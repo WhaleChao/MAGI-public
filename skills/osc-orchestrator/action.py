@@ -1748,27 +1748,37 @@ def _annotate_unknown_import_calendar_sources(
             gid = str((row or {}).get("google_calendar_id") or "").strip()
             if not gid:
                 continue
-            hits: list[str] = []
+            active_hits: list[str] = []
+            cancelled_hits: list[str] = []
             for cid in ids:
                 try:
-                    service.events().get(calendarId=cid, eventId=gid).execute()
-                    hits.append(cid)
+                    ev = service.events().get(calendarId=cid, eventId=gid).execute()
+                    status = str((ev or {}).get("status") or "").lower()
+                    if status == "cancelled":
+                        cancelled_hits.append(cid)
+                    else:
+                        active_hits.append(cid)
                 except Exception:
                     continue
-            if not hits:
+            if not active_hits:
                 out["unresolved"] += 1
                 continue
             chosen = ""
-            for cid in hits:
-                if cid.lower() in target_calendar_ids:
+            for cid in active_hits:
+                if cid.lower() not in target_calendar_ids and cid.lower() != "primary":
                     chosen = cid
                     break
             if not chosen:
-                chosen = hits[0]
+                chosen = active_hits[0]
             cur.execute("UPDATE case_todos SET source_file=%s WHERE id=%s", (f"gcal_import:{chosen}", int(row.get("id") or 0)))
             out["updated"] += 1
             if len(out["items"]) < 20:
-                out["items"].append({"id": row.get("id"), "source_file": f"gcal_import:{chosen}", "hits": hits})
+                out["items"].append({
+                    "id": row.get("id"),
+                    "source_file": f"gcal_import:{chosen}",
+                    "active_hits": active_hits,
+                    "cancelled_hits": cancelled_hits,
+                })
         if out["updated"]:
             conn.commit()
     finally:
@@ -2366,7 +2376,8 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
     - stale primary-calendar ids;
     - imported non-primary calendar events that were not mirrored to primary;
     - imported rows whose source calendar is still unknown;
-    - mirrors that accidentally point back to the target calendar.
+    - mirrors that accidentally point back to the target calendar;
+    - source-calendar imported events that are not visible through events.list.
     """
 
     try:
@@ -2399,6 +2410,19 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
             return out
         service = svc.get("service")
 
+    def _brief(row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": row.get("id"),
+            "case_number": str(row.get("case_number") or ""),
+            "client_name": str(row.get("client_name") or ""),
+            "todo_type": str(row.get("todo_type") or ""),
+            "todo_date": str(row.get("todo_date") or ""),
+            "todo_time": str(row.get("todo_time") or ""),
+            "source_file": str(row.get("source_file") or ""),
+            "google_calendar_id": str(row.get("google_calendar_id") or ""),
+            "description": str(row.get("description") or "")[:140],
+        }
+
     conn = None
     cur = None
     try:
@@ -2421,20 +2445,6 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not target_calendar_ids:
             target_calendar_ids = {calendar_id.lower(), "primary"}
 
-        def _brief(row: Dict[str, Any]) -> Dict[str, Any]:
-            return {
-                "id": row.get("id"),
-                "case_number": str(row.get("case_number") or ""),
-                "client_name": str(row.get("client_name") or ""),
-                "todo_type": str(row.get("todo_type") or ""),
-                "todo_date": str(row.get("todo_date") or ""),
-                "todo_time": str(row.get("todo_time") or ""),
-                "source_file": str(row.get("source_file") or ""),
-                "google_calendar_id": str(row.get("google_calendar_id") or ""),
-                "description": str(row.get("description") or "")[:140],
-            }
-
-        # OSC-owned future todos must have a target-calendar id.
         cur.execute(
             """
             SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
@@ -2453,7 +2463,6 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         missing_google_id = [_brief(r) for r in (cur.fetchall() or [])]
 
-        # Imported rows with no source calendar cannot be safely mirrored.
         cur.execute(
             """
             SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
@@ -2472,8 +2481,6 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         unknown_import_source = [_brief(r) for r in (cur.fetchall() or [])]
 
-        # Non-primary imported events should either have an OSC-owned equivalent
-        # or a gcal_mirror row that is pushed to primary.
         cur.execute(
             """
             SELECT ct.id, ct.case_number, COALESCE(NULLIF(ct.client_name, ''), c.client_name, '') AS client_name,
@@ -2586,6 +2593,26 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
             (limit,),
         )
         rows_to_check = cur.fetchall() or []
+
+        cur.execute(
+            """
+            SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
+                   description, source_file, google_calendar_id
+            FROM case_todos
+            WHERE source_file LIKE 'gcal_import:%%'
+              AND todo_date IS NOT NULL
+              AND todo_date >= CURDATE()
+              AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
+              AND COALESCE(status, '') <> 'deleted'
+              AND COALESCE(case_number, '') <> ''
+              AND google_calendar_id IS NOT NULL
+              AND google_calendar_id <> ''
+            ORDER BY todo_date ASC, todo_time ASC, id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        source_rows_to_list_check = cur.fetchall() or []
     except Exception as e:
         return {"ok": False, "error": f"audit_db_failed:{type(e).__name__}: {str(e)[:220]}"}
     finally:
@@ -2599,6 +2626,9 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     stale_google_events: list[Dict[str, Any]] = []
     primary_ok = 0
+    source_calendar_not_listed: list[Dict[str, Any]] = []
+    source_calendar_errors: list[Dict[str, Any]] = []
+    source_list_ok = 0
     if check_google and service:
         for row in rows_to_check:
             gid = str(row.get("google_calendar_id") or "").strip()
@@ -2623,6 +2653,59 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 stale_google_events.append({**brief, "error": f"{type(e).__name__}: {str(e)[:160]}"})
 
+        source_rows_by_calendar: Dict[str, list[Dict[str, Any]]] = {}
+        for row in source_rows_to_list_check:
+            source = str(row.get("source_file") or "")
+            source_calendar = source.split(":", 1)[1].strip() if ":" in source else ""
+            if source_calendar:
+                source_rows_by_calendar.setdefault(source_calendar, []).append(row)
+
+        now_utc = datetime.now(timezone.utc)
+        time_min = (now_utc - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        time_max = (now_utc + timedelta(days=730)).isoformat().replace("+00:00", "Z")
+        for source_calendar, rows in sorted(source_rows_by_calendar.items()):
+            listed_ids: set[str] = set()
+            listed_ok = False
+            try:
+                page_token = None
+                while True:
+                    resp = service.events().list(
+                        calendarId=source_calendar,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        singleEvents=True,
+                        showDeleted=False,
+                        maxResults=2500,
+                        pageToken=page_token,
+                    ).execute()
+                    for ev in (resp or {}).get("items", []) or []:
+                        ev_id = str((ev or {}).get("id") or "").strip()
+                        if ev_id:
+                            listed_ids.add(ev_id)
+                    page_token = (resp or {}).get("nextPageToken")
+                    if not page_token:
+                        break
+                listed_ok = True
+            except Exception as e:
+                for row in rows[:20]:
+                    source_calendar_errors.append({
+                        **_brief(row),
+                        "source_calendar": source_calendar,
+                        "error": f"{type(e).__name__}: {str(e)[:160]}",
+                    })
+
+            if not listed_ok:
+                continue
+            for row in rows:
+                gid = str(row.get("google_calendar_id") or "").strip()
+                if gid in listed_ids:
+                    source_list_ok += 1
+                else:
+                    source_calendar_not_listed.append({
+                        **_brief(row),
+                        "source_calendar": source_calendar,
+                    })
+
     findings = {
         "missing_google_id": missing_google_id,
         "unknown_import_source": unknown_import_source,
@@ -2631,6 +2714,8 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         "unknown_mirrors": unknown_mirrors,
         "duplicate_mirrors": duplicate_mirrors,
         "stale_google_events": stale_google_events,
+        "source_calendar_not_listed": source_calendar_not_listed,
+        "source_calendar_errors": source_calendar_errors,
     }
     summary = {
         "missing_google_id": len(missing_google_id),
@@ -2642,8 +2727,16 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         "stale_google_events": len(stale_google_events),
         "checked_primary_events": len(rows_to_check),
         "primary_ok": primary_ok,
+        "checked_source_events": len(source_rows_to_list_check),
+        "source_list_ok": source_list_ok,
+        "source_calendar_not_listed": len(source_calendar_not_listed),
+        "source_calendar_errors": len(source_calendar_errors),
     }
-    ok = all(v == 0 for k, v in summary.items() if k not in {"checked_primary_events", "primary_ok"})
+    ok = all(
+        v == 0
+        for k, v in summary.items()
+        if k not in {"checked_primary_events", "primary_ok", "checked_source_events", "source_list_ok"}
+    )
     out = {
         "ok": bool(ok),
         "calendar_id": calendar_id,
@@ -2868,6 +2961,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     imported = 0
     skipped = 0
+    cancelled_marked = 0
     dedup_skipped_in_batch = 0
     db_dedup_skipped = 0
     invalid_case_keys = 0
@@ -2884,6 +2978,22 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     for event in events:
         gcal_id = event.get("id", "")
         if not gcal_id:
+            continue
+        if str(event.get("status") or "").lower() == "cancelled":
+            try:
+                cur.execute(
+                    """
+                    UPDATE case_todos
+                       SET status='deleted'
+                     WHERE google_calendar_id=%s
+                       AND source_file LIKE 'gcal_import%%'
+                    """,
+                    (gcal_id,),
+                )
+                cancelled_marked += int(getattr(cur, "rowcount", 0) or 0)
+            except Exception as e:
+                errors.append(f"cancelled_mark_failed:{gcal_id[:20]}:{e}")
+            skipped += 1
             continue
         if gcal_id in existing_gcal_ids:
             skipped += 1
@@ -3018,6 +3128,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         "ok": True,
         "imported": imported,
         "skipped": skipped,
+        "cancelled_marked": cancelled_marked,
         "dedup_enabled": bool(dedup_enabled),
         "dedup_skipped_in_batch": dedup_skipped_in_batch,
         "db_dedup_skipped": db_dedup_skipped,
