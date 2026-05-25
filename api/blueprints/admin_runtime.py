@@ -137,13 +137,17 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
 
 
 def _safe_epoch(value: Any) -> float:
-    try:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
         return float(value)
-    except Exception:
-        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 141, exc_info=True)
     txt = str(value or "").strip()
     if not txt:
         return 0.0
+    try:
+        return float(txt)
+    except (TypeError, ValueError):
+        txt = txt.strip()
     try:
         if txt.endswith("Z"):
             txt = txt[:-1] + "+00:00"
@@ -186,7 +190,7 @@ def _current_omlx_model_ids() -> list[str]:
 def _expected_omlx_keyword_now() -> str:
     now = datetime.now()
     minutes = now.hour * 60 + now.minute
-    return "e4b" if 415 <= minutes < 1310 else "26b"
+    return "e4b" if 395 <= minutes < 1310 else "26b"
 
 
 def _is_omlx_switch_recovered() -> bool:

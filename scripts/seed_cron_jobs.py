@@ -299,7 +299,7 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "last_run": None,
             "last_run_minute": None,
             "enabled": True,
-            "timeout_sec": 900,
+            "timeout_sec": 1800,
             "no_catchup": True,
         },
         {

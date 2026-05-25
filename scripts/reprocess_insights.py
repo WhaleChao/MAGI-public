@@ -123,6 +123,30 @@ PROMPT_TEMPLATE = (
 
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
 REJECT_KEYWORDS = ["無法擷取", "無可擷取", "案由不符"]
+DEGRADED_MARKERS = [
+    "degraded",
+    "fallback",
+    "模型回覆逾時",
+    "模型暫時無法",
+    "系統降級",
+    "無法完成摘要",
+    "請稍後再試",
+]
+
+
+def _looks_degraded(row: dict[str, Any]) -> bool:
+    if row.get("is_degraded"):
+        return True
+    text = str(row.get("insight_text") or "").lower()
+    return any(marker.lower() in text for marker in DEGRADED_MARKERS)
+
+
+def _write_json_report(path: str, report: dict[str, Any]) -> None:
+    if not path:
+        return
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ── DB（含 failover：遠端不通自動切本機）───────────────────────────
@@ -362,7 +386,11 @@ def main():
     parser.add_argument("--start-id", type=int, default=0, help="Start from this ID")
     parser.add_argument("--delay", type=float, default=1.5, help="Delay between NIM calls (sec)")
     parser.add_argument("--skip-api", action="store_true", help="Skip judicial API fetch (cache + raw_text only)")
+    parser.add_argument("--only-degraded", action="store_true", help="Only process rows marked or detected as degraded")
+    parser.add_argument("--max-seconds", type=float, default=0, help="Stop gracefully before this runtime budget (0=unlimited)")
+    parser.add_argument("--json-out", default="", help="Optional path to write a machine-readable report")
     args = parser.parse_args()
+    started_at = time.monotonic()
 
     conn = _get_db()
     import pymysql
@@ -398,14 +426,23 @@ def main():
     if args.only_with_raw:
         rows = [r for r in rows if r.get("raw_text") and len(r["raw_text"]) > 100]
         logger.info("Filtered to %d rows with raw_text", len(rows))
+    if args.only_degraded:
+        rows = [r for r in rows if _looks_degraded(r)]
+        logger.info("Filtered to %d degraded rows", len(rows))
 
     if args.limit > 0:
         rows = rows[:args.limit]
 
     total = len(rows)
     logger.info("Processing %d rows (dry_run=%s, skip_api=%s)", total, args.dry_run, args.skip_api)
+    stopped_reason = ""
 
     for i, row in enumerate(rows):
+        if args.max_seconds > 0 and time.monotonic() - started_at >= args.max_seconds:
+            stopped_reason = "max_seconds"
+            logger.info("Runtime budget reached (%.1fs), stopping gracefully", args.max_seconds)
+            break
+
         rid = row["id"]
         court_ref = row.get("court_reference") or ""
         case_reason = row.get("case_reason") or ""
@@ -490,9 +527,14 @@ def main():
         "failed": failed,
         "sources": source_counts,
         "dry_run": args.dry_run,
+        "only_degraded": args.only_degraded,
+        "max_seconds": args.max_seconds,
+        "stopped_reason": stopped_reason,
+        "elapsed_sec": round(time.monotonic() - started_at, 2),
     }
     logger.info("=== Final Report ===")
     logger.info(json.dumps(report, ensure_ascii=False, indent=2))
+    _write_json_report(args.json_out, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
     conn.close()

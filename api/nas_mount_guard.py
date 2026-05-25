@@ -260,6 +260,15 @@ else:
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
 _ENSURE_MOUNT_LOCK = threading.Lock()  # BUG-38: 防止多執行緒同時 mount 同一 share
 
+
+def _managed_share_mount_re() -> re.Pattern[str]:
+    """Return a mount-name matcher for configured NAS shares."""
+    names = sorted({name for name, _ in _SHARES if name}, key=len, reverse=True)
+    if not names:
+        names = ["homes", "lumi"]
+    body = "|".join(re.escape(name) for name in names)
+    return re.compile(rf"^({body})(-\d+)?$")
+
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
 def _is_mounted(volume_path: str) -> bool:
@@ -277,7 +286,7 @@ def _is_mounted(volume_path: str) -> bool:
 
 def _known_nas_hosts() -> set:
     """所有已知的 NAS IP（LAN + Tailscale），任一都算合法掛載。"""
-    return {_NAS_LAN_HOST, _NAS_TS_HOST}
+    return {host for host in (_NAS_LAN_HOST, _NAS_TS_HOST) if host}
 
 
 def _is_correct_host(volume_path: str) -> bool:
@@ -485,14 +494,15 @@ def _cleanup_wrong_host_mounts() -> None:
         vol = m.group(1)
         base_name = vol.split("/")[-1]
 
-        # 只處理 homes/lumi 相關的 mount
-        if not re.match(r"^(homes|lumi)(-\d+)?$", base_name):
+        # 只處理 MAGI 管理的 NAS mount，避免誤卸其他使用者磁碟。
+        managed_mount = _managed_share_mount_re()
+        if not managed_mount.match(base_name):
             continue
 
         # 掛載指向已知 IP → 保留（無論是 LAN 或 Tailscale）
         if any(ip in line for ip in known):
             # 但如果是 -N 後綴且正名掛載也存在且可用，清理重複
-            if re.match(r"^(homes|lumi)-\d+$", base_name):
+            if managed_mount.match(base_name) and re.search(r"-\d+$", base_name):
                 canonical = f"/Volumes/{base_name.split('-')[0]}"
                 if _is_mounted(canonical) and _is_correct_host(canonical):
                     logger.info("清理重複 mount（正名已可用）: %s", vol)

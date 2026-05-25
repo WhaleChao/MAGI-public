@@ -13,13 +13,13 @@ probe_model_id_at_port() {
 }
 
 # ---- auto 模式：依當前時間自動選 day / night（在 lock 之前解析）----
-# day 窗口：06:55-21:49（對齊 job_omlx_switch_day=06:55 / job_omlx_switch_night=21:50）
+# day 窗口：06:35-21:49（06:35 排程重開後即應進入日間；06:55 只是安全重試）
 # 重要：auto 模式有冪等檢查 — 需「實際 API 模型」與 models-text 都對應正確才跳過切換
 if [ "$MODE" = "auto" ]; then
     current_hour=$((10#$(date +%H)))
     current_minute=$((10#$(date +%M)))
     current_total_min=$((current_hour * 60 + current_minute))
-    if [ "$current_total_min" -ge 415 ] && [ "$current_total_min" -lt 1310 ]; then
+    if [ "$current_total_min" -ge 395 ] && [ "$current_total_min" -lt 1310 ]; then
         MODE="day"
         EXPECTED_MODEL_KEYWORD="e4b"
     else
@@ -440,6 +440,45 @@ wait_model_ready() {
 get_active_profile() {
     cat "$PROFILE_FILE" 2>/dev/null || echo "unknown"
 }
+
+already_in_requested_mode() {
+    local requested="$1"
+    local active current_main current_phi4 current_smol
+    active=$(get_active_profile)
+    current_main=$(probe_model_id_at_port 8080)
+    current_phi4=$(probe_model_id_at_port 8082)
+    current_smol=$(probe_model_id_at_port 8083)
+    if [ "$requested" = "day" ]; then
+        if [ "$active" != "day" ] || ! echo "$current_main" | grep -qi "e4b"; then
+            return 1
+        fi
+        if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! echo "$current_phi4" | grep -qi "phi"; then
+            return 1
+        fi
+        if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! echo "$current_smol" | grep -qi "smol"; then
+            return 1
+        fi
+        log "DAY mode already healthy（api=$current_main, phi4=${current_phi4:-off}, smol=${current_smol:-off}），跳過重啟"
+        return 0
+    fi
+    if [ "$requested" = "night" ]; then
+        if [ "$active" != "night" ] || ! echo "$current_main" | grep -qi "26b"; then
+            return 1
+        fi
+        if [ -n "$current_phi4" ] || [ -n "$current_smol" ]; then
+            return 1
+        fi
+        log "NIGHT mode already healthy（api=$current_main），跳過重啟"
+        return 0
+    fi
+    return 1
+}
+
+if [ "${MAGI_OMLX_FORCE_SWITCH:-0}" != "1" ] && [ "$MODE" != "auto" ] && [ "$MODE" != "status" ]; then
+    if already_in_requested_mode "$MODE"; then
+        exit 0
+    fi
+fi
 
 case "$MODE" in
   day)

@@ -130,7 +130,7 @@ def audit_omlx_profile() -> dict[str, Any]:
     """Verify that the live oMLX model matches the current day/night policy."""
     now = datetime.now()
     minutes = now.hour * 60 + now.minute
-    expected_profile = "day" if 415 <= minutes < 1310 else "night"
+    expected_profile = "day" if 395 <= minutes < 1310 else "night"
     expected_keyword = "e4b" if expected_profile == "day" else "26b"
     models = _current_omlx_models(8080)
     phi4_models = _current_omlx_models(8082)

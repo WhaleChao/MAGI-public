@@ -3768,7 +3768,7 @@ if __name__ == "__main__":
     else:
         # Housekeeping: clean up old exports (>30 days)
         try:
-            from api.server import cleanup_old_exports
+            from api.startup import _cleanup_old_exports as cleanup_old_exports
             cleanup_old_exports(days=30)
         except Exception:
             logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3773, exc_info=True)

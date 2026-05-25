@@ -58,6 +58,23 @@ def test_ensure_nas_mounts_ping_failure_returns_share_names(monkeypatch):
     assert mod.ensure_nas_mounts() == {"homes": False}
 
 
+def test_managed_share_mount_regex_includes_configured_backup(monkeypatch):
+    from api import nas_mount_guard as mod
+
+    monkeypatch.setattr(
+        mod,
+        "_SHARES",
+        [("homes", "/Volumes/homes"), ("lumi", "/Volumes/lumi"), ("bakup", "/Volumes/bakup")],
+    )
+
+    matcher = mod._managed_share_mount_re()
+    assert matcher.match("homes")
+    assert matcher.match("lumi-1")
+    assert matcher.match("bakup")
+    assert matcher.match("bakup-2")
+    assert not matcher.match("external")
+
+
 def test_guard_loop_checks_before_first_sleep(monkeypatch):
     from api import nas_mount_guard as mod
 

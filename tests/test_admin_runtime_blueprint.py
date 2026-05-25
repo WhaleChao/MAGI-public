@@ -129,6 +129,16 @@ def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None):
     return app, orchestrator, product_updates
 
 
+def test_safe_epoch_accepts_iso_strings_without_warning(caplog):
+    from api.blueprints.admin_runtime import _safe_epoch
+
+    caplog.clear()
+    value = _safe_epoch("2026-05-26T06:30:45.824976")
+
+    assert value > 0
+    assert not caplog.records
+
+
 def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     import requests
     import subprocess as _subprocess

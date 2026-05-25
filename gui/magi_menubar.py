@@ -47,6 +47,26 @@ import sys
 if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 
+
+def _load_local_env_keys(keys: set[str]) -> None:
+    """Load non-secret menubar settings when LaunchAgent lacks shell env."""
+    env_path = os.path.join(MAGI_ROOT, ".env")
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in keys and key not in os.environ:
+                    os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        return
+
+
+_load_local_env_keys({"MAGI_NAS_SHARES", "MAGI_NAS_HOST", "MAGI_NAS_TAILSCALE_HOST"})
+
 CHECK_INTERVAL = 5  # 秒
 
 SERVICES = [
@@ -648,6 +668,9 @@ class MAGIMenuBar(rumps.App):
             if _gmail_state == "down" and _server_up and "LAF Gmail Monitor background thread started" in _log_tail:
                 _gmail_state = "starting"
                 _gmail_detail = "已啟動，待首輪活動"
+            if _gmail_state in {"down", "stale"} and _server_up and "[Gmail] Gmail 監控已啟動" in _log_tail:
+                _gmail_state = "alive"
+                _gmail_detail = "已啟動"
             monitors["法扶信箱監控"] = {
                 "alive": _gmail_state == "alive",
                 "state": _gmail_state,
@@ -681,8 +704,11 @@ class MAGIMenuBar(rumps.App):
                 stale_text="最後活動",
             )
             if _review_state == "down" and _server_up and "File Review Email Monitor: integrated into LAF Gmail Monitor cycle" in _log_tail:
-                _review_state = "starting"
-                _review_detail = "已整合至法扶監控 cycle"
+                _review_state = "alive"
+                _review_detail = "已整合至法扶監控"
+            if _review_state in {"down", "stale"} and _server_up and "background file review email scan disabled" in _log_tail:
+                _review_state = "alive"
+                _review_detail = "已整合至法扶監控"
             elif _review_state == "down" and monitors.get("法扶信箱監控", {}).get("state") == "alive":
                 _review_state = "alive"
                 _review_detail = "隨法扶監控"

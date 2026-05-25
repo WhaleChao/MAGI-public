@@ -42,7 +42,9 @@ class ModelGateReport:
 def expected_profile_now() -> str:
     now = datetime.now()
     minutes = now.hour * 60 + now.minute
-    return "day" if 415 <= minutes < 1310 else "night"
+    # Day switch is allowed from the 06:35 scheduled reboot guard onward.
+    # The 06:55 switch job is a safety retry, not the first valid day window.
+    return "day" if 395 <= minutes < 1310 else "night"
 
 
 def active_profile() -> str:

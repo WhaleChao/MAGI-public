@@ -306,8 +306,7 @@ def build_report() -> dict:
                 "若超過 72 小時仍未更新，才需要檢查夜拉排程。"
             )
             if pull_age >= 72.0:
-                status = "PULL_STALE"
-                reasons.append("夜間拉取已超過 72 小時未更新，請檢查排程或司法院 API 服務狀態。")
+                reasons.append("夜間拉取已超過 72 小時未更新；目前序列已清空，先列為提醒並由夜間排程續查。")
         else:
             if status == "PIPELINE_HEALTHY":
                 status = "PULL_STALE"
