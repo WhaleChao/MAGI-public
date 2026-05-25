@@ -64,6 +64,7 @@ def test_cases_import_route_registered(app):
     rules = [str(r) for r in app.url_map.iter_rules()]
     assert "/api/osc/cases/import-csv" in rules
     assert "/api/osc/cases/export-csv" in rules
+    assert "/api/osc/cases/export-xlsx" in rules
     assert "/api/osc/clients/import-csv" in rules
     assert "/api/osc/clients/export-csv" in rules
 
@@ -202,6 +203,32 @@ def test_cases_export_returns_csv(client):
     content = r.data.decode("utf-8-sig")
     assert "當事人" in content
     assert "陳大文" in content
+
+
+def test_cases_export_returns_xlsx_sorted_by_case_number(client):
+    from openpyxl import load_workbook
+
+    captured = []
+    fake_rows = [
+        {"case_number": "C-002", "client_name": "乙", "case_type": "民事", "status": "進行中"},
+        {"case_number": "C-001", "client_name": "甲", "case_type": "刑事", "status": "已結案"},
+    ]
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        captured.append(sql)
+        return (fake_rows, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases/export-xlsx")
+
+    assert r.status_code == 200
+    assert "spreadsheet" in r.content_type.lower()
+    wb = load_workbook(io.BytesIO(r.data))
+    ws = wb.active
+    assert ws.title == "案件資料"
+    assert ws["A1"].value == "案件編號"
+    assert ws["A2"].value == "C-002"
+    assert any("ORDER BY case_number ASC" in " ".join(sql.split()) for sql in captured)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

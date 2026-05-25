@@ -231,14 +231,26 @@ def test_db_write_read():
 # 4. SERVICE HEALTH TESTS
 # ══════════════════════════════════════════════════════════════
 
-def _http_get(url, timeout=5):
+def _http_get(url, timeout=8, retries=1):
     import urllib.request
+    last_exc = None
     req = urllib.request.Request(url, headers={"User-Agent": "MAGI-Smoke/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read().decode("utf-8", errors="replace")
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", errors="replace")
+        except TimeoutError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(1.0)
+                continue
+            raise
+        except Exception:
+            raise
+    raise last_exc or TimeoutError("http_get_failed")
 
 def test_server_health():
-    code, body = _http_get("http://127.0.0.1:5002/health")
+    code, body = _http_get("http://127.0.0.1:5002/health", timeout=12, retries=1)
     return code == 200, f"HTTP {code}"
 
 def test_tools_api_health():

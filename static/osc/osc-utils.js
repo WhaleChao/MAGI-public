@@ -215,7 +215,10 @@ async function shareFileLink(path, label = "檔案") {
         await navigator.clipboard.writeText(data.url);
         showToast(`已建立並複製分享連結：${label || data.name || "檔案"}`, "ok", 3500);
     } catch {
-        window.prompt("分享連結（不含檔案路徑）：", data.url);
+        showCustomDialog("MAGI說｜分享連結", `
+            <p>瀏覽器暫時不允許自動複製，請手動複製下列分享連結。</p>
+            <input value="${esc(data.url)}" readonly style="box-sizing:border-box;width:100%;border:1px solid #d2d7df;border-radius:8px;padding:10px 12px;font-size:14px">
+        `);
         showToast(`已建立分享連結：${label || data.name || "檔案"}`, "ok", 3500);
     }
     return data;
@@ -266,7 +269,7 @@ async function copyText(text, message = "已複製到剪貼簿。") {
         await navigator.clipboard.writeText(value);
         showToast(message, "ok");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
 }
 

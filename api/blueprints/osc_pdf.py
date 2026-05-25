@@ -492,6 +492,18 @@ def _append_calendar_share_link(description: str, share: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _append_calendar_source_reference(description: str, *, source_path: Path, share: dict[str, Any]) -> str:
+    """Keep PDF-created todos traceable even when the public share tunnel is unavailable."""
+    desc = str(description or "").strip()
+    if share.get("ok") and share.get("url"):
+        return _append_calendar_share_link(desc, share)
+    lines = [desc] if desc else []
+    lines.append(f"來源PDF：{source_path}")
+    if share:
+        lines.append(f"MAGI分享狀態：分享連結暫不可用（{share.get('error') or 'unknown'}）")
+    return "\n".join(lines).strip()
+
+
 def _insert_todo(item: dict[str, Any], *, case_number: str, client_name: str, source_file: str, allow_duplicates: bool) -> str:
     todo_type = str(item.get("type") or "待辦").strip()
     todo_date = str(item.get("date") or "").strip() or None
@@ -651,9 +663,9 @@ def _scan_pdf_for_calendar(
     todos = _dedupe_todos([*filename_todos, *text_todos])
     todos = [_json_safe(t) for t in todos]
     share_link = _create_calendar_share_link(path) if include_share_link else {}
-    if share_link.get("ok"):
+    if include_share_link:
         for todo in todos:
-            todo["description"] = _append_calendar_share_link(str(todo.get("description") or ""), share_link)
+            todo["description"] = _append_calendar_source_reference(str(todo.get("description") or ""), source_path=path, share=share_link)
     events = [
         _todo_to_calendar_event(t, case_number=case_number, client_name=client_name, source_file=str(path))
         for t in todos
@@ -1072,7 +1084,7 @@ def osc_pdf_calendar_scan_api():
         # OSC 單機版正規流程：PDF 建立的是 case_todos；Google 日曆由
         # gcal_sync 讀 case_todos 推送。calendar_events 只保留給明確指定的舊相容模式。
         write_osc_calendar_events = _safe_bool(data.get("write_osc_calendar_events"), False)
-        include_share_link = _safe_bool(data.get("include_share_link"), False)
+        include_share_link = _safe_bool(data.get("include_share_link"), True)
         allow_duplicates = _safe_bool(data.get("allow_duplicates"), False)
         case_number = str(data.get("case_number") or "").strip()
         client_name = str(data.get("client_name") or "").strip()

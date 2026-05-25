@@ -70,8 +70,7 @@
                         <div class="sort-bar" id="caseSortBar">
                             <label>排序</label>
                             <select id="caseSortCol">
-                                <option value="">預設</option>
-                                <option value="case_number">案號</option>
+                                <option value="case_number">案件號碼（預設）</option>
                                 <option value="client_name">當事人</option>
                                 <option value="court_name">法院 / 地檢署</option>
                                 <option value="case_type">案件分類</option>
@@ -85,7 +84,7 @@
                         </div>
                         <div class="inline-actions">
                             <button class="btn" id="casesImportCsvBtn">匯入 CSV</button>
-                            <button class="btn" id="casesExportCsvBtn">匯出 CSV</button>
+                            <button class="btn" id="casesExportXlsxBtn">匯出 XLSX</button>
                             <button class="btn" id="caseViewToggle">切換表格</button>
                             <input type="file" id="casesImportCsvFile" accept=".csv" style="display:none">
                         </div>

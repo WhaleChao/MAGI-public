@@ -61,6 +61,7 @@ const state = {
     caseStatusScope: "all",
     wb: { mode: null, id: null, data: null },
     folderUpload: null,
+    caseSort: { col: "case_number", dir: 1, type: "string" },
     sort: { col: null, dir: 1, type: "string" },
     lafSort: { col: "case_number", dir: 1, type: "string" }
 };

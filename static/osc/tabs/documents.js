@@ -498,7 +498,7 @@ async function runLafScan() {
 }
 
 async function batchLafStatusToInProgress() {
-    if (!confirm("確定要將所有未開辦的法扶案件改為「進行中」嗎？")) return;
+    if (!await showConfirm("MAGI說", "確定要將所有未開辦的法扶案件改為「進行中」嗎？")) return;
     const result = await api("/api/osc/laf/batch-status", "POST", { legal_aid_status: "進行中" });
     if (!result || result.ok === false) throw new Error(result?.error || "批次更新失敗");
     showToast("已批次更新未開辦法扶案件。", "ok", 3200);
@@ -1190,7 +1190,7 @@ async function runPdfCalendarScan(write = false, syncGoogle = false) {
         write,
         write_todos: true,
         write_calendar: true,
-        include_share_link: Boolean(syncGoogle),
+        include_share_link: Boolean(write),
         recursive: true,
         max_pages: 8,
     });
@@ -1217,7 +1217,7 @@ async function runPdfCalendarScan(write = false, syncGoogle = false) {
 }
 
 async function runAllCasePdfCalendarScan() {
-    if (!confirm("將掃描所有進行中案件資料夾內的法院通知、程序裁定與判決書 PDF。先只做預覽，不會寫入。是否繼續？")) return;
+    if (!await showConfirm("MAGI說", "將掃描所有進行中案件資料夾內的法院通知、程序裁定與判決書 PDF。先只做預覽，不會寫入。是否繼續？")) return;
     const result = await api("/api/osc/pdf/calendar-scan", "POST", {
         all_cases: true,
         write: false,
@@ -1337,10 +1337,12 @@ async function stampDocument(path) {
         return;
     }
 
-    const copyType = (prompt(
-        "請選擇蓋章類型（直接按確定預設「正本」）：\n\n  正本 / 副本 / 繕本",
-        "正本"
-    ) || "").trim();
+    const copyType = await showChoice(
+        "MAGI說｜選擇蓋章類型",
+        "網頁電子蓋章預設用於「繕本」。正本原則上仍需手寫或實體用印，避免誤認電子章已完成正本用印。",
+        ["繕本", "副本", "正本"],
+        "繕本"
+    );
     if (!copyType) return;
     if (!["正本", "副本", "繕本"].includes(copyType)) {
         showToast("無效的蓋章類型，僅可填正本/副本/繕本", "warn");
@@ -1350,12 +1352,14 @@ async function stampDocument(path) {
     let addPoa = false;
     let addSent = false;
     if (copyType === "正本") {
-        addPoa = confirm("正本是否加註「附委任狀」？");
-        addSent = confirm("正本是否加註「繕本已送對造」？");
+        const ok = await showConfirm("MAGI說｜正本用印提醒", "你選擇的是正本。請確認這只是產生電子輔助版本，正式正本仍需手寫或實體用印。\n\n是否繼續產生正本電子蓋章版？", { okText: "繼續" });
+        if (!ok) return;
+        addPoa = await showConfirm("MAGI說", "正本是否加註「附委任狀」？");
+        addSent = await showConfirm("MAGI說", "正本是否加註「繕本已送對造」？");
     }
 
     let stampCenter = null;
-    if (confirm("是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
+    if (await showConfirm("MAGI說", "是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
         stampCenter = await pickStampCenter(path, { normalize: false });
         if (stampCenter?.cancelled) return;
     }
@@ -1391,18 +1395,18 @@ async function finalizeDocument(path) {
         showToast("僅支援 PDF / DOCX 定稿合併", "warn");
         return;
     }
-    const copiesRaw = prompt("請輸入需要產生的繕本份數：", "1");
+    const copiesRaw = await showPrompt("MAGI說", "請輸入需要產生的繕本份數：", "1");
     if (copiesRaw === null) return;
     const numCopies = Number.parseInt(copiesRaw, 10);
     if (!Number.isFinite(numCopies) || numCopies < 0) {
         showToast("繕本份數必須是 0 以上整數。", "warn");
         return;
     }
-    const addSent = numCopies > 0 ? confirm("正本是否加註「繕本已送對造」？") : false;
-    const addPoa = confirm("正本是否加註「附委任狀」？");
-    const includeEvidence = confirm("是否合併同資料夾內已編號的證據 PDF（例如 原證1、附件二）？");
+    const addSent = numCopies > 0 ? await showConfirm("MAGI說", "正本是否加註「繕本已送對造」？") : false;
+    const addPoa = await showConfirm("MAGI說", "正本是否加註「附委任狀」？");
+    const includeEvidence = await showConfirm("MAGI說", "是否合併同資料夾內已編號的證據 PDF（例如 原證1、附件二）？");
     let stampCenter = null;
-    if (confirm("是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
+    if (await showConfirm("MAGI說", "是否要手動點選律師章位置？\n\n選「確定」會開啟最後一頁預覽；選「取消」則使用預設位置。")) {
         stampCenter = await pickStampCenter(path, { normalize: true });
         if (stampCenter?.cancelled) return;
     }
@@ -1491,7 +1495,7 @@ async function saveDocumentTemplate() {
 }
 
 async function delDocumentTemplate(id) {
-    if (!confirm(`確定刪除書狀模板 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除書狀模板 ${id}？`)) return;
     await api(`/api/osc/document-templates/${Number(id)}`, "DELETE");
     await loadDocumentTemplates();
     await loadMeta();
@@ -1550,7 +1554,7 @@ async function saveDocumentKeyword() {
         usage_count: (document.getElementById("docKwUsageCount").value || "0").trim(),
         keyword_content: (document.getElementById("docKwContent").value || "").trim(),
     };
-    if (!body.keyword_name) return alert("請先輸入 keyword_name");
+    if (!body.keyword_name) return showAlert("MAGI說", "請先輸入 keyword_name");
     if (body.id) await api(`/api/osc/document-keywords/${Number(body.id)}`, "PUT", body);
     else await api(`/api/osc/document-keywords`, "POST", body);
     ["docKwId", "docKwCase", "docKwName", "docKwCategory", "docKwHotkey", "docKwCaseSpecific", "docKwUsageCount", "docKwContent"].forEach(id => {
@@ -1561,7 +1565,7 @@ async function saveDocumentKeyword() {
 }
 
 async function delDocumentKeyword(id) {
-    if (!confirm(`確定刪除關鍵字 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除關鍵字 ${id}？`)) return;
     await api(`/api/osc/document-keywords/${Number(id)}`, "DELETE");
     await loadDocumentKeywords();
     await loadMeta();
@@ -1594,7 +1598,7 @@ async function loadDocumentReplacements() {
 }
 
 async function delDocumentReplacement(id) {
-    if (!confirm(`確定刪除替換紀錄 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除替換紀錄 ${id}？`)) return;
     await api(`/api/osc/document-replacements/${Number(id)}`, "DELETE");
     await loadDocumentReplacements();
     await loadMeta();
@@ -1610,7 +1614,7 @@ async function openDocumentPath(path) {
     if (result.ok) return;
     const smb = (data.smb_candidates || [])[0] || "";
     if (smb) window.open(smb, "_blank");
-    alert(`無法直接開啟，請手動使用路徑：\n${path}`);
+    showAlert("MAGI說", `無法直接開啟，請手動使用路徑：\n${path}`);
 }
 
 async function openFolderPath(path) {
@@ -1625,9 +1629,9 @@ async function openFolderPath(path) {
             window.open(smb, "_blank");
             return;
         }
-        alert(`無法直接開啟資料夾，請手動使用路徑：\n${rawPath}`);
+        showAlert("MAGI說", `無法直接開啟資料夾，請手動使用路徑：\n${rawPath}`);
     } catch (err) {
-        alert(`資料夾開啟失敗：${err.message || err}\n${rawPath}`);
+        showAlert("MAGI說", `資料夾開啟失敗：${err.message || err}\n${rawPath}`);
     }
 }
 
@@ -1638,14 +1642,14 @@ async function copyDocumentPath(path) {
         await navigator.clipboard.writeText(text);
         showToast("檔案路徑已複製。", "ok");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
 }
 
 async function runDocCaseAction(action) {
     const caseId = (document.getElementById("docActionCaseId").value || "").trim();
     if (!caseId) {
-        alert("請先選擇系統案件");
+        showAlert("MAGI說", "請先選擇系統案件");
         return;
     }
     const data = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/quick-action`, "POST", { action });
@@ -1711,9 +1715,9 @@ async function exportForm() {
     const errs = Array.isArray(data.export_errors) ? data.export_errors : [];
     const errText = errs.map((e) => `${e.type || "file"}: ${e.error || "unknown_error"}`).join("\n");
     if (errText) {
-        alert(`匯出失敗：\n${errText}`);
+        showAlert("MAGI說", `匯出失敗：\n${errText}`);
     } else {
-        alert("已產出檔案，但目前沒有公開下載網址。");
+        showAlert("MAGI說", "已產出檔案，但目前沒有公開下載網址。");
     }
 }
 
@@ -1730,10 +1734,10 @@ async function runLafWizard(mode) {
     };
     if (mode === "submit") {
         if (payload.action !== "go_live") {
-            alert("送出模式目前僅允許開辦（go_live）。");
+            showAlert("MAGI說", "送出模式目前僅允許開辦（go_live）。");
             return;
         }
-        if (!confirm("確定要送出？此動作可能影響正式法扶資料。")) return;
+        if (!await showConfirm("MAGI說", "確定要送出？此動作可能影響正式法扶資料。")) return;
     }
     const data = await api("/api/osc/laf-wizard/run", "POST", payload);
     state.lafWizardResult = data;
@@ -1797,31 +1801,17 @@ async function executeArchiveMove() {
     const force = !!document.getElementById("archiveForce").checked;
     const picks = Array.from(document.querySelectorAll(".archive-pick:checked")).map(el => String(el.dataset.id || "").trim()).filter(Boolean);
     if (!picks.length) {
-        alert("請先勾選要搬移的案件。");
+        showAlert("MAGI說", "請先勾選要搬移的案件。");
         return;
     }
-    if (!confirm(`確定搬移 ${picks.length} 筆已結案案件？`)) return;
+    if (!await showConfirm("MAGI說", `確定搬移 ${picks.length} 筆已結案案件？\n\nMAGI 會排入背景任務，不會卡住網頁。`)) return;
     const summaryEl = document.getElementById("archiveSummary");
-    const total = { moved: 0, skipped: 0, errors: 0 };
-    const details = [];
-    for (let i = 0; i < picks.length; i += 1) {
-        const id = picks[i];
-        if (summaryEl) summaryEl.textContent = `結案搬移中：${i + 1} / ${picks.length}（系統案件 ${id}）`;
-        try {
-            const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: [id], force, max_items: 1 });
-            const s = data.summary || {};
-            total.moved += Number(s.moved || 0);
-            total.skipped += Number(s.skipped || 0);
-            total.errors += Number(s.errors || 0);
-            (data.skipped || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.reason || x.error || "略過"}`));
-            (data.errors || []).forEach(x => details.push(`${x.case_number || x.id || id}：${x.error || "錯誤"}`));
-        } catch (err) {
-            total.errors += 1;
-            details.push(`${id}：${err.message || err}`);
-        }
-    }
-    const detail = details.slice(0, 8).join("\n");
-    alert(`搬移完成：已搬移 ${total.moved}，略過 ${total.skipped}，錯誤 ${total.errors}${detail ? "\n\n" + detail : ""}`);
+    if (summaryEl) summaryEl.textContent = `結案搬移已排入背景：${picks.length} 筆`;
+    const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force, max_items: picks.length, background: true });
+    const s = data.summary || {};
+    const jobs = data.jobs || [];
+    showAlert("MAGI說", `結案搬移已排入背景任務。\n\n已排入：${s.queued || jobs.length || 0}\n找不到案件：${s.errors || 0}\n\n完成後案件路徑會自動更新，列表也會重新整理。`);
+    jobs.forEach(job => pollArchiveJob(job.id));
     await loadArchivePreview();
     await loadCases();
     await loadMeta();

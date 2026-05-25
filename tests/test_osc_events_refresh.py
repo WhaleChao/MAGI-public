@@ -164,3 +164,4 @@ def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
     assert result["ok"] is True
     assert calls[0]["scan_text"] is True
     assert calls[0]["text_when_filename"] is True
+    assert calls[0]["include_share_link"] is True

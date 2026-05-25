@@ -246,6 +246,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "insight-toggle") return await toggleInsight(id);
     if (act === "insight-copy") return await copyInsight(id);
     if (act === "insight-fetch") return await fetchInsightFullById(id);
+    if (act === "insight-source") return await openInsightSource(id);
 
     if (act === "admin-setting-edit") return await editAdminSetting(t.dataset.key || "");
     if (act === "admin-setting-del") return await delAdminSetting(t.dataset.key || "");
@@ -335,22 +336,25 @@ function bindGlobalDelegates() {
         if (th) {
             const col = th.dataset.sort;
             const type = th.dataset.type || "string";
-            if (state.sort.col === col) {
-                state.sort.dir = state.sort.dir === 1 ? -1 : 1;
+            const viewId = th.closest(".view")?.id || th.closest(".modal")?.id || "";
+            const activeSort = viewId === "cases" ? (state.caseSort || { col: "case_number", dir: 1, type: "string" }) : state.sort;
+            if (activeSort.col === col) {
+                activeSort.dir = activeSort.dir === 1 ? -1 : 1;
             } else {
-                state.sort.col = col;
-                state.sort.dir = 1;
-                state.sort.type = type;
+                activeSort.col = col;
+                activeSort.dir = 1;
+                activeSort.type = type;
             }
+            if (viewId === "cases") state.caseSort = activeSort;
+            else state.sort = activeSort;
 
             // Sync sort bar dropdown if present
-            const viewId = th.closest(".view")?.id || th.closest(".modal")?.id || "";
             const syncMap = { cases:'caseSortCol', clients:'clientSortCol', meetings:'meetingSortCol', accounting:'txSortCol', insights:'insightSortCol', todos:'todoSortCol' };
             const dirMap = { cases:'caseSortDir', clients:'clientSortDir', meetings:'meetingSortDir', accounting:'txSortDir', insights:'insightSortDir', todos:'todoSortDir' };
             const selEl = document.getElementById(syncMap[viewId]);
             if (selEl) selEl.value = col;
             const dirEl = document.getElementById(dirMap[viewId]);
-            if (dirEl) dirEl.textContent = state.sort.dir === 1 ? '▲' : '▼';
+            if (dirEl) dirEl.textContent = activeSort.dir === 1 ? '▲' : '▼';
 
             if (viewId === "laf") {
                 state.lafSort = { col, dir: state.sort.dir, type };
@@ -534,12 +538,12 @@ function bindEvents() {
         btn.addEventListener("click", () => setCaseStatusScope(btn.dataset.scope || "working"));
     });
 
-    // Cases CSV
+    // Cases import/export
     const casesImportBtn = document.getElementById("casesImportCsvBtn");
-    const casesExportBtn = document.getElementById("casesExportCsvBtn");
+    const casesExportBtn = document.getElementById("casesExportXlsxBtn") || document.getElementById("casesExportCsvBtn");
     const casesFileInput = document.getElementById("casesImportCsvFile");
     if (casesImportBtn) casesImportBtn.addEventListener("click", importCasesCsv);
-    if (casesExportBtn) casesExportBtn.addEventListener("click", exportCasesCsv);
+    if (casesExportBtn) casesExportBtn.addEventListener("click", exportCasesXlsx);
     if (casesFileInput) casesFileInput.addEventListener("change", e => handleCasesCsvUpload(e.target.files[0]));
 
     // Clients CSV
@@ -614,8 +618,8 @@ function bindEvents() {
     bindEnterSubmit(["draftInsightsQ", "draftInsightsCaseFilter", "draftInsightsReasonFilter"], "draftInsightsSearchBtn", loadDraftInsights, { actionLabel: "見解搜尋", onError: reportDraftError });
     document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
 
-    document.getElementById("formPreviewBtn").addEventListener("click", () => withBusy("formPreviewBtn", "預覽中...", previewForm).catch(e => alert(`預覽失敗：${e.message}`)));
-    document.getElementById("formExportBtn").addEventListener("click", () => withBusy("formExportBtn", "匯出中...", exportForm).catch(e => alert(`匯出失敗：${e.message}`)));
+    document.getElementById("formPreviewBtn").addEventListener("click", () => withBusy("formPreviewBtn", "預覽中...", previewForm).catch(e => showAlert("MAGI說", `預覽失敗：${e.message}`)));
+    document.getElementById("formExportBtn").addEventListener("click", () => withBusy("formExportBtn", "匯出中...", exportForm).catch(e => showAlert("MAGI說", `匯出失敗：${e.message}`)));
     document.getElementById("formType").addEventListener("change", syncFormTypeFields);
     document.getElementById("docTplResetBtn").addEventListener("click", () => {
         ["docTplId", "docTplType", "docTplParty", "docTplCase", "docTplDivision", "docTplUseCount", "docTplData"].forEach(x => {
@@ -785,7 +789,32 @@ function initSortBars() {
             renderFn();
         });
     }
-    wire('caseSortCol', 'caseSortDir', renderCases, 'string');
+    function wireCaseSort(selectId, dirBtnId) {
+        const sel = document.getElementById(selectId);
+        const btn = document.getElementById(dirBtnId);
+        if (!sel || !btn) return;
+        sel.value = state.caseSort?.col || 'case_number';
+        btn.textContent = (state.caseSort?.dir || 1) === 1 ? '▲' : '▼';
+        sel.addEventListener('change', () => {
+            const opt = sel.selectedOptions[0];
+            state.caseSort = {
+                col: sel.value || 'case_number',
+                dir: state.caseSort?.dir || 1,
+                type: opt?.dataset?.type || 'string',
+            };
+            renderCases();
+        });
+        btn.addEventListener('click', () => {
+            state.caseSort = {
+                col: state.caseSort?.col || 'case_number',
+                dir: (state.caseSort?.dir || 1) === 1 ? -1 : 1,
+                type: state.caseSort?.type || 'string',
+            };
+            btn.textContent = state.caseSort.dir === 1 ? '▲' : '▼';
+            renderCases();
+        });
+    }
+    wireCaseSort('caseSortCol', 'caseSortDir');
     wire('todoSortCol', 'todoSortDir', renderTodos, 'string');
     wire('clientSortCol', 'clientSortDir', renderClients, 'string');
     wire('meetingSortCol', 'meetingSortDir', renderMeetings, 'string');

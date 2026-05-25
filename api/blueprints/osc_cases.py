@@ -15,8 +15,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -91,6 +93,13 @@ _log = logging.getLogger(__name__)
 logger = _log  # alias used by some routes
 
 osc_bp = Blueprint("osc_cases", __name__)
+
+_OSC_ARCHIVE_JOB_LOCK = threading.RLock()
+_OSC_ARCHIVE_JOB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("MAGI_OSC_ARCHIVE_WORKERS", "1") or "1")),
+    thread_name_prefix="osc-archive",
+)
+_OSC_ARCHIVE_JOBS: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # Lazy imports for server globals
@@ -1484,7 +1493,12 @@ def osc_case_detail_api(row_id):
         ("status" in payload and _osc_is_closed_case_status(payload.get("status") or ""))
         or ("legal_aid_status" in payload and _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""))
     ):
-        resp["archive"] = _osc_auto_archive_closed_case(row_id)
+        sync_requested = str(payload.get("sync") or request.args.get("sync") or "").strip().lower() in {"1", "true", "yes", "on"}
+        background_requested = str(payload.get("background", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        if sync_requested or not background_requested:
+            resp["archive"] = _osc_auto_archive_closed_case(row_id)
+        else:
+            resp["archive_job"] = _osc_start_archive_job(row_id, source="osc_web_case_update")
     return jsonify(resp)
 
 
@@ -1504,7 +1518,15 @@ def osc_case_close_api(row_id):
     if _osc_is_template_case(row):
         return jsonify({"ok": False, "error": "template_case_cannot_close"}), 400
     status_result = _osc_set_case_status_manual(row_id, "已結案", source="osc_web_close_button")
-    archive = _osc_auto_archive_closed_case(row_id)
+    payload = request.get_json(silent=True) or {}
+    sync_requested = str(payload.get("sync") or request.args.get("sync") or "").strip().lower() in {"1", "true", "yes", "on"}
+    background_requested = str(payload.get("background", "1") if payload else request.args.get("background", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    archive = None
+    archive_job = None
+    if sync_requested or not background_requested:
+        archive = _osc_auto_archive_closed_case(row_id)
+    else:
+        archive_job = _osc_start_archive_job(row_id, source="osc_web_close_button")
     updated, _ = _osc_exec(
         "SELECT id, case_number, client_name, status, manual_status_lock, manual_status_source, manual_status_at, folder_path FROM cases WHERE id=%s",
         (row_id,),
@@ -1514,9 +1536,9 @@ def osc_case_close_api(row_id):
         "case:manual_close",
         "cases",
         row_id,
-        {"case_number": row.get("case_number"), "client_name": row.get("client_name"), "archive": archive},
+        {"case_number": row.get("case_number"), "client_name": row.get("client_name"), "archive": archive, "archive_job": archive_job},
     )
-    return jsonify({"ok": True, "status": status_result, "archive": archive, "case": updated or {}})
+    return jsonify({"ok": True, "status": status_result, "archive": archive, "archive_job": archive_job, "case": updated or {}})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2501,6 +2523,116 @@ def _osc_auto_archive_closed_case(row_id: str, *, force: bool = False) -> dict:
     moved["archive_local"] = item.get("archive_local")
     moved["source_path"] = item.get("source_path")
     return moved
+
+
+def _osc_archive_job_public(job: dict | None) -> dict:
+    if not job:
+        return {}
+    public = dict(job)
+    public.pop("future", None)
+    return public
+
+
+def _osc_prune_archive_jobs() -> None:
+    with _OSC_ARCHIVE_JOB_LOCK:
+        if len(_OSC_ARCHIVE_JOBS) <= 200:
+            return
+        ordered = sorted(_OSC_ARCHIVE_JOBS.items(), key=lambda kv: str(kv[1].get("created_at") or ""))
+        for job_id, job in ordered[: max(0, len(ordered) - 160)]:
+            if job.get("status") not in {"queued", "running"}:
+                _OSC_ARCHIVE_JOBS.pop(job_id, None)
+
+
+def _osc_run_archive_job(job_id: str) -> None:
+    with _OSC_ARCHIVE_JOB_LOCK:
+        job = _OSC_ARCHIVE_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = datetime.now().isoformat(timespec="seconds")
+        row_id = str(job.get("row_id") or "")
+        force = bool(job.get("force"))
+
+    started = time.time()
+    try:
+        result = _osc_auto_archive_closed_case(row_id, force=force)
+        status = "done" if result.get("ok") else "failed"
+        with _OSC_ARCHIVE_JOB_LOCK:
+            job = _OSC_ARCHIVE_JOBS.get(job_id)
+            if job:
+                job["status"] = status
+                job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                job["duration_ms"] = int((time.time() - started) * 1000)
+                job["result"] = result
+                if not result.get("ok"):
+                    job["error"] = result.get("error") or result.get("reason") or "archive_failed"
+        try:
+            _osc_log_activity(
+                "case:archive_job_finished",
+                "cases",
+                row_id,
+                {"job_id": job_id, "status": status, "result": result},
+            )
+        except Exception:
+            _log.debug("silent-catch archive job activity log", exc_info=True)
+    except Exception as exc:
+        with _OSC_ARCHIVE_JOB_LOCK:
+            job = _OSC_ARCHIVE_JOBS.get(job_id)
+            if job:
+                job["status"] = "failed"
+                job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                job["duration_ms"] = int((time.time() - started) * 1000)
+                job["error"] = str(exc)
+                job["result"] = {"ok": False, "reason": "archive_job_exception", "error": str(exc)}
+        _log.exception("osc archive background job failed: %s", job_id)
+    finally:
+        _osc_prune_archive_jobs()
+
+
+def _osc_start_archive_job(row_id: str, *, force: bool = False, source: str = "osc_web") -> dict:
+    row_id = str(row_id or "").strip()
+    if not row_id:
+        return {"ok": False, "error": "invalid_id"}
+    with _OSC_ARCHIVE_JOB_LOCK:
+        for existing in _OSC_ARCHIVE_JOBS.values():
+            if existing.get("row_id") == row_id and existing.get("status") in {"queued", "running"}:
+                return _osc_archive_job_public(existing)
+
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return {"ok": False, "error": "case_not_found"}
+    job_id = f"archive-{uuid.uuid4().hex[:12]}"
+    job = {
+        "ok": True,
+        "id": job_id,
+        "row_id": row_id,
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "status": "queued",
+        "source": source,
+        "force": bool(force),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "message": "結案資料夾搬移已排入背景任務。",
+    }
+    with _OSC_ARCHIVE_JOB_LOCK:
+        _OSC_ARCHIVE_JOBS[job_id] = job
+        future = _OSC_ARCHIVE_JOB_EXECUTOR.submit(_osc_run_archive_job, job_id)
+        job["future"] = future
+    return _osc_archive_job_public(job)
+
+
+@osc_bp.route("/api/osc/archive-jobs/<job_id>", methods=["GET"])
+@login_required
+def osc_archive_job_status_api(job_id):
+    with _OSC_ARCHIVE_JOB_LOCK:
+        job = _OSC_ARCHIVE_JOBS.get(str(job_id or "").strip())
+        if not job:
+            return jsonify({"ok": False, "error": "job_not_found"}), 404
+        return jsonify({"ok": True, "job": _osc_archive_job_public(job)})
 
 
 def _osc_archive_items_for_case_ids(case_ids: list[str]) -> list[dict]:
@@ -6694,8 +6826,7 @@ def osc_documents_stamp_preview_api():
     if not file_path:
         return jsonify({"ok": False, "error": "file_path required"}), 400
 
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -6771,8 +6902,7 @@ def osc_documents_stamp_api():
         return jsonify({"ok": False, "error": "copy_type must be 正本/副本/繕本"}), 400
 
     # 路徑安全性：解析 + allowed-roots 檢查
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -6980,8 +7110,7 @@ def osc_documents_finalize_api():
     if not file_path:
         return jsonify({"ok": False, "error": "file_path required"}), 400
 
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -7160,6 +7289,52 @@ _CLIENTS_CSV_MAP = {
 _CLIENTS_CSV_HEADERS_ZH = ["姓名", "聯絡人", "電話", "email", "地址", "統編"]
 
 
+def _osc_export_date_str(v):
+    if not v:
+        return ""
+    try:
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+    except Exception:
+        _log.debug("silent-catch export date stringify: %r", v, exc_info=True)
+    return str(v)
+
+
+def _osc_cases_export_rows() -> list[dict]:
+    rows, _ = _osc_exec(
+        """
+        SELECT case_number, client_name, client_name_en, case_type, case_category,
+               case_subject, case_reason, status, legal_aid_status, start_date, court_date,
+               lawyer, court_case_no, court_division, court_name
+        FROM cases
+        ORDER BY case_number ASC, updated_at DESC, created_date DESC
+        """,
+        (),
+        fetch="all",
+    )
+    return rows or []
+
+
+def _osc_case_export_values(r: dict) -> list[str]:
+    display_row = _osc_case_api_row(r) or r
+    return [
+        r.get("case_number") or "",
+        r.get("client_name") or "",
+        r.get("client_name_en") or "",
+        display_row.get("case_type_display") or r.get("case_type") or "",
+        r.get("case_category") or "",
+        r.get("case_subject") or "",
+        display_row.get("case_reason_display") or r.get("case_reason") or "",
+        display_row.get("status_display") or r.get("status") or "",
+        _osc_export_date_str(r.get("start_date")),
+        _osc_export_date_str(r.get("court_date")),
+        r.get("lawyer") or "",
+        r.get("court_case_no") or "",
+        r.get("court_division") or "",
+        r.get("court_name") or "",
+    ]
+
+
 def _parse_csv_date(s):
     """YYYY-MM-DD or YYYY/MM/DD → YYYY-MM-DD, or None."""
     if not s:
@@ -7275,57 +7450,65 @@ def osc_cases_import_csv_api():
 @login_required
 def osc_cases_export_csv_api():
     """匯出全部案件為 CSV（中文 header，utf-8-sig，與匯入相容）。"""
-    rows, _ = _osc_exec(
-        """
-        SELECT case_number, client_name, client_name_en, case_type, case_category,
-               case_subject, case_reason, status, legal_aid_status, start_date, court_date,
-               lawyer, court_case_no, court_division, court_name
-        FROM cases
-        ORDER BY updated_at DESC, created_date DESC
-        """,
-        (),
-        fetch="all",
-    )
-
-    def _date_str(v):
-        if not v:
-            return ""
-        try:
-            if hasattr(v, "isoformat"):
-                return v.isoformat()
-        except Exception:
-            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7296, exc_info=True)
-        return str(v)
-
+    rows = _osc_cases_export_rows()
     buf = io.StringIO()
     # 不要在這裡寫 BOM，下方 encode("utf-8-sig") 會加；
     # 否則雙 BOM 會讓 import 的 DictReader 把 BOM 當欄位名一部分（fieldname 變 "﻿案件編號"）。
     writer = csv.writer(buf)
     writer.writerow(_CASES_CSV_HEADERS)
     for r in rows:
-        display_row = _osc_case_api_row(r) or r
-        writer.writerow([
-            r.get("case_number") or "",
-            r.get("client_name") or "",
-            r.get("client_name_en") or "",
-            display_row.get("case_type_display") or r.get("case_type") or "",
-            r.get("case_category") or "",
-            r.get("case_subject") or "",
-            display_row.get("case_reason_display") or r.get("case_reason") or "",
-            display_row.get("status_display") or r.get("status") or "",
-            _date_str(r.get("start_date")),
-            _date_str(r.get("court_date")),
-            r.get("lawyer") or "",
-            r.get("court_case_no") or "",
-            r.get("court_division") or "",
-            r.get("court_name") or "",
-        ])
+        writer.writerow(_osc_case_export_values(r))
 
     filename = f"案件資料匯出_{time.strftime('%Y%m%d')}.csv"
     return Response(
         buf.getvalue().encode("utf-8-sig"),
         mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@osc_bp.route("/api/osc/cases/export-xlsx", methods=["GET"])
+@login_required
+def osc_cases_export_xlsx_api():
+    """匯出全部案件為 XLSX；預設依案件編號排序，方便直接交付與檢視。"""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"openpyxl unavailable: {exc}"}), 500
+
+    rows = _osc_cases_export_rows()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "案件資料"
+    ws.append(_CASES_CSV_HEADERS)
+    for r in rows:
+        ws.append(_osc_case_export_values(r))
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_font = Font(bold=True)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    for col_idx, header in enumerate(_CASES_CSV_HEADERS, start=1):
+        max_len = len(str(header))
+        for row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+            value = row[0].value
+            max_len = max(max_len, len(str(value or "")))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 10), 36)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"案件資料匯出_{time.strftime('%Y%m%d')}.xlsx"
+    return Response(
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 
@@ -7565,6 +7748,27 @@ def osc_archive_wizard_execute_api():
         items = preview.get("items") or []
         missing = []
     pick = items[:max_items]
+    if bool(payload.get("background")):
+        jobs = []
+        for it in pick:
+            job = _osc_start_archive_job(str(it.get("id") or ""), force=force, source="archive_wizard")
+            jobs.append(job)
+        failed_jobs = [job for job in jobs if not job.get("ok")]
+        return jsonify(
+            {
+                "ok": not missing and not failed_jobs,
+                "summary": {
+                    "requested": len(case_ids) if case_ids else len(items),
+                    "selected": len(pick),
+                    "queued": sum(1 for job in jobs if job.get("ok")),
+                    "errors": len(missing) + len(failed_jobs),
+                    "limited": max(0, len(items) - len(pick)),
+                },
+                "jobs": jobs,
+                "errors": [{"id": cid, "error": "case_not_found"} for cid in missing] + failed_jobs,
+            }
+        )
+
     moved = []
     skipped = []
     errors = [{"id": cid, "error": "case_not_found"} for cid in missing]

@@ -1075,7 +1075,9 @@
             await navigator.clipboard.writeText(r.url);
             setStatus('已建立並複製分享連結：' + (name || pathBaseName(rel)));
         } catch (e) {
-            window.prompt('分享連結（不含檔案路徑）：', r.url);
+            if (typeof showCustomDialog === 'function') {
+                showCustomDialog('MAGI說｜分享連結', '<p>瀏覽器暫時不允許自動複製，請手動複製下列分享連結。</p><input value="' + esc(r.url) + '" readonly style="box-sizing:border-box;width:100%;border:1px solid #d2d7df;border-radius:8px;padding:10px 12px;font-size:14px">');
+            }
             setStatus('已建立分享連結：' + (name || pathBaseName(rel)));
         }
         setTimeout(() => setStatus(''), 3500);
@@ -1274,7 +1276,9 @@
 
     async function renameSelected(rel, oldName) {
         if (!rel) return;
-        const newName = prompt('新名稱：', oldName || '');
+        const newName = typeof showPrompt === 'function'
+            ? await showPrompt('MAGI說', '新名稱：', oldName || '')
+            : null;
         if (newName == null) return;
         const trimmed = newName.trim();
         if (!trimmed || trimmed === oldName) return;
@@ -1285,7 +1289,7 @@
 
     async function trashSelected(rel, name) {
         if (!rel) return;
-        if (!confirm('將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
+        if (!await showConfirm('MAGI說', '將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
         const r = await apiMoveToTrash(FM.basePath, rel);
         if (r && r.ok) { setStatus('已移到回收桶：' + r.new_relative_path); refresh(); setTimeout(() => setStatus(''), 3000); }
         else setStatus('移到回收桶失敗：' + ((r && r.error) || '未知'), true);
@@ -1764,7 +1768,7 @@
             mkdirBtn._fmBound = true;
             mkdirBtn.addEventListener('click', async () => {
                 if (!FM.basePath) { setStatus('請先開啟資料夾', true); return; }
-                const name = prompt('新資料夾名稱：');
+                const name = await showPrompt('MAGI說', '新資料夾名稱：', '');
                 if (!name) return;
                 const r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
                 if (r && r.ok) { setStatus('已建立資料夾：' + name); refresh(); setTimeout(() => setStatus(''), 2000); }

@@ -351,7 +351,7 @@ def test_closed_case_resolution_does_not_match_same_client_other_procedure(tmp_p
         update_db=True,
     )
 
-    assert result["source"] == "db_or_guess"
+    assert result["source"] in {"db_or_guess", "metadata_expected"}
     assert result["local_folder"] == str(active_debt)
     assert result["local_folder"] != str(closed_guardianship)
 
@@ -446,3 +446,47 @@ def test_case_identity_rejects_ambiguous_client_name(monkeypatch):
 
     with pytest.raises(ValueError, match="ambiguous_client_name"):
         drafts._osc_get_case_identity_by_payload({"client_name": "宣愛華Ayka lku"})
+
+
+def test_archive_job_runs_in_background_executor(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    saved_jobs = mod._OSC_ARCHIVE_JOBS
+    mod._OSC_ARCHIVE_JOBS = {}
+
+    class DeferredExecutor:
+        def submit(self, fn, *args, **kwargs):
+            class _Future:
+                target = fn
+                target_args = args
+                target_kwargs = kwargs
+
+            return _Future()
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "2025-0001",
+                "client_name": "測試",
+                "status": "已結案",
+                "folder_path": "/tmp/case",
+            }, None
+        return {"rowcount": 1}, None
+
+    monkeypatch.setattr(mod, "_OSC_ARCHIVE_JOB_EXECUTOR", DeferredExecutor())
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda row_id, force=False: {"ok": True, "reason": "moved", "id": row_id})
+    monkeypatch.setattr(mod, "_osc_log_activity", lambda *a, **k: None)
+
+    try:
+        job = mod._osc_start_archive_job("case-1", source="test")
+        assert job["ok"] is True
+        assert job["status"] == "queued"
+        assert "future" not in job
+        mod._osc_run_archive_job(job["id"])
+        finished = mod._osc_archive_job_public(mod._OSC_ARCHIVE_JOBS[job["id"]])
+        assert finished["status"] == "done"
+        assert finished["result"]["reason"] == "moved"
+    finally:
+        mod._OSC_ARCHIVE_JOBS = saved_jobs

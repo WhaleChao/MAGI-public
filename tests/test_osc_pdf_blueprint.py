@@ -327,6 +327,10 @@ def test_pdf_calendar_scan_write_uses_single_machine_todo_writer(client, tmp_pat
 
     monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
     monkeypatch.setattr("api.blueprints.osc_pdf._insert_todos_single_machine", fake_writer)
+    monkeypatch.setattr(
+        "api.blueprints.osc_pdf._create_calendar_share_link",
+        lambda p: {"ok": False, "error": "share_public_base_required"},
+    )
     r = client.post(
         "/api/osc/pdf/calendar-scan",
         json={"file_path": str(path), "case_number": "2026-0002", "client_name": "林小華", "write": True},
@@ -341,6 +345,8 @@ def test_pdf_calendar_scan_write_uses_single_machine_todo_writer(client, tmp_pat
     assert writer_calls[0]["case_number"] == "2026-0002"
     assert writer_calls[0]["client_name"] == "林小華"
     assert writer_calls[0]["source_file"] == path.name
+    assert "來源PDF：" in writer_calls[0]["todos"][0]["description"]
+    assert "MAGI分享狀態：分享連結暫不可用" in writer_calls[0]["todos"][0]["description"]
     joined_sql = "\n".join(c[0] for c in osc_exec_calls)
     assert "INSERT INTO calendar_events" not in joined_sql
 
@@ -389,7 +395,6 @@ def test_pdf_calendar_scan_write_can_embed_magi_share_link(client, tmp_path, mon
             "case_number": "2026-0002",
             "client_name": "林小華",
             "write": True,
-            "include_share_link": True,
         },
     )
 

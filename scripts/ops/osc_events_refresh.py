@@ -168,7 +168,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                     case_number=case_number,
                     client_name=client_name,
                     max_pages=max_pages,
-                    include_share_link=False,
+                    include_share_link=not dry_run,
                     scan_text=scan_text,
                     text_when_filename=text_when_filename,
                 )

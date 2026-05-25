@@ -169,12 +169,13 @@ function renderCases() {
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
-    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type));
+    const caseSort = state.caseSort || { col: "case_number", dir: 1, type: "string" };
+    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], caseSort.col, caseSort.dir, caseSort.type));
 
     // Card view
     if (cardGrid) {
         const order = JSON.parse(localStorage.getItem('caseCardOrder') || '[]');
-        const useManualOrder = !state.sort?.col && order.length;
+        const useManualOrder = !caseSort?.col && order.length;
         const orderedCases = pushFinalClosedCasesLast(useManualOrder ? [...sorted].sort((a, b) => {
             const ia = order.indexOf(String(a.id));
             const ib = order.indexOf(String(b.id));
@@ -249,7 +250,8 @@ function renderCases() {
 
     const ts = document.querySelectorAll("#cases th[data-sort]");
     ts.forEach(th => {
-        th.innerHTML = th.innerHTML.replace(/ [▲▼]/g, "") + renderSortArrow(th.dataset.sort);
+        const arrow = caseSort.col === th.dataset.sort ? (caseSort.dir === 1 ? " ▲" : " ▼") : "";
+        th.innerHTML = th.innerHTML.replace(/ [▲▼]/g, "") + arrow;
     });
 }
 
@@ -340,7 +342,7 @@ function buildCaseMagiContext() {
         `狀態=${caseDisplayStatus(r) || "-"}`,
     ].join("｜"));
     return [
-        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.sort?.col || "預設"}`,
+        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.caseSort?.col || "case_number"}`,
         `目前顯示 ${state.cases?.length || 0} 筆案件。以下最多列 40 筆：`,
         rows.join("\n") || "目前沒有案件列。",
     ].join("\n");
@@ -423,7 +425,7 @@ function prepareNewCase() {
 }
 
 async function delCase(id) {
-    if (!confirm(`確定刪除案件 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除案件 ${id}？`)) return;
     await api(`/api/osc/cases/${encodeURIComponent(id)}`, "DELETE");
     await loadCases();
     await loadMeta();
@@ -431,10 +433,15 @@ async function delCase(id) {
 
 async function closeCase(id) {
     if (!id) return;
-    if (!confirm("確定將此案件標記為已結案並搬移到結案資料夾？\\n\\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。")) return;
-    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", {});
-    showArchiveResult(resp?.archive);
-    showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    if (!await showConfirm("MAGI說", "確定將此案件標記為已結案並搬移到結案資料夾？\n\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。搬移會排入背景任務，避免網頁卡住。")) return;
+    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", { background: true });
+    if (resp?.archive_job?.id) {
+        showToast(`案件已標記為已結案，搬移已排入背景：${resp.archive_job.case_number || id}`, "ok", 5000);
+        pollArchiveJob(resp.archive_job.id, id);
+    } else {
+        showArchiveResult(resp?.archive);
+        showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    }
     await loadCases();
     await loadMeta();
     if (state.wb?.id === id && state.wb.mode === "case") {
@@ -451,7 +458,8 @@ async function saveCase() {
         case_category: p.case_category, case_type: p.case_type, case_stage: p.case_stage,
         case_reason: p.case_reason, laf_case_no: lafNumber, application_no: lafNumber,
         court_name: p.case_court_name, court_case_no: p.case_court_case_no, court_division: p.case_court_division,
-        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
+        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes,
+        background: true,
     };
     const isNew = !(body.id || "").trim();
     const autoFolder = isNew && document.getElementById("case_auto_create_folder")?.checked;
@@ -466,7 +474,12 @@ async function saveCase() {
     } else if (isNew && resp?.case_number) {
         showToast(`案件已建立：${resp.case_number}`, "ok", 3000);
     }
-    showArchiveResult(resp?.archive);
+    if (resp?.archive_job?.id) {
+        showToast(`結案搬移已排入背景：${resp.archive_job.case_number || body.case_number || body.id}`, "ok", 5000);
+        pollArchiveJob(resp.archive_job.id, body.id);
+    } else {
+        showArchiveResult(resp?.archive);
+    }
     clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     await loadCases();
     await loadMeta();
@@ -474,7 +487,10 @@ async function saveCase() {
 
 function archiveReasonText(reason) {
     return {
+        queued: "已排入背景搬移",
+        running: "背景搬移中",
         moved: "已移到結案資料夾",
+        merged_existing_target: "已合併到既有結案資料夾",
         already_archived: "已在結案資料夾",
         already_in_archive_base: "已在結案資料夾",
         source_missing: "找不到原案件資料夾，請確認同步或路徑",
@@ -483,6 +499,38 @@ function archiveReasonText(reason) {
         status_not_closed: "案件狀態不是結案，未搬移",
         case_not_found: "找不到案件",
     }[reason] || reason || "未搬移";
+}
+
+async function pollArchiveJob(jobId, caseId = "", attempt = 0) {
+    if (!jobId) return;
+    try {
+        const data = await api(`/api/osc/archive-jobs/${encodeURIComponent(jobId)}`);
+        const job = data.job || {};
+        if (job.status === "done") {
+            showArchiveResult(job.result || { ok: true, reason: "moved" });
+            await loadCases();
+            await loadMeta();
+            if (caseId && state.wb?.id === caseId && state.wb.mode === "case") {
+                await openCaseWorkbench(caseId, "結案搬移已完成，案件處理頁已重新整理。");
+            }
+            return;
+        }
+        if (job.status === "failed") {
+            showToast(`結案搬移失敗：${archiveReasonText(job.result?.reason || job.error)}`, "warn", 8000);
+            return;
+        }
+        if (attempt < 120) {
+            setTimeout(() => pollArchiveJob(jobId, caseId, attempt + 1), 2500);
+        } else {
+            showToast("結案搬移仍在背景執行，稍後重新整理可查看結果。", "warn", 6000);
+        }
+    } catch (err) {
+        if (attempt < 8) {
+            setTimeout(() => pollArchiveJob(jobId, caseId, attempt + 1), 3000);
+        } else {
+            showToast(`無法讀取結案搬移狀態：${err.message || err}`, "warn", 6000);
+        }
+    }
 }
 
 function showArchiveResult(archive) {
@@ -858,7 +906,7 @@ async function createWorkbenchFolder(caseId, folderPath, relativePath = "") {
         wbSetStatus("目前沒有案件資料夾路徑，無法新增資料夾。", "warn");
         return;
     }
-    const name = window.prompt("請輸入新資料夾名稱，例如：書狀、證據資料、與當事人往來");
+    const name = await showPrompt("MAGI說", "請輸入新資料夾名稱，例如：書狀、證據資料、與當事人往來", "");
     const trimmed = String(name || "").trim();
     if (!trimmed) return;
     try {
@@ -893,7 +941,7 @@ async function renameWorkbenchCaseFolder(caseId) {
     const data = state.wb?.data || {};
     const currentPath = data.folder_path || document.getElementById("wb_case_folder_path")?.value || "";
     const currentName = String(currentPath || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
-    const name = window.prompt("請輸入新的案件資料夾名稱。會同步更新 MAGI 內的路徑。", currentName);
+    const name = await showPrompt("MAGI說", "請輸入新的案件資料夾名稱。會同步更新 MAGI 內的路徑。", currentName);
     const trimmed = String(name || "").trim();
     if (!trimmed || trimmed === currentName) return;
     try {
@@ -920,7 +968,7 @@ async function renameWorkbenchFolder(caseId, folderPath, relativePath = "", curr
         wbSetStatus("缺少資料夾路徑，無法改名。", "warn");
         return;
     }
-    const name = window.prompt("請輸入新的資料夾名稱。會同步更新 MAGI 內的檔案路徑。", currentName || srcRel.split("/").pop() || "");
+    const name = await showPrompt("MAGI說", "請輸入新的資料夾名稱。會同步更新 MAGI 內的檔案路徑。", currentName || srcRel.split("/").pop() || "");
     const trimmed = String(name || "").trim();
     if (!trimmed || trimmed === currentName) return;
     try {
@@ -1015,7 +1063,7 @@ async function handleFolderUploadFiles(fileList, opts = {}) {
         const errorItems = results.filter(item => !item.ok && item.error !== "file_exists");
 
         if (conflictItems.length && !opts.overwrite) {
-            const overwrite = confirm(`有 ${conflictItems.length} 個同名檔案已存在，是否覆蓋這些檔案？`);
+            const overwrite = await showConfirm("MAGI說", `有 ${conflictItems.length} 個同名檔案已存在，是否覆蓋這些檔案？`);
             if (overwrite) {
                 const names = new Set(conflictItems.map(item => item.name));
                 const conflictFiles = files.filter(file => names.has(file.name));
@@ -1036,7 +1084,7 @@ async function handleFolderUploadFiles(fileList, opts = {}) {
         wbSetStatus(parts.length ? `批次上傳結果：${parts.join("，")}。` : "沒有檔案完成上傳。", errorItems.length ? "warn" : "ok");
     } catch (e) {
         wbSetStatus(`上傳失敗：${e.message}`, "warn");
-        alert(`上傳失敗：${e.message}`);
+        showAlert("MAGI說", `上傳失敗：${e.message}`);
     }
 }
 
@@ -1081,7 +1129,7 @@ function setCaseType(type) {
     document.querySelectorAll("#caseTypeTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.type === state.caseType);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function setCaseKind(kind) {
@@ -1090,7 +1138,7 @@ function setCaseKind(kind) {
     document.querySelectorAll("#caseKindTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.kind === state.caseKind);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function setCaseCategory(cat) {
@@ -1102,7 +1150,7 @@ function setCaseStatusScope(scope) {
     document.querySelectorAll("#caseStatusTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.scope === state.caseStatusScope);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function wbRenderTodoForm(defaultCaseNumber = "", defaultClientName = "") {
@@ -1183,6 +1231,7 @@ async function saveWorkbenchCase() {
         status: (document.getElementById("wb_case_status")?.value || "").trim(),
         folder_path: (document.getElementById("wb_case_folder_path")?.value || "").trim(),
         notes: (document.getElementById("wb_case_notes")?.value || "").trim(),
+        background: true,
     };
     if (!body.client_name) {
         wbSetStatus("當事人欄位不能空白。", "warn");
@@ -1190,8 +1239,12 @@ async function saveWorkbenchCase() {
     }
     const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}`, "PUT", body);
     const archive = resp?.archive;
+    const archiveJob = resp?.archive_job;
     if (archive && archive.ok && !archive.skipped) {
         wbSetStatus(`案件資料已儲存，結案搬移：${archiveReasonText(archive.reason)}。`, "ok");
+    } else if (archiveJob?.id) {
+        wbSetStatus("案件資料已儲存，結案搬移已排入背景。", "ok");
+        pollArchiveJob(archiveJob.id, id);
     } else if (archive && !archive.ok) {
         wbSetStatus(`案件資料已儲存，但結案搬移未完成：${archiveReasonText(archive.reason)}。`, "warn");
     } else {
@@ -1651,7 +1704,7 @@ async function editClient(id) {
 }
 
 async function delClient(id) {
-    if (!confirm(`確定刪除當事人 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除當事人 ${id}？`)) return;
     await api(`/api/osc/clients/${encodeURIComponent(id)}`, "DELETE");
     await loadClients();
     await loadMeta();
@@ -1711,7 +1764,7 @@ async function editMeeting(id) {
 }
 
 async function delMeeting(id) {
-    if (!confirm(`確定刪除會議 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除會議 ${id}？`)) return;
     await api(`/api/osc/meetings/${id}`, "DELETE");
     await loadMeetings();
     await loadMeta();
@@ -1744,8 +1797,12 @@ async function handleCasesCsvUpload(file) {
     }
 }
 
+function exportCasesXlsx() {
+    window.location.href = "/api/osc/cases/export-xlsx";
+}
+
 function exportCasesCsv() {
-    window.location.href = "/api/osc/cases/export-csv";
+    exportCasesXlsx();
 }
 
 /* ── Clients CSV Import / Export ── */
