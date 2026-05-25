@@ -112,7 +112,7 @@ _STATUS_TEXT_ALIASES = {
     "archived": "已結案",
     "已結案": "已結案",
 }
-_NAME_FIXES = str.maketrans({"餘": "余"})
+_NAME_FIXES = str.maketrans({"餘": "余", "遊": "游", "臺": "台"})
 _BACKFILL_NOTICE_RE = re.compile(r"^\s*•\s+(?P<case>20\d{2}-\d{4})\s+.+?→\s+(?P<laf>\d{6,8}-[A-Za-z]-\d{3})", re.MULTILINE)
 
 
@@ -616,6 +616,24 @@ def mark_progress_reported(target: str, *, db=None, actor: str = "user", note: s
         ) or []
     except Exception as e:
         return {"ok": False, "error": "db_query_failed", "detail": str(e)}
+
+    if not rows and _normalize_person_name(target) != target:
+        try:
+            candidates = db.fetch_all(
+                """
+                SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, `laf_case_no`, `application_no`,
+                       `legal_aid_status`, `status`, `start_date`, `legal_aid_startup_deadline`
+                FROM `cases`
+                WHERE (`case_category` = '法律扶助案件' OR `case_reason` LIKE '%法扶%' OR `case_reason` LIKE '%法律扶助%')
+                ORDER BY `case_number` DESC
+                LIMIT 300
+                """,
+                as_dict=True,
+            ) or []
+            target_key = _normalize_person_name(target)
+            rows = [r for r in candidates if _normalize_person_name(r.get("client_name") or "") == target_key]
+        except Exception as e:
+            return {"ok": False, "error": "db_query_failed", "detail": str(e)}
 
     if not rows:
         return {"ok": False, "error": "case_not_found", "target": target}
@@ -2242,14 +2260,6 @@ def scan_laf_reporting_status(db) -> dict:
                 ("開辦通知書", "接案通知書", "准予扶助證明書"),
             )
             has_go_live_poa = _folder_has_file(mac_folder, "02_開辦資料", ("委任狀",))
-            if not has_go_live_notice:
-                has_go_live_notice = _folder_has_file(
-                    mac_folder,
-                    "01_法扶資料",
-                    ("開辦通知書", "接案通知書", "准予扶助證明書"),
-                )
-            if not has_go_live_poa:
-                has_go_live_poa = _folder_has_file(mac_folder, "01_法扶資料", ("委任狀",))
 
         # A. 未開辦且已逾期
         if laf_status in ("未開辦", "", None) and laf_no and not (has_go_live_notice and has_go_live_poa):
@@ -3241,7 +3251,7 @@ def format_audit_report(
             assigned = c.get("assignment_date") or "日期不明"
             days_since = c.get("days_since_assignment", "?")
             lines.append(f"  • {_case_label(c)} {_client_label(c)} — 派案/建案 {assigned}，已 {days_since} 天")
-        lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
+        lines.append("  👉 若已回報，可直接回覆「案號 已回報」或「姓名 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
         lines.append("")
 
     progress_suppressed = status.get("progress_suppressed", [])

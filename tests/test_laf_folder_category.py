@@ -1,6 +1,7 @@
 """T2 tests: _resolve_case_category root fix."""
 import pytest
 import sys, os
+import errno
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -62,3 +63,38 @@ def test_execution_does_not_force_criminal():
         "case_type": "", "case_stage": "", "case_reason": "強制執行"
     })
     assert result == "民事"
+
+
+def test_create_case_folder_retries_transient_nas_mkdir(monkeypatch, tmp_path):
+    from casper_ecosystem.law_firm_orchestrators import laf_folder_builder as mod
+
+    builder = _make_builder()
+    builder.config = {}
+    builder.experiment_base_dir = str(tmp_path)
+    builder.windows_base = None
+    builder.mac_smb_base = None
+    builder.mac_local_base = str(tmp_path)
+    builder.laf_target = "法扶案件"
+
+    real_makedirs = mod.os.makedirs
+    calls = {"n": 0}
+
+    def flaky_makedirs(path, exist_ok=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.ETIMEDOUT, "Operation timed out")
+        return real_makedirs(path, exist_ok=exist_ok)
+
+    monkeypatch.setattr(mod.os, "makedirs", flaky_makedirs)
+    monkeypatch.setattr(mod.time, "sleep", lambda *_: None)
+
+    db_path = builder.create_case_folder({
+        "case_number": "2026-0055",
+        "client_name": "游秀鈴",
+        "case_type": "刑事",
+        "case_stage": "二審",
+        "case_reason": "過失致死罪",
+    })
+
+    assert db_path
+    assert (tmp_path / "法扶案件" / "刑事" / "2026-0055-游秀鈴-二審-過失致死罪" / "12_信件往返").is_dir()

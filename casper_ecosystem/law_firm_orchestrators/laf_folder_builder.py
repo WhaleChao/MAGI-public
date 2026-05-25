@@ -18,6 +18,8 @@ import re
 import json
 import logging
 import sys
+import errno
+import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 
@@ -52,6 +54,14 @@ STANDARD_SUBFOLDERS = [
     "11_回執",
     "12_信件往返",
 ]
+
+_TRANSIENT_MKDIR_ERRNOS = {
+    errno.EAGAIN,
+    errno.EBUSY,
+    errno.EDEADLK,
+    errno.EIO,
+    errno.ETIMEDOUT,
+}
 
 
 class LAFFolderBuilder:
@@ -186,9 +196,9 @@ class LAFFolderBuilder:
 
         # Create the folder + subfolders
         try:
-            os.makedirs(local_path, exist_ok=True)
+            self._safe_makedirs(local_path)
             for sub in STANDARD_SUBFOLDERS:
-                os.makedirs(os.path.join(local_path, sub), exist_ok=True)
+                self._safe_makedirs(os.path.join(local_path, sub))
 
             logger.info("✅ Created case folder: %s", local_path)
             logger.info("   DB canonical path: %s", canonical_path)
@@ -210,6 +220,50 @@ class LAFFolderBuilder:
         folder_name = self._build_folder_name(case_info)
         local_path = self._get_local_path(folder_name, case_info)
         return os.path.isdir(local_path)
+
+    def _safe_makedirs(self, path: str) -> None:
+        """Create NAS-backed folders with bounded retry for transient SMB failures."""
+        attempts = max(1, int(os.environ.get("MAGI_NAS_MKDIR_RETRIES", "4") or "4"))
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                os.makedirs(path, exist_ok=True)
+                return
+            except OSError as e:
+                last_error = e
+                msg = str(e).lower()
+                transient = (
+                    e.errno in _TRANSIENT_MKDIR_ERRNOS
+                    or "timed out" in msg
+                    or "deadlock" in msg
+                    or "resource temporarily unavailable" in msg
+                )
+                if not transient or attempt >= attempts:
+                    raise
+                logger.warning(
+                    "NAS mkdir transient failure (%s/%s): %s — %s",
+                    attempt,
+                    attempts,
+                    path,
+                    e,
+                )
+                self._refresh_mount_for_retry(path)
+                time.sleep(min(8.0, 1.5 * attempt))
+        if last_error:
+            raise last_error
+
+    def _refresh_mount_for_retry(self, path: str) -> None:
+        if self.experiment_base_dir:
+            return
+        marker_path = str(path or "")
+        if "/Volumes/" not in marker_path and "SynologyDrive" not in marker_path:
+            return
+        try:
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+            self._detect_local_mount()
+        except Exception as e:
+            logger.warning("NAS mount refresh before mkdir retry failed: %s", e)
 
     # ------------------------------------------------------------------
     # Private

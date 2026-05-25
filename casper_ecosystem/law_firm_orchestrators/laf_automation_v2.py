@@ -8547,7 +8547,11 @@ def _mark_duplicate_folder(dup_folder: str, canonical_folder: str, log=None) -> 
 def _discover_existing_case_folder(final_root: str, client_name: str, case_reason: str, case_stage: str = "") -> Dict[str, str]:
     root = (final_root or "").strip()
     cn = (client_name or "").strip()
-    cn_key = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", cn).lower()
+    try:
+        from api.case_display import normalize_person_name as _normalize_person_name
+    except Exception:
+        _normalize_person_name = lambda value: re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", str(value or "").strip()).lower()
+    cn_key = _normalize_person_name(cn)
     cr = (case_reason or "").strip()
     cs = (case_stage or "").strip()
     if not root or not cn or not cr or not os.path.isdir(root):
@@ -8558,7 +8562,7 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
             if not ent.is_dir():
                 continue
             name = ent.name or ""
-            name_key = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", name).lower()
+            name_key = _normalize_person_name(name)
             score = 0.0
             if cn and (cn in name or (cn_key and cn_key in name_key)):
                 score += 2.5

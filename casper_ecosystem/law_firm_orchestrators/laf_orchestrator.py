@@ -1644,8 +1644,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 case_number=case_number,
             )
 
-        # Vision Step: Extract Start Date from downloaded files
-        # 全案件掃描（供二階段、結案等使用），但開辦判斷只認 02_開辦資料 內的檔案
+        # Vision Step: Extract Start Date from prepared go-live files.
+        # 01_法扶資料保存官網下載的空白表件；只有 02_開辦資料的已簽/已填文件
+        # 可以作為開辦上傳依據，避免把空白委任狀誤認為已可開辦。
         extracted_date = None
         poa_submit_date = None
         open_doc = None
@@ -1655,9 +1656,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not self.dry_run and db_path:
             try:
                 docs = self._scan_case_folder_docs(db_path, action="go_live")
-                local_root = self._to_local_case_folder(db_path) or db_path
-                go_live_dir = os.path.join(local_root, "02_開辦資料")
-                go_live_docs = self._scan_case_folder_docs(go_live_dir, action="go_live") if os.path.isdir(go_live_dir) else self._empty_docs_map()
+                go_live_docs, go_live_scan_scope = self._scan_go_live_docs(db_path)
+                if go_live_scan_scope:
+                    logger.info("  🔎 開辦文件掃描範圍：%s", go_live_scan_scope)
                 open_doc = (go_live_docs.get("opening_notice_files") or [None])[0]
                 poa_doc = (go_live_docs.get("poa_files") or [None])[0]
                 if open_doc:
@@ -4093,26 +4094,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return super()._scan_case_folder_docs(case_folder, action=action)
 
     def _scan_go_live_docs(self, case_folder: str) -> tuple[dict, str]:
-        """Scan go-live source folders.
+        """Scan prepared go-live source folder.
 
-        Newer LAF portal downloads often land opening notices and POAs in
-        01_法扶資料.  The legacy portal draft path only looked at 02_開辦資料,
-        which made nightly audit and actual draft execution disagree.
+        01_法扶資料保存 portal 下載的空白表件；不可當成已簽/已填的開辦資料。
         """
         base = self._to_local_case_folder(case_folder) or case_folder
         docs = self._empty_docs_map()
-        scanned_dirs: list[str] = []
-        for subdir in ("02_開辦資料", "01_法扶資料"):
-            scan_dir = os.path.join(base, subdir)
-            if not os.path.isdir(scan_dir):
-                continue
-            scanned_dirs.append(scan_dir)
+        scan_dir = os.path.join(base, "02_開辦資料")
+        if os.path.isdir(scan_dir):
             part = self._scan_case_folder_docs(scan_dir, action="go_live")
             for key, value in (part or {}).items():
                 if isinstance(value, list):
                     docs.setdefault(key, [])
                     docs[key].extend(x for x in value if x not in docs[key])
-        return docs, " + ".join(scanned_dirs) if scanned_dirs else os.path.join(base, "02_開辦資料")
+        return docs, scan_dir
 
     def _dump_missing_docs_diagnostics(
         self,
@@ -4920,7 +4915,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     missing.append("開辦通知書/接案通知書")
                 if _need_poa and not _gl_docs["poa_files"]:
                     missing.append("委任狀")
-                hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
+                hint = "請將已填/已簽開辦通知書放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知與委任狀放入 02_開辦資料；01_法扶資料的官網空白表件不算"
                 self._dump_missing_docs_diagnostics(
                     mode="portal_draft",
                     case_folder=case_folder,
@@ -5764,7 +5759,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 missing.append("開辦通知書/接案通知書")
             if _need_poa and not _gl_docs["poa_files"]:
                 missing.append("委任狀")
-            hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
+            hint = "請將已填/已簽開辦通知書放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知與委任狀放入 02_開辦資料；01_法扶資料的官網空白表件不算"
             self._dump_missing_docs_diagnostics(
                 mode="portal_submit",
                 case_folder=case_folder,
@@ -5841,6 +5836,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     @staticmethod
     def _norm_token(v: str) -> str:
         s = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", str(v or "").strip()).lower()
+        try:
+            from api.case_display import normalize_person_name
+            s = normalize_person_name(s)
+        except Exception:
+            pass
         for orig, repl in LAFOrchestrator._VARIANT_MAP.items():
             s = s.replace(orig, repl)
         return s

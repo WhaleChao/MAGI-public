@@ -783,7 +783,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         logger.warning(f"Codex sidecar command routing skipped: {e}")
 
     # 1.5 Natural-language command router (shared across LINE/Discord/Telegram/web callers)
-    # This maps colloquial zh-TW phrases to vetted magi-office-ops commands.
+    # This maps colloquial zh-TW phrases to vetted MAGI commands.
     # ⚠️ LAF report commands (開辦回報/報結/疑義 etc.) have a dedicated parser
     #    in _handle_command → parse_laf_report_payload.  Skip NL route for these
     #    to prevent the external intent_router from mis-parsing client names.

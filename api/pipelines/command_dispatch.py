@@ -1183,19 +1183,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     _progress_reported_hit = any(k in message for k in ("已回報", "已經回報", "已完成回報", "進度已回報", "進度回報已完成"))
     if _progress_reported_hit and role == "admin":
         _target = ""
-        _m = re.search(
-            r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40}?)"
-            r"\s*(?:的)?(?:法扶)?(?:進度)?(?:已經|已)?(?:完成)?回報",
-            message,
-        )
-        if not _m:
-            _m = re.search(
-                r"(?:進度)?(?:已經|已)(?:完成)?回報\s*"
-                r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40})",
-                message,
-            )
-        if _m:
-            _target = str(_m.group("target") or "").strip(" ，,。；;：:")
+        try:
+            from api.pipelines.message_router import extract_laf_progress_reported_target
+            _target = extract_laf_progress_reported_target(message)
+        except Exception:
+            _target = ""
         if _target:
             try:
                 _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
@@ -2473,68 +2465,6 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
 
 def list_skills(orch):
-    """
-    Dynamically lists available skills by parsing SKILL.md frontmatter.
-    """
-    import os
-    from skills.catalog import iter_top_level_skill_dirs
+    from api.pipelines.skill_listing import build_skill_list_response
 
-    skill_roots = [
-        (f"{_MAGI_ROOT}/skills", "magi"),
-        (os.path.join(os.path.expanduser("~"), ".openclaw", "skills"), "openclaw"),
-    ]
-    skills_found = []
-
-    # Scan for all SKILL.md files
-    try:
-        for skills_dir, source in skill_roots:
-            if not os.path.isdir(skills_dir):
-                continue
-            for entry in iter_top_level_skill_dirs(skills_dir):
-                skill_path = os.path.join(entry.path, "SKILL.md")
-                try:
-                    with open(skill_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    # Simple frontmatter parsing (no yaml dependency)
-                    name = entry.name
-                    desc = "No description"
-                    if content.startswith("---"):
-                        parts = content.split("---", 2)
-                        if len(parts) >= 3:
-                            for line in parts[1].strip().split("\n"):
-                                line = line.strip()
-                                if line.startswith("name:"):
-                                    name = line.split(":", 1)[1].strip().strip("'\"")
-                                elif line.startswith("description:"):
-                                    desc = line.split(":", 1)[1].strip().strip("'\"")
-                    # Truncate long descriptions
-                    if len(desc) > 80:
-                        desc = desc[:77] + "..."
-                    skills_found.append({"name": name, "desc": desc, "source": source})
-                except Exception:
-                    skills_found.append({"name": entry.name, "desc": "(Unable to parse)", "source": source})
-    except Exception as e:
-        logger.error(f"Error scanning skills: {e}")
-        return "❌ 無法讀取技能列表。"
-
-    # Format Output
-    response = f"🧩 **MAGI 技能列表 (Skill Matrix)**\n"
-    response += f"📦 已安裝 **{len(skills_found)}** 個技能模組\n\n"
-
-    # Emoji map
-    emoji_map = {
-        "bridge": "🌉", "memory": "🧠", "research": "🌐",
-        "law-firm": "⚖️", "browser": "🖥️", "identity": "🪪",
-        "evolution": "🧬", "apple": "🍎", "ops": "⚙️",
-        "maintenance": "🔧", "source_control": "📂", "synology": "💾",
-        "brain_manager": "🧠"
-    }
-
-    for skill in sorted(skills_found, key=lambda s: s["name"]):
-        emoji = emoji_map.get(skill["name"], "📌")
-        src = str(skill.get("source") or "magi")
-        response += f"{emoji} **{skill['name']}** [{src}]\n"
-        response += f"  _{skill['desc']}_\n\n"
-
-    response += "💡 *您可以直接對我下達相關指令，例如「查詢行程」、「分析程式碼」等。*"
-    return response
+    return build_skill_list_response(_MAGI_ROOT, logger=logger)

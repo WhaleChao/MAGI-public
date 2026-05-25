@@ -27,18 +27,80 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 # ---------------------------------------------------------------------------
 
 def read_openclaw_primary_model() -> str:
+    return "OpenClaw 已退役，請以 MAGI 推論服務狀態為準"
+
+
+_LAF_PROGRESS_REPORTED_KEYWORDS = (
+    "已回報",
+    "已經回報",
+    "已完成回報",
+    "進度已回報",
+    "進度回報已完成",
+)
+
+
+def extract_laf_progress_reported_target(message: str) -> str:
+    """Extract target from messages like '<1130101-A-001 王小明>已回報'."""
+    text = str(message or "").strip()
+    if not text or not any(k in text for k in _LAF_PROGRESS_REPORTED_KEYWORDS):
+        return ""
+    laf_match = re.search(r"\d{6,8}-[A-Za-z]-\d{3}", text)
+    if laf_match:
+        return laf_match.group(0)
+    case_match = re.search(r"\b\d{4}-\d{4}\b", text)
+    if case_match:
+        return case_match.group(0)
+
+    before = re.split(
+        r"(?:進度)?(?:已經|已)(?:完成)?回報|進度回報已完成",
+        text,
+        maxsplit=1,
+    )[0]
+    before = before.strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    if not before:
+        parts = re.split(
+            r"(?:進度)?(?:已經|已)(?:完成)?回報|進度回報已完成",
+            text,
+            maxsplit=1,
+        )
+        if len(parts) > 1:
+            before = parts[1].strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    if not before:
+        return ""
+    name_matches = re.findall(r"[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_. -]{1,40}", before)
+    if name_matches:
+        return name_matches[-1].strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    return before[:40]
+
+
+def handle_laf_progress_reported_message(user_id, message: str) -> Optional[str]:
+    target = extract_laf_progress_reported_target(message)
+    if not target:
+        return None
     try:
-        p = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            m = (((cfg or {}).get("agents") or {}).get("defaults") or {}).get("model") or {}
-            primary = str(m.get("primary") or "").strip()
-            if primary:
-                return primary
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "read_openclaw_primary_model", exc_info=True)
-    return "未設定"
+        _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
+        if _orch_dir not in sys.path:
+            sys.path.insert(0, _orch_dir)
+        from laf_nightly_audit import mark_progress_reported
+        result = mark_progress_reported(target, actor=str(user_id or "admin"), note=message)
+    except Exception as e:
+        logger.warning("LAF progress reported cooldown failed: %s", e)
+        return f"❌ 進度回報冷卻設定失敗：{e}"
+
+    if result.get("ok"):
+        case = result.get("case") if isinstance(result.get("case"), dict) else {}
+        name = case.get("client_name") or target
+        laf_no = case.get("laf_case_number") or case.get("case_number") or ""
+        calendar = result.get("calendar") if isinstance(result.get("calendar"), dict) else {}
+        cal_note = "，並已登上行事曆" if calendar.get("google_calendar_id") or calendar.get("todo_id") else ""
+        return f"✅ 已將 {name}{'（' + laf_no + '）' if laf_no else ''} 的進度回報提醒冷卻至 {result.get('cooldown_until')}（60 日）{cal_note}。"
+    if result.get("error") == "ambiguous_target":
+        candidates = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+        lines = [f"⚠️ 找到多筆「{target}」相關法扶案件，請改用法扶案號或案件編號："]
+        for c in candidates[:8]:
+            lines.append(f"  • {c.get('case_number') or '-'} {c.get('client_name') or '-'} {c.get('laf_case_number') or ''}".rstrip())
+        return "\n".join(lines)
+    return f"❌ 找不到 {target} 的法扶案件，無法設定進度回報冷卻。"
 
 
 # ── Gibberish report ───────────────────────────────────────────────
@@ -260,7 +322,7 @@ def should_try_nl_route(orch, message: str) -> bool:
 
 
 def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> tuple[bool, str]:
-    """Route natural language to magi-office-ops commands."""
+    """Route natural language to vetted MAGI command scripts."""
     if not nl_router_enabled():
         return False, ""
     if not should_try_nl_route(orch, message):
@@ -276,11 +338,11 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
 
     router_script = os.environ.get(
         "MAGI_NL_ROUTER_SCRIPT",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "skills", "magi-office-ops", "intent_router.py"),
+        "",
     ).strip()
     run_script = os.environ.get(
         "MAGI_NL_RUN_SCRIPT",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "skills", "magi-office-ops", "run.sh"),
+        "",
     ).strip()
 
     if not (router_script and os.path.exists(router_script) and run_script and os.path.exists(run_script)):
@@ -578,7 +640,9 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             autocompleted = "同步筆錄 " + msg_stripped
             logger.info("[TopicFastPath] transcript autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
             return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
-        # 其他訊息（如一般問題）→ 不攔截
+        # 業務頻道不交給閒聊模型，避免「您好我是 Gemma」型誤答。
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道用來處理**筆錄同步/下載**。請輸入 `同步筆錄 <法院> <案號>`，或貼上法院與案號。"
         return None
 
     # ── 閱卷-繳費頻道 (filereview_payment) 守門 ──
@@ -600,7 +664,8 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         _dl_kws = ["閱卷查核", "可下載", "下載清單"]
         if any(msg_stripped.startswith(kw) for kw in _dl_kws):
             return orch._handle_command(user_id, message, role=role, platform=platform)
-        # 通知頻道，非指令訊息不走 chat engine
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道顯示**閱卷可下載通知**。請輸入 `閱卷查核` 或 `下載清單` 查看目前狀態。"
         return None
 
     # ── 閱卷-聲請頻道 (filereview_apply) 自動補全 ──
@@ -618,7 +683,8 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             autocompleted = "閱卷聲請 " + msg_stripped
             logger.info("[TopicFastPath] filereview_apply autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
             return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
-        # 其他訊息（如一般問題、確認碼）→ 不攔截，走一般流程
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道用來處理**閱卷聲請**。請輸入 `閱卷聲請 <法院> <案號> <當事人>`。"
         return None
 
     # 頻道→允許的動作映射
@@ -646,6 +712,10 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         except Exception as e:
             logger.error(f"❌ Topic fast path '{topic_key}' error: {e}", exc_info=True)
             return None
+
+    progress_reply = handle_laf_progress_reported_message(user_id, message)
+    if progress_reply:
+        return progress_reply
 
     # 檢查是否為法扶指令
     try:
@@ -692,12 +762,18 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             logger.info(f"[TopicFastPath] executing: '{message}'")
             return orch._handle_command(user_id, message, role=role, platform=platform)
 
+        msg_stripped = (message or "").strip()
+        if len(msg_stripped) > 1:
+            if topic_key == "laf_progress":
+                return "💡 這個頻道用來確認**法扶進度回報**。可直接輸入 `1131122-E-017 已回報` 或 `謝依穎已回報`。"
+            return f"💡 這個頻道是 **{conf['label']}**。我沒有辨識到可執行的法扶指令，請補上案號/姓名與作業，例如：`1150101-A-001 開辦`、`1150101-A-001 結案`、`1150101-A-001 費用支付`。"
         return None
     except Exception:
-        pass
+        logger.exception("[TopicFastPath] LAF command parse failed")
+        return f"⚠️ {conf['label']} 指令解析失敗，請改用「法扶案號 + 作業」格式，例如 `1150101-A-001 開辦`。"
 
-    # 非法扶指令（一般對話）→ return None 讓正常流程處理
-    return None
+    # 法扶業務頻道不交給一般閒聊模型。
+    return f"💡 這個頻道是 **{conf['label']}**。請輸入可執行的法扶作業指令。"
 
 
 # ── Conversational Intent ──────────────────────────────────────────

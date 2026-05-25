@@ -9,15 +9,11 @@ def _read(rel: str) -> str:
 
 
 def test_go_live_nightly_does_not_update_db_on_generic_portal_draft_failed():
-    for rel in [
-        "scripts/laf_nightly_audit.py",
-        "casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py",
-    ]:
-        src = _read(rel)
-        assert 'elif err == "portal_draft_failed" and db and case.get("id")' not in src
-        assert "不自動更新 DB" in src
-        assert "MAGI_LAF_AUTO_GO_LIVE_PREFILL" in src
-        assert "go_live_has_no_draft" in src
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
+    assert 'elif err == "portal_draft_failed" and db and case.get("id")' not in src
+    assert "不自動更新 DB" in src
+    assert "MAGI_LAF_AUTO_GO_LIVE_PREFILL" in src
+    assert "go_live_has_no_draft" in src
 
 
 def test_go_live_never_uses_draft_failure_wording():
@@ -59,7 +55,7 @@ def test_autopilot_zero_max_cases_remains_unlimited():
 
 
 def test_production_laf_nightly_scans_case_status_drafts():
-    src = _read("scripts/laf_nightly_audit.py")
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
     assert '"case_status_drafts": []' in src
     assert 'portal.get("case_status", [])' in src
     assert "portal_pending_case_status_drafts" in src
