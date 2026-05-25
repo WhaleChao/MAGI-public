@@ -33,11 +33,43 @@ def test_補正_中文數字產生全天待辦():
     assert todos[0]["time"] == ""
 
 
+def test_補正_日內後有標點仍建立待辦():
+    todos = _extract("20260513 花蓮地方法院115年度訴字第109號民事裁定（張國賢；主文：原告應於本裁定送達後十日內，補正說明本件消極確認之訴的權利保護必要）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-05-25"
+    assert todos[0]["time"] == ""
+
+
+def test_補正_文到後期限仍建立待辦():
+    todos = _extract("20260505 臺北地方法院函（王台銘；主旨：請於文到後14日內補正如說明一所示事項）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-05-19"
+    assert todos[0]["time"] == ""
+
+
 def test_週內期限轉為全天待辦():
     todos = _extract("20260225 花蓮地方法院114年度訴字第83號函（主旨：請於文到2週內陳報有無調解意願到院）.pdf")
     assert len(todos) == 1
     assert todos[0]["type"] == "陳報"
     assert todos[0]["date"] == "2026-03-11"
+    assert todos[0]["time"] == ""
+
+
+def test_絕對日期前表示意見轉為待辦():
+    todos = _extract("20250415 花蓮地方法院函（游秀鈴；請惠予於114年4月21日前，就聲請訴訟參與一事表示意見）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "陳報"
+    assert todos[0]["date"] == "2025-04-21"
+    assert todos[0]["time"] == ""
+
+
+def test_絕對日期前陳報轉為待辦():
+    todos = _extract("20260331 花蓮地方法院函（王小明；請於115年4月8日前陳報相關資料）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "陳報"
+    assert todos[0]["date"] == "2026-04-08"
     assert todos[0]["time"] == ""
 
 

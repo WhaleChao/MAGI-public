@@ -150,11 +150,14 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
     return {
         "補正": [
             {"pattern": rf"應於本裁定送達後{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
-            {"pattern": rf"請於文到{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
-            {"pattern": rf"文到{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於本裁定送達後{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"請於文到(?:後)?{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"文到(?:後)?{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
             {"pattern": rf"命.+?於{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
             {"pattern": rf"應於{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
             {"pattern": rf"{_DURATION_RE}內補正", "pattern_type": "relative", "days": None},
+            {"pattern": rf"{_DURATION_RE}內.*?補正", "pattern_type": "relative", "days": None},
         ],
         "上訴": [
             {"pattern": rf"上訴期間.*?送達.*?{_DURATION_RE}內", "pattern_type": "relative", "days": None},
@@ -169,15 +172,15 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
             {"pattern": rf"{_DURATION_RE}內陳述意見", "pattern_type": "relative", "days": None},
         ],
         "陳報": [
-            {"pattern": rf"(?:請)?(?:於)?(?:文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"(?:請)?(?:於)?(?:文到後|文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "pattern_type": "relative", "days": None},
             {"pattern": rf"{_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "pattern_type": "relative", "days": None},
         ],
         "提出資料": [
-            {"pattern": rf"(?:請)?(?:於)?(?:文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"(?:請)?(?:於)?(?:文到後|文到|送達翌日起|送達後){_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "pattern_type": "relative", "days": None},
             {"pattern": rf"{_DURATION_RE}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "pattern_type": "relative", "days": None},
         ],
         "繳費": [
-            {"pattern": rf"應於文到{_DURATION_RE}內繳納.*?(?:規費|裁判費)", "pattern_type": "relative", "days": None},
+            {"pattern": rf"應於文到(?:後)?{_DURATION_RE}內繳納.*?(?:規費|裁判費)", "pattern_type": "relative", "days": None},
             {"pattern": rf"限{_DURATION_RE}內.*?繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
             {"pattern": rf"{_DURATION_RE}內繳納.*?(?:裁判費|規費)", "pattern_type": "relative", "days": None},
         ],
@@ -231,6 +234,68 @@ def _todo_sort_key(todo: Dict) -> tuple[str, str, str]:
         str(todo.get("time") or "00:00"),
         str(todo.get("type") or ""),
     )
+
+
+def _infer_absolute_deadline_type(context: str) -> Optional[str]:
+    text = context or ""
+    ordered = [
+        ("繳費", ("繳納", "繳費", "裁判費", "規費", "聲請費")),
+        ("補正", ("補正", "補繳", "補提")),
+        ("陳述意見", ("陳述意見",)),
+        ("陳報", ("陳報", "回覆", "表示意見", "具狀表示", "確答", "陳明", "說明")),
+        ("提出資料", ("提出", "檢送", "檢附", "補送", "補提", "資料", "文件", "清冊", "報告書", "截圖", "證據")),
+        ("上訴", ("上訴",)),
+        ("抗告", ("抗告",)),
+        ("閱卷期限", ("閱卷",)),
+    ]
+    for todo_type, keywords in ordered:
+        if any(keyword in text for keyword in keywords):
+            return todo_type
+    return None
+
+
+def _extract_absolute_deadline_todos(filename: str, document_date: datetime) -> List[Dict]:
+    """Extract court deadlines written as an exact ROC/AD date.
+
+    Examples seen in OSC folders:
+    - 114年4月21日前表示意見
+    - 請惠予於115年6月3日前陳報
+    """
+    text = re.sub(r"\s+", "", filename or "")
+    if not text:
+        return []
+    todos: List[Dict] = []
+    date_pat = re.compile(
+        r"(?:請惠予|應|請|命|限|惠予)?(?:於)?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?:以前|前)[，,、\s]*([^）)]{0,90})"
+    )
+    for m in date_pat.finditer(text):
+        before = text[max(0, m.start() - 24) : m.start()]
+        tail = m.group(4) or ""
+        context = f"{before}{tail}"
+        todo_type = _infer_absolute_deadline_type(context)
+        if not todo_type:
+            continue
+        try:
+            dt = datetime(_parse_roc_or_ad_year(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            continue
+        if dt.date() < document_date.date() - timedelta(days=3650):
+            continue
+        _append_unique_todo(
+            todos,
+            {
+                "type": todo_type,
+                "deadline_type": todo_type,
+                "file": filename,
+                "source_file": filename,
+                "source": "filename_absolute_date",
+                "date": dt.strftime("%Y-%m-%d"),
+                "datetime": dt,
+                "time": "",
+                "description": f"📝 {dt.month}月{dt.day}日前{todo_type}",
+            },
+        )
+    return sorted(todos, key=_todo_sort_key)
 
 
 def _hearing_datetime(
@@ -395,6 +460,7 @@ def _extract_todo_from_filename(filename: str) -> Optional[Dict]:
 
     _BRACKET_PATTERNS = [
         (rf"{_DURATION_RE}內補正", "補正"),
+        (rf"{_DURATION_RE}內.*?補正", "補正"),
         (rf"{_DURATION_RE}內上訴", "上訴"),
         (rf"{_DURATION_RE}內陳述意見", "陳述意見"),
         (rf"{_DURATION_RE}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "陳報"),
@@ -533,6 +599,9 @@ def extract_todos_from_filename(
                 "time": "",
                 "description": f"📝 {days}日內{bracket_todo['deadline_type']} ({document_date.strftime('%m/%d')}文到)",
             })
+
+    for todo in _extract_absolute_deadline_todos(filename, document_date):
+        _append_unique_todo(todos, todo)
 
     for todo in _extract_hearing_sequence_todos(filename, document_date):
         _append_unique_todo(todos, todo)

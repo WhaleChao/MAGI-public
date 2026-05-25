@@ -244,6 +244,33 @@ def test_pdf_calendar_scan_preview_detects_all_day_filename_deadline(client, tmp
     assert event["start_date"] == "2026-04-07"
 
 
+def test_pdf_calendar_scan_preview_detects_absolute_deadline_in_pdf_text(client, tmp_path, monkeypatch):
+    path = tmp_path / "20260520 花蓮地方法院函.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    monkeypatch.setattr(
+        "api.blueprints.osc_pdf._pdf_text",
+        lambda *_args, **_kwargs: "請惠予於民國115年6月3日前表示意見，俾憑辦理。",
+    )
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0001", "client_name": "王小明", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "陳報"
+    assert todo["date"] == "2026-06-03"
+    assert todo["time"] == ""
+
+
 def test_pdf_calendar_scan_falls_back_to_filename_when_pdf_placeholder_unreadable(client, tmp_path, monkeypatch):
     path = tmp_path / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
     path.write_bytes(b"not a real local pdf yet")
@@ -404,6 +431,75 @@ def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch)
     targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
 
     assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
+
+
+def test_all_case_pdf_targets_prioritizes_unprocessed_recent_pdfs(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    case_dir = tmp_path / "01_案件" / "一般案件" / "民事" / "2026-0001-測試-一審-測試"
+    notice_dir = case_dir / "02_法院通知與程序裁定"
+    notice_dir.mkdir(parents=True)
+    processed = notice_dir / "20260501 已處理通知.pdf"
+    fresh = notice_dir / "20260520 新通知.pdf"
+    processed.write_bytes(b"%PDF-1.4\n")
+    fresh.write_bytes(b"%PDF-1.4\n")
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0001",
+                    "client_name": "測試",
+                    "folder_path": str(case_dir),
+                }
+            ], {}
+        if "FROM case_todos" in sql:
+            return [{"case_number": "2026-0001", "source_file": processed.name}], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(case_dir)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=1)
+
+    assert targets == [(fresh.resolve(), "2026-0001", "測試")]
+
+
+def test_all_case_pdf_targets_prioritizes_todo_like_pdf_names(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+    import os
+    import time
+
+    case_dir = tmp_path / "01_案件" / "一般案件" / "民事" / "2026-0001-測試-一審-測試"
+    notice_dir = case_dir / "02_法院通知與程序裁定"
+    notice_dir.mkdir(parents=True)
+    no_todo = notice_dir / "20260525 普通函文.pdf"
+    todo_like = notice_dir / "20260520 花蓮地方法院函（請於115年6月3日前表示意見）.pdf"
+    no_todo.write_bytes(b"%PDF-1.4\n")
+    todo_like.write_bytes(b"%PDF-1.4\n")
+    now = time.time()
+    os.utime(no_todo, (now, now))
+    os.utime(todo_like, (now - 86400, now - 86400))
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0001",
+                    "client_name": "測試",
+                    "folder_path": str(case_dir),
+                }
+            ], {}
+        if "FROM case_todos" in sql:
+            return [], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(case_dir)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=1)
+
+    assert targets == [(todo_like.resolve(), "2026-0001", "測試")]
 
 
 def test_pdf_calendar_scan_skips_text_for_large_pdf_when_filename_has_todo(tmp_path, monkeypatch):

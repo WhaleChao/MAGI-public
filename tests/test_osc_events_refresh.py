@@ -127,3 +127,40 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     assert result["calendar_push"]["inserted"] == 1
     assert result["calendar_audit"]["ok"] is True
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
+
+
+def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
+    from api.blueprints import osc_pdf
+
+    calls = []
+
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(SimpleNamespace(name="notice.pdf"), "2026-0001", "王小明")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(kwargs)
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "開庭", "date": "2026-06-01", "time": "10:00", "description": "測試"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+    monkeypatch.delenv("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", raising=False)
+    monkeypatch.delenv("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", raising=False)
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert calls[0]["scan_text"] is True
+    assert calls[0]["text_when_filename"] is True

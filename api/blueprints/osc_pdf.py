@@ -224,6 +224,29 @@ def _next_tw_workday(dt: datetime) -> datetime:
         return dt
 
 
+_PDF_TODO_HINT_RE = re.compile(
+    r"(開庭|調解|審理|辯論|宣判|訊問|調查|補正|陳報|表示意見|提出|檢送|檢附|繳納|繳費|裁判費|抗告|上訴|日內|日前|文到|送達後|送達翌日起|訂於|定於)"
+)
+
+
+def _infer_deadline_type_from_context(context: str) -> str | None:
+    text = context or ""
+    mapping = [
+        ("繳費", ("繳納", "繳費", "裁判費", "規費", "聲請費")),
+        ("補正", ("補正", "補繳", "補提")),
+        ("陳述意見", ("陳述意見",)),
+        ("陳報", ("陳報", "回覆", "表示意見", "具狀表示", "確答", "陳明", "說明")),
+        ("提出資料", ("提出", "檢送", "檢附", "補送", "補提", "資料", "文件", "清冊", "報告書", "截圖", "證據")),
+        ("上訴", ("上訴",)),
+        ("抗告", ("抗告",)),
+        ("閱卷期限", ("閱卷",)),
+    ]
+    for todo_type, keywords in mapping:
+        if any(keyword in text for keyword in keywords):
+            return todo_type
+    return None
+
+
 def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     body = re.sub(r"\s+", "", text or "")
@@ -269,6 +292,29 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
             break
     if doc_date is None:
         doc_date = datetime.fromtimestamp(path.stat().st_mtime)
+
+    absolute_deadline_pat = re.compile(
+        r"(?:請惠予|應|請|命|限|惠予)?(?:於)?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?:以前|前)[，,、\s]*([^）)]{0,90})"
+    )
+    for m in absolute_deadline_pat.finditer(body):
+        before = body[max(0, m.start() - 24) : m.start()]
+        tail = m.group(4) or ""
+        todo_type = _infer_deadline_type_from_context(f"{before}{tail}")
+        if not todo_type:
+            continue
+        deadline = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
+        if not deadline:
+            continue
+        items.append(
+            {
+                "type": todo_type,
+                "date": deadline.strftime("%Y-%m-%d"),
+                "time": "",
+                "description": f"📝 PDF 擷取：{deadline.strftime('%m/%d')}前{todo_type}",
+                "source": "pdf_text",
+                "source_file": str(path),
+            }
+        )
 
     day_token = r"([零一二三四五六七八九十\d]{1,4})(日|週|周)"
     relative_map = [
@@ -569,6 +615,7 @@ def _scan_pdf_for_calendar(
     max_pages: int = 5,
     include_share_link: bool = False,
     scan_text: bool = True,
+    text_when_filename: bool | None = None,
 ) -> dict[str, Any]:
     inferred = _infer_case_from_path(path)
     case_number = (case_number or inferred.get("case_number") or "").strip()
@@ -579,7 +626,8 @@ def _scan_pdf_for_calendar(
     text = ""
     text_error = ""
     text_max_mb = float(os.environ.get("OSC_PDF_CALENDAR_TEXT_MAX_MB", "8") or "8")
-    text_when_filename = str(os.environ.get("OSC_PDF_CALENDAR_TEXT_WHEN_FILENAME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if text_when_filename is None:
+        text_when_filename = str(os.environ.get("OSC_PDF_CALENDAR_TEXT_WHEN_FILENAME", "0")).strip().lower() in {"1", "true", "yes", "on"}
     try:
         file_size_mb = path.stat().st_size / (1024 * 1024)
     except OSError:
@@ -656,8 +704,28 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
         fetch="all",
     )
     out: list[tuple[Path, str, str]] = []
+    candidates: list[tuple[int, int, float, str, Path, str, str]] = []
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
     max_items = max(1, min(limit, 5000))
+    existing_sources: set[tuple[str, str]] = set()
+
+    try:
+        source_rows, _ = _osc_exec(
+            """
+            SELECT case_number, source_file
+            FROM case_todos
+            WHERE source_file IS NOT NULL AND source_file!=''
+              AND COALESCE(status, '') <> 'deleted'
+            """,
+            fetch="all",
+        )
+        existing_sources = {
+            (str(r.get("case_number") or ""), Path(str(r.get("source_file") or "")).name)
+            for r in (source_rows or [])
+            if str(r.get("source_file") or "").strip()
+        }
+    except Exception:
+        existing_sources = set()
 
     def _relevant_roots(folder: Path) -> list[Path]:
         roots: list[Path] = []
@@ -688,14 +756,23 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
         for root in _relevant_roots(folder):
             iterator = root.rglob("*.pdf") if root != folder or any(k in str(root) for k in wanted) else root.glob("*.pdf")
             for pdf in iterator:
-                if len(out) >= max_items:
-                    return out
                 if pdf.name.startswith(".") or pdf.name.startswith("~$"):
                     continue
                 text = str(pdf)
                 if wanted and not any(k in text for k in wanted):
                     continue
-                out.append((pdf.resolve(), str(row.get("case_number") or ""), str(row.get("client_name") or "")))
+                case_number = str(row.get("case_number") or "")
+                try:
+                    mtime = pdf.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                processed_rank = 1 if (case_number, pdf.name) in existing_sources else 0
+                hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
+                candidates.append((processed_rank, hint_rank, -mtime, pdf.name, pdf.resolve(), case_number, str(row.get("client_name") or "")))
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    for _processed_rank, _hint_rank, _mtime, _name, pdf, case_number, client_name in candidates[:max_items]:
+        out.append((pdf, case_number, client_name))
     return out
 
 

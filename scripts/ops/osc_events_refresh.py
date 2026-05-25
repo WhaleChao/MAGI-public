@@ -11,9 +11,11 @@ This is intentionally conservative for NAS safety:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
+import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -23,6 +25,33 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 LATEST_PATH = ROOT / ".runtime" / "osc_events_refresh_latest.json"
+PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
+
+
+class _PdfScanTimeout(TimeoutError):
+    pass
+
+
+@contextlib.contextmanager
+def _pdf_scan_time_limit(seconds: int):
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise _PdfScanTimeout(f"pdf_scan_timeout:{seconds}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_alarm = signal.alarm(0)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_alarm:
+            signal.alarm(previous_alarm)
 
 
 def _load_osc_action_module():
@@ -54,16 +83,56 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     from api.blueprints import osc_pdf
 
     limit = max(1, int(getattr(args, "pdf_limit", 240)))
+    target_limit = max(limit, min(limit * 5, 5000))
     max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
     dry_run = bool(getattr(args, "dry_run", False))
-    scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
+    text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "1").strip().lower() in {"1", "true", "yes", "on"}
+    file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
+    budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
+    no_todo_cache_days = max(0, int(os.environ.get("OSC_PDF_CALENDAR_NO_TODO_CACHE_DAYS", "14") or "14"))
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
+    timeout_count = 0
+    error_count = 0
+    cache_skipped = 0
     sample_items: list[dict[str, Any]] = []
     errors: list[str] = []
+    cache_changed = False
+
+    def _load_cache() -> dict[str, Any]:
+        try:
+            if PDF_SCAN_CACHE_PATH.exists():
+                data = json.loads(PDF_SCAN_CACHE_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    data.setdefault("files", {})
+                    return data
+        except Exception:
+            pass
+        return {"version": 1, "files": {}}
+
+    def _save_cache(data: dict[str, Any]) -> None:
+        files = data.get("files")
+        if isinstance(files, dict) and len(files) > 20000:
+            ordered = sorted(files.items(), key=lambda item: str((item[1] or {}).get("scanned_at") or ""))
+            data["files"] = dict(ordered[-16000:])
+        PDF_SCAN_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PDF_SCAN_CACHE_PATH.with_suffix(PDF_SCAN_CACHE_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(PDF_SCAN_CACHE_PATH)
+
+    def _file_signature(path: Any) -> tuple[str, int, int] | None:
+        try:
+            st = path.stat()
+            return str(path), int(st.st_mtime), int(st.st_size)
+        except Exception:
+            return None
+
+    scan_cache = _load_cache()
+    cache_files = scan_cache.setdefault("files", {})
 
     try:
-        targets = osc_pdf._iter_all_case_pdf_targets(limit=limit)
+        targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit)
     except Exception as exc:
         return {
             "ok": False,
@@ -74,19 +143,50 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
 
     for path, case_number, client_name in targets:
         try:
-            item = osc_pdf._scan_pdf_for_calendar(
-                path,
-                case_number=case_number,
-                client_name=client_name,
-                max_pages=max_pages,
-                include_share_link=False,
-                scan_text=scan_text,
-            )
+            if scanned >= limit:
+                break
+            if budget_sec and time.monotonic() - started > budget_sec:
+                errors.append(f"budget_exhausted:{budget_sec}s")
+                break
+            signature = _file_signature(path)
+            cache_key = signature[0] if signature else ""
+            if signature and no_todo_cache_days:
+                cached = cache_files.get(cache_key) if isinstance(cache_files, dict) else None
+                if isinstance(cached, dict):
+                    same_file = int(cached.get("mtime") or 0) == signature[1] and int(cached.get("size") or -1) == signature[2]
+                    scanned_at = str(cached.get("scanned_at") or "")
+                    try:
+                        age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(scanned_at)).total_seconds() / 86400
+                    except Exception:
+                        age_days = no_todo_cache_days + 1
+                    if same_file and int(cached.get("todo_count") or 0) == 0 and age_days < no_todo_cache_days:
+                        cache_skipped += 1
+                        continue
+            with _pdf_scan_time_limit(file_timeout_sec):
+                item = osc_pdf._scan_pdf_for_calendar(
+                    path,
+                    case_number=case_number,
+                    client_name=client_name,
+                    max_pages=max_pages,
+                    include_share_link=False,
+                    scan_text=scan_text,
+                    text_when_filename=text_when_filename,
+                )
             scanned += 1
             todos = item.get("todos") or []
             events = item.get("events") or []
             todo_count += len(todos)
             event_count += len(events)
+            if signature and isinstance(cache_files, dict):
+                cache_files[cache_key] = {
+                    "mtime": signature[1],
+                    "size": signature[2],
+                    "todo_count": len(todos),
+                    "text_available": bool(item.get("text_available")),
+                    "text_error": str(item.get("text_error") or "")[:200],
+                    "scanned_at": datetime.now(timezone.utc).isoformat(),
+                }
+                cache_changed = True
             if todos and not item.get("case_number"):
                 warning_count += 1
             write_result = {"inserted": 0, "updated": 0, "skipped": 0}
@@ -113,20 +213,40 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                         "todos": todos[:3],
                     }
                 )
+        except _PdfScanTimeout as exc:
+            timeout_count += 1
+            if len(errors) < 20:
+                errors.append(f"{path.name}: {str(exc)[:200]}")
         except Exception as exc:
+            error_count += 1
             if len(errors) < 20:
                 errors.append(f"{path.name}: {type(exc).__name__}: {str(exc)[:200]}")
 
+    if cache_changed:
+        try:
+            _save_cache(scan_cache)
+        except Exception as exc:
+            if len(errors) < 20:
+                errors.append(f"cache_save_failed:{type(exc).__name__}: {str(exc)[:160]}")
+
     return {
-        "ok": not errors,
+        "ok": True,
         "dry_run": dry_run,
         "limit": limit,
+        "candidate_limit": target_limit,
         "max_pages": max_pages,
         "scan_text": scan_text,
+        "text_when_filename": text_when_filename,
+        "file_timeout_sec": file_timeout_sec,
+        "budget_sec": budget_sec,
+        "no_todo_cache_days": no_todo_cache_days,
         "targets": len(targets),
         "scanned": scanned,
+        "cache_skipped": cache_skipped,
         "todo_count": todo_count,
         "event_count": event_count,
+        "timeout_count": timeout_count,
+        "error_count": error_count,
         "write_result": {
             "inserted": inserted,
             "updated": updated,
