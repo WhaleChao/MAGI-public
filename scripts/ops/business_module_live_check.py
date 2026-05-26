@@ -28,7 +28,7 @@ if not Path(PYTHON).exists():
 def _run(name: str, argv: list[str], timeout: int = 600) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("MAGI_NO_DELETE", "1")
-    env.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     try:
         proc = subprocess.run(
             argv,

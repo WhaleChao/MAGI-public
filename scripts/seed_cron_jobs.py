@@ -291,6 +291,26 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_slow_archive_closed_cases",
+            "cron": "35 2 * * *",
+            "command": (
+                f"{python_bin} {run_with_env} "
+                "MAGI_SLOW_ARCHIVE_CASE_NUMBER=2025-0002 "
+                "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=3 "
+                "MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=5400 "
+                f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'slow_archive_closed_cases.py'} "
+                "--apply --case-number 2025-0002 --limit 1 --bwlimit-mbps 3 --max-runtime-sec 5400 "
+                f"--json-out {repo_root / '.runtime' / 'slow_archive_closed_cases_latest.json'}"
+            ),
+            "desc": "大型已結案案件離峰慢搬（02:35；限速可續傳，游秀鈴 2025-0002 優先，不使用 Synology Drive 雲端目標）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 5700,
+            "no_catchup": True,
+        },
+        {
             "id": "job_disk_cleanup_healthcheck",
             "cron": "55 3 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_DISK_CLEANUP_DRY_RUN=0 MAGI_DISK_NAS_RECYCLE_ENABLE=1 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'disk_cleanup_healthcheck.py'} --apply",

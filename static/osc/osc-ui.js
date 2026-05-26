@@ -141,11 +141,7 @@ function inferBusyLabel(btn) {
 function reportUiError(actionLabel, error) {
     console.error(error);
     const body = `${actionLabel || "操作"}失敗：${error.message}`;
-    if (typeof showAlert === "function") {
-        showAlert("MAGI", body);
-    } else {
-        alert(`MAGI\n\n${body}`);
-    }
+    showAlert("MAGI說", body);
 }
 
 async function runBusyAction(buttonId, fn, opts = {}) {

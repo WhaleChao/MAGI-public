@@ -188,8 +188,8 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
             connection_timeout=int(_get("CONNECTION_TIMEOUT", "5")),
         )
 
-    # Otherwise choose profile by policy: remote-first unless MAGI_PREFER_LOCAL_DB=1.
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    # Otherwise choose profile by policy: local-first unless a remote DB is explicitly requested.
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     cands = _profile_candidates(prefer_local=prefer_local)
     if cands:
         c0 = cands[0]
@@ -247,7 +247,7 @@ def connect_mysql(cfg: DBConfig) -> mysql.connector.MySQLConnection:
         last_err = e
 
     # 2) profile-based candidates
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     for c in _profile_candidates(prefer_local=prefer_local):
         key = (c.host, int(c.port), c.database)
         if key in tried:

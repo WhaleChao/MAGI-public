@@ -85,7 +85,7 @@ async function searchDraftCases() {
 async function loadDraftSelectedCase() {
     await withBusy("draftCaseLoadBtn", "載入中...", async () => {
         const id = (document.getElementById("draftCaseSelect").value || "").trim();
-        if (!id) return alert("請先選擇案件");
+        if (!id) return showAlert("MAGI說", "請先選擇案件");
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
         const x = data.item || {};
         state.draft.selectedCaseId = x.id || id;
@@ -274,19 +274,19 @@ async function generateDraft() {
 
 async function copyDraftResult() {
     const text = (document.getElementById("draftResult").value || "").trim();
-    if (!text) return alert("沒有可複製內容");
+    if (!text) return showAlert("MAGI說", "沒有可複製內容");
     try {
         await navigator.clipboard.writeText(text);
         setDraftStatus("已複製產生結果到剪貼簿。");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
 }
 
 async function exportDraftResult() {
     await withBusy("draftExportBtn", "匯出中...", async () => {
         const draftText = (document.getElementById("draftResult").value || "").trim();
-        if (!draftText) return alert("沒有內容可以匯出");
+        if (!draftText) return showAlert("MAGI說", "沒有內容可以匯出");
         const body = {
             draft_text: draftText,
             doc_type: (document.getElementById("draftDocType").value || "").trim(),
@@ -372,8 +372,8 @@ function updateDraftFeedbackPanel() {
 async function submitDraftFeedback() {
     await withBusy("draftFeedbackSaveBtn", "記錄中...", async () => {
         const delta = currentDraftCorrectionDelta();
-        if (!delta.original) return alert("請先產生一次 AI 書狀，再修改結果。");
-        if (!delta.changed) return alert("尚未偵測到修正內容。");
+        if (!delta.original) return showAlert("MAGI說", "請先產生一次 AI 書狀，再修改結果。");
+        if (!delta.changed) return showAlert("MAGI說", "尚未偵測到修正內容。");
         const payload = collectDraftPayload();
         payload.original_text = delta.original;
         payload.corrected_text = delta.corrected;

@@ -145,7 +145,7 @@ async function previewAccountingImport() {
 
 async function runAccountingImport() {
     const month = accountingImportMonthValue();
-    if (!confirm(`確定匯入 ${month} 的同事帳務表？固定支出會跳過，不會重複入帳。`)) return;
+    if (!await showConfirm("MAGI說", `確定匯入 ${month} 的同事帳務表？固定支出會跳過，不會重複入帳。`)) return;
     const data = await api(`/api/osc/accounting/import/google-sheet`, "POST", { month, commit: true });
     renderAccountingImportResult(data);
     await loadTransactions();
@@ -215,7 +215,7 @@ async function previewAccountingBonus() {
 
 async function runAccountingBonus() {
     const month = accountingBonusMonthValue();
-    if (!confirm(`確定正式登載或更新 ${month} 的月結獎金？MAGI 會先重新匯入帳務並避免重複入帳。`)) return;
+    if (!await showConfirm("MAGI說", `確定正式登載或更新 ${month} 的月結獎金？MAGI 會先重新匯入帳務並避免重複入帳。`)) return;
     const data = await api(`/api/osc/accounting/monthly-bonus`, "POST", { month, commit: true, refresh_import: true });
     renderAccountingBonusResult(data);
     await loadTransactions();
@@ -252,7 +252,7 @@ async function editTransaction(id) {
 }
 
 async function delTransaction(id) {
-    if (!confirm(`確定刪除帳務紀錄 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除帳務紀錄 ${id}？`)) return;
     await api(`/api/osc/accounting/transactions/${id}`, "DELETE");
     await loadTransactions();
 }
@@ -268,10 +268,10 @@ async function saveTransaction() {
         amount: p.tx_amount,
         description: p.tx_description,
     };
-    if (!body.date) return alert("請選擇日期");
-    if (!body.type) return alert("請選擇收入或支出");
-    if (!body.category) return alert("請輸入分類");
-    if (body.amount === "" || Number.isNaN(Number(body.amount)) || Number(body.amount) < 0) return alert("金額請填 0 以上的數字");
+    if (!body.date) return showAlert("MAGI說", "請選擇日期");
+    if (!body.type) return showAlert("MAGI說", "請選擇收入或支出");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
+    if (body.amount === "" || Number.isNaN(Number(body.amount)) || Number(body.amount) < 0) return showAlert("MAGI說", "金額請填 0 以上的數字");
     if ((p.tx_id || "").trim()) await api(`/api/osc/accounting/transactions/${Number(p.tx_id)}`, "PUT", body);
     else await api(`/api/osc/accounting/transactions`, "POST", body);
     clearFields(["tx_id", "tx_case_id", "tx_date", "tx_type", "tx_sub_type", "tx_category", "tx_amount", "tx_description"]);
@@ -319,7 +319,7 @@ async function saveExpenseDefault() {
         default_description: (document.getElementById("txDefDescription").value || "").trim(),
     };
     const id = (document.getElementById("txDefId").value || "").trim();
-    if (!body.category) return alert("請輸入分類");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
     if (id) await api(`/api/osc/accounting/defaults/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/accounting/defaults`, "POST", body);
     ["txDefId", "txDefCategory", "txDefAmount", "txDefDescription"].forEach(x => {
@@ -330,7 +330,7 @@ async function saveExpenseDefault() {
 }
 
 async function delExpenseDefault(id) {
-    if (!confirm(`確定刪除預設帳務項目 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除預設帳務項目 ${id}？`)) return;
     await api(`/api/osc/accounting/defaults/${Number(id)}`, "DELETE");
     await loadExpenseDefaults();
     await loadMeta();
@@ -393,9 +393,9 @@ async function saveRecurringExpense() {
         last_generated_month: (document.getElementById("txRecurringLastMonth").value || "").trim(),
     };
     const id = (document.getElementById("txRecurringId").value || "").trim();
-    if (!body.category) return alert("請輸入分類");
-    if (!body.amount || Number(body.amount) < 0) return alert("請輸入固定支出金額");
-    if (!body.day_of_month || Number(body.day_of_month) < 1 || Number(body.day_of_month) > 31) return alert("每月日請填 1 到 31");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
+    if (!body.amount || Number(body.amount) < 0) return showAlert("MAGI說", "請輸入固定支出金額");
+    if (!body.day_of_month || Number(body.day_of_month) < 1 || Number(body.day_of_month) > 31) return showAlert("MAGI說", "每月日請填 1 到 31");
     if (id) await api(`/api/osc/accounting/recurring/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/accounting/recurring`, "POST", body);
     ["txRecurringId", "txRecurringCategory", "txRecurringSubType", "txRecurringDescription", "txRecurringAmount", "txRecurringDay", "txRecurringStartDate", "txRecurringEndDate", "txRecurringActive", "txRecurringLastMonth"].forEach(x => {
@@ -409,18 +409,18 @@ async function saveRecurringExpense() {
 
 async function syncRecurringGenerated() {
     const id = (document.getElementById("txRecurringId").value || "").trim();
-    if (!id) return alert("請先選擇一筆固定支出");
+    if (!id) return showAlert("MAGI說", "請先選擇一筆固定支出");
     const amount = (document.getElementById("txRecurringAmount").value || "0").trim();
     const description = (document.getElementById("txRecurringDescription").value || "").trim();
-    if (!confirm(`確定同步今年已產生的「${description || id}」固定支出金額？`)) return;
+    if (!await showConfirm("MAGI說", `確定同步今年已產生的「${description || id}」固定支出金額？`)) return;
     const data = await api(`/api/osc/accounting/recurring/${Number(id)}/sync-generated`, "POST", { amount });
-    alert(`已同步 ${data.updated_count || 0} 筆固定支出紀錄`);
+    showAlert("MAGI說", `已同步 ${data.updated_count || 0} 筆固定支出紀錄`);
     await loadTransactions();
     await loadAccountingSummary();
 }
 
 async function delRecurringExpense(id) {
-    if (!confirm(`確定刪除固定支出 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除固定支出 ${id}？`)) return;
     await api(`/api/osc/accounting/recurring/${Number(id)}`, "DELETE");
     await loadRecurringExpenses();
     await loadMeta();
@@ -597,9 +597,9 @@ function resetQuotationTemplateForm() {
 function applySelectedQuotationTemplate() {
     const select = document.getElementById("qtTemplateSelect");
     const id = select ? select.value : "";
-    if (!id) return alert("請先選擇模板");
+    if (!id) return showAlert("MAGI說", "請先選擇模板");
     const tpl = (state.quotationTemplates || []).find(x => String(x.id) === String(id));
-    if (!tpl) return alert("找不到模板，請重新整理模板");
+    if (!tpl) return showAlert("MAGI說", "找不到模板，請重新整理模板");
     const items = parseQuotationItems(tpl.items);
     renderQuotationItems(items.length ? items : [QT_PRESETS.consult], "qt");
     const projectEl = document.getElementById("qt_project_name");
@@ -610,7 +610,7 @@ function applySelectedQuotationTemplate() {
 
 function downloadCurrentQuotationPdf() {
     const id = (document.getElementById("qt_id")?.value || "").trim();
-    if (!id) return alert("請先儲存報價單，再下載 PDF");
+    if (!id) return showAlert("MAGI說", "請先儲存報價單，再下載 PDF");
     window.open(`/api/osc/quotations/${encodeURIComponent(id)}/export-pdf`, "_blank", "noopener");
 }
 
@@ -675,8 +675,8 @@ async function saveQuotation() {
         items: JSON.stringify(collectQuotationItems("qt")),
         extended_data: p.qt_extended_data || "{}",
     };
-    if (!body.client_name || !body.project_name) return alert("請輸入當事人與專案名稱");
-    if (!collectQuotationItems("qt").length) return alert("請至少新增一個服務項目");
+    if (!body.client_name || !body.project_name) return showAlert("MAGI說", "請輸入當事人與專案名稱");
+    if (!collectQuotationItems("qt").length) return showAlert("MAGI說", "請至少新增一個服務項目");
     if ((body.id || "").trim()) await api(`/api/osc/quotations/${encodeURIComponent(body.id)}`, "PUT", body);
     else await api(`/api/osc/quotations`, "POST", body);
     resetQuotationForm();
@@ -685,7 +685,7 @@ async function saveQuotation() {
 }
 
 async function delQuotation(id) {
-    if (!confirm(`確定刪除報價單 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除報價單 ${id}？`)) return;
     await api(`/api/osc/quotations/${encodeURIComponent(id)}`, "DELETE");
     await loadQuotations();
     await loadMeta();
@@ -743,8 +743,8 @@ async function saveQuotationTemplate() {
         items: JSON.stringify(collectQuotationItems("qtTpl")),
         notes: (document.getElementById("qtTplNotes").value || "").trim(),
     };
-    if (!body.name) return alert("請輸入模板名稱");
-    if (!collectQuotationItems("qtTpl").length) return alert("請至少新增一個模板項目");
+    if (!body.name) return showAlert("MAGI說", "請輸入模板名稱");
+    if (!collectQuotationItems("qtTpl").length) return showAlert("MAGI說", "請至少新增一個模板項目");
     if (id) await api(`/api/osc/quotation-templates/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/quotation-templates`, "POST", body);
     resetQuotationTemplateForm();
@@ -753,7 +753,7 @@ async function saveQuotationTemplate() {
 }
 
 async function delQuotationTemplate(id) {
-    if (!confirm(`確定刪除報價模板 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除報價模板 ${id}？`)) return;
     await api(`/api/osc/quotation-templates/${Number(id)}`, "DELETE");
     await loadQuotationTemplates();
     await loadMeta();

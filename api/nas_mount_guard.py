@@ -475,6 +475,32 @@ def _unmount_path(volume_path: str) -> None:
         logger.warning("卸載失敗: %s → %s", volume_path, e)
 
 
+def _netauth_kernel_waiting() -> bool:
+    """Return True when macOS SMB auth is stuck in uninterruptible wait.
+
+    Retrying `mount volume` while NetAuthSysAgent is in U state creates more
+    stuck osascript/mount processes and can make MAGI look unstable.  When this
+    happens the only reliable recovery is to wait for the kernel call to return
+    or reboot at a safe time; the guard should not pile on more mount attempts.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-Ao", "stat,comm,args"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    for line in result.stdout.splitlines():
+        if "NetAuth" not in line and "mount_smbfs" not in line:
+            continue
+        stat = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+        if "U" in stat:
+            return True
+    return False
+
+
 def _cleanup_wrong_host_mounts() -> None:
     """卸載指向未知 IP 的 SMB mount；已知 IP（LAN/Tailscale）的掛載一律保留。"""
     known = _known_nas_hosts()
@@ -544,6 +570,11 @@ def _ensure_nas_mounts_locked() -> dict[str, bool]:
         mounted_path = get_share_mount_path(share_name, volume_path)
         if mounted_path:
             results[short_name] = True
+            continue
+
+        if _netauth_kernel_waiting():
+            logger.warning("macOS SMB 認證層目前卡在 kernel wait；跳過 %s 掛載重試，避免堆疊殭屍程序", share_name)
+            results[short_name] = False
             continue
 
         cooldown = float(os.environ.get("MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC", "600") or 600)

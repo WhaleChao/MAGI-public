@@ -6,8 +6,10 @@
 function _checklistToast(msg, isError) {
     if (typeof showToast === "function") {
         showToast(msg, isError ? "error" : "success");
+    } else if (typeof showAlert === "function") {
+        showAlert("MAGI說", msg);
     } else {
-        alert(msg);
+        console.warn("[MAGI checklist]", msg);
     }
 }
 
@@ -73,8 +75,8 @@ function updateLafChecklistRow(id) {
         .catch(e => _checklistToast("儲存錯誤：" + e.message, true));
 }
 
-function delLafChecklistRow(id, caseNumber) {
-    if (!confirm("確定刪除此補件項目？")) return;
+async function delLafChecklistRow(id, caseNumber) {
+    if (!await showConfirm("MAGI說", "確定刪除此補件項目？")) return;
     fetch(`/api/osc/checklists/legal-aid/${id}`, { method: "DELETE" })
         .then(r => r.json())
         .then(d => {
@@ -84,10 +86,10 @@ function delLafChecklistRow(id, caseNumber) {
         .catch(e => _checklistToast("刪除錯誤：" + e.message, true));
 }
 
-function seedLafChecklist() {
+async function seedLafChecklist() {
     const caseNumber = _checklistCaseNumber("lafChecklistCaseNumber");
     if (!caseNumber) { _checklistToast("請輸入案件編號", true); return; }
-    if (!confirm(`確定要為案件「${caseNumber}」填入法扶預設補件清單？`)) return;
+    if (!await showConfirm("MAGI說", `確定要為案件「${caseNumber}」填入法扶預設補件清單？`)) return;
     fetch("/api/osc/checklists/legal-aid/seed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -181,8 +183,8 @@ function updateCaseChecklistRow(id) {
         .catch(e => _checklistToast("儲存錯誤：" + e.message, true));
 }
 
-function delCaseChecklistRow(id, caseNumber) {
-    if (!confirm("確定刪除（軟刪除）此補正項目？")) return;
+async function delCaseChecklistRow(id, caseNumber) {
+    if (!await showConfirm("MAGI說", "確定刪除（軟刪除）此補正項目？")) return;
     fetch(`/api/osc/checklists/case/${id}`, { method: "DELETE" })
         .then(r => r.json())
         .then(d => {

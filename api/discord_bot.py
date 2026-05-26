@@ -648,7 +648,7 @@ async def bg_scheduler_loop():
                         else:
                             _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
                         _job_id = job.get("id", "?")
-                        _shell_env = {"MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
+                        _shell_env = {"MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
                         try:
                             from api.platforms.safe_process import parse_cron_command, run as _safe_run
                             from skills.ops.cron_result_policy import should_log_cron_issue

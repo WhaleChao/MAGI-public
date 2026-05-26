@@ -63,16 +63,19 @@ cleanup_state() {
 
 # === 每小時任務 ===
 run_hourly() {
-    # DB sync（每小時）
-    log "hourly: db_sync"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 $VENV_PY skills/ops/db_sync.py --task sync >> "$LOG_DIR/db_sync_cron.log" 2>&1 &
+    if [ "${MAGI_ENABLE_DB_BIDIR_SYNC:-0}" = "1" ]; then
+        log "hourly: db_sync"
+        MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 $VENV_PY skills/ops/db_sync.py --task sync >> "$LOG_DIR/db_sync_cron.log" 2>&1 &
+    else
+        log "hourly: db_sync skipped (local-only DB mode)"
+    fi
 }
 
 # === 夜間任務（22:00 觸發）===
 run_nightly_22() {
     if already_ran_today "nightly_22"; then return; fi
     log "nightly_22: autopilot nightly 開始"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 timeout 21600 $VENV_PY skills/magi-autopilot/action.py --task nightly >> "$LOG_DIR/cron_nightly.log" 2>&1
+    MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 timeout 21600 $VENV_PY skills/magi-autopilot/action.py --task nightly >> "$LOG_DIR/cron_nightly.log" 2>&1
     log "nightly_22: autopilot nightly 完成"
     mark_done "nightly_22"
 }
@@ -134,7 +137,7 @@ run_nightly_council() {
 run_morning_ingest() {
     if already_ran_today "morning_ingest"; then return; fi
     log "morning_ingest: 開始"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 \
+    MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 \
     $VENV_PY scripts/ingest_raw_judgments.py >> "$LOG_DIR/cron_judicial_ingest.log" 2>&1
     log "morning_ingest: 完成"
     mark_done "morning_ingest"

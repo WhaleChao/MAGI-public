@@ -813,7 +813,7 @@ def _start_cron_fallback() -> None:
                         else:
                             _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                             if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
+                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
                                 # ===== R2 Phase 3: SafeProcess 正式路徑（legacy 已清除）=====
                                 result_returncode = -1
                                 result_stdout = ""

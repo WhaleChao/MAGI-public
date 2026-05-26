@@ -200,9 +200,22 @@ def _resolve_remote_db_endpoint() -> Tuple[str, int]:
 def _set_db_preference_by_reachability(timeout_sec: float = 1.6) -> Dict[str, Any]:
     """
     Enforce DB preference for this run:
-    - remote reachable -> MAGI_PREFER_LOCAL_DB=0
-    - remote unreachable -> MAGI_PREFER_LOCAL_DB=1
+    - local-only mode (default) -> MAGI_PREFER_LOCAL_DB=1
+    - explicit bidirectional DB sync enabled and remote reachable -> MAGI_PREFER_LOCAL_DB=0
+    - explicit bidirectional DB sync enabled but remote unreachable -> MAGI_PREFER_LOCAL_DB=1
     """
+    db_bidir_enabled = str(os.environ.get("MAGI_ENABLE_DB_BIDIR_SYNC", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if not db_bidir_enabled:
+        os.environ["MAGI_PREFER_LOCAL_DB"] = "1"
+        return {
+            "ok": True,
+            "remote_host": "",
+            "remote_port": 0,
+            "remote_reachable": False,
+            "prefer_local_db": "1",
+            "message": "local-only",
+            "error": "",
+        }
     host, port = _resolve_remote_db_endpoint()
     reachable = False
     err = ""
@@ -3024,8 +3037,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_NO_DELETE", "1")
     # DB safety: block destructive SQL in headless/automation paths.
     os.environ.setdefault("MAGI_DB_NO_DELETE", "1")
-    # DB strategy: prefer Keeper/main DB by default; fallback logic lives in each module.
-    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    # DB strategy: the retired remote DB is opt-in only; ordinary automation uses the local MariaDB.
+    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     # Schema guard: detect accidental re-hardening (chk_nb_*) that can break OSC/GUI flows.
     os.environ.setdefault("MAGI_DB_SCHEMA_GUARD_ENABLE", "1")
     # User asked to pause Apple AI usage; prefer non-Apple PDF text extraction.
@@ -3674,7 +3687,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
 def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_NO_DELETE", "1")
     os.environ.setdefault("MAGI_DB_NO_DELETE", "1")
-    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     os.environ.setdefault("MAGI_PDF_TEXT_ENGINE", "pymupdf")
     os.environ.setdefault("MAGI_DISABLE_APPLE_AI", "1")
     os.environ.setdefault("MAGI_SYSTEM_NOTIFY_CHANNEL", "telegram")
@@ -4500,7 +4513,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             str(max(120, repair_timeout)),
         ]
         repair_env = os.environ.copy()
-        repair_env.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+        repair_env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
         _run_budgeted_step(
             "weekend_insight_repair",
             repair_cmd,

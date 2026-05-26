@@ -419,7 +419,7 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
     env["MAGI_CODE_DIR"] = code_dir
     env["MAGI_ROOT_DIR"] = magi_dir
     env["MAGI_NO_DELETE"] = env.get("MAGI_NO_DELETE", "1") or "1"
-    env["MAGI_PREFER_LOCAL_DB"] = env.get("MAGI_PREFER_LOCAL_DB", "0") or "0"
+    env["MAGI_PREFER_LOCAL_DB"] = env.get("MAGI_PREFER_LOCAL_DB", "1") or "1"
 
     timeout_sec = int(os.environ.get("MAGI_NL_ROUTE_EXEC_TIMEOUT_SEC", "300") or "300")
     async_timeout_sec = int(os.environ.get("MAGI_NL_ROUTE_ASYNC_TIMEOUT_SEC", "2400") or "2400")

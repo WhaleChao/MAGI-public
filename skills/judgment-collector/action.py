@@ -349,8 +349,8 @@ def _get_db_config() -> dict:
     except Exception as _e:
         logging.getLogger("judgment-collector").warning("DB config via osc_headless failed: %s", _e)
 
-    # Prefer local DB when requested (Keeper/主 DB 關機時，避免卡在遠端連線)。
-    prefer_local = _env("MAGI_PREFER_LOCAL_DB", "0").lower() in {"1", "true", "yes", "on"}
+    # Default to local DB; remote/dual-active DB is an explicit opt-in path.
+    prefer_local = _env("MAGI_PREFER_LOCAL_DB", "1").lower() in {"1", "true", "yes", "on"}
 
     # Final fallback: config.json profiles, otherwise empty password.
     c2 = _from_config_json(prefer_local=prefer_local)

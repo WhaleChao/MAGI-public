@@ -41,7 +41,7 @@ async function saveAdminSetting() {
         value: (document.getElementById("adminSettingValue").value || "").trim(),
         description: (document.getElementById("adminSettingDescription").value || "").trim(),
     };
-    if (!body.key) return alert("請輸入 key");
+    if (!body.key) return showAlert("MAGI說", "請輸入 key");
     await api("/api/osc/settings", "POST", body);
     clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]);
     await loadAdminSettings();
@@ -49,7 +49,7 @@ async function saveAdminSetting() {
 }
 
 async function delAdminSetting(key) {
-    if (!confirm(`確定刪除設定 ${key}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除設定 ${key}？`)) return;
     await api(`/api/osc/settings/${encodeURIComponent(key)}`, "DELETE");
     await loadAdminSettings();
     await loadMeta();
@@ -84,7 +84,7 @@ async function saveAdminCaseReason() {
         is_common: (document.getElementById("adminReasonCommon").value || "0").trim(),
     };
     const id = (document.getElementById("adminReasonId").value || "").trim();
-    if (!body.case_type || !body.reason) return alert("請輸入案型與案由");
+    if (!body.case_type || !body.reason) return showAlert("MAGI說", "請輸入案型與案由");
     if (id) await api(`/api/osc/case-reason-templates/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/case-reason-templates`, "POST", body);
     clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]);
@@ -93,7 +93,7 @@ async function saveAdminCaseReason() {
 }
 
 async function delAdminCaseReason(id) {
-    if (!confirm(`確定刪除案由模板 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除案由模板 ${id}？`)) return;
     await api(`/api/osc/case-reason-templates/${Number(id)}`, "DELETE");
     await loadAdminCaseReasons();
     await loadMeta();
@@ -127,7 +127,7 @@ async function saveAdminCourt() {
         address: (document.getElementById("adminCourtAddress").value || "").trim(),
     };
     const id = (document.getElementById("adminCourtId").value || "").trim();
-    if (!body.name || !body.address) return alert("請輸入法院名稱與地址");
+    if (!body.name || !body.address) return showAlert("MAGI說", "請輸入法院名稱與地址");
     if (id) await api(`/api/osc/courts/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/courts`, "POST", body);
     clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]);
@@ -136,7 +136,7 @@ async function saveAdminCourt() {
 }
 
 async function delAdminCourt(id) {
-    if (!confirm(`確定刪除法院 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除法院 ${id}？`)) return;
     await api(`/api/osc/courts/${Number(id)}`, "DELETE");
     await loadAdminCourts();
     await loadMeta();
@@ -168,7 +168,7 @@ async function saveAdminBranch() {
         address: (document.getElementById("adminBranchAddress").value || "").trim(),
     };
     const id = (document.getElementById("adminBranchId").value || "").trim();
-    if (!body.name || !body.address) return alert("請輸入分會名稱與地址");
+    if (!body.name || !body.address) return showAlert("MAGI說", "請輸入分會名稱與地址");
     if (id) await api(`/api/osc/legal-aid-branches/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/legal-aid-branches`, "POST", body);
     clearFields(["adminBranchId", "adminBranchName", "adminBranchAddress"]);
@@ -177,7 +177,7 @@ async function saveAdminBranch() {
 }
 
 async function delAdminBranch(id) {
-    if (!confirm(`確定刪除分會 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除分會 ${id}？`)) return;
     await api(`/api/osc/legal-aid-branches/${Number(id)}`, "DELETE");
     await loadAdminBranches();
     await loadMeta();
@@ -211,7 +211,7 @@ async function saveAdminUserSetting() {
         setting_value: (document.getElementById("adminUserSettingValue").value || "").trim(),
     };
     const id = (document.getElementById("adminUserSettingId").value || "").trim();
-    if (!body.hostname || !body.setting_key) return alert("請輸入 hostname 與 setting_key");
+    if (!body.hostname || !body.setting_key) return showAlert("MAGI說", "請輸入 hostname 與 setting_key");
     if (id) await api(`/api/osc/user-settings/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/user-settings`, "POST", body);
     clearFields(["adminUserSettingId", "adminUserSettingHost", "adminUserSettingKey", "adminUserSettingValue"]);
@@ -220,7 +220,7 @@ async function saveAdminUserSetting() {
 }
 
 async function delAdminUserSetting(id) {
-    if (!confirm(`確定刪除使用者設定 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除使用者設定 ${id}？`)) return;
     await api(`/api/osc/user-settings/${Number(id)}`, "DELETE");
     await loadAdminUserSettings();
     await loadMeta();
@@ -255,7 +255,7 @@ async function saveAdminMemoryKeyword() {
         name: (document.getElementById("adminMemoryName").value || "").trim(),
         value: (document.getElementById("adminMemoryValue").value || "").trim(),
     };
-    if (!body.case_number || !body.hotkey) return alert("請輸入案件編號與 hotkey");
+    if (!body.case_number || !body.hotkey) return showAlert("MAGI說", "請輸入案件編號與 hotkey");
     await api("/api/osc/memory-keywords", "POST", body);
     clearFields(["adminMemoryCaseNumber", "adminMemoryHotkey", "adminMemoryName", "adminMemoryValue"]);
     await loadAdminMemoryKeywords();
@@ -263,7 +263,7 @@ async function saveAdminMemoryKeyword() {
 }
 
 async function delAdminMemoryKeyword(caseNumber, hotkey) {
-    if (!confirm(`確定刪除熱鍵 ${caseNumber}/${hotkey}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除熱鍵 ${caseNumber}/${hotkey}？`)) return;
     await api(`/api/osc/memory-keywords/${encodeURIComponent(caseNumber)}/${encodeURIComponent(hotkey)}`, "DELETE");
     await loadAdminMemoryKeywords();
     await loadMeta();
@@ -300,7 +300,7 @@ async function saveAdminOpponent() {
         is_active: (document.getElementById("adminOpponentActive").value || "1").trim(),
     };
     const id = (document.getElementById("adminOpponentId").value || "").trim();
-    if (!body.case_number || !body.name) return alert("請輸入案件編號與對造姓名");
+    if (!body.case_number || !body.name) return showAlert("MAGI說", "請輸入案件編號與對造姓名");
     if (id) await api(`/api/osc/opponents/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/opponents`, "POST", body);
     clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]);
@@ -309,7 +309,7 @@ async function saveAdminOpponent() {
 }
 
 async function delAdminOpponent(id) {
-    if (!confirm(`確定刪除對造 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除對造 ${id}？`)) return;
     await api(`/api/osc/opponents/${Number(id)}`, "DELETE");
     await loadAdminOpponents();
     await loadMeta();
@@ -329,7 +329,7 @@ async function loadAdminPdfLogs() {
 }
 
 async function delAdminPdfLog(id) {
-    if (!confirm(`確定刪除 PDF log ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除 PDF log ${id}？`)) return;
     await api(`/api/osc/pdf-generation-log/${Number(id)}`, "DELETE");
     await loadAdminPdfLogs();
     await loadMeta();
@@ -349,7 +349,7 @@ async function loadAdminActivityLogs() {
 }
 
 async function delAdminActivityLog(id) {
-    if (!confirm(`確定刪除活動紀錄 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除活動紀錄 ${id}？`)) return;
     await api(`/api/osc/activity-logs/${Number(id)}`, "DELETE");
     await loadAdminActivityLogs();
     await loadMeta();
@@ -458,7 +458,7 @@ async function createOscBackup() {
 
 async function restoreOscBackup(filename, dryRun) {
     if (!dryRun) {
-        if (!confirm(`確定要從 ${filename} 還原資料嗎？\n（已有的紀錄不會被覆蓋，只補缺少的筆數）`)) return;
+        if (!await showConfirm("MAGI說", `確定要從 ${filename} 還原資料嗎？\n（已有的紀錄不會被覆蓋，只補缺少的筆數）`)) return;
     }
     const payload = dryRun ? { dry_run: true } : { confirm: true };
     const res = await api(`/api/osc/backups/${encodeURIComponent(filename)}/restore`, "POST", payload);
@@ -470,7 +470,7 @@ async function restoreOscBackup(filename, dryRun) {
 }
 
 async function delOscBackup(filename) {
-    if (!confirm(`確定刪除備份 ${filename}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除備份 ${filename}？`)) return;
     await api(`/api/osc/backups/${encodeURIComponent(filename)}`, "DELETE");
     showToast("備份已刪除");
     await loadOscBackups();
@@ -555,7 +555,7 @@ async function syncGcal(dryRun) {
 }
 
 async function disconnectGcal() {
-    if (!confirm("確定解除 Google Calendar 授權？將刪除本機 token。")) return;
+    if (!await showConfirm("MAGI說", "確定解除 Google Calendar 授權？將刪除本機 token。")) return;
     const statusEl = document.getElementById("gcalStatus");
     try {
         await api("/api/osc/gcal/disconnect", "POST", {});

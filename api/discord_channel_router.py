@@ -617,8 +617,6 @@ async def auto_setup_channels(guild, category_name: str = "📋 MAGI 通知") ->
 
     Returns: { sub_topic: channel_id_str, ... }
     """
-    import discord  # noqa
-
     # 建立「全 guild」頻道名稱索引，避免跨 category 重複建立
     all_text_channels = {ch.name: ch for ch in guild.text_channels}
 

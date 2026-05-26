@@ -249,7 +249,7 @@ async function saveCalendarEvent() {
         description: p.cal_description,
         raw_data: p.cal_raw_data,
     };
-    if (!body.title || !body.start_date || !body.end_date) return alert("請輸入標題、開始與結束時間");
+    if (!body.title || !body.start_date || !body.end_date) return showAlert("MAGI說", "請輸入標題、開始與結束時間");
     if ((p.cal_id || "").trim()) await api(`/api/osc/calendar/events/${Number(p.cal_id)}`, "PUT", body);
     else await api(`/api/osc/calendar/events`, "POST", body);
     clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]);
@@ -258,7 +258,7 @@ async function saveCalendarEvent() {
 }
 
 async function delCalendarEvent(id) {
-    if (!confirm(`確定刪除行事曆事件 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除行事曆事件 ${id}？`)) return;
     await api(`/api/osc/calendar/events/${Number(id)}`, "DELETE");
     await loadCalendarEvents();
     await loadMeta();

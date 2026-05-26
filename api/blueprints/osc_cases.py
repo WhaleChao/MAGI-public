@@ -1824,6 +1824,86 @@ def _osc_find_closed_case_folder(case_number: str, *, folder_name: str = "") -> 
     return unique[0] if len(unique) == 1 else ""
 
 
+def _osc_find_active_case_folder(case_number: str, *, folder_name: str = "") -> str:
+    """Find an active 01_案件 folder without changing DB state.
+
+    Closed cases can spend hours in a physical move window when the folder is
+    large.  During that window the canonical DB path should remain under the
+    closed archive (Y:) while the web file browser may temporarily read from the
+    old active folder.  This helper is deliberately read-only.
+    """
+    case_number = str(case_number or "").strip()
+    folder_name = str(folder_name or "").strip()
+    if not case_number and not folder_name:
+        return ""
+    exact: list[str] = []
+    case_id_matches: list[str] = []
+    seen_roots: set[str] = set()
+    for root in _get_preferred_case_roots(include_closed=False):
+        root = str(root or "").rstrip("/")
+        if not root or root in seen_roots:
+            continue
+        seen_roots.add(root)
+        for case_dir in _osc_iter_case_dirs_at_depth(root) or []:
+            name = os.path.basename(case_dir.rstrip("/"))
+            if folder_name and name == folder_name:
+                exact.append(case_dir)
+            elif case_number and (name == case_number or name.startswith(f"{case_number}-")):
+                case_id_matches.append(case_dir)
+    if exact:
+        return exact[0]
+    unique = _osc_unique_strings(case_id_matches)
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _osc_active_case_folder_from_closed_path(closed_path: str) -> str:
+    norm = _osc_norm_path(closed_path).replace("\\", "/")
+    marker = "/03_工作資料/10_結案/"
+    if marker not in norm:
+        return ""
+    rel = norm.split(marker, 1)[1].lstrip("/")
+    account = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    candidates = [
+        Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件" / rel,
+        Path.home() / "Library/CloudStorage/SynologyDrive-homes" / account / "01_案件" / rel,
+        Path.home() / "SynologyDrive/homes/01_案件" / rel,
+        Path.home() / "SynologyDrive/homes" / account / "01_案件" / rel,
+        Path.home() / "SynologyDrive/01_案件" / rel,
+        Path("/Volumes/homes") / account / "01_案件" / rel,
+    ]
+    for candidate in candidates:
+        raw = str(candidate)
+        if _osc_dir_listable_quick(raw):
+            return raw
+    return ""
+
+
+def _osc_dir_listable_quick(path: str, timeout: float = 1.5) -> bool:
+    """Return True only when a directory can be listed without SMB/FileProvider hang."""
+    path = str(path or "").strip()
+    if not path:
+        return False
+    result = {"ok": False}
+
+    def _run() -> None:
+        try:
+            with os.scandir(path) as entries:
+                for _ in entries:
+                    break
+            result["ok"] = True
+        except Exception:
+            result["ok"] = False
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    return bool(result["ok"]) if not thread.is_alive() else False
+
+
 def _osc_expected_case_folder_name(row: dict) -> str:
     try:
         from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import build_case_folder_name
@@ -1991,20 +2071,26 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
     local = _osc_resolve_existing_local_path(norm, prefer_dir=True) if norm else ""
     is_closed = _osc_should_archive_case_row(row)
     if local and (not is_closed or "10_結案" in norm.replace("\\", "/")):
-        reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
-        if reconciled.get("changed"):
-            return {
-                "folder_path": reconciled.get("folder_path") or norm,
-                "local_folder": reconciled.get("local_folder") or local,
-                "source": reconciled.get("source") or "metadata_reconciled",
-                "updated": bool(reconciled.get("updated")),
-                "path_references": reconciled.get("path_references") or {},
-            }
-        return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+        if is_closed and not _osc_dir_listable_quick(local):
+            local = ""
+        else:
+            reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
+            if reconciled.get("changed"):
+                return {
+                    "folder_path": reconciled.get("folder_path") or norm,
+                    "local_folder": reconciled.get("local_folder") or local,
+                    "source": reconciled.get("source") or "metadata_reconciled",
+                    "updated": bool(reconciled.get("updated")),
+                    "path_references": reconciled.get("path_references") or {},
+                }
+            return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
 
     if is_closed:
         folder_name = os.path.basename(norm.replace("\\", "/").rstrip("/")) if norm else ""
         closed_local = _osc_find_closed_case_folder(row.get("case_number") or "", folder_name=folder_name)
+        if closed_local:
+            if not _osc_dir_listable_quick(closed_local):
+                closed_local = ""
         if closed_local:
             translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
             canonical = translate_local_path_to_canonical(closed_local) or closed_local
@@ -2016,6 +2102,24 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
                 except Exception:
                     _log.debug("silent-catch closed case folder path db update", exc_info=True)
             return {"folder_path": _osc_norm_path(canonical), "local_folder": closed_local, "source": "closed_archive", "updated": updated}
+
+        active_local = _osc_active_case_folder_from_closed_path(norm) or _osc_find_active_case_folder(row.get("case_number") or "", folder_name=folder_name)
+        if active_local:
+            return {
+                "folder_path": norm,
+                "local_folder": active_local,
+                "source": "archive_pending_active_fallback",
+                "updated": False,
+                "pending_archive": True,
+            }
+
+        return {
+            "folder_path": norm,
+            "local_folder": "",
+            "source": "closed_archive_missing",
+            "updated": False,
+            "pending_archive": True,
+        }
 
     if local:
         reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)

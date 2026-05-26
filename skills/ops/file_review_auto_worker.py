@@ -280,7 +280,7 @@ def _run_cycle() -> Dict[str, Any]:
     env.setdefault("MAGI_CODE_DIR", CODE_DIR)
     env.setdefault("MAGI_ROOT_DIR", _MAGI_ROOT)
     env.setdefault("MAGI_NO_DELETE", "1")
-    env.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     env.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")
     env.setdefault("MAGI_CAPTCHA_DOUBLE_CHECK", "1")
     env.setdefault("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "1")

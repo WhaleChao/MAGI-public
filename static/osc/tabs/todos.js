@@ -199,7 +199,7 @@ async function editTodo(id, targetPrefix = "todo_") {
 }
 
 async function delTodo(id) {
-    if (!confirm(`確定刪除待辦 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除待辦 ${id}？`)) return;
     await api(`/api/osc/todos/${id}`, "DELETE");
     await loadTodos();
     await loadMeta();
