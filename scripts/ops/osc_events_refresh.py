@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LATEST_PATH = ROOT / ".runtime" / "osc_events_refresh_latest.json"
 PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
-PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-27-compact-date-dateonly-hearing")
+PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-27-original-osc-rules")
 
 
 class _PdfScanTimeout(TimeoutError):
@@ -97,6 +97,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     if outer_budget:
         budget_sec = min(budget_sec, outer_budget)
     no_todo_cache_days = max(0, int(os.environ.get("OSC_PDF_CALENDAR_NO_TODO_CACHE_DAYS", "14") or "14"))
+    if bool(getattr(args, "force_rebuild", False)):
+        no_todo_cache_days = 0
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
     timeout_count = 0
@@ -161,6 +163,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     env_case_offset = os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_OFFSET")
     if env_case_offset is not None and str(env_case_offset).strip() != "":
         case_offset = max(0, int(env_case_offset or "0"))
+    elif bool(getattr(args, "force_rebuild", False)):
+        case_offset = 0
     else:
         case_offset = max(0, int(scan_cursor.get("case_offset") or 0))
     if total_case_rows and case_offset >= total_case_rows:

@@ -671,13 +671,30 @@ def seed_default_todo_keywords(conn: mysql.connector.MySQLConnection) -> int:
         ("補正", rf"請於文到{duration}內補正", "relative", None),
         ("補正", rf"文到{duration}內.*?補正", "relative", None),
         ("補正", rf"{duration}內補正", "relative", None),
+        ("補正", "補陳", "relative", None),
+        ("補正", "補提", "relative", None),
         ("陳述意見", rf"文到{duration}內陳述意見", "relative", None),
         ("陳述意見", rf"{duration}內陳述意見", "relative", None),
         ("陳報", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "relative", None),
+        ("陳報", "回復", "relative", None),
         ("提出資料", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "relative", None),
-        ("開庭", rf"(\d{{1,2}})月(\d{{1,2}})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|言詞辯論|調解|審理|宣判)", "absolute_time", None),
+        ("開庭", rf"(\d{{1,2}})月(\d{{1,2}})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|協商程序|言詞辯論|調解|審理|宣判|訊問|調查|辯論|閱卷)", "absolute_time", None),
         ("繳費", rf"文到{duration}內繳納", "relative", None),
         ("閱卷", rf"文到{duration}內.*?閱卷", "relative", None),
+        ("答辯", "答辯", "relative", None),
+        ("聲請", "聲請", "relative", None),
+        ("異議", "異議", "relative", None),
+        ("上訴", "判決", "fixed", 20),
+        ("抗告", "羈押裁定", "fixed", 10),
+        ("抗告", "民事裁定", "fixed", 10),
+        ("抗告", "刑事裁定", "fixed", 10),
+        ("抗告", "家事裁定", "fixed", 10),
+        ("抗告", "裁定", "fixed", 10),
+        ("再議", "不起訴處分書", "fixed", 10),
+        ("異議", "支付命令", "fixed", 20),
+        ("異議", "司消債更字", "fixed", 10),
+        ("異議", "司消債清字", "fixed", 10),
+        ("異議", "司消債調字", "fixed", 10),
     ]
 
     cur = conn.cursor()
@@ -779,6 +796,46 @@ def insert_case_todos(
                             WHERE `id`=%s
                             """,
                             (client_name or old_client or "", desc, same_id),
+                        )
+                        updated += int(getattr(cur, "rowcount", 0) or 0)
+                    else:
+                        skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    SELECT `id`, `description`, `client_name`, `status` FROM `case_todos`
+                    WHERE `case_number`=%s
+                      AND `todo_type`=%s
+                      AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
+                      AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
+                      AND (status IS NULL OR status='' OR status!='deleted')
+                      AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
+                    LIMIT 1
+                    """,
+                    (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
+                )
+                same_event = cur.fetchone()
+                if same_event:
+                    old_status = same_event[3] if isinstance(same_event, tuple) and len(same_event) > 3 else ""
+                    if str(old_status or "").strip().lower() in {"completed", "done", "已完成"}:
+                        skipped += 1
+                        continue
+                    same_id = same_event[0] if isinstance(same_event, tuple) else same_event
+                    old_desc = same_event[1] if isinstance(same_event, tuple) and len(same_event) > 1 else ""
+                    old_client = same_event[2] if isinstance(same_event, tuple) and len(same_event) > 2 else ""
+                    should_refresh_share = _should_refresh_share_description(str(old_desc or ""), desc)
+                    should_refresh_client = bool(client_name) and not str(old_client or "").strip()
+                    if same_id and (should_refresh_share or should_refresh_client):
+                        cur.execute(
+                            """
+                            UPDATE `case_todos`
+                            SET `client_name`=%s,
+                                `description`=%s,
+                                `status`='pending'
+                            WHERE `id`=%s
+                            """,
+                            (client_name or old_client or "", desc or old_desc or "", same_id),
                         )
                         updated += int(getattr(cur, "rowcount", 0) or 0)
                     else:

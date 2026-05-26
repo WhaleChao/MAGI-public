@@ -122,8 +122,13 @@ class _DummyCursor:
 class _DummyConn:
     repair_rows = []
 
+    def __init__(self):
+        self.cursors = []
+
     def cursor(self, dictionary=False):
-        return _DummyCursor(self.repair_rows)
+        cur = _DummyCursor(self.repair_rows)
+        self.cursors.append(cur)
+        return cur
 
     def commit(self):
         return None
@@ -201,9 +206,10 @@ class _DuplicateCleanupConn:
 def _patch_db_helpers(monkeypatch, todo_rows, set_calls, repair_rows=None):
     import osc_headless.db as dbmod  # type: ignore
 
-    _DummyConn.repair_rows = list(repair_rows or [])
+    conn = _DummyConn()
+    conn.repair_rows = list(repair_rows or [])
     monkeypatch.setattr(dbmod, "db_config_from_env", lambda prefix="OSC_DB_": {"host": "127.0.0.1"})
-    monkeypatch.setattr(dbmod, "connect_mysql", lambda cfg: _DummyConn())
+    monkeypatch.setattr(dbmod, "connect_mysql", lambda cfg: conn)
     monkeypatch.setattr(dbmod, "ensure_osc_min_schema", lambda conn: None)
     monkeypatch.setattr(dbmod, "ensure_cases_schema", lambda conn: None)
     monkeypatch.setattr(dbmod, "list_unsynced_todos_with_case_info", lambda conn, limit=50: list(todo_rows))
@@ -212,6 +218,7 @@ def _patch_db_helpers(monkeypatch, todo_rows, set_calls, repair_rows=None):
         "set_todo_google_calendar_id",
         lambda conn, todo_id, google_calendar_id: set_calls.append((todo_id, google_calendar_id)) or {"updated": 1},
     )
+    return conn
 
 
 def test_todo_to_gcal_event_embeds_dedup_metadata():
@@ -414,6 +421,36 @@ def test_gcal_sync_repairs_existing_calendar_event_by_patching(monkeypatch):
     assert out.get("patched") == 1
     assert out.get("inserted") == 0
     assert fake_service.events_api.patch_calls[0]["eventId"] == "existing-google-id"
+
+
+def test_gcal_sync_repair_query_includes_calendar_deduped_rows(monkeypatch):
+    mod = _load_action_module()
+    monkeypatch.setenv("MAGI_GCAL_DEDUP_ENABLED", "1")
+    monkeypatch.setenv("MAGI_GCAL_DEDUP_DRY_RUN", "1")
+
+    fake_service = _FakeService(existing_event_id="")
+    monkeypatch.setattr(mod, "_build_google_calendar_service", lambda *a, **k: {"ok": True, "service": fake_service})
+
+    repair_row = {
+        "id": 33,
+        "case_number": "2026-0038",
+        "client_name": "陳建華",
+        "todo_type": "開庭",
+        "todo_date": "2026-05-27",
+        "todo_time": "10:40:00",
+        "description": "陳建華開庭",
+        "source_file": "notice.pdf",
+        "google_calendar_id": "deduped-but-needs-repair",
+        "court_case_number": "",
+        "court_name": "臺灣臺東地方檢察署",
+    }
+    conn = _patch_db_helpers(monkeypatch, todo_rows=[], set_calls=[], repair_rows=[repair_row])
+
+    out = mod.task_gcal_sync({"limit": 10, "calendar_id": "primary", "time_zone": "Asia/Taipei", "repair_existing": True})
+
+    sql = "\n".join(sql for cur in conn.cursors for sql, _ in cur.executed)
+    assert "calendar_deduped" in sql
+    assert out.get("ok") is True
 
 
 def test_gcal_sync_skips_implausible_far_future_todo(monkeypatch):

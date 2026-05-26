@@ -602,25 +602,29 @@ def _insert_todo(item: dict[str, Any], *, case_number: str, client_name: str, so
     if not allow_duplicates:
         existing, _ = _osc_exec(
             """
-            SELECT id, description, client_name FROM case_todos
+            SELECT id, description, client_name, status FROM case_todos
             WHERE case_number=%s
               AND todo_type=%s
               AND ((todo_date=%s) OR (%s IS NULL AND todo_date IS NULL))
               AND ((todo_time=%s) OR (%s IS NULL AND todo_time IS NULL))
-              AND source_file=%s
+              AND (status IS NULL OR status='' OR status!='deleted')
+              AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
             LIMIT 1
             """,
-            (case_number, todo_type, todo_date, todo_date, todo_time, todo_time, source_file),
+            (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
             fetch="one",
         )
         if existing:
             existing_desc = str((existing or {}).get("description") or "").strip()
             existing_client = str((existing or {}).get("client_name") or "").strip()
+            existing_status = str((existing or {}).get("status") or "").strip().lower()
             row_id = int((existing or {}).get("id") or 0)
+            if existing_status in {"completed", "done", "已完成"}:
+                return "skipped"
             if row_id and (desc and desc != existing_desc or client_name and client_name != existing_client):
                 _osc_exec(
-                    "UPDATE case_todos SET client_name=%s, description=%s WHERE id=%s",
-                    (client_name, desc, row_id),
+                    "UPDATE case_todos SET client_name=%s, description=%s, status='pending', source_file=%s WHERE id=%s",
+                    (client_name, desc, source_file, row_id),
                     fetch="none",
                 )
                 return "updated"

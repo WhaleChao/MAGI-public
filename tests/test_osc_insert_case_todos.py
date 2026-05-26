@@ -41,6 +41,8 @@ class _FakeCursor:
                     self._fetchone = (88, "陳建華案開庭@台東地檢", "陳建華", "gcal_import:whalelawyer@gmail.com")
             elif self.mode == "cross_source_non_gcal_hearing":
                 self._fetchone = (89, "⚖️ 5月27日 早上10時40分 開庭", "陳建華", "other_notice.pdf")
+            elif self.mode == "same_event_other_pdf":
+                self._fetchone = (90, "📝 10日內補正 (05/01文到)", "王大明", "pending")
             else:
                 self._fetchone = None
         elif "AND `todo_type`=%s AND `source_file`=%s" in normalized:
@@ -139,6 +141,27 @@ def test_insert_case_todos_updates_stale_pending_same_source_type():
 
     assert result == {"inserted": 0, "skipped": 0, "updated": 1}
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_skips_same_event_from_different_pdf_source():
+    conn = _FakeConn("same_event_other_pdf")
+    result = insert_case_todos(
+        conn,
+        case_number="2026-0001",
+        client_name="王大明",
+        todos=[
+            {
+                "type": "補正",
+                "date": "2026-05-11",
+                "time": "",
+                "description": "📝 10日內補正 (05/01文到)",
+            }
+        ],
+        source_file="another_notice.pdf",
+    )
+
+    assert result == {"inserted": 0, "skipped": 1, "updated": 0}
+    assert not any("INSERT INTO `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
 
 
 def test_insert_case_todos_does_not_let_imported_calendar_block_pdf_todo():

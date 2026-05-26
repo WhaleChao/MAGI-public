@@ -49,6 +49,25 @@ def test_補正_文到後期限仍建立待辦():
     assert todos[0]["time"] == ""
 
 
+def test_原版osc簡單關鍵字搭配文到期限仍建立待辦():
+    todos = extract_todos_from_filename(
+        "20260501 函（王大明；請於文到10日內補提資料）.pdf",
+        patterns={"補正": [{"pattern": "補提", "pattern_type": "relative", "days": None}]},
+    )
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-05-11"
+    assert todos[0]["time"] == ""
+
+
+def test_原版osc文到十日沒有內字也建立待辦():
+    todos = _extract("20260501 函（王大明；請於文到10日補正）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-05-11"
+    assert todos[0]["time"] == ""
+
+
 def test_週內期限轉為全天待辦():
     todos = _extract("20260225 花蓮地方法院114年度訴字第83號函（主旨：請於文到2週內陳報有無調解意願到院）.pdf")
     assert len(todos) == 1
@@ -149,6 +168,14 @@ def test_開庭民國年期日可從尾段辨識調解程序():
     assert todos[0]["time"] == "16:00"
 
 
+def test_開庭民國年期日可辨識協商程序():
+    todos = _extract("20260520 花蓮地方法院通知書（王大明；訂115年6月2日上午9時協商程序）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "協商程序"
+    assert todos[0]["date"] == "2026-06-02"
+    assert todos[0]["time"] == "09:00"
+
+
 def test_開庭無年份期日使用收文年份而非案號年度():
     todos = _extract("20250211 花蓮地院113年度原易字第179號刑事庭通知書（余秋菊；訂3月4日下午3時整審理）.pdf")
     assert len(todos) == 1
@@ -185,6 +212,44 @@ def test_多日共用同一時間都要建立():
         ("調解", "2025-12-17", "09:30"),
         ("調解", "2025-12-18", "09:30"),
     ]
+
+
+def test_原版osc固定判決規則只在判決書資料夾產生上訴期限():
+    todos = extract_todos_from_filename(
+        "20260501 花蓮地方法院判決（王大明）.pdf",
+        "/tmp/case/10_判決書/20260501 花蓮地方法院判決（王大明）.pdf",
+    )
+    assert [(t["type"], t["date"], t["time"]) for t in todos] == [("上訴", "2026-05-21", "")]
+
+
+def test_原版osc固定裁定規則非判決書資料夾不產生抗告期限():
+    todos = extract_todos_from_filename(
+        "20260501 花蓮地方法院裁定（王大明）.pdf",
+        "/tmp/case/09_法院通知或程序裁定/20260501 花蓮地方法院裁定（王大明）.pdf",
+    )
+    assert todos == []
+
+
+def test_原版osc固定消債字號需搭配裁定才產生異議期限():
+    todos = extract_todos_from_filename(
+        "20260501 花蓮地方法院115年度司消債更字第1號裁定（王大明）.pdf",
+        "/tmp/case/10_判決書/20260501 花蓮地方法院115年度司消債更字第1號裁定（王大明）.pdf",
+    )
+    assert [(t["type"], t["date"], t["time"]) for t in todos] == [("異議", "2026-05-11", "")]
+
+    no_ruling = extract_todos_from_filename(
+        "20260501 花蓮地方法院115年度司消債更字第1號通知（王大明）.pdf",
+        "/tmp/case/10_判決書/20260501 花蓮地方法院115年度司消債更字第1號通知（王大明）.pdf",
+    )
+    assert no_ruling == []
+
+
+def test_原版osc不得抗告排除固定裁定期限():
+    todos = extract_todos_from_filename(
+        "20260501 花蓮地方法院裁定（王大明；不得抗告）.pdf",
+        "/tmp/case/10_判決書/20260501 花蓮地方法院裁定（王大明；不得抗告）.pdf",
+    )
+    assert todos == []
 
 
 # ── deadline_type field ──

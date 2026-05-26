@@ -330,6 +330,7 @@ def _synthesize_overview(
     # Use direct oMLX call (bypasses gateway's hardcoded max_tokens=2048).
     max_tokens = int(os.environ.get("MAGI_WIKI_MAX_TOKENS", "500"))
     timeout_sec = int(os.environ.get("MAGI_WIKI_LLM_TIMEOUT", "90"))
+    gateway_timeout_sec = int(os.environ.get("MAGI_WIKI_GATEWAY_TIMEOUT", "30"))
 
     resp = _omlx_chat_direct(prompt, timeout=timeout_sec, max_tokens=max_tokens)
     if resp and len(resp) >= 100:
@@ -343,7 +344,7 @@ def _synthesize_overview(
     if resp is not None:
         logger.warning("LLM response too short for %s (%d chars)", case_number, len(resp))
     try:
-        result = gw.chat(prompt, task_type="general", timeout=30)
+        result = gw.chat(prompt, task_type="general", timeout=gateway_timeout_sec)
         if result.get("success"):
             gw_resp = result.get("response", "").strip()
             if gw_resp and len(gw_resp) >= 100:
@@ -558,6 +559,35 @@ def _ingest_wiki_to_vectors(
         return {"success": False, "error": str(e)}
 
 
+def _update_obsidian_index_for_wiki(vault: Path, wiki_path: Path, vr: Dict) -> None:
+    """Keep knowledge_lint's Obsidian index in sync with synthesized wiki pages."""
+    try:
+        rel = str(wiki_path.relative_to(vault))
+        content = wiki_path.read_text(encoding="utf-8", errors="replace")
+        st = wiki_path.stat()
+        idx: Dict
+        if INDEX_PATH.exists():
+            idx = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            if not isinstance(idx, dict):
+                idx = {"notes": {}, "updated_at": ""}
+        else:
+            idx = {"notes": {}, "updated_at": ""}
+        notes = idx.setdefault("notes", {})
+        notes[rel] = {
+            "hash": hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16],
+            "mtime": int(st.st_mtime),
+            "doc_key": str(vr.get("doc_key") or ""),
+            "chunks": int(vr.get("chunks_written") or 0) if vr.get("success") else 0,
+            "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        idx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        tmp = INDEX_PATH.with_suffix(f"{INDEX_PATH.suffix}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(INDEX_PATH)
+    except Exception as e:
+        logger.warning("Obsidian index update failed for wiki page %s: %s", wiki_path, e)
+
+
 # ── Main synthesis loop ─────────────────────────────────────────────
 
 def synthesize(
@@ -630,8 +660,11 @@ def synthesize(
         if not quiet:
             print(f"\n[{i}/{len(cases_to_update)}] {case_number} ({client_name}) — {len(notes)} 份筆記")
 
-        # Synthesize overview (LLM path)
-        overview = _synthesize_overview(case_number, client_name, notes, gw)
+        # Synthesize overview (LLM path).  Commercial release and recovery
+        # jobs can opt into structural-only mode so stale wiki state can be
+        # repaired even when the local LLM sidecar is busy or restarting.
+        structural_only = os.environ.get("MAGI_WIKI_STRUCTURAL_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
+        overview = None if structural_only else _synthesize_overview(case_number, client_name, notes, gw)
 
         # Structural fallback: always produce a wiki page even if LLM fails
         used_fallback = False
@@ -639,7 +672,9 @@ def synthesize(
             overview = _structural_overview(case_number, client_name, notes)
             used_fallback = True
             if not quiet:
-                if len(notes) <= 1:
+                if structural_only:
+                    print("  📋 結構式總覽（MAGI_WIKI_STRUCTURAL_ONLY）")
+                elif len(notes) <= 1:
                     print("  📋 單一來源，使用結構式總覽")
                 else:
                     print("  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
@@ -653,9 +688,11 @@ def synthesize(
         # Ingest to vectors (skip if --no-ingest; Phase 4 ingest handles it separately)
         if skip_ingest:
             chunks = 0
+            vr = {"success": False, "chunks_written": 0}
         else:
             vr = _ingest_wiki_to_vectors(vault, case_number, client_name, overview, "overview")
             chunks = vr.get("chunks_written", 0) if vr.get("success") else 0
+            _update_obsidian_index_for_wiki(vault, wiki_path, vr)
             if not quiet:
                 print(f"  📊 向量化 {chunks} chunks")
 

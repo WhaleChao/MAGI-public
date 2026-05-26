@@ -115,6 +115,9 @@ SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE = int(
 SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL = os.environ.get(
     "MAGI_DISK_SYNOLOGY_EMPTY_CASE_INCLUDE_LOCAL", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
 NAS_RECYCLE_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_NAS_RECYCLE_ENABLE", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
@@ -1281,6 +1284,8 @@ def _closed_archive_roots_for_shell_cleanup() -> List[Path]:
 
 
 def _closed_case_numbers_from_archive_roots() -> set[str]:
+    if not SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE:
+        return set()
     out: set[str] = set()
     for root in _closed_archive_roots_for_shell_cleanup():
         if not root.is_dir():
@@ -1705,6 +1710,9 @@ def cleanup_duplicate_payment_slips(dry_run: bool) -> List[Dict[str, Any]]:
 # ---- NAS recycle cleanup -----------------------------------------------
 
 _NAS_RECYCLE_NAMES = frozenset({"#recycle", "$RECYCLE.BIN", ".Trash", ".Trashes"})
+NAS_RECYCLE_INCLUDE_DOLLAR_BIN = os.environ.get(
+    "MAGI_DISK_NAS_RECYCLE_INCLUDE_DOLLAR_BIN", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
 
 
 def _default_nas_recycle_roots() -> List[Path]:
@@ -1742,6 +1750,12 @@ def _nas_recycle_roots() -> List[Path]:
         if not root.exists():
             continue
         if root.name not in _NAS_RECYCLE_NAMES:
+            continue
+        if root.name == "$RECYCLE.BIN" and not NAS_RECYCLE_INCLUDE_DOLLAR_BIN:
+            # Windows recycle bins on SMB/NAS can contain massive SID trees and
+            # block os.scandir long enough for the whole healthcheck to be
+            # SIGTERM'd.  Keep daily cleanup bounded; enable explicitly for a
+            # supervised maintenance window.
             continue
         if not NAS_RECYCLE_ALLOW_NON_VOLUME and not str(root).startswith("/Volumes/"):
             continue

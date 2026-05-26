@@ -2204,7 +2204,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                       AND ct.todo_date IS NOT NULL
                       AND ct.todo_date >= CURDATE()
                       AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
-                      AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+                      AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
                       AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
                     ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                     LIMIT %s
