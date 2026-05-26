@@ -196,6 +196,56 @@ def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, t
     assert result["scan"]["inserted"] == 1
 
 
+def test_refresh_marks_transcript_timeout_as_warning(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+
+    class FakeOscAction:
+        pass
+
+    class FakeTranscriptTodo:
+        @staticmethod
+        def _iter_pdf_targets(raw_path, *, limit):
+            raise osc_events_refresh._PdfScanTimeout("transcript_todo_timeout:1s")
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(osc_events_refresh, "_load_transcript_todo_module", lambda: FakeTranscriptTodo)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: {"ok": True, "scanned": 0, "write_result": {"inserted": 0, "updated": 0, "skipped": 0}},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=True,
+        legacy_scan=False,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=30,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=False,
+        skip_calendar_audit=False,
+        json_out=str(out),
+        dry_run=True,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert "transcript_todo_timeout" in result["warnings"]
+    assert result["transcript_todos"]["ok"] is False
+    assert result["transcript_todos"]["skipped"] is True
+
+
 def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
     from api.blueprints import osc_pdf
 

@@ -189,6 +189,31 @@ _check_port_with_label() {
     fi
 }
 
+_omlx_active_profile() {
+    local profile_file="${HOME}/.omlx/active_profile"
+    if [ -f "$profile_file" ]; then
+        tr -d '\r\n' < "$profile_file" 2>/dev/null || true
+    fi
+}
+
+_check_omlx_day_sidecar() {
+    local name="$1" port="$2" label="$3" profile="$4"
+    local pid
+    pid=$(lsof -ti:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    case "$profile" in
+        night*)
+            if [ -n "$pid" ]; then
+                printf "  ${YELLOW}▲${NC} %-18s port %-5s PID %-6s ${YELLOW}UNEXPECTED_NIGHT${NC}\n" "$name" "$port" "$pid"
+            else
+                printf "  ${GREEN}●${NC} %-18s port %-5s ${GREEN}SLEEP (night profile)${NC}\n" "$name" "$port"
+            fi
+            ;;
+        *)
+            _check_port_with_label "$name" "$port" "$label"
+            ;;
+    esac
+}
+
 _estimate_magi_memory_gb() {
     # 估算 MAGI 核心 + oMLX 服務 RSS（GB）
     local pid_list
@@ -259,10 +284,12 @@ cmd_status() {
     _check_port "Website Admin"     8088
     echo ""
     echo "oMLX Inference:"
+    local omlx_profile
+    omlx_profile=$(_omlx_active_profile)
     _check_port_with_label "Text (Gemma-4)" 8080 "com.magi.omlx"
     _check_port_with_label "Embed (BERT)"   8081 "com.magi.omlx-embed"
-    _check_port_with_label "Logic (Phi-4)"  8082 "com.magi.omlx-phi4"
-    _check_port_with_label "Cross (SmolLM3)" 8083 "com.magi.omlx-smol"
+    _check_omlx_day_sidecar "Logic (Phi-4)"  8082 "com.magi.omlx-phi4" "$omlx_profile"
+    _check_omlx_day_sidecar "Cross (SmolLM3)" 8083 "com.magi.omlx-smol" "$omlx_profile"
     echo ""
 
     echo ""

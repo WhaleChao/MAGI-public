@@ -66,6 +66,42 @@ def _load_headless_todo_helpers():
     return extract_todos_from_filename, get_default_patterns
 
 
+def _load_headless_date_helpers():
+    skill_dir = _repo_root() / "skills" / "osc-orchestrator"
+    if str(skill_dir) not in sys.path:
+        sys.path.insert(0, str(skill_dir))
+    from osc_headless.todos import extract_base_year_from_filename, extract_document_date_from_filename  # type: ignore
+    return extract_document_date_from_filename, extract_base_year_from_filename
+
+
+def _open_case_status_sql(column: str = "status") -> str:
+    col = column if re.fullmatch(r"[A-Za-z0-9_`.]+", column or "") else "status"
+    return f"""
+        (
+          {col} IS NULL OR {col}=''
+          OR (
+            LOWER({col}) NOT IN ('closed', 'done')
+            AND {col} NOT IN ('已結案', '結案')
+            AND {col} NOT LIKE '%已結案%'
+            AND {col} NOT LIKE '%結案中%'
+            AND {col} NOT LIKE '%待報結%'
+            AND {col} NOT LIKE '%待送出%'
+          )
+        )
+    """
+
+
+def _pdf_text_date_context(path: Path) -> tuple[datetime, int]:
+    extract_doc_date, extract_base_year = _load_headless_date_helpers()
+    doc_date = extract_doc_date(path.name, str(path))
+    if not doc_date:
+        try:
+            doc_date = datetime.fromtimestamp(path.stat().st_mtime)
+        except Exception:
+            doc_date = datetime.now()
+    return doc_date, int(extract_base_year(path.name, str(path), doc_date))
+
+
 def _pdf_text(path: Path, max_pages: int = 5) -> str:
     doc = fitz.open(path)
     parts: list[str] = []
@@ -265,6 +301,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     body = re.sub(r"\s+", "", text or "")
     if not body:
         return items
+    filename_doc_date, filename_base_year = _pdf_text_date_context(path)
 
     hearing_patterns = [
         r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
@@ -276,9 +313,11 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 dt = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
                 period, hour, minute, proc = m.group(4), m.group(5), m.group(6), m.group(7)
             elif len(m.groups()) == 6:
-                # Yearless hearing: use document/mtime year.
-                base = datetime.fromtimestamp(path.stat().st_mtime)
-                dt = datetime(base.year, int(m.group(1)), int(m.group(2)))
+                # Yearless hearing: mirror original OSC base-year logic.
+                base = filename_doc_date
+                dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
+                if dt.date() < base.date() - timedelta(days=30):
+                    dt = dt.replace(year=dt.year + 1)
                 period, hour, minute, proc = m.group(3), m.group(4), m.group(5), m.group(6)
             else:
                 continue
@@ -308,9 +347,9 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 dt = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
                 proc = m.group(4)
             elif len(m.groups()) == 3:
-                base = datetime.fromtimestamp(path.stat().st_mtime)
+                base = filename_doc_date
                 try:
-                    dt = datetime(base.year, int(m.group(1)), int(m.group(2)))
+                    dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
                     if dt.date() < base.date() - timedelta(days=30):
                         dt = dt.replace(year=dt.year + 1)
                 except Exception:
@@ -338,7 +377,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
         if doc_date:
             break
     if doc_date is None:
-        doc_date = datetime.fromtimestamp(path.stat().st_mtime)
+        doc_date = filename_doc_date
 
     absolute_deadline_pat = re.compile(
         r"(?:請惠予|應|請|命|限|惠予)?(?:於)?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?:以前|前)[，,、\s]*([^）)]{0,90})"
@@ -802,7 +841,7 @@ def _count_all_case_pdf_case_rows() -> int:
         SELECT COUNT(*) AS count
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
-          AND (status IS NULL OR status='' OR status NOT IN ('已結案'))
+          AND """ + _open_case_status_sql("status") + """
         """,
         fetch="one",
     )
@@ -826,7 +865,7 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
         SELECT case_number, client_name, folder_path
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
-          AND (status IS NULL OR status='' OR status NOT IN ('已結案'))
+          AND """ + _open_case_status_sql("status") + """
         ORDER BY updated_at DESC, created_date DESC, case_number DESC
         LIMIT %s OFFSET %s
         """,

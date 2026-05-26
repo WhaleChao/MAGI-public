@@ -25,6 +25,7 @@ def extract_document_date_from_filename(filename: str, file_path: str = "") -> O
     Priority:
     - Prefix YYYYMMDD
     - Prefix YYYY-MM-DD / YYYY.MM.DD
+    - Prefix ROC YYYMMDD / YYY-MM-DD / YYY/MM/DD
     """
     name = os.path.basename(filename or "")
     m = re.match(r"^(\d{4})(\d{2})(\d{2})", name)
@@ -41,6 +42,17 @@ def extract_document_date_from_filename(filename: str, file_path: str = "") -> O
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 40, exc_info=True)
 
+    m = re.match(r"^(\d{3})[-/]?(\d{2})[-/]?(\d{2})(?:\s|$)", name)
+    if m:
+        try:
+            roc_year = int(m.group(1))
+            month = int(m.group(2))
+            day = int(m.group(3))
+            if 100 <= roc_year <= 130:
+                return datetime(roc_year + 1911, month, day)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 51, exc_info=True)
+
     # Fallback: try file mtime (only if exists)
     if file_path and os.path.exists(file_path):
         try:
@@ -48,6 +60,36 @@ def extract_document_date_from_filename(filename: str, file_path: str = "") -> O
         except Exception:
             return None
     return None
+
+
+def extract_base_year_from_filename(filename: str, file_path: str = "", document_date: Optional[datetime] = None) -> int:
+    """Return the OSC base year for yearless hearing dates.
+
+    This mirrors the original OSC order: AD prefix first, ROC case year in
+    "YYY年度" second, then the received date / mtime fallback.
+    """
+    name = os.path.basename(filename or "")
+    m = re.match(r"^(20\d{2})(\d{2})(\d{2})", name)
+    if m:
+        try:
+            datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return int(m.group(1))
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 70, exc_info=True)
+
+    m = re.search(r"(\d{3})年度", name)
+    if m:
+        try:
+            roc_year = int(m.group(1))
+            if 100 < roc_year < 130:
+                return roc_year + 1911
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 79, exc_info=True)
+
+    doc_date = document_date or extract_document_date_from_filename(filename, file_path)
+    if doc_date:
+        return doc_date.year
+    return datetime.now().year
 
 
 def chinese_to_number(chinese_str: str) -> Optional[int]:
@@ -525,9 +567,10 @@ def _make_hearing_todo(
     }
 
 
-def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> List[Dict]:
+def _extract_hearing_sequence_todos(filename: str, document_date: datetime, base_year: Optional[int] = None) -> List[Dict]:
     """Extract every hearing datetime in filenames with multiple sessions."""
     kind = _infer_hearing_procedure_type(filename) or "開庭"
+    year_for_yearless = base_year or document_date.year
     todos: List[Dict] = []
 
     explicit_pat = re.compile(
@@ -563,7 +606,7 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> L
     )
     for m in yearless_pat.finditer(filename):
         parsed = _hearing_datetime(
-            year_token=str(document_date.year),
+            year_token=str(year_for_yearless),
             month_token=m.group(1),
             day_token=m.group(2),
             period_token=m.group(3),
@@ -597,7 +640,7 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> L
         for dm in date_pat.finditer(m.group("dates")):
             explicit_year = bool(dm.group(1))
             parsed = _hearing_datetime(
-                year_token=dm.group(1) or str(document_date.year),
+                year_token=dm.group(1) or str(year_for_yearless),
                 month_token=dm.group(2),
                 day_token=dm.group(3),
                 period_token=period_token,
@@ -652,7 +695,7 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> L
         if re.search(r"(?:上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,8}時", m.group(0)):
             continue
         try:
-            dt = datetime(document_date.year, int(m.group(1)), int(m.group(2)))
+            dt = datetime(year_for_yearless, int(m.group(1)), int(m.group(2)))
             if dt.date() < document_date.date() - timedelta(days=30):
                 dt = dt.replace(year=dt.year + 1)
         except Exception:
@@ -722,7 +765,7 @@ def extract_todos_from_filename(
         # As a last resort, treat as "today" to avoid crashing; caller can override by renaming.
         document_date = datetime.now()
 
-    base_year = document_date.year
+    base_year = extract_base_year_from_filename(filename, file_path, document_date)
     tw = holidays.Taiwan(years=range(base_year - 1, base_year + 3))
 
     all_patterns = patterns or get_default_patterns()
@@ -899,7 +942,7 @@ def extract_todos_from_filename(
     for todo in _extract_absolute_deadline_todos(filename, document_date):
         _append_unique_todo(todos, todo)
 
-    for todo in _extract_hearing_sequence_todos(filename, document_date):
+    for todo in _extract_hearing_sequence_todos(filename, document_date, base_year):
         _append_unique_todo(todos, todo)
 
     return sorted(todos, key=_todo_sort_key)

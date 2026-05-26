@@ -2,10 +2,11 @@
 """Tests for expanded OSC _TODO_PATTERNS covering 5 deadline categories."""
 import sys
 import os
+from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "osc-orchestrator"))
 
-from osc_headless.todos import extract_todos_from_filename, _extract_todo_from_filename
+from osc_headless.todos import extract_todos_from_filename, _extract_todo_from_filename, extract_document_date_from_filename
 
 
 def _extract(filename):
@@ -66,6 +67,15 @@ def test_原版osc文到十日沒有內字也建立待辦():
     assert todos[0]["type"] == "補正"
     assert todos[0]["date"] == "2026-05-11"
     assert todos[0]["time"] == ""
+
+
+def test_原版osc民國收文日前綴作為文到基準日():
+    assert extract_document_date_from_filename("1150528 函（王大明；請於文到10日補正）.pdf") == datetime(2026, 5, 28)
+    todos = _extract("1150528 函（王大明；請於文到10日補正）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-06-08"
+    assert "05/28文到" in todos[0]["description"]
 
 
 def test_週內期限轉為全天待辦():
@@ -181,6 +191,14 @@ def test_開庭無年份期日使用收文年份而非案號年度():
     assert len(todos) == 1
     assert todos[0]["date"] == "2025-03-04"
     assert todos[0]["time"] == "15:00"
+
+
+def test_開庭無收文日前綴時使用案號年度判斷年份():
+    todos = _extract("花蓮地方法院115年度司消債調字第69號民事庭通知書（曾昌義；訂6月1日下午3時50分調解）.pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "調解"
+    assert todos[0]["date"] == "2026-06-01"
+    assert todos[0]["time"] == "15:50"
 
 
 def test_開庭無年份期日可跨隔年():

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import os
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -216,6 +218,32 @@ def test_pdf_calendar_scan_preview_detects_filename_when_pdf_has_no_text(client,
     assert todo["date"] == "2026-05-27"
     assert todo["time"] == "10:40"
     assert body["items"][0]["events"][0]["case_number"] == "2026-0038"
+
+
+def test_pdf_calendar_scan_text_uses_roc_case_year_when_filename_has_no_received_date(client, tmp_path, monkeypatch):
+    path = tmp_path / "花蓮地方法院115年度司消債調字第69號民事庭通知書.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+    old = time.mktime((2025, 5, 1, 9, 0, 0, 0, 0, -1))
+    os.utime(path, (old, old))
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    monkeypatch.setattr("api.blueprints.osc_pdf._pdf_text", lambda *a, **k: "本院定於6月1日下午3時50分調解。")
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2025-0127", "client_name": "曾昌義", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "調解"
+    assert todo["date"] == "2026-06-01"
+    assert todo["time"] == "15:50"
 
 
 def test_pdf_calendar_scan_preview_detects_all_day_filename_deadline(client, tmp_path, monkeypatch):
@@ -436,6 +464,32 @@ def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch)
     targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
 
     assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
+
+
+def test_all_case_pdf_targets_excludes_closing_and_closed_statuses(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    seen_sql = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        seen_sql.append(sql)
+        if "COUNT(*)" in sql:
+            return {"count": 0}, {}
+        if "FROM cases" in sql:
+            return [], {}
+        if "FROM case_todos" in sql:
+            return [], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+
+    assert osc_pdf._count_all_case_pdf_case_rows() == 0
+    assert osc_pdf._iter_all_case_pdf_targets(limit=5) == []
+    joined = "\n".join(seen_sql)
+    assert "NOT LIKE '%已結案%'" in joined
+    assert "NOT LIKE '%結案中%'" in joined
+    assert "NOT LIKE '%待報結%'" in joined
+    assert "NOT LIKE '%待送出%'" in joined
 
 
 def test_all_case_pdf_targets_prioritizes_unprocessed_recent_pdfs(tmp_path, monkeypatch):
