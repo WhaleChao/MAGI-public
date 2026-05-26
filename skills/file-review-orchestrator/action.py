@@ -4252,6 +4252,42 @@ def _save_portal_notify_state(
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2630, exc_info=True)
 
 
+def _should_emit_review_check_notice(
+    *,
+    download_email_hits: int,
+    pickup_email_hits: int,
+    ready_to_download_count: int,
+    portal_downloadable: int,
+    portal_downloadable_changed: bool,
+    portal_pickup: int,
+    portal_pickup_changed: bool,
+    scan_errors: int,
+    portal_failure_alert: bool,
+) -> bool:
+    """Only emit review-check notices for work the user can act on now.
+
+    OLA can show a "線上下載" button before the clerk actually uploads files.
+    Those rows and Gmail download notices are hints for the downloader, not
+    user-facing events.  The user should only be notified after cmd_download
+    has obtained and archived real review files.
+    """
+    _ = (
+        download_email_hits,
+        ready_to_download_count,
+        portal_downloadable,
+        portal_downloadable_changed,
+    )
+    if int(pickup_email_hits or 0) > 0:
+        return True
+    if int(portal_pickup or 0) > 0 and bool(portal_pickup_changed):
+        return True
+    if int(scan_errors or 0) > 0:
+        return True
+    if bool(portal_failure_alert):
+        return True
+    return False
+
+
 def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
     """Scan Gmail for payment notices and delivery notifications."""
     _eventlog("filereview:gmail_check:start")
@@ -4531,14 +4567,16 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 portal_pending_changed=_portal_pending_changed,
                 portal_probe_ok=_portal_probe_ok,
             )
-            review_signal = bool(
-                dl_hits > 0
-                or pickup_hits > 0
-                or ready_cnt > 0
-                or (portal_downloadable > 0 and _portal_downloadable_changed)
-                or (portal_pickup > 0 and _portal_pickup_changed)
-                or err_cnt > 0
-                or _portal_failure_alert
+            review_signal = _should_emit_review_check_notice(
+                download_email_hits=dl_hits,
+                pickup_email_hits=pickup_hits,
+                ready_to_download_count=ready_cnt,
+                portal_downloadable=portal_downloadable,
+                portal_downloadable_changed=_portal_downloadable_changed,
+                portal_pickup=portal_pickup,
+                portal_pickup_changed=_portal_pickup_changed,
+                scan_errors=err_cnt,
+                portal_failure_alert=_portal_failure_alert,
             )
             download_signal = bool(recent_review_download_activity)
             section_messages: List[Tuple[str, str]] = []  # (msg, topic_key)
@@ -4579,10 +4617,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             # 有新的、需要使用者處理的資訊時才鏡像到 DC。
             _has_new_actionable_info = bool(
                 payment_signal          # 有真正待處理的繳費資訊
-                or dl_hits > 0          # 有新閱卷通知信件
                 or pickup_hits > 0      # 有新到院閱卷通知信件
-                or ready_cnt > 0        # 有待下載佇列
-                or (portal_downloadable > 0 and _portal_downloadable_changed)  # 入口新增可下載卷宗
                 or (portal_pickup > 0 and _portal_pickup_changed)  # 可到院閱卷
                 or download_signal      # 有新卷宗下載
                 or err_cnt > 0          # 有掃描錯誤
@@ -4616,7 +4651,9 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 # 會讓下一次真正出現待繳費時被誤判成「沒有變動」。
                 _save_portal_notify_state(
                     _portal_state_path,
-                    portal_downloadable=portal_downloadable,
+                    # 可下載按鈕不代表書記官已上傳卷宗；不寫入通知去重狀態，
+                    # 讓下載器下輪仍可重試，直到真的下載並歸檔後才通知。
+                    portal_downloadable=0,
                     portal_pickup=portal_pickup,
                     portal_pending=portal_pending,
                 )

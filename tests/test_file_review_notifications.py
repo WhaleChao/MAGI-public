@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import sys
@@ -494,6 +495,120 @@ def test_payment_check_notice_emits_for_real_or_unverified_payment_work():
         portal_pending_changed=False,
         portal_probe_ok=True,
     ) is True
+
+
+def test_review_check_notice_ignores_download_button_until_archived():
+    module = _load_action_module()
+
+    assert module._should_emit_review_check_notice(
+        download_email_hits=0,
+        pickup_email_hits=0,
+        ready_to_download_count=0,
+        portal_downloadable=1,
+        portal_downloadable_changed=True,
+        portal_pickup=0,
+        portal_pickup_changed=False,
+        scan_errors=0,
+        portal_failure_alert=False,
+    ) is False
+
+
+def test_review_check_notice_ignores_download_email_until_archived():
+    module = _load_action_module()
+
+    assert module._should_emit_review_check_notice(
+        download_email_hits=1,
+        pickup_email_hits=0,
+        ready_to_download_count=1,
+        portal_downloadable=0,
+        portal_downloadable_changed=False,
+        portal_pickup=0,
+        portal_pickup_changed=False,
+        scan_errors=0,
+        portal_failure_alert=False,
+    ) is False
+
+
+def test_review_check_notice_emits_for_pickup_and_health_issues():
+    module = _load_action_module()
+
+    assert module._should_emit_review_check_notice(
+        download_email_hits=0,
+        pickup_email_hits=1,
+        ready_to_download_count=0,
+        portal_downloadable=0,
+        portal_downloadable_changed=False,
+        portal_pickup=0,
+        portal_pickup_changed=False,
+        scan_errors=0,
+        portal_failure_alert=False,
+    ) is True
+    assert module._should_emit_review_check_notice(
+        download_email_hits=0,
+        pickup_email_hits=0,
+        ready_to_download_count=0,
+        portal_downloadable=0,
+        portal_downloadable_changed=False,
+        portal_pickup=0,
+        portal_pickup_changed=False,
+        scan_errors=1,
+        portal_failure_alert=False,
+    ) is True
+
+
+def test_download_notice_email_is_not_processed_until_download_archive(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    class _Exec:
+        def __init__(self, data):
+            self.data = data
+
+        def execute(self):
+            return self.data
+
+    class _Messages:
+        def __init__(self, message):
+            self.message = message
+
+        def list(self, **kwargs):
+            return _Exec({"messages": [{"id": "msg-download"}]})
+
+        def get(self, **kwargs):
+            return _Exec(self.message)
+
+    class _Users:
+        def __init__(self, message):
+            self.message = message
+
+        def messages(self):
+            return _Messages(self.message)
+
+    class _Gmail:
+        def __init__(self, message):
+            self.message = message
+
+        def users(self):
+            return _Users(self.message)
+
+    body = "法院完成線上交付核閱通知，可線上下載。案號：115年度原交易字第21號。"
+    message = {
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "法院完成線上交付核閱通知 115年度原交易字第21號"},
+                {"name": "From", "value": "noreply@judicial.gov.tw"},
+            ],
+            "body": {"data": base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii")},
+        }
+    }
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    mgr.gmail_service = _Gmail(message)
+
+    result = mgr._scan_and_process_emails("線上下載", "download")
+
+    assert result["hits"] == 1
+    assert len(mgr.ready_to_download) == 1
+    assert "msg-download" not in mgr.processed_emails
+    assert not (tmp_path / "processed_emails.json").exists()
 
 
 def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_path):

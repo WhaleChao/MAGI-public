@@ -12931,8 +12931,9 @@ class FileReviewManager:
                     stats["hits"] += 1
                     if type == "auto":
                         stats["download_hits"] += 1
-                    # 下載通知
-                    self.log(f"  發現可下載案件: {resolved_case_no}")
+                    # 下載通知只作為下載器線索。法院入口可能已出現「線上下載」
+                    # 但書記官尚未上傳檔案；成功下載並歸檔前，不標記已處理。
+                    self.log(f"  發現可下載線索（待實際下載驗證）: {resolved_case_no}")
 
                     # 加入待下載清單
                     info = FileReviewInfo()
@@ -12941,11 +12942,6 @@ class FileReviewManager:
                     info.application_no = ids["application_no"]
                     info.message_id = msg_id
                     self.ready_to_download.append(info)
-
-                    # 標記已處理 (下載成功後再標記可能更好，但在這裡標記代表「已讀」)
-                    # processed_emails 是 set，只記錄 msg_id
-                    self.processed_emails.add(msg_id)
-                    self._save_processed_emails()
 
                 elif msg_type == "court_pickup":
                     stats["pickup_hits"] += 1
