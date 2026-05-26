@@ -435,6 +435,27 @@ def _audit_no_boundary_multidoc_signals(
     }
 
 
+def _normalize_toc_hierarchy(toc: list[list]) -> list[list]:
+    """Make generated bookmarks acceptable to PyMuPDF's strict hierarchy rules."""
+    normalized: list[list] = []
+    prev_level = 0
+    for entry in toc:
+        if len(entry) < 3:
+            continue
+        raw_level, title, page = entry[:3]
+        try:
+            level = max(1, int(raw_level))
+        except Exception:
+            level = 1
+        if not normalized:
+            level = 1
+        elif level > prev_level + 1:
+            level = prev_level + 1
+        normalized.append([level, str(title), int(page)])
+        prev_level = level
+    return normalized
+
+
 def _detect_doc_type(
     text: str,
     in_prior_record: bool = False,
@@ -733,6 +754,7 @@ def scan_and_bookmark(
         merged = existing_toc + new_entries
         merged.sort(key=lambda x: x[2])
         toc = merged
+    toc = _normalize_toc_hierarchy(toc)
 
     if not dry_run:
         doc.set_toc(toc)

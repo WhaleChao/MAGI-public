@@ -42,8 +42,14 @@ STATE_FILE = MAGI_ROOT / ".agent" / "bookmark_batch_state.json"
 # ── Config ────────────────────────────────────────────────────────────────────
 VISION_BUDGET_SECONDS = int(os.environ.get("BOOKMARK_VISION_BUDGET_SEC", "28800"))  # 8 hours default
 VISION_PER_PAGE_TIMEOUT = 30  # seconds per vision call
-TARGET_SUBDIRS = ["06_閱卷資料"]
+TARGET_SUBDIRS = ["05_閱卷資料", "06_閱卷資料", "06_證據資料"]
 BACKFILL_PLAN_PATH = MAGI_ROOT / ".runtime" / "bookmark_backfill_plan_latest.json"
+SINGLE_DOC_FASTPATH_RE = re.compile(
+    r"(?:判決|裁定|聲請書|申請書|申冤表格|調查報告|不起訴處分書|起訴書|答辯狀|陳報狀|抗告狀|上訴狀)"
+)
+MERGED_RECORD_HINT_RE = re.compile(
+    r"(?:全案卷宗|調查卷|卷\d+|卷[一二三四五六七八九十]|DOC_|_OCR|P\d+|P\d+-\d+)"
+)
 
 # ── Imports ───────────────────────────────────────────────────────────────────
 try:
@@ -84,16 +90,35 @@ def _load_state() -> dict:
     return {"completed": {}, "vision_done": {}, "last_run": None}
 
 
+def _set_state_file(path: str | None) -> None:
+    """Allow priority/example runs to keep their progress outside the global batch state."""
+    if not path:
+        return
+    global STATE_FILE
+    state_path = Path(path).expanduser()
+    if not state_path.is_absolute():
+        state_path = MAGI_ROOT / state_path
+    STATE_FILE = state_path
+
+
 def _save_state(state: dict):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     state["last_run"] = datetime.now().isoformat()
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _save_loop_progress(state: dict, key: str, index: int, total: int) -> None:
+    state["last_file"] = key
+    state["last_index"] = index
+    state["last_total"] = total
+    _save_state(state)
+
+
 # ── Path discovery ────────────────────────────────────────────────────────────
 
-def find_all_pdfs(roots: list[str]) -> list[Path]:
-    """Find all PDFs in 06_閱卷資料 under case roots (prefers NAS mount)."""
+def find_all_pdfs(roots: list[str], target_subdirs: list[str] | None = None) -> list[Path]:
+    """Find PDFs in target evidence/review folders under case roots."""
+    target_subdirs = target_subdirs or TARGET_SUBDIRS
     pdfs = []
     for root in roots:
         root_path = Path(root)
@@ -107,23 +132,53 @@ def find_all_pdfs(roots: list[str]) -> list[Path]:
             for case_dir in sorted(case_type_dir.iterdir()):
                 if not case_dir.is_dir() or case_dir.name.startswith("."):
                     continue
-                _collect_pdfs_from(case_dir, pdfs)
+                _collect_pdfs_from(case_dir, pdfs, target_subdirs)
                 # One level deeper (e.g. 法扶案件/刑事/case_name)
                 for sub_dir in sorted(case_dir.iterdir()):
                     if not sub_dir.is_dir() or sub_dir.name.startswith("."):
                         continue
-                    _collect_pdfs_from(sub_dir, pdfs)
+                    _collect_pdfs_from(sub_dir, pdfs, target_subdirs)
     return pdfs
 
 
-def _collect_pdfs_from(case_dir: Path, out: list[Path]):
-    for sub in TARGET_SUBDIRS:
+def find_direct_pdfs(roots: list[str]) -> list[Path]:
+    """Find PDFs directly below explicit roots for priority case/folder processing."""
+    pdfs: list[Path] = []
+    for root in roots:
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir():
+            logger.warning(f"Explicit PDF root not mounted: {root}")
+            continue
+        logger.info(f"Scanning explicit PDF root: {root_path}")
+        for pdf in sorted(root_path.rglob("*.pdf")):
+            if not pdf.name.startswith("."):
+                pdfs.append(pdf)
+    return pdfs
+
+
+def _collect_pdfs_from(case_dir: Path, out: list[Path], target_subdirs: list[str] | None = None):
+    target_subdirs = target_subdirs or TARGET_SUBDIRS
+    for sub in target_subdirs:
         target = case_dir / sub
         if not target.is_dir():
             continue
         for pdf in sorted(target.rglob("*.pdf")):
             if not pdf.name.startswith("."):
                 out.append(pdf)
+
+
+def _looks_like_obvious_single_doc(pdf: Path, page_count: int) -> bool:
+    """Fast-path clearly single legal documents so large example batches focus on merged records."""
+    max_pages = int(os.environ.get("BOOKMARK_SINGLE_DOC_FASTPATH_MAX_PAGES", "80"))
+    if page_count > max_pages:
+        return False
+    text = str(pdf)
+    name = pdf.name
+    if MERGED_RECORD_HINT_RE.search(text):
+        return False
+    if page_count <= 3:
+        return True
+    return bool(SINGLE_DOC_FASTPATH_RE.search(name))
 
 
 # ── oMLX management ──────────────────────────────────────────────────────────
@@ -169,8 +224,17 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
     """Fast regex-based bookmark pass. Returns stats dict."""
     import fitz
 
-    stats = {"processed": 0, "bookmarks": 0, "skipped": 0, "no_boundary": 0, "errors": 0}
+    stats = {
+        "processed": 0,
+        "bookmarks": 0,
+        "skipped": 0,
+        "no_boundary": 0,
+        "needs_ocr": 0,
+        "deferred_large_ocr": 0,
+        "errors": 0,
+    }
     completed = state.setdefault("completed", {})
+    stage1_errors = state.setdefault("stage1_errors", {})
 
     # Optional soft budget (seconds) — nightly caller sets this to ~1800 to bound wall-clock.
     _budget_raw = os.environ.get("BOOKMARK_REGEX_BUDGET_SEC", "").strip()
@@ -178,6 +242,16 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
         budget_sec = int(_budget_raw) if _budget_raw else 0
     except ValueError:
         budget_sec = 0
+    single_doc_fastpath = os.environ.get("BOOKMARK_SINGLE_DOC_FASTPATH", "").strip() == "1"
+    skip_large_non_ocr = os.environ.get("BOOKMARK_SKIP_LARGE_NON_OCR", "").strip() == "1"
+    try:
+        large_non_ocr_pages = int(os.environ.get("BOOKMARK_LARGE_NON_OCR_MIN_PAGES", "100"))
+    except ValueError:
+        large_non_ocr_pages = 100
+    try:
+        defer_large_ocr_pages = int(os.environ.get("BOOKMARK_DEFER_LARGE_OCR_PAGES", "0"))
+    except ValueError:
+        defer_large_ocr_pages = 0
     stage_start = time.time()
 
     for i, pdf in enumerate(pdfs, 1):
@@ -196,6 +270,8 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
         prev = completed.get(key, {})
         if prev.get("mtime") == mtime and prev.get("stage1"):
             stats["skipped"] += 1
+            stage1_errors.pop(key, None)
+            _save_loop_progress(state, key, i, len(pdfs))
             continue
 
         # Skip if already has enough bookmarks
@@ -209,11 +285,67 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                     "mtime": mtime, "stage1": True,
                     "stage1_bookmarks": len(existing),
                     "pages": page_count,
+                    "processed_at": datetime.now().isoformat(),
                 }
                 stats["skipped"] += 1
+                stage1_errors.pop(key, None)
+                _save_loop_progress(state, key, i, len(pdfs))
                 continue
         except Exception:
+            stage1_errors[key] = {
+                "mtime": mtime,
+                "stage1": False,
+                "message": "PDF 開啟或讀取既有書籤失敗",
+                "processed_at": datetime.now().isoformat(),
+            }
             stats["errors"] += 1
+            _save_loop_progress(state, key, i, len(pdfs))
+            continue
+
+        if skip_large_non_ocr and page_count >= large_non_ocr_pages and "_OCR" not in pdf.stem.upper():
+            completed[key] = {
+                "mtime": mtime,
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": page_count,
+                "needs_ocr": True,
+                "message": "大型非 OCR PDF，專案模式先略過，需 OCR 後再編標籤",
+                "processed_at": datetime.now().isoformat(),
+            }
+            stats["needs_ocr"] += 1
+            stage1_errors.pop(key, None)
+            _save_loop_progress(state, key, i, len(pdfs))
+            continue
+
+        if defer_large_ocr_pages and page_count >= defer_large_ocr_pages and "_OCR" in pdf.stem.upper():
+            completed[key] = {
+                "mtime": mtime,
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": page_count,
+                "deferred_large_ocr": True,
+                "message": f"大型 OCR PDF（{page_count} 頁）先排入分割/離峰重跑，避免專案批次被單檔阻塞",
+                "processed_at": datetime.now().isoformat(),
+            }
+            stats["deferred_large_ocr"] += 1
+            stage1_errors.pop(key, None)
+            _save_loop_progress(state, key, i, len(pdfs))
+            continue
+
+        if single_doc_fastpath and _looks_like_obvious_single_doc(pdf, page_count):
+            completed[key] = {
+                "mtime": mtime,
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": page_count,
+                "no_boundary": True,
+                "classification": "legitimate_single_doc",
+                "message": "明確單一文件，專案快徑略過逐頁編標籤",
+                "processed_at": datetime.now().isoformat(),
+            }
+            stats["no_boundary"] += 1
+            stage1_errors.pop(key, None)
+            _save_loop_progress(state, key, i, len(pdfs))
             continue
 
         if i % 50 == 0:
@@ -233,7 +365,9 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                     "mtime": stored_mtime, "stage1": True,
                     "stage1_bookmarks": bm_count,
                     "pages": page_count,
+                    "processed_at": datetime.now().isoformat(),
                 }
+                stage1_errors.pop(key, None)
             elif _is_stage1_no_hit_result(result):
                 message = str(result.get("message") or "")
                 completed[key] = {
@@ -243,17 +377,31 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                     "pages": page_count,
                     "no_boundary": True,
                     "message": message,
+                    "processed_at": datetime.now().isoformat(),
                 }
                 stats["no_boundary"] += 1
+                stage1_errors.pop(key, None)
             else:
+                stage1_errors[key] = {
+                    "mtime": mtime,
+                    "stage1": False,
+                    "pages": page_count,
+                    "message": str((result or {}).get("message") if isinstance(result, dict) else result)[:500],
+                    "processed_at": datetime.now().isoformat(),
+                }
                 stats["errors"] += 1
         except Exception as e:
             logger.debug(f"  Stage 1 error {pdf.name}: {e}")
+            stage1_errors[key] = {
+                "mtime": mtime,
+                "stage1": False,
+                "pages": page_count,
+                "message": str(e)[:500],
+                "processed_at": datetime.now().isoformat(),
+            }
             stats["errors"] += 1
 
-        # Save state periodically
-        if i % 100 == 0:
-            _save_state(state)
+        _save_loop_progress(state, key, i, len(pdfs))
 
     _save_state(state)
     return stats
@@ -501,17 +649,66 @@ def main():
         default=20,
         help="Number of sample paths per plan category.",
     )
+    parser.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Explicit folder to process recursively. Use for a priority case/evidence folder; can be repeated.",
+    )
+    parser.add_argument(
+        "--target-subdir",
+        action="append",
+        default=[],
+        help="Case subfolder name to scan during normal root discovery. Defaults include evidence and review folders.",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=None,
+        help="Progress JSON path. Defaults to .agent/bookmark_batch_state.json; priority/example runs should use a separate file.",
+    )
+    parser.add_argument(
+        "--report-path",
+        default=None,
+        help="Optional JSON report path for this run.",
+    )
+    parser.add_argument(
+        "--single-doc-fastpath",
+        action="store_true",
+        help="Skip obvious single-document filenames in priority/example runs and record them as legitimate single docs.",
+    )
+    parser.add_argument(
+        "--skip-large-non-ocr",
+        action="store_true",
+        help="In priority/example runs, mark large non-OCR PDFs as needs_ocr instead of spending the batch on OCR.",
+    )
+    parser.add_argument(
+        "--defer-large-ocr-pages",
+        type=int,
+        default=0,
+        help="In priority/example runs, defer OCR PDFs at or above this page count to a split/off-peak pass.",
+    )
     args = parser.parse_args()
 
+    _set_state_file(args.state_file)
+    if args.single_doc_fastpath:
+        os.environ["BOOKMARK_SINGLE_DOC_FASTPATH"] = "1"
+    if args.skip_large_non_ocr:
+        os.environ["BOOKMARK_SKIP_LARGE_NON_OCR"] = "1"
+    if args.defer_large_ocr_pages > 0:
+        os.environ["BOOKMARK_DEFER_LARGE_OCR_PAGES"] = str(args.defer_large_ocr_pages)
     started = time.time()
     state = _load_state()
 
+    target_subdirs = args.target_subdir or TARGET_SUBDIRS
     # preferred_case_roots already prefers NAS SMB over Synology Drive
-    roots = preferred_case_roots(include_closed=False)
+    roots = [str(Path(r).expanduser()) for r in args.root] if args.root else preferred_case_roots(include_closed=False)
     label = "Nightly Regex" if args.stage == "regex" else ("Vision Only" if args.stage == "vision" else "Weekend")
     logger.info(f"📑 Bookmark Batch [{label}] — roots: {roots}")
+    logger.info(f"Progress state: {STATE_FILE}")
+    if not args.root:
+        logger.info(f"Target subfolders: {target_subdirs}")
 
-    pdfs = find_all_pdfs(roots)
+    pdfs = find_direct_pdfs(roots) if args.root else find_all_pdfs(roots, target_subdirs)
     logger.info(f"Found {len(pdfs)} PDFs across all case folders")
 
     if not pdfs:
@@ -532,7 +729,15 @@ def main():
         )
         return
 
-    s1 = {"processed": 0, "bookmarks": 0, "skipped": 0, "no_boundary": 0, "errors": 0}
+    s1 = {
+        "processed": 0,
+        "bookmarks": 0,
+        "skipped": 0,
+        "no_boundary": 0,
+        "needs_ocr": 0,
+        "deferred_large_ocr": 0,
+        "errors": 0,
+    }
     s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
 
     do_regex = args.stage in ("regex", "all")
@@ -576,6 +781,10 @@ def main():
         lines.append(f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤")
         lines.append(f"  跳過：{s1['skipped']} 份")
         lines.append(f"  無邊界（待 vision 補漏）：{s1['no_boundary']} 份")
+        if s1.get("needs_ocr"):
+            lines.append(f"  大型非 OCR（待 OCR 後再編）：{s1['needs_ocr']} 份")
+        if s1.get("deferred_large_ocr"):
+            lines.append(f"  大型 OCR（待分割/離峰重跑）：{s1['deferred_large_ocr']} 份")
     if do_vision:
         lines.append("  ── Stage 2 (vision) ──")
         lines.append(f"  視覺檢查：{s2['pages_checked']} 頁")
@@ -584,6 +793,52 @@ def main():
     lines.append(f"  耗時：{elapsed:.0f} 秒（{elapsed / 3600:.1f} 小時）")
     summary = "\n".join(lines)
     logger.info(summary)
+
+    if args.report_path:
+        report_path = Path(args.report_path).expanduser()
+        if not report_path.is_absolute():
+            report_path = MAGI_ROOT / report_path
+        completed = state.get("completed", {}) or {}
+        stage1_errors = state.get("stage1_errors", {}) or {}
+        relevant_completed = [
+            key for key in completed
+            if any(str(Path(root).expanduser()) in key for root in roots)
+        ] if args.root else list(completed.keys())
+        relevant_errors = [
+            key for key in stage1_errors
+            if any(str(Path(root).expanduser()) in key for root in roots)
+        ] if args.root else list(stage1_errors.keys())
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "label": label,
+            "stage": args.stage,
+            "roots": roots,
+            "target_subdirs": target_subdirs if not args.root else None,
+            "state_file": str(STATE_FILE),
+            "pdf_count": len(pdfs),
+            "stats": {"regex": s1, "vision": s2},
+            "completed_count_for_roots": len(relevant_completed),
+            "bookmarked_count_for_roots": sum(
+                1 for key in relevant_completed
+                if int((completed.get(key) or {}).get("stage1_bookmarks") or 0) > 0
+            ),
+            "no_boundary_count_for_roots": sum(
+                1 for key in relevant_completed
+                if (completed.get(key) or {}).get("no_boundary")
+            ),
+            "stage1_error_count_for_roots": len(relevant_errors),
+            "stage1_error_samples": [
+                {
+                    "path": key,
+                    "message": str((stage1_errors.get(key) or {}).get("message") or ""),
+                }
+                for key in relevant_errors[:20]
+            ],
+            "elapsed_sec": round(elapsed, 3),
+        }
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Run report written: %s", report_path)
 
     # Notify (weekend full pass gets the system channel; nightly is quieter — log only)
     if args.stage == "all":

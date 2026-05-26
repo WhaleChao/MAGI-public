@@ -192,6 +192,19 @@ class TestBoundary:
         assert mod._normalize_doc_type("上訴抗告狀") == "上訴/抗告狀"
         assert mod._normalize_doc_type("調解筆錄") == "調解/和解筆錄"
 
+    def test_normalize_toc_hierarchy_promotes_first_level(self):
+        mod = _load_module()
+        toc = [
+            [2, "送達證書", 1],
+            [2, "傳票", 3],
+            [4, "裁定", 5],
+        ]
+        assert mod._normalize_toc_hierarchy(toc) == [
+            [1, "送達證書", 1],
+            [2, "傳票", 3],
+            [3, "裁定", 5],
+        ]
+
     def test_classify_no_boundary_single_doc_hint(self):
         mod = _load_module()
         classification, reason = mod._classify_no_boundary_case(
