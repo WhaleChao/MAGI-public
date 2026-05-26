@@ -2706,6 +2706,18 @@ class FileReviewManager:
             self.log(f"  ℹ️ MAGI 已上傳繳費憑證，跳過通知: {notify_key}")
             return True
 
+        if file_paths is not None:
+            valid_file_paths = [
+                p for p in (file_paths or [])
+                if os.path.exists(p) and self._is_valid_payment_download_artifact(p)
+            ]
+            if not valid_file_paths:
+                self.log(
+                    f"  ℹ️ 繳費列尚未取得實際繳費單 PDF，暫不通知/去重: {notify_key_case or notify_key}"
+                )
+                return False
+            file_paths = valid_file_paths
+
         # 同一 session 已通知 → 跳過（兩個 key 任一命中即跳過）
         if notify_key in self.notified_cases:
             return True

@@ -223,6 +223,9 @@ launchctl kickstart -k gui/$(id -u)/com.magi.mlx-mtp
 # 驗證
 curl http://127.0.0.1:8090/health
 python3 scripts/live_magi_mtp_eval.py --all-tools
+
+# launchd log
+tail -f ~/Library/Logs/MAGI/mlx_mtp_sidecar.log
 ```
 
 Live acceptance 的門檻是：JSON tool route、ReAct 真實工具呼叫、全部工具選擇案例、工具混淆 guard 皆通過，且 hallucination safety 的 unsafe rate 必須在可接受範圍內。
@@ -413,6 +416,7 @@ cp config/launchagents/com.magi.mlx-mtp.plist ~/Library/LaunchAgents/
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist 2>/dev/null || true
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.magi.mlx-mtp.plist
 launchctl kickstart -k gui/$(id -u)/com.magi.mlx-mtp
+tail -f ~/Library/Logs/MAGI/mlx_mtp_sidecar.log
 
 # 立即 rollback
 export MAGI_ENABLE_MTP_DRAFT=0
