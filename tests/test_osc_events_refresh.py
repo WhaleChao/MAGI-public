@@ -165,3 +165,52 @@ def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
     assert calls[0]["scan_text"] is True
     assert calls[0]["text_when_filename"] is True
     assert calls[0]["include_share_link"] is True
+
+
+def test_pdf_calendar_scan_rescans_when_rule_version_changes(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    calls = []
+    old_cache = {
+        "version": 1,
+        "files": {
+            str(pdf): {
+                "mtime": int(pdf.stat().st_mtime),
+                "size": int(pdf.stat().st_size),
+                "todo_count": 0,
+                "rule_version": "old-rule",
+                "scanned_at": "2026-05-26T00:00:00+00:00",
+            }
+        },
+    }
+    cache_path = tmp_path / "pdf_calendar_scan_cache.json"
+    cache_path.write_text(json.dumps(old_cache), encoding="utf-8")
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_RULE_VERSION", "new-rule")
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(str(path))
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [],
+            "events": [],
+        },
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=True)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["scanned"] == 1
+    assert calls == [str(pdf)]
+    updated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert updated["files"][str(pdf)]["rule_version"] == "new-rule"

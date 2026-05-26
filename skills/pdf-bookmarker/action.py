@@ -151,6 +151,16 @@ KNOWN_DOC_LABELS = {label for _, label, _ in DOC_PATTERNS}
 SINGLE_DOC_FILENAME_HINT_RE = re.compile(
     r"(?:同意書|證明書|委任|上訴理由狀|聲明上訴|答辯狀|陳報狀|聲請狀|信件|回執|收據)"
 )
+FILENAME_BOOKMARK_FALLBACK_RE = re.compile(
+    r"(?:"
+    r"P\d+\s*[-~－—]\s*\d+|"
+    r"(?:卷|卷宗)\s*\d+|卷[一二三四五六七八九十]+|"
+    r"DOC_\d+|"
+    r"手機|群組|對話|聯絡人|LINE|mission|"
+    r"限閱|遮隱|調查卷|閱卷資料|光碟|錄音|錄影|監視器|照片|相片"
+    r")",
+    re.IGNORECASE,
+)
 _STRONG_DOC_SIGNAL_PATTERNS = [
     ("判決", re.compile(r"(?:刑事|民事|家事)?判決(?:書)?|主文")),
     ("裁定", re.compile(r"(?:刑事|民事|家事)?裁定(?:書)?")),
@@ -369,6 +379,9 @@ def _classify_no_boundary_case(
 
     if page_count <= 12 and SINGLE_DOC_FILENAME_HINT_RE.search(stem):
         return "legitimate_single_doc", "filename_single_doc_hint"
+
+    if FILENAME_BOOKMARK_FALLBACK_RE.search(stem):
+        return "filename_bookmark_fallback", "filename_volume_or_evidence_chunk"
 
     return "empty_failure", "no_boundary_without_single_doc_signal"
 
@@ -736,6 +749,8 @@ def scan_and_bookmark(
         msg = f"未偵測到文件邊界，無法產生書籤（{Path(pdf_path).name}）"
         if classification == "legitimate_single_doc":
             msg = f"{msg}；判定為單一文件（{reason}）"
+        elif classification == "filename_bookmark_fallback":
+            msg = f"{msg}；判定可用檔名建立 page-1 書籤（{reason}）"
         logger.warning(msg)
         return {
             "success": False,

@@ -275,3 +275,33 @@ def test_followup_plan_routes_timed_out_ocr_to_split(tmp_path, monkeypatch):
 
     assert plan["counts"]["split_large_ocr"] == 1
     assert plan["actions"][0]["reason"] == "file_timeout"
+
+
+def test_followup_plan_routes_old_volume_no_boundary_to_page1_bookmark(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    mod = _load_weekend_module()
+
+    pdf = tmp_path / "臺北刑事_114訴972卷4(游秀鈴)_P285-510_OCR.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    state = {
+        "completed": {
+            str(pdf): {
+                "mtime": str(pdf.stat().st_mtime),
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": 226,
+                "no_boundary": True,
+            }
+        },
+        "vision_done": {},
+    }
+
+    plan = mod.build_followup_plan([pdf], state, sample_limit=10)
+
+    assert plan["counts"]["single_doc_page1_bookmark"] == 1
+    assert plan["actions"][0]["reason"] == "filename_volume_or_evidence_chunk"

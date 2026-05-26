@@ -81,6 +81,16 @@ SINGLE_DOC_FASTPATH_RE = re.compile(
 MERGED_RECORD_HINT_RE = re.compile(
     r"(?:全案卷宗|調查卷|卷\d+|卷[一二三四五六七八九十]|DOC_|_OCR|P\d+|P\d+-\d+)"
 )
+FILENAME_BOOKMARK_FALLBACK_RE = re.compile(
+    r"(?:"
+    r"P\d+\s*[-~－—]\s*\d+|"
+    r"(?:卷|卷宗)\s*\d+|卷[一二三四五六七八九十]+|"
+    r"DOC_\d+|"
+    r"手機|群組|對話|聯絡人|LINE|mission|"
+    r"限閱|遮隱|調查卷|閱卷資料|光碟|錄音|錄影|監視器|照片|相片"
+    r")",
+    re.IGNORECASE,
+)
 WATERMARK_ONLY_RE = re.compile(
     r"(?:司法院線上閱卷系統作業平台|[\u4e00-\u9fff]{2,4}律師|\d{2,3}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})"
 )
@@ -213,6 +223,11 @@ def _looks_like_obvious_single_doc(pdf: Path, page_count: int) -> bool:
     if page_count <= 3:
         return True
     return bool(SINGLE_DOC_FASTPATH_RE.search(name))
+
+
+def _looks_like_filename_bookmark_fallback(pdf: Path) -> bool:
+    """A no-boundary court/evidence volume whose filename is already the useful bookmark label."""
+    return bool(FILENAME_BOOKMARK_FALLBACK_RE.search(pdf.name))
 
 
 def _single_doc_bookmark_title(pdf: Path) -> str:
@@ -489,6 +504,27 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             _save_loop_progress(state, key, i, len(pdfs))
             continue
 
+        if single_doc_fastpath and prev.get("no_boundary") and _looks_like_filename_bookmark_fallback(pdf):
+            bm_count = _write_single_doc_bookmark(pdf)
+            try:
+                stored_mtime = str(pdf.stat().st_mtime)
+            except Exception:
+                stored_mtime = mtime
+            completed[key] = {
+                "mtime": stored_mtime,
+                "stage1": True,
+                "stage1_bookmarks": bm_count,
+                "pages": page_count,
+                "classification": "single_doc_bookmark",
+                "classification_reason": "filename_volume_or_evidence_chunk_after_no_boundary",
+                "message": "舊無邊界卷宗/證據分段檔，已補 page-1 檔名書籤",
+                "processed_at": datetime.now().isoformat(),
+            }
+            stats["single_doc"] += 1
+            stage1_errors.pop(key, None)
+            _save_loop_progress(state, key, i, len(pdfs))
+            continue
+
         if i % 50 == 0:
             logger.info(f"  Stage 1 progress: {i}/{len(pdfs)}")
 
@@ -513,7 +549,11 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             elif _is_stage1_no_hit_result(result):
                 message = str(result.get("message") or "")
                 classification = str(result.get("classification") or "")
-                if classification == "legitimate_single_doc" or _looks_like_obvious_single_doc(pdf, page_count):
+                if (
+                    classification in {"legitimate_single_doc", "filename_bookmark_fallback"}
+                    or _looks_like_obvious_single_doc(pdf, page_count)
+                    or _looks_like_filename_bookmark_fallback(pdf)
+                ):
                     bm_count = _write_single_doc_bookmark(pdf)
                     try:
                         stored_mtime = str(pdf.stat().st_mtime)
@@ -526,7 +566,7 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                         "pages": page_count,
                         "classification": "single_doc_bookmark",
                         "classification_reason": str(result.get("classification_reason") or ""),
-                        "message": "無多文件邊界但判定為單一文件，已補 page-1 檔名書籤",
+                        "message": "無多文件邊界但判定可用檔名建立索引，已補 page-1 檔名書籤",
                         "processed_at": datetime.now().isoformat(),
                     }
                     stats["single_doc"] += 1
@@ -698,6 +738,13 @@ def _followup_action_for(pdf: Path, info: dict, mtime: str) -> dict:
                 doc.close()
         except Exception:
             page_count = pages
+        if _looks_like_filename_bookmark_fallback(pdf):
+            return {
+                "path": key,
+                "action": "single_doc_page1_bookmark",
+                "reason": "filename_volume_or_evidence_chunk",
+                "pages": page_count,
+            }
         if page_count >= 100:
             needs_ocr, reason = _needs_full_ocr(pdf, page_count)
             if needs_ocr:
@@ -713,7 +760,7 @@ def _followup_action_for(pdf: Path, info: dict, mtime: str) -> dict:
                 "reason": "large_pdf_no_boundary_with_text",
                 "pages": page_count,
             }
-        if _looks_like_obvious_single_doc(pdf, page_count) or info.get("classification") == "legitimate_single_doc":
+        if _looks_like_obvious_single_doc(pdf, page_count) or info.get("classification") in {"legitimate_single_doc", "filename_bookmark_fallback"}:
             return {
                 "path": key,
                 "action": "single_doc_page1_bookmark",

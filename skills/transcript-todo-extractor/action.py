@@ -31,6 +31,18 @@ INDEX_DB_PATH = Path(
 )
 DEFAULT_LIMIT = int(os.environ.get("TRANSCRIPT_TODO_LIMIT", "50") or "50")
 TAIL_PAGES = int(os.environ.get("TRANSCRIPT_TODO_TAIL_PAGES", "3") or "3")
+RECENT_DAYS = int(os.environ.get("TRANSCRIPT_TODO_RECENT_DAYS", "45") or "45")
+LISTING_BUDGET_SEC = int(os.environ.get("TRANSCRIPT_TODO_LISTING_BUDGET_SEC", "120") or "120")
+PDF_TIMEOUT_SEC = int(os.environ.get("TRANSCRIPT_TODO_PDF_TIMEOUT_SEC", "25") or "25")
+_TRANSCRIPT_SUBDIRS = [
+    s.strip()
+    for s in (
+        os.environ.get("TRANSCRIPT_TODO_DIRS")
+        or os.environ.get("TRANSCRIPT_DIRS")
+        or "05_筆錄,06_筆錄,07_筆錄,08_筆錄"
+    ).split(",")
+    if s.strip()
+]
 
 _CASE_NO_RE = re.compile(r"(20\d{2}-\d{4})")
 _DATE8_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
@@ -276,7 +288,7 @@ def _infer_case_identity(path: Path) -> tuple[str, str]:
     return "", ""
 
 
-def _extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
+def _extract_pages_inner(pdf_path: Path) -> list[tuple[int, str]]:
     try:
         import fitz  # PyMuPDF
     except Exception as exc:
@@ -286,6 +298,36 @@ def _extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
         return [(idx + 1, page.get_text()) for idx, page in enumerate(doc)]
     finally:
         doc.close()
+
+
+def _extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
+    """Extract text with a bounded wall-clock timeout.
+
+    PyMuPDF can stall on partially hydrated Synology Drive placeholders or
+    damaged NAS PDFs.  A single bad transcript must not block the six-hour OSC
+    todo refresh.
+    """
+    import threading
+
+    result: list[tuple[int, str]] = []
+    error: list[BaseException] = []
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            result.extend(_extract_pages_inner(pdf_path))
+        except BaseException as exc:  # keep original error for caller
+            error.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_runner, daemon=True, name=f"transcript-todo-{pdf_path.name[:30]}")
+    thread.start()
+    if not done.wait(timeout=max(1, PDF_TIMEOUT_SEC)):
+        raise TimeoutError(f"transcript_pdf_timeout:{PDF_TIMEOUT_SEC}s")
+    if error:
+        raise error[0]
+    return result
 
 
 def _candidate_segments(pages: list[tuple[int, str]], *, tail_pages: int = TAIL_PAGES) -> list[tuple[int, str]]:
@@ -550,6 +592,104 @@ def _iter_index_paths(limit: int) -> Iterable[Path]:
     return [p for _, p in rows[:limit]]
 
 
+def _case_roots() -> list[Path]:
+    raw = (
+        os.environ.get("TRANSCRIPT_TODO_CASE_ROOTS")
+        or os.environ.get("SYNOLOGY_CASE_ROOTS")
+        or os.environ.get("SYNOLOGY_CASE_ROOT")
+        or ""
+    )
+    if raw.strip():
+        return [Path(x.strip()).expanduser() for x in raw.split(",") if x.strip()]
+    try:
+        from api.case_path_mapper import preferred_case_roots
+
+        return [Path(x).expanduser() for x in preferred_case_roots(include_closed=True)]
+    except Exception:
+        return []
+
+
+def _looks_like_case_dir(path: Path) -> bool:
+    if _CASE_NO_RE.search(path.name):
+        return True
+    return any((path / subdir).is_dir() for subdir in _TRANSCRIPT_SUBDIRS)
+
+
+def _iter_case_dirs_under(root: Path, *, started_at: float) -> Iterable[Path]:
+    if not root.exists():
+        return
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        if datetime.now().timestamp() - started_at > LISTING_BUDGET_SEC:
+            return
+        current, depth = stack.pop()
+        if depth > 5:
+            continue
+        try:
+            children = [x for x in current.iterdir() if x.is_dir() and not x.name.startswith(".")]
+        except OSError:
+            continue
+        for child in children:
+            if _looks_like_case_dir(child):
+                yield child
+                continue
+            stack.append((child, depth + 1))
+
+
+def _iter_recent_filesystem_paths(limit: int, *, recent_days: int = RECENT_DAYS) -> list[Path]:
+    """Find newly downloaded transcripts even before the nightly indexer runs.
+
+    The old flow only read `.agent/transcript_index.json`; a transcript downloaded
+    at 06:00/21:00 could therefore be invisible to the six-hour todo refresh
+    until the next index run.  This filesystem pass is bounded and mtime-sorted,
+    so it catches fresh transcript PDFs without doing a full NAS crawl.
+    """
+    import time
+
+    started = time.time()
+    cutoff = started - max(1, recent_days) * 86400
+    rows: list[tuple[float, Path]] = []
+    seen: set[str] = set()
+    scan_limit = max(limit * 4, limit, 50)
+    for root in _case_roots():
+        for case_dir in _iter_case_dirs_under(root, started_at=started):
+            for subdir_name in _TRANSCRIPT_SUBDIRS:
+                folder = case_dir / subdir_name
+                if not folder.is_dir():
+                    continue
+                try:
+                    pdfs = list(folder.glob("*.pdf"))
+                except OSError:
+                    continue
+                for pdf in pdfs:
+                    if pdf.name.startswith(".") or pdf.name.startswith("~$"):
+                        continue
+                    try:
+                        st = pdf.stat()
+                    except OSError:
+                        continue
+                    if st.st_mtime < cutoff:
+                        continue
+                    try:
+                        key = str(pdf.resolve())
+                    except OSError:
+                        key = str(pdf)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append((float(st.st_mtime), pdf))
+                    if len(rows) >= scan_limit:
+                        break
+                if len(rows) >= scan_limit:
+                    break
+            if len(rows) >= scan_limit or time.time() - started > LISTING_BUDGET_SEC:
+                break
+        if len(rows) >= scan_limit or time.time() - started > LISTING_BUDGET_SEC:
+            break
+    rows.sort(key=lambda item: item[0], reverse=True)
+    return [path for _mtime, path in rows[:limit]]
+
+
 def _iter_pdf_targets(raw_path: str, *, limit: int) -> list[Path]:
     if raw_path:
         root = Path(raw_path).expanduser()
@@ -565,7 +705,20 @@ def _iter_pdf_targets(raw_path: str, *, limit: int) -> list[Path]:
                     break
             return out
         return []
-    return list(_iter_index_paths(limit))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in [*_iter_recent_filesystem_paths(limit), *_iter_index_paths(limit * 2)]:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def scan_targets(paths: list[Path], *, tail_pages: int = TAIL_PAGES) -> dict[str, Any]:

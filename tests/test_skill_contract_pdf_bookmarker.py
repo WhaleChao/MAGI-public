@@ -232,6 +232,18 @@ class TestBoundary:
         assert classification == "needs_manual_review"
         assert "multi_doc_signal" in reason
 
+    def test_classify_no_boundary_volume_chunk_uses_filename_bookmark_fallback(self):
+        mod = _load_module()
+        classification, reason = mod._classify_no_boundary_case(
+            pdf_path="/case/臺北刑事_114訴972卷4(游秀鈴)_P285-510_OCR.pdf",
+            page_count=226,
+            meaningful_counts=[80, 90, 70],
+            detected_doc_types=set(),
+            page_texts=["頁首浮水印與聊天紀錄"] * 3,
+        )
+        assert classification == "filename_bookmark_fallback"
+        assert "filename_volume_or_evidence_chunk" in reason
+
 
 # ===================================================================
 # 4. Should reject

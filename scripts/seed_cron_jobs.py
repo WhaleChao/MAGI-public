@@ -147,6 +147,18 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "enabled": True,
         },
         {
+            "id": "job_transcript_indexer",
+            "cron": "30 6,21 * * *",
+            "command": f"{python_bin} {repo_root / 'skills' / 'transcript-indexer' / 'action.py'} --task index",
+            "desc": "筆錄索引更新（筆錄同步後 30 分鐘；供搜尋與待辦抽取使用）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "timeout_sec": 900,
+        },
+        {
             "id": "job_transcript_self_test",
             "cron": "5 3 * * *",
             "command": f"{python_bin} {repo_root / 'skills' / 'transcript-downloader' / 'action.py'} --task self_test",

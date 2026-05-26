@@ -705,6 +705,10 @@ def _iter_scan_targets(raw_path: str, recursive: bool, limit: int) -> list[Path]
 def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
     from api.case_path_mapper import local_case_path_candidates
 
+    started = time.monotonic()
+    target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "180") or "180"))
+    max_items = max(1, min(limit, 5000))
+    row_limit = max(50, min(2000, max_items * 4))
     rows, _ = _osc_exec(
         """
         SELECT case_number, client_name, folder_path
@@ -712,14 +716,15 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
         WHERE folder_path IS NOT NULL AND folder_path!=''
           AND (status IS NULL OR status='' OR status NOT IN ('已結案'))
         ORDER BY updated_at DESC, created_date DESC
-        LIMIT 2000
+        LIMIT %s
         """,
+        (row_limit,),
         fetch="all",
     )
     out: list[tuple[Path, str, str]] = []
     candidates: list[tuple[int, int, float, str, Path, str, str]] = []
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
-    max_items = max(1, min(limit, 5000))
+    candidate_cap = max(max_items * 12, max_items, 240)
     existing_sources: set[tuple[str, str]] = set()
 
     try:
@@ -756,7 +761,26 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
             roots.append(folder)
         return roots
 
+    def _iter_relevant_pdfs(root: Path, *, is_case_root: bool):
+        if is_case_root:
+            yield from root.glob("*.pdf")
+            return
+        # Court notice/ruling/judgment folders should be shallow.  Avoid a deep
+        # rglob here because one large archive folder can stall the six-hour
+        # todo refresh and prevent newer files from being reached.
+        yield from root.glob("*.pdf")
+        try:
+            for child in root.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    yield from child.glob("*.pdf")
+        except OSError:
+            return
+
     for row in rows or []:
+        if len(candidates) >= candidate_cap:
+            break
+        if target_budget_sec and time.monotonic() - started > target_budget_sec:
+            break
         raw_folder = str(row.get("folder_path") or "").strip()
         folder: Path | None = None
         for candidate in local_case_path_candidates(raw_folder):
@@ -767,8 +791,11 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
         if folder is None:
             continue
         for root in _relevant_roots(folder):
-            iterator = root.rglob("*.pdf") if root != folder or any(k in str(root) for k in wanted) else root.glob("*.pdf")
-            for pdf in iterator:
+            for pdf in _iter_relevant_pdfs(root, is_case_root=(root == folder and not any(k in str(root) for k in wanted))):
+                if len(candidates) >= candidate_cap:
+                    break
+                if target_budget_sec and time.monotonic() - started > target_budget_sec:
+                    break
                 if pdf.name.startswith(".") or pdf.name.startswith("~$"):
                     continue
                 text = str(pdf)

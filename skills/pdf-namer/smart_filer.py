@@ -60,6 +60,7 @@ SCAN_NONAME  = os.path.join(SCAN_ROOT, "04_程式無法命名區")
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_PATH = os.path.join(SKILL_DIR, "_case_index.json")
 FILING_LOG_PATH = os.path.join(SKILL_DIR, "_filing_log.json")
+_LISTDIR_TIMEOUT_SEC = float(os.environ.get("PDF_NAMER_CASE_INDEX_LISTDIR_TIMEOUT_SEC", "8") or "8")
 
 # Filing confidence threshold — anything below goes to failure zone
 # Load threshold from nightly training auto-adjustment (closed feedback loop)
@@ -77,6 +78,25 @@ OSC_ORCH_PATH = f"{_MAGI_ROOT}/skills/osc-orchestrator/action.py"
 OSC_ORCH_PY = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python3")
 
 CODE_DIR = str(get_orch_dir())
+
+
+def _safe_listdir(path: str, *, timeout_sec: float = _LISTDIR_TIMEOUT_SEC) -> List[str]:
+    """Bound directory listing so stale NAS/CloudStorage folders cannot hang case indexing."""
+    if not path or not os.path.isdir(path):
+        return []
+    try:
+        result = subprocess.run(
+            ["/bin/ls", "-1", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(1, timeout_sec),
+        )
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line]
+    except Exception:
+        return []
 
 def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
     """
@@ -177,17 +197,17 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
         logger.warning(f"案件根目錄不存在: {CASE_ROOT}")
         return index
 
-    for case_type in os.listdir(CASE_ROOT):
+    for case_type in _safe_listdir(CASE_ROOT):
         type_path = os.path.join(CASE_ROOT, case_type)
         if not os.path.isdir(type_path) or case_type.startswith("."):
             continue
 
-        for domain in os.listdir(type_path):
+        for domain in _safe_listdir(type_path):
             domain_path = os.path.join(type_path, domain)
             if not os.path.isdir(domain_path) or domain.startswith("."):
                 continue
 
-            for case_folder in os.listdir(domain_path):
+            for case_folder in _safe_listdir(domain_path):
                 case_path = os.path.join(domain_path, case_folder)
                 if not os.path.isdir(case_path) or case_folder.startswith("."):
                     continue
@@ -196,7 +216,7 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
 
                 # List subfolders
                 subfolders = []
-                for sf in os.listdir(case_path):
+                for sf in _safe_listdir(case_path):
                     sf_path = os.path.join(case_path, sf)
                     if os.path.isdir(sf_path) and not sf.startswith("."):
                         subfolders.append(sf)

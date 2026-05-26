@@ -26,6 +26,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LATEST_PATH = ROOT / ".runtime" / "osc_events_refresh_latest.json"
 PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
+PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-26-court-judgment-transcript")
 
 
 class _PdfScanTimeout(TimeoutError):
@@ -154,12 +155,13 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                 cached = cache_files.get(cache_key) if isinstance(cache_files, dict) else None
                 if isinstance(cached, dict):
                     same_file = int(cached.get("mtime") or 0) == signature[1] and int(cached.get("size") or -1) == signature[2]
+                    same_rule = str(cached.get("rule_version") or "") == PDF_SCAN_RULE_VERSION
                     scanned_at = str(cached.get("scanned_at") or "")
                     try:
                         age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(scanned_at)).total_seconds() / 86400
                     except Exception:
                         age_days = no_todo_cache_days + 1
-                    if same_file and int(cached.get("todo_count") or 0) == 0 and age_days < no_todo_cache_days:
+                    if same_file and same_rule and int(cached.get("todo_count") or 0) == 0 and age_days < no_todo_cache_days:
                         cache_skipped += 1
                         continue
             with _pdf_scan_time_limit(file_timeout_sec):
@@ -182,6 +184,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                     "mtime": signature[1],
                     "size": signature[2],
                     "todo_count": len(todos),
+                    "rule_version": PDF_SCAN_RULE_VERSION,
                     "text_available": bool(item.get("text_available")),
                     "text_error": str(item.get("text_error") or "")[:200],
                     "scanned_at": datetime.now(timezone.utc).isoformat(),
@@ -240,6 +243,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "file_timeout_sec": file_timeout_sec,
         "budget_sec": budget_sec,
         "no_todo_cache_days": no_todo_cache_days,
+        "rule_version": PDF_SCAN_RULE_VERSION,
         "targets": len(targets),
         "scanned": scanned,
         "cache_skipped": cache_skipped,

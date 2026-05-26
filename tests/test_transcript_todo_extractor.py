@@ -184,3 +184,20 @@ def test_rights_warning_is_not_todo(tmp_path):
     )
 
     assert items == []
+
+
+def test_default_targets_include_recent_unindexed_transcript(tmp_path, monkeypatch):
+    mod = _load_module()
+    case_dir = tmp_path / "01_案件" / "一般案件" / "刑事" / "2026-0002-劉信義-一審-殺人"
+    transcript_dir = case_dir / "08_筆錄"
+    transcript_dir.mkdir(parents=True)
+    pdf = transcript_dir / "20260513 準備程序筆錄(下午0210).pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(mod, "INDEX_DB_PATH", tmp_path / "missing_index.json")
+    monkeypatch.setattr(mod, "_case_roots", lambda: [tmp_path / "01_案件"])
+    monkeypatch.setattr(mod, "RECENT_DAYS", 60)
+    monkeypatch.setattr(mod, "LISTING_BUDGET_SEC", 5)
+
+    targets = mod._iter_pdf_targets("", limit=10)
+
+    assert pdf in targets
