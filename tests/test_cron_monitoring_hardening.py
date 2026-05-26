@@ -412,6 +412,14 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "scheduled_reboot_guard.py" in by_id["job_reboot_before_day_model_switch"]["command"]
     assert by_id["job_reboot_before_night_model_switch"]["enabled"] is False
     assert "MAGI_ALLOW_SCHEDULED_REBOOT=1" in by_id["job_reboot_before_night_model_switch"]["command"]
+    assert by_id["job_nightly_bookmark_regex"]["enabled"] is True
+    assert by_id["job_nightly_bookmark_regex"]["no_catchup"] is True
+    assert "--enqueue-ocr-followups" in by_id["job_nightly_bookmark_regex"]["command"]
+    assert by_id["job_weekend_bookmark"]["timeout_sec"] == 21600
+    assert "--single-doc-fastpath" in by_id["job_weekend_bookmark"]["command"]
+    assert by_id["job_nas_pdf_ocr_worker_offpeak"]["cron"] == "45 1,3,5,22 * * *"
+    assert "--batch 1" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
+    assert "--require-free-inactive-gb 4" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
 
 
 def test_seed_cron_jobs_installs_monthly_accounting_bonus_job(tmp_path):

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("weekend-bookmark")
 
+
+class FileScanTimeout(TimeoutError):
+    pass
+
+
+class _file_timeout:
+    def __init__(self, seconds: int):
+        self.seconds = max(0, int(seconds or 0))
+        self._old_handler = None
+
+    def __enter__(self):
+        if self.seconds <= 0 or not hasattr(signal, "SIGALRM"):
+            return self
+        self._old_handler = signal.getsignal(signal.SIGALRM)
+
+        def _raise_timeout(_signum, _frame):
+            raise FileScanTimeout(f"single PDF scan exceeded {self.seconds}s")
+
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.alarm(self.seconds)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.seconds > 0 and hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+            if self._old_handler is not None:
+                signal.signal(signal.SIGALRM, self._old_handler)
+        return False
+
 # ── State persistence ─────────────────────────────────────────────────────────
 STATE_FILE = MAGI_ROOT / ".agent" / "bookmark_batch_state.json"
 
@@ -44,11 +74,15 @@ VISION_BUDGET_SECONDS = int(os.environ.get("BOOKMARK_VISION_BUDGET_SEC", "28800"
 VISION_PER_PAGE_TIMEOUT = 30  # seconds per vision call
 TARGET_SUBDIRS = ["05_閱卷資料", "06_閱卷資料", "06_證據資料"]
 BACKFILL_PLAN_PATH = MAGI_ROOT / ".runtime" / "bookmark_backfill_plan_latest.json"
+FOLLOWUP_PLAN_PATH = MAGI_ROOT / ".runtime" / "bookmark_followup_plan_latest.json"
 SINGLE_DOC_FASTPATH_RE = re.compile(
     r"(?:判決|裁定|聲請書|申請書|申冤表格|調查報告|不起訴處分書|起訴書|答辯狀|陳報狀|抗告狀|上訴狀)"
 )
 MERGED_RECORD_HINT_RE = re.compile(
     r"(?:全案卷宗|調查卷|卷\d+|卷[一二三四五六七八九十]|DOC_|_OCR|P\d+|P\d+-\d+)"
+)
+WATERMARK_ONLY_RE = re.compile(
+    r"(?:司法院線上閱卷系統作業平台|[\u4e00-\u9fff]{2,4}律師|\d{2,3}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})"
 )
 
 # ── Imports ───────────────────────────────────────────────────────────────────
@@ -181,6 +215,80 @@ def _looks_like_obvious_single_doc(pdf: Path, page_count: int) -> bool:
     return bool(SINGLE_DOC_FASTPATH_RE.search(name))
 
 
+def _single_doc_bookmark_title(pdf: Path) -> str:
+    stem = pdf.stem
+    stem = re.sub(r"[_\-\s]*OCR$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"\s+", " ", stem).strip(" -_")
+    return stem[:80] or "單一文件"
+
+
+def _write_single_doc_bookmark(pdf: Path, title: str | None = None) -> int:
+    """Write a page-1 bookmark for a confirmed single-document PDF."""
+    import fitz
+
+    doc = fitz.open(str(pdf))
+    try:
+        existing = doc.get_toc() or []
+        if existing:
+            return len(existing)
+        toc = [[1, title or _single_doc_bookmark_title(pdf), 1]]
+        doc.set_toc(toc)
+        temp = str(pdf) + ".tmp.pdf"
+        doc.save(temp, garbage=4, deflate=True)
+        doc.close()
+        os.replace(temp, pdf)
+        return 1
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+
+def _meaningful_boundary_chars(text: str) -> int:
+    """Count useful text after removing repetitive court/watermark noise."""
+    clean = WATERMARK_ONLY_RE.sub("", text or "")
+    clean = re.sub(r"\s+", "", clean)
+    clean = re.sub(r"[^\w\u4e00-\u9fff]", "", clean)
+    return len(clean)
+
+
+def _text_profile(pdf: Path, page_count: int, max_samples: int = 5) -> dict:
+    """Sample native text to decide if a PDF needs OCR before bookmark detection."""
+    import fitz
+
+    if page_count <= 0:
+        return {"sampled_pages": 0, "useful_chars": 0, "max_useful_chars": 0}
+    indexes = {0, min(1, page_count - 1), page_count // 2, max(0, page_count - 2), page_count - 1}
+    indexes = sorted(i for i in indexes if 0 <= i < page_count)[:max_samples]
+    useful_counts: list[int] = []
+    doc = fitz.open(str(pdf))
+    try:
+        for idx in indexes:
+            useful_counts.append(_meaningful_boundary_chars(doc[idx].get_text() or ""))
+    finally:
+        doc.close()
+    return {
+        "sampled_pages": len(useful_counts),
+        "useful_chars": sum(useful_counts),
+        "max_useful_chars": max(useful_counts or [0]),
+    }
+
+
+def _needs_full_ocr(pdf: Path, page_count: int) -> tuple[bool, str]:
+    if "_OCR" in pdf.stem.upper():
+        return False, "already_ocr_named"
+    try:
+        profile = _text_profile(pdf, page_count)
+    except Exception as exc:
+        return True, f"text_profile_failed:{type(exc).__name__}"
+    max_useful = int(profile.get("max_useful_chars") or 0)
+    useful_total = int(profile.get("useful_chars") or 0)
+    if max_useful < 80 and useful_total < 250:
+        return True, f"text_poor_sample:max={max_useful},total={useful_total}"
+    return False, f"text_sample_ok:max={max_useful},total={useful_total}"
+
+
 # ── oMLX management ──────────────────────────────────────────────────────────
 
 def _stop_omlx():
@@ -229,8 +337,10 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
         "bookmarks": 0,
         "skipped": 0,
         "no_boundary": 0,
+        "single_doc": 0,
         "needs_ocr": 0,
         "deferred_large_ocr": 0,
+        "file_timeout": 0,
         "errors": 0,
     }
     completed = state.setdefault("completed", {})
@@ -244,6 +354,14 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
         budget_sec = 0
     single_doc_fastpath = os.environ.get("BOOKMARK_SINGLE_DOC_FASTPATH", "").strip() == "1"
     skip_large_non_ocr = os.environ.get("BOOKMARK_SKIP_LARGE_NON_OCR", "").strip() == "1"
+    if os.environ.get("BOOKMARK_STAGE1_ALLOW_VISION", "0").strip() not in ("1", "true", "yes"):
+        # Stage 1 must stay deterministic and bounded. Vision fallback belongs to
+        # stage2_vision; leaving it on here can make every regex miss call the
+        # inference service and stall large court-record PDFs.
+        os.environ["MAGI_BOOKMARKER_VISION_FALLBACK"] = "0"
+    retry_no_boundary = os.environ.get("BOOKMARK_RETRY_NO_BOUNDARY", "").strip() == "1"
+    retry_deferred = os.environ.get("BOOKMARK_RETRY_DEFERRED", "").strip() == "1"
+    retry_needs_ocr = os.environ.get("BOOKMARK_RETRY_NEEDS_OCR", "").strip() == "1"
     try:
         large_non_ocr_pages = int(os.environ.get("BOOKMARK_LARGE_NON_OCR_MIN_PAGES", "100"))
     except ValueError:
@@ -252,6 +370,10 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
         defer_large_ocr_pages = int(os.environ.get("BOOKMARK_DEFER_LARGE_OCR_PAGES", "0"))
     except ValueError:
         defer_large_ocr_pages = 0
+    try:
+        file_timeout_sec = int(os.environ.get("BOOKMARK_FILE_TIMEOUT_SEC", "0"))
+    except ValueError:
+        file_timeout_sec = 0
     stage_start = time.time()
 
     for i, pdf in enumerate(pdfs, 1):
@@ -268,7 +390,12 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
 
         # Skip if already processed with same mtime
         prev = completed.get(key, {})
-        if prev.get("mtime") == mtime and prev.get("stage1"):
+        force_retry = (
+            (retry_no_boundary and prev.get("no_boundary"))
+            or (retry_deferred and prev.get("deferred_large_ocr"))
+            or (retry_needs_ocr and prev.get("needs_ocr"))
+        )
+        if prev.get("mtime") == mtime and prev.get("stage1") and not force_retry:
             stats["skipped"] += 1
             stage1_errors.pop(key, None)
             _save_loop_progress(state, key, i, len(pdfs))
@@ -302,22 +429,32 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             _save_loop_progress(state, key, i, len(pdfs))
             continue
 
-        if skip_large_non_ocr and page_count >= large_non_ocr_pages and "_OCR" not in pdf.stem.upper():
-            completed[key] = {
-                "mtime": mtime,
-                "stage1": True,
-                "stage1_bookmarks": 0,
-                "pages": page_count,
-                "needs_ocr": True,
-                "message": "大型非 OCR PDF，專案模式先略過，需 OCR 後再編標籤",
-                "processed_at": datetime.now().isoformat(),
-            }
-            stats["needs_ocr"] += 1
-            stage1_errors.pop(key, None)
-            _save_loop_progress(state, key, i, len(pdfs))
-            continue
+        if skip_large_non_ocr and page_count >= large_non_ocr_pages:
+            needs_ocr, ocr_reason = _needs_full_ocr(pdf, page_count)
+            if not needs_ocr:
+                logger.info("  large non-OCR text sample OK: %s (%s)", pdf.name, ocr_reason)
+            elif not retry_needs_ocr:
+                completed[key] = {
+                    "mtime": mtime,
+                    "stage1": True,
+                    "stage1_bookmarks": 0,
+                    "pages": page_count,
+                    "needs_ocr": True,
+                    "ocr_reason": ocr_reason,
+                    "message": "大型 PDF 文字層不足，需 OCR 後再編標籤",
+                    "processed_at": datetime.now().isoformat(),
+                }
+                stats["needs_ocr"] += 1
+                stage1_errors.pop(key, None)
+                _save_loop_progress(state, key, i, len(pdfs))
+                continue
 
-        if defer_large_ocr_pages and page_count >= defer_large_ocr_pages and "_OCR" in pdf.stem.upper():
+        if (
+            defer_large_ocr_pages
+            and page_count >= defer_large_ocr_pages
+            and "_OCR" in pdf.stem.upper()
+            and not retry_deferred
+        ):
             completed[key] = {
                 "mtime": mtime,
                 "stage1": True,
@@ -333,17 +470,21 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             continue
 
         if single_doc_fastpath and _looks_like_obvious_single_doc(pdf, page_count):
+            bm_count = _write_single_doc_bookmark(pdf)
+            try:
+                stored_mtime = str(pdf.stat().st_mtime)
+            except Exception:
+                stored_mtime = mtime
             completed[key] = {
-                "mtime": mtime,
+                "mtime": stored_mtime,
                 "stage1": True,
-                "stage1_bookmarks": 0,
+                "stage1_bookmarks": bm_count,
                 "pages": page_count,
-                "no_boundary": True,
-                "classification": "legitimate_single_doc",
-                "message": "明確單一文件，專案快徑略過逐頁編標籤",
+                "classification": "single_doc_bookmark",
+                "message": "明確單一文件，已補 page-1 檔名書籤",
                 "processed_at": datetime.now().isoformat(),
             }
-            stats["no_boundary"] += 1
+            stats["single_doc"] += 1
             stage1_errors.pop(key, None)
             _save_loop_progress(state, key, i, len(pdfs))
             continue
@@ -352,7 +493,8 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
             logger.info(f"  Stage 1 progress: {i}/{len(pdfs)}")
 
         try:
-            result = scan_fn(str(pdf), output_path=None, dry_run=False)
+            with _file_timeout(file_timeout_sec):
+                result = scan_fn(str(pdf), output_path=None, dry_run=False)
             if result.get("success"):
                 bm_count = result.get("bookmarks", 0)
                 try:
@@ -370,6 +512,27 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                 stage1_errors.pop(key, None)
             elif _is_stage1_no_hit_result(result):
                 message = str(result.get("message") or "")
+                classification = str(result.get("classification") or "")
+                if classification == "legitimate_single_doc" or _looks_like_obvious_single_doc(pdf, page_count):
+                    bm_count = _write_single_doc_bookmark(pdf)
+                    try:
+                        stored_mtime = str(pdf.stat().st_mtime)
+                    except Exception:
+                        stored_mtime = mtime
+                    completed[key] = {
+                        "mtime": stored_mtime,
+                        "stage1": True,
+                        "stage1_bookmarks": bm_count,
+                        "pages": page_count,
+                        "classification": "single_doc_bookmark",
+                        "classification_reason": str(result.get("classification_reason") or ""),
+                        "message": "無多文件邊界但判定為單一文件，已補 page-1 檔名書籤",
+                        "processed_at": datetime.now().isoformat(),
+                    }
+                    stats["single_doc"] += 1
+                    stage1_errors.pop(key, None)
+                    _save_loop_progress(state, key, i, len(pdfs))
+                    continue
                 completed[key] = {
                     "mtime": mtime,
                     "stage1": True,
@@ -390,6 +553,19 @@ def stage1_regex(pdfs: list[Path], state: dict, scan_fn) -> dict:
                     "processed_at": datetime.now().isoformat(),
                 }
                 stats["errors"] += 1
+        except FileScanTimeout as e:
+            logger.warning("  Stage 1 timeout %s: %s", pdf.name, e)
+            completed[key] = {
+                "mtime": mtime,
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": page_count,
+                "deferred_large_ocr": "_OCR" in pdf.stem.upper(),
+                "file_timeout": True,
+                "message": str(e),
+                "processed_at": datetime.now().isoformat(),
+            }
+            stats["file_timeout"] += 1
         except Exception as e:
             logger.debug(f"  Stage 1 error {pdf.name}: {e}")
             stage1_errors[key] = {
@@ -475,6 +651,180 @@ def build_backfill_plan(pdfs: list[Path], state: dict, sample_limit: int = 20) -
         },
     }
     return plan
+
+
+def _followup_action_for(pdf: Path, info: dict, mtime: str) -> dict:
+    """Return the next concrete action MAGI should take for a bookmarked PDF state."""
+    key = str(pdf)
+    if not pdf.exists():
+        return {"path": key, "action": "missing", "reason": "file_not_found"}
+
+    pages = int(info.get("pages") or 0)
+    bookmarks = int(info.get("stage1_bookmarks") or 0)
+    if bookmarks > 0:
+        return {"path": key, "action": "complete", "reason": f"bookmarks={bookmarks}", "pages": pages}
+
+    if info.get("needs_ocr"):
+        return {
+            "path": key,
+            "action": "ocr_then_bookmark",
+            "reason": str(info.get("ocr_reason") or info.get("message") or "needs_ocr"),
+            "pages": pages,
+        }
+
+    if info.get("deferred_large_ocr"):
+        return {
+            "path": key,
+            "action": "split_large_ocr" if info.get("file_timeout") else "offpeak_retry_stage1",
+            "reason": "file_timeout" if info.get("file_timeout") else "large_ocr_pdf_deferred",
+            "pages": pages,
+        }
+
+    if info.get("file_timeout"):
+        return {
+            "path": key,
+            "action": "split_or_manual_boundary",
+            "reason": "file_timeout",
+            "pages": pages,
+        }
+
+    if info.get("no_boundary"):
+        try:
+            page_count = pages
+            if page_count <= 0:
+                import fitz
+                doc = fitz.open(str(pdf))
+                page_count = doc.page_count
+                doc.close()
+        except Exception:
+            page_count = pages
+        if page_count >= 100:
+            needs_ocr, reason = _needs_full_ocr(pdf, page_count)
+            if needs_ocr:
+                return {
+                    "path": key,
+                    "action": "ocr_then_bookmark",
+                    "reason": reason,
+                    "pages": page_count,
+                }
+            return {
+                "path": key,
+                "action": "offpeak_retry_stage1",
+                "reason": "large_pdf_no_boundary_with_text",
+                "pages": page_count,
+            }
+        if _looks_like_obvious_single_doc(pdf, page_count) or info.get("classification") == "legitimate_single_doc":
+            return {
+                "path": key,
+                "action": "single_doc_page1_bookmark",
+                "reason": str(info.get("classification_reason") or "single_doc"),
+                "pages": page_count,
+            }
+        return {
+            "path": key,
+            "action": "vision_boundary_review",
+            "reason": "no_boundary_without_single_doc_signal",
+            "pages": page_count,
+        }
+
+    if not info.get("stage1") or info.get("mtime") != mtime:
+        return {"path": key, "action": "retry_stage1", "reason": "stage1_missing_or_stale", "pages": pages}
+
+    return {"path": key, "action": "manual_review", "reason": "zero_bookmarks_without_known_class", "pages": pages}
+
+
+def build_followup_plan(pdfs: list[Path], state: dict, sample_limit: int = 50) -> dict:
+    """Build an actionable plan for OCR/no-boundary/deferred PDFs.
+
+    This is the key guard against silent drift: every zero-bookmark PDF must be
+    either resolved as a single document, queued for OCR, retried off-peak, or
+    explicitly assigned to vision/manual review.
+    """
+    completed = state.get("completed", {}) or {}
+    actions: list[dict] = []
+    counts: dict[str, int] = {}
+    for pdf in pdfs:
+        key = str(pdf)
+        info = completed.get(key, {}) or {}
+        try:
+            mtime = str(pdf.stat().st_mtime)
+        except Exception:
+            mtime = ""
+        action = _followup_action_for(pdf, info, mtime)
+        counts[action["action"]] = counts.get(action["action"], 0) + 1
+        if action["action"] not in {"complete"}:
+            actions.append(action)
+
+    priority_order = {
+        "ocr_then_bookmark": 0,
+        "offpeak_retry_stage1": 1,
+        "split_large_ocr": 1,
+        "split_or_manual_boundary": 2,
+        "single_doc_page1_bookmark": 3,
+        "vision_boundary_review": 4,
+        "retry_stage1": 5,
+        "manual_review": 6,
+        "missing": 7,
+    }
+    actions.sort(key=lambda item: (priority_order.get(item["action"], 99), -int(item.get("pages") or 0), item["path"]))
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "total_pdfs": len(pdfs),
+        "counts": counts,
+        "pending_count": len(actions),
+        "actions": actions[:sample_limit],
+        "truncated": len(actions) > sample_limit,
+    }
+
+
+def write_followup_plan(plan: dict, path: Path = FOLLOWUP_PLAN_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def enqueue_ocr_followups(plan: dict) -> int:
+    """Insert OCR follow-up items into the NAS OCR worker queue."""
+    import sqlite3
+
+    db_path = os.path.expanduser("~/.magi_nas_ocr_queue.db")
+    rows = [
+        item["path"]
+        for item in plan.get("actions", [])
+        if item.get("action") == "ocr_then_bookmark"
+    ]
+    if not rows:
+        return 0
+    conn = sqlite3.connect(db_path)
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ocr_queue (
+                file_path TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'pending',
+                last_attempt TIMESTAMP,
+                attempt_count INTEGER DEFAULT 0,
+                error_msg TEXT
+            )
+            """
+        )
+        added = 0
+        for file_path in rows:
+            try:
+                c.execute("INSERT INTO ocr_queue (file_path, status, error_msg) VALUES (?, 'pending', ?)", (
+                    file_path,
+                    "queued_by_bookmark_followup",
+                ))
+                added += 1
+            except sqlite3.IntegrityError:
+                c.execute(
+                    "UPDATE ocr_queue SET status='pending', error_msg=? WHERE file_path=? AND status IN ('failed','missing')",
+                    ("requeued_by_bookmark_followup", file_path),
+                )
+        conn.commit()
+        return added
+    finally:
+        conn.close()
 
 
 # ── Stage 2: Vision refinement ───────────────────────────────────────────────
@@ -687,6 +1037,37 @@ def main():
         default=0,
         help="In priority/example runs, defer OCR PDFs at or above this page count to a split/off-peak pass.",
     )
+    parser.add_argument(
+        "--file-timeout-sec",
+        type=int,
+        default=0,
+        help="Hard timeout per PDF for stage1 scan. Timed-out PDFs are recorded for split/off-peak follow-up.",
+    )
+    parser.add_argument(
+        "--retry-no-boundary",
+        action="store_true",
+        help="Reprocess same-mtime PDFs previously marked no_boundary; used after boundary/OCR rules improve.",
+    )
+    parser.add_argument(
+        "--retry-deferred",
+        action="store_true",
+        help="Reprocess same-mtime PDFs previously deferred as large OCR PDFs.",
+    )
+    parser.add_argument(
+        "--retry-needs-ocr",
+        action="store_true",
+        help="Re-evaluate same-mtime PDFs previously marked needs_ocr.",
+    )
+    parser.add_argument(
+        "--write-followup-plan",
+        action="store_true",
+        help="Write an actionable OCR/no-boundary/deferred follow-up plan JSON after discovery/run.",
+    )
+    parser.add_argument(
+        "--enqueue-ocr-followups",
+        action="store_true",
+        help="Add ocr_then_bookmark follow-up items to ~/.magi_nas_ocr_queue.db.",
+    )
     args = parser.parse_args()
 
     _set_state_file(args.state_file)
@@ -696,6 +1077,14 @@ def main():
         os.environ["BOOKMARK_SKIP_LARGE_NON_OCR"] = "1"
     if args.defer_large_ocr_pages > 0:
         os.environ["BOOKMARK_DEFER_LARGE_OCR_PAGES"] = str(args.defer_large_ocr_pages)
+    if args.file_timeout_sec > 0:
+        os.environ["BOOKMARK_FILE_TIMEOUT_SEC"] = str(args.file_timeout_sec)
+    if args.retry_no_boundary:
+        os.environ["BOOKMARK_RETRY_NO_BOUNDARY"] = "1"
+    if args.retry_deferred:
+        os.environ["BOOKMARK_RETRY_DEFERRED"] = "1"
+    if args.retry_needs_ocr:
+        os.environ["BOOKMARK_RETRY_NEEDS_OCR"] = "1"
     started = time.time()
     state = _load_state()
 
@@ -719,6 +1108,12 @@ def main():
         plan = build_backfill_plan(pdfs, state, sample_limit=max(1, args.plan_limit))
         BACKFILL_PLAN_PATH.parent.mkdir(parents=True, exist_ok=True)
         BACKFILL_PLAN_PATH.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.write_followup_plan or args.enqueue_ocr_followups:
+            followup = build_followup_plan(pdfs, state, sample_limit=max(1, args.plan_limit))
+            write_followup_plan(followup)
+            if args.enqueue_ocr_followups:
+                added = enqueue_ocr_followups(followup)
+                logger.info("Queued %d OCR follow-up PDFs", added)
         logger.info("Dry-run backfill plan written: %s", BACKFILL_PLAN_PATH)
         logger.info(
             "Plan summary: total=%d stage1_pending=%d no_boundary=%d vision_pending=%d",
@@ -734,8 +1129,10 @@ def main():
         "bookmarks": 0,
         "skipped": 0,
         "no_boundary": 0,
+        "single_doc": 0,
         "needs_ocr": 0,
         "deferred_large_ocr": 0,
+        "file_timeout": 0,
         "errors": 0,
     }
     s2 = {"pages_checked": 0, "bookmarks_added": 0, "files_refined": 0, "errors": 0}
@@ -758,6 +1155,7 @@ def main():
         logger.info(
             f"Stage 1 done: {s1['processed']} processed, "
             f"{s1['bookmarks']} bookmarks, {s1['skipped']} skipped, "
+            f"{s1.get('single_doc', 0)} single-doc, "
             f"{s1['no_boundary']} no-boundary, {s1['errors']} errors ({time.time() - started:.0f}s)"
         )
 
@@ -780,11 +1178,15 @@ def main():
         lines.append("  ── Stage 1 (regex) ──")
         lines.append(f"  處理：{s1['processed']} 份 / {s1['bookmarks']} 個書籤")
         lines.append(f"  跳過：{s1['skipped']} 份")
+        if s1.get("single_doc"):
+            lines.append(f"  單一文件：{s1['single_doc']} 份（已補 page-1 書籤）")
         lines.append(f"  無邊界（待 vision 補漏）：{s1['no_boundary']} 份")
         if s1.get("needs_ocr"):
             lines.append(f"  大型非 OCR（待 OCR 後再編）：{s1['needs_ocr']} 份")
         if s1.get("deferred_large_ocr"):
             lines.append(f"  大型 OCR（待分割/離峰重跑）：{s1['deferred_large_ocr']} 份")
+        if s1.get("file_timeout"):
+            lines.append(f"  單檔逾時（已排入分割流程）：{s1['file_timeout']} 份")
     if do_vision:
         lines.append("  ── Stage 2 (vision) ──")
         lines.append(f"  視覺檢查：{s2['pages_checked']} 頁")
@@ -793,6 +1195,15 @@ def main():
     lines.append(f"  耗時：{elapsed:.0f} 秒（{elapsed / 3600:.1f} 小時）")
     summary = "\n".join(lines)
     logger.info(summary)
+
+    followup = None
+    if args.write_followup_plan or args.enqueue_ocr_followups:
+        followup = build_followup_plan(pdfs, state, sample_limit=max(1, args.plan_limit))
+        write_followup_plan(followup)
+        logger.info("Follow-up plan written: %s", FOLLOWUP_PLAN_PATH)
+        if args.enqueue_ocr_followups:
+            added = enqueue_ocr_followups(followup)
+            logger.info("Queued %d OCR follow-up PDFs", added)
 
     if args.report_path:
         report_path = Path(args.report_path).expanduser()
@@ -836,6 +1247,9 @@ def main():
             ],
             "elapsed_sec": round(elapsed, 3),
         }
+        if followup is not None:
+            report["followup_counts"] = followup.get("counts", {})
+            report["followup_pending_count"] = followup.get("pending_count", 0)
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("Run report written: %s", report_path)

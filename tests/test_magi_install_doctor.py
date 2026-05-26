@@ -105,6 +105,9 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_distill_train_gemma" in cron_text
     assert "pdfnamer_docling_layout" in cron_text
     assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in cron_text
+    assert "job_nightly_bookmark_regex" in cron_text
+    assert "--write-followup-plan --enqueue-ocr-followups" in cron_text
+    assert "job_nas_pdf_ocr_worker_offpeak" in cron_text
 
 
 def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatch):

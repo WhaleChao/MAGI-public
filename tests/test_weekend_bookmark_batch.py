@@ -176,3 +176,102 @@ def test_build_backfill_plan_reports_no_boundary_and_mtime_backlog(tmp_path, mon
     assert str(backlog_pdf) in plan["samples"]["no_boundary_backlog"]
     assert plan["vision_pending_count"] == 1
     assert str(backlog_pdf) in plan["samples"]["vision_pending"]
+
+
+def test_stage1_regex_single_doc_no_boundary_gets_page1_bookmark(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    fake_fitz = types.SimpleNamespace(open=lambda _path: _FakeDoc(toc=[], pages=6))
+    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+
+    mod = _load_weekend_module()
+    monkeypatch.setattr(mod, "_save_state", lambda _state: None)
+    monkeypatch.setattr(mod, "_write_single_doc_bookmark", lambda _pdf: 1)
+
+    pdf = tmp_path / "刑事判決.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    state = {"completed": {}, "vision_done": {}}
+
+    def _scan_fn(_path, output_path=None, dry_run=False):
+        return {
+            "success": False,
+            "bookmarks": 0,
+            "toc": [],
+            "classification": "legitimate_single_doc",
+            "classification_reason": "filename_doc_type:判決",
+            "message": "未偵測到文件邊界，無法產生書籤；判定為單一文件",
+        }
+
+    stats = mod.stage1_regex([pdf], state, _scan_fn)
+
+    key = str(pdf)
+    assert stats["single_doc"] == 1
+    assert stats["no_boundary"] == 0
+    assert state["completed"][key]["stage1_bookmarks"] == 1
+    assert state["completed"][key]["classification"] == "single_doc_bookmark"
+
+
+def test_followup_plan_reclassifies_large_no_boundary_as_ocr(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    mod = _load_weekend_module()
+
+    pdf = tmp_path / "卷宗.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    monkeypatch.setattr(mod, "_needs_full_ocr", lambda _pdf, _page_count: (True, "text_poor_sample:max=0,total=0"))
+    state = {
+        "completed": {
+            str(pdf): {
+                "mtime": str(pdf.stat().st_mtime),
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": 500,
+                "no_boundary": True,
+            }
+        },
+        "vision_done": {},
+    }
+
+    plan = mod.build_followup_plan([pdf], state, sample_limit=10)
+
+    assert plan["counts"]["ocr_then_bookmark"] == 1
+    assert plan["actions"][0]["action"] == "ocr_then_bookmark"
+
+
+def test_followup_plan_routes_timed_out_ocr_to_split(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    mod = _load_weekend_module()
+
+    pdf = tmp_path / "卷宗_OCR.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    state = {
+        "completed": {
+            str(pdf): {
+                "mtime": str(pdf.stat().st_mtime),
+                "stage1": True,
+                "stage1_bookmarks": 0,
+                "pages": 449,
+                "deferred_large_ocr": True,
+                "file_timeout": True,
+            }
+        },
+        "vision_done": {},
+    }
+
+    plan = mod.build_followup_plan([pdf], state, sample_limit=10)
+
+    assert plan["counts"]["split_large_ocr"] == 1
+    assert plan["actions"][0]["reason"] == "file_timeout"

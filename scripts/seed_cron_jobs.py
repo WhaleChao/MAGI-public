@@ -368,6 +368,63 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_nightly_bookmark_regex",
+            "cron": "15 2 * * *",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_nightly_bookmark_regex",
+                (
+                    f"{python_bin} {repo_root / 'scripts' / 'weekend_bookmark_batch.py'} "
+                    "--stage regex --max-minutes 30 --single-doc-fastpath "
+                    "--skip-large-non-ocr --defer-large-ocr-pages 350 --file-timeout-sec 90 "
+                    "--write-followup-plan --enqueue-ocr-followups"
+                ),
+                block_at="throttle",
+            ),
+            "desc": "卷宗自動書籤夜間增量（regex-only + OCR 佇列，每日 02:15，30 分鐘上限）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 2100,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_weekend_bookmark",
+            "cron": "15 3 * * 6",
+            "command": (
+                f"{python_bin} {repo_root / 'scripts' / 'weekend_bookmark_batch.py'} "
+                "--stage all --single-doc-fastpath --skip-large-non-ocr "
+                "--defer-large-ocr-pages 350 --file-timeout-sec 90 "
+                "--write-followup-plan --enqueue-ocr-followups"
+            ),
+            "desc": "卷宗自動書籤週末完整回合（regex + OCR 佇列 + vision 補漏，6h timeout）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 21600,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_nas_pdf_ocr_worker_offpeak",
+            "cron": "45 1,3,5,22 * * *",
+            "command": (
+                f"{python_bin} {repo_root / 'scripts' / 'ops' / 'resource_guarded_run.py'} "
+                "--job-id job_nas_pdf_ocr_worker_offpeak --block-at throttle "
+                "--require-disk-free-gb 80 --require-free-inactive-gb 4 -- "
+                f"{python_bin} {repo_root / 'skills' / 'documents' / 'nas_pdf_ocr_worker.py'} work --batch 1"
+            ),
+            "desc": "NAS PDF OCR 離峰佇列處理（每次 1 份；資源不足自動略過，避免拖垮 NAS/Mac）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 1500,
+            "no_catchup": True,
+        },
+        {
             "id": "job_benchmark_pdf_bookmarker",
             "cron": "40 14 * * *",
             "command": guarded_cron_command(
