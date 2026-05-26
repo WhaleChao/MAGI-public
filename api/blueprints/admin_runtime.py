@@ -59,6 +59,7 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
     omlx = checks.get("omlx") if isinstance(checks.get("omlx"), dict) else {}
     db = checks.get("db") if isinstance(checks.get("db"), dict) else {}
     faiss = checks.get("faiss") if isinstance(checks.get("faiss"), dict) else {}
+    browser_core = checks.get("browser_core") if isinstance(checks.get("browser_core"), dict) else {}
     audit = checks.get("operational_audit") if isinstance(checks.get("operational_audit"), dict) else {}
     op = checks.get("operational_health") if isinstance(checks.get("operational_health"), dict) else {}
 
@@ -67,6 +68,7 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
         ("資料庫", db.get("ok"), db.get("detail") or "MariaDB"),
         ("推論服務", omlx.get("ok"), ", ".join(omlx.get("models") or []) or "模型狀態"),
         ("OCR", (checks.get("ocr") or {}).get("ok") if isinstance(checks.get("ocr"), dict) else None, (checks.get("ocr") or {}).get("engine", "")),
+        ("瀏覽器核心", browser_core.get("ok"), browser_core.get("detail") or browser_core.get("reason") or "Playwright Chromium"),
         ("向量資料庫", faiss.get("ok"), f"{faiss.get('vectors', '暖機中')} vectors"),
         ("日常稽核", audit.get("ok"), "最近檢查"),
         ("維運健康", op.get("ok"), ", ".join(op.get("degraded_reasons") or []) or "無重大異常"),
@@ -1441,6 +1443,18 @@ def create_admin_runtime_blueprint(
         except Exception:
             checks["ocr"] = {"ok": False, "engine": "macOS Vision", "note": "import failed"}
 
+        try:
+            from skills.engine.playwright_wrapper import playwright_chromium_health
+
+            checks["browser_core"] = playwright_chromium_health(timeout_seconds=5, cache_ttl_seconds=300)
+        except Exception as exc:
+            checks["browser_core"] = {
+                "ok": False,
+                "engine": "playwright-chromium",
+                "reason": "health_probe_failed",
+                "detail": str(exc)[:120],
+            }
+
         conn = None
         try:
             conn = mysql_connector.connect(**db_config, connection_timeout=3, use_pure=True)
@@ -1597,9 +1611,21 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, get_share_status
+            from api import nas_mount_guard as _nas_guard
 
-            nas_detail = {vol.split("/")[-1]: get_share_status(name, vol) for name, vol in _SHARES}
+            shares = _nas_guard.get_configured_shares(refresh=True)
+            nas_detail = {vol.split("/")[-1]: _nas_guard.get_share_status(name, vol) for name, vol in shares}
+            if any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+                checks["nas_auto_remount_attempted"] = True
+                try:
+                    _nas_guard.ensure_nas_mounts()
+                    shares = _nas_guard.get_configured_shares(refresh=True)
+                    nas_detail = {
+                        vol.split("/")[-1]: _nas_guard.get_share_status(name, vol)
+                        for name, vol in shares
+                    }
+                except Exception as exc:
+                    checks["nas_auto_remount_error"] = str(exc)[:120]
             checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
             checks["nas_detail"] = nas_detail
         except Exception:
@@ -1611,6 +1637,8 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health uptime", exc_info=True)
 
         degraded = not checks.get("omlx", {}).get("ok")
+        if checks.get("browser_core", {}).get("ok") is False:
+            degraded = True
         if checks.get("operational_audit", {}).get("ok") is False:
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded

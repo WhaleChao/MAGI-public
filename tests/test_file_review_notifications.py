@@ -585,7 +585,7 @@ def test_notify_payment_needed_without_pdf_is_not_delivery(tmp_path):
     info = FileReviewInfo(
         client_name="林建豐",
         court="臺灣臺東地方法院",
-        court_case_no="115年度原交易字第21號",
+        court_case_no="115年度原交易字第999999號",
         status="待繳費",
         payment_deadline="",
         files=[],
@@ -681,3 +681,26 @@ def test_portal_pending_payment_skips_payment_registry_case(tmp_path):
     )
 
     assert groups == {"overdue": [], "urgent": [], "unknown": []}
+
+
+def test_payment_download_error_is_retryable_after_cooldown(tmp_path, monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    mgr = FileReviewManager(download_folder=str(tmp_path / "downloads"), headless=True)
+    monkeypatch.setattr(mgr, "_find_existing_payment_slip_files", lambda row_json: [])
+    monkeypatch.setenv("MAGI_EEFILE_PAYMENT_ERROR_COOLDOWN_HOURS", "0")
+    row = {
+        "rowid": "retry-row",
+        "yyidno": "115.原交易.000021",
+        "showyyidno": "115年度原交易字第000021號",
+        "clnm": "喬○翔",
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    mgr._mark_payment_download_error(row, reason="payment_slip_download_no_pdf", files=[])
+
+    assert mgr.payment_registry["rowid:retry-row"]["status"] == "invalid_download_cooldown"
+    assert mgr._is_payment_processed(row) is False

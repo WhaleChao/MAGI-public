@@ -5876,8 +5876,9 @@ class FileReviewManager:
                 })
                 self.log(f"    ✅ 繳費單已下載: {new_files}")
             else:
-                # 即使沒抓到檔案也記錄（避免重複嘗試）
-                self._mark_payment_processed(rj, files=[], case_info={
+                # 沒有拿到 PDF 不能標成已處理；只記錄短暫錯誤冷卻，
+                # 讓下一輪仍可重試，避免「沒有繳費單卻永久略過」。
+                self._mark_payment_download_error(rj, reason="payment_slip_download_no_pdf", files=[], case_info={
                     "case_number": case_id, "party": party,
                 })
                 self.log(f"    ⚠️ 未偵測到繳費單檔案")
@@ -10070,17 +10071,47 @@ class FileReviewManager:
     }
 
     @classmethod
-    def _court_name_to_code(cls, court_name: str) -> str:
-        """法院全名 → court_code，支援模糊比對。"""
+    def _canonical_court_name(cls, court_name: str) -> str:
+        """法院 OCR 文字 → 官方法院全名，容忍常見台/臺與 OCR 近形錯字。"""
         if not court_name:
             return ""
-        code = cls._FULL_COURT_MAP.get(court_name, "")
-        if not code:
-            for full_name, c in cls._FULL_COURT_MAP.items():
-                if full_name in court_name or court_name in full_name:
-                    code = c
-                    break
-        return code
+        name = str(court_name or "").strip()
+        name = (
+            name.replace("台灣", "臺灣")
+            .replace("台北", "臺北")
+            .replace("台中", "臺中")
+            .replace("台南", "臺南")
+            .replace("台東", "臺東")
+            .replace("臺束", "臺東")
+            .replace("臺柬", "臺東")
+            .replace("臺束", "臺東")
+        )
+        if name in cls._FULL_COURT_MAP:
+            return name
+        for full_name in cls._FULL_COURT_MAP:
+            if full_name in name or name in full_name:
+                return full_name
+        try:
+            from difflib import SequenceMatcher
+
+            best_name = ""
+            best_score = 0.0
+            for full_name in cls._FULL_COURT_MAP:
+                score = SequenceMatcher(None, name, full_name).ratio()
+                if score > best_score:
+                    best_name = full_name
+                    best_score = score
+            if best_score >= 0.78:
+                return best_name
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch canonical court fuzzy", exc_info=True)
+        return name
+
+    @classmethod
+    def _court_name_to_code(cls, court_name: str) -> str:
+        """法院全名 → court_code，支援 OCR 錯字與模糊比對。"""
+        canonical = cls._canonical_court_name(court_name)
+        return cls._FULL_COURT_MAP.get(canonical, "")
 
     @staticmethod
     def parse_payment_screenshot(image_path: str) -> Dict[str, str]:
@@ -10266,8 +10297,7 @@ class FileReviewManager:
         # 法院名稱: 臺灣...法院 或 福建...法院（含分院）
         court_match = _re.search(r'[臺台福][灣]?[^\s]*法院(?:[^\s]*分院)?', text)
         court_name = court_match.group(0).rstrip() if court_match else ""
-        # 正規化: 台→臺
-        court_name = court_name.replace("台灣", "臺灣").replace("台中", "臺中").replace("台南", "臺南").replace("台東", "臺東").replace("台北", "臺北")
+        court_name = FileReviewManager._canonical_court_name(court_name)
 
         court_code = FileReviewManager._court_name_to_code(court_name)
 

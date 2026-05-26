@@ -3,6 +3,14 @@ from __future__ import annotations
 import subprocess
 
 
+def test_merge_share_csv_adds_local_backup_without_duplicates():
+    from api import nas_mount_guard as mod
+
+    assert mod._merge_share_csv("homes,lumi", "homes,lumi,bakup") == "homes,lumi,bakup"
+    assert mod._merge_share_csv("", "homes,lumi,bakup") == "homes,lumi,bakup"
+    assert mod._merge_share_csv("homes,bakup", "homes,lumi,bakup") == "homes,bakup,lumi"
+
+
 def test_synology_drive_fallback_counts_as_homes_available(tmp_path, monkeypatch):
     from api import nas_mount_guard as mod
 
@@ -29,6 +37,7 @@ def test_ensure_nas_mounts_does_not_treat_fallback_as_smb_mount(tmp_path, monkey
     attempts = []
 
     monkeypatch.setattr(mod, "_SHARES", [("lumi", "/Volumes/lumi")])
+    monkeypatch.setattr(mod, "_shares_from_env", lambda: [("lumi", "/Volumes/lumi")])
     monkeypatch.setattr(mod, "_SYNOLOGY_DRIVE_CANDIDATES", (str(fallback),))
     monkeypatch.setattr(mod, "_is_mounted", lambda path: False)
     monkeypatch.setattr(mod, "_ping_ok", lambda host, timeout=2: True)
@@ -52,6 +61,7 @@ def test_ensure_nas_mounts_ping_failure_returns_share_names(monkeypatch):
     from api import nas_mount_guard as mod
 
     monkeypatch.setattr(mod, "_SHARES", [("homes", "/Volumes/homes")])
+    monkeypatch.setattr(mod, "_shares_from_env", lambda: [("homes", "/Volumes/homes")])
     monkeypatch.setattr(mod, "resolve_nas_host", lambda: "192.0.2.10")
     monkeypatch.setattr(mod, "_ping_ok", lambda host, timeout=2: False)
 

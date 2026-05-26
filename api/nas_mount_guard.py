@@ -23,6 +23,44 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger("magi.nas_mount_guard")
 
 
+def _parse_env_file_values(keys: tuple[str, ...]) -> dict[str, str]:
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    found: dict[str, str] = {}
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key not in keys:
+                    continue
+                found[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return found
+
+
+def _merge_share_csv(current: str, local: str) -> str:
+    """Merge NAS share CSV values while preserving current order.
+
+    launchd can keep an older process environment after `.env` is edited.  For
+    NAS shares, `.env` should be additive so newly configured shares such as
+    `bakup` are not silently ignored until the next full service reinstall.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in (current or "", local or ""):
+        for part in raw.split(","):
+            name = part.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            merged.append(name)
+    return ",".join(merged)
+
+
 def _load_local_nas_env_if_needed() -> None:
     """Load non-secret NAS connection hints from .env for standalone diagnostics.
 
@@ -38,22 +76,18 @@ def _load_local_nas_env_if_needed() -> None:
         "MAGI_NAS_SHARES",
         "MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC",
     )
-    if all(os.environ.get(k) for k in needed):
+    local_values = _parse_env_file_values(needed)
+    if not local_values:
         return
-    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if key not in needed or key in os.environ:
-                    continue
-                os.environ[key] = value.strip().strip('"').strip("'")
-    except OSError:
-        return
+    for key, value in local_values.items():
+        if key == "MAGI_NAS_SHARES":
+            current = os.environ.get(key, "")
+            merged = _merge_share_csv(current, value)
+            if merged:
+                os.environ[key] = merged
+            continue
+        if key not in os.environ:
+            os.environ[key] = value
 
 
 _load_local_nas_env_if_needed()
@@ -246,15 +280,30 @@ _SHARES_DEFAULT: list[tuple[str, str]] = [
     ("homes", "/Volumes/homes"),
     ("lumi",  "/Volumes/lumi"),
 ]
-_SHARES_ENV = os.getenv("MAGI_NAS_SHARES", "").strip()
-if _SHARES_ENV:
-    _SHARES: list[tuple[str, str]] = [
+def _shares_from_env() -> list[tuple[str, str]]:
+    _load_local_nas_env_if_needed()
+    shares_env = os.getenv("MAGI_NAS_SHARES", "").strip()
+    if shares_env:
+        return [
         (name.strip(), f"/Volumes/{name.strip()}")
-        for name in _SHARES_ENV.split(",")
+        for name in shares_env.split(",")
         if name.strip()
-    ]
-else:
-    _SHARES = list(_SHARES_DEFAULT)
+        ]
+    return list(_SHARES_DEFAULT)
+
+
+_SHARES: list[tuple[str, str]] = _shares_from_env()
+
+
+def get_configured_shares(*, refresh: bool = False) -> list[tuple[str, str]]:
+    """Return configured NAS shares, optionally refreshing from `.env`."""
+    global _SHARES
+    if refresh:
+        refreshed = _shares_from_env()
+        if refreshed != _SHARES:
+            logger.info("NAS share 設定已刷新: %s", ", ".join(name for name, _ in refreshed))
+            _SHARES = refreshed
+    return list(_SHARES)
 
 # 當 /Volumes/<share> 因 root 權限無法建目錄時的 fallback
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
@@ -553,17 +602,18 @@ def ensure_nas_mounts() -> dict[str, bool]:
 def _ensure_nas_mounts_locked() -> dict[str, bool]:
     """實際掛載邏輯（需在 _ENSURE_MOUNT_LOCK 持有期間呼叫）。"""
     results: dict[str, bool] = {}
+    shares = get_configured_shares(refresh=True)
 
     # 動態解析 NAS IP（LAN → Tailscale fallback）
     host = resolve_nas_host()
     if not _ping_ok(host):
         logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", host)
-        return {name: False for name, _ in _SHARES}
+        return {name: False for name, _ in shares}
 
     # 清理舊 IP 或重複 mount
     _cleanup_wrong_host_mounts()
 
-    for share_name, volume_path in _SHARES:
+    for share_name, volume_path in shares:
         short_name = volume_path.split("/")[-1]
 
         # 已掛載且指向已知 NAS IP → 不動（無論 LAN 或 Tailscale）

@@ -115,7 +115,9 @@ def handle_payment_proof_from_channel(orch, image_path: str) -> str:
     if not py or not os.path.exists(py):
         py = sys.executable or "python3"
 
-    cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path})
+    # The channel pipeline will send the returned message.  Keep the subprocess
+    # silent to avoid duplicate Discord/LINE notifications on parse failures.
+    cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path, "notify": False})
     logger.info("💰 Calling action.py for payment proof: %s", image_path)
 
     try:

@@ -44,6 +44,7 @@ STEP_TIMEOUTS = {
     "upgrade_pip": 300,
     "install_core": 1800,
     "install_optional": 3600,
+    "install_playwright_browsers": 1200,
     "seed_cron_jobs": 180,
     "doctor": 180,
 }
