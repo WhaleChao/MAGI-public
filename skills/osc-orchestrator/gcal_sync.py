@@ -13,12 +13,13 @@ run_sync                : 主入口，回 stats dict
   - MAGI → GCal 推送至 settings.gcal_calendar_id
   - GCal → MAGI 匯入會掃 settings.gcal_import_calendar_ids；未設定時掃使用者可見的所有日曆
   - dry_run=True 時不呼叫任何 GCal write API，也不寫入 DB
-  - 掃未來 30 天內、未刪除的 todo / calendar_event
+  - 預設委派給 action.task_gcal_sync，掃未來 2 年內、未刪除的 todo
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -701,6 +702,34 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     Returns:
         {"pushed": int, "skipped": int, "errors": list[str]}
     """
+    if os.environ.get("MAGI_USE_LEGACY_GCAL_SYNC", "").strip() != "1":
+        try:
+            from action import task_gcal_sync  # type: ignore
+
+            out = task_gcal_sync(
+                {
+                    "dry_run": bool(dry_run),
+                    "limit": int(os.environ.get("OSC_GCAL_SYNC_LIMIT", "120") or 120),
+                    "repair_existing": True,
+                    "repair_limit": int(os.environ.get("OSC_GCAL_SYNC_REPAIR_LIMIT", "120") or 120),
+                    "mirror_imported": True,
+                }
+            )
+            return {
+                **out,
+                "pushed": int(out.get("inserted", 0) or 0) + int(out.get("patched", 0) or 0),
+                "skipped": int(out.get("skipped_implausible", 0) or 0),
+                "errors": [] if out.get("ok") else [str(out.get("error") or "gcal_sync_failed")],
+                "delegated_to": "task_gcal_sync",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "pushed": 0,
+                "skipped": 0,
+                "errors": [f"delegated_sync_failed:{type(exc).__name__}:{str(exc)[:160]}"],
+            }
+
     stats: dict[str, Any] = {"pushed": 0, "skipped": 0, "errors": []}
 
     creds = _load_creds()

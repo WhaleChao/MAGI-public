@@ -7645,8 +7645,8 @@ class LAFGmailMonitor:
             has_scopes = getattr(creds, 'has_scopes', None)
             if callable(has_scopes):
                 return bool(has_scopes([self.MODIFY_SCOPE]))
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log(f"⚠️ Gmail token scope check failed; fallback to scope list: {type(exc).__name__}")
         try:
             scopes = list(getattr(creds, 'scopes', None) or getattr(creds, 'granted_scopes', None) or [])
             if not scopes:

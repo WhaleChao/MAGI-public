@@ -2094,6 +2094,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": f"missing_db_helpers:{type(e).__name__}"}
 
     limit = int((payload or {}).get("limit") or 60)
+    dry_run = bool((payload or {}).get("dry_run", False))
     calendar_id = str((payload or {}).get("calendar_id") or "").strip()
     tz = (payload or {}).get("time_zone") or os.environ.get("MAGI_TIME_ZONE") or "Asia/Taipei"
     dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
@@ -2149,7 +2150,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not calendar_id:
             calendar_id = "primary"
         target_calendar_ids = _target_calendar_aliases(service, calendar_id)
-        if mirror_imported:
+        if mirror_imported and not dry_run:
             try:
                 cal_items = service.calendarList().list().execute().get("items", [])
                 visible_calendar_ids = [str(c.get("id") or "") for c in cal_items if c.get("id")]
@@ -2167,13 +2168,14 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 limit=limit,
                 target_calendar_ids=target_calendar_ids,
             )
-        duplicate_cleanup = _cleanup_duplicate_calendar_todos(
-            conn,
-            service,
-            calendar_id=calendar_id,
-            target_calendar_ids=target_calendar_ids,
-            limit=max(limit * 4, 300),
-        )
+        if not dry_run:
+            duplicate_cleanup = _cleanup_duplicate_calendar_todos(
+                conn,
+                service,
+                calendar_id=calendar_id,
+                target_calendar_ids=target_calendar_ids,
+                limit=max(limit * 4, 300),
+            )
         todos = list_unsynced_todos_with_case_info(conn, limit=limit)
         if repair_existing:
             repair_limit = max(1, min(int((payload or {}).get("repair_limit") or limit), 400))
@@ -2228,6 +2230,48 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if not calendar_id:
         calendar_id = "primary"
+
+    if dry_run:
+        preview_items = []
+        skipped_implausible = 0
+        today = datetime.now().date()
+        for td in todos or []:
+            try:
+                parsed_todo_date = datetime.strptime(str(td.get("todo_date") or ""), "%Y-%m-%d").date()
+                if parsed_todo_date < today or parsed_todo_date > today + timedelta(days=730):
+                    skipped_implausible += 1
+                    continue
+            except Exception:
+                skipped_implausible += 1
+                continue
+            if len(preview_items) < 25:
+                preview_items.append(
+                    {
+                        "todo_id": td.get("id"),
+                        "case_number": td.get("case_number"),
+                        "client_name": td.get("client_name"),
+                        "court_case_number": td.get("court_case_number"),
+                        "todo_type": td.get("todo_type"),
+                        "todo_date": str(td.get("todo_date") or ""),
+                        "todo_time": str(td.get("todo_time") or ""),
+                        "dry_run": True,
+                    }
+                )
+        return {
+            "ok": True,
+            "dry_run": True,
+            "limit": limit,
+            "fetched": len(todos or []),
+            "would_insert": max(0, len(todos or []) - skipped_implausible),
+            "inserted": 0,
+            "patched": 0,
+            "failed": 0,
+            "repair_existing": bool(repair_existing),
+            "mirror_imported": bool(mirror_imported),
+            "calendar_duplicate_cleanup": duplicate_cleanup,
+            "skipped_implausible": skipped_implausible,
+            "items": preview_items,
+        }
 
     retry_max_attempts = int((payload or {}).get("retry_max_attempts") or os.environ.get("OSC_GCAL_RETRY_MAX_ATTEMPTS") or 2)
     retry_sleep_sec = float((payload or {}).get("retry_sleep_sec") or os.environ.get("OSC_GCAL_RETRY_SLEEP_SEC") or 0.8)

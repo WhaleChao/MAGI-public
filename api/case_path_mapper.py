@@ -60,15 +60,23 @@ def _is_dir_accessible(path: str) -> bool:
     SMB hang 時 stat 會無限卡住（kernel uninterruptible sleep），
     所以 /Volumes/ 路徑用 thread + timeout 保護。
     """
-    # 本機路徑（/Users/、SynologyDrive）不需 timeout
-    if path.startswith("/Users/") or not path.startswith("/Volumes/"):
+    needs_timeout = (
+        path.startswith("/Volumes/")
+        or "/Library/CloudStorage/SynologyDrive" in path
+        or "/SynologyDrive" in path
+    )
+
+    # 普通本機路徑不需 timeout；Synology Drive / CloudStorage 會出現
+    # Resource deadlock avoided 或 File Provider 卡住，必須跟 SMB 一樣保護。
+    if not needs_timeout:
         try:
             st = os.stat(path)
             return st.st_mode & 0o40000 != 0
         except OSError:
             return False
 
-    # /Volumes/ SMB 路徑：用 thread timeout 保護，防止 NAS hang 卡住整個 process
+    # /Volumes/ SMB 與 Synology Drive/CloudStorage：用 thread timeout 保護，
+    # 防止 NAS 或 File Provider hang 卡住整個 process。
     import threading
     _result = [False]
     def _check():
@@ -628,7 +636,7 @@ def translate_case_path_to_local(path: str, cfg: Optional[dict] = None, *, requi
 
     for cand in candidates:
         if cand.startswith("/Users/") or cand.startswith("/Volumes/"):
-            if os.path.exists(cand):
+            if _is_dir_accessible(cand):
                 return cand
 
     if require_existing:
@@ -647,7 +655,7 @@ def translate_synology_path_to_local(path: str, cfg: Optional[dict] = None, *, r
 
     for cand in candidates:
         if cand.startswith("/Users/") or cand.startswith("/Volumes/"):
-            if os.path.exists(cand):
+            if _is_dir_accessible(cand):
                 return cand
 
     if require_existing:

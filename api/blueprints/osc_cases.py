@@ -6308,6 +6308,33 @@ def osc_todos_api():
         (payload.get("status") or "pending").strip() or "pending",
         (payload.get("source_file") or "").strip() or None,
     ]
+    existing, _ = _osc_exec(
+        """
+        SELECT id FROM case_todos
+        WHERE case_number=%s
+          AND todo_type=%s
+          AND ((todo_date=%s) OR (%s IS NULL AND todo_date IS NULL))
+          AND ((todo_time=%s) OR (%s IS NULL AND todo_time IS NULL))
+          AND COALESCE(description, '')=%s
+          AND COALESCE(source_file, '')=%s
+          AND (status IS NULL OR status='' OR status!='deleted')
+        LIMIT 1
+        """,
+        (
+            case_number,
+            todo_type,
+            vals[3],
+            vals[3],
+            vals[4],
+            vals[4],
+            vals[5] or "",
+            vals[7] or "",
+        ),
+        fetch="one",
+    )
+    if existing:
+        existing_id = existing.get("id") if isinstance(existing, dict) else existing[0]
+        return jsonify({"ok": True, "deduped": True, "id": existing_id})
     result, _ = _osc_exec(
         f"INSERT INTO case_todos ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})",
         tuple(vals),

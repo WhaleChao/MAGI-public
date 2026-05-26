@@ -165,6 +165,18 @@ def _parse_roc_or_ad_date(year: str, month: str, day: str) -> datetime | None:
         return None
 
 
+def _parse_compact_roc_or_ad_date(value: str) -> datetime | None:
+    text = re.sub(r"\D", "", str(value or ""))
+    try:
+        if len(text) == 7:
+            return _parse_roc_or_ad_date(text[:3], text[3:5], text[5:7])
+        if len(text) == 8:
+            return _parse_roc_or_ad_date(text[:4], text[4:6], text[6:8])
+    except Exception:
+        return None
+    return None
+
+
 def _parse_chinese_number_token(value: str) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -286,6 +298,40 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 }
             )
 
+    date_only_patterns = [
+        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
+        r"(?:定|訂)於?(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
+    ]
+    for pattern in date_only_patterns:
+        for m in re.finditer(pattern, body):
+            if len(m.groups()) == 4:
+                dt = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
+                proc = m.group(4)
+            elif len(m.groups()) == 3:
+                base = datetime.fromtimestamp(path.stat().st_mtime)
+                try:
+                    dt = datetime(base.year, int(m.group(1)), int(m.group(2)))
+                    if dt.date() < base.date() - timedelta(days=30):
+                        dt = dt.replace(year=dt.year + 1)
+                except Exception:
+                    dt = None
+                proc = m.group(3)
+            else:
+                continue
+            if not dt:
+                continue
+            kind = "審理" if proc in {"審理程序", "審判程序"} else (proc or "開庭")
+            items.append(
+                {
+                    "type": kind,
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "time": "",
+                    "description": f"⚖️ PDF 擷取：{dt.strftime('%m/%d')} {kind}",
+                    "source": "pdf_text",
+                    "source_file": str(path),
+                }
+            )
+
     doc_date = None
     for m in re.finditer(r"(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日", body):
         doc_date = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
@@ -312,6 +358,50 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 "date": deadline.strftime("%Y-%m-%d"),
                 "time": "",
                 "description": f"📝 PDF 擷取：{deadline.strftime('%m/%d')}前{todo_type}",
+                "source": "pdf_text",
+                "source_file": str(path),
+            }
+        )
+
+    separated_deadline_pat = re.compile(
+        r"(?:(?:期限|至|於|應於|限於|請於|繳費期限|繳費日期)[:：]?)?(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
+    )
+    for m in separated_deadline_pat.finditer(body):
+        before = body[max(0, m.start() - 28) : m.start()]
+        after = body[m.end() : m.end() + 40]
+        todo_type = _infer_deadline_type_from_context(f"{before}{after}")
+        if not todo_type:
+            continue
+        deadline = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
+        if not deadline:
+            continue
+        items.append(
+            {
+                "type": todo_type,
+                "date": deadline.strftime("%Y-%m-%d"),
+                "time": "",
+                "description": f"📝 PDF 擷取：{deadline.strftime('%m/%d')}{todo_type}",
+                "source": "pdf_text",
+                "source_file": str(path),
+            }
+        )
+
+    compact_deadline_pat = re.compile(r"(?:繳費期限|繳費日期|期限|至|於|應於|限於|請於)[:：]?\s*(\d{7,8})(?!\d)")
+    for m in compact_deadline_pat.finditer(body):
+        before = body[max(0, m.start() - 28) : m.start()]
+        after = body[m.end() : m.end() + 40]
+        todo_type = _infer_deadline_type_from_context(f"{before}{after}")
+        if not todo_type:
+            continue
+        deadline = _parse_compact_roc_or_ad_date(m.group(1))
+        if not deadline:
+            continue
+        items.append(
+            {
+                "type": todo_type,
+                "date": deadline.strftime("%Y-%m-%d"),
+                "time": "",
+                "description": f"📝 PDF 擷取：{deadline.strftime('%m/%d')}{todo_type}",
                 "source": "pdf_text",
                 "source_file": str(path),
             }
@@ -702,29 +792,64 @@ def _iter_scan_targets(raw_path: str, recursive: bool, limit: int) -> list[Path]
     return items[: max(1, min(limit, 2000))]
 
 
-def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
-    from api.case_path_mapper import local_case_path_candidates
+def _count_all_case_pdf_case_rows() -> int:
+    rows, _ = _osc_exec(
+        """
+        SELECT COUNT(*) AS count
+        FROM cases
+        WHERE folder_path IS NOT NULL AND folder_path!=''
+          AND (status IS NULL OR status='' OR status NOT IN ('已結案'))
+        """,
+        fetch="one",
+    )
+    if isinstance(rows, dict):
+        return int(rows.get("count") or 0)
+    if isinstance(rows, (list, tuple)) and rows:
+        return int(rows[0] or 0)
+    return 0
+
+
+def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: int | None = None) -> list[tuple[Path, str, str]]:
+    from api.case_path_mapper import _is_dir_accessible, local_case_path_candidates
 
     started = time.monotonic()
-    target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "180") or "180"))
+    target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "45") or "45"))
     max_items = max(1, min(limit, 5000))
-    row_limit = max(50, min(2000, max_items * 4))
+    row_limit = max(1, min(2000, int(case_batch or 0) or max(20, max_items * 2)))
+    row_offset = max(0, int(case_offset or 0))
     rows, _ = _osc_exec(
         """
         SELECT case_number, client_name, folder_path
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
           AND (status IS NULL OR status='' OR status NOT IN ('已結案'))
-        ORDER BY updated_at DESC, created_date DESC
-        LIMIT %s
+        ORDER BY updated_at DESC, created_date DESC, case_number DESC
+        LIMIT %s OFFSET %s
         """,
-        (row_limit,),
+        (row_limit, row_offset),
         fetch="all",
     )
     out: list[tuple[Path, str, str]] = []
     candidates: list[tuple[int, int, float, str, Path, str, str]] = []
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
-    candidate_cap = max(max_items * 12, max_items, 240)
+    wanted_dir_names = (
+        "法院通知與程序裁定",
+        "02_法院通知與程序裁定",
+        "01_法院通知與程序裁定",
+        "法院通知",
+        "程序裁定",
+        "法院通知或程序裁定",
+        "法院通知及程序裁定",
+        "09_法院通知或程序裁定",
+        "09_法院通知及程序裁定",
+        "法院_通知",
+        "法院_傳票",
+        "判決書",
+        "03_判決書",
+        "04_判決書",
+        "10_判決書",
+    )
+    candidate_cap = min(max(max_items * 4, max_items, 4), max_items * 8)
     existing_sources: set[tuple[str, str]] = set()
 
     try:
@@ -745,36 +870,62 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
     except Exception:
         existing_sources = set()
 
+    def _run_path_probe(fn, *, timeout_sec: float = 3.0, fallback=None):
+        import threading
+
+        box: dict[str, Any] = {"value": fallback}
+
+        def _runner():
+            try:
+                box["value"] = fn()
+            except Exception:
+                box["value"] = fallback
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        return fallback if t.is_alive() else box.get("value", fallback)
+
+    def _pdfs_shallow_timeout(root: Path, *, is_case_root: bool) -> list[Path]:
+        def _scan() -> list[Path]:
+            found = list(root.glob("*.pdf"))
+            if is_case_root:
+                return found
+            for child in root.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    found.extend(child.glob("*.pdf"))
+            return found
+
+        return list(_run_path_probe(_scan, timeout_sec=5.0, fallback=[]) or [])
+
+    def _pdf_mtime_timeout(pdf: Path) -> float:
+        return float(_run_path_probe(lambda: pdf.stat().st_mtime, timeout_sec=1.5, fallback=0.0) or 0.0)
+
+    def _pdf_resolve_timeout(pdf: Path) -> Path:
+        return _run_path_probe(lambda: pdf.resolve(), timeout_sec=1.5, fallback=pdf) or pdf
+
     def _relevant_roots(folder: Path) -> list[Path]:
-        roots: list[Path] = []
-        if any(k in str(folder) for k in wanted):
-            roots.append(folder)
-        try:
-            for child in folder.iterdir():
-                if not child.is_dir():
+        def _scan() -> list[Path]:
+            roots: list[Path] = []
+            if any(k in str(folder) for k in wanted):
+                roots.append(folder)
+            for name in wanted_dir_names:
+                child = folder / name
+                try:
+                    if child.is_dir():
+                        roots.append(child)
+                except OSError:
                     continue
-                if any(k in child.name for k in wanted):
-                    roots.append(child)
-        except OSError:
             return roots
-        if not roots:
-            roots.append(folder)
+
+        roots = list(_run_path_probe(_scan, timeout_sec=4.0, fallback=[]) or [])
         return roots
 
     def _iter_relevant_pdfs(root: Path, *, is_case_root: bool):
-        if is_case_root:
-            yield from root.glob("*.pdf")
-            return
         # Court notice/ruling/judgment folders should be shallow.  Avoid a deep
         # rglob here because one large archive folder can stall the six-hour
         # todo refresh and prevent newer files from being reached.
-        yield from root.glob("*.pdf")
-        try:
-            for child in root.iterdir():
-                if child.is_dir() and not child.name.startswith("."):
-                    yield from child.glob("*.pdf")
-        except OSError:
-            return
+        yield from _pdfs_shallow_timeout(root, is_case_root=is_case_root)
 
     for row in rows or []:
         if len(candidates) >= candidate_cap:
@@ -785,7 +936,7 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
         folder: Path | None = None
         for candidate in local_case_path_candidates(raw_folder):
             cand = Path(candidate).expanduser()
-            if cand.exists() and cand.is_dir():
+            if _is_dir_accessible(str(cand)):
                 folder = cand
                 break
         if folder is None:
@@ -802,13 +953,10 @@ def _iter_all_case_pdf_targets(limit: int) -> list[tuple[Path, str, str]]:
                 if wanted and not any(k in text for k in wanted):
                     continue
                 case_number = str(row.get("case_number") or "")
-                try:
-                    mtime = pdf.stat().st_mtime
-                except OSError:
-                    mtime = 0.0
+                mtime = _pdf_mtime_timeout(pdf)
                 processed_rank = 1 if (case_number, pdf.name) in existing_sources else 0
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
-                candidates.append((processed_rank, hint_rank, -mtime, pdf.name, pdf.resolve(), case_number, str(row.get("client_name") or "")))
+                candidates.append((processed_rank, hint_rank, -mtime, pdf.name, _pdf_resolve_timeout(pdf), case_number, str(row.get("client_name") or "")))
 
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
     for _processed_rank, _hint_rank, _mtime, _name, pdf, case_number, client_name in candidates[:max_items]:

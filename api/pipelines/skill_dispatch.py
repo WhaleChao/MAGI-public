@@ -990,20 +990,43 @@ def dispatch_calendar_event(message, user_id="", platform=""):
     todo_inserted = False
     try:
         from api.osc.utils import _osc_exec
-        _osc_exec(
-            "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'pending')",
-            (
-                event_case_number,
-                "",
-                "開庭" if is_court else "開會",
-                start_dt.strftime("%Y-%m-%d"),
-                start_dt.strftime("%H:%M:%S"),
-                "%s — %s" % (title, location) if location else title,
-            ),
-            fetch=None,
+        todo_type = "開庭" if is_court else "開會"
+        todo_date = start_dt.strftime("%Y-%m-%d")
+        todo_time = start_dt.strftime("%H:%M:%S")
+        todo_desc = "%s — %s" % (title, location) if location else title
+        source_file = "manual_dispatch:calendar_event"
+        existing, _ = _osc_exec(
+            """
+            SELECT id FROM case_todos
+            WHERE case_number=%s
+              AND todo_type=%s
+              AND todo_date=%s
+              AND todo_time=%s
+              AND description=%s
+              AND (status IS NULL OR status='' OR status!='deleted')
+            LIMIT 1
+            """,
+            (event_case_number, todo_type, todo_date, todo_time, todo_desc),
+            fetch="one",
         )
-        todo_inserted = True
+        if existing:
+            todo_inserted = True
+        else:
+            _osc_exec(
+                "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, source_file, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')",
+                (
+                    event_case_number,
+                    "",
+                    todo_type,
+                    todo_date,
+                    todo_time,
+                    todo_desc,
+                    source_file,
+                ),
+                fetch=None,
+            )
+            todo_inserted = True
     except Exception as _dbe:
         logger.warning("dispatch_calendar_event db insert failed: %s", _dbe)
 

@@ -1126,6 +1126,7 @@ def test_debt_auto_import_selected_docs_and_candidates(client, tmp_path, monkeyp
     _write_debt_asset_doc(asset, "12345")
     _write_debt_creditor_doc(creditor, "67890", "測試銀行")
     monkeypatch.setattr(mod, "_export_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(mod, "_debt_osc_exec", lambda *args, **kwargs: ([], {"host": "unit"}))
 
     r = client.get("/api/osc/debt/import-candidates")
     assert r.status_code == 200

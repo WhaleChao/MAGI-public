@@ -120,13 +120,80 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["scan", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
+    assert [name for name, _ in calls] == ["pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
+    assert result["scan"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
+    }
     assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
     assert calls[-1][1]["limit"] == 7
     assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1
     assert result["calendar_audit"]["ok"] is True
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
+
+
+def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+    calls = []
+
+    class FakeOscAction:
+        @staticmethod
+        def task_scan_cases(payload):
+            calls.append(("scan", payload))
+            return {"ok": True, "inserted": 1}
+
+        @staticmethod
+        def task_gcal_import(payload):
+            calls.append(("import", payload))
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(payload):
+            calls.append(("push", payload))
+            return {"ok": True, "inserted": 0, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: calls.append(("pdf_scan", {"limit": args.pdf_limit})) or {"ok": True, "scanned": 0},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=True,
+        legacy_scan=True,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=30,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert [name for name, _ in calls] == ["scan", "pdf_scan"]
+    assert result["scan"]["inserted"] == 1
 
 
 def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):

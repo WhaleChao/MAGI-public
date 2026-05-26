@@ -92,6 +92,26 @@ def _parse_roc_or_ad_year(year_token: str) -> int:
     return year + 1911 if year < 1911 else year
 
 
+def _parse_compact_roc_or_ad_date(token: str) -> Optional[datetime]:
+    """Parse compact court dates such as 1150528 or 20260528."""
+    text = re.sub(r"\D", "", token or "")
+    try:
+        if len(text) == 7:
+            return datetime(_parse_roc_or_ad_year(text[:3]), int(text[3:5]), int(text[5:7]))
+        if len(text) == 8:
+            return datetime(int(text[:4]), int(text[4:6]), int(text[6:8]))
+    except Exception:
+        return None
+    return None
+
+
+def _parse_separator_roc_or_ad_date(year_token: str, month_token: str, day_token: str) -> Optional[datetime]:
+    try:
+        return datetime(_parse_roc_or_ad_year(year_token), int(month_token), int(day_token))
+    except Exception:
+        return None
+
+
 def _normalize_time_period(period: str) -> str:
     text = (period or "").strip()
     if text == "上":
@@ -295,6 +315,62 @@ def _extract_absolute_deadline_todos(filename: str, document_date: datetime) -> 
                 "description": f"📝 {dt.month}月{dt.day}日前{todo_type}",
             },
         )
+
+    separated_date_pat = re.compile(
+        r"(?:(?:期限|至|於|應於|限於|請於|繳費期限|繳費日期)[:：]?)?(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
+    )
+    for m in separated_date_pat.finditer(text):
+        before = text[max(0, m.start() - 28) : m.start()]
+        after = text[m.end() : m.end() + 40]
+        context = f"{before}{after}"
+        todo_type = _infer_absolute_deadline_type(context)
+        if not todo_type:
+            continue
+        dt = _parse_separator_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
+        if not dt or dt.date() < document_date.date() - timedelta(days=3650):
+            continue
+        _append_unique_todo(
+            todos,
+            {
+                "type": todo_type,
+                "deadline_type": todo_type,
+                "file": filename,
+                "source_file": filename,
+                "source": "filename_absolute_date",
+                "date": dt.strftime("%Y-%m-%d"),
+                "datetime": dt,
+                "time": "",
+                "description": f"📝 {dt.month}月{dt.day}日{todo_type}",
+            },
+        )
+
+    compact_date_pat = re.compile(
+        r"(?:繳費期限|繳費日期|期限|至|於|應於|限於|請於)[:：]?\s*(\d{7,8})(?!\d)"
+    )
+    for m in compact_date_pat.finditer(text):
+        before = text[max(0, m.start() - 28) : m.start()]
+        after = text[m.end() : m.end() + 40]
+        context = f"{before}{after}"
+        todo_type = _infer_absolute_deadline_type(context)
+        if not todo_type:
+            continue
+        dt = _parse_compact_roc_or_ad_date(m.group(1))
+        if not dt or dt.date() < document_date.date() - timedelta(days=3650):
+            continue
+        _append_unique_todo(
+            todos,
+            {
+                "type": todo_type,
+                "deadline_type": todo_type,
+                "file": filename,
+                "source_file": filename,
+                "source": "filename_absolute_date",
+                "date": dt.strftime("%Y-%m-%d"),
+                "datetime": dt,
+                "time": "",
+                "description": f"📝 {dt.month}月{dt.day}日{todo_type}",
+            },
+        )
     return sorted(todos, key=_todo_sort_key)
 
 
@@ -442,6 +518,53 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime) -> L
                         minute=minute,
                     ),
                 )
+
+    explicit_date_only_pat = re.compile(
+        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,30}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)"
+    )
+    for m in explicit_date_only_pat.finditer(filename):
+        dt = _parse_separator_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
+        if not dt:
+            continue
+        label = "審理" if m.group(4) in {"審理程序", "審判程序"} else (m.group(4) or kind or "開庭")
+        _append_unique_todo(
+            todos,
+            {
+                "type": label,
+                "deadline_type": label,
+                "file": filename,
+                "source_file": filename,
+                "description": f"⚖️ {dt.month}月{dt.day}日 {label}",
+                "date": dt.strftime("%Y-%m-%d"),
+                "time": "",
+                "datetime": dt,
+            },
+        )
+
+    yearless_date_only_pat = re.compile(
+        r"(?:定|訂)?於?(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,30}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)"
+    )
+    for m in yearless_date_only_pat.finditer(filename):
+        try:
+            dt = datetime(document_date.year, int(m.group(1)), int(m.group(2)))
+            if dt.date() < document_date.date() - timedelta(days=30):
+                dt = dt.replace(year=dt.year + 1)
+        except Exception:
+            continue
+        label = "審理" if m.group(3) in {"審理程序", "審判程序"} else (m.group(3) or kind or "開庭")
+        _append_unique_todo(
+            todos,
+            {
+                "type": label,
+                "deadline_type": label,
+                "file": filename,
+                "source_file": filename,
+                "description": f"⚖️ {dt.month}月{dt.day}日 {label}",
+                "date": dt.strftime("%Y-%m-%d"),
+                "time": "",
+                "datetime": dt,
+            },
+        )
 
     return sorted(todos, key=_todo_sort_key)
 

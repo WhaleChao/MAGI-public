@@ -280,9 +280,8 @@ def _debt_import_candidates() -> dict:
 
     try:
         from api.case_path_mapper import translate_case_path_to_local
-        from api.osc.utils import _osc_exec
 
-        rows, _ = _osc_exec(
+        rows, _ = _debt_osc_exec(
             """
             SELECT id, case_number, client_name, folder_path
             FROM cases

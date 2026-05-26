@@ -26,7 +26,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LATEST_PATH = ROOT / ".runtime" / "osc_events_refresh_latest.json"
 PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
-PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-26-court-judgment-transcript")
+PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
+PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-27-compact-date-dateonly-hearing")
 
 
 class _PdfScanTimeout(TimeoutError):
@@ -84,13 +85,17 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     from api.blueprints import osc_pdf
 
     limit = max(1, int(getattr(args, "pdf_limit", 240)))
-    target_limit = max(limit, min(limit * 5, 5000))
+    target_limit_env = int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CANDIDATE_LIMIT", "0") or "0")
+    target_limit = max(limit, min(target_limit_env, 5000)) if target_limit_env > 0 else limit
     max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
     dry_run = bool(getattr(args, "dry_run", False))
     scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
     text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "1").strip().lower() in {"1", "true", "yes", "on"}
     file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
     budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
+    outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
+    if outer_budget:
+        budget_sec = min(budget_sec, outer_budget)
     no_todo_cache_days = max(0, int(os.environ.get("OSC_PDF_CALENDAR_NO_TODO_CACHE_DAYS", "14") or "14"))
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
@@ -112,6 +117,16 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             pass
         return {"version": 1, "files": {}}
 
+    def _load_cursor() -> dict[str, Any]:
+        try:
+            if PDF_SCAN_CURSOR_PATH.exists():
+                data = json.loads(PDF_SCAN_CURSOR_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {"version": 1, "case_offset": 0}
+
     def _save_cache(data: dict[str, Any]) -> None:
         files = data.get("files")
         if isinstance(files, dict) and len(files) > 20000:
@@ -122,6 +137,12 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(PDF_SCAN_CACHE_PATH)
 
+    def _save_cursor(data: dict[str, Any]) -> None:
+        PDF_SCAN_CURSOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PDF_SCAN_CURSOR_PATH.with_suffix(PDF_SCAN_CURSOR_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(PDF_SCAN_CURSOR_PATH)
+
     def _file_signature(path: Any) -> tuple[str, int, int] | None:
         try:
             st = path.stat()
@@ -131,15 +152,52 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
 
     scan_cache = _load_cache()
     cache_files = scan_cache.setdefault("files", {})
-
+    scan_cursor = _load_cursor()
     try:
-        targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit)
+        total_case_rows = max(0, int(osc_pdf._count_all_case_pdf_case_rows()))
+    except Exception:
+        total_case_rows = 0
+    case_batch = max(1, min(500, int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_BATCH", "40") or "40")))
+    env_case_offset = os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_OFFSET")
+    if env_case_offset is not None and str(env_case_offset).strip() != "":
+        case_offset = max(0, int(env_case_offset or "0"))
+    else:
+        case_offset = max(0, int(scan_cursor.get("case_offset") or 0))
+    if total_case_rows and case_offset >= total_case_rows:
+        case_offset = 0
+
+    target_timeout_sec = max(5, min(max(10, budget_sec or 10), int(os.environ.get("OSC_PDF_CALENDAR_TARGET_TIMEOUT_SEC", "45") or "45")))
+    try:
+        with _pdf_scan_time_limit(target_timeout_sec):
+            try:
+                targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit, case_offset=case_offset, case_batch=case_batch)
+            except TypeError:
+                # Unit tests and older private plugins may monkeypatch the old
+                # one-argument helper; keep dry-run verification compatible.
+                targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit)
+    except _PdfScanTimeout as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "limit": limit,
+            "candidate_limit": target_limit,
+            "max_pages": max_pages,
+            "target_timeout_sec": target_timeout_sec,
+            "case_offset": case_offset,
+            "case_batch": case_batch,
+            "total_case_rows": total_case_rows,
+        }
     except Exception as exc:
         return {
             "ok": False,
             "error": f"{type(exc).__name__}: {str(exc)[:240]}",
             "limit": limit,
+            "candidate_limit": target_limit,
             "max_pages": max_pages,
+            "target_timeout_sec": target_timeout_sec,
+            "case_offset": case_offset,
+            "case_batch": case_batch,
+            "total_case_rows": total_case_rows,
         }
 
     for path, case_number, client_name in targets:
@@ -232,6 +290,26 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             if len(errors) < 20:
                 errors.append(f"cache_save_failed:{type(exc).__name__}: {str(exc)[:160]}")
 
+    next_case_offset = (case_offset + case_batch) if total_case_rows else case_offset
+    if total_case_rows and next_case_offset >= total_case_rows:
+        next_case_offset = 0
+    if not dry_run:
+        try:
+            _save_cursor(
+                {
+                    "version": 1,
+                    "case_offset": next_case_offset,
+                    "last_case_offset": case_offset,
+                    "case_batch": case_batch,
+                    "total_case_rows": total_case_rows,
+                    "rule_version": PDF_SCAN_RULE_VERSION,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            if len(errors) < 20:
+                errors.append(f"cursor_save_failed:{type(exc).__name__}: {str(exc)[:160]}")
+
     return {
         "ok": True,
         "dry_run": dry_run,
@@ -242,6 +320,11 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "text_when_filename": text_when_filename,
         "file_timeout_sec": file_timeout_sec,
         "budget_sec": budget_sec,
+        "target_timeout_sec": target_timeout_sec,
+        "case_offset": case_offset,
+        "case_batch": case_batch,
+        "next_case_offset": next_case_offset,
+        "total_case_rows": total_case_rows,
         "no_todo_cache_days": no_todo_cache_days,
         "rule_version": PDF_SCAN_RULE_VERSION,
         "targets": len(targets),
@@ -305,25 +388,36 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     if not args.calendar_only:
-        try:
-            result["scan"] = mod.task_scan_cases(
-                {
-                    "max_cases": args.max_cases,
-                    "max_files_per_case": args.max_files_per_case,
-                    "time_budget_sec": args.scan_time_budget_sec,
-                    "dry_run": bool(getattr(args, "dry_run", False)),
-                    "force_rebuild": bool(args.force_rebuild),
-                }
-            )
-        except Exception as exc:
-            result["ok"] = False
-            result["scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+        if bool(getattr(args, "legacy_scan", False)):
+            try:
+                result["scan"] = mod.task_scan_cases(
+                    {
+                        "max_cases": args.max_cases,
+                        "max_files_per_case": args.max_files_per_case,
+                        "time_budget_sec": args.scan_time_budget_sec,
+                        "dry_run": bool(getattr(args, "dry_run", False)),
+                        "force_rebuild": bool(args.force_rebuild),
+                    }
+                )
+            except Exception as exc:
+                result["ok"] = False
+                result["scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+        else:
+            result["scan"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
+            }
 
         if not getattr(args, "skip_pdf_todos", False):
             try:
                 result["pdf_calendar_scan"] = _run_pdf_calendar_scan(args)
                 if not result["pdf_calendar_scan"].get("ok"):
-                    result["ok"] = False
+                    err = str(result["pdf_calendar_scan"].get("error") or "")
+                    if err.startswith("pdf_scan_timeout"):
+                        result["warnings"].append("pdf_calendar_scan_timeout")
+                    else:
+                        result["ok"] = False
             except Exception as exc:
                 result["ok"] = False
                 result["pdf_calendar_scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
@@ -428,7 +522,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--calendar-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_CALENDAR_LIMIT", "250")))
     parser.add_argument("--gcal-push-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT", "120")))
     parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKBACK_DAYS", "30")))
-    parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "180")))
+    parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "730")))
     parser.add_argument("--transcript-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT", "120")))
     parser.add_argument("--transcript-tail-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_TAIL_PAGES", "3")))
     parser.add_argument("--pdf-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_LIMIT", "240")))
@@ -441,6 +535,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-only", action="store_true")
     parser.add_argument("--calendar-only", action="store_true")
     parser.add_argument("--force-rebuild", action="store_true")
+    parser.add_argument("--legacy-scan", action="store_true", default=os.environ.get("OSC_EVENTS_REFRESH_LEGACY_SCAN", "0") == "1")
     return parser.parse_args(argv)
 
 

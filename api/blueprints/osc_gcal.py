@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+import importlib.util
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify
@@ -69,6 +71,22 @@ def _load_creds():
     except Exception as exc:
         logger.warning("_load_creds failed: %s", exc)
         return None
+
+
+def _run_current_gcal_sync(payload: dict) -> dict:
+    """Run the single current OSC Google Calendar sync implementation."""
+    skill_dir = Path(__file__).resolve().parents[2] / "skills" / "osc-orchestrator"
+    action_path = skill_dir / "action.py"
+    if not action_path.exists():
+        raise RuntimeError("找不到 OSC 日曆同步模組")
+    if str(skill_dir) not in sys.path:
+        sys.path.insert(0, str(skill_dir))
+    spec = importlib.util.spec_from_file_location("magi_osc_orchestrator_action", action_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("無法載入 OSC 日曆同步模組")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(module.task_gcal_sync(payload or {}))
 
 
 def _build_redirect_uri() -> str:
@@ -214,20 +232,18 @@ def gcal_sync():
     dry_run = bool(payload.get("dry_run", False))
 
     try:
-        from skills.osc_orchestrator.gcal_sync import run_sync  # type: ignore
-        stats = run_sync(dry_run=dry_run)
-        return jsonify({"ok": True, **stats})
-    except ImportError:
-        # Fallback: import from skills directory directly
-        import sys
-        sys.path.insert(0, "/Users/ai/Desktop/MAGI_v2/skills/osc-orchestrator")
-        try:
-            from gcal_sync import run_sync  # type: ignore
-            stats = run_sync(dry_run=dry_run)
-            return jsonify({"ok": True, **stats})
-        except Exception as exc2:
-            logger.exception("gcal_sync fallback failed")
-            return jsonify({"ok": False, "error": str(exc2)}), 500
+        limit = max(1, min(400, int(payload.get("limit") or 80)))
+        stats = _run_current_gcal_sync(
+            {
+                "dry_run": dry_run,
+                "limit": limit,
+                "repair_existing": bool(payload.get("repair_existing", True)),
+                "repair_limit": max(limit, 80),
+                "mirror_imported": bool(payload.get("mirror_imported", True)),
+            }
+        )
+        status = 200 if stats.get("ok") else (400 if stats.get("need_interactive_oauth") else 500)
+        return jsonify(stats), status
     except Exception as exc:
         logger.exception("gcal_sync failed")
         return jsonify({"ok": False, "error": str(exc)}), 500

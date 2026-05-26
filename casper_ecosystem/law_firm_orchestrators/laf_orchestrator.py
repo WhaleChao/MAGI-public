@@ -53,7 +53,7 @@ if str(MAGI_DIR) not in sys.path:
     sys.path.insert(0, str(MAGI_DIR))
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
-from api.case_path_mapper import canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 CODE_DIR = get_orch_dir()
@@ -84,6 +84,43 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
         magi_eventlog.remember_event(event, ok=ok, payload=payload or {}, tags=tags or {}, source="laf_orchestrator")
     except Exception:
         return
+
+
+def _safe_listdir(path: str, *, timeout_sec: float = 2.0) -> list[str]:
+    """List a NAS/Synology Drive directory without letting stale mounts block LAF."""
+    out: dict[str, list[str]] = {"items": []}
+
+    def _runner() -> None:
+        try:
+            out["items"] = list(os.listdir(path))
+        except Exception:
+            out["items"] = []
+
+    t = threading.Thread(target=_runner, daemon=True, name="laf-safe-listdir")
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        logger.warning("LAF safe listdir timeout after %.1fs: %s", timeout_sec, path)
+        return []
+    return out.get("items") or []
+
+
+def _safe_getmtime(path: str, *, timeout_sec: float = 1.5) -> float:
+    out: dict[str, float] = {"value": 0.0}
+
+    def _runner() -> None:
+        try:
+            out["value"] = float(os.path.getmtime(path))
+        except Exception:
+            out["value"] = 0.0
+
+    t = threading.Thread(target=_runner, daemon=True, name="laf-safe-getmtime")
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        logger.warning("LAF safe getmtime timeout after %.1fs: %s", timeout_sec, path)
+        return 0.0
+    return float(out.get("value") or 0.0)
 
 # -------------------------------------------------------------------
 # Lazy imports (avoid import-time failures on missing deps)
@@ -3550,7 +3587,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             os.path.join(root, "法扶案件")
             for root in preferred_case_roots(include_closed=False)
         ]
-        return [p for p in candidates if os.path.isdir(p)]
+        return [p for p in candidates if _is_dir_accessible(p)]
 
     def _fallback_find_case_folder(self, client_name: str = "", laf_case_number: str = "") -> str:
         candidates = self._fallback_find_case_folders(client_name=client_name, laf_case_number=laf_case_number, limit=1)
@@ -3562,17 +3599,33 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         roots = self._laf_case_roots()
         if not roots:
             return []
+        try:
+            scan_budget_sec = max(1.0, float(os.environ.get("MAGI_LAF_FALLBACK_SCAN_BUDGET_SEC", "5") or "5"))
+        except Exception:
+            scan_budget_sec = 5.0
+        deadline = time.monotonic() + scan_budget_sec
+
+        def _budget_exhausted() -> bool:
+            return time.monotonic() >= deadline
+
         scored: List[tuple[int, float, str]] = []
         loose_candidates: List[str] = []
         for root in roots:
+            if _budget_exhausted():
+                logger.warning("LAF fallback folder scan stopped by %.1fs budget before root: %s", scan_budget_sec, root)
+                break
             try:
-                for cat in os.listdir(root):
+                for cat in _safe_listdir(root):
+                    if _budget_exhausted():
+                        break
                     cat_path = os.path.join(root, cat)
-                    if not os.path.isdir(cat_path):
+                    if not _is_dir_accessible(cat_path):
                         continue
-                    for d in os.listdir(cat_path):
+                    for d in _safe_listdir(cat_path):
+                        if _budget_exhausted():
+                            break
                         case_path = os.path.join(cat_path, d)
-                        if not os.path.isdir(case_path):
+                        if not _is_dir_accessible(case_path):
                             continue
                         if not self._is_case_folder_name(d):
                             continue
@@ -3589,8 +3642,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             try:
                                 found = False
                                 for _check_dir in [case_path, os.path.join(case_path, "01_法扶資料")]:
-                                    if os.path.isdir(_check_dir):
-                                        if any(laf_no in f for f in os.listdir(_check_dir)):
+                                    if _is_dir_accessible(_check_dir):
+                                        if any(laf_no in f for f in _safe_listdir(_check_dir)):
                                             found = True
                                             break
                                 if found:
@@ -3598,13 +3651,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2648, exc_info=True)
                         if score > 0:
-                            try:
-                                mtime = os.path.getmtime(case_path)
-                            except Exception:
-                                mtime = 0.0
+                            mtime = _safe_getmtime(case_path)
                             scored.append((score, float(mtime), case_path))
                         else:
-                            loose_candidates.append(case_path)
+                            if len(loose_candidates) < max(20, int(limit or 1) * 4):
+                                loose_candidates.append(case_path)
             except Exception:
                 continue
         if scored:
@@ -3616,7 +3667,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # Precision-first default: do not auto-pick "most recent" folder unless explicitly enabled.
         if not self.allow_loose_case_folder_fallback:
             return []
-        loose_candidates = sorted(loose_candidates, key=lambda p: os.path.getmtime(p), reverse=True)
+        loose_candidates = sorted(loose_candidates, key=lambda p: _safe_getmtime(p), reverse=True)
         return loose_candidates[: max(1, int(limit or 1))]
 
     def _pick_case_folder_for_action(

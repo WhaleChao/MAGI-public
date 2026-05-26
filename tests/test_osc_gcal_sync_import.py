@@ -262,6 +262,7 @@ def test_import_gcal_events_keeps_laf_reportable_manual_events(monkeypatch):
 def test_run_sync_accepts_dict_rows_from_osc_exec(monkeypatch):
     module = _load_gcal_sync_module()
     seen_sql = []
+    monkeypatch.setenv("MAGI_USE_LEGACY_GCAL_SYNC", "1")
 
     monkeypatch.setattr(module, "_load_creds", lambda: type("Creds", (), {"valid": True})())
     monkeypatch.setattr(module, "_build_service", lambda creds: _FakeService())
@@ -336,6 +337,7 @@ def test_run_sync_updates_db_when_stale_calendar_id_is_replaced(monkeypatch):
     module = _load_gcal_sync_module()
     errors = pytest.importorskip("googleapiclient.errors")
     updates = []
+    monkeypatch.setenv("MAGI_USE_LEGACY_GCAL_SYNC", "1")
 
     class Resp:
         status = 404

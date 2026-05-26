@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -111,6 +112,74 @@ _LOW_VALUE_WORDS = (
     "是否還有主張",
     "是否還有證據",
 )
+
+
+def _safe_path_call(fn, *, timeout_sec: float = 2.0, default=None):
+    box: dict[str, Any] = {"value": default}
+
+    def _runner() -> None:
+        try:
+            box["value"] = fn()
+        except Exception:
+            box["value"] = default
+
+    t = threading.Thread(target=_runner, daemon=True, name="transcript-todo-path-probe")
+    t.start()
+    t.join(timeout_sec)
+    return default if t.is_alive() else box.get("value", default)
+
+
+def _safe_exists(path: Path) -> bool:
+    return bool(_safe_path_call(lambda: path.exists(), default=False))
+
+
+def _safe_is_file(path: Path) -> bool:
+    return bool(_safe_path_call(lambda: path.is_file(), default=False))
+
+
+def _safe_is_dir(path: Path) -> bool:
+    return bool(_safe_path_call(lambda: path.is_dir(), default=False))
+
+
+def _safe_stat_mtime(path: Path) -> float:
+    return float(_safe_path_call(lambda: path.stat().st_mtime, timeout_sec=1.5, default=0.0) or 0.0)
+
+
+def _safe_child_dirs(path: Path) -> list[Path]:
+    return list(
+        _safe_path_call(
+            lambda: [x for x in path.iterdir() if x.is_dir() and not x.name.startswith(".")],
+            timeout_sec=3.0,
+            default=[],
+        )
+        or []
+    )
+
+
+def _safe_pdf_glob(path: Path, *, limit: int) -> list[Path]:
+    out = list(
+        _safe_path_call(
+            lambda: [p for p in path.glob("*.pdf") if not p.name.startswith(".") and not p.name.startswith("~$")][:limit],
+            timeout_sec=4.0,
+            default=[],
+        )
+        or []
+    )
+    return out[:limit]
+
+
+def _safe_pdf_rglob(path: Path, *, limit: int) -> list[Path]:
+    def _scan() -> list[Path]:
+        out: list[Path] = []
+        for p in path.rglob("*.pdf"):
+            if any(part.startswith(".") for part in p.parts):
+                continue
+            out.append(p)
+            if len(out) >= limit:
+                break
+        return out
+
+    return list(_safe_path_call(_scan, timeout_sec=8.0, default=[]) or [])[:limit]
 
 
 @dataclass
@@ -571,7 +640,7 @@ def extract_candidates_from_pdf(pdf_path: Path, *, tail_pages: int = TAIL_PAGES)
 
 
 def _iter_index_paths(limit: int) -> Iterable[Path]:
-    if not INDEX_DB_PATH.exists():
+    if not _safe_exists(INDEX_DB_PATH):
         return []
     try:
         data = json.loads(INDEX_DB_PATH.read_text("utf-8"))
@@ -580,9 +649,9 @@ def _iter_index_paths(limit: int) -> Iterable[Path]:
     rows: list[tuple[float, Path]] = []
     for key, info in (data.get("indexed") or {}).items():
         p = Path(key)
-        if p.exists() and p.suffix.lower() == ".pdf":
+        if _safe_exists(p) and p.suffix.lower() == ".pdf":
             try:
-                mtime = float((info or {}).get("mtime") or p.stat().st_mtime or 0)
+                mtime = float((info or {}).get("mtime") or _safe_stat_mtime(p) or 0)
             except Exception:
                 mtime = 0
             rows.append((mtime, p))
@@ -612,11 +681,11 @@ def _case_roots() -> list[Path]:
 def _looks_like_case_dir(path: Path) -> bool:
     if _CASE_NO_RE.search(path.name):
         return True
-    return any((path / subdir).is_dir() for subdir in _TRANSCRIPT_SUBDIRS)
+    return any(_safe_is_dir(path / subdir) for subdir in _TRANSCRIPT_SUBDIRS)
 
 
 def _iter_case_dirs_under(root: Path, *, started_at: float) -> Iterable[Path]:
-    if not root.exists():
+    if not _safe_exists(root):
         return
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
@@ -625,10 +694,7 @@ def _iter_case_dirs_under(root: Path, *, started_at: float) -> Iterable[Path]:
         current, depth = stack.pop()
         if depth > 5:
             continue
-        try:
-            children = [x for x in current.iterdir() if x.is_dir() and not x.name.startswith(".")]
-        except OSError:
-            continue
+        children = _safe_child_dirs(current)
         for child in children:
             if _looks_like_case_dir(child):
                 yield child
@@ -655,20 +721,17 @@ def _iter_recent_filesystem_paths(limit: int, *, recent_days: int = RECENT_DAYS)
         for case_dir in _iter_case_dirs_under(root, started_at=started):
             for subdir_name in _TRANSCRIPT_SUBDIRS:
                 folder = case_dir / subdir_name
-                if not folder.is_dir():
+                if not _safe_is_dir(folder):
                     continue
-                try:
-                    pdfs = list(folder.glob("*.pdf"))
-                except OSError:
-                    continue
+                pdfs = _safe_pdf_glob(folder, limit=scan_limit - len(rows))
                 for pdf in pdfs:
                     if pdf.name.startswith(".") or pdf.name.startswith("~$"):
                         continue
                     try:
-                        st = pdf.stat()
+                        mtime = _safe_stat_mtime(pdf)
                     except OSError:
                         continue
-                    if st.st_mtime < cutoff:
+                    if mtime < cutoff:
                         continue
                     try:
                         key = str(pdf.resolve())
@@ -677,7 +740,7 @@ def _iter_recent_filesystem_paths(limit: int, *, recent_days: int = RECENT_DAYS)
                     if key in seen:
                         continue
                     seen.add(key)
-                    rows.append((float(st.st_mtime), pdf))
+                    rows.append((float(mtime), pdf))
                     if len(rows) >= scan_limit:
                         break
                 if len(rows) >= scan_limit:
@@ -693,17 +756,10 @@ def _iter_recent_filesystem_paths(limit: int, *, recent_days: int = RECENT_DAYS)
 def _iter_pdf_targets(raw_path: str, *, limit: int) -> list[Path]:
     if raw_path:
         root = Path(raw_path).expanduser()
-        if root.is_file() and root.suffix.lower() == ".pdf":
+        if _safe_is_file(root) and root.suffix.lower() == ".pdf":
             return [root]
-        if root.is_dir():
-            out: list[Path] = []
-            for p in root.rglob("*.pdf"):
-                if any(part.startswith(".") for part in p.parts):
-                    continue
-                out.append(p)
-                if len(out) >= limit:
-                    break
-            return out
+        if _safe_is_dir(root):
+            return _safe_pdf_rglob(root, limit=limit)
         return []
     out: list[Path] = []
     seen: set[str] = set()
@@ -834,12 +890,12 @@ def apply_high_confidence(items: list[dict[str, Any]], *, include_past: bool = F
 def cmd_status() -> dict[str, Any]:
     indexed = 0
     existing = 0
-    if INDEX_DB_PATH.exists():
+    if _safe_exists(INDEX_DB_PATH):
         try:
             data = json.loads(INDEX_DB_PATH.read_text("utf-8"))
             indexed = len(data.get("indexed") or {})
             for key in (data.get("indexed") or {}).keys():
-                if Path(key).exists():
+                if _safe_exists(Path(key)):
                     existing += 1
         except Exception:
             pass

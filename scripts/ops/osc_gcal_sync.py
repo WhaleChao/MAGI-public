@@ -1,8 +1,7 @@
 """
 OSC → Google Calendar 定時同步腳本
 ====================================
-每 30 分鐘由 cron 呼叫，推送未來 30 天內的 case_todos 到 GCal。
-enabled=false by default — 使用者完成 OAuth 後手動在 Admin 啟用。
+Delegates to the current osc-orchestrator task_gcal_sync implementation.
 """
 import sys
 import logging
@@ -21,20 +20,25 @@ logger = logging.getLogger(__name__)
 
 def main():
     try:
-        gcal_sync_path = _ROOT / "skills" / "osc-orchestrator"
-        sys.path.insert(0, str(gcal_sync_path))
-        from gcal_sync import run_sync  # type: ignore
+        action_path = _ROOT / "skills" / "osc-orchestrator" / "action.py"
+        sys.path.insert(0, str(action_path.parent))
+        import importlib.util
 
-        stats = run_sync(dry_run=False)
+        spec = importlib.util.spec_from_file_location("magi_osc_orchestrator_action", action_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("cannot load osc-orchestrator action.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        stats = module.task_gcal_sync({"limit": 120, "repair_existing": True, "repair_limit": 120, "mirror_imported": True})
         logger.info(
-            "GCal sync done — pushed=%d skipped=%d errors=%d",
-            stats.get("pushed", 0),
-            stats.get("skipped", 0),
-            len(stats.get("errors", [])),
+            "GCal sync done — inserted=%d patched=%d failed=%d",
+            stats.get("inserted", 0),
+            stats.get("patched", 0),
+            stats.get("failed", 0),
         )
-        if stats.get("errors"):
-            for err in stats["errors"][:5]:
-                logger.warning("  error: %s", err)
+        if not stats.get("ok"):
+            logger.warning("  error: %s", stats.get("error", "unknown"))
     except Exception as exc:
         logger.exception("osc_gcal_sync.py failed: %s", exc)
         sys.exit(1)

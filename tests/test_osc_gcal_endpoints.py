@@ -205,28 +205,19 @@ class TestGcalSync:
         mock_service.events.return_value = mock_events
         mock_events.insert.return_value.execute.return_value = {"id": "gcal_event_999"}
 
-        def fake_run_sync(dry_run=False):
+        def fake_run_sync(payload=None):
             # When dry_run, we should NOT call insert
-            if not dry_run:
+            if not (payload or {}).get("dry_run"):
                 mock_events.insert(calendarId="primary", body={}).execute()
-            return {"pushed": 3, "skipped": 0, "errors": []}
+            return {"ok": True, "dry_run": bool((payload or {}).get("dry_run")), "inserted": 0, "patched": 0, "failed": 0}
 
         with (
             patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
-            patch("api.blueprints.osc_gcal.run_sync", fake_run_sync, create=True),
+            patch("api.blueprints.osc_gcal._run_current_gcal_sync", fake_run_sync),
         ):
-            # Patch the import inside the endpoint
-            with patch.dict("sys.modules", {"gcal_sync": MagicMock(run_sync=fake_run_sync)}):
-                # Directly patch the blueprint module's sync
-                import api.blueprints.osc_gcal as gcal_mod
+            rv = client.post("/api/osc/gcal/sync", json={"dry_run": True})
 
-                original = gcal_mod.__dict__.get("_load_creds")
-                with patch.object(gcal_mod, "_load_creds", return_value=creds):
-                    # Test dry_run path doesn't call insert
-                    rv = client.post("/api/osc/gcal/sync", json={"dry_run": True})
-
-        # Status might be 500 if run_sync import fails in test env, that's OK
-        # Main assertion: insert was NOT called in dry_run=True scenario
+        assert rv.status_code == 200
         assert mock_events.insert.call_count == 0
 
     def test_sync_handles_api_error(self, client):
@@ -240,17 +231,16 @@ class TestGcalSync:
         except Exception:
             http_err = Exception("Simulated GCal API error")
 
-        def fake_run_sync_with_error(dry_run=False):
-            return {"pushed": 0, "skipped": 0, "errors": [f"Simulated: {http_err}"]}
+        def fake_run_sync_with_error(payload=None):
+            return {"ok": False, "error": f"Simulated: {http_err}"}
 
-        with patch("api.blueprints.osc_gcal._load_creds", return_value=creds):
-            # Test that a sync with errors returns ok=True with errors list
-            import api.blueprints.osc_gcal as gcal_mod
-            with patch.object(gcal_mod, "_load_creds", return_value=creds):
-                # Simulate endpoint calling run_sync that returns errors
-                rv = client.post("/api/osc/gcal/sync", json={})
-                # Even if sync fails internally (import error in test env), no crash
-                assert rv.status_code in (200, 400, 500)
-                data = rv.get_json()
-                assert data is not None
-                assert "ok" in data
+        with (
+            patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
+            patch("api.blueprints.osc_gcal._run_current_gcal_sync", fake_run_sync_with_error),
+        ):
+            rv = client.post("/api/osc/gcal/sync", json={})
+
+        assert rv.status_code == 500
+        data = rv.get_json()
+        assert data is not None
+        assert data["ok"] is False
