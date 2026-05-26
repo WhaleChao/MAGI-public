@@ -435,6 +435,50 @@ def test_file_review_manager_court_pickup_row_is_not_pending_payment():
     assert FileReviewManager._is_pending_payment_row(row_json, "") is False
 
 
+def test_file_review_manager_pending_payment_wins_over_online_download_marker():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    row_json = {
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "請將聲請複製電子卷證費用新台幣200元整於待繳費連結繳費後，書記官確認後會將可進行【線上下載】。",
+        "clnm": "林建豐",
+        "yyidno": "115.原交易.000021",
+    }
+
+    assert (
+        FileReviewManager._classify_portal_row_status(
+            row_json,
+            row_text="線上下載",
+            has_download=True,
+        )
+        == "pending_payment"
+    )
+
+
+def test_file_review_manager_court_pickup_wins_over_online_download_marker():
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    row_json = {
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "請至本院閱覽紙本卷宗，不另製發繳費單。",
+        "clnm": "鑫源企業社",
+        "yyidno": "115聲123",
+    }
+
+    assert (
+        FileReviewManager._classify_portal_row_status(
+            row_json,
+            row_text="線上下載",
+            has_download=True,
+        )
+        == "court_pickup"
+    )
+
+
 def test_file_review_manager_waiting_or_denied_rows_are_not_court_pickup():
     from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
 

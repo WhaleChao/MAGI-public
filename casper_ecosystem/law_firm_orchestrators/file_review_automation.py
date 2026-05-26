@@ -1359,8 +1359,12 @@ class FileReviewManager:
             return
         driver = getattr(self, "driver", None)
         if driver is not None:
+            quit_method = getattr(driver, "quit", None)
+            if not callable(quit_method):
+                self.driver = None
+                return
             try:
-                driver.quit()
+                quit_method()
             except Exception:
                 logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1364, exc_info=True)
             self.driver = None
@@ -4716,19 +4720,18 @@ class FileReviewManager:
                     if norm_target and norm_target not in self._normalize_case_keyword(probe_text):
                         continue
 
-                    court_pickup = self._is_court_pickup_row(row_json, row_text=row_text)
-                    pending_payment = self._is_pending_payment_row(row_json, row_text=row_text)
                     has_download = bool(row_data.get("has_online_download"))
 
-                    status = "other"
-                    if has_download:
-                        status = "downloadable"
+                    status = self._classify_portal_row_status(
+                        row_json,
+                        row_text=row_text,
+                        has_download=has_download,
+                    )
+                    if status == "downloadable":
                         downloadable_count += 1
-                    elif court_pickup:
-                        status = "court_pickup"
+                    elif status == "court_pickup":
                         court_pickup_count += 1
-                    elif pending_payment:
-                        status = "pending_payment"
+                    elif status == "pending_payment":
                         pending_payment_count += 1
 
                     paystatus = str(row_json.get("paystatus") or "").strip()
@@ -4946,6 +4949,21 @@ class FileReviewManager:
         if payment == "N" and status in {"3", "6"} and ("同意" in statusnm or "繳費" in result_text):
             return True
         return False
+
+    @staticmethod
+    def _classify_portal_row_status(row_json: dict, row_text: str = "", has_download: bool = False) -> str:
+        """Classify OLA portal rows with payment/court-pickup semantics first."""
+        if not isinstance(row_json, dict):
+            row_json = {}
+        if FileReviewManager._is_court_pickup_row(row_json, row_text=row_text):
+            return "court_pickup"
+        if FileReviewManager._is_pending_payment_row(row_json, row_text=row_text):
+            return "pending_payment"
+        # OLA sometimes shows a download marker inside payment instructions before
+        # the clerk uploads the file; only treat it as downloadable after exclusions.
+        if has_download:
+            return "downloadable"
+        return "other"
 
     @staticmethod
     def _is_payment_overdue(row_json: dict, max_days: int = 14) -> bool:
