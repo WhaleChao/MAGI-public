@@ -2167,7 +2167,11 @@ class GeneralEmailInfo:
 class LAFGmailMonitor:
     """監控 Gmail 中的法扶信件與一般信件"""
     
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+    ]
+    MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
     
     def __init__(self, credentials_path: str, token_path: str, 
                  callback=None, general_callback=None, log_callback=None,
@@ -2320,11 +2324,94 @@ class LAFGmailMonitor:
             
             with open(self.token_path, 'wb') as token:
                 pickle.dump(creds, token)
+
+        if creds and creds.valid and not self._credentials_have_modify_scope(creds):
+            msg = (
+                "⚠️ LAF Gmail token 目前只有讀取權限；MAGI 不會刪除法扶信，"
+                "但若派案信落入 Gmail 垃圾郵件，需重新授權 gmail.modify 才能自動移回收件匣。"
+            )
+            if sys.stdin.isatty() and os.path.exists(self.credentials_path):
+                self.log("🔐 Gmail token 需要升級權限，正在重新授權以支援垃圾郵件復原…")
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_path, self.SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                with open(self.token_path, 'wb') as token:
+                    pickle.dump(creds, token)
+            else:
+                self.log(msg)
         
         self.credentials = creds
         self.service = build('gmail', 'v1', credentials=creds)
         self.log("✅ Gmail API 認證成功")
         return True
+
+    def _credentials_have_modify_scope(self, creds=None) -> bool:
+        """Return whether the current Gmail token can move spam back to inbox."""
+        creds = creds or self.credentials
+        if creds is None:
+            return True
+        try:
+            has_scopes = getattr(creds, 'has_scopes', None)
+            if callable(has_scopes):
+                return bool(has_scopes([self.MODIFY_SCOPE]))
+        except Exception:
+            pass
+        try:
+            scopes = list(getattr(creds, 'scopes', None) or getattr(creds, 'granted_scopes', None) or [])
+            if not scopes:
+                return True
+            return self.MODIFY_SCOPE in scopes
+        except Exception:
+            return True
+
+    def _restore_spam_to_inbox_if_needed(self, msg_id: str, msg_data: dict, subject: str = "") -> bool:
+        """
+        Move LAF mail accidentally classified as Gmail spam back to inbox.
+
+        Safety guard:
+        - only removes the SPAM label and adds INBOX;
+        - never deletes, trashes, archives, or marks mail as read;
+        - leaves TRASH alone because user deletion is a different signal.
+        """
+        labels = set(msg_data.get('labelIds') or [])
+        if 'SPAM' not in labels:
+            return False
+        if 'TRASH' in labels:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾桶，未自動移動: {subject or msg_id[-6:]}")
+            return False
+        enabled = str(os.environ.get("MAGI_LAF_GMAIL_RESTORE_SPAM", "1")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not enabled:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾郵件，已依設定保留原狀: {subject or msg_id[-6:]}")
+            return False
+        if not self.service:
+            return False
+        if not self._credentials_have_modify_scope():
+            self.log(
+                "  ⚠️ 法扶信件在 Gmail 垃圾郵件，但目前 token 缺 gmail.modify；"
+                "請重新授權後 MAGI 才能自動移回收件匣。"
+            )
+            return False
+        try:
+            self.service.users().messages().modify(
+                userId='me',
+                id=msg_id,
+                body={'removeLabelIds': ['SPAM'], 'addLabelIds': ['INBOX']},
+            ).execute()
+            labels.discard('SPAM')
+            labels.add('INBOX')
+            msg_data['labelIds'] = list(labels)
+            self.log(f"  ✅ 法扶信件曾在 Gmail 垃圾郵件，已移回收件匣: {subject or msg_id[-6:]}")
+            return True
+        except Exception as e:
+            err = str(e)
+            if "insufficient" in err.lower() or "403" in err:
+                self.log("  ⚠️ Gmail token 權限不足，無法把法扶信從垃圾郵件移回收件匣；請重新授權。")
+            else:
+                self.log(f"  ⚠️ 法扶信件垃圾郵件復原失敗: {e}")
+            return False
     
     def check_emails(self, max_results: int = 10) -> List[LAFCaseInfo]:
         """檢查新的法扶信件"""
@@ -2345,6 +2432,7 @@ class LAFGmailMonitor:
                 lookback_days = 3
             lookback_days = max(1, min(lookback_days, 14))
             query = (
+                f'in:anywhere -in:trash '
                 f'(from:@laf.org.tw OR from:laf.server) '
                 f'newer_than:{lookback_days}d '
                 f'-subject:"回報案件辦理進度"'
@@ -2360,18 +2448,6 @@ class LAFGmailMonitor:
             
             for msg in messages:
                 msg_id = msg['id']
-
-                # DB 優先，JSON fallback
-                _email_already = False
-                try:
-                    from skills.ops.dedup_db import is_done as _dd_is_done
-                    _email_already = _dd_is_done("email_laf", msg_id)
-                except Exception:
-                    pass
-                if not _email_already:
-                    _email_already = msg_id in self._processed_ids
-                if _email_already:
-                    continue
 
                 # 取得完整信件
                 full_msg = self.service.users().messages().get(
@@ -2390,6 +2466,19 @@ class LAFGmailMonitor:
                     _log.debug("laf skipped: %s", _bare_e)
 
                 self.log(f"🔍 [掃描] 檢查信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
+
+                # DB 優先，JSON fallback。先讀信是為了即使已處理，也能把誤入垃圾郵件的法扶信復原。
+                _email_already = False
+                try:
+                    from skills.ops.dedup_db import is_done as _dd_is_done
+                    _email_already = _dd_is_done("email_laf", msg_id)
+                except Exception:
+                    pass
+                if not _email_already:
+                    _email_already = msg_id in self._processed_ids
+                if _email_already:
+                    continue
 
                 case_info = self._process_message(msg_id, full_msg)
 
@@ -2711,7 +2800,7 @@ class LAFGmailMonitor:
             except Exception:
                 query_end_date = end_date
 
-            query = f'(from:@laf.org.tw OR from:laf.server) after:{start_date} before:{query_end_date}'
+            query = f'in:anywhere -in:trash (from:@laf.org.tw OR from:laf.server) after:{start_date} before:{query_end_date}'
             
             response = self.service.users().messages().list(
                 userId='me',
@@ -2761,6 +2850,7 @@ class LAFGmailMonitor:
                     _log.debug("laf skipped: %s", _bare_e)
                 
                 self.log(f"  ✨ 發現未處理信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
                 
                 case_info = self._process_message(msg_id, full_msg)
                 
