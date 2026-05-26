@@ -122,7 +122,8 @@ def test_non_standard_drive_category_requires_review():
     assert "非 OSC 標準案件根目錄" in note
 
 
-def test_match_by_laf_case_number():
+def test_match_by_laf_case_number(monkeypatch):
+    monkeypatch.setattr("api.osc.drive_case_sync.lookup_db_case_contexts", lambda nums: {})
     drive = CaseFolder(
         source="drive",
         path="法扶案件/Lumi/測試乙-1150101-A-001-刑事一審辯護-詐欺",
@@ -145,6 +146,103 @@ def test_match_by_laf_case_number():
     assert len(result["matched"]) == 1
     assert not result["drive_only"]
     assert not result["local_only"]
+
+
+def test_same_name_different_laf_numbers_do_not_match(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        relative_path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        name="游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=extract_case_meta("游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等"),
+    )
+    different_laf_case = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2026-0055-游秀鈴-二審-過失致死罪",
+        relative_path="法扶案件/刑事/2026-0055-游秀鈴-二審-過失致死罪",
+        name="2026-0055-游秀鈴-二審-過失致死罪",
+        category="法扶案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2026-0055", laf_case_no="1150521-A-044", client_hint="游秀鈴", reason_hint="過失致死罪"),
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.lookup_db_case_contexts", lambda nums: {})
+    result = compare_case_folders([drive], [different_laf_case])
+    assert not result["matched"]
+    assert not result["drive_only"]
+    assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
+    assert "法扶案號不同" in result["out_of_scope"][0]["reason"]
+
+
+def test_active_drive_folder_does_not_match_db_closed_active_shell(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        relative_path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        name="游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=extract_case_meta("游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等"),
+    )
+    stale_active_shell = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        relative_path="法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        name="2025-0002-游秀鈴-一審-傷害致死",
+        category="法扶案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2025-0002", client_hint="游秀鈴", reason_hint="傷害致死"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.lookup_db_case_contexts",
+        lambda nums: {
+            "2025-0002": {
+                "status": "已結案",
+                "legal_aid_status": "已結案，待送出",
+                "manual_status_lock": 1,
+                "folder_path": r"Y:\lumi\03_工作資料\10_結案\法扶案件\刑事\2025-0002-游秀鈴-一審-傷害致死",
+                "opponents": [],
+            }
+        },
+    )
+    result = compare_case_folders([drive], [stale_active_shell])
+    assert not result["matched"]
+    assert not result["drive_only"]
+    assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
+    assert "已結案" in result["out_of_scope"][0]["reason"]
+
+
+def test_db_closed_active_shell_is_not_created_as_drive_missing(monkeypatch):
+    stale_active_shell = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        relative_path="法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        name="2025-0002-游秀鈴-一審-傷害致死",
+        category="法扶案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2025-0002", client_hint="游秀鈴", reason_hint="傷害致死"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.lookup_db_case_contexts",
+        lambda nums: {
+            "2025-0002": {
+                "status": "已結案",
+                "legal_aid_status": "已結案，待送出",
+                "manual_status_lock": 1,
+                "folder_path": r"Y:\lumi\03_工作資料\10_結案\法扶案件\刑事\2025-0002-游秀鈴-一審-傷害致死",
+                "opponents": [],
+            }
+        },
+    )
+    result = compare_case_folders([], [stale_active_shell])
+    assert not result["local_only"]
+    assert result["out_of_scope"][0]["local"].relative_path == stale_active_shell.relative_path
 
 
 def test_context_terms_trim_case_suffixes():

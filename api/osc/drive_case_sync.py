@@ -1177,7 +1177,8 @@ def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, 
         rows, _ = _osc_exec(
             f"""
             SELECT id, case_number, client_name, case_reason, court_name, court_case_no,
-                   notes, folder_path, status
+                   notes, folder_path, status, legal_aid_status, manual_status_lock,
+                   legal_aid_number, laf_case_no, application_no
             FROM cases
             WHERE case_number IN ({ph})
             """,
@@ -1208,6 +1209,72 @@ def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, 
         if cn in out:
             out[cn].setdefault("opponents", []).append(dict(opp))
     return out
+
+
+def _closed_status_text(value: str) -> bool:
+    text = normalize_text(value)
+    return any(term in text for term in ("已結案", "已報結", "待送出", "已轉入"))
+
+
+def _closed_canonical_path(value: str) -> bool:
+    text = str(value or "").replace("\\", "/")
+    return text.upper().startswith("Y:/") or "/10_結案/" in text or text.endswith("/10_結案")
+
+
+def _db_context_marks_closed(db_context: dict[str, Any] | None) -> bool:
+    if not db_context:
+        return False
+    status_closed = _closed_status_text(str(db_context.get("status") or ""))
+    laf_closed = _closed_status_text(str(db_context.get("legal_aid_status") or ""))
+    try:
+        locked = int(db_context.get("manual_status_lock") or 0) == 1
+    except Exception:
+        locked = False
+    path_closed = _closed_canonical_path(str(db_context.get("folder_path") or ""))
+    return status_closed or laf_closed or (locked and path_closed)
+
+
+def _db_laf_numbers(db_context: dict[str, Any] | None) -> set[str]:
+    if not db_context:
+        return set()
+    values = {
+        str(db_context.get("legal_aid_number") or "").strip(),
+        str(db_context.get("laf_case_no") or "").strip(),
+        str(db_context.get("application_no") or "").strip(),
+    }
+    return {v for v in values if LAF_CASE_RE.fullmatch(v)}
+
+
+def _drive_local_match_conflict_reason(
+    drive_case: CaseFolder,
+    local_case: CaseFolder,
+    db_context: dict[str, Any] | None,
+) -> str:
+    """Block stale active shells and same-name/different-LAF false matches."""
+    drive_laf = str(drive_case.meta.laf_case_no or "").strip()
+    local_lafs = {
+        str(local_case.meta.laf_case_no or "").strip(),
+        *_db_laf_numbers(db_context),
+    }
+    local_lafs = {v for v in local_lafs if LAF_CASE_RE.fullmatch(v)}
+    if drive_laf and local_lafs and drive_laf not in local_lafs:
+        return (
+            f"法扶案號不同（雲端 {drive_laf}；本機/DB {', '.join(sorted(local_lafs))}），"
+            "不得只靠同姓名或案由同步，避免同一當事人不同程序混檔"
+        )
+    if not _db_context_marks_closed(db_context):
+        return ""
+    if drive_case.status == "active":
+        return (
+            "DB 已鎖定為結案或結案路徑，但雲端資料夾仍在進行中區；"
+            "避免 NAS/Synology Drive 備援把已結案舊案重新當成進行中同步"
+        )
+    if local_case.status == "active":
+        return (
+            "DB 已鎖定為結案或結案路徑，但本機候選仍在進行中路徑；"
+            "等待結案慢搬完成前不做雙向同步，避免新舊案混檔"
+        )
+    return ""
 
 
 def _context_values_from_case(
@@ -1520,6 +1587,9 @@ def resolve_drive_only_cases_with_context(
 def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFolder]) -> dict[str, Any]:
     strong_local = _index_cases(local_cases)
     weak_local = _index_cases(local_cases, include_name_only=True)
+    db_contexts = lookup_db_case_contexts(
+        c.meta.case_number for c in local_cases if c.meta.case_number
+    )
     matched: list[dict[str, Any]] = []
     drive_only: list[CaseFolder] = []
     out_of_scope: list[dict[str, Any]] = []
@@ -1533,21 +1603,39 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
             continue
         keys = match_keys(d.meta)
         candidates: dict[str, CaseFolder] = {}
+        blocked: list[tuple[CaseFolder, str]] = []
+        def add_candidate(candidate: CaseFolder) -> None:
+            reason = _drive_local_match_conflict_reason(
+                d,
+                candidate,
+                db_contexts.get(candidate.meta.case_number, {}),
+            )
+            if reason:
+                blocked.append((candidate, reason))
+                return
+            candidates[candidate.relative_path] = candidate
+
         for key in keys:
             if key.startswith("name:"):
                 continue
             for c in strong_local.get(key, []):
-                candidates[c.relative_path] = c
+                add_candidate(c)
         if not candidates and keys:
             for key in keys:
                 for c in weak_local.get(key, []):
-                    candidates[c.relative_path] = c
+                    add_candidate(c)
         if len(candidates) == 1:
             local = next(iter(candidates.values()))
             matched_local_ids.add(local.relative_path)
             matched.append({"drive": d, "local": local, "match_keys": keys})
         elif len(candidates) > 1:
             ambiguous.append({"drive": d, "candidates": list(candidates.values()), "match_keys": keys})
+        elif blocked:
+            out_of_scope.append({
+                "drive": d,
+                "reason": blocked[0][1],
+                "candidates": [c for c, _ in blocked],
+            })
         else:
             if is_aaron_drive_bucket(d):
                 out_of_scope.append({
@@ -1561,6 +1649,16 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
     local_only: list[CaseFolder] = []
     for local in local_cases:
         if local.relative_path in matched_local_ids:
+            continue
+        db_context = db_contexts.get(local.meta.case_number, {})
+        if local.status == "active" and _db_context_marks_closed(db_context):
+            out_of_scope.append({
+                "local": local,
+                "reason": (
+                    "DB 已鎖定為結案或結案路徑，但 Synology Drive/本機仍有進行中殼資料夾；"
+                    "不建立雲端同步任務，待結案慢搬或空殼清理處理"
+                ),
+            })
             continue
         keys = [k for k in match_keys(local.meta) if not k.startswith("name:")]
         if keys and any(drive_strong.get(k) for k in keys):
@@ -1625,14 +1723,15 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
             "status": resolution.get("status") or "ambiguous",
         })
     for item in comparison.get("out_of_scope", []):
-        drive = item.get("drive")
-        if not drive:
+        case = item.get("drive") or item.get("local")
+        if not case:
             continue
         actions.append({
             "action": "skip",
             "safety": "out_of_scope",
-            "drive_path": drive.relative_path,
-            "drive_id": drive.drive_id,
+            "drive_path": case.relative_path if case.source == "drive" else "",
+            "drive_id": case.drive_id if case.source == "drive" else "",
+            "local_path": case.local_path or case.path if case.source != "drive" else "",
             "reason": item.get("reason", ""),
             "status": "skipped",
         })
@@ -2626,7 +2725,8 @@ def build_report(
         "local_only": [_case_to_dict(c) for c in comparison["local_only"]],
         "out_of_scope": [
             {
-                "drive": _case_to_dict(item["drive"]),
+                "drive": _case_to_dict(item["drive"]) if item.get("drive") else {},
+                "local": _case_to_dict(item["local"]) if item.get("local") else {},
                 "reason": item["reason"],
                 "candidates": [_case_to_dict(c) for c in item.get("candidates", [])],
             }
@@ -2675,7 +2775,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
                 "note": case.get("suggested_path_note", ""),
             })
     for item in report.get("out_of_scope", []):
-        case = item.get("drive") or {}
+        case = item.get("drive") or item.get("local") or {}
         rows.append({
             "status": "out_of_scope",
             "source": case.get("source"),
@@ -2807,8 +2907,8 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
     if report.get("out_of_scope"):
         lines.extend(["", "## 不在同步範圍（前 80 筆）", ""])
         for item in report.get("out_of_scope", [])[:80]:
-            drive = item.get("drive") or {}
-            lines.append(f"- `{drive.get('relative_path')}`：{item.get('reason')}")
+            case = item.get("drive") or item.get("local") or {}
+            lines.append(f"- `{case.get('relative_path')}`：{item.get('reason')}")
     plan_summary = (report.get("sync_plan") or {}).get("summary") or {}
     lines.extend([
         "",
