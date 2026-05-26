@@ -554,6 +554,46 @@ def test_processed_payment_registry_suppresses_old_pdf_resend(tmp_path):
     assert "web_payment:case:114原交易49:吳志炳" in saved
 
 
+def test_payment_notice_requires_actual_pdf_before_dedup(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "lin-row",
+        "yyidno": "115.原交易.000021",
+        "showyyidno": "115年度原交易字第21號",
+        "clnm": "林建豐",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    assert mgr._notify_payment_if_needed(row, case_info={"party": "林建豐"}, file_paths=[]) is False
+    notified_path = tmp_path / "notified_cases.json"
+    if notified_path.exists():
+        saved = json.loads(notified_path.read_text(encoding="utf-8"))
+        assert "web_payment:115年度原交易字第21號" not in saved
+        assert "web_payment:case:115原交易21:林建豐" not in saved
+
+
+def test_notify_payment_needed_without_pdf_is_not_delivery(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewInfo, FileReviewManager
+
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    info = FileReviewInfo(
+        client_name="林建豐",
+        court="臺灣臺東地方法院",
+        court_case_no="115年度原交易字第21號",
+        status="待繳費",
+        payment_deadline="",
+        files=[],
+    )
+
+    assert mgr.notify_payment_needed(info) is False
+
+
 def test_archived_payment_slip_suppresses_repeat_download_and_reseeds_registry(tmp_path):
     from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
 

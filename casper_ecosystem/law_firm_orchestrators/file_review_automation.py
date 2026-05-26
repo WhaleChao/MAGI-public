@@ -3254,10 +3254,12 @@ class FileReviewManager:
                         self._download_attachments(msg_id, info)
                         
                         # 發送繳費通知（red_phone: TG + DC mirror）
-                        self.notify_payment_needed(info)
-                        
-                        self.processed_emails.add(msg_id)
-                        self._save_processed_emails() # 立即儲存
+                        _notify_result = self.notify_payment_needed(info)
+                        if _notify_result is True:
+                            self.processed_emails.add(msg_id)
+                            self._save_processed_emails() # 立即儲存
+                        elif _notify_result is False:
+                            self.log(f"  ⚠️ 繳費通知未送達或尚未取得 PDF，保留信件供下輪重試: {subject[:80]}")
                 
                 except Exception as e:
                     self.log(f"  ⚠️ 處理信件 {msg_id if 'msg_id' in locals() else 'unknown'} 失敗: {e}")
@@ -12409,6 +12411,13 @@ class FileReviewManager:
 
             self.log(f"  [DEBUG] notify_payment_needed: existing_files={existing_files}")
 
+            if not existing_files:
+                self.log(
+                    f"  ⚠️ 繳費單通知延後：尚未取得 PDF 繳費單，"
+                    f"不發送空通知、不標記已通知: {court_case_no}"
+                )
+                return False
+
             msg = f"💰 繳費單通知\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
             if info.laf_case_no:
                 msg += f"\n法扶案號: {info.laf_case_no}"
@@ -12870,16 +12879,14 @@ class FileReviewManager:
                          info.files = downloaded_files
                          self.log(f"  📎 共下載 {len(downloaded_files)} 個附件")
 
-                         # 標記已處理 (processed_emails 是 set，只記錄 msg_id)
-                         self.processed_emails.add(msg_id)
-                         self._save_processed_emails()
-
                          # 通知 (含附件) — key 統一加 web_payment: 前綴避免與 web 掃描重複
                          notify_key = f"web_payment:{info.court_case_no or info.laf_case_no or info.application_no or msg_id}"
                          if notify_key not in self.notified_cases:
                              _notify_result = self.notify_payment_needed(info)
                              sent_ok = _notify_result is True  # True=sent, None=skip, False=failed
                              if sent_ok:
+                                 self.processed_emails.add(msg_id)
+                                 self._save_processed_emails()
                                  self.notified_cases.add(notify_key)
                                  self._save_notified_cases()  # 持久化，避免重複通知
                                  stats["notified"] += 1
@@ -12887,7 +12894,7 @@ class FileReviewManager:
                                      stats["payment_notified"] += 1
                              elif _notify_result is False:
                                  # False = attempted but failed
-                                 self.log(f"  ⚠️ 繳費通知未送達，暫不標記已通知: {notify_key}")
+                                 self.log(f"  ⚠️ 繳費通知未送達或尚未取得 PDF，暫不標記已通知/已處理: {notify_key}")
                              # None = dismissed/dedup — already logged; don't warn
 
                 elif msg_type == "download":
