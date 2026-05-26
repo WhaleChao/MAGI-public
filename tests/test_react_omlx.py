@@ -124,6 +124,34 @@ class TestReActForOmlx(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("rm -rf", result)
 
+    def test_interpreter_empirical_request_forces_classifier_skill(self):
+        from skills.engine.react_engine import ReActEngine
+
+        calls = []
+        tools = {
+            "run_skill": {
+                "fn": lambda **params: calls.append(params) or "TOOL_CALLED:run_skill",
+                "desc": "run skill",
+                "params": "",
+            },
+            "search_judgments": {
+                "fn": lambda **params: "TOOL_CALLED:search_judgments",
+                "desc": "search judgments",
+                "params": "",
+            },
+        }
+        llm = lambda messages: (
+            'ACTION: search_judgments\n'
+            'PARAMS: {"keywords":"最高法院 通譯","max_results":10}'
+        )
+        engine = ReActEngine(tools=tools, llm_fn=llm, max_steps=1)
+        result = engine.run("請用關鍵字「最高法院 通譯」上網抓取裁判並產出通譯判決實證研究分類表。")
+
+        self.assertIn("run_skill", result["tools_used"])
+        self.assertEqual(calls[0]["skill_name"], "interpreter-empirical-classifier")
+        self.assertEqual(calls[0]["task"], "fetch_and_classify")
+        self.assertIn("最高法院 通譯", calls[0]["params"])
+
 
 class TestEnsembleChatWithTools(unittest.TestCase):
     """Phase 4: ensemble_chat_with_tools 入口。"""

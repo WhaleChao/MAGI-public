@@ -2447,6 +2447,52 @@ def api_acquire_skill():
     return jsonify(result)
 
 
+_SKILL_RUN_CONTROL_KEYS = {
+    "skill",
+    "task",
+    "timeout_sec",
+    "auto_repair",
+    "rollback_on_fail",
+    "auto_install_deps",
+    "route_key",
+    "async",
+}
+
+
+def _skill_task_from_request_payload(task: str, data: dict) -> str:
+    """Keep the public /skills/run payload structured while preserving old skills.
+
+    ReAct callers should send {"task": "search", "keywords": "..."} so the
+    tool name and arguments stay separated.  Most MAGI skills still accept a
+    single CLI task string, so the API folds non-control fields into
+    ``task {json}`` only at the execution boundary.
+    """
+    task_arg = (task or "").strip()
+    if "{" in task_arg:
+        return task_arg
+
+    params: dict = {}
+    raw_params = data.get("params")
+    if isinstance(raw_params, dict):
+        params.update({str(k): v for k, v in raw_params.items() if v is not None})
+    elif isinstance(raw_params, str) and raw_params.strip():
+        try:
+            parsed = json.loads(raw_params)
+            if isinstance(parsed, dict):
+                params.update({str(k): v for k, v in parsed.items() if v is not None})
+        except Exception as exc:
+            logger.warning("skills/run ignored invalid params JSON: %s", str(exc)[:160])
+
+    for key, value in data.items():
+        if key in _SKILL_RUN_CONTROL_KEYS or key == "params" or value is None:
+            continue
+        params[str(key)] = value
+
+    if not params:
+        return task_arg
+    return f"{task_arg} {json.dumps(params, ensure_ascii=False)}"
+
+
 @app.route('/skills/run', methods=['POST'])
 @require_api_key
 def api_run_skill():
@@ -2471,8 +2517,10 @@ def api_run_skill():
     if not skill:
         return jsonify({"error": "Missing 'skill' parameter"}), 400
 
+    task_for_run = _skill_task_from_request_payload(task, data)
+
     tool_name = f"skill:{skill}"
-    started = _start_tool_event(tool_name, {"task": task}, {"route": "skills_run"})
+    started = _start_tool_event(tool_name, {"task": task_for_run}, {"route": "skills_run"})
     allowed, decision = _check_tool_access(
         tool_name,
         command_subject=tool_name,
@@ -2489,11 +2537,11 @@ def api_run_skill():
             platform="api",
             user_id=request.headers.get("X-Api-Key-Id", "api"),
             role="operator",
-            user_text=f"{skill}:{task}",
+            user_text=f"{skill}:{task_for_run}",
             chat_id="",
             payload={
                 "skill": skill,
-                "task": task,
+                "task": task_for_run,
                 "timeout_sec": timeout_sec,
                 "auto_repair": auto_repair,
                 "rollback_on_fail": rollback_on_fail,
@@ -2503,7 +2551,7 @@ def api_run_skill():
         )
         _INLINE_EXECUTOR.submit(
             _run_skill_job_background,
-            job_id, skill, task, timeout_sec,
+            job_id, skill, task_for_run, timeout_sec,
             auto_repair, rollback_on_fail, auto_install_deps, route_key,
         )
         return jsonify({
@@ -2517,7 +2565,7 @@ def api_run_skill():
     try:
         result = run_skill_action(
             skill,
-            task,
+            task_for_run,
             timeout_sec=timeout_sec,
             auto_repair=auto_repair,
             rollback_on_fail=rollback_on_fail,

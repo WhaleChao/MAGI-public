@@ -308,6 +308,60 @@ class ReActEngine:
         return None
 
     @staticmethod
+    def _is_interpreter_empirical_request(text: str) -> bool:
+        body = str(text or "")
+        if "通譯" not in body:
+            return False
+        intent_markers = ("實證", "分類", "分類表", "抓取", "補抓", "上網抓", "表格")
+        source_markers = ("最高法院", "裁判", "判決", "法院")
+        return any(m in body for m in intent_markers) and any(m in body for m in source_markers)
+
+    @staticmethod
+    def _extract_interpreter_keywords(text: str) -> str:
+        body = str(text or "")
+        quoted = re.search(r"[「『\"]([^」』\"]*通譯[^」』\"]*)[」』\"]", body)
+        if quoted:
+            return quoted.group(1).strip()
+        if "最高法院" in body:
+            return "最高法院 通譯"
+        return "通譯"
+
+    def _coerce_action_for_query(self, user_query: str, tool_name: str, params: dict) -> tuple[str, dict, str]:
+        """Correct known high-risk tool confusions before execution.
+
+        The LLM sometimes chooses the generic judgment collector for empirical
+        interpreter research. That is still a tool call, but it is the wrong
+        tool for the user's workflow. Keep this deterministic guard narrow so
+        plain judgment searches remain unaffected.
+        """
+        if not self._is_interpreter_empirical_request(user_query):
+            return tool_name, params, ""
+        if "run_skill" not in self.tools:
+            return tool_name, params, ""
+
+        merged = dict(params or {})
+        inner: dict[str, Any] = {}
+        raw_inner = merged.get("params")
+        if isinstance(raw_inner, dict):
+            inner.update(raw_inner)
+        elif isinstance(raw_inner, str) and raw_inner.strip():
+            try:
+                parsed = json.loads(raw_inner)
+                if isinstance(parsed, dict):
+                    inner.update(parsed)
+            except json.JSONDecodeError:
+                logger.debug("Interpreter empirical params JSON ignored: %s", raw_inner[:120])
+
+        inner.setdefault("keywords", self._extract_interpreter_keywords(user_query))
+        merged["skill_name"] = "interpreter-empirical-classifier"
+        current_task = str(merged.get("task") or "").strip()
+        allowed_tasks = {"fetch", "fetch_and_classify", "classify", "status", "self_test"}
+        merged["task"] = current_task if current_task in allowed_tasks else "fetch_and_classify"
+        merged["params"] = json.dumps(inner, ensure_ascii=False)
+        reason = "coerced_interpreter_empirical_classifier"
+        return "run_skill", merged, reason
+
+    @staticmethod
     def _iron_dome_text_check(text: str) -> Optional[str]:
         """Block deterministic destructive commands before LLM planning."""
         match = _IRON_DOME_TEXT_RE.search(str(text or ""))
@@ -446,11 +500,14 @@ class ReActEngine:
             # 檢查是否有 ACTION
             if "ACTION:" in response:
                 tool_name, params = self._parse_action(response)
+                tool_name, params, coerce_reason = self._coerce_action_for_query(user_query, tool_name, params)
 
                 # 記錄思考過程
                 think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL)
                 if think_match:
                     trace.append({"step": step, "type": "think", "content": think_match.group(1).strip()[:300]})
+                if coerce_reason:
+                    trace.append({"step": step, "type": "tool_route_guard", "reason": coerce_reason})
 
                 # Iron Dome 安全檢查
                 block_reason = self._iron_dome_check(tool_name, params)

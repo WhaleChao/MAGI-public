@@ -311,10 +311,9 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
         from skills.bridge.http_pool import get_session
         session = get_session()
         timeout_sec = int(params_dict.pop("timeout_sec", 60) or 60) if isinstance(params_dict, dict) else 60
-        task_arg = task
-        if isinstance(params_dict, dict) and params_dict and "{" not in task_arg:
-            task_arg = f"{task_arg} {json.dumps(params_dict, ensure_ascii=False)}"
-        payload = {"skill": skill_name, "task": task_arg, "timeout_sec": timeout_sec}
+        payload = {"skill": skill_name, "task": task, "timeout_sec": timeout_sec}
+        if isinstance(params_dict, dict) and params_dict:
+            payload.update(params_dict)
         resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=max(70, timeout_sec + 10))
         if resp.status_code == 200:
             data = resp.json()

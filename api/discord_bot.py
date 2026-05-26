@@ -1150,9 +1150,15 @@ async def on_message(message):
         _is_routed_channel = False
         if not _is_main_channel:
             try:
-                from api.discord_channel_router import _load_all_routed_channel_ids
+                from api.discord_channel_router import _load_all_routed_channel_ids, infer_topic_from_channel_metadata
                 _routed_ids = _load_all_routed_channel_ids()
                 _is_routed_channel = _current_ch_id in _routed_ids
+                if not _is_routed_channel:
+                    _topic_by_name = infer_topic_from_channel_metadata(
+                        name=str(getattr(message.channel, "name", "") or ""),
+                        topic=str(getattr(message.channel, "topic", "") or ""),
+                    )
+                    _is_routed_channel = bool(_topic_by_name and _topic_by_name != "general")
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 915, exc_info=True)
         if not _is_main_channel and not _is_routed_channel:
@@ -1364,8 +1370,13 @@ async def on_message(message):
                 _dc_topic_key = ""
                 _dc_ch_id = str(message.channel.id)
                 try:
-                    from api.discord_channel_router import _reverse_lookup_channel
+                    from api.discord_channel_router import _reverse_lookup_channel, infer_topic_from_channel_metadata
                     _sub_topic = _reverse_lookup_channel(_dc_ch_id)
+                    if not _sub_topic:
+                        _sub_topic = infer_topic_from_channel_metadata(
+                            name=str(getattr(message.channel, "name", "") or ""),
+                            topic=str(getattr(message.channel, "topic", "") or ""),
+                        )
                     if _sub_topic:
                         # 保留完整 sub_topic 供頻道命令綁定使用
                         _dc_topic_key = _sub_topic

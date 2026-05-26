@@ -687,6 +687,63 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             return "💡 這個頻道用來處理**閱卷聲請**。請輸入 `閱卷聲請 <法院> <案號> <當事人>`。"
         return None
 
+    # ── 文件產出頻道守門：防止業務頻道掉回閒聊模型 ──
+    _msg_stripped = (message or "").strip()
+    _msg_lower = _msg_stripped.lower()
+    if topic_key == "translation":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["翻譯", "translate", "中翻", "英翻", "日翻", "韓翻"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**翻譯**。請輸入 `翻譯 <文字/網址>`，或上傳檔案後輸入 `翻譯這份檔案`。"
+        return None
+
+    if topic_key == "summary":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["摘要", "summary", "summarize", "總結", "重點整理", "精簡摘要", "詳細摘要"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**摘要**。請輸入 `摘要 <文字/網址>`，或上傳檔案後指定摘要長度。"
+        return None
+
+    if topic_key == "verbatim":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["逐字稿", "聽寫", "轉文字", "transcript", "transcribe", "whisper"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**逐字稿**。請上傳音訊檔，或輸入 `逐字稿 <音訊檔路徑>`。"
+        return None
+
+    if topic_key == "transcript":
+        # handled above; keep this as a safety net if the block is moved later.
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**筆錄同步/下載**。請輸入 `同步筆錄 <法院> <案號>`。"
+        return None
+
+    if topic_key == "judgment":
+        if any(k in _msg_lower for k in ["查判決", "找判決", "搜尋判決", "查裁判", "實務見解", "查法條", "通譯", "分類"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**裁判/實務見解**。請輸入 `查判決 <關鍵字>`、`實務見解 <主題>`，或指定研究分類需求。"
+        return None
+
+    if topic_key == "filing":
+        if any(k in _msg_lower for k in ["歸檔", "命名", "pdf", "掃描", "建立待辦", "待辦", "namer", "filing"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**PDF 命名、歸檔與待辦建立**。請上傳 PDF 或輸入明確的歸檔/待辦指令。"
+        return None
+
+    if topic_key.startswith("research_"):
+        if any(k in _msg_lower for k in ["研究", "爬蟲", "來源", "關鍵字", "摘要", "分類", "抓取", "通譯", "research", "crawl"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**研究爬蟲/分類**。請輸入 `研究摘要`、`研究來源`、`研究關鍵字` 或具體抓取/分類指令。"
+        return None
+
     # 頻道→允許的動作映射
     _CHANNEL_ACTION_MAP = {
         "laf_go_live": {"allowed": ("go_live",), "label": "法扶-開辦", "hint": "這個頻道用來執行**開辦回報**", "default_action": "go_live"},

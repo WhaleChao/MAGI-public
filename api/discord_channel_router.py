@@ -331,6 +331,92 @@ def _reverse_lookup_channel(channel_id: str) -> str:
     return ""
 
 
+def _normalize_channel_name(value: str) -> str:
+    """Normalize Discord channel names for topic inference."""
+    s = str(value or "").strip().lower()
+    # Discord names may contain emoji/category prefixes, dashes, or full-width
+    # variants.  Keep CJK/ASCII alnum and remove visual separators.
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", s)
+
+
+_CHANNEL_NAME_ALIASES: dict[str, str] = {
+    "進度回報": "laf_progress",
+    "法扶進度": "laf_progress",
+    "法扶進度回報": "laf_progress",
+    "開辦": "laf_go_live",
+    "法扶開辦": "laf_go_live",
+    "報結": "laf_closing",
+    "結案": "laf_closing",
+    "法扶結案": "laf_closing",
+    "法扶派案": "laf_dispatch",
+    "法扶一般": "laf_general",
+    "法扶費用": "laf_fee",
+    "法扶疑義": "laf_inquiry",
+    "法扶二階段": "laf_condition",
+    "閱卷繳費": "filereview_payment",
+    "閱卷下載": "filereview_download",
+    "閱卷聲請": "filereview_apply",
+    "筆錄": "transcript",
+    "筆錄通知": "transcript",
+    "逐字稿": "verbatim",
+    "摘要": "summary",
+    "翻譯": "translation",
+    "歸檔": "filing",
+    "歸檔通知": "filing",
+    "裁判": "judgment",
+    "判決": "judgment",
+    "研究通譯": "research_interpretation",
+    "通譯": "research_interpretation",
+}
+
+
+def infer_topic_from_channel_metadata(
+    *,
+    name: str = "",
+    topic: str = "",
+    include_general: bool = False,
+) -> str:
+    """
+    Infer MAGI topic key from Discord channel name/topic when channel_map is stale.
+
+    This is a safety net for business channels: if the ID map is missing after a
+    server/category rebuild, MAGI must still treat messages in those channels as
+    task commands instead of letting them fall through to free-form chat.
+    """
+    normalized_candidates = [_normalize_channel_name(name), _normalize_channel_name(topic)]
+    lookup: dict[str, str] = {}
+    for ch_def in DEFAULT_CHANNELS:
+        key = str(ch_def.get("key") or "").strip()
+        if not key:
+            continue
+        if key == "general" and not include_general:
+            continue
+        for candidate in _channel_name_candidates(ch_def):
+            norm = _normalize_channel_name(candidate)
+            if norm:
+                lookup[norm] = key
+    for alias, key in _CHANNEL_NAME_ALIASES.items():
+        if key == "general" and not include_general:
+            continue
+        lookup[_normalize_channel_name(alias)] = key
+
+    for candidate in normalized_candidates:
+        if not candidate:
+            continue
+        if candidate in lookup:
+            return lookup[candidate]
+        # Be permissive for names such as "magi-法扶-進度回報" but avoid generic
+        # "一般" unless explicitly requested.
+        for alias_norm, key in sorted(lookup.items(), key=lambda item: len(item[0]), reverse=True):
+            if not alias_norm:
+                continue
+            if len(candidate) <= 2 or len(alias_norm) <= 2:
+                continue
+            if alias_norm in candidate or candidate in alias_norm:
+                return key
+    return ""
+
+
 def save_channel_map(channel_map: dict[str, str]) -> str:
     """儲存頻道映射到 .agent/discord_channel_map.json。"""
     os.makedirs(_AGENT_DIR, exist_ok=True)

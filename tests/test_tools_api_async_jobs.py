@@ -112,6 +112,23 @@ def test_sync_skill_run_succeeds(ctx):
     assert "job_id" not in data
 
 
+def test_sync_skill_run_folds_structured_params_at_execution_boundary(ctx):
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={
+            "skill": "judicial-web-search",
+            "task": "search",
+            "keywords": "最高法院 通譯",
+            "max_results": 3,
+        },
+    )
+    assert resp.status_code == 200
+    output = resp.get_json()["output"]
+    assert output.startswith("done:search ")
+    assert '"keywords": "最高法院 通譯"' in output
+    assert '"max_results": 3' in output
+
+
 def test_sync_skill_run_missing_task_returns_400(ctx):
     resp = ctx["client"].post("/skills/run", json={"skill": "translator"})
     assert resp.status_code == 400

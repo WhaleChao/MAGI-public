@@ -30,6 +30,25 @@ def test_progress_channel_definition_uses_new_name_and_keeps_legacy_alias():
     assert "🔄 進度回報" in progress_def.get("aliases", [])
 
 
+def test_channel_name_inference_keeps_business_channels_from_chat_fallback():
+    samples = {
+        "法扶-進度回報": "laf_progress",
+        "🔄 進度回報": "laf_progress",
+        "magi-閱卷-繳費": "filereview_payment",
+        "筆錄-通知": "transcript",
+        "翻譯": "translation",
+        "研究-通譯": "research_interpretation",
+    }
+
+    for name, expected in samples.items():
+        assert router.infer_topic_from_channel_metadata(name=name) == expected
+
+
+def test_channel_name_inference_does_not_treat_generic_general_as_business():
+    assert router.infer_topic_from_channel_metadata(name="一般") == ""
+    assert router.infer_topic_from_channel_metadata(name="一般", include_general=True) == "general"
+
+
 def test_auto_setup_reuses_legacy_progress_channel_name(monkeypatch):
     legacy_channel = SimpleNamespace(name="🔄 進度回報", id=123456)
     guild = _FakeGuild(text_channels=[legacy_channel])

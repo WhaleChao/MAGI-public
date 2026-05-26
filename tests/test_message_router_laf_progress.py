@@ -93,3 +93,50 @@ def test_transcript_channel_does_not_fall_through_to_chat():
 
     assert "筆錄同步" in out
     assert "Gemma" not in out
+
+
+def test_document_business_channels_do_not_fall_through_to_chat():
+    samples = [
+        ("translation", "這份怎麼弄", "翻譯"),
+        ("summary", "這份怎麼弄", "摘要"),
+        ("verbatim", "這份怎麼弄", "逐字稿"),
+        ("filing", "這份怎麼弄", "PDF"),
+        ("judgment", "這份怎麼弄", "裁判"),
+        ("research_interpretation", "這份怎麼弄", "研究"),
+    ]
+
+    for topic, message, expected in samples:
+        out = message_router.topic_fast_path(
+            _DummyOrch(),
+            topic,
+            "user-1",
+            message,
+            "user",
+            "discord",
+        )
+        assert expected in out
+        assert "Gemma" not in out
+        assert "您好" not in out
+
+
+def test_document_business_channels_allow_explicit_commands_to_continue():
+    cases = [
+        ("translation", "翻譯 Hello"),
+        ("summary", "摘要 這是一段文字"),
+        ("judgment", "查判決 通譯"),
+        ("research_interpretation", "研究摘要 通譯"),
+        ("filing", "PDF 建立待辦"),
+    ]
+
+    for topic, message in cases:
+        assert (
+            message_router.topic_fast_path(
+                _DummyOrch(),
+                topic,
+                "user-1",
+                message,
+                "user",
+                "discord",
+            )
+            is None
+        )
