@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+
 from scripts.ops import model_live_gate as gate
+from scripts.ops.omlx_profile_policy import expected_profile_for_minutes, expected_profile_now
 
 
 def _probe(port: int, model: str = "", ok: bool = True) -> gate.EndpointProbe:
     return gate.EndpointProbe(port=port, ok=ok, model_id=model, error="" if ok else "down")
+
+
+def test_omlx_profile_policy_boundaries_are_single_source_of_truth():
+    assert expected_profile_for_minutes(6 * 60 + 34) == ("night", "26b")
+    assert expected_profile_for_minutes(6 * 60 + 35) == ("day", "e4b")
+    assert expected_profile_for_minutes(21 * 60 + 49) == ("day", "e4b")
+    assert expected_profile_for_minutes(21 * 60 + 50) == ("night", "26b")
+    assert expected_profile_now(datetime(2026, 5, 27, 6, 35)) == ("day", "e4b")
+
+
+def test_daemon_does_not_keep_a_second_omlx_window_definition():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+    assert "from scripts.ops.omlx_profile_policy import expected_profile_now" in source
+    assert "415 <= minutes" not in source
 
 
 def test_day_gate_requires_primary_and_aux(monkeypatch):

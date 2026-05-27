@@ -1352,108 +1352,32 @@ def _load_last_line_callback_age_sec() -> Optional[int]:
 def _comm_health_self_test() -> Dict[str, Any]:
     """
     通訊介面自檢：
-    1) OpenClaw channel probe
+    1) MAGI 官方通道 smoke test
     2) LINE 本機 webhook 簽章 smoke test
     3) 最近 callback 新鮮度
     """
     out: Dict[str, Any] = {
         "ok": True,
-        "openclaw_probe": {},
+        "official_channel_smoke": {},
         "line_local_webhook": {},
         "line_last_callback_age_sec": None,
         "warnings": [],
         "errors": [],
     }
 
-    # 1) OpenClaw probe (retry to avoid false negative right after restart)
-    try:
-        probe_retries = max(1, int(os.environ.get("MAGI_OPENCLAW_PROBE_RETRIES", "3") or "3"))
-    except Exception:
-        probe_retries = 3
-    try:
-        probe_retry_wait = max(1, int(os.environ.get("MAGI_OPENCLAW_PROBE_RETRY_WAIT_SEC", "3") or "3"))
-    except Exception:
-        probe_retry_wait = 3
-
-    probe = _run_cmd(["openclaw", "channels", "status", "--probe"], timeout_sec=40)
-    probe_text = (probe.stdout or "") + "\n" + (probe.stderr or "")
-    discord_line = ""
-    for ln in probe_text.splitlines():
-        s = ln.strip()
-        if re.search(r"Discord\s+default\b", s, re.IGNORECASE):
-            discord_line = s
-            break
-    discord_ok = bool(re.search(r"Discord\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-    line_ok = bool(re.search(r"LINE\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-    tg_ok = bool(re.search(r"Telegram\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-
-    attempt = 1
-    while attempt < probe_retries and not (discord_ok and line_ok and tg_ok):
-        time.sleep(probe_retry_wait)
-        probe = _run_cmd(["openclaw", "channels", "status", "--probe"], timeout_sec=40)
-        probe_text = (probe.stdout or "") + "\n" + (probe.stderr or "")
-        for ln in probe_text.splitlines():
-            s = ln.strip()
-            if re.search(r"Discord\s+default\b", s, re.IGNORECASE):
-                discord_line = s
-                break
-        discord_ok = bool(re.search(r"Discord\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        line_ok = bool(re.search(r"LINE\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        tg_ok = bool(re.search(r"Telegram\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        attempt += 1
-    warn_lines = []
-    for ln in probe_text.splitlines():
-        s = ln.strip()
-        if s.startswith("- ") and "not configured" in s.lower():
-            warn_lines.append(s)
-    out["openclaw_probe"] = {
-        "ok": bool(probe.ok and discord_ok and line_ok and tg_ok),
-        "returncode": probe.returncode,
-        "discord_ok": discord_ok,
-        "line_ok": line_ok,
-        "telegram_ok": tg_ok,
-        "attempts": attempt,
-        "warnings": warn_lines[:8],
-    }
-    discord_disabled = (": disabled" in discord_line.lower()) or ("error:disabled" in discord_line.lower())
-    if not discord_ok and discord_disabled:
-        official_discord = _official_discord_selftest(timeout_sec=8)
-        out["official_discord"] = official_discord
-        if official_discord.get("ok"):
-            discord_ok = True
-            out["openclaw_probe"]["discord_ok"] = True
-            out["warnings"].append("openclaw_discord_disabled_using_official_bot")
-    if not (discord_ok and line_ok and tg_ok):
-        official_channels = _official_channel_smoke_selftest(timeout_sec=45)
-        out["official_channel_smoke"] = official_channels
-        recovered = []
-        if not discord_ok and official_channels.get("discord_ok"):
-            discord_ok = True
-            out["openclaw_probe"]["discord_ok"] = True
-            recovered.append("discord")
-        if not line_ok and official_channels.get("line_ok"):
-            line_ok = True
-            out["openclaw_probe"]["line_ok"] = True
-            recovered.append("line")
-        if not tg_ok and official_channels.get("telegram_ok"):
-            tg_ok = True
-            out["openclaw_probe"]["telegram_ok"] = True
-            recovered.append("telegram")
-        if recovered:
-            out["warnings"].append("openclaw_probe_recovered_by_official_channel_smoke:" + ",".join(recovered))
-    out["openclaw_probe"]["ok"] = bool(probe.ok and discord_ok and line_ok and tg_ok)
+    official_channels = _official_channel_smoke_selftest(timeout_sec=45)
+    out["official_channel_smoke"] = official_channels
+    discord_ok = bool(official_channels.get("discord_ok"))
+    line_ok = bool(official_channels.get("line_ok"))
+    tg_ok = bool(official_channels.get("telegram_ok"))
     if not discord_ok:
         out["errors"].append("discord_channel_probe_failed")
     if not line_ok:
         out["errors"].append("line_channel_probe_failed")
     if not tg_ok:
         out["errors"].append("telegram_channel_probe_failed")
-    if warn_lines:
-        if line_ok:
-            # OpenClaw doctor occasionally reports LINE token/secret missing even when probe is healthy.
-            out["warnings"].append("openclaw_line_warning_false_positive")
-        else:
-            out["warnings"].append("openclaw_line_config_warning_present")
+    if official_channels.get("error"):
+        out["warnings"].append(str(official_channels.get("error")))
 
     # 2) Local LINE callback smoke
     local_cb = _line_local_webhook_selftest(timeout_sec=8)
@@ -2573,9 +2497,10 @@ def _format_comm_notify_lines(parsed: Any) -> list:
     if not isinstance(parsed, dict):
         return []
     lines = []
-    probe = parsed.get("openclaw_probe") if isinstance(parsed.get("openclaw_probe"), dict) else {}
+    probe = parsed.get("official_channel_smoke") if isinstance(parsed.get("official_channel_smoke"), dict) else {}
     discord_ok = bool(probe.get("discord_ok"))
     line_ok = bool(probe.get("line_ok"))
+    telegram_ok = bool(probe.get("telegram_ok"))
     webhook = parsed.get("line_local_webhook") if isinstance(parsed.get("line_local_webhook"), dict) else {}
     line_local_ok = bool(webhook.get("ok"))
     age = parsed.get("line_last_callback_age_sec")
@@ -2587,7 +2512,8 @@ def _format_comm_notify_lines(parsed: Any) -> list:
     lines.append(
         "- 通訊健康："
         f"Discord={'OK' if discord_ok else 'FAIL'} / "
-        f"LINE-probe={'OK' if line_ok else 'FAIL'} / "
+        f"LINE={'OK' if line_ok else 'FAIL'} / "
+        f"Telegram={'OK' if telegram_ok else 'FAIL'} / "
         f"LINE-webhook={'OK' if line_local_ok else 'FAIL'} / "
         f"LINE-callback-age={age_text}"
     )
@@ -3082,7 +3008,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_MINUTES", "180")
     os.environ.setdefault("MAGI_TICK_OSC_QUEUE_FLUSH_TIMEOUT_SEC", "120")
     os.environ.setdefault("MAGI_TICK_SCAN_FOLDER_ASYNC", "1")
-    # OpenClaw 配置守門：卡住時自動校正 timeout/context/concurrency 並重啟 gateway
+    # 退役 OpenClaw 守門保留為顯式 opt-in stub；預設不得觸發舊 runtime。
     os.environ.setdefault("MAGI_OPENCLAW_MODEL_GUARD_RESTART", "1")
     # LAF 深度二次抽取（舊案件文件/信件附件/報表文字）
     os.environ.setdefault("MAGI_LAF_DEEP_EXTRACT_ENABLE", "1")
@@ -3195,8 +3121,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         elif not schema_guard.get("ok", True):
             maybe_block("db_schema_guard", str(schema_guard.get("message", "")))
 
-    # -1) OpenClaw session self-heal（修補 modelApi 缺漏，避免 TG/LINE 偶發不回）
-    if _env_on("MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE", True):
+    # -1) Retired OpenClaw session self-heal；只允許明確 opt-in 的歷史資料修補。
+    if _env_on("MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE", False):
         try:
             sh = _openclaw_session_selfheal(max_files=int(os.environ.get("MAGI_OPENCLAW_SESSION_HEAL_MAX_FILES", "80") or "80"))
         except Exception as e:
@@ -3208,7 +3134,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         results["steps"]["openclaw_session_selfheal"] = {
             "ok": True,
             "skipped": True,
-            "reason": "MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE=0",
+            "reason": "OpenClaw deprecated; session self-heal disabled by default",
         }
 
     # -0.5) OpenClaw model guard（避免 context/timeout/並發配置導致任務卡住）

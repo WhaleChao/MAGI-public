@@ -466,6 +466,10 @@ def _osc_allowed_local_roots() -> list[str]:
         os.environ.get("MAGI_OSC_TEMPLATE_FOLDER", ""),
         str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理"),
     ]
+    file_manager_test_roots = [
+        os.environ.get("PAPERCLIP_FILEMANAGER_TEST_BASE", ""),
+        "/tmp/paperclip_filemanager_test_base",
+    ]
     closed_alias_roots: list[str] = []
     for share_name in _osc_closed_share_aliases():
         closed_alias_roots.extend([
@@ -480,7 +484,9 @@ def _osc_allowed_local_roots() -> list[str]:
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
         f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
-    ] + closed_alias_roots + [p for p in template_roots if str(p or "").strip()]
+    ] + closed_alias_roots + [
+        p for p in (template_roots + file_manager_test_roots) if str(p or "").strip()
+    ]
     out = []
     for root in roots:
         rp = os.path.realpath(root)

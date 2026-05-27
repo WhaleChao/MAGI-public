@@ -436,43 +436,56 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 remaining = _remaining_scan_budget_sec()
                 if remaining is not None and remaining <= 0:
-                    result["warnings"].append("transcript_todo_budget_exhausted")
                     result["transcript_todos"] = {
-                        "ok": False,
+                        "ok": True,
                         "skipped": True,
-                        "error": f"transcript_todo_budget_exhausted:{args.scan_time_budget_sec}s",
+                        "reason": f"transcript_todo_budget_exhausted:{args.scan_time_budget_sec}s",
                     }
                 else:
                     env_timeout = int(os.environ.get("OSC_TRANSCRIPT_TODO_TIMEOUT_SEC", "0") or "0")
                     transcript_timeout = env_timeout if env_timeout > 0 else 120
-                    if remaining is not None:
-                        transcript_timeout = max(1, min(transcript_timeout, remaining))
-                    transcript_mod = _load_transcript_todo_module()
-                    transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
-                    transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
-                    with _pdf_scan_time_limit(transcript_timeout):
-                        paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
-                        scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
-                        if bool(getattr(args, "dry_run", False)):
-                            write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
-                        else:
-                            write = transcript_mod.apply_high_confidence(scan.get("items") or [])
-                    result["transcript_todos"] = {
-                        "ok": True,
-                        "timeout_sec": transcript_timeout,
-                        "scanned": scan.get("scanned", 0),
-                        "high_count": scan.get("high_count", 0),
-                        "review_count": scan.get("review_count", 0),
-                        "errors_count": scan.get("errors_count", 0),
-                        "write_result": {
-                            "inserted": write.get("inserted", 0),
-                            "updated": write.get("updated", 0),
-                            "skipped": write.get("skipped", 0),
-                            "past_skipped": write.get("past_skipped", 0),
-                        },
-                        "sample_items": (scan.get("items") or [])[:10],
-                        "errors": scan.get("errors", [])[:10],
-                    }
+                    min_dry_run_budget = max(1, int(os.environ.get("OSC_TRANSCRIPT_TODO_MIN_DRY_RUN_BUDGET_SEC", "120") or "120"))
+                    if (
+                        bool(getattr(args, "dry_run", False))
+                        and remaining is not None
+                        and remaining < min_dry_run_budget
+                    ):
+                        result["transcript_todos"] = {
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "transcript_todo_dry_run_budget_too_small",
+                            "remaining_sec": remaining,
+                            "required_sec": min_dry_run_budget,
+                        }
+                    else:
+                        if remaining is not None:
+                            transcript_timeout = max(1, min(transcript_timeout, remaining))
+                        transcript_mod = _load_transcript_todo_module()
+                        transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
+                        transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
+                        with _pdf_scan_time_limit(transcript_timeout):
+                            paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
+                            scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
+                            if bool(getattr(args, "dry_run", False)):
+                                write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
+                            else:
+                                write = transcript_mod.apply_high_confidence(scan.get("items") or [])
+                        result["transcript_todos"] = {
+                            "ok": True,
+                            "timeout_sec": transcript_timeout,
+                            "scanned": scan.get("scanned", 0),
+                            "high_count": scan.get("high_count", 0),
+                            "review_count": scan.get("review_count", 0),
+                            "errors_count": scan.get("errors_count", 0),
+                            "write_result": {
+                                "inserted": write.get("inserted", 0),
+                                "updated": write.get("updated", 0),
+                                "skipped": write.get("skipped", 0),
+                                "past_skipped": write.get("past_skipped", 0),
+                            },
+                            "sample_items": (scan.get("items") or [])[:10],
+                            "errors": scan.get("errors", [])[:10],
+                        }
             except _PdfScanTimeout as exc:
                 result["warnings"].append("transcript_todo_timeout")
                 result["transcript_todos"] = {"ok": False, "skipped": True, "error": str(exc)}

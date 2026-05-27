@@ -59,8 +59,30 @@ def test_active_openclaw_defaults_are_retired():
     assert "已退役" in read_openclaw_primary_model()
 
 
+def test_autopilot_comm_health_uses_magi_official_channels_not_openclaw_cli():
+    src = _read("skills/magi-autopilot/action.py")
+    assert '"openclaw", "channels", "status", "--probe"' not in src
+    assert "MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE\", False" in src
+    assert "official_channel_smoke" in src
+
+
 def test_file_manager_deep_verify_does_not_default_to_case_nas():
     src = _read("scripts/ops/paperclip_filemanager_deep_verify.py")
     assert "/tmp/paperclip_filemanager_test_base" in src
     assert "PAPERCLIP_FILEMANAGER_TEST_BASE" in src
     assert "/Users/ai/SynologyDrive/homes/01_案件" not in src
+
+
+def test_file_manager_test_sandbox_is_allowed_but_not_all_tmp(tmp_path):
+    from api.osc import utils
+
+    sandbox = Path("/tmp/paperclip_filemanager_test_base")
+    sandbox.mkdir(parents=True, exist_ok=True)
+    sample = sandbox / "allowed.txt"
+    sample.write_text("ok", encoding="utf-8")
+
+    outside = tmp_path / "not-under-file-manager-root.txt"
+    outside.write_text("no", encoding="utf-8")
+
+    assert utils._osc_is_safe_local_path(str(sample)) is True
+    assert utils._osc_is_safe_local_path(str(outside)) is False

@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api.platforms.safe_process import parse_cron_command, _validate_argv  # noqa: E402
+from scripts.ops.omlx_profile_policy import expected_profile_now as expected_omlx_profile_now  # noqa: E402
 
 
 _SILENT_EXCEPT_LINE_RE = re.compile(
@@ -129,9 +130,7 @@ def _current_omlx_models(port: int = 8080) -> list[str]:
 def audit_omlx_profile() -> dict[str, Any]:
     """Verify that the live oMLX model matches the current day/night policy."""
     now = datetime.now()
-    minutes = now.hour * 60 + now.minute
-    expected_profile = "day" if 395 <= minutes < 1310 else "night"
-    expected_keyword = "e4b" if expected_profile == "day" else "26b"
+    expected_profile, expected_keyword = expected_omlx_profile_now(now)
     models = _current_omlx_models(8080)
     phi4_models = _current_omlx_models(8082)
     smol_models = _current_omlx_models(8083)

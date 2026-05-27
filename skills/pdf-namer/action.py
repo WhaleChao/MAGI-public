@@ -1787,7 +1787,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
         if not found_date:
             found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-            logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+            logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
         if not found_date:
             return empty_result if return_structured else None
 
@@ -2317,7 +2317,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     if not found_date:
         found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-        logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+        logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
     if not found_date:
         return empty_result if return_structured else None
 
@@ -3887,7 +3887,7 @@ def _build_name_result(
         try:
             year = int(found_date[:4])
             if year < 2000 or year > 2030:
-                logger.warning("Rejecting implausible date %s (year %d)", found_date, year)
+                logger.info("Rejecting implausible date %s (year %d)", found_date, year)
                 found_date = None
         except ValueError:
             found_date = None

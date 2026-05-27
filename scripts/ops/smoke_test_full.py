@@ -709,17 +709,24 @@ def test_omlx_aux_models_available():
     return ok, ", ".join(results)
 
 def test_mlx_mtp_sidecar_health():
-    try:
-        code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
-        data = json.loads(body)
-        ok = code == 200 and bool(data.get("ok", True))
-        model = data.get("model") or "-"
-        draft = data.get("draft_model") or "-"
-        return ok, f"model={model}; draft={draft}"
-    except Exception as e:
-        if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
-            return True, "MLX MTP optional"
-        return False, str(e)[:120]
+    last_error = ""
+    for attempt in range(4):
+        try:
+            code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
+            data = json.loads(body)
+            ok = code == 200 and bool(data.get("ok", True))
+            model = data.get("model") or "-"
+            draft = data.get("draft_model") or "-"
+            suffix = "" if attempt == 0 else f"; retry={attempt}"
+            return ok, f"model={model}; draft={draft}{suffix}"
+        except Exception as e:
+            last_error = str(e)[:120]
+            if attempt < 3:
+                time.sleep(2)
+                continue
+    if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
+        return True, "MLX MTP optional"
+    return False, last_error
 
 def test_menubar_process_running():
     lines = _process_lines(r"gui/magi_menubar.py")

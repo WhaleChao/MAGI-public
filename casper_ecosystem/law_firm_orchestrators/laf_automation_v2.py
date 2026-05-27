@@ -2613,14 +2613,14 @@ class LAFWebAutomation:
                         try:
                             _pw_page.evaluate("() => { if(typeof checkForm==='function') checkForm(); }")
                         except Exception:
-                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2615, exc_info=True)
+                            logging.getLogger(__name__).debug("checkForm login fallback unavailable", exc_info=True)
                         time.sleep(0.5)
                         # 如果還在登入頁，改 click loginLink
                         if 'toMainPage' not in (_pw_page.url or '') and 'processLogin' not in (_pw_page.url or ''):
                             try:
                                 _pw_page.click('#loginLink, a#loginLink', timeout=3000)
                             except Exception:
-                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2622, exc_info=True)
+                                logging.getLogger(__name__).debug("loginLink fallback unavailable", exc_info=True)
                         # 等待登入結果（最多 25 秒）
                         _login_ok_pw = False
                         for _wi in range(25):

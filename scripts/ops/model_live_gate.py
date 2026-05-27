@@ -11,11 +11,14 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(MAGI_ROOT))
+
+from scripts.ops.omlx_profile_policy import expected_profile_now as expected_omlx_profile_now  # noqa: E402
 
 
 @dataclass
@@ -40,11 +43,8 @@ class ModelGateReport:
 
 
 def expected_profile_now() -> str:
-    now = datetime.now()
-    minutes = now.hour * 60 + now.minute
-    # Day switch is allowed from the 06:35 scheduled reboot guard onward.
-    # The 06:55 switch job is a safety retry, not the first valid day window.
-    return "day" if 395 <= minutes < 1310 else "night"
+    profile, _keyword = expected_omlx_profile_now()
+    return profile
 
 
 def active_profile() -> str:

@@ -240,13 +240,16 @@ def _is_night_window() -> bool:
 
 def _expected_omlx_profile_now() -> tuple[str, str]:
     """Return the expected oMLX profile and model keyword for the local time."""
-    import datetime
+    try:
+        from scripts.ops.omlx_profile_policy import expected_profile_now
 
-    now = datetime.datetime.now()
-    minutes = now.hour * 60 + now.minute
-    if 415 <= minutes < 1310:  # 06:55 <= now < 21:50
-        return "day", "e4b"
-    return "night", "26b"
+        return expected_profile_now()
+    except Exception:
+        import datetime
+
+        now = datetime.datetime.now()
+        minutes = now.hour * 60 + now.minute
+        return ("day", "e4b") if 395 <= minutes < 1310 else ("night", "26b")
 
 
 def _is_omlx_night_window() -> bool:
