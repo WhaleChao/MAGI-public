@@ -16,13 +16,27 @@ from flask_login import login_required
 
 raziel_bp = Blueprint("raziel", __name__)
 
-DEFAULT_RAZIEL_ROOT = Path(os.environ.get("MAGI_RAZIEL_ROOT", "/Users/ai/Desktop/最高法院_通譯_TXT")).expanduser()
+DEFAULT_RAZIEL_ROOT = Path.home() / "Desktop" / "interpreter-judgment-classifier"
+LEGACY_RAZIEL_ROOT = Path.home() / "Desktop" / "最高法院_通譯_TXT"
 RAZIEL_LOCK = threading.Lock()
 DELIVERY_ROOT_NAME = "判決捕捉與分類_交付資料"
 
 
 def _raziel_root() -> Path:
-    return Path(os.environ.get("MAGI_RAZIEL_ROOT", str(DEFAULT_RAZIEL_ROOT))).expanduser().resolve()
+    configured = os.environ.get("MAGI_RAZIEL_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    candidates = [
+        DEFAULT_RAZIEL_ROOT,
+        Path.home() / "Desktop" / "interpreter-judgment-classifier-main",
+        Path.home() / "Desktop" / "interpreter-judgment-classifier-fresh",
+        Path.home() / "Desktop" / "interpreter-judgment-classifier-work",
+        LEGACY_RAZIEL_ROOT,
+    ]
+    for candidate in candidates:
+        if (candidate / "scripts" / "complete_interpreter_dataset.py").exists():
+            return candidate.expanduser().resolve()
+    return DEFAULT_RAZIEL_ROOT.expanduser().resolve()
 
 
 def _config_path() -> Path:
@@ -87,10 +101,33 @@ def _terms_from_query(query: str) -> list[str]:
     return terms
 
 
+def _keyword_query_from_config(config: dict[str, Any]) -> str:
+    query = str(config.get("keyword_query") or "").strip()
+    if query:
+        return query
+    keywords = config.get("keywords")
+    if isinstance(keywords, list):
+        query = " ".join(str(x).strip() for x in keywords if str(x).strip())
+    else:
+        query = str(keywords or "").strip()
+    return query or "通譯"
+
+
+def _effective_rule_query(config: dict[str, Any]) -> str:
+    keyword_query = _keyword_query_from_config(config)
+    rule_query = str(config.get("rule_query") or "").strip()
+    if rule_query == "通譯" and keyword_query != "通譯":
+        rule_query = ""
+    return rule_query or keyword_query
+
+
 def _public_config(config: dict[str, Any]) -> dict[str, Any]:
+    keyword_query = _keyword_query_from_config(config)
+    effective_rule = _effective_rule_query({**config, "keyword_query": keyword_query})
     return {
-        "keyword_query": config.get("keyword_query") or config.get("keywords") or "通譯",
-        "rule_query": config.get("rule_query") or config.get("keyword_query") or "通譯",
+        "keyword_query": keyword_query,
+        "rule_query": "" if effective_rule == keyword_query else effective_rule,
+        "effective_rule_query": effective_rule,
         "court_scopes": config.get("court_scopes") or config.get("courts") or ["最高法院"],
         "max_results": config.get("max_results") or config.get("max_api") or 2000,
         "keyword_text_dir_name": config.get("keyword_text_dir_name") or "依關鍵字原文",
@@ -103,19 +140,52 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _result_paths() -> dict[str, str]:
+def _output_root() -> Path:
     root = _raziel_root()
-    return {
-        "xlsx": str(root / "完整812" / "最高法院_通譯_分類表.xlsx"),
-        "csv": str(root / "完整812" / "最高法院_通譯_分類表.csv"),
-        "md": str(root / "完整812" / "最高法院_通譯_分類表.md"),
-        "preview": str(root / "完整812" / "規則前後文預覽.json"),
-        "report": str(root / "完整812" / "通譯812補抓分析報告.json"),
-    }
+    return root / "判決抓取與分類結果"
+
+
+def _latest_project_payload() -> dict[str, Any]:
+    pointer = _output_root() / "目前使用的搜尋專案.json"
+    if not pointer.exists():
+        return {}
+    try:
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _complete_dir() -> Path:
-    return _raziel_root() / "完整812"
+    payload = _latest_project_payload()
+    project_dir = payload.get("project_dir")
+    if project_dir:
+        path = Path(str(project_dir)).expanduser()
+        if path.exists():
+            return path.resolve()
+    legacy = _raziel_root() / "完整812"
+    if legacy.exists():
+        return legacy
+    return _output_root()
+
+
+def _first_result_path(base: Path, *names: str) -> Path:
+    paths = [base / name for name in names]
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+def _result_paths() -> dict[str, str]:
+    complete = _complete_dir()
+    return {
+        "xlsx": str(_first_result_path(complete, "判決分類表.xlsx", "最高法院_通譯_分類表.xlsx")),
+        "csv": str(_first_result_path(complete, "判決分類表.csv", "最高法院_通譯_分類表.csv")),
+        "md": str(_first_result_path(complete, "判決分類表.md", "最高法院_通譯_分類表.md")),
+        "preview": str(_first_result_path(complete, "規則前後文預覽.json")),
+        "report": str(_first_result_path(complete, "判決補抓與分類報告.json", "通譯812補抓分析報告.json")),
+    }
 
 
 def _delivery_dir() -> Path:
@@ -274,7 +344,14 @@ def _write_delivery_zip(config: dict[str, Any], split_bytes: int) -> dict[str, A
 def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
     config = _load_config()
     keyword_query = str(payload.get("keyword_query") or config.get("keyword_query") or "通譯").strip()
-    rule_query = str(payload.get("rule_query") or config.get("rule_query") or keyword_query or "通譯").strip()
+    if "rule_query" in payload:
+        rule_query = str(payload.get("rule_query") or "").strip()
+    else:
+        rule_query = str(config.get("rule_query") or "").strip()
+    if rule_query == "通譯" and keyword_query != "通譯":
+        rule_query = ""
+    effective_rule_query = rule_query or keyword_query or "通譯"
+    stored_rule_query = "" if effective_rule_query == keyword_query else effective_rule_query
     courts = _split_lines_or_commas(payload.get("court_scopes")) or list(config.get("court_scopes") or ["最高法院"])
     try:
         max_results = int(payload.get("max_results") or config.get("max_results") or config.get("max_api") or 2000)
@@ -284,8 +361,8 @@ def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
         {
             "keyword_query": keyword_query,
             "keywords": _terms_from_query(keyword_query) or [keyword_query],
-            "rule_query": rule_query,
-            "rule_keywords": _terms_from_query(rule_query) or [rule_query],
+            "rule_query": stored_rule_query,
+            "rule_keywords": _terms_from_query(effective_rule_query) or [effective_rule_query],
             "court_scopes": courts,
             "courts": courts,
             "max_results": max(1, max_results),
@@ -319,12 +396,19 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
     cmd = [sys.executable, str(script), "--mode", mode, "--no-zip"]
     if max_api:
         cmd.extend(["--max-api", str(max_api)])
+    env = os.environ.copy()
+    env["INTERPRETER_JUDGMENT_BASE_DIR"] = str(root)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         proc = subprocess.run(
             cmd,
             cwd=str(root),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
+            env=env,
             timeout=900 if mode in {"search", "nightly", "table"} else 240,
         )
     except subprocess.TimeoutExpired:

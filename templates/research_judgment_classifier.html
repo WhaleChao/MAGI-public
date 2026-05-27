@@ -87,15 +87,8 @@
     <script src="/static/osc/tabs/raziel.js?v=20260520-judgment-classifier-v1"></script>
     <script>
         document.addEventListener("DOMContentLoaded", () => {
-            if (typeof bindBusyClick === "function") {
-                bindBusyClick("razielStatusBtn", loadRazielStatus, { actionLabel: "判決分類狀態檢查" });
-                bindBusyClick("razielSearchBtn", () => runRaziel("search"), { actionLabel: "判決抓取" });
-                bindBusyClick("razielPreviewBtn", () => runRaziel("preview"), { actionLabel: "前後文預覽" });
-                bindBusyClick("razielTableBtn", () => runRaziel("table"), { actionLabel: "分類表產生" });
-                bindBusyClick("razielDeliveryBtn", createRazielDelivery, { actionLabel: "交付壓縮檔產生" });
-            }
-            if (typeof loadRazielStatus === "function") {
-                loadRazielStatus().catch(error => setRazielStatus(`狀態檢查失敗：${error.message || error}`, "warn"));
+            if (typeof initRazielControls === "function") {
+                initRazielControls({ autoload: true });
             }
         });
     </script>

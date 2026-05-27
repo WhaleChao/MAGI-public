@@ -28,6 +28,36 @@ def test_raziel_public_config_never_returns_api_key():
     assert "nvidia_api_key" not in public
 
 
+def test_raziel_payload_clears_stale_interpreter_rule(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    root = tmp_path / "judgments"
+    monkeypatch.setenv("MAGI_RAZIEL_ROOT", str(root))
+    config_path = root / "config" / "app_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        '{"keyword_query":"通譯","keywords":["通譯"],"rule_query":"通譯","rule_keywords":["通譯"]}',
+        encoding="utf-8",
+    )
+
+    config = mod._apply_payload_to_config(
+        {
+            "keyword_query": "漁會法 AND 會員大會",
+            "rule_query": "",
+            "court_scopes": "最高法院",
+            "max_results": 527,
+            "ai_provider": "none",
+        }
+    )
+    public = mod._public_config(config)
+
+    assert config["keyword_query"] == "漁會法 AND 會員大會"
+    assert config["rule_query"] == ""
+    assert config["rule_keywords"] == ["漁會法", "會員大會"]
+    assert public["rule_query"] == ""
+    assert public["effective_rule_query"] == "漁會法 AND 會員大會"
+
+
 def test_judgment_classifier_visible_text_uses_function_name():
     root = Path(__file__).resolve().parents[1]
     visible_templates = [
@@ -44,6 +74,29 @@ def test_judgment_classifier_visible_text_uses_function_name():
     assert "拉結爾" not in combined
     assert "專案資料夾" not in combined
     assert "最高法院_通譯_TXT" not in combined
+    partial = (root / "templates" / "partials" / "osc" / "raziel.html").read_text(encoding="utf-8")
+    assert partial.index("1 搜尋判決") < partial.index("2 抓取原文並產生 Excel") < partial.index("3 預覽摘錄")
+
+
+def test_raziel_result_paths_follow_latest_project_pointer(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    root = tmp_path / "judgments"
+    project = root / "判決抓取與分類結果" / "最高法院_漁會法_AND_會員大會_f93db6be"
+    project.mkdir(parents=True)
+    (project / "判決分類表.xlsx").write_bytes(b"xlsx")
+    (project / "判決補抓與分類報告.json").write_text("{}", encoding="utf-8")
+    pointer = root / "判決抓取與分類結果" / "目前使用的搜尋專案.json"
+    pointer.write_text(
+        '{"project_dir":"' + str(project).replace("\\", "\\\\") + '"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAGI_RAZIEL_ROOT", str(root))
+
+    paths = mod._result_paths()
+
+    assert paths["xlsx"] == str(project / "判決分類表.xlsx")
+    assert paths["report"] == str(project / "判決補抓與分類報告.json")
 
 
 def test_raziel_delivery_zip_splits_when_limit_is_small(tmp_path, monkeypatch):

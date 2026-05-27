@@ -18,9 +18,9 @@ function setRazielBadge(text, tone = "info") {
     badge.className = `badge${tone === "ok" || tone === "success" ? " ok" : ""}`;
 }
 
-function razielSetValue(id, value) {
+function razielSetValue(id, value, force = false) {
     const el = razielEl(id);
-    if (el && value !== undefined && value !== null && !el.value) el.value = value;
+    if (el && value !== undefined && value !== null && (force || !el.value)) el.value = value;
 }
 
 function razielPayload(mode = "preview") {
@@ -42,8 +42,10 @@ function razielPayload(mode = "preview") {
 }
 
 function fillRazielConfig(config = {}) {
-    razielSetValue("razielKeywordQuery", config.keyword_query || "通譯");
-    razielSetValue("razielRuleQuery", config.rule_query || config.keyword_query || "通譯");
+    const keywordQuery = config.keyword_query || "通譯";
+    const visibleRule = config.rule_query && config.rule_query !== keywordQuery ? config.rule_query : "";
+    razielSetValue("razielKeywordQuery", keywordQuery);
+    razielSetValue("razielRuleQuery", visibleRule, true);
     razielSetValue("razielCourts", Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : (config.court_scopes || "最高法院"));
     razielSetValue("razielMaxResults", config.max_results || 2000);
     razielSetValue("razielSplitMb", 1900);
@@ -83,7 +85,7 @@ function renderRazielStatus(data = {}) {
             `狀態：${ready ? "可使用" : "需檢查"}`,
             "資料來源：本機判決資料庫",
             `搜尋式：${config.keyword_query || ""}`,
-            `分類規則：${config.rule_query || ""}`,
+            `分類規則：${config.effective_rule_query || config.rule_query || config.keyword_query || ""}`,
             `法院範圍：${Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : ""}`,
             `AI 模式：${config.ai_provider || "nvidia"}`,
             `主模型：${config.nvidia_model || ""}`,
@@ -99,11 +101,17 @@ function renderRazielStatus(data = {}) {
 function renderRazielResult(data = {}) {
     const result = data.result || {};
     const config = data.config || {};
+    const modeLabels = {
+        search: "1 搜尋判決",
+        nightly: "2 抓取原文並產生 Excel",
+        preview: "3 預覽摘錄",
+        table: "只重建 Excel",
+    };
     const output = [
-        `執行模式：${data.mode || ""}`,
+        `執行模式：${modeLabels[data.mode] || data.mode || ""}`,
         `結果：${data.ok && result.success !== false ? "完成" : "未完成"}`,
         `搜尋式：${config.keyword_query || ""}`,
-        `分類規則：${config.rule_query || ""}`,
+        `分類規則：${config.effective_rule_query || config.rule_query || config.keyword_query || ""}`,
         `法院範圍：${Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : ""}`,
         `AI 模式：${config.ai_provider || ""}`,
         `模型：${result.ai_model || result.model || config.nvidia_model || ""}`,
@@ -164,9 +172,10 @@ async function loadRazielStatus() {
 
 async function runRaziel(mode) {
     const labels = {
-        search: "正在抓取判決；若有網站限制，系統會在結果中提示改用夜間補抓。",
+        search: "正在搜尋判決清單；若網站單次回傳不足，系統會拆年度補齊到本次上限。",
+        nightly: "正在抓取原文與 PDF，並產生 Excel；若需判決資料服務，會在服務時段自動補抓。",
         preview: "正在產生關鍵字前後文預覽。",
-        table: "正在產生 Excel 分類表。",
+        table: "正在只重建 Excel 分類表。",
     };
     try {
         setRazielStatus(labels[mode] || "正在執行判決分類器。");
@@ -182,6 +191,33 @@ async function runRaziel(mode) {
         throw error;
     }
 }
+
+function bindRazielButton(buttonId, fn, actionLabel) {
+    const btn = razielEl(buttonId);
+    if (!btn || btn.dataset.razielBound === "1") return;
+    btn.dataset.razielBound = "1";
+    if (typeof bindBusyClick === "function") {
+        bindBusyClick(buttonId, fn, { actionLabel });
+    } else {
+        btn.addEventListener("click", fn);
+    }
+}
+
+function initRazielControls(options = {}) {
+    bindRazielButton("razielStatusBtn", loadRazielStatus, "判決分類狀態檢查");
+    bindRazielButton("razielSearchBtn", () => runRaziel("search"), "判決搜尋");
+    bindRazielButton("razielTableBtn", () => runRaziel("nightly"), "原文抓取與分類表產生");
+    bindRazielButton("razielPreviewBtn", () => runRaziel("preview"), "前後文預覽");
+    bindRazielButton("razielDeliveryBtn", createRazielDelivery, "交付壓縮檔產生");
+    if (options.autoload !== false && typeof loadRazielStatus === "function" && !window.__razielAutoLoaded) {
+        window.__razielAutoLoaded = true;
+        loadRazielStatus().catch(error => setRazielStatus(`狀態檢查失敗：${error.message || error}`, "warn"));
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    if (razielEl("razielStatusBtn")) initRazielControls({ autoload: true });
+});
 
 async function createRazielDelivery() {
     try {
