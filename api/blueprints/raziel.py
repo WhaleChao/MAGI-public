@@ -22,20 +22,52 @@ RAZIEL_LOCK = threading.Lock()
 DELIVERY_ROOT_NAME = "判決捕捉與分類_交付資料"
 
 
+def _has_classifier_script(path: Path) -> bool:
+    return (path / "scripts" / "complete_interpreter_dataset.py").exists()
+
+
+def _candidate_roots() -> list[Path]:
+    candidates: list[Path] = []
+
+    def add(path: Any) -> None:
+        if not path:
+            return
+        candidate = Path(path).expanduser()
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    add(os.environ.get("MAGI_RAZIEL_ROOT"))
+    add(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR"))
+    add(DEFAULT_RAZIEL_ROOT)
+    for base in (Path.home() / "Desktop", Path.home() / "Downloads"):
+        for name in (
+            "interpreter-judgment-classifier",
+            "interpreter-judgment-classifier-main",
+            "interpreter-judgment-classifier-fresh",
+            "interpreter-judgment-classifier-work",
+        ):
+            add(base / name)
+            add(base / name / name)
+        for candidate in sorted(base.glob("interpreter-judgment-classifier*")):
+            add(candidate)
+            if candidate.is_dir():
+                for nested in sorted(candidate.glob("interpreter-judgment-classifier*")):
+                    add(nested)
+    add(LEGACY_RAZIEL_ROOT)
+    return candidates
+
+
 def _raziel_root() -> Path:
     configured = os.environ.get("MAGI_RAZIEL_ROOT")
     if configured:
-        return Path(configured).expanduser().resolve()
-    candidates = [
-        DEFAULT_RAZIEL_ROOT,
-        Path.home() / "Desktop" / "interpreter-judgment-classifier-main",
-        Path.home() / "Desktop" / "interpreter-judgment-classifier-fresh",
-        Path.home() / "Desktop" / "interpreter-judgment-classifier-work",
-        LEGACY_RAZIEL_ROOT,
-    ]
-    for candidate in candidates:
-        if (candidate / "scripts" / "complete_interpreter_dataset.py").exists():
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists() or _has_classifier_script(configured_path):
+            return configured_path.resolve()
+    for candidate in _candidate_roots():
+        if _has_classifier_script(candidate):
             return candidate.expanduser().resolve()
+    if configured:
+        return Path(configured).expanduser().resolve()
     return DEFAULT_RAZIEL_ROOT.expanduser().resolve()
 
 
@@ -438,11 +470,20 @@ def raziel_status_api():
     config = _load_config()
     paths = _result_paths()
     files = {key: {"path": value, "exists": Path(value).exists()} for key, value in paths.items()}
+    script_path = _script_path()
+    script_exists = script_path.exists()
     return jsonify(
         {
             "ok": True,
             "root": str(root),
-            "script_exists": _script_path().exists(),
+            "script_path": str(script_path),
+            "script_exists": script_exists,
+            "configured_root": os.environ.get("MAGI_RAZIEL_ROOT") or "",
+            "status_message": (
+                "判決捕捉與分類器已連線。"
+                if script_exists
+                else "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"
+            ),
             "config": _public_config(config),
             "files": files,
         }

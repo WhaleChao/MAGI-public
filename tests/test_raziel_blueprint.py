@@ -99,6 +99,33 @@ def test_raziel_result_paths_follow_latest_project_pointer(tmp_path, monkeypatch
     assert paths["report"] == str(project / "判決補抓與分類報告.json")
 
 
+def test_raziel_root_falls_back_when_configured_path_is_stale(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    stale = tmp_path / "old" / "最高法院_通譯_TXT"
+    fresh = tmp_path / "fresh" / "interpreter-judgment-classifier-main"
+    (fresh / "scripts").mkdir(parents=True)
+    (fresh / "scripts" / "complete_interpreter_dataset.py").write_text("print('ok')", encoding="utf-8")
+    monkeypatch.setenv("MAGI_RAZIEL_ROOT", str(stale))
+    monkeypatch.setattr(mod, "DEFAULT_RAZIEL_ROOT", fresh)
+
+    assert mod._raziel_root() == fresh.resolve()
+
+
+def test_raziel_root_finds_downloaded_nested_source_folder(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    nested = tmp_path / "Downloads" / "interpreter-judgment-classifier-main" / "interpreter-judgment-classifier-main"
+    (nested / "scripts").mkdir(parents=True)
+    (nested / "scripts" / "complete_interpreter_dataset.py").write_text("print('ok')", encoding="utf-8")
+    monkeypatch.delenv("MAGI_RAZIEL_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(mod, "DEFAULT_RAZIEL_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(mod, "LEGACY_RAZIEL_ROOT", tmp_path / "legacy")
+
+    assert mod._raziel_root() == nested.resolve()
+
+
 def test_raziel_delivery_zip_splits_when_limit_is_small(tmp_path, monkeypatch):
     from api.blueprints import raziel as mod
 

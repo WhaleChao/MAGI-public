@@ -76,14 +76,15 @@ function renderRazielStatus(data = {}) {
     setRazielStatus(
         ready
             ? `判決分類核心已連線。${keyText}。`
-            : "找不到判決分類核心，請確認本機判決資料庫仍存在。",
+            : (data.status_message || "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"),
         ready ? "ok" : "warn"
     );
     const out = razielEl("razielOutput");
     if (out) {
         out.textContent = [
             `狀態：${ready ? "可使用" : "需檢查"}`,
-            "資料來源：本機判決資料庫",
+            `分類器資料夾：${data.root || ""}`,
+            `核心程式：${data.script_path || ""}`,
             `搜尋式：${config.keyword_query || ""}`,
             `分類規則：${config.effective_rule_query || config.rule_query || config.keyword_query || ""}`,
             `法院範圍：${Array.isArray(config.court_scopes) ? config.court_scopes.join(", ") : ""}`,
