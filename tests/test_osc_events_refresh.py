@@ -3,9 +3,70 @@ from __future__ import annotations
 import json
 import os
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from scripts.ops import osc_events_refresh
+
+
+def test_active_pdf_todos_filters_past_and_implausible_dates():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {"type": "補正", "date": "2026-05-26", "description": "old"},
+            {"type": "開庭", "date": "2026-05-27", "description": "today"},
+            {"type": "調解", "date": "2028-05-25", "description": "edge"},
+            {"type": "異議", "date": "2028-05-27", "description": "too far"},
+            {"type": "待確認", "date": "", "description": "missing"},
+        ],
+        today=date(2026, 5, 27),
+    )
+
+    assert [x["description"] for x in active] == ["today", "edge"]
+    assert past_skipped == 1
+    assert implausible_skipped == 2
+
+
+def test_pdf_calendar_scan_writes_only_active_todos(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    today = date.today()
+    captured: list[dict] = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", tmp_path / "cursor.json")
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [
+                {"type": "補正", "date": (today - timedelta(days=1)).isoformat(), "description": "old"},
+                {"type": "補正", "date": (today + timedelta(days=3)).isoformat(), "description": "future"},
+            ],
+            "events": [{}, {}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda todos, **_kwargs: captured.extend(todos) or {"inserted": len(todos), "updated": 0, "skipped": 0},
+    )
+
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False, force_rebuild=True)
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert result["todo_count"] == 1
+    assert result["past_todo_count"] == 1
+    assert result["write_result"]["inserted"] == 1
+    assert [x["description"] for x in captured] == ["future"]
 
 
 def test_write_latest_serializes_datetime_nested_payload(tmp_path):

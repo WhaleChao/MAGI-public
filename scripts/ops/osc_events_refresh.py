@@ -18,7 +18,7 @@ import os
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +80,35 @@ def _load_transcript_todo_module():
     return mod
 
 
+def _active_pdf_todos(
+    todos: list[dict[str, Any]],
+    *,
+    today: date | None = None,
+    max_future_days: int = 730,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Keep only actionable PDF todos before writing them into OSC/Google."""
+    today = today or datetime.now().date()
+    latest = today + timedelta(days=max_future_days)
+    active: list[dict[str, Any]] = []
+    past_skipped = 0
+    implausible_skipped = 0
+    for todo in todos or []:
+        raw = str(todo.get("date") or "").strip()
+        try:
+            todo_date = datetime.strptime(raw[:10], "%Y-%m-%d").date()
+        except Exception:
+            implausible_skipped += 1
+            continue
+        if todo_date < today:
+            past_skipped += 1
+            continue
+        if todo_date > latest:
+            implausible_skipped += 1
+            continue
+        active.append(todo)
+    return active, past_skipped, implausible_skipped
+
+
 def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     """Scan court PDFs with the same extractor used by the OSC web PDF tool."""
     from api.blueprints import osc_pdf
@@ -101,6 +130,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         no_todo_cache_days = 0
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
+    past_todo_count = 0
+    implausible_todo_count = 0
     timeout_count = 0
     error_count = 0
     cache_skipped = 0
@@ -237,10 +268,12 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                     text_when_filename=text_when_filename,
                 )
             scanned += 1
-            todos = item.get("todos") or []
-            events = item.get("events") or []
+            raw_todos = item.get("todos") or []
+            todos, past_skipped, implausible_skipped = _active_pdf_todos(raw_todos)
+            past_todo_count += past_skipped
+            implausible_todo_count += implausible_skipped
             todo_count += len(todos)
-            event_count += len(events)
+            event_count += len(todos)
             if signature and isinstance(cache_files, dict):
                 cache_files[cache_key] = {
                     "mtime": signature[1],
@@ -273,7 +306,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                         "client_name": item.get("client_name") or client_name,
                         "file_name": path.name,
                         "todo_count": len(todos),
-                        "event_count": len(events),
+                        "event_count": len(todos),
                         "write_result": write_result,
                         "todos": todos[:3],
                     }
@@ -336,6 +369,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "cache_skipped": cache_skipped,
         "todo_count": todo_count,
         "event_count": event_count,
+        "past_todo_count": past_todo_count,
+        "implausible_todo_count": implausible_todo_count,
         "timeout_count": timeout_count,
         "error_count": error_count,
         "write_result": {
