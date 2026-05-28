@@ -41,6 +41,7 @@ if PROJECT_ROOT not in sys.path:
 from api.runtime_paths import get_orch_dir, get_skill_python
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
+from api.domains.judicial_api_policy import judicial_api_env_default
 from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
 from api.osc.insight_filters import is_non_extractable_legal_insight
 try:
@@ -381,13 +382,28 @@ SYNOLOGY_CASE_ROOTS = preferred_case_roots(include_closed=False)
 JDG_API_BASE = _env("JUDICIAL_API_BASE", "https://data.judicial.gov.tw/jdg/api").rstrip("/")
 JDG_API_WINDOW_START_HOUR = int(_env("JUDICIAL_API_WINDOW_START_HOUR", "0") or "0")
 JDG_API_WINDOW_END_HOUR = int(_env("JUDICIAL_API_WINDOW_END_HOUR", "6") or "6")
-JDG_API_NIGHT_MAX_JDOCS = int(_env("JUDICIAL_API_NIGHT_MAX_JDOCS", "25000") or "25000")
-JDG_API_DAY_MAX_PROCESS = int(_env("JUDICIAL_API_DAY_MAX_PROCESS", "200") or "200")
-JDG_API_DAY_SUMMARY_MAX = int(_env("JUDICIAL_API_DAY_SUMMARY_MAX", "80") or "80")
+JDG_API_NIGHT_MAX_JDOCS = int(
+    _env("JUDICIAL_API_NIGHT_MAX_JDOCS", judicial_api_env_default("JUDICIAL_API_NIGHT_MAX_JDOCS", "300")) or "300"
+)
+JDG_API_NIGHT_MAX_DAYS = int(
+    _env("JUDICIAL_API_NIGHT_MAX_DAYS", judicial_api_env_default("JUDICIAL_API_NIGHT_MAX_DAYS", "2")) or "2"
+)
+JDG_API_DAY_MAX_PROCESS = int(
+    _env("JUDICIAL_API_DAY_MAX_PROCESS", judicial_api_env_default("JUDICIAL_API_DAY_MAX_PROCESS", "60")) or "60"
+)
+JDG_API_DAY_SUMMARY_MAX = int(
+    _env("JUDICIAL_API_DAY_SUMMARY_MAX", judicial_api_env_default("JUDICIAL_API_DAY_SUMMARY_MAX", "12")) or "12"
+)
 JDG_API_DAY_SUMMARY_TIMEOUT_SEC = int(_env("JUDICIAL_API_DAY_SUMMARY_TIMEOUT_SEC", "240") or "240")
 JDG_API_DAY_VECTOR_MAX_CHARS = int(_env("JUDICIAL_API_DAY_VECTOR_MAX_CHARS", "12000") or "12000")
-JDG_API_DAY_SUMMARY_MODE = _env("JUDICIAL_API_DAY_SUMMARY_MODE", "llm").lower() or "llm"
-JDG_API_DAY_SKIP_ASSETS = _env("JUDICIAL_API_DAY_SKIP_ASSETS", "0").lower() in {"1", "true", "yes", "on"}
+JDG_API_DAY_SUMMARY_MODE = (
+    _env("JUDICIAL_API_DAY_SUMMARY_MODE", judicial_api_env_default("JUDICIAL_API_DAY_SUMMARY_MODE", "extractive")).lower()
+    or "extractive"
+)
+JDG_API_DAY_SKIP_ASSETS = (
+    _env("JUDICIAL_API_DAY_SKIP_ASSETS", judicial_api_env_default("JUDICIAL_API_DAY_SKIP_ASSETS", "1")).lower()
+    in {"1", "true", "yes", "on"}
+)
 JDG_API_FAST_BACKLOG_THRESHOLD = int(_env("JUDICIAL_API_FAST_BACKLOG_THRESHOLD", "5000") or "5000")
 JDG_API_ROOT = os.path.join(CACHE_ROOT, "judicial_api")
 JDG_API_RAW_ROOT = os.path.join(JDG_API_ROOT, "raw")
@@ -3879,7 +3895,7 @@ def _iter_jdg_raw_files() -> list[str]:
 def official_api_night_pull(
     *,
     max_jdocs: int = JDG_API_NIGHT_MAX_JDOCS,
-    max_days: int = 0,
+    max_days: int = JDG_API_NIGHT_MAX_DAYS,
     force: bool = False,
     notify: bool = False,
 ) -> dict:
@@ -3887,8 +3903,8 @@ def official_api_night_pull(
     司法院裁判書資料夜間批量拉取。
 
     Parameters:
-        max_jdocs: 本次拉取上限筆數（預設 25000）
-        max_days:  JList 日期上限（0=不限，拉完所有可用日期）
+        max_jdocs: 本次拉取上限筆數（tlr_smart 預設 300；legacy 才是 25000）
+        max_days:  JList 日期上限（tlr_smart 預設 2；0=不限，拉完所有可用日期）
         force:     強制重新拉取已存在的判決
         notify:    完成後通知
     """
@@ -5169,9 +5185,9 @@ def main() -> int:
         except Exception:
             max_jdocs = JDG_API_NIGHT_MAX_JDOCS
         try:
-            max_days = int(payload.get("max_days", 7))
+            max_days = int(payload.get("max_days", JDG_API_NIGHT_MAX_DAYS))
         except Exception:
-            max_days = 7
+            max_days = JDG_API_NIGHT_MAX_DAYS
         force = bool(payload.get("force", False))
         notify = bool(payload.get("notify", False))
         r = official_api_night_pull(max_jdocs=max_jdocs, max_days=max_days, force=force, notify=notify)

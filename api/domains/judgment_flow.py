@@ -280,6 +280,107 @@ def _tlr_lookup_allowed() -> bool:
     return tw_legal_rag_enabled() and value not in {"0", "false", "no", "off"}
 
 
+def _twlegalrag_cache_enabled() -> bool:
+    value = str(os.environ.get("MAGI_TWLEGALRAG_CACHE_HITS", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _normalize_tlr_judgment_date(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        return text
+    match = re.search(r"(\d{2,3})[./年-](\d{1,2})[./月-](\d{1,2})", text)
+    if not match:
+        return None
+    try:
+        year = int(match.group(1))
+        if year < 1911:
+            year += 1911
+        month = int(match.group(2))
+        day = int(match.group(3))
+        if 1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+            return f"{year:04d}-{month:02d}-{day:02d}"
+    except Exception:
+        return None
+    return None
+
+
+def _cache_tlr_judgments_to_local(tlr_judgments: Dict[str, Any]) -> int:
+    """Persist verified TLR hits as a small local cache for repeated queries."""
+    if not _twlegalrag_cache_enabled():
+        return 0
+    items = tlr_judgments.get("items") if isinstance(tlr_judgments.get("items"), list) else []
+    if not items:
+        return 0
+    try:
+        db = _get_local_db_manager()
+    except Exception as exc:
+        logger.debug("tw-legal-rag local cache db unavailable: %s", exc, exc_info=True)
+        return 0
+    if db is None:
+        return 0
+
+    try:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS court_judgments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                jid VARCHAR(100) UNIQUE,
+                court_name VARCHAR(100) DEFAULT NULL,
+                case_number VARCHAR(200) DEFAULT NULL,
+                case_type VARCHAR(50) DEFAULT NULL,
+                judgment_date DATE DEFAULT NULL,
+                summary MEDIUMTEXT,
+                full_text LONGTEXT,
+                source_url TEXT,
+                crawled_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    except Exception as exc:
+        logger.debug("tw-legal-rag cache table ensure failed: %s", exc, exc_info=True)
+        return 0
+
+    cached = 0
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        jid = str(row.get("jid") or row.get("doc_id") or "").strip()[:100]
+        if not jid:
+            continue
+        title = str(row.get("citation_text") or row.get("title") or "").strip()
+        summary = str(row.get("summary_full") or row.get("summary_preview") or "").strip()
+        if not summary:
+            continue
+        try:
+            db.execute(
+                """
+                INSERT INTO court_judgments
+                    (jid, court_name, case_number, case_type, judgment_date, summary, full_text, source_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    summary = IF(COALESCE(summary, '') = '', VALUES(summary), summary),
+                    full_text = IF(COALESCE(full_text, '') = '', VALUES(full_text), full_text),
+                    source_url = IF(COALESCE(source_url, '') = '', VALUES(source_url), source_url),
+                    crawled_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    jid,
+                    str(row.get("court_name") or "").strip() or None,
+                    title or jid,
+                    str(row.get("case_category") or "一般").strip() or "一般",
+                    _normalize_tlr_judgment_date(row.get("judgment_date")),
+                    summary[:12000],
+                    summary,
+                    str(row.get("url") or "").strip(),
+                ),
+            )
+            cached += 1
+        except Exception as exc:
+            logger.debug("tw-legal-rag cache upsert failed for %s: %s", jid, exc, exc_info=True)
+    return cached
+
+
 def _augment_judgments_with_tlr(
     query: str,
     judgments: Dict[str, Any],
@@ -298,6 +399,9 @@ def _augment_judgments_with_tlr(
         logger.debug("tw-legal-rag augment failed: %s", exc, exc_info=True)
         return judgments
     if tlr_judgments.get("success"):
+        cached_count = _cache_tlr_judgments_to_local(tlr_judgments)
+        if cached_count:
+            tlr_judgments["local_cache_upserts"] = cached_count
         return merge_judgment_sources(judgments, tlr_judgments, limit=limit)
     if not judgments.get("success"):
         return tlr_judgments

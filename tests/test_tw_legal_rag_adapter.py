@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from api.domains import judgment_flow
 from api.osc import tw_legal_rag
 
 
@@ -78,3 +79,36 @@ def test_tlr_disabled_is_soft_failure(monkeypatch):
 
     assert result["success"] is False
     assert result["error"] == "tw_legal_rag_disabled"
+
+
+def test_tlr_hits_cache_to_local_court_judgments(monkeypatch):
+    monkeypatch.setenv("MAGI_TWLEGALRAG_CACHE_HITS", "1")
+    calls = []
+
+    class FakeDb:
+        def execute(self, query, params=None, fetch=None):
+            calls.append((query, params, fetch))
+            return 1
+
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: FakeDb())
+    result = {
+        "items": [
+            {
+                "jid": "TPS,114,台上,3753,20250101,1",
+                "citation_text": "最高法院 114年度台上字第3753號",
+                "summary_full": "法院認為通譯程序足以保障被告訴訟權。",
+                "url": "https://example.test/judgment",
+                "court_name": "最高法院",
+                "judgment_date": "2025-01-01",
+                "case_category": "刑事",
+            }
+        ]
+    }
+
+    cached = judgment_flow._cache_tlr_judgments_to_local(result)
+
+    assert cached == 1
+    assert any("CREATE TABLE IF NOT EXISTS court_judgments" in call[0] for call in calls)
+    insert_call = [call for call in calls if "INSERT INTO court_judgments" in call[0]][0]
+    assert insert_call[1][0] == "TPS,114,台上,3753,20250101,1"
+    assert insert_call[1][4] == "2025-01-01"

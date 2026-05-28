@@ -39,6 +39,7 @@ TLR 全判決語義檢索預設啟用，可用環境變數調整：
 ```bash
 MAGI_TWLEGALRAG_ENABLE=1
 MAGI_TWLEGALRAG_AUGMENT=1
+MAGI_TWLEGALRAG_CACHE_HITS=1
 MAGI_TWLEGALRAG_MAX_RESULTS=3
 MAGI_TWLEGALRAG_FULLTEXT_LIMIT=1
 MAGI_TWLEGALRAG_BASE_URL=https://tlr.dr-lawbot.com
@@ -59,6 +60,24 @@ MAGI_TWLEGALRAG_BASE_URL=https://tlr.dr-lawbot.com
 判決與實務見解會保留既有本地見解庫與判決收集流程，並追加 MCP 的司法院公開資料與 TLR 全判決語義檢索；法規與釋憲問題則可直接調用 MCP。查不到時會明確回報查不到，不回到一般聊天猜測。
 
 判決捕捉與分類頁也會顯示「全判決語義預覽」按鈕，方便先確認搜尋式是否能在 TLR 找到相關裁判。預覽結果會保存成 `全判決語義檢索預覽.json`，並納入交付壓縮檔。
+
+## 負載策略：TLR 優先，小量快取
+
+有 TLR 之後，MAGI 不再需要每天對司法院 API 做大規模夜拉。預設 `MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart`：
+
+- TLR 用於「使用者問到時」即時查詢全判決語義結果。
+- 命中的 TLR 裁判會小量快取到本地 `court_judgments`，下次相同議題優先走本地。
+- 官方司法院 API 保留小量增量：夜間只補近 2 日、上限 300 筆；固定晨間只整理少量抽取摘要，不下載 PDF 附件。
+- 一般 `tick`/巡檢預設不再處理司法院 backlog，避免每 2 小時就動用 DB 與磁碟 I/O。
+- 既有 2,000 筆級白天批次可由 `scripts/ops/tune_judicial_api_load.py --apply` 停用。
+- 需要回到舊行為時可明確設定 `MAGI_JUDICIAL_API_LOAD_MODE=legacy`，但不建議作為日常模式。
+
+調整本機排程：
+
+```bash
+cd ~/Desktop/MAGI_v2
+venv/bin/python scripts/ops/tune_judicial_api_load.py --apply
+```
 
 ## 隱私與引用規則
 

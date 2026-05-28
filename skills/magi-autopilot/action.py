@@ -46,6 +46,11 @@ from api.autopilot_artifacts import (
     read_kill_reason,
     write_kill_reason,
 )
+from api.domains.judicial_api_policy import (
+    apply_judicial_api_env_defaults,
+    judicial_api_env_default,
+    judicial_api_policy_report,
+)
 
 from api.runtime_paths import (
     ensure_orch_on_sys_path,
@@ -2994,9 +2999,10 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_BIG_BRAIN_REQUIRE_DISTRIBUTED", "0")
     # 預設允許非主模型降級，重點是任務可完成與回覆不中斷。
     os.environ.setdefault("MAGI_BIG_BRAIN_REQUIRE_MAIN_MODEL", "0")
-    # 司法院官方 API：夜間拉取、白天整理（由 tick/ nighty 分工）
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", "1")
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+    # 司法院官方 API：預設低負載（TLR 語義檢索優先，本地只做小量增量快取）。
+    apply_judicial_api_env_defaults(os.environ)
+    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", "1"))
+    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1"))
     # Tick 補強：除了信箱掃描，也要實際到閱卷網站檢查可下載並自動下載。
     os.environ.setdefault("MAGI_ENABLE_FILE_REVIEW_SITE_CHECK_TICK", "1")
     os.environ.setdefault("MAGI_TICK_FILE_REVIEW_SITE_TIMEOUT_SEC", "900")
@@ -3068,7 +3074,13 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 kind = "needs_human"
             results["blockers"].append(f"{step}: {kind}")
 
-    results: Dict[str, Any] = {"ok": True, "steps": {}, "blocked": False, "blockers": []}
+    results: Dict[str, Any] = {
+        "ok": True,
+        "steps": {},
+        "blocked": False,
+        "blockers": [],
+        "judicial_api_load_policy": judicial_api_policy_report(),
+    }
     if _env_on("MAGI_TICK_OPENCLAW_AUTH_GUARD_ENABLE", False):
         try:
             auth_guard = _openclaw_auth_mode_guard()
@@ -3436,15 +3448,18 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
             }
         else:
             day_payload = {
-                "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_DAY_MAX_DOCS", "200") or "200"),
-                "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", "80") or "80"),
+                "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_DAY_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_MAX_DOCS", "60")) or "60"),
+                "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", "12")) or "12"),
+                "summary_mode": os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MODE", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_SUMMARY_MODE", "extractive")),
+                "skip_assets": _env_on("MAGI_JUDICIAL_API_DAY_SKIP_ASSETS", True),
+                "vector_ingest": _env_on("MAGI_JUDICIAL_API_DAY_VECTOR_INGEST", False),
                 "force": False,
                 "notify": False,
             }
             jc_day_cmd = [VENV_PY, jc_path, "--task", "official_api_day_process " + json.dumps(day_payload, ensure_ascii=False)]
             jc_day = _run_cmd(
                 jc_day_cmd,
-                timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", "3600") or "3600"),
+                timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", "900")) or "900"),
             )
             _stash_cmd_output(run_dir, "judicial_api_day_process", jc_day_cmd, jc_day)
             results["steps"]["judicial_api_day_process"] = {
@@ -3454,7 +3469,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 "stderr_tail": (jc_day.stderr or "")[-800:],
             }
             retry_day_process = (
-                os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", "1").strip().lower()
+                os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", "0")).strip().lower()
                 in {"1", "true", "yes", "on"}
             )
             if jc_day.ok and retry_day_process and isinstance(jc_day.parsed, dict):
@@ -3471,7 +3486,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     retry_payload["force"] = True
                     retry_payload["max_docs"] = min(
                         max(backlog_remaining, int(day_payload.get("max_docs") or 0)),
-                        int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", "400") or "400"),
+                        int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", "120")) or "120"),
                     )
                     jc_day_retry_cmd = [
                         VENV_PY,
@@ -3481,7 +3496,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     ]
                     jc_day_retry = _run_cmd(
                         jc_day_retry_cmd,
-                        timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", "1200") or "1200"),
+                        timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", "600")) or "600"),
                     )
                     _stash_cmd_output(run_dir, "judicial_api_day_process_retry", jc_day_retry_cmd, jc_day_retry)
                     results["steps"]["judicial_api_day_process"]["retry"] = {
@@ -3492,6 +3507,12 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     }
             if not jc_day.ok:
                 maybe_block("judicial_api_day_process", str((jc_day.parsed or {}).get("error") or jc_day.stderr or ""))
+    else:
+        results["steps"]["judicial_api_day_process"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "disabled_by_judicial_api_load_policy" if not day_proc_enabled else "script_not_found",
+        }
 
     # 3) PDF namer file pipeline (notify=0, execute=1)
     # Changed to async background
@@ -3633,7 +3654,10 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_ENABLE_JUDGMENT_CRAWL", "1")
     judicial_api_cron_handles_night_pull = _cron_job_enabled("job_judicial_api_night_pull")
     if "MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL" not in os.environ:
-        os.environ["MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL"] = "0" if judicial_api_cron_handles_night_pull else "1"
+        os.environ["MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL"] = (
+            "0" if judicial_api_cron_handles_night_pull else judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+        )
+    apply_judicial_api_env_defaults(os.environ)
     os.environ.setdefault("MAGI_ENABLE_SCAN_FOLDER", "1")
     os.environ.setdefault("MAGI_ENABLE_DB_BIDIR_SYNC", "0")
     os.environ.setdefault("MAGI_ENABLE_DB_DAILY_BACKUP", "1")
@@ -3729,8 +3753,8 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
                 time.sleep(min(wait_sec + 1, 60))  # 每 60 秒最多重新檢查一次
             logger.info("judicial_api_night_thread: 00:00 服務時段到，開始拉取")
             jdg_payload = {
-                "max_jdocs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", "25000") or "25000"),
-                "max_days": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", "0") or "0"),
+                "max_jdocs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", "300")) or "300"),
+                "max_days": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", "2")) or "2"),
                 "force": False,
                 "notify": True,
             }
@@ -3739,7 +3763,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             # P0-12: 不再預設開啟 insecure SSL。若需要請在 .env 中明確設定。
             # jdg_env["JUDICIAL_API_ALLOW_INSECURE_SSL"] = "1"
             jdg_env.setdefault("JUDICIAL_API_ALLOW_INSECURE_SSL", os.environ.get("JUDICIAL_API_ALLOW_INSECURE_SSL", "0"))
-            jdg_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", "5400") or "5400")
+            jdg_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", "1800")) or "1800")
             res = _run_cmd(jdg_cmd, timeout_sec=jdg_timeout, env=jdg_env)
             _stash_cmd_output(run_dir, "judicial_api_night_pull", jdg_cmd, res)
             _jdg_thread_result = {
@@ -3810,12 +3834,15 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         pass  # 使用者活躍中，摘要整理自動延後
     elif os.path.exists(jc_path_post) and _post_day_enabled:
         _post_payload = {
-            "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", "400") or "400"),
-            "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", "200") or "200"),
+            "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", "80")) or "80"),
+            "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", "20")) or "20"),
+            "summary_mode": os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MODE", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MODE", "extractive")),
+            "skip_assets": _env_on("MAGI_JUDICIAL_API_NIGHTLY_SKIP_ASSETS", True),
+            "vector_ingest": _env_on("MAGI_JUDICIAL_API_NIGHTLY_VECTOR_INGEST", False),
             "force": False,
             "notify": False,
         }
-        _post_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", "7200") or "7200")
+        _post_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", "1800")) or "1800")
         _post_cmd = [VENV_PY, jc_path_post, "--task", "official_api_day_process " + json.dumps(_post_payload, ensure_ascii=False)]
         logger.info("nightly: 開始整理摘要（max_docs=%d, timeout=%ds）", _post_payload["max_docs"], _post_timeout)
         _post_res = _run_cmd(_post_cmd, timeout_sec=_post_timeout)

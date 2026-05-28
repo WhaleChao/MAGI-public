@@ -141,3 +141,22 @@
 | `MAGI_CHANDRA_OCR_METHOD` | `vllm`/`hf` | `vllm` | Chandra 後端；HF 另需 `MAGI_CHANDRA_ALLOW_HF=1`，避免誤下載大型模型 |
 | `MAGI_CHANDRA_VLLM_API_BASE` | URL | `http://127.0.0.1:8000/v1` | Chandra vLLM OpenAI-compatible endpoint |
 | `MAGI_CHANDRA_OCR_MIN_SCORE` | float | `0.45` | pdf-namer 既有 OCR 分數低於此值才呼叫 Chandra |
+
+### Tier 9: Legal Research / Judicial API Load
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MAGI_TWLEGALRAG_ENABLE` | bool | `1` | 啟用 Taiwan Legal RAG/TLR 全判決語義檢索 |
+| `MAGI_TWLEGALRAG_AUGMENT` | bool | `1` | 實務見解/判決搜尋結果不足時自動合併 TLR 結果 |
+| `MAGI_TWLEGALRAG_CACHE_HITS` | bool | `1` | 將 TLR 命中的裁判小量快取到本地 `court_judgments`，降低後續夜拉與重查 |
+| `MAGI_TWLEGALRAG_MAX_RESULTS` | int | `3` | 一般回答時最多合併的 TLR 裁判筆數 |
+| `MAGI_TWLEGALRAG_FULLTEXT_LIMIT` | int | `1` | 每次 TLR 查詢會讀取全文摘要的前 N 筆 |
+| `MAGI_JUDICIAL_API_LOAD_MODE` | `tlr_smart`/`balanced`/`legacy` | `tlr_smart` | 司法院官方 API 負載策略；日常預設為 TLR 優先、小量增量 |
+| `MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS` | bool | `0` | `tlr_smart` 下巡檢 tick 不處理裁判 backlog；由晨間 cron 小量整理 |
+| `MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS` | int | `300` | `tlr_smart` 夜間官方 API 小量拉取上限 |
+| `MAGI_JUDICIAL_API_NIGHT_MAX_DAYS` | int | `2` | `tlr_smart` 夜間只補近幾日裁判 |
+| `MAGI_JUDICIAL_API_DAY_MAX_DOCS` | int | `60` | 白天整理 raw backlog 的單輪上限 |
+| `MAGI_JUDICIAL_API_DAY_SUMMARY_MAX` | int | `12` | 白天單輪摘要上限 |
+| `MAGI_JUDICIAL_API_DAY_SUMMARY_MODE` | string | `extractive` | 日常整理使用抽取摘要，避免 LLM 長時間佔用 |
+| `MAGI_JUDICIAL_API_DAY_SKIP_ASSETS` | bool | `1` | 日常整理不下載 PDF/附件，降低 NAS 與網路負載 |
+| `MAGI_JUDICIAL_API_DAY_VECTOR_INGEST` | bool | `0` | 日常整理不即時向量化；需要時交給低峰專用流程 |
