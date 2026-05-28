@@ -23,6 +23,9 @@ from werkzeug.utils import secure_filename
 
 osc_pdf_bp = Blueprint("osc_pdf", __name__)
 
+_RAPID_OCR_ENGINE: Any | None = None
+_RAPID_OCR_UNAVAILABLE = False
+
 
 def _upload_dir() -> Path:
     root = Path(__file__).resolve().parents[2]
@@ -102,12 +105,76 @@ def _pdf_text_date_context(path: Path) -> tuple[datetime, int]:
     return doc_date, int(extract_base_year(path.name, str(path), doc_date))
 
 
+def _get_rapid_ocr_engine():
+    global _RAPID_OCR_ENGINE, _RAPID_OCR_UNAVAILABLE
+    if _RAPID_OCR_UNAVAILABLE:
+        return None
+    if _RAPID_OCR_ENGINE is not None:
+        return _RAPID_OCR_ENGINE
+    try:
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # type: ignore
+        except Exception:
+            from rapidocr import RapidOCR  # type: ignore
+
+        _RAPID_OCR_ENGINE = RapidOCR()
+        return _RAPID_OCR_ENGINE
+    except Exception:
+        _RAPID_OCR_UNAVAILABLE = True
+        return None
+
+
+def _normalise_ocr_result(result: Any) -> str:
+    if not result:
+        return ""
+    if hasattr(result, "txts"):
+        try:
+            return "\n".join(str(t) for t in (result.txts or []) if str(t or "").strip())
+        except Exception:
+            return ""
+    payload = result[0] if isinstance(result, tuple) and result else result
+    lines: list[str] = []
+    for item in payload or []:
+        try:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                text = item[1]
+                if isinstance(text, (list, tuple)) and text:
+                    text = text[0]
+                if str(text or "").strip():
+                    lines.append(str(text).strip())
+        except Exception:
+            continue
+    return "\n".join(lines)
+
+
+def _ocr_pdf_page(page: fitz.Page) -> str:
+    engine = _get_rapid_ocr_engine()
+    if engine is None:
+        return ""
+    try:
+        dpi = max(120, min(260, int(os.environ.get("OSC_PDF_CALENDAR_OCR_DPI", "180") or "180")))
+        pix = page.get_pixmap(dpi=dpi, alpha=False)
+        image_bytes = pix.tobytes("png")
+        return _normalise_ocr_result(engine(image_bytes))
+    except Exception:
+        logging.getLogger(__name__).warning("pdf calendar OCR fallback failed", exc_info=True)
+        return ""
+
+
 def _pdf_text(path: Path, max_pages: int = 5) -> str:
     doc = fitz.open(path)
     parts: list[str] = []
     try:
-        for idx in range(min(doc.page_count, max(1, max_pages))):
+        page_limit = min(doc.page_count, max(1, max_pages))
+        for idx in range(page_limit):
             parts.append(doc[idx].get_text("text") or "")
+        native_text = "\n".join(parts).strip()
+        min_chars = max(0, int(os.environ.get("OSC_PDF_CALENDAR_OCR_MIN_TEXT_CHARS", "20") or "20"))
+        ocr_enabled = str(os.environ.get("OSC_PDF_CALENDAR_OCR_FALLBACK", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        if ocr_enabled and len(re.sub(r"\s+", "", native_text)) < min_chars:
+            ocr_limit = max(1, min(page_limit, int(os.environ.get("OSC_PDF_CALENDAR_OCR_MAX_PAGES", "3") or "3")))
+            ocr_parts = [_ocr_pdf_page(doc[idx]) for idx in range(ocr_limit)]
+            parts.extend([p for p in ocr_parts if str(p or "").strip()])
     finally:
         doc.close()
     return "\n".join(parts).strip()
@@ -479,6 +546,55 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     return items
 
 
+def _is_court_calendar_pdf(path: Path, text: str = "") -> bool:
+    haystack = f"{path}\n{path.name}\n{(text or '')[:3000]}"
+    return any(
+        key in haystack
+        for key in (
+            "法院通知",
+            "程序裁定",
+            "法院通知或程序裁定",
+            "法院通知及程序裁定",
+            "判決書",
+            "地方法院",
+            "高等法院",
+            "最高法院",
+            "裁定",
+            "通知",
+            "函",
+            "開庭方式意願徵詢",
+        )
+    )
+
+
+def _tentative_no_deadline_todo(path: Path, text: str = "") -> list[dict[str, Any]]:
+    enabled = str(os.environ.get("OSC_PDF_CALENDAR_TENTATIVE_IF_NO_DEADLINE", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled or not _is_court_calendar_pdf(path, text):
+        return []
+    try:
+        st = path.stat()
+        mtime_dt = datetime.fromtimestamp(st.st_mtime)
+    except Exception:
+        mtime_dt = datetime.now()
+    max_age_days = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TENTATIVE_MAX_MTIME_DAYS", "45") or "45"))
+    if max_age_days and (datetime.now() - mtime_dt).total_seconds() > max_age_days * 86400:
+        return []
+    doc_date, _base_year = _pdf_text_date_context(path)
+    base_dt = max(doc_date, mtime_dt)
+    days = max(1, int(os.environ.get("OSC_PDF_CALENDAR_TENTATIVE_DAYS", "14") or "14"))
+    deadline = _next_tw_workday(base_dt + timedelta(days=days))
+    return [
+        {
+            "type": "確認",
+            "date": deadline.strftime("%Y-%m-%d"),
+            "time": "",
+            "description": f"📝 PDF 擷取：未載明明確期限，暫定於{deadline.strftime('%m/%d')}前確認（基準日 {base_dt.strftime('%m/%d')}）",
+            "source": "pdf_tentative_no_deadline",
+            "source_file": str(path),
+        }
+    ]
+
+
 def _dedupe_todos(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str, str]] = set()
     out: list[dict[str, Any]] = []
@@ -794,6 +910,8 @@ def _scan_pdf_for_calendar(
             text_error = f"{type(exc).__name__}: {str(exc)[:180]}"
     text_todos = _extract_todos_from_pdf_text(path, text) if text else []
     todos = _dedupe_todos([*filename_todos, *text_todos])
+    if not todos:
+        todos = _tentative_no_deadline_todo(path, text)
     todos = [_json_safe(t) for t in todos]
     share_link = _create_calendar_share_link(path) if include_share_link else {}
     if include_share_link:
@@ -872,6 +990,26 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
         (row_limit, row_offset),
         fetch="all",
     )
+    recent_sweep_hours = max(0, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS", "96") or "96"))
+    recent_case_limit = max(0, min(1000, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_CASE_LIMIT", "300") or "300")))
+    recent_cutoff = time.time() - recent_sweep_hours * 3600
+    recent_rows: list[dict[str, Any]] = []
+    if recent_sweep_hours and recent_case_limit:
+        try:
+            recent_rows, _ = _osc_exec(
+                """
+                SELECT case_number, client_name, folder_path
+                FROM cases
+                WHERE folder_path IS NOT NULL AND folder_path!=''
+                  AND """ + _open_case_status_sql("status") + """
+                ORDER BY updated_at DESC, created_date DESC, case_number DESC
+                LIMIT %s
+                """,
+                (recent_case_limit,),
+                fetch="all",
+            )
+        except Exception:
+            recent_rows = []
     out: list[tuple[Path, str, str]] = []
     candidates: list[tuple[int, int, float, str, Path, str, str]] = []
     wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
@@ -970,7 +1108,25 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
         # todo refresh and prevent newer files from being reached.
         yield from _pdfs_shallow_timeout(root, is_case_root=is_case_root)
 
-    for row in rows or []:
+    row_entries: list[tuple[dict[str, Any], bool]] = []
+    seen_rows: set[tuple[str, str]] = set()
+
+    def _add_rows(items: Any, *, recent_only: bool) -> None:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("case_number") or ""), str(item.get("folder_path") or ""))
+            if key in seen_rows:
+                continue
+            seen_rows.add(key)
+            row_entries.append((item, recent_only))
+
+    # Recent PDFs must win over the rotating cursor batch.  Otherwise a newly
+    # arrived court notice can wait several six-hour cycles behind older cases.
+    _add_rows(recent_rows, recent_only=True)
+    _add_rows(rows, recent_only=False)
+
+    for row, recent_only in row_entries:
         if len(candidates) >= candidate_cap:
             break
         if target_budget_sec and time.monotonic() - started > target_budget_sec:
@@ -997,6 +1153,8 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
                     continue
                 case_number = str(row.get("case_number") or "")
                 mtime = _pdf_mtime_timeout(pdf)
+                if recent_only and recent_sweep_hours and mtime < recent_cutoff:
+                    continue
                 processed_rank = 1 if (case_number, pdf.name) in existing_sources else 0
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
                 candidates.append((processed_rank, hint_rank, -mtime, pdf.name, _pdf_resolve_timeout(pdf), case_number, str(row.get("client_name") or "")))

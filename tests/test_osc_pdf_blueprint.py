@@ -466,6 +466,51 @@ def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch)
     assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
 
 
+def test_all_case_pdf_targets_recent_sweep_reaches_fresh_pdf_outside_cursor_batch(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    old_case_dir = tmp_path / "old" / "2026-0001-舊案"
+    old_notice_dir = old_case_dir / "02_法院通知與程序裁定"
+    old_notice_dir.mkdir(parents=True)
+    old_pdf = old_notice_dir / "20260501 舊通知.pdf"
+    old_pdf.write_bytes(b"%PDF-1.4\n")
+
+    fresh_case_dir = tmp_path / "fresh" / "2026-0002-新案"
+    fresh_notice_dir = fresh_case_dir / "02_法院通知與程序裁定"
+    fresh_notice_dir.mkdir(parents=True)
+    fresh_pdf = fresh_notice_dir / "20260528 新通知（訂115年6月9日上午10時開庭）.pdf"
+    fresh_pdf.write_bytes(b"%PDF-1.4\n")
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_todos" in sql:
+            return [], {}
+        if "LIMIT %s OFFSET %s" in sql:
+            return [
+                {
+                    "case_number": "2026-0001",
+                    "client_name": "舊案",
+                    "folder_path": str(old_case_dir),
+                }
+            ], {}
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0002",
+                    "client_name": "新案",
+                    "folder_path": str(fresh_case_dir),
+                }
+            ], {}
+        return [], {}
+
+    monkeypatch.setenv("OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS", "96")
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(p)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=5, case_offset=40, case_batch=1)
+
+    assert (fresh_pdf.resolve(), "2026-0002", "新案") in targets
+
+
 def test_all_case_pdf_targets_excludes_closing_and_closed_statuses(tmp_path, monkeypatch):
     from api.blueprints import osc_pdf
 
@@ -577,6 +622,63 @@ def test_pdf_calendar_scan_skips_text_for_large_pdf_when_filename_has_todo(tmp_p
     assert item["todos"]
     assert item["todos"][0]["date"] == "2026-05-27"
     assert item["text_error"] == "skipped_text_filename_todos"
+
+
+def test_pdf_calendar_scan_keeps_original_osc_rules_before_tentative_fallback(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260528 臺灣花蓮地方法院通知（王小明；訂115年6月9日上午10時開庭）.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    item = osc_pdf._scan_pdf_for_calendar(
+        path,
+        case_number="2026-0001",
+        client_name="王小明",
+        scan_text=False,
+    )
+
+    assert item["todos"]
+    assert item["todos"][0]["type"] == "開庭"
+    assert item["todos"][0]["date"] == "2026-06-09"
+    assert item["todos"][0]["time"] == "10:00"
+    assert item["todos"][0].get("source") != "pdf_tentative_no_deadline"
+
+
+def test_pdf_calendar_scan_tentative_14_days_when_court_pdf_has_no_deadline(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260528 臺北高等行政法院開庭方式意願徵詢表（李秀英）.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+    fixed_mtime = time.mktime((2026, 5, 28, 9, 0, 0, 0, 0, -1))
+    os.utime(path, (fixed_mtime, fixed_mtime))
+
+    item = osc_pdf._scan_pdf_for_calendar(
+        path,
+        case_number="2026-0045",
+        client_name="李秀英",
+        scan_text=False,
+    )
+
+    assert item["todos"]
+    assert item["todos"][0]["type"] == "確認"
+    assert item["todos"][0]["date"] == "2026-06-11"
+    assert item["todos"][0]["source"] == "pdf_tentative_no_deadline"
+
+
+def test_pdf_text_uses_ocr_fallback_when_native_text_empty(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr(osc_pdf, "_ocr_pdf_page", lambda page: "OCR 補正內容")
+
+    text = osc_pdf._pdf_text(path, max_pages=1)
+
+    assert "OCR 補正內容" in text
 
 
 def test_gcal_sync_todo_event_title_includes_client_and_type():

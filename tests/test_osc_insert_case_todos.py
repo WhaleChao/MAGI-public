@@ -33,6 +33,11 @@ class _FakeCursor:
                 )
             else:
                 self._fetchone = None
+        elif "AND `source_file`=%s" in normalized and "`todo_type` IN" in normalized:
+            if self.mode == "same_source_hearing_drift":
+                self._fetchone = (43, "⚖️ 7月30日 早上9時00分 審理程序", "劉信義", "審理程序", "09:00:00")
+            else:
+                self._fetchone = None
         elif "AND `todo_type`=%s" in normalized and "AND `source_file`=%s" not in normalized:
             if self.mode == "cross_source_hearing":
                 if "source_file NOT LIKE 'gcal_import%%'" in normalized:
@@ -141,6 +146,30 @@ def test_insert_case_todos_updates_stale_pending_same_source_type():
 
     assert result == {"inserted": 0, "skipped": 0, "updated": 1}
     assert any("UPDATE `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_updates_same_source_hearing_when_time_becomes_more_precise():
+    conn = _FakeConn("same_source_hearing_drift")
+    result = insert_case_todos(
+        conn,
+        case_number="2026-0028",
+        client_name="劉信義",
+        todos=[
+            {
+                "type": "審理",
+                "date": "2026-07-30",
+                "time": "09:30",
+                "description": "⚖️ 7月30日 早上9時30分 審理",
+            }
+        ],
+        source_file="20260528 臺灣花蓮地方法院刑事庭通知.pdf",
+    )
+
+    assert result == {"inserted": 0, "skipped": 0, "updated": 1}
+    updates = [params for sql, params in conn.cursor_obj.executed if "UPDATE `case_todos`" in sql]
+    assert updates
+    assert updates[0][1] == "審理"
+    assert updates[0][2] == "09:30"
 
 
 def test_insert_case_todos_skips_same_event_from_different_pdf_source():

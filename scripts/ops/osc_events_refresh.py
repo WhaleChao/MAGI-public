@@ -27,7 +27,10 @@ ROOT = Path(__file__).resolve().parents[2]
 LATEST_PATH = ROOT / ".runtime" / "osc_events_refresh_latest.json"
 PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
-PDF_SCAN_RULE_VERSION = os.environ.get("OSC_PDF_CALENDAR_RULE_VERSION", "2026-05-27-original-osc-rules")
+PDF_SCAN_RULE_VERSION = os.environ.get(
+    "OSC_PDF_CALENDAR_RULE_VERSION",
+    "2026-05-28-original-osc-rules-ocr-tentative14",
+)
 
 
 class _PdfScanTimeout(TimeoutError):

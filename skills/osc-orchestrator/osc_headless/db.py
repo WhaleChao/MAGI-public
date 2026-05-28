@@ -802,6 +802,43 @@ def insert_case_todos(
                         skipped += 1
                     continue
 
+                if todo_type in hearing_types and todo_date and source_file:
+                    hearing_placeholders = ",".join(["%s"] * len(hearing_types))
+                    cur.execute(
+                        f"""
+                        SELECT `id`, `description`, `client_name`, `todo_type`, `todo_time` FROM `case_todos`
+                        WHERE `case_number`=%s
+                          AND `source_file`=%s
+                          AND `todo_date`=%s
+                          AND `todo_type` IN ({hearing_placeholders})
+                          AND (status IS NULL OR status='' OR status='pending')
+                        ORDER BY `id` DESC
+                        LIMIT 1
+                        """,
+                        (case_number, source_file, todo_date, *sorted(hearing_types)),
+                    )
+                    same_source_hearing = cur.fetchone()
+                    if same_source_hearing:
+                        same_id = same_source_hearing[0] if isinstance(same_source_hearing, tuple) else same_source_hearing
+                        old_client = same_source_hearing[2] if isinstance(same_source_hearing, tuple) and len(same_source_hearing) > 2 else ""
+                        if same_id:
+                            cur.execute(
+                                """
+                                UPDATE `case_todos`
+                                SET `client_name`=%s,
+                                    `todo_type`=%s,
+                                    `todo_time`=%s,
+                                    `description`=%s,
+                                    `status`='pending'
+                                WHERE `id`=%s
+                                """,
+                                (client_name or old_client or "", todo_type, todo_time, desc, same_id),
+                            )
+                            updated += int(getattr(cur, "rowcount", 0) or 0)
+                        else:
+                            skipped += 1
+                        continue
+
                 cur.execute(
                     """
                     SELECT `id`, `description`, `client_name`, `status` FROM `case_todos`
