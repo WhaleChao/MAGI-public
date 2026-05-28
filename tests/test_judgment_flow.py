@@ -207,6 +207,7 @@ def test_practical_insight_augments_with_tw_legal_rag(monkeypatch):
     monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: False)
     monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: False)
     monkeypatch.setattr(judgment_flow, "tw_legal_rag_enabled", lambda: True)
+    tlr_summary = "法院認為通譯或譯文品質會影響被告防禦權與審判程序之適法性；若卷證顯示通譯未能使當事人理解程序內容，法院應具體說明其判斷理由。" * 5
     monkeypatch.setattr(
         judgment_flow,
         "search_practical_judgments_via_tlr",
@@ -216,7 +217,7 @@ def test_practical_insight_augments_with_tw_legal_rag(monkeypatch):
             "items": [
                 {
                     "title": "TLR 全判決見解",
-                    "summary_preview": "TLR 摘要。",
+                    "summary_preview": tlr_summary,
                     "url": "https://dr-lawbot.com/fullview/example",
                 }
             ],
@@ -259,7 +260,7 @@ def test_format_practical_insight_prefers_non_degraded_items():
     assert "系統降級回覆" not in text
 
 
-def test_practical_insight_labels_extractive_fast_digest():
+def test_practical_insight_blocks_extractive_fast_digest():
     fast_digest = (
         "## 摘要類型\n"
         "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）\n\n"
@@ -283,5 +284,40 @@ def test_practical_insight_labels_extractive_fast_digest():
         {"ok": True, "items": []},
     )
 
-    assert "抽取式快篩，僅供定位原文" in text
-    assert "引用或生成書狀前請核對裁判全文" in text
+    assert "已阻擋其作為正式實務見解" in text
+    assert "臺灣高等法院 114年度上字第1號" not in text
+    assert "被告應給付原告" not in text
+
+
+def test_local_archive_fast_digest_is_not_authoritative(monkeypatch):
+    fast_digest = (
+        "## 摘要類型\n"
+        "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）\n\n"
+        "## 主文摘錄\n"
+        "被告應給付原告新臺幣十萬元。\n\n"
+        "## 理由摘錄\n"
+        "法院認為被告應負損害賠償責任。"
+    )
+
+    class FakeDB:
+        def execute(self, _sql, _params=None, fetch=None):
+            return [
+                {
+                    "jid": "J1",
+                    "court_name": "臺灣高等法院",
+                    "case_number": "114年度上字第1號",
+                    "case_type": "侵權行為",
+                    "judgment_date": "2026-01-01",
+                    "summary_text": fast_digest,
+                    "source_url": "https://judgment.local/1",
+                    "crawled_at": "2026-01-01 00:00:00",
+                }
+            ]
+
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: FakeDB())
+
+    result = judgment_flow._search_local_judgment_archive("侵權行為", limit=3)
+
+    assert result["success"] is False
+    assert result["error"] == "no_high_quality_local_archive_matches"
+    assert result["rejected_fast_digest_count"] == 1

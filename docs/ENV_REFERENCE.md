@@ -150,7 +150,8 @@
 | `MAGI_TWLEGALRAG_AUGMENT` | bool | `1` | 實務見解/判決搜尋結果不足時自動合併 TLR 結果 |
 | `MAGI_TWLEGALRAG_CACHE_HITS` | bool | `1` | 將 TLR 命中的裁判小量快取到本地 `court_judgments`，降低後續夜拉與重查 |
 | `MAGI_TWLEGALRAG_MAX_RESULTS` | int | `3` | 一般回答時最多合併的 TLR 裁判筆數 |
-| `MAGI_TWLEGALRAG_FULLTEXT_LIMIT` | int | `1` | 每次 TLR 查詢會讀取全文摘要的前 N 筆 |
+| `MAGI_TWLEGALRAG_FULLTEXT_LIMIT` | int | `3` | 每次 TLR 查詢會讀取全文摘要的前 N 筆；正式實務見解只顯示有全文/高品質摘要的項目 |
+| `MAGI_SHOW_FAST_INSIGHT_CANDIDATES` | bool | `0` | 是否在實務見解頁顯示抽取式快篩候選；預設隱藏，避免誤當可引用見解 |
 | `MAGI_JUDICIAL_API_LOAD_MODE` | `tlr_smart`/`balanced`/`legacy` | `tlr_smart` | 司法院官方 API 負載策略；日常預設為 TLR 優先、小量增量 |
 | `MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS` | bool | `0` | `tlr_smart` 下巡檢 tick 不處理裁判 backlog；由晨間 cron 小量整理 |
 | `MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS` | int | `300` | `tlr_smart` 夜間官方 API 小量拉取上限 |

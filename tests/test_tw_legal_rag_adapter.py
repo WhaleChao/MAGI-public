@@ -112,3 +112,31 @@ def test_tlr_hits_cache_to_local_court_judgments(monkeypatch):
     insert_call = [call for call in calls if "INSERT INTO court_judgments" in call[0]][0]
     assert insert_call[1][0] == "TPS,114,台上,3753,20250101,1"
     assert insert_call[1][4] == "2025-01-01"
+
+
+def test_tlr_fast_digest_is_not_cached(monkeypatch):
+    monkeypatch.setenv("MAGI_TWLEGALRAG_CACHE_HITS", "1")
+    calls = []
+
+    class FakeDb:
+        def execute(self, query, params=None, fetch=None):
+            calls.append((query, params, fetch))
+            return 1
+
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: FakeDb())
+    result = {
+        "items": [
+            {
+                "jid": "TPS,114,台上,1,20250101,1",
+                "citation_text": "最高法院 114年度台上字第1號",
+                "summary_preview": "短片段",
+                "url": "https://dr-lawbot.com/fullview/example",
+                "is_fast_digest": True,
+            }
+        ]
+    }
+
+    cached = judgment_flow._cache_tlr_judgments_to_local(result)
+
+    assert cached == 0
+    assert not any("INSERT INTO court_judgments" in call[0] for call in calls)

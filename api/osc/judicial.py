@@ -31,10 +31,25 @@ from api.osc.insight_filters import (
     displayable_insight_item,
     is_extractive_fast_judgment_digest,
     is_non_extractable_legal_insight,
-    mark_extractive_fast_digest_summary,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _osc_show_fast_insight_candidates() -> bool:
+    return str(os.environ.get("MAGI_SHOW_FAST_INSIGHT_CANDIDATES", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _osc_probable_fast_judgment_candidate(summary: str, source_url: str = "", title: str = "") -> bool:
+    if is_extractive_fast_judgment_digest(summary, title):
+        return True
+    url = str(source_url or "").strip().lower()
+    return ("dr-lawbot.com" in url or "tlr." in url) and len(str(summary or "").strip()) < 280
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +76,8 @@ def _osc_collect_insights():
                 # insight_text = 結構化法律見解萃取結果；raw_text = 判決原文
                 insight_text = (r.get("insight_text") or "").strip()
                 raw_text = (r.get("raw_text") or "").strip()
+                if is_extractive_fast_judgment_digest(title, insight_text, raw_text) and not _osc_show_fast_insight_candidates():
+                    continue
                 if is_non_extractable_legal_insight(
                     title,
                     r.get("court_reference"),
@@ -110,7 +127,9 @@ def _osc_collect_insights():
                     continue
                 full_text = (r.get("full_text") or r.get("summary") or "").strip()
                 summary = (r.get("summary") or full_text[:350] or "").strip()
-                is_fast_digest = is_extractive_fast_judgment_digest(summary)
+                is_fast_digest = _osc_probable_fast_judgment_candidate(summary, r.get("source_url") or "", title)
+                if is_fast_digest and not _osc_show_fast_insight_candidates():
+                    continue
                 if is_non_extractable_legal_insight(
                     title,
                     summary,
@@ -125,7 +144,7 @@ def _osc_collect_insights():
                     "source_type": "court_judgments",
                     "source": "裁判書（抽取式快篩）" if is_fast_digest else "裁判書",
                     "title": title,
-                    "summary": mark_extractive_fast_digest_summary(summary) if is_fast_digest else summary,
+                    "summary": summary,
                     "full_text": full_text,
                     "url": r.get("source_url") or "",
                     "case_number": r.get("case_number") or "",
@@ -164,6 +183,8 @@ def _osc_collect_insights():
                         continue
                     full_text = (r.get("full_text") or r.get("summary") or "").strip()
                     summary = (r.get("summary") or "")[:350]
+                    if _osc_probable_fast_judgment_candidate(summary or full_text, r.get("url") or "", r.get("title") or "") and not _osc_show_fast_insight_candidates():
+                        continue
                     if is_non_extractable_legal_insight(
                         r.get("title"),
                         summary,

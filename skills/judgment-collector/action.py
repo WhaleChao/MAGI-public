@@ -43,7 +43,7 @@ from api.case_path_mapper import preferred_case_roots, translate_case_path_to_lo
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
 from api.domains.judicial_api_policy import judicial_api_env_default
 from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
-from api.osc.insight_filters import is_non_extractable_legal_insight
+from api.osc.insight_filters import is_extractive_fast_judgment_digest, is_non_extractable_legal_insight
 try:
     from dotenv import load_dotenv
 except Exception:
@@ -2376,6 +2376,9 @@ def _is_degraded_summary(text: str, expected_reason: str = "") -> bool:
         "timeout",
     ]
     if any(f in s for f in flags):
+        return True
+    if is_extractive_fast_judgment_digest(s):
+        logger.warning("Extractive fast digest detected; storing as non-authoritative candidate only (len=%d)", len(s))
         return True
     if is_non_extractable_legal_insight(s):
         logger.warning("Non-extractable legal insight placeholder detected in summary (len=%d)", len(s))

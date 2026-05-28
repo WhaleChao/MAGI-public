@@ -41,8 +41,9 @@ MAGI_TWLEGALRAG_ENABLE=1
 MAGI_TWLEGALRAG_AUGMENT=1
 MAGI_TWLEGALRAG_CACHE_HITS=1
 MAGI_TWLEGALRAG_MAX_RESULTS=3
-MAGI_TWLEGALRAG_FULLTEXT_LIMIT=1
+MAGI_TWLEGALRAG_FULLTEXT_LIMIT=3
 MAGI_TWLEGALRAG_BASE_URL=https://tlr.dr-lawbot.com
+MAGI_SHOW_FAST_INSIGHT_CANDIDATES=0
 ```
 
 若服務方未來要求金鑰，可放在 `MAGI_TWLEGALRAG_API_KEY`；MAGI 不會在網頁狀態回傳金鑰內容。
@@ -60,6 +61,16 @@ MAGI_TWLEGALRAG_BASE_URL=https://tlr.dr-lawbot.com
 判決與實務見解會保留既有本地見解庫與判決收集流程，並追加 MCP 的司法院公開資料與 TLR 全判決語義檢索；法規與釋憲問題則可直接調用 MCP。查不到時會明確回報查不到，不回到一般聊天猜測。
 
 判決捕捉與分類頁也會顯示「全判決語義預覽」按鈕，方便先確認搜尋式是否能在 TLR 找到相關裁判。預覽結果會保存成 `全判決語義檢索預覽.json`，並納入交付壓縮檔。
+
+## 品質閘門：快篩只當候選，不當正式見解
+
+日常整理為了降低負載，可能產生「抽取式快篩」摘要。這種摘要只用來定位裁判原文，不得直接作為書狀引用或實務見解輸出。MAGI 會套用下列規則：
+
+- `抽取式快篩`、`系統降級回覆`、空摘要、提示詞回聲與「無可擷取見解」一律不顯示為正式實務見解。
+- 使用者查詢實務見解時，若本地只有快篩候選，MAGI 會自動改查 MCP/TLR 全文來源。
+- TLR 回傳若沒有全文摘要，會被視為候選，不進入正式輸出。
+- 實務見解頁預設隱藏快篩候選；除非維運時設定 `MAGI_SHOW_FAST_INSIGHT_CANDIDATES=1` 才會顯示。
+- 書狀生成與草稿引用只能使用通過品質閘門的裁判摘要或全文來源。
 
 ## 負載策略：TLR 優先，小量快取
 
