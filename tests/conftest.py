@@ -32,6 +32,9 @@ def mock_env_vars(monkeypatch):
         # api.handlers.translation_handler (both call load_dotenv() on import).
         "MAGI_HEAVY_STRICT_NIM": "0",
         "MAGI_HEAVY_STRICT_NIM_RETRIES": "0",
+        # Unit tests must never call the public TLR endpoint unless they opt in
+        # and mock the adapter explicitly.
+        "MAGI_TWLEGALRAG_ENABLE": "0",
     }
     for k, v in defaults.items():
         monkeypatch.setenv(k, v)

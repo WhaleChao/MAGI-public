@@ -182,7 +182,7 @@ Recent hardening work is reflected in the public docs and live gates:
 - **PDF / OCR**: PDF naming supports envelope-page skipping, multi-engine OCR consensus, legal-text correction, and training feedback for court notices, procedural rulings, judgments, opposing-party pleadings, and judgment folders.
 - **Pleadings**: OSC pleading generation includes Word/PDF layout safeguards and case-reason-scoped correction learning.
 - **Accounting**: Google Sheets imports can exclude coworker-tagged rows, deduplicate recurring fixed expenses, and run on Monday/Friday schedules.
-- **Legal research**: the Taiwan legal MCP adapter is available as a practical-opinion source; misses are reported as misses rather than filled by the model.
+- **Legal research**: the Taiwan legal MCP adapter and TLR full-judgment semantic retrieval can supplement practical-opinion searches and judgment classification; misses are reported as misses rather than filled by the model.
 - **Legal AI delivery gates**: legal answers carry source/coverage review notes; summary, translation, and transcript outputs are blocked when they are too short, off-topic, failed, or leak tool reasoning.
 - **Office overview**: the web UI links cases, todos, LAF, pleading index, public-facing data, and business overview without duplicating the source modules.
 - **Operations**: the full smoke gate now includes commercial-release guards, clean public install checks, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks.

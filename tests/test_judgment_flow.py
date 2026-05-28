@@ -187,6 +187,48 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
     assert "法律工作流：實務見解檢索代理" in text
 
 
+def test_practical_insight_augments_with_tw_legal_rag(monkeypatch):
+    def _fake_run_skill_json(skill_script, task, timeout_sec):
+        if "judgment-collector" in skill_script:
+            return {
+                "success": True,
+                "source_label": "本地實務見解庫",
+                "items": [
+                    {
+                        "title": "本地見解",
+                        "summary_preview": "本地摘要。",
+                        "url": "https://judgment.local/1",
+                    }
+                ],
+            }
+        return {"ok": True, "items": []}
+
+    monkeypatch.setattr(judgment_flow, "_run_skill_json", _fake_run_skill_json)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: False)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: False)
+    monkeypatch.setattr(judgment_flow, "tw_legal_rag_enabled", lambda: True)
+    monkeypatch.setattr(
+        judgment_flow,
+        "search_practical_judgments_via_tlr",
+        lambda query, limit=3, fulltext_limit=1: {
+            "success": True,
+            "source_label": "Taiwan Legal RAG/TLR 全判決語義檢索",
+            "items": [
+                {
+                    "title": "TLR 全判決見解",
+                    "summary_preview": "TLR 摘要。",
+                    "url": "https://dr-lawbot.com/fullview/example",
+                }
+            ],
+        },
+    )
+
+    text = judgment_flow.run_practical_insight_command(None, "實務見解 通譯", notify=False)
+    assert "本地見解" in text
+    assert "TLR 全判決見解" in text
+    assert "全判決語義檢索" in text
+
+
 def test_format_practical_insight_prefers_non_degraded_items():
     text = judgment_flow.format_practical_insight_result(
         "侵權行為",

@@ -14,6 +14,14 @@ from typing import Any
 from flask import Blueprint, jsonify, request, send_file
 from flask_login import login_required
 
+from api.osc.tw_legal_rag import (
+    citation_check_against_tlr_bundle,
+    search_practical_judgments_via_tlr,
+    tlr_health,
+    tw_legal_rag_base_url,
+    tw_legal_rag_enabled,
+)
+
 raziel_bp = Blueprint("raziel", __name__)
 
 DEFAULT_RAZIEL_ROOT = Path.home() / "Desktop" / "interpreter-judgment-classifier"
@@ -169,7 +177,53 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
         "nvidia_large_fallback_model": config.get("nvidia_large_fallback_model") or "nvidia/nemotron-3-super-120b-a12b",
         "nvidia_fallback_model": config.get("nvidia_fallback_model") or "meta/llama-3.3-70b-instruct",
         "has_nvidia_api_key": bool(config.get("nvidia_api_key")),
+        "tlr_enabled": tw_legal_rag_enabled(),
+        "tlr_base_url": tw_legal_rag_base_url(),
     }
+
+
+def _tlr_preview_for_config(config: dict[str, Any], *, limit: int = 3) -> dict[str, Any]:
+    query = _keyword_query_from_config(config)
+    if not tw_legal_rag_enabled():
+        return {"ok": False, "enabled": False, "query": query, "error": "tw_legal_rag_disabled"}
+    result = search_practical_judgments_via_tlr(
+        query,
+        limit=max(1, min(int(limit), 10)),
+        fulltext_limit=1,
+    )
+    if not result.get("success"):
+        return {
+            "ok": False,
+            "enabled": True,
+            "query": result.get("query") or query,
+            "error": result.get("error") or "no_tlr_matches",
+            "source": result.get("source"),
+        }
+    bundle = result.get("bundle") if isinstance(result.get("bundle"), dict) else {}
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    citation_text = "\n".join(str(item.get("citation_text") or item.get("title") or "") for item in items if isinstance(item, dict))
+    check = citation_check_against_tlr_bundle(citation_text, bundle) if bundle else {"overall": "needs_review"}
+    return {
+        "ok": True,
+        "enabled": True,
+        "query": result.get("query") or query,
+        "source_label": result.get("source_label"),
+        "count": len(items),
+        "items": items,
+        "bundle": bundle,
+        "citation_check": check,
+        "privacy_note": "TLR 只接收已去識別化的法律關鍵字；不要把當事人個資或完整案情放進搜尋式。",
+    }
+
+
+def _write_tlr_preview_file(preview: dict[str, Any]) -> str:
+    try:
+        target = _complete_dir() / "全判決語義檢索預覽.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(preview, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(target)
+    except Exception:
+        return ""
 
 
 def _output_root() -> Path:
@@ -217,6 +271,7 @@ def _result_paths() -> dict[str, str]:
         "md": str(_first_result_path(complete, "判決分類表.md", "最高法院_通譯_分類表.md")),
         "preview": str(_first_result_path(complete, "規則前後文預覽.json")),
         "report": str(_first_result_path(complete, "判決補抓與分類報告.json", "通譯812補抓分析報告.json")),
+        "tlr": str(_first_result_path(complete, "全判決語義檢索預覽.json")),
     }
 
 
@@ -243,6 +298,7 @@ def _delivery_source_specs(config: dict[str, Any]) -> list[tuple[Path, Path]]:
         "md": "分類表.md",
         "preview": "前後文預覽.json",
         "report": "補抓分析報告.json",
+        "tlr": "全判決語義檢索預覽.json",
     }
     specs: list[tuple[Path, Path]] = []
     for key, value in _result_paths().items():
@@ -460,6 +516,12 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
             "result": parsed,
         }
     parsed.setdefault("success", True)
+    if mode in {"status", "search", "preview", "table"}:
+        tlr_preview = _tlr_preview_for_config(config, limit=int(os.environ.get("MAGI_RAZIEL_TLR_PREVIEW_LIMIT", "3") or "3"))
+        parsed["tlr_semantic_preview"] = tlr_preview
+        tlr_path = _write_tlr_preview_file(tlr_preview)
+        if tlr_path:
+            parsed["tlr_semantic_preview_path"] = tlr_path
     return {"ok": True, "mode": mode, "config": _public_config(config), "paths": _result_paths(), "result": parsed}
 
 
@@ -485,6 +547,7 @@ def raziel_status_api():
                 else "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"
             ),
             "config": _public_config(config),
+            "tlr": tlr_health(),
             "files": files,
         }
     )
@@ -502,6 +565,19 @@ def raziel_run_api():
         result = _run_raziel(mode, config, max_api=int(config.get("max_api") or 0) if mode in {"search", "nightly"} else None)
     status = 200 if result.get("ok") else 500
     return jsonify(result), status
+
+
+@raziel_bp.route("/api/osc/raziel/tlr-preview", methods=["POST"])
+@login_required
+def raziel_tlr_preview_api():
+    payload = request.get_json() or {}
+    config = _apply_payload_to_config(payload)
+    preview = _tlr_preview_for_config(config, limit=int(payload.get("limit") or os.environ.get("MAGI_RAZIEL_TLR_PREVIEW_LIMIT", "3") or "3"))
+    path = _write_tlr_preview_file(preview)
+    if path:
+        preview["path"] = path
+    status = 200 if preview.get("ok") else 502
+    return jsonify(preview), status
 
 
 @raziel_bp.route("/api/osc/raziel/delivery", methods=["POST"])

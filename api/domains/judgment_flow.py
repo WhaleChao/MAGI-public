@@ -27,6 +27,10 @@ from api.osc.taiwan_legal_mcp import (
     taiwan_legal_mcp_available,
     taiwan_legal_mcp_enabled,
 )
+from api.osc.tw_legal_rag import (
+    search_practical_judgments_via_tlr,
+    tw_legal_rag_enabled,
+)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -269,6 +273,50 @@ def _augment_judgments_with_mcp(
     if not judgments.get("success"):
         return mcp_judgments
     return judgments
+
+
+def _tlr_lookup_allowed() -> bool:
+    value = str(os.environ.get("MAGI_TWLEGALRAG_AUGMENT", "1")).strip().lower()
+    return tw_legal_rag_enabled() and value not in {"0", "false", "no", "off"}
+
+
+def _augment_judgments_with_tlr(
+    query: str,
+    judgments: Dict[str, Any],
+    *,
+    limit: int = 3,
+) -> Dict[str, Any]:
+    if not _tlr_lookup_allowed():
+        return judgments
+    try:
+        tlr_judgments = search_practical_judgments_via_tlr(
+            query,
+            limit=int(os.environ.get("MAGI_TWLEGALRAG_MAX_RESULTS", str(limit)) or str(limit)),
+            fulltext_limit=int(os.environ.get("MAGI_TWLEGALRAG_FULLTEXT_LIMIT", "1") or "1"),
+        )
+    except Exception as exc:
+        logger.debug("tw-legal-rag augment failed: %s", exc, exc_info=True)
+        return judgments
+    if tlr_judgments.get("success"):
+        return merge_judgment_sources(judgments, tlr_judgments, limit=limit)
+    if not judgments.get("success"):
+        return tlr_judgments
+    return judgments
+
+
+def _augment_judgments_with_external_sources(
+    query: str,
+    judgments: Dict[str, Any],
+    *,
+    case_type: str = "",
+    limit: int = 3,
+) -> Dict[str, Any]:
+    """Add optional public legal retrieval sources without breaking local results."""
+    augmented = judgments
+    if _mcp_lookup_allowed():
+        augmented = _augment_judgments_with_mcp(query, augmented, case_type=case_type, limit=limit)
+    augmented = _augment_judgments_with_tlr(query, augmented, limit=limit)
+    return augmented
 
 
 def _extract_regulation_query(message: str) -> Tuple[str, str]:
@@ -539,21 +587,20 @@ def run_practical_insight_command(orch, message: str, notify: bool = False) -> s
         fallback = _search_local_judgment_archive(query, limit=3)
         if fallback.get("success"):
             judgments = fallback
-    if _mcp_lookup_allowed():
-        primary_items = judgments.get("items") if isinstance(judgments.get("items"), list) else []
-        should_augment = str(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_AUGMENT", "1")).strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-        if should_augment or (not judgments.get("success")) or len(primary_items) < 2:
-            judgments = _augment_judgments_with_mcp(
-                query,
-                judgments,
-                case_type=str(payload.get("case_type") or ""),
-                limit=int(os.environ.get("MAGI_TAIWAN_LEGAL_MCP_MAX_RESULTS", "3") or "3"),
-            )
+    primary_items = judgments.get("items") if isinstance(judgments.get("items"), list) else []
+    should_augment = str(os.environ.get("MAGI_LEGAL_EXTERNAL_AUGMENT", "1")).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if should_augment or (not judgments.get("success")) or len(primary_items) < 2:
+        judgments = _augment_judgments_with_external_sources(
+            query,
+            judgments,
+            case_type=str(payload.get("case_type") or ""),
+            limit=int(os.environ.get("MAGI_LEGAL_EXTERNAL_MAX_RESULTS", "3") or "3"),
+        )
     statutes = _run_skill_json(
         statutes_script,
         "search " + json.dumps({"query": query, "top_k": 5}, ensure_ascii=False),
@@ -604,7 +651,7 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
             limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
         )
         if fallback.get("success"):
-            fallback = _augment_judgments_with_mcp(
+            fallback = _augment_judgments_with_external_sources(
                 query,
                 fallback,
                 limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
@@ -616,7 +663,7 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
                 "items": fallback.get("items") or [],
                 "source_label": fallback.get("source_label", "本地實務見解庫"),
             }), query, tool_used=True)
-        mcp_fallback = _augment_judgments_with_mcp(
+        mcp_fallback = _augment_judgments_with_external_sources(
             query,
             {"success": False, "error": str(data.get("error") or "collector_failed")},
             limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),
@@ -627,11 +674,11 @@ def run_judgment_collector_command(orch, message: str, notify: bool = False) -> 
                 "case_reason": query,
                 "count": len(mcp_fallback.get("items") or []),
                 "items": mcp_fallback.get("items") or [],
-                "source_label": mcp_fallback.get("source_label", "台灣法律資料庫 MCP（司法院公開資料）"),
+                "source_label": mcp_fallback.get("source_label", "外部判決公開資料"),
             }), query, tool_used=True)
         return f"\u274c \u5224\u6c7a\u641c\u5c0b\u5931\u6557\uff1a{str(data.get('error') or 'unknown')[:280]}"
     query = str(payload.get("case_reason") or payload.get("case_number") or "").strip()
-    data = _augment_judgments_with_mcp(
+    data = _augment_judgments_with_external_sources(
         query,
         data,
         limit=int(os.environ.get("MAGI_JUDGMENT_CHAT_MAX_RESULTS", "12") or "12"),

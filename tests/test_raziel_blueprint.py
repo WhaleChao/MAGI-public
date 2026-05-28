@@ -26,6 +26,8 @@ def test_raziel_public_config_never_returns_api_key():
 
     assert public["has_nvidia_api_key"] is True
     assert "nvidia_api_key" not in public
+    assert "tlr_base_url" in public
+    assert "twlegalrag_api_key" not in public
 
 
 def test_raziel_payload_clears_stale_interpreter_rule(tmp_path, monkeypatch):
@@ -56,6 +58,43 @@ def test_raziel_payload_clears_stale_interpreter_rule(tmp_path, monkeypatch):
     assert config["rule_keywords"] == ["漁會法", "會員大會"]
     assert public["rule_query"] == ""
     assert public["effective_rule_query"] == "漁會法 AND 會員大會"
+
+
+def test_raziel_tlr_preview_uses_current_keyword_query(monkeypatch):
+    from api.blueprints import raziel as mod
+
+    monkeypatch.setattr(mod, "tw_legal_rag_enabled", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "search_practical_judgments_via_tlr",
+        lambda query, limit=3, fulltext_limit=1: {
+            "success": True,
+            "query": query,
+            "source_label": "Taiwan Legal RAG/TLR 全判決語義檢索",
+            "items": [
+                {
+                    "title": "最高法院 114年度台上字第3753號",
+                    "citation_text": "最高法院 114年度台上字第3753號",
+                    "summary_preview": "通譯程序見解。",
+                }
+            ],
+            "bundle": {
+                "judgments": [
+                    {
+                        "citation_text": "最高法院 114年度台上字第3753號",
+                        "doc_id": "TPS,114,台上,3753,20250101,1",
+                    }
+                ]
+            },
+        },
+    )
+
+    preview = mod._tlr_preview_for_config({"keyword_query": "通譯 最高法院"}, limit=1)
+
+    assert preview["ok"] is True
+    assert preview["query"] == "通譯 最高法院"
+    assert preview["count"] == 1
+    assert preview["citation_check"]["overall"] == "pass"
 
 
 def test_judgment_classifier_visible_text_uses_function_name():

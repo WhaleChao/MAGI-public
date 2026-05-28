@@ -63,8 +63,25 @@ function razielFileSummary(files = {}) {
         ["CSV", files.csv],
         ["前後文預覽", files.preview],
         ["補抓報告", files.report],
+        ["全判決語義檢索預覽", files.tlr],
     ];
     return rows.map(([label, file]) => `${label}：${file?.exists ? "已產生" : "尚未產生"}`).join("\n");
+}
+
+function razielTlrSummary(preview = {}) {
+    if (!preview || !preview.enabled) return "全判決語義檢索：未啟用";
+    if (!preview.ok) return `全判決語義檢索：需檢查（${preview.error || "查無結果"}）`;
+    const items = Array.isArray(preview.items) ? preview.items : [];
+    const lines = [
+        `全判決語義檢索：已命中 ${preview.count || items.length || 0} 筆`,
+        `查詢式：${preview.query || ""}`,
+    ];
+    items.slice(0, 3).forEach((item, idx) => {
+        lines.push(`${idx + 1}. ${item.citation_text || item.title || "裁判"}${item.court_name ? `｜${item.court_name}` : ""}`);
+    });
+    const check = preview.citation_check || {};
+    if (check.overall) lines.push(`引用核對：${check.overall}`);
+    return lines.join("\n");
 }
 
 function renderRazielStatus(data = {}) {
@@ -72,10 +89,12 @@ function renderRazielStatus(data = {}) {
     fillRazielConfig(config);
     const ready = Boolean(data.script_exists);
     const keyText = config.has_nvidia_api_key ? "雲端 AI 金鑰已設定" : "尚未設定雲端 AI 金鑰";
+    const tlr = data.tlr || {};
+    const tlrText = tlr.enabled === false ? "全判決語義檢索未啟用" : (tlr.ok ? "全判決語義檢索正常" : `全判決語義檢索需檢查：${tlr.error || "無回應"}`);
     setRazielBadge(ready ? "可使用" : "需檢查", ready ? "ok" : "warn");
     setRazielStatus(
         ready
-            ? `判決分類核心已連線。${keyText}。`
+            ? `判決分類核心已連線。${keyText}。${tlrText}。`
             : (data.status_message || "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"),
         ready ? "ok" : "warn"
     );
@@ -93,6 +112,7 @@ function renderRazielStatus(data = {}) {
             `大型備援：${config.nvidia_large_fallback_model || ""}`,
             `最後備援：${config.nvidia_fallback_model || ""}`,
             keyText,
+            tlrText,
             "",
             razielFileSummary(data.files || {}),
         ].join("\n");
@@ -124,6 +144,8 @@ function renderRazielResult(data = {}) {
         `分類成功：${result.classification_success || result.ai_success || "未回報"}`,
         `提醒：${result.user_notice || result.notice || "無"}`,
         "",
+        razielTlrSummary(result.tlr_semantic_preview || {}),
+        "",
         "輸出檔案：",
         "Excel 分類表：可用上方按鈕下載",
         "CSV 分類表：可用上方按鈕下載",
@@ -135,6 +157,21 @@ function renderRazielResult(data = {}) {
     ];
     const out = razielEl("razielOutput");
     if (out) out.textContent = output.join("\n");
+}
+
+function renderRazielTlrPreview(preview = {}) {
+    const out = razielEl("razielOutput");
+    if (out) {
+        out.textContent = [
+            "全判決語義檢索預覽",
+            razielTlrSummary(preview),
+            "",
+            preview.privacy_note || "請避免把當事人個資或完整案情送入公開檢索服務。",
+            "",
+            "原始回傳摘要：",
+            JSON.stringify(preview, null, 2),
+        ].join("\n");
+    }
 }
 
 function renderRazielDelivery(manifest = {}) {
@@ -209,6 +246,7 @@ function initRazielControls(options = {}) {
     bindRazielButton("razielSearchBtn", () => runRaziel("search"), "判決搜尋");
     bindRazielButton("razielTableBtn", () => runRaziel("nightly"), "原文抓取與分類表產生");
     bindRazielButton("razielPreviewBtn", () => runRaziel("preview"), "前後文預覽");
+    bindRazielButton("razielTlrPreviewBtn", previewRazielTlr, "全判決語義檢索預覽");
     bindRazielButton("razielDeliveryBtn", createRazielDelivery, "交付壓縮檔產生");
     if (options.autoload !== false && typeof loadRazielStatus === "function" && !window.__razielAutoLoaded) {
         window.__razielAutoLoaded = true;
@@ -230,6 +268,20 @@ async function createRazielDelivery() {
         return data;
     } catch (error) {
         setRazielStatus(`交付壓縮檔沒有完成：${error.message || error}`, "warn");
+        throw error;
+    }
+}
+
+async function previewRazielTlr() {
+    try {
+        setRazielStatus("正在使用全判決語義檢索預覽相關裁判。");
+        const data = await api("/api/osc/raziel/tlr-preview", "POST", { ...razielPayload("preview"), limit: 3 });
+        renderRazielTlrPreview(data);
+        setRazielStatus("全判決語義檢索預覽完成。", "ok");
+        showToast("全判決語義檢索預覽完成。", "ok");
+        return data;
+    } catch (error) {
+        setRazielStatus(`全判決語義檢索預覽沒有完成：${error.message || error}`, "warn");
         throw error;
     }
 }
