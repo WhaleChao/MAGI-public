@@ -60,7 +60,7 @@ def _clear_user(state: dict, user_id: str):
 def _load_config() -> dict:
     config = {
         "company_name": os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所"),
-        "default_lawyer": os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師"),
+        "default_lawyer": os.environ.get("MAGI_PUBLIC_LAWYER_NAME", ""),
         "company_address_hl": "",
         "company_phone": "",
         "company_fax": "",

@@ -11,6 +11,33 @@ async function loadCaseCourtOptions(force = false) {
     }
 }
 
+async function loadCaseLawyerOptions(force = false) {
+    if (!force && state.caseLawyerOptionsLoaded) return;
+    const keys = ["default_lawyer", "lawyer_name", "default_specialist"];
+    try {
+        const rows = await Promise.all(keys.map(async key => {
+            try {
+                const data = await api(`/api/osc/settings/${encodeURIComponent(key)}`);
+                return data.item?.value || "";
+            } catch (_e) {
+                return "";
+            }
+        }));
+        const demoNames = new Set(["範例律師", "示範律師", "測試律師", "Sample Lawyer", "Demo Lawyer"]);
+        state.caseLawyerOptions = [...new Set(rows.map(v => String(v || "").trim()).filter(v => v && !demoNames.has(v)))];
+        state.caseLawyerOptionsLoaded = true;
+        renderCaseLawyerOptions();
+    } catch (e) {
+        console.warn("loadCaseLawyerOptions failed:", e);
+    }
+}
+
+function renderCaseLawyerOptions() {
+    const list = document.getElementById("caseLawyerOptions");
+    if (!list) return;
+    list.innerHTML = (state.caseLawyerOptions || []).map(name => `<option value="${esc(name)}"></option>`).join("");
+}
+
 function renderCaseCourtOptions() {
     const list = document.getElementById("caseCourtOptions");
     if (!list) return;
@@ -24,6 +51,7 @@ function renderCaseCourtOptions() {
 async function loadCases() {
     try {
         loadCaseCourtOptions().catch(() => {});
+        loadCaseLawyerOptions().catch(() => {});
         const q = encodeURIComponent((document.getElementById("casesQ").value || "").trim());
         const caseType = encodeURIComponent(state.caseType || "全部");
         const caseKind = encodeURIComponent(state.caseKind || "全部");
@@ -202,6 +230,7 @@ function renderCases() {
                     <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
                     <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
                     <div><span class="label">股別</span> <span class="value">${esc(r.court_division || '-')}</span></div>
+                    <div><span class="label">承辦</span> <span class="value">${esc(r.lawyer || '-')}</span></div>
                     <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
                     <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
                     ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
@@ -406,7 +435,8 @@ async function editCase(id) {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     await loadCaseCourtOptions();
-    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
+    await loadCaseLawyerOptions();
+    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "lawyer", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
     document.getElementById("case_category").value = x.case_category || "";
     document.getElementById("case_type").value = x.case_type || "";
     document.getElementById("case_stage").value = x.case_stage || "";
@@ -419,7 +449,8 @@ function prepareNewCase() {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     loadCaseCourtOptions().catch(() => {});
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    loadCaseLawyerOptions().catch(() => {});
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const name = document.getElementById("case_client_name");
     if (name) name.focus();
 }
@@ -450,11 +481,12 @@ async function closeCase(id) {
 }
 
 async function saveCase() {
-    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const lafNumber = (p.case_laf_case_no || p.case_application_no || "").trim();
     const body = {
         id: p.case_id, case_number: p.case_id ? p.case_case_number : "", client_name: p.case_client_name,
         client_phone: p.case_client_phone, client_email: p.case_client_email, client_id_number: p.case_client_id_number,
+        lawyer: p.case_lawyer,
         case_category: p.case_category, case_type: p.case_type, case_stage: p.case_stage,
         case_reason: p.case_reason, laf_case_no: lafNumber, application_no: lafNumber,
         court_name: p.case_court_name, court_case_no: p.case_court_case_no, court_division: p.case_court_division,
@@ -480,7 +512,7 @@ async function saveCase() {
     } else {
         showArchiveResult(resp?.archive);
     }
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     await loadCases();
     await loadMeta();
 }
@@ -770,12 +802,14 @@ function renderWorkbenchCaseEditor(c) {
     const editorCaseType = caseDisplayType(c);
     const editorCaseReason = caseDisplayReason(c);
     const editorStatus = caseDisplayStatus(c);
+    loadCaseLawyerOptions().catch(() => {});
     return `
 	    <div class="card">
 	        <h3>案件主資料快速編輯</h3>
 	        <div class="field-grid cols-4">
 	            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly></div>
 	            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
+	            <div class="field"><label>承辦律師</label><input id="wb_case_lawyer" list="caseLawyerOptions" value="${esc(c.lawyer || "")}" placeholder="留空則使用系統預設"></div>
 	            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
 	            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
 	            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
@@ -1321,6 +1355,7 @@ async function saveWorkbenchCase() {
     const body = {
         case_number: (document.getElementById("wb_case_case_number")?.value || "").trim(),
         client_name: (document.getElementById("wb_case_client_name")?.value || "").trim(),
+        lawyer: (document.getElementById("wb_case_lawyer")?.value || "").trim(),
         case_category: (document.getElementById("wb_case_case_category")?.value || "").trim(),
         case_type: (document.getElementById("wb_case_case_type")?.value || "").trim(),
         case_stage: (document.getElementById("wb_case_case_stage")?.value || "").trim(),

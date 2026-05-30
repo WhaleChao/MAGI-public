@@ -43,6 +43,8 @@ const state = {
     adminSettings: [],
     adminCaseReasons: [],
     adminCourts: [],
+    caseLawyerOptions: [],
+    caseLawyerOptionsLoaded: false,
     caseCourtOptions: [],
     caseCourtOptionsLoaded: false,
     adminBranches: [],

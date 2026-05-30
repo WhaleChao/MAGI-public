@@ -478,6 +478,36 @@ def test_cases_active_scope_excludes_laf_closing_and_closed(client):
     assert "NOT" in sql
 
 
+def test_case_create_replaces_demo_lawyer_with_setting_default(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "SELECT value FROM settings" in sql:
+            return {"value": "正式承辦律師"}, {"host": "127.0.0.1"}
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    payload = {
+        "id": "web-test-lawyer",
+        "case_number": "2026-9999",
+        "client_name": "測試當事人",
+        "case_category": "一般案件",
+        "lawyer": "範例律師",
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", return_value="正式承辦律師"):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    insert_sql, insert_params = calls[0]
+    assert "lawyer" in insert_sql
+    assert "正式承辦律師" in insert_params
+    assert "範例律師" not in insert_params
+
+
 def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypatch):
     import api.blueprints.osc_cases as mod
 
@@ -487,13 +517,14 @@ def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypa
         sql_text = sql or ""
         if sql_text.startswith("INSERT INTO cases"):
             raise Exception("1062 Duplicate entry")
-        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases" in sql_text:
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path" in sql_text:
             return {
                 "id": "case-closed",
                 "status": "進行中",
                 "legal_aid_status": "已結案",
                 "manual_status_lock": 1,
                 "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\刑事\2025-0078-陳瀚-刑事二審-洗錢防制法",
+                "lawyer": "正式承辦律師",
             }, {"host": "127.0.0.1"}
         if sql_text.startswith("UPDATE cases SET"):
             updates.append((sql_text, params))
@@ -530,13 +561,14 @@ def test_cases_duplicate_upsert_does_not_reopen_archived_general_case(client, mo
         sql_text = sql or ""
         if sql_text.startswith("INSERT INTO cases"):
             raise Exception("1062 Duplicate entry")
-        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases" in sql_text:
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path" in sql_text:
             return {
                 "id": "case-archived",
                 "status": "進行中",
                 "legal_aid_status": "未開辦",
                 "manual_status_lock": 0,
                 "folder_path": r"Y:\lumi\03_工作資料\10_結案\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+                "lawyer": "正式承辦律師",
             }, {"host": "127.0.0.1"}
         if sql_text.startswith("UPDATE cases SET"):
             updates.append((sql_text, params))

@@ -24,7 +24,7 @@ def test_change_master_dry_run_redacts_password():
         host="100.97.29.92",
         port=3306,
         user="repl",
-        password="secret-pass",
+        password="pw",
         server_id=2,
         use_gtid=True,
     )
@@ -32,8 +32,8 @@ def test_change_master_dry_run_redacts_password():
     sql, params, display = mod._build_change_master(target)
 
     assert "MASTER_PASSWORD=%s" in sql
-    assert "secret-pass" in params
-    assert "secret-pass" not in display
+    assert "pw" in params
+    assert "pw" not in display
     assert "MASTER_PASSWORD='***'" in display
     assert "MASTER_USE_GTID=slave_pos" in display
 
@@ -44,7 +44,7 @@ def test_change_master_requires_file_position_without_gtid():
         host="100.97.29.92",
         port=3306,
         user="repl",
-        password="secret-pass",
+        password="pw",
         server_id=2,
         use_gtid=False,
     )

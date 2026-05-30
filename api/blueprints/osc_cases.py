@@ -122,6 +122,33 @@ def _osc_existing_resource_path(setting_key: str, filename: str, fallback: str =
     return configured or _osc_photo_path(filename) or fallback
 
 
+_OSC_DEMO_LAWYER_VALUES = {
+    "範例律師",
+    "示範律師",
+    "測試律師",
+    "Sample Lawyer",
+    "Demo Lawyer",
+}
+
+
+def _osc_default_case_lawyer() -> str:
+    for key in ("default_lawyer", "lawyer_name"):
+        value = str(_osc_get_setting_value(key, "") or "").strip()
+        if value and value not in _OSC_DEMO_LAWYER_VALUES:
+            return value
+    value = str(os.environ.get("MAGI_PUBLIC_LAWYER_NAME") or "").strip()
+    return "" if value in _OSC_DEMO_LAWYER_VALUES else value
+
+
+def _osc_normalize_case_lawyer(value: object, *, allow_default: bool = True) -> str:
+    text = str(value or "").strip()
+    if text in _OSC_DEMO_LAWYER_VALUES:
+        text = ""
+    if text:
+        return text
+    return _osc_default_case_lawyer() if allow_default else ""
+
+
 def _get_orchestrator():
     from api.server import orchestrator
     return orchestrator
@@ -1109,6 +1136,7 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
     if not isinstance(row, dict):
         return row
     if row.get("is_template_case"):
+        row["lawyer"] = ""
         row["effective_status"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["status_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["case_type_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
@@ -1116,6 +1144,7 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
         return row
     effective = _osc_effective_case_status(row)
     out = dict(row)
+    out["lawyer"] = _osc_normalize_case_lawyer(out.get("lawyer"), allow_default=False)
     out["effective_status"] = effective
     out["status_display"] = effective
     if str(out.get("case_type") or "").strip() == "消費者債務清理":
@@ -1248,6 +1277,7 @@ def osc_cases_api():
         sql = """
             SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
                    laf_case_no, application_no, court_name, court_case_no, court_division, legal_aid_status,
+                   lawyer,
                    status, manual_status_lock, manual_status_source, manual_status_at,
                    notes, folder_path, updated_at, created_date
             FROM cases
@@ -1297,7 +1327,7 @@ def osc_cases_api():
         "id", "case_number", "client_name", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
         "laf_case_no", "application_no", "court_name", "court_case_no", "court_division",
-        "status", "notes", "folder_path"
+        "lawyer", "status", "notes", "folder_path"
     ]
     status_value = (payload.get("status") or "進行中").strip() or "進行中"
     if is_template_payload:
@@ -1308,6 +1338,13 @@ def osc_cases_api():
     case_reason_value = (payload.get("case_reason") or "").strip() or None
     if is_template_payload:
         case_reason_value = _OSC_TEMPLATE_DISPLAY_VALUE
+    lawyer_value = _osc_normalize_case_lawyer(
+        payload.get("lawyer")
+        or payload.get("case_lawyer")
+        or payload.get("assigned_lawyer")
+        or payload.get("responsible_lawyer"),
+        allow_default=not is_template_payload,
+    )
     vals = [
         row_id,
         case_number or None,
@@ -1324,6 +1361,7 @@ def osc_cases_api():
         (payload.get("court_name") or payload.get("court") or "").strip() or None,
         (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
         (payload.get("court_division") or payload.get("division") or "").strip() or None,
+        lawyer_value or None,
         status_value,
         (payload.get("notes") or "").strip() or None,
         translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
@@ -1351,13 +1389,13 @@ def osc_cases_api():
         target = None
         if case_number:
             target, _ = _osc_exec(
-                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE case_number=%s LIMIT 1",
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path, lawyer FROM cases WHERE case_number=%s LIMIT 1",
                 (case_number,),
                 fetch="one",
             )
         if not target and row_id:
             target, _ = _osc_exec(
-                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE id=%s LIMIT 1",
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path, lawyer FROM cases WHERE id=%s LIMIT 1",
                 (row_id,),
                 fetch="one",
             )
@@ -1387,6 +1425,19 @@ def osc_cases_api():
             "court_division": (payload.get("court_division") or payload.get("division") or "").strip() or None,
             "notes": (payload.get("notes") or "").strip() or None,
         }
+        incoming_lawyer = _osc_normalize_case_lawyer(
+            payload.get("lawyer")
+            or payload.get("case_lawyer")
+            or payload.get("assigned_lawyer")
+            or payload.get("responsible_lawyer"),
+            allow_default=False,
+        )
+        if incoming_lawyer:
+            update_payload["lawyer"] = incoming_lawyer
+        elif not _osc_normalize_case_lawyer(target.get("lawyer"), allow_default=False):
+            default_lawyer = _osc_default_case_lawyer()
+            if default_lawyer:
+                update_payload["lawyer"] = default_lawyer
         if target_final_closed:
             update_payload["status"] = "已結案"
         elif target_laf_closing and _osc_case_status_is_openish(status_value):
@@ -1451,7 +1502,7 @@ def osc_case_detail_api(row_id):
         "case_number", "client_name", "client_name_en", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
         "laf_case_no", "application_no", "court_case_no", "status", "notes", "folder_path",
-        "legal_aid_status", "court_case_number", "court_name", "court_division",
+        "legal_aid_status", "court_case_number", "court_name", "court_division", "lawyer",
     ]
     sets = []
     vals = []
@@ -1467,6 +1518,8 @@ def osc_case_detail_api(row_id):
                 v = (payload.get("legal_aid_number") or "").strip() or None
             if k == "folder_path" and v:
                 v = translate_local_path_to_canonical(v) or v
+            if k == "lawyer":
+                v = _osc_normalize_case_lawyer(v, allow_default=not template_update) or None
             if template_update and k in {"case_category", "case_type", "case_reason", "status"}:
                 v = _OSC_TEMPLATE_DISPLAY_VALUE
             vals.append(v)
@@ -6725,7 +6778,7 @@ def _osc_document_generator_config() -> dict:
 
     return {
         "company_name": pick(["company_name", "firm_name"], "MAGI_PUBLIC_FIRM_NAME", "範例法律事務所"),
-        "default_lawyer": pick(["default_lawyer", "lawyer_name"], "MAGI_PUBLIC_LAWYER_NAME", "範例律師"),
+        "default_lawyer": pick(["default_lawyer", "lawyer_name"], "MAGI_PUBLIC_LAWYER_NAME"),
         "company_address_hl": pick(["company_address_hl", "firm_address"], "MAGI_PUBLIC_CONTACT_ADDRESS"),
         "company_phone": pick(["company_phone", "firm_phone", "specialist_phone"], "MAGI_PUBLIC_CONTACT_PHONE"),
         "company_fax": pick(["company_fax", "firm_fax"], "MAGI_PUBLIC_CONTACT_FAX"),
@@ -8891,7 +8944,10 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     phone = str(row.get("phone") or "")
     email = str(row.get("email") or "")
     address = str(row.get("address") or "")
-    lawyer = str(extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師"))
+    lawyer = _osc_normalize_case_lawyer(
+        extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or os.environ.get("MAGI_PUBLIC_LAWYER_NAME", ""),
+        allow_default=True,
+    )
     specialist = str(extended.get("specialist") or _osc_get_setting_value("default_specialist", "") or "法務專員")
     specialist_phone = str(extended.get("specialist_phone") or _osc_get_setting_value("specialist_phone", "") or os.environ.get("MAGI_PUBLIC_CONTACT_PHONE", ""))
 
