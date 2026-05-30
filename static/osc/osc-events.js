@@ -282,6 +282,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "wb-folder-mkdir") return await createWorkbenchFolder(id, t.dataset.folderPath || "", t.dataset.path || "");
     if (act === "wb-folder-rename") return await renameWorkbenchFolder(id, t.dataset.folderPath || "", t.dataset.path || "", t.dataset.currentPath || "", t.dataset.name || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
+    if (act === "wb-folder-upload-dir") return promptDirectoryUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
+    if (act === "wb-folder-trash") return await trashWorkbenchEntry(id, t.dataset.folderPath || "", t.dataset.path || "", t.dataset.currentPath || "", t.dataset.name || "", t.dataset.kind || "");
     if (act === "wb-folder-copy-path") return await copyText(t.dataset.path || "", "路徑已複製。");
     if (act === "wb-file-share") return await shareFileLink(t.dataset.path || "", t.dataset.name || "檔案");
     if (act === "wb-file-edit") return await openTextFileEditor(id, t.dataset.path || "", t.dataset.returnPath || "");
@@ -726,6 +728,15 @@ function bindEvents() {
     const wbFolderUploadInput = document.getElementById("wbFolderUploadInput");
     if (wbFolderUploadInput) {
         wbFolderUploadInput.addEventListener("change", async (e) => {
+            const files = e.target.files ? Array.from(e.target.files) : [];
+            if (!files.length) return;
+            await handleFolderUploadFiles(files);
+            e.target.value = "";
+        });
+    }
+    const wbDirectoryUploadInput = document.getElementById("wbDirectoryUploadInput");
+    if (wbDirectoryUploadInput) {
+        wbDirectoryUploadInput.addEventListener("change", async (e) => {
             const files = e.target.files ? Array.from(e.target.files) : [];
             if (!files.length) return;
             await handleFolderUploadFiles(files);

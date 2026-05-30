@@ -601,6 +601,10 @@
             return '<div class="fm-file-actions">'
                 + '<button type="button" class="fm-action-btn" data-fm-action="open" data-rel="' + rel
                 + '" data-type="dir" data-name="' + name + '" title="開啟資料夾">開啟</button>'
+                + '<button type="button" class="fm-action-btn" data-fm-action="rename" data-rel="' + rel
+                + '" data-type="dir" data-name="' + name + '" title="重新命名資料夾">改名</button>'
+                + '<button type="button" class="fm-action-btn danger" data-fm-action="trash" data-rel="' + rel
+                + '" data-type="dir" data-name="' + name + '" title="移到回收區">刪除</button>'
                 + '</div>';
         }
         return '<div class="fm-file-actions">'
@@ -610,6 +614,8 @@
             + '" data-type="file" data-name="' + name + '" title="建立並複製分享連結">分享</button>'
             + '<button type="button" class="fm-action-btn" data-fm-action="download" data-rel="' + rel
             + '" data-type="file" data-name="' + name + '" title="下載檔案">下載</button>'
+            + '<button type="button" class="fm-action-btn danger" data-fm-action="trash" data-rel="' + rel
+            + '" data-type="file" data-name="' + name + '" title="移到回收區">刪除</button>'
             + '</div>';
     }
 
@@ -1263,6 +1269,9 @@
         if (act === 'open' && type === 'dir') return navigateTo(rel);
         if (act === 'preview' && type === 'file') return openPreview(rel, name);
         if (act === 'share' && type === 'file') return createShareLink(rel, name);
+        if (act === 'move') return startMoveSelected(rel, type, name);
+        if (act === 'rename') return renameSelected(rel, name);
+        if (act === 'trash') return trashSelected(rel, name);
         if (act === 'download' && type === 'file') {
             const url = '/api/osc/files/content?path=' + encodeURIComponent(buildLocalPath(rel));
             const a = document.createElement('a');
@@ -1313,12 +1322,14 @@
         return r.json();
     }
 
-    function openConflictDialog(name) {
+    function openConflictDialog(name, message) {
         return new Promise(resolve => {
             const m = document.getElementById('fmConflictModal');
             const body = document.getElementById('fmConflictBody');
             if (!m || !body) return resolve('skip');
-            body.innerHTML = '<b>' + escapeHTML(name) + '</b> 已存在於目前資料夾。請選擇處理方式：';
+            body.innerHTML = message
+                ? message
+                : '<b>' + escapeHTML(name) + '</b> 已存在於目前資料夾。請選擇處理方式：';
             m.hidden = false;
             const handler = (ev) => {
                 const btn = ev.target.closest('[data-conflict-act]');
@@ -1332,6 +1343,56 @@
             };
             m.addEventListener('click', handler);
         });
+    }
+
+    function uploadFilePath(file) {
+        const raw = String((file && (file.webkitRelativePath || file.relativePath)) || (file && file.name) || '').replace(/\\/g, '/');
+        const parts = raw.split('/').map(p => p.trim()).filter(Boolean);
+        return parts.length ? parts.join('/') : ((file && file.name) || '');
+    }
+
+    function pathDir(path) {
+        const parts = String(path || '').split('/').filter(Boolean);
+        parts.pop();
+        return parts.join('/');
+    }
+
+    function currentFolderNames() {
+        return new Set((FM.lastEntries.folders || []).map(f => String(f.name || '')));
+    }
+
+    async function buildUploadQueue(fileList) {
+        const existing = currentFolderNames();
+        const rawFiles = Array.from(fileList || []).map(file => ({ file, fullRel: uploadFilePath(file), overwrite: false }));
+        const conflicts = new Set();
+        rawFiles.forEach(item => {
+            const parts = item.fullRel.split('/').filter(Boolean);
+            if (parts.length > 1 && existing.has(parts[0])) conflicts.add(parts[0]);
+        });
+        if (!conflicts.size) return rawFiles;
+
+        const names = Array.from(conflicts).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+        const msg = '<p>你上傳的資料夾已存在：</p><p><b>' + names.map(escapeHTML).join('、')
+            + '</b></p><p>請選擇處理方式。選「覆蓋」會覆蓋同一路徑下的同名檔案；不會刪除既有資料夾內其他檔案。</p>';
+        const choice = await openConflictDialog('同名資料夾', msg);
+        if (choice === 'skip' || choice === 'skip-all') {
+            return rawFiles.filter(item => !conflicts.has(item.fullRel.split('/').filter(Boolean)[0] || ''));
+        }
+        if (choice === 'overwrite' || choice === 'overwrite-all') {
+            return rawFiles.map(item => {
+                const root = item.fullRel.split('/').filter(Boolean)[0] || '';
+                return conflicts.has(root) ? { ...item, overwrite: true } : item;
+            });
+        }
+        if (choice === 'rename') {
+            const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+            return rawFiles.map(item => {
+                const parts = item.fullRel.split('/').filter(Boolean);
+                if (parts.length > 1 && conflicts.has(parts[0])) parts[0] = parts[0] + '_' + stamp;
+                return { ...item, fullRel: parts.join('/') };
+            });
+        }
+        return rawFiles;
     }
 
     function showQueue() {
@@ -1372,10 +1433,17 @@
         _uploadConflictPolicy = null;
         showQueue();
 
-        const queue = Array.from(fileList).map((f, i) => ({
+        const planned = await buildUploadQueue(fileList);
+        if (!planned.length) {
+            setStatus('沒有檔案需要上傳。');
+            hideQueue();
+            return;
+        }
+        const queue = planned.map((item, i) => ({
             id: 'u' + Date.now() + '_' + i,
-            file: f,
-            relPath: (f.webkitRelativePath || '').split('/').slice(0, -1).join('/'),
+            file: item.file,
+            relPath: pathDir(item.fullRel),
+            overwrite: !!item.overwrite,
         }));
         queue.forEach(q => addQueueRow(q.id, (q.relPath ? q.relPath + '/' : '') + q.file.name));
 
@@ -1434,7 +1502,7 @@
     }
 
     async function uploadSingle(q, targetRel) {
-        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        let overwrite = q.overwrite || (_uploadConflictPolicy === 'overwrite-all');
         for (let attempt = 0; attempt < 3; attempt++) {
             const fd = new FormData();
             fd.append('base_path', FM.basePath);
@@ -1497,7 +1565,7 @@
     async function uploadChunked(q, targetRel) {
         const sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
         const total = Math.ceil(q.file.size / CHUNK_SIZE);
-        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        let overwrite = q.overwrite || (_uploadConflictPolicy === 'overwrite-all');
         for (let i = 0; i < total; i++) {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, q.file.size);

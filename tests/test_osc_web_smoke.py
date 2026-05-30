@@ -622,7 +622,7 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260524-folder-upload-v1" in page
+    assert "20260530-fileops-v1" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
@@ -630,8 +630,14 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'id="case_application_no" type="hidden"' in html
     assert 'for="case_court_division">股別' in html
     assert 'id="wbFolderUploadInput" type="file" multiple hidden' in page
+    assert 'id="wbDirectoryUploadInput" type="file" webkitdirectory directory multiple hidden' in page
     assert "/api/osc/files/upload-multi" in js
+    assert 'data-act="wb-folder-upload-dir"' in js
+    assert 'data-act="wb-folder-trash"' in js
+    assert "trashWorkbenchEntry" in js
+    assert "relative_paths" in js
     assert "handleFolderUploadFiles(files)" in events_js
+    assert "wbDirectoryUploadInput" in events_js
     assert "可將多個檔案拖拉到這裡上傳" in js
     assert 'addEventListener("drop"' in js
     assert 'data-act="wb-folder-rename"' in js

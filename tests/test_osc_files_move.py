@@ -149,6 +149,106 @@ def test_upload_multi_accepts_batch_files_and_reports_conflicts(tmp_path: Path):
     assert conflict["error"] == "file_exists"
 
 
+def test_upload_multi_preserves_folder_paths_and_overwrites_when_confirmed(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件A"
+    case_dir.mkdir()
+    existing = case_dir / "證據資料" / "同名.pdf"
+    existing.parent.mkdir()
+    existing.write_bytes(b"old")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        conflict = client.post(
+            "/api/osc/files/upload-multi",
+            data={
+                "base_path": str(case_dir),
+                "files": [(BytesIO(b"%PDF-new"), "同名.pdf")],
+                "relative_paths": ["證據資料/同名.pdf"],
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert conflict.status_code == 200
+    assert conflict.get_json()["results"][0]["error"] == "file_exists"
+    assert existing.read_bytes() == b"old"
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        overwrite = client.post(
+            "/api/osc/files/upload-multi",
+            data={
+                "base_path": str(case_dir),
+                "overwrite": "1",
+                "files": [
+                    (BytesIO(b"%PDF-new"), "同名.pdf"),
+                    (BytesIO(b"%PDF-child"), "新檔.pdf"),
+                ],
+                "relative_paths": ["證據資料/同名.pdf", "證據資料/子資料夾/新檔.pdf"],
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert overwrite.status_code == 200
+    data = overwrite.get_json()
+    assert data["succeeded"] == 2
+    assert existing.read_bytes() == b"%PDF-new"
+    assert (case_dir / "證據資料" / "子資料夾" / "新檔.pdf").read_bytes() == b"%PDF-child"
+
+
+def test_upload_multi_blocked_overwrite_keeps_original_file(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件A"
+    case_dir.mkdir()
+    existing = case_dir / "重要.pdf"
+    existing.write_bytes(b"old-safe-content")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/files/upload-multi",
+            data={
+                "base_path": str(case_dir),
+                "overwrite": "1",
+                "files": [(BytesIO(b"MZ disguised executable"), "重要.pdf")],
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["results"][0]["error"] == "blocked_content_signature"
+    assert existing.read_bytes() == b"old-safe-content"
+
+
+def test_delete_action_moves_folder_to_trash(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件A"
+    target = case_dir / "誤建資料夾"
+    target.mkdir(parents=True)
+    (target / "內容.txt").write_text("payload", encoding="utf-8")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(tmp_path)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/folders/move",
+            json={
+                "base_path": str(tmp_path),
+                "source_relative_path": "案件A/誤建資料夾",
+                "to_trash": True,
+            },
+        )
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["source_exists"] is False
+    assert not target.exists()
+    trashed = list((tmp_path / ".trash").glob("誤建資料夾_*"))
+    assert len(trashed) == 1
+    assert (trashed[0] / "內容.txt").read_text(encoding="utf-8") == "payload"
+
+
 def test_share_file_creates_opaque_download_link(tmp_path: Path, monkeypatch):
     client = _client()
     src = tmp_path / "卷證.pdf"

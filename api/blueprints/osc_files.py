@@ -695,6 +695,34 @@ def _check_upload_ext(filename: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _normalize_upload_relative_path(raw_path: str) -> tuple[str, str]:
+    """Normalize browser-supplied relative upload paths without allowing traversal."""
+    raw = str(raw_path or "").replace("\\", "/").strip()
+    raw = re.sub(r"^/+", "", raw)
+    parts = [p.strip() for p in raw.split("/") if p.strip()]
+    if not parts:
+        return "", "empty_filename"
+    clean_parts: list[str] = []
+    for part in parts:
+        ok, err = _validate_filename(part)
+        if not ok:
+            return "", err
+        clean_parts.append(part)
+    return "/".join(clean_parts), ""
+
+
+def _unique_path(candidate: str) -> str:
+    """Return candidate or a sibling with _N suffix; avoids same-second trash collisions."""
+    if not os.path.exists(candidate):
+        return candidate
+    stem, ext = os.path.splitext(candidate)
+    for i in range(2, 1000):
+        alt = f"{stem}_{i}{ext}"
+        if not os.path.exists(alt):
+            return alt
+    return f"{stem}_{secrets.token_hex(4)}{ext}"
+
+
 # Magic-byte signatures for executables — block even if extension is renamed.
 # (commit 13: harden against `disguised_exe.pdf` style renaming)
 _EXEC_MAGIC_SIGS = (
@@ -744,6 +772,7 @@ def osc_files_upload_multi_api():
       base_path     : NAS root
       relative_path : sub-folder under base (default root)
       overwrite     : "1" to overwrite (default fail on conflict per file)
+      relative_paths: optional per-file paths from folder upload (same order as files)
       files         : multiple file fields
     Returns: per-file results array (some may succeed, some fail).
     """
@@ -763,50 +792,76 @@ def osc_files_upload_multi_api():
     uploads = request.files.getlist("files") or request.files.getlist("file")
     if not uploads:
         return jsonify({"ok": False, "error": "files required"}), 400
+    relative_paths = request.form.getlist("relative_paths")
+    if relative_paths and len(relative_paths) != len(uploads):
+        return jsonify({"ok": False, "error": "relative_paths_count_mismatch"}), 400
 
     results = []
     total_saved = 0
-    for up in uploads:
-        name = os.path.basename(str(up.filename or "").strip())
-        if not name:
-            results.append({"ok": False, "error": "empty_filename"})
+    for idx, up in enumerate(uploads):
+        raw_name = str(up.filename or "").strip()
+        raw_rel = relative_paths[idx] if relative_paths else raw_name
+        upload_rel, rel_err = _normalize_upload_relative_path(raw_rel)
+        if rel_err:
+            results.append({"ok": False, "name": os.path.basename(raw_name), "error": rel_err})
             continue
+        name = os.path.basename(upload_rel)
         ok, ext_err = _check_upload_ext(name)
         if not ok:
             results.append({"ok": False, "name": name, "error": ext_err})
             continue
-        dest = os.path.join(target, name)
-        if os.path.exists(dest) and not overwrite:
-            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest})
+        dest = _safe_join_under(target, upload_rel)
+        if dest is None:
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": "path_escape"})
             continue
+        dest_parent = os.path.dirname(dest)
+        if not _osc_is_safe_local_path(dest_parent, allow_missing=True):
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": "target_dir_not_allowed"})
+            continue
+        if os.path.exists(dest) and not overwrite:
+            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest, "relative_path": _osc_relpath_under(base_real, dest)})
+            continue
+        tmp_path = ""
         try:
-            up.save(dest)
-            sz = os.path.getsize(dest)
+            os.makedirs(dest_parent, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=dest_parent)
+            os.close(fd)
+            up.save(tmp_path)
+            sz = os.path.getsize(tmp_path)
         except OSError as e:
-            results.append({"ok": False, "name": name, "error": f"save_failed: {e}"})
+            if tmp_path:
+                _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": f"save_failed: {e}"})
             continue
         # Magic-byte sniff: catch executables renamed to allowed extensions.
-        sniff = _sniff_executable(dest)
+        sniff = _sniff_executable(tmp_path)
         if sniff:
-            try:
-                os.remove(dest)
-            except OSError:
-                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 793, exc_info=True)
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "blocked_content_signature",
                             "detail": sniff})
             continue
         if sz > _MAX_UPLOAD_BYTES_PER_FILE:
-            os.remove(dest)
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "file_too_large",
                             "size_mb": round(sz / 1024 / 1024, 1),
                             "limit_mb": _MAX_UPLOAD_BYTES_PER_FILE // 1024 // 1024})
             continue
         total_saved += sz
         if total_saved > _MAX_MULTI_TOTAL_BYTES:
-            os.remove(dest)
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "total_too_large",
                             "limit_mb": _MAX_MULTI_TOTAL_BYTES // 1024 // 1024})
             break
+        if os.path.exists(dest) and not overwrite:
+            _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest, "relative_path": _osc_relpath_under(base_real, dest)})
+            continue
+        try:
+            os.replace(tmp_path, dest)
+        except OSError as e:
+            _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": f"replace_failed: {e}"})
+            continue
         results.append({"ok": True, "name": name, "path": dest, "size": sz,
                         "size_label": _osc_human_size(sz),
                         "relative_path": _osc_relpath_under(base_real, dest)})
@@ -903,23 +958,29 @@ def osc_files_upload_chunked_api():
     if missing:
         return jsonify({"ok": False, "error": "chunks_missing", "missing": missing}), 400
 
+    tmp_dest = ""
     try:
-        with open(dest, "wb") as out:
+        fd, tmp_dest = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=target)
+        os.close(fd)
+        with open(tmp_dest, "wb") as out:
             for i in range(total_chunks):
                 with open(session_dir / f"{i:06d}.part", "rb") as f:
                     shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
-        sz = os.path.getsize(dest)
+        sz = os.path.getsize(tmp_dest)
         if sz > _MAX_UPLOAD_BYTES_PER_FILE:
-            os.remove(dest)
+            _cleanup_file_once(tmp_dest)
             return jsonify({"ok": False, "error": "file_too_large", "size_mb": round(sz / 1024 / 1024, 1)}), 413
-        sniff = _sniff_executable(dest)
+        sniff = _sniff_executable(tmp_dest)
         if sniff:
-            try:
-                os.remove(dest)
-            except OSError:
-                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 919, exc_info=True)
+            _cleanup_file_once(tmp_dest)
             return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sniff}), 415
+        if os.path.exists(dest) and not overwrite:
+            _cleanup_file_once(tmp_dest)
+            return jsonify({"ok": False, "error": "file_exists", "path": dest}), 409
+        os.replace(tmp_dest, dest)
     except OSError as e:
+        if tmp_dest:
+            _cleanup_file_once(tmp_dest)
         return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
     finally:
         shutil.rmtree(session_dir, ignore_errors=True)
@@ -1057,7 +1118,7 @@ def osc_folders_move_api():
         os.makedirs(trash_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_name = f"{os.path.splitext(src_name)[0]}_{ts}{os.path.splitext(src_name)[1]}"
-        dst = os.path.join(trash_dir, new_name)
+        dst = _unique_path(os.path.join(trash_dir, new_name))
     else:
         target_parent = _safe_join_under(base_real, dst_rel)
         if target_parent is None or not _osc_is_safe_local_path(target_parent) or not os.path.isdir(target_parent):
@@ -1076,6 +1137,7 @@ def osc_folders_move_api():
         "new_path": dst,
         "new_relative_path": _osc_relpath_under(base_real, dst),
         "to_trash": to_trash,
+        "source_exists": os.path.exists(src),
     })
 
 

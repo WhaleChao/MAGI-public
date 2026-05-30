@@ -421,6 +421,16 @@ body.theme-dark .fm-move-pending {
     font-weight: 700;
 }
 
+.fm-action-btn.danger {
+    color: var(--danger, #ef4444);
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.fm-action-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* === Compact (one-line list) view === */
 .fm-compact {
     list-style: none;

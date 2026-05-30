@@ -825,6 +825,7 @@ function renderCaseFolderBrowser(data) {
         const renameBtn = isDir
             ? `<button class="btn slim" data-act="wb-folder-rename" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-current-path="${esc(rel)}" data-folder-path="${esc(folderPath)}" data-name="${esc(item.name || "")}">改名</button>`
             : "";
+        const deleteBtn = `<button class="btn slim danger" data-act="wb-folder-trash" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-current-path="${esc(rel)}" data-folder-path="${esc(folderPath)}" data-name="${esc(item.name || "")}" data-kind="${esc(item.type || "")}">刪除</button>`;
         const downloadBtn = isDir
             ? ""
             : `<a class="btn slim" href="${fileContentUrl(targetPath)}" target="_blank" rel="noopener noreferrer">下載</a>`;
@@ -840,7 +841,7 @@ function renderCaseFolderBrowser(data) {
             <td>${esc(item.name || "")}</td>
             <td>${esc(item.modified_at || "")}</td>
             <td>${esc(item.size_label || formatBytes(item.size) || "")}</td>
-            <td><div class="wb-folder-actions">${openBtn}${renameBtn}${editBtn}${shareBtn}${downloadBtn}</div></td>
+            <td><div class="wb-folder-actions">${openBtn}${renameBtn}${editBtn}${shareBtn}${downloadBtn}${deleteBtn}</div></td>
         </tr>
         `;
     }).join("") : `<tr><td colspan="5" class="muted">目前資料夾沒有可列出的內容</td></tr>`;
@@ -855,6 +856,7 @@ function renderCaseFolderBrowser(data) {
                 <button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(rel)}">重新整理</button>
                 <button class="btn slim" data-act="wb-folder-mkdir" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">新增資料夾</button>
                 <button class="btn slim" data-act="wb-folder-upload" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳檔案</button>
+                <button class="btn slim" data-act="wb-folder-upload-dir" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳資料夾</button>
                 <button class="btn slim" data-act="wb-folder-copy-path" data-path="${esc(folderPath)}">複製案件路徑</button>
                 <button class="btn slim" data-act="wb-case-open-host" data-id="${esc(c.id || "")}">在本機開啟</button>
             </div>
@@ -1041,20 +1043,117 @@ function promptFolderUpload(caseId, folderPath, relativePath = "") {
     input.click();
 }
 
+function promptDirectoryUpload(caseId, folderPath, relativePath = "") {
+    state.folderUpload = { caseId, folderPath, relativePath, mode: "directory" };
+    const input = document.getElementById("wbDirectoryUploadInput");
+    if (!input) return showAlert("MAGI說", "目前瀏覽器不支援資料夾上傳，請改用拖拉或分批上傳檔案。");
+    input.value = "";
+    input.click();
+}
+
 async function handleFolderUpload(file, opts = {}) {
     return handleFolderUploadFiles(file ? [file] : [], opts);
+}
+
+function normalizeBrowserUploadPath(file) {
+    const raw = String((file && (file.webkitRelativePath || file.relativePath)) || (file && file.name) || "").replace(/\\/g, "/");
+    const parts = raw.split("/").map(x => x.trim()).filter(Boolean);
+    return parts.length ? parts.join("/") : (file && file.name) || "";
+}
+
+function relativeDirOf(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+}
+
+function existingWorkbenchDirNames() {
+    const entries = state.wb?.data?.entries || [];
+    return new Set(entries.filter(item => item.type === "dir").map(item => String(item.name || "")));
+}
+
+async function buildWorkbenchUploadPlans(files) {
+    const existingDirs = existingWorkbenchDirNames();
+    const conflictRoots = new Set();
+    const plans = files.map(file => {
+        const relativePath = normalizeBrowserUploadPath(file);
+        const parts = relativePath.split("/").filter(Boolean);
+        if (parts.length > 1 && existingDirs.has(parts[0])) conflictRoots.add(parts[0]);
+        return { file, relativePath, overwrite: false };
+    });
+    if (!conflictRoots.size) return { plans, overwrite: false };
+
+    const names = Array.from(conflictRoots).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    const overwrite = await showConfirm(
+        "MAGI說",
+        `你上傳的資料夾已存在：${names.join("、")}\n\n是否覆蓋同一路徑下的同名檔案？\nMAGI 不會刪掉既有資料夾內其他檔案。`
+    );
+    if (!overwrite) {
+        return {
+            plans: plans.filter(plan => !conflictRoots.has(plan.relativePath.split("/").filter(Boolean)[0] || "")),
+            overwrite: false,
+        };
+    }
+    return {
+        plans: plans.map(plan => {
+            const root = plan.relativePath.split("/").filter(Boolean)[0] || "";
+            return conflictRoots.has(root) ? { ...plan, overwrite: true } : plan;
+        }),
+        overwrite: true,
+    };
+}
+
+async function trashWorkbenchEntry(caseId, folderPath, relativePath = "", currentPath = "", name = "", kind = "") {
+    const basePath = String(folderPath || "").trim();
+    const srcRel = String(relativePath || "").trim();
+    if (!caseId || !basePath || !srcRel) {
+        wbSetStatus("缺少檔案或資料夾路徑，無法刪除。", "warn");
+        return;
+    }
+    const label = kind === "dir" ? "資料夾" : "檔案";
+    const ok = await showConfirm(
+        "MAGI說",
+        `確定將${label}「${name || srcRel}」移到回收區嗎？\n\n這不會永久刪除；MAGI 會移到案件根目錄的 .trash，NAS 同步後原位置會消失。`
+    );
+    if (!ok) return;
+    try {
+        const data = await api("/api/osc/folders/move", "POST", {
+            base_path: basePath,
+            source_relative_path: srcRel,
+            to_trash: true,
+        });
+        if (!data.ok) throw new Error(data.error || "trash_failed");
+        showToast(`已移到回收區：${name || srcRel}`, "ok", 3000);
+        wbSetStatus(`已移到回收區，原位置已移除：${name || srcRel}`, "ok");
+        await openCaseFolder(caseId, currentPath || "");
+    } catch (e) {
+        wbSetStatus(`刪除失敗：${friendlyFolderRenameError(e.message || e)}`, "warn");
+        showToast(`刪除失敗：${e.message || e}`, "warn", 3500);
+    }
 }
 
 async function handleFolderUploadFiles(fileList, opts = {}) {
     const ctx = state.folderUpload || {};
     const folderPath = String(ctx.folderPath || "").trim();
     const files = Array.from(fileList || []).filter(file => file && file.name);
-    if (!files.length || !folderPath) return;
+    if ((!files.length && !(opts.plans && opts.plans.length)) || !folderPath) return;
+    const planState = opts.plans
+        ? { plans: opts.plans, overwrite: !!opts.overwrite }
+        : await buildWorkbenchUploadPlans(files);
+    const plans = planState.plans || [];
+    if (!plans.length) {
+        wbSetStatus("沒有檔案需要上傳。", "warn");
+        return;
+    }
     const form = new FormData();
     form.append("base_path", folderPath);
     form.append("relative_path", String(ctx.relativePath || ""));
-    if (opts.overwrite) form.append("overwrite", "1");
-    files.forEach(file => form.append("files", file, file.name));
+    if (opts.overwrite || planState.overwrite || plans.some(plan => plan.overwrite)) form.append("overwrite", "1");
+    plans.forEach(plan => {
+        const uploadName = String(plan.relativePath || plan.file.name || "").split("/").filter(Boolean).pop() || plan.file.name;
+        form.append("files", plan.file, uploadName);
+        form.append("relative_paths", plan.relativePath || uploadName);
+    });
     try {
         const data = await apiForm("/api/osc/files/upload-multi", form);
         const results = data.results || [];
@@ -1065,10 +1164,13 @@ async function handleFolderUploadFiles(fileList, opts = {}) {
         if (conflictItems.length && !opts.overwrite) {
             const overwrite = await showConfirm("MAGI說", `有 ${conflictItems.length} 個同名檔案已存在，是否覆蓋這些檔案？`);
             if (overwrite) {
-                const names = new Set(conflictItems.map(item => item.name));
-                const conflictFiles = files.filter(file => names.has(file.name));
-                if (conflictFiles.length) {
-                    return await handleFolderUploadFiles(conflictFiles, { overwrite: true });
+                const keys = new Set(conflictItems.map(item => String(item.relative_path || item.name || "")));
+                const conflictPlans = plans.filter(plan => {
+                    const suffix = String(plan.relativePath || plan.file.name || "");
+                    return keys.has(suffix) || Array.from(keys).some(key => key.endsWith("/" + suffix));
+                });
+                if (conflictPlans.length) {
+                    return await handleFolderUploadFiles([], { plans: conflictPlans, overwrite: true });
                 }
             }
         }
