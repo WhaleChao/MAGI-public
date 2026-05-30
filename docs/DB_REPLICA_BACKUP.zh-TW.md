@@ -1,128 +1,136 @@
-# MAGI MariaDB 遠端主庫與本機備援同步
+# MAGI MariaDB 主 DB 與遠端備份庫同步
 
-更新日期：2026-05-30
+更新日期：2026-05-31
 
 ## 目的
 
-這份文件說明如何讓本機 MAGI MariaDB 作為遠端 MariaDB master 的 replica，用於備援與災難復原。此流程不取代一般每日 `mysqldump` 備份；replica 是即時或近即時備援，dump 備份則是可回到特定時間點的保險。
+私有版 MAGI 的資料庫方向是：
+
+```text
+本機 MAGI MariaDB 主 DB -> 遠端 MariaDB 備份庫 replica
+```
+
+也就是這台 MAGI 電腦保留主資料庫，遠端資料庫只做備援追蹤。不得把本機切成追遠端的 replica，否則可能讓遠端舊資料覆蓋本機正式資料。
 
 ## 目前本機狀態
 
-- MAGI 實際 MariaDB 服務：`127.0.0.1:3306`
+- MAGI 實際 MariaDB：`127.0.0.1:3306`
 - 相容入口：`127.0.0.1:3307`
 - `3307` 由 `com.magi.db-proxy` 轉接到 `127.0.0.1:3306`
+- Tailscale master：`100.97.29.92:3306`
+- MagicDNS：`aimac-mini.tail6738b7.ts.net:3306`
 - 本機 `server-id`：`2`
+- 本機 `log_bin`：已啟用
 - 本機 `binlog_format`：`ROW`
-- 本機 `log_bin`：未啟用。若本機只作為 replica，這是可接受狀態；若未來要讓第三台再複製本機，才需要啟用本機 binlog。
+- binlog 保留：7 天
 
-## 遠端主庫需完成的設定
-
-請遠端 MariaDB 管理者在 `100.97.29.92:3306` 執行下列設定，密碼請改成實際強密碼，且兩個來源使用同一組密碼：
-
-```sql
-CREATE USER IF NOT EXISTS 'repl'@'whale.tail6738b7.ts.net' IDENTIFIED BY '請設定一組密碼';
-CREATE USER IF NOT EXISTS 'repl'@'100.116.54.16' IDENTIFIED BY '請設定同一組密碼';
-
-GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl'@'whale.tail6738b7.ts.net';
-GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl'@'100.116.54.16';
-
-FLUSH PRIVILEGES;
-```
-
-遠端也必須確認：
-
-- `server-id` 不可為 `2`
-- `log_bin` 已啟用
-- `binlog_format=ROW`
-- `100.116.54.16` 可連入 `3306`
-- 若使用 GTID，遠端 GTID 狀態需健康；若不用 GTID，需提供 `MASTER_LOG_FILE` 與 `MASTER_LOG_POS`
-
-## 本機檢查
-
-先只檢查，不變更資料：
+## 本機 master 檢查
 
 ```bash
 cd ~/Desktop/MAGI_v2
-venv/bin/python scripts/ops/configure_mariadb_replica.py \
-  --check-only \
-  --local-port 3307 \
-  --remote-host 100.97.29.92 \
-  --remote-port 3306 \
-  --server-id 2
+venv/bin/python scripts/ops/configure_mariadb_master_backup.py --check-only
 ```
 
 檢查結果會寫入：
 
 ```text
-.runtime/db_replica_setup_latest.json
+.runtime/db_master_backup_latest.json
 ```
 
-這個 JSON 會遮蔽密碼，可以提交給維運者判讀。
+密碼保存在本機：
 
-## 正式套用
+```text
+.runtime/db_replication_credentials.local.json
+```
 
-等遠端管理者提供 `repl` 密碼後，先確認本機有可執行 `CHANGE MASTER` 的管理帳號。不要使用一般 MAGI app 帳號硬套；一般帳號通常只有 `law_firm_data` 與 `magi_brain` 權限，沒有全域 replication 管理權。
+這個檔案權限應為 `600`，不得提交到 git。
+
+## 本機 master 套用
+
+需要重新產生或補齊 replication 帳號時：
 
 ```bash
 cd ~/Desktop/MAGI_v2
-MAGI_DB_REPLICA_PASSWORD='遠端 repl 密碼' \
-MAGI_DB_REPLICA_LOCAL_ADMIN_USER='本機管理帳號' \
-MAGI_DB_REPLICA_LOCAL_ADMIN_PASSWORD='本機管理密碼' \
-venv/bin/python scripts/ops/configure_mariadb_replica.py \
-  --apply \
-  --yes-i-understand \
-  --local-port 3307 \
-  --remote-host 100.97.29.92 \
-  --remote-port 3306 \
-  --server-id 2
+venv/bin/python scripts/ops/configure_mariadb_master_backup.py --apply
 ```
 
-正式套用前，工具會先備份本機資料庫到：
-
-```text
-_db_backups/replica_cutover/
-```
-
-除非已另外完成完整備份，不要使用 `--skip-backup`。
-
-## 不使用 GTID 的情形
-
-若遠端未啟用 GTID，請遠端提供目前 master status：
-
-```sql
-SHOW MASTER STATUS;
-```
-
-再用：
+如果修改了 `/opt/homebrew/etc/my.cnf.d/magi.cnf`，再加上：
 
 ```bash
-venv/bin/python scripts/ops/configure_mariadb_replica.py \
-  --apply \
-  --yes-i-understand \
-  --no-gtid \
-  --master-log-file 'mariadb-bin.000001' \
-  --master-log-pos 12345
+venv/bin/python scripts/ops/configure_mariadb_master_backup.py --apply --restart-mariadb
 ```
+
+工具會：
+
+- 確認本機 master 狀態。
+- 寫入或更新 binlog 設定。
+- 建立 `repl` 帳號。
+- 允許 `100.116.54.16`、`whale.tail6738b7.ts.net`、`100.111.10.126`、`whale-1.tail6738b7.ts.net` 連入同步。
+- 輸出遠端 replica 需要執行的 `CHANGE MASTER` 指令摘要，密碼會遮蔽。
+
+## 初始化備份
+
+遠端備份庫第一次建立 replica 時，需先匯入一份帶 master 座標的 seed dump：
+
+```bash
+mkdir -p _db_backups/master_seed
+TS=$(date +%Y%m%d_%H%M%S)
+mysqldump --protocol=socket -uai --single-transaction --quick --routines --events --triggers --master-data=2 --default-character-set=utf8mb4 law_firm_data | gzip -6 > _db_backups/master_seed/law_firm_data_master_seed_${TS}.sql.gz
+mysqldump --protocol=socket -uai --single-transaction --quick --routines --events --triggers --master-data=2 --default-character-set=utf8mb4 magi_brain | gzip -6 > _db_backups/master_seed/magi_brain_master_seed_${TS}.sql.gz
+```
+
+目前已產生的 seed dump 位置：
+
+```text
+_db_backups/master_seed/
+```
+
+## 遠端備份庫要做的事
+
+遠端備份庫需先匯入 seed dump，然後以 `.runtime/db_replication_credentials.local.json` 內的 `repl` 密碼接本機 master。遠端 SQL 範例：
+
+```sql
+STOP SLAVE;
+RESET SLAVE ALL;
+CHANGE MASTER TO
+  MASTER_HOST='100.97.29.92',
+  MASTER_PORT=3306,
+  MASTER_USER='repl',
+  MASTER_PASSWORD='請填入本機 .runtime 內的 repl 密碼',
+  MASTER_LOG_FILE='magi-bin.000001',
+  MASTER_LOG_POS=實際座標;
+START SLAVE;
+```
+
+實際 `MASTER_LOG_FILE` 與 `MASTER_LOG_POS` 以 seed dump 內的 `CHANGE MASTER TO` 註解或 `SHOW MASTER STATUS` 為準。
 
 ## 驗證同步
 
-套用後看 `SHOW SLAVE STATUS` 摘要：
+遠端備份庫執行：
 
-- `Slave_IO_Running=Yes`
-- `Slave_SQL_Running=Yes`
+```sql
+SHOW SLAVE STATUS\G
+```
+
+應確認：
+
+- `Slave_IO_Running: Yes`
+- `Slave_SQL_Running: Yes`
 - `Last_IO_Error` 空白
 - `Last_SQL_Error` 空白
-- `Seconds_Behind_Master` 可接受
+- `Seconds_Behind_Master` 在合理範圍
 
-也可以重跑：
+本機端可檢查：
 
-```bash
-venv/bin/python scripts/ops/configure_mariadb_replica.py --check-only
+```sql
+SHOW PROCESSLIST;
+SHOW MASTER STATUS;
 ```
 
 ## 安全原則
 
-- 不提交任何 DB 密碼、token 或 Google OAuth token。
-- 沒有本機備份，不切 replication。
-- 遠端主庫資料若不是 MAGI 目前資料的來源，不可直接切本機為 replica，否則可能導致資料被遠端覆蓋。
+- 本機是主 DB，不可執行追遠端的 `CHANGE MASTER`。
+- 遠端備份庫只能做 replica；不要讓遠端自動回寫本機。
+- 不提交任何 DB 密碼、token、OAuth token 或 `.runtime/db_replication_credentials.local.json`。
 - `com.magi.db-proxy` 必須維持 `3307 -> 127.0.0.1:3306`，不得再指向退役 DB。
+- `log-bin` 會占用硬碟；目前設定 binlog 保留 7 天，避免硬碟無限制成長。

@@ -280,7 +280,7 @@ git status --short
 
 ### DB 備援機制
 
-MAGI 目前以本機 MariaDB 為主要服務資料庫；舊的「雙活同步」預設關閉，避免已退役 DB 造成資料互相覆寫。若要接遠端 MariaDB 做備援，採「遠端主庫 -> 本機備援庫」的 replication 流程，並保留每日 `mysqldump` 作為時間點備份。
+MAGI 目前以本機 MariaDB 為主要服務資料庫；舊的「雙活同步」預設關閉，避免已退役 DB 造成資料互相覆寫。若要接遠端 MariaDB 做備援，私有版採「本機主 DB -> 遠端備份庫 replica」流程，並保留每日 `mysqldump` 作為時間點備份。
 
 檢查容錯狀態：
 ```bash
@@ -288,9 +288,9 @@ magi status                    # 看 Database 段
 curl http://127.0.0.1:5002/health  # 看 db_failover 段
 ```
 
-檢查 MariaDB replica 前置狀態：
+檢查本機 master 與遠端備份前置狀態：
 ```bash
-venv/bin/python scripts/ops/configure_mariadb_replica.py --check-only
+venv/bin/python scripts/ops/configure_mariadb_master_backup.py --check-only
 ```
 
 完整設定流程請見 [DB_REPLICA_BACKUP.zh-TW.md](DB_REPLICA_BACKUP.zh-TW.md)。
