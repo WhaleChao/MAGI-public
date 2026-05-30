@@ -35,6 +35,25 @@
 | `DB_NAME` | string | `magi_brain` | 資料庫名稱（預設 magi_brain） |
 | `FLASK_SECRET_KEY` | string | — | Flask session 加密金鑰。產生方式：`python3 -c "import secrets; print(secrets.token_hex(32))"` |
 
+### MariaDB Replica / 備援同步
+
+這組變數只用於「遠端主庫 -> 本機備援庫」的 MariaDB replication 設定。正式套用前，請先用
+`scripts/ops/configure_mariadb_replica.py --check-only` 做 live 檢查；沒有 replication 密碼時只會檢查，不會變更資料。
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MAGI_DB_REPLICA_ENABLED` | bool | `0` | 是否啟用遠端主庫同步設定流程；不會自行套用，仍需執行設定工具 |
+| `MAGI_DB_REPLICA_LOCAL_HOST` | string | `127.0.0.1` | 本機 MariaDB host |
+| `MAGI_DB_REPLICA_LOCAL_PORT` | int | `3307` | 本機 MariaDB 對 MAGI 工具的相容入口；目前可轉接到實際 MariaDB 3306 |
+| `MAGI_DB_REPLICA_LOCAL_SERVER_ID` | int | `2` | 本機 replica 的 MariaDB server-id |
+| `MAGI_DB_REPLICA_LOCAL_ADMIN_USER` | string | — | 具備 `STOP SLAVE` / `CHANGE MASTER` 權限的本機 DB 管理帳號 |
+| `MAGI_DB_REPLICA_LOCAL_ADMIN_PASSWORD` | string | — | 本機 DB 管理帳號密碼；不得提交 |
+| `MAGI_DB_REPLICA_REMOTE_HOST` | string | — | 遠端 MariaDB master host |
+| `MAGI_DB_REPLICA_REMOTE_PORT` | int | `3306` | 遠端 MariaDB master port |
+| `MAGI_DB_REPLICA_USER` | string | `repl` | 遠端 replication 帳號 |
+| `MAGI_DB_REPLICA_PASSWORD` | string | — | 遠端 replication 密碼；不得提交 |
+| `MAGI_DB_REPLICA_USE_GTID` | bool | `1` | 使用 MariaDB GTID；若關閉需提供 master log file / position |
+
 ### Tier 2: Feature Enable Flags
 控制各通道與功能是否啟用。設為 `0` 時對應的 credentials 不需要填。
 
