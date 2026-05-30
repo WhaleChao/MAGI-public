@@ -38,6 +38,11 @@ DEFAULT_ALLOWED_HOSTS = [
     "100.111.10.126",
     "whale-1.tail6738b7.ts.net",
     "whale-1.tail6738b7.ts.net.",
+    # Tailscale clients may be seen by IP or MagicDNS reverse lookup.
+    # Keep this narrower than '%' while avoiding brittle single-host matching.
+    "100.%",
+    "%.tail6738b7.ts.net",
+    "%.tail6738b7.ts.net.",
 ]
 
 
