@@ -508,6 +508,42 @@ def test_case_create_replaces_demo_lawyer_with_setting_default(client):
     assert "範例律師" not in insert_params
 
 
+def test_consumer_debt_case_defaults_to_debt_lawyer(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    def fake_setting(key, default=""):
+        values = {
+            "default_lawyer": "一般承辦律師",
+            "default_specialist": "消債承辦律師",
+        }
+        return values.get(key, default)
+
+    payload = {
+        "id": "web-test-debt-lawyer",
+        "case_number": "2026-9998",
+        "client_name": "測試消債當事人",
+        "case_category": "法律扶助案件",
+        "case_type": "消費者債務清理",
+        "case_reason": "更生",
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", side_effect=fake_setting):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    insert_sql, insert_params = calls[0]
+    assert "lawyer" in insert_sql
+    assert "消債承辦律師" in insert_params
+    assert "一般承辦律師" not in insert_params
+
+
 def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypatch):
     import api.blueprints.osc_cases as mod
 

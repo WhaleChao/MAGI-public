@@ -809,7 +809,7 @@ function renderWorkbenchCaseEditor(c) {
 	        <div class="field-grid cols-4">
 	            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly></div>
 	            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
-	            <div class="field"><label>承辦律師</label><input id="wb_case_lawyer" list="caseLawyerOptions" value="${esc(c.lawyer || "")}" placeholder="留空則使用系統預設"></div>
+	            <div class="field"><label>承辦律師</label><input id="wb_case_lawyer" list="caseLawyerOptions" value="${esc(c.lawyer || "")}" placeholder="留空則依案件分類使用系統預設"></div>
 	            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
 	            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
 	            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>

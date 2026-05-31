@@ -131,8 +131,17 @@ _OSC_DEMO_LAWYER_VALUES = {
 }
 
 
-def _osc_default_case_lawyer() -> str:
-    for key in ("default_lawyer", "lawyer_name"):
+def _osc_case_uses_consumer_debt_lawyer(*values: object) -> bool:
+    text = " ".join(str(value or "") for value in values)
+    return any(marker in text for marker in ("消費者債務清理", "消債", "更生", "清算"))
+
+
+def _osc_default_case_lawyer(*, case_type: object = "", case_reason: object = "", case_category: object = "") -> str:
+    if _osc_case_uses_consumer_debt_lawyer(case_type, case_reason, case_category):
+        keys = ("default_debt_lawyer", "consumer_debt_lawyer", "debt_lawyer", "default_specialist")
+    else:
+        keys = ("default_lawyer", "lawyer_name")
+    for key in keys:
         value = str(_osc_get_setting_value(key, "") or "").strip()
         if value and value not in _OSC_DEMO_LAWYER_VALUES:
             return value
@@ -140,13 +149,26 @@ def _osc_default_case_lawyer() -> str:
     return "" if value in _OSC_DEMO_LAWYER_VALUES else value
 
 
-def _osc_normalize_case_lawyer(value: object, *, allow_default: bool = True) -> str:
+def _osc_normalize_case_lawyer(
+    value: object,
+    *,
+    allow_default: bool = True,
+    case_type: object = "",
+    case_reason: object = "",
+    case_category: object = "",
+) -> str:
     text = str(value or "").strip()
     if text in _OSC_DEMO_LAWYER_VALUES:
         text = ""
     if text:
         return text
-    return _osc_default_case_lawyer() if allow_default else ""
+    if not allow_default:
+        return ""
+    return _osc_default_case_lawyer(
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+    )
 
 
 def _get_orchestrator():
@@ -1344,6 +1366,9 @@ def osc_cases_api():
         or payload.get("assigned_lawyer")
         or payload.get("responsible_lawyer"),
         allow_default=not is_template_payload,
+        case_type=case_type_value,
+        case_reason=case_reason_value,
+        case_category=case_category,
     )
     vals = [
         row_id,
@@ -1435,7 +1460,11 @@ def osc_cases_api():
         if incoming_lawyer:
             update_payload["lawyer"] = incoming_lawyer
         elif not _osc_normalize_case_lawyer(target.get("lawyer"), allow_default=False):
-            default_lawyer = _osc_default_case_lawyer()
+            default_lawyer = _osc_default_case_lawyer(
+                case_type=case_type_value,
+                case_reason=case_reason_value,
+                case_category=case_category,
+            )
             if default_lawyer:
                 update_payload["lawyer"] = default_lawyer
         if target_final_closed:
@@ -1486,7 +1515,7 @@ def osc_case_detail_api(row_id):
         payload["laf_case_no"] = synced_laf
         payload["application_no"] = synced_laf
     current_row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, folder_path, manual_status_lock FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, case_category, case_type, case_reason, folder_path, manual_status_lock FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
@@ -1506,6 +1535,9 @@ def osc_case_detail_api(row_id):
     ]
     sets = []
     vals = []
+    lawyer_case_category = payload.get("case_category") or (current_row or {}).get("case_category") or ""
+    lawyer_case_type = payload.get("case_type") or (current_row or {}).get("case_type") or ""
+    lawyer_case_reason = payload.get("case_reason") or (current_row or {}).get("case_reason") or ""
     for k in allowed:
         if k in payload:
             sets.append(f"{k}=%s")
@@ -1519,7 +1551,13 @@ def osc_case_detail_api(row_id):
             if k == "folder_path" and v:
                 v = translate_local_path_to_canonical(v) or v
             if k == "lawyer":
-                v = _osc_normalize_case_lawyer(v, allow_default=not template_update) or None
+                v = _osc_normalize_case_lawyer(
+                    v,
+                    allow_default=not template_update,
+                    case_type=lawyer_case_type,
+                    case_reason=lawyer_case_reason,
+                    case_category=lawyer_case_category,
+                ) or None
             if template_update and k in {"case_category", "case_type", "case_reason", "status"}:
                 v = _OSC_TEMPLATE_DISPLAY_VALUE
             vals.append(v)
