@@ -60,6 +60,7 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
     db = checks.get("db") if isinstance(checks.get("db"), dict) else {}
     faiss = checks.get("faiss") if isinstance(checks.get("faiss"), dict) else {}
     browser_core = checks.get("browser_core") if isinstance(checks.get("browser_core"), dict) else {}
+    drive_sync = checks.get("drive_sync") if isinstance(checks.get("drive_sync"), dict) else {}
     audit = checks.get("operational_audit") if isinstance(checks.get("operational_audit"), dict) else {}
     op = checks.get("operational_health") if isinstance(checks.get("operational_health"), dict) else {}
 
@@ -69,6 +70,7 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
         ("推論服務", omlx.get("ok"), ", ".join(omlx.get("models") or []) or "模型狀態"),
         ("OCR", (checks.get("ocr") or {}).get("ok") if isinstance(checks.get("ocr"), dict) else None, (checks.get("ocr") or {}).get("engine", "")),
         ("瀏覽器核心", browser_core.get("ok"), browser_core.get("detail") or browser_core.get("reason") or "Playwright Chromium"),
+        ("雲端同步", drive_sync.get("ok"), drive_sync.get("detail") or drive_sync.get("message") or "Google Drive"),
         ("向量資料庫", faiss.get("ok"), f"{faiss.get('vectors', '暖機中')} vectors"),
         ("日常稽核", audit.get("ok"), "最近檢查"),
         ("維運健康", op.get("ok"), ", ".join(op.get("degraded_reasons") or []) or "無重大異常"),
@@ -1506,6 +1508,41 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
         try:
+            drive_dir = root / ".runtime" / "drive_sync"
+            auth_required_path = drive_dir / "drive_case_sync_auth_required_latest.json"
+            worker_state_path = drive_dir / "worker_state.json"
+            if auth_required_path.exists():
+                auth_required = json.loads(auth_required_path.read_text(encoding="utf-8"))
+                checks["drive_sync"] = {
+                    "ok": False,
+                    "status": "auth_required",
+                    "message": str(auth_required.get("message") or "Google Drive 授權需重新建立")[:160],
+                    "token_path": str(auth_required.get("token_path") or ""),
+                    "write_scope": bool(auth_required.get("write_scope")),
+                }
+            elif worker_state_path.exists():
+                worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+                last_status = worker_state.get("last_status") if isinstance(worker_state.get("last_status"), dict) else {}
+                last_summary = worker_state.get("last_summary") if isinstance(worker_state.get("last_summary"), dict) else {}
+                if last_status.get("action_required"):
+                    checks["drive_sync"] = {
+                        "ok": False,
+                        "status": str(last_status.get("status") or "action_required"),
+                        "message": str(last_status.get("message") or "Google Drive 同步需要處理")[:160],
+                    }
+                else:
+                    checks["drive_sync"] = {
+                        "ok": True,
+                        "status": str(last_status.get("status") or "ok"),
+                        "detail": "最近同步檢查正常",
+                        "matched_case_folders": int(last_summary.get("matched_case_folders") or 0),
+                    }
+            else:
+                checks["drive_sync"] = {"ok": None, "status": "unknown", "detail": "尚未執行同步檢查"}
+        except Exception as exc:
+            checks["drive_sync"] = {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+
+        try:
             audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
             if audit_path.exists():
                 audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -1643,6 +1680,8 @@ def create_admin_runtime_blueprint(
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded
         if checks.get("operational_health", {}).get("ok") is False:
+            degraded = True
+        if checks.get("drive_sync", {}).get("ok") is False:
             degraded = True
         if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True

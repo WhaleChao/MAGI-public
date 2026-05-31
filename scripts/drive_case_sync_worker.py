@@ -70,6 +70,14 @@ def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool) -> dict:
     return report
 
 
+def clear_auth_required() -> None:
+    """Remove a stale auth-required marker after a successful worker run."""
+    try:
+        (runtime_dir() / "drive_case_sync_auth_required_latest.json").unlink()
+    except FileNotFoundError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MAGI bounded Drive/NAS bidirectional sync worker")
     parser.add_argument("--root-id", default="")
@@ -137,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     state["last_file_sync_summary"] = (report.get("file_sync_plan") or {}).get("summary") or {}
     state["last_execution_summary"] = (report.get("execution_result") or {}).get("summary") or {}
     state["last_drive_folder_summary"] = (report.get("drive_folder_result") or {}).get("summary") or {}
+    state["last_status"] = {"ok": True, "status": "ok", "action_required": False}
+    clear_auth_required()
     save_state(state)
 
     print(json.dumps({
