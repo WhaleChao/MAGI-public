@@ -763,6 +763,45 @@ def test_cases_post_generates_osc_number_syncs_laf_and_keeps_division(client, mo
     assert inserted["court_division"] == "義股"
 
 
+def test_cases_post_defaults_to_folder_creation_for_manual_new_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    folders = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            return {"rowcount": 1, "lastrowid": None}, {"host": "127.0.0.1"}
+        if fetch == "all":
+            return [], {"host": "127.0.0.1"}
+        if fetch == "one":
+            return None, {"host": "127.0.0.1"}
+        return {"rowcount": 1}, {"host": "127.0.0.1"}
+
+    def fake_folder(row_id, payload, case_category):
+        folders.append((row_id, dict(payload), case_category))
+        return {"ok": True, "path": f"/tmp/{payload['case_number']}-測試"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_generate_case_number", lambda: "2026-0101")
+    monkeypatch.setattr(mod, "_osc_auto_create_folder_for_case", fake_folder)
+
+    r = client.post("/api/osc/cases", json={
+        "client_name": "謝易霖測試",
+        "case_category": "一般案件",
+        "case_type": "刑事",
+        "case_stage": "偵查",
+        "case_reason": "兒童及少年性剝削防制條例",
+    })
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["folder"]["ok"] is True
+    assert folders
+    assert folders[0][1]["case_number"] == "2026-0101"
+    assert folders[0][1]["client_name"] == "謝易霖測試"
+
+
 def test_cases_legacy_category_still_maps_to_case_kind(client):
     """舊的 category=一般案件 仍要相容，但語意是案件種類。"""
     calls = []

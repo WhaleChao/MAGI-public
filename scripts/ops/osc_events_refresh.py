@@ -122,7 +122,9 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
     dry_run = bool(getattr(args, "dry_run", False))
     scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
-    text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "1").strip().lower() in {"1", "true", "yes", "on"}
+    # Match original OSC behavior: filename rules are authoritative. Text/OCR is
+    # a fallback for ambiguous filenames, not a second pass for every matched PDF.
+    text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "0").strip().lower() in {"1", "true", "yes", "on"}
     file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
     budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
     outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
@@ -581,8 +583,13 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     if not audit.get("ok"):
                         if audit.get("need_interactive_oauth"):
                             result["warnings"].append("google_calendar_oauth_required")
-                        else:
+                        elif audit.get("error"):
                             result["ok"] = False
+                            result["warnings"].append("google_calendar_integrity_failed")
+                        else:
+                            # A consistency audit finding should remain visible
+                            # but must not make the six-hour todo refresh look
+                            # failed after scan/import/push already succeeded.
                             result["warnings"].append("google_calendar_integrity_needs_attention")
                 except Exception as exc:
                     result["ok"] = False

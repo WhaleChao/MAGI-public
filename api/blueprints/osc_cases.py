@@ -665,7 +665,7 @@ def _osc_clear_case_root_outage() -> None:
     try:
         _osc_case_root_outage_path().unlink()
     except FileNotFoundError:
-        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 609, exc_info=True)
+        pass
     except Exception:
         _log.debug("silent-catch clear case root outage", exc_info=True)
 
@@ -964,6 +964,27 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         "warning": root_selection.get("warning") or "",
         "drive_sync": drive_sync,
     }
+
+
+def _osc_should_auto_create_folder_on_insert(payload: dict, *, is_template: bool, status_value: str) -> bool:
+    """Backend safety net for manual web case creation.
+
+    The UI normally sends ``auto_create_folder=true``.  If a stale browser tab or
+    partial template fails to include that flag, a newly inserted active case
+    with no explicit folder path would otherwise be left without a case folder.
+    Explicit false still wins for imports/tests/API callers that intentionally
+    create DB-only rows.
+    """
+    raw = payload.get("auto_create_folder")
+    if raw is not None:
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    if is_template:
+        return False
+    if str(payload.get("folder_path") or "").strip():
+        return False
+    if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
+        return False
+    return True
 
 
 def _osc_legal_insight_normalized_expr() -> str:
@@ -1391,7 +1412,11 @@ def osc_cases_api():
         (payload.get("notes") or "").strip() or None,
         translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
     ]
-    auto_create_folder = str(payload.get("auto_create_folder") or "").strip().lower() in {"1", "true", "yes", "on"}
+    auto_create_folder = _osc_should_auto_create_folder_on_insert(
+        payload,
+        is_template=is_template_payload,
+        status_value=status_value,
+    )
     sql_insert = f"INSERT INTO cases ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})"
     try:
         result, _ = _osc_exec(sql_insert, tuple(vals), fetch="none")

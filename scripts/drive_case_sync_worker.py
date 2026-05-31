@@ -16,7 +16,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from api.osc.drive_case_sync import DEFAULT_DRIVE_ROOT_NAME, run_inventory, runtime_dir
+from api.osc.drive_case_sync import (
+    DEFAULT_DRIVE_ROOT_NAME,
+    DriveCaseSyncAuthRequired,
+    run_inventory,
+    runtime_dir,
+)
 
 
 def state_path() -> Path:
@@ -44,6 +49,27 @@ def save_state(state: dict) -> None:
     tmp.replace(path)
 
 
+def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool) -> dict:
+    report = {
+        "ok": False,
+        "status": "auth_required",
+        "action_required": True,
+        "message": str(exc),
+        "token_path": str(exc.token_path or ""),
+        "write_scope": bool(write),
+        "next_step": (
+            "請在本機執行：python3 -m api.osc.drive_case_sync --auth "
+            + ("--execute-uploads 或 --ensure-drive-case-folders 重新建立寫入授權" if write else "重新建立唯讀授權")
+        ),
+    }
+    path = runtime_dir() / "drive_case_sync_auth_required_latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MAGI bounded Drive/NAS bidirectional sync worker")
     parser.add_argument("--root-id", default="")
@@ -68,28 +94,37 @@ def main(argv: list[str] | None = None) -> int:
 
     state = load_state()
     offset = max(0, int(state.get("matched_case_offset") or 0))
-    report = run_inventory(
-        root_id=args.root_id,
-        root_name=args.root_name or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME),
-        max_depth=args.max_depth,
-        max_items=args.max_items,
-        resolve_context=not args.no_context_resolve,
-        file_diff=not (args.no_downloads and args.no_uploads),
-        execute_downloads=not args.no_downloads,
-        execute_uploads=not args.no_uploads,
-        download_limit=args.download_limit,
-        max_download_bytes=args.max_download_bytes,
-        upload_limit=args.upload_limit,
-        max_upload_bytes=args.max_upload_bytes,
-        max_case_depth=args.max_case_depth,
-        max_case_items=args.max_case_items,
-        matched_case_limit=args.matched_case_limit,
-        matched_case_offset=offset,
-        ensure_drive_case_folders=not args.no_create_drive_folders,
-        create_drive_folder_limit=args.create_drive_folder_limit,
-        create_drive_folder_max_age_hours=args.create_drive_folder_max_age_hours,
-        drive_owner_bucket_name=args.drive_owner_bucket,
-    )
+    needs_write_scope = not args.no_uploads or not args.no_create_drive_folders
+    try:
+        report = run_inventory(
+            root_id=args.root_id,
+            root_name=args.root_name or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME),
+            max_depth=args.max_depth,
+            max_items=args.max_items,
+            resolve_context=not args.no_context_resolve,
+            file_diff=not (args.no_downloads and args.no_uploads),
+            execute_downloads=not args.no_downloads,
+            execute_uploads=not args.no_uploads,
+            download_limit=args.download_limit,
+            max_download_bytes=args.max_download_bytes,
+            upload_limit=args.upload_limit,
+            max_upload_bytes=args.max_upload_bytes,
+            max_case_depth=args.max_case_depth,
+            max_case_items=args.max_case_items,
+            matched_case_limit=args.matched_case_limit,
+            matched_case_offset=offset,
+            ensure_drive_case_folders=not args.no_create_drive_folders,
+            create_drive_folder_limit=args.create_drive_folder_limit,
+            create_drive_folder_max_age_hours=args.create_drive_folder_max_age_hours,
+            drive_owner_bucket_name=args.drive_owner_bucket,
+        )
+    except DriveCaseSyncAuthRequired as exc:
+        status = save_auth_required(exc, write=needs_write_scope)
+        state["last_status"] = status
+        state["last_summary"] = {"auth_required": True}
+        save_state(state)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0
 
     matched_total = int((report.get("summary") or {}).get("matched_case_folders") or 0)
     scanned = int(((report.get("file_sync_plan") or {}).get("summary") or {}).get("matched_cases_scanned") or 0)

@@ -153,6 +153,15 @@ class DriveCaseSyncError(RuntimeError):
     pass
 
 
+class DriveCaseSyncAuthRequired(DriveCaseSyncError):
+    """Raised when a non-interactive Drive sync needs a fresh OAuth grant."""
+
+    def __init__(self, message: str, *, token_path: Path | None = None, write: bool = False):
+        super().__init__(message)
+        self.token_path = token_path
+        self.write = write
+
+
 @dataclass
 class FileEntry:
     source: str
@@ -291,15 +300,37 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     if force_auth and interactive:
         token_path.unlink(missing_ok=True)
     if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        try:
+            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        except Exception as exc:
+            if not interactive:
+                raise DriveCaseSyncAuthRequired(
+                    f"Google Drive 授權檔無法讀取，請重新授權：{token_path}",
+                    token_path=token_path,
+                    write=write,
+                ) from exc
+            token_path.unlink(missing_ok=True)
+            creds = None
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            if not interactive:
+                raise DriveCaseSyncAuthRequired(
+                    f"Google Drive 授權已失效，請重新授權：{token_path}",
+                    token_path=token_path,
+                    write=write,
+                ) from exc
+            token_path.unlink(missing_ok=True)
+            creds = None
     if not creds or not creds.valid or not creds.has_scopes(scopes):
         if not interactive:
             scope_text = "Google Drive 寫入" if write else "Google Drive 唯讀"
-            raise DriveCaseSyncError(
+            raise DriveCaseSyncAuthRequired(
                 f"尚未授權 {scope_text}。請先以 --auth 建立 "
-                f"{'MAGI_DRIVE_SYNC_WRITE_TOKEN' if write else 'MAGI_DRIVE_SYNC_TOKEN'}。"
+                f"{'MAGI_DRIVE_SYNC_WRITE_TOKEN' if write else 'MAGI_DRIVE_SYNC_TOKEN'}。",
+                token_path=token_path,
+                write=write,
             )
         if not credentials_path.exists():
             raise DriveCaseSyncError(f"找不到 Google OAuth credentials：{credentials_path}")

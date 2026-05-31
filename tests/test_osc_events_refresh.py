@@ -358,7 +358,7 @@ def test_refresh_marks_transcript_timeout_as_warning_when_scan_had_budget(monkey
     assert result["transcript_todos"]["skipped"] is True
 
 
-def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
+def test_pdf_calendar_scan_uses_filename_first_in_bulk(monkeypatch):
     from api.blueprints import osc_pdf
 
     calls = []
@@ -392,7 +392,7 @@ def test_pdf_calendar_scan_reads_text_by_default_in_bulk(monkeypatch):
 
     assert result["ok"] is True
     assert calls[0]["scan_text"] is True
-    assert calls[0]["text_when_filename"] is True
+    assert calls[0]["text_when_filename"] is False
     assert calls[0]["include_share_link"] is True
 
 
