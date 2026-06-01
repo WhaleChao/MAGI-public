@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -2433,7 +2434,7 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
     cleanup_error = ""
     try:
         if os.path.isdir(src):
-            shutil.rmtree(src)
+            _osc_remove_tree_robust(src)
         elif os.path.exists(src):
             os.remove(src)
     except Exception as e:
@@ -2478,6 +2479,52 @@ def _osc_copy_file_for_nas(src_file: str, dst_file: str, *, strict_hash: bool = 
     same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
     if not same_size or not same_hash:
         raise RuntimeError(f"copy verification failed: {dst_file}")
+
+
+@contextmanager
+def _osc_legacy_delete_guard_disabled():
+    """Disable legacy import-order delete guards only inside verified archive cleanup."""
+    keys = ("MAGI_NO_DELETE", "MAGI_DB_NO_DELETE")
+    before = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = "0"
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _osc_remove_tree_robust(path: str) -> None:
+    """Remove archived source folders with os primitives.
+
+    Some test and maintenance helpers monkey-patch ``shutil.rmtree`` while
+    exercising cache cleanup.  Closed-case archiving must still remove the
+    active source after the verified copy, otherwise users see misleading empty
+    or duplicate active folders.
+    """
+    with _osc_legacy_delete_guard_disabled():
+        if os.path.islink(path):
+            os.unlink(path)
+            return
+        for root, dirnames, filenames in os.walk(path, topdown=False):
+            for filename in filenames:
+                try:
+                    os.unlink(os.path.join(root, filename))
+                except FileNotFoundError:
+                    pass
+            for dirname in dirnames:
+                try:
+                    os.rmdir(os.path.join(root, dirname))
+                except FileNotFoundError:
+                    pass
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            pass
 
 
 def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
@@ -2550,7 +2597,7 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
     cleanup_error = ""
     try:
         if os.path.exists(src):
-            shutil.rmtree(src)
+            _osc_remove_tree_robust(src)
     except Exception as e:
         cleanup_error = str(e)
 

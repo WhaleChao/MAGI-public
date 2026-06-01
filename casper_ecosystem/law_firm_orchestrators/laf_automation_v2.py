@@ -7527,6 +7527,8 @@ class LAFGmailMonitor:
         # ★ 從檔案載入已處理的 message ID
         self._processed_ids = self._load_processed_ids()
         self._general_processed_ids = self._load_processed_ids('_general')
+        # JSON is only a fallback. The durable source of truth is laf_email_records.
+        self.processed_exists_func = None
     
     def _load_processed_ids(self, suffix: str = '') -> set:
         """載入已處理的 Email ID 記錄"""
@@ -7571,6 +7573,37 @@ class LAFGmailMonitor:
                 json.dump(ids_list, f)
         except Exception as e:
             self.log(f"  ⚠️ 儲存已處理信件記錄失敗: {e}")
+
+    def _durable_laf_record_exists(self, msg_id: str, check_exists_func=None):
+        """Return True/False when DB state is known; None when unavailable."""
+        func = check_exists_func or self.processed_exists_func
+        if not func:
+            return None
+        try:
+            return bool(func(msg_id))
+        except Exception as e:
+            self.log(f"  ⚠️ 法扶信件 DB 去重檢查失敗，改用暫存紀錄: {e}")
+            return None
+
+    def _laf_message_already_processed(self, msg_id: str, check_exists_func=None) -> bool:
+        """DB record wins; JSON-only/dedup-only state is recoverable."""
+        durable_exists = self._durable_laf_record_exists(msg_id, check_exists_func)
+        if durable_exists is True:
+            return True
+
+        fallback_exists = msg_id in self._processed_ids
+        if fallback_exists and durable_exists is False:
+            self.log(f"  ♻️ 已處理暫存有紀錄但 DB 無紀錄，重新補處理法扶信件 (ID: {msg_id[-6:]}...)")
+            return False
+        return fallback_exists
+
+    def mark_laf_processed(self, msg_id: str):
+        """Persist the JSON fallback marker after callback handling has run."""
+        mid = str(msg_id or "").strip()
+        if not mid:
+            return
+        self._processed_ids.add(mid)
+        self._save_processed_ids()
     
     def authenticate(self) -> bool:
         """進行 Gmail API 認證"""
@@ -7701,7 +7734,7 @@ class LAFGmailMonitor:
                 self.log(f"  ⚠️ 法扶信件垃圾郵件復原失敗: {e}")
             return False
     
-    def check_emails(self, max_results: int = 10) -> List[LAFCaseInfo]:
+    def check_emails(self, max_results: int = 10, check_exists_func=None, mark_processed: bool = True) -> List[LAFCaseInfo]:
         """檢查新的法扶信件"""
         results = []
         
@@ -7710,9 +7743,24 @@ class LAFGmailMonitor:
             return results
         
         try:
+            try:
+                max_results = int(os.environ.get("MAGI_LAF_EMAIL_MAX_RESULTS", str(max_results)) or str(max_results))
+            except Exception:
+                max_results = int(max_results or 10)
+            max_results = max(10, min(max_results, 200))
             self.log("🔍 正在檢查新信件...")
-            # 搜尋最近的法扶相關信件（不再限定未讀，由內部 _processed_ids 避免重複）
-            query = 'in:anywhere -in:trash (from:@laf.org.tw OR from:laf.server)'
+            lookback_days = 3
+            try:
+                lookback_days = int(os.environ.get("MAGI_LAF_GMAIL_LOOKBACK_DAYS", "3") or "3")
+            except Exception:
+                lookback_days = 3
+            lookback_days = max(1, min(lookback_days, 14))
+            query = (
+                f'in:anywhere -in:trash '
+                f'(from:@laf.org.tw OR from:laf.server) '
+                f'newer_than:{lookback_days}d '
+                f'-subject:"回報案件辦理進度"'
+            )
             
             response = self.service.users().messages().list(
                 userId='me',
@@ -7744,15 +7792,15 @@ class LAFGmailMonitor:
                 self.log(f"🔍 [掃描] 檢查信件: {subject} (ID: {msg_id[-6:]}...)")
                 self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
 
-                if msg_id in self._processed_ids:
+                if self._laf_message_already_processed(msg_id, check_exists_func):
                     continue
                 
                 case_info = self._process_message(msg_id, full_msg)
 
                 if case_info:
                     results.append(case_info)
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
+                    if mark_processed:
+                        self.mark_laf_processed(msg_id)
                 else:
                     # 解析失敗：只標記「已忽略」，不加入 _processed_ids
                     # 讓 _process_message 內部的 ⚠️ log 留紀錄即可
@@ -8121,18 +8169,12 @@ class LAFGmailMonitor:
             for msg in messages:
                 msg_id = msg['id']
                 
-                # 1. 檢查是否已處理 (DB)
-                if check_exists_func and check_exists_func(msg_id):
+                # DB 優先，JSON fallback；DB 無紀錄時要補處理，不能只看暫存清單。
+                if self._laf_message_already_processed(msg_id, check_exists_func):
                     self.log(f"  ⏭️ 信件已處理，跳過 (ID: {msg_id[-6:]}...)")
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
                     continue
                 
-                # 2. 檢查記憶體快取
-                if msg_id in self._processed_ids:
-                    continue
-                
-                # 3. 處理信件
+                # 處理信件
                 full_msg = self.service.users().messages().get(
                     userId='me', id=msg_id
                 ).execute()
@@ -8154,11 +8196,17 @@ class LAFGmailMonitor:
                 case_info = self._process_message(msg_id, full_msg)
 
                 if case_info:
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
-                    # 觸發回呼
+                    callback_ok = True
                     if self.callback:
-                        self.callback(case_info)
+                        try:
+                            callback_result = self.callback(case_info)
+                            if callback_result is False:
+                                callback_ok = False
+                        except Exception:
+                            callback_ok = False
+                            raise
+                    if callback_ok:
+                        self.mark_laf_processed(msg_id)
 
         except Exception as e:
             self.log(f"❌ 掃描區間信件失敗: {e}")
@@ -8167,6 +8215,18 @@ class LAFGmailMonitor:
         """掃描今日所有法扶信件 (啟動時執行)"""
         today_str = datetime.now().strftime('%Y/%m/%d')
         self.scan_emails_in_range(today_str, today_str, check_exists_func)
+
+    def scan_recent_emails(self, days: int = None, check_exists_func=None):
+        """啟動時補掃近期法扶信件，避免 daemon 停機或人工讀信造成漏啟動。"""
+        if days is None:
+            try:
+                days = int(os.environ.get("MAGI_LAF_GMAIL_STARTUP_SCAN_DAYS", "7") or "7")
+            except Exception:
+                days = 7
+        days = max(1, min(int(days or 7), 30))
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days - 1)
+        self.scan_emails_in_range(start_dt.strftime('%Y/%m/%d'), end_dt.strftime('%Y/%m/%d'), check_exists_func)
     
     def _process_message(self, msg_id: str, msg_data: dict) -> Optional[LAFCaseInfo]:
         """處理單封信件"""
@@ -8358,13 +8418,22 @@ class LAFGmailMonitor:
         while self._running:
             try:
                 # 1. 檢查法扶信件
-                cases = self.check_emails()
+                cases = self.check_emails(
+                    check_exists_func=self.processed_exists_func,
+                    mark_processed=False,
+                )
                 for case_info in cases:
+                    callback_ok = True
                     if self.callback:
                         try:
-                            self.callback(case_info)
+                            callback_result = self.callback(case_info)
+                            if callback_result is False:
+                                callback_ok = False
                         except Exception as e:
+                            callback_ok = False
                             self.log(f"❌ 法扶回呼處理失敗: {e}")
+                    if callback_ok:
+                        self.mark_laf_processed(case_info.message_id)
                 
                 # 2. 檢查一般信件
                 if general_rules:
@@ -9642,6 +9711,11 @@ class LAFAutomationManager:
         self.log("[LAF] 🚀 開始執行 setup()...")
         gmail_config = self.config.get('gmail', {})
         laf_config = self.config.get('laf', {})
+        if not isinstance(laf_config, dict):
+            laf_config = {}
+        self.config['laf'] = laf_config
+        # Missing legacy configs must not silently disable the dispatch workflow.
+        laf_config.setdefault('auto_create_case', True)
         
         # 除錯：顯示收到的設定
         self.log(f"[LAF] 📋 設定檢查:")
@@ -9708,7 +9782,10 @@ class LAFAutomationManager:
         if self.db_manager:
             try:
                 # (V-MacFix) 轉換為本機路徑
-                target_folder = laf_config.get('target_folder', './法扶資料')
+                target_folder = laf_config.get('target_folder') or ''
+                if not target_folder or target_folder in {'.', './法扶資料', '法扶資料'}:
+                    roots = preferred_case_roots(include_closed=False)
+                    target_folder = os.path.join((roots[0] if roots else "."), "法扶案件")
                 
                 # 嘗試路徑轉換 (最可能卡住的地方)
                 if hasattr(self.db_manager, 'translate_path_to_local'):
@@ -9739,6 +9816,7 @@ class LAFAutomationManager:
                         target_folder = mac_target
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7406, exc_info=True)
+                laf_config['target_folder'] = target_folder
                 
                 self.case_creator = OSCCaseCreator(
                     db_manager=self.db_manager,
@@ -9769,9 +9847,10 @@ class LAFAutomationManager:
             if self.db_manager:
                 # 定義檢查函式
                 check_func = lambda mid: self.db_manager.check_laf_email_exists(mid)
+                self.gmail_monitor.processed_exists_func = check_func
                 # 在背景執行掃描，避免卡住 GUI
                 threading.Thread(
-                    target=self.gmail_monitor.scan_today_emails,
+                    target=self.gmail_monitor.scan_recent_emails,
                     args=(check_func,),
                     daemon=True
                 ).start()
@@ -9855,12 +9934,12 @@ class LAFAutomationManager:
             # 0. 記錄到資料庫 (避免重複處理)
             if self.db_manager:
                 record_data = {
-                    'message_id': case_info.message_id,
-                    'subject': f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
+                    'gmail_message_id': case_info.message_id,
+                    'subject': case_info.subject or f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
                     'sender': case_info.sender,
                     'received_at': case_info.received_at,
                     'status': 'processing',
-                    'laf_case_number': case_info.laf_case_number,
+                    'case_number': case_info.laf_case_number,
                     'created_case_id': None
                 }
                 self.db_manager.add_laf_email_record(record_data)
@@ -9935,7 +10014,19 @@ class LAFAutomationManager:
                 
                 # 有附件時建案（附件會自動歸檔）
                 if self.case_creator and self.config.get('laf', {}).get('auto_create_case'):
-                    osc_case_number = self.case_creator.create_case(case_info, downloaded_files)
+                    create_result = self.case_creator.create_case(case_info, downloaded_files)
+                    if isinstance(create_result, tuple):
+                        osc_case_number = create_result[0]
+                    else:
+                        osc_case_number = create_result
+                    if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                        try:
+                            self.db_manager.execute_write(
+                                "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                                ("completed", getattr(case_info, "laf_case_number", "") or str(osc_case_number), case_info.message_id),
+                            )
+                        except Exception as e:
+                            self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                     
                     if osc_case_number and self.discord:
                         self.discord.send_message(
@@ -9945,9 +10036,11 @@ class LAFAutomationManager:
                             f"**附件:** {len(downloaded_files)} 個檔案已歸檔",
                             color=0x00ff00
                         )
+            return True
         
         except Exception as e:
             self.log(f"❌ 處理新案件失敗: {e}")
+            return False
 
     def _on_general_email(self, email_info: GeneralEmailInfo):
         """處理一般信件"""
@@ -10140,6 +10233,14 @@ class LAFAutomationManager:
             # 建立案件
             if self.case_creator:
                 osc_case_number, case_folder = self.case_creator.create_case(case_info, files)
+                if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                    try:
+                        self.db_manager.execute_write(
+                            "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                            ("completed", getattr(case_info, "laf_case_number", "") or osc_case_number, case_info.message_id),
+                        )
+                    except Exception as e:
+                        self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                 
                 if osc_case_number and self.discord:
                     # 嘗試轉換回 Windows 路徑供顯示

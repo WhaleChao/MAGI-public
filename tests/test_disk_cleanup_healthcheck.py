@@ -304,6 +304,52 @@ def test_cleanup_empty_synology_case_shells_removes_closed_shells_without_age_de
     assert actions[0]["deleted_dirs"] == 1
 
 
+def test_cleanup_empty_synology_case_shells_ignores_legacy_delete_guard(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    empty_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    (empty_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setenv("MAGI_NO_DELETE", "1")
+    monkeypatch.setenv("MAGI_DB_NO_DELETE", "1")
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    orig_unlink = os.unlink
+
+    def guarded_unlink(path, *args, **kwargs):
+        if os.environ.get("MAGI_NO_DELETE") == "1" and "01_案件" in str(path):
+            raise PermissionError(f"legacy guard blocked {path}")
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(dc.os, "unlink", guarded_unlink)
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
+
+    assert not empty_case.exists()
+    assert actions[0]["deleted_dirs"] == 1
+    assert os.environ.get("MAGI_NO_DELETE") == "1"
+    assert os.environ.get("MAGI_DB_NO_DELETE") == "1"
+
+
+def test_remove_tree_robust_tolerates_vanishing_metadata_file(tmp_path, monkeypatch):
+    root = tmp_path / "01_案件" / "2026-0099-測試"
+    root.mkdir(parents=True)
+    ghost = root / "._.DS_Store"
+    ghost.write_bytes(b"")
+    orig_unlink = os.unlink
+
+    def flaky_unlink(path, *args, **kwargs):
+        if str(path).endswith("._.DS_Store"):
+            orig_unlink(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(dc.os, "unlink", flaky_unlink)
+
+    dc._remove_tree_robust(root)
+
+    assert not root.exists()
+
+
 def test_synology_empty_case_roots_default_to_smb_and_skip_file_provider(monkeypatch, tmp_path):
     monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
     monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL", False, raising=True)

@@ -959,7 +959,7 @@ def _find_missing_portal_files(expected_files: List[str], existing_files: List[s
 
 
 def _make_laf_web_automation(*, log_prefix: str = "LAF-AUDIT"):
-    from laf_automation_v2 import LAFWebAutomation
+    from skills.legal.laf import LAFWebAutomation
 
     config = _load_config()
     laf_cfg = config.get("laf") if isinstance(config.get("laf"), dict) else {}

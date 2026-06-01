@@ -177,4 +177,7 @@ def default_local_chat_models() -> list[str]:
 
 
 def default_local_vision_models() -> list[str]:
-    return [VISION_MODEL]
+    # This is the installer/onboarding default, not the currently selected
+    # runtime override. Keep it stable so text-heavy models such as 26B are not
+    # accidentally advertised as the safe local OCR/vision default.
+    return [DEFAULT_VISION_MODEL]

@@ -561,25 +561,29 @@ class DatabaseManager:
 
     def add_laf_email_record(self, record_data: dict[str, Any]) -> bool:
         data = dict(record_data or {})
-        mid = str(data.get("gmail_message_id") or "").strip()
+        mid = str(data.get("gmail_message_id") or data.get("message_id") or "").strip()
         if not mid:
             return False
         if self.check_laf_email_exists(mid):
             return True
         cols = self._fetch_table_columns("laf_email_records")
+        id_type = str(cols.get("id") or "").lower()
         values_by_col = {
-            "id": str(uuid.uuid4()),
             "gmail_message_id": mid,
             "subject": data.get("subject") or "",
             "sender": data.get("sender") or "",
             "received_at": data.get("received_at"),
             "processed_at": data.get("processed_at") or datetime.now(),
             "status": data.get("status") or "",
-            "case_number": data.get("case_number") or "",
+            "case_number": data.get("case_number") or data.get("laf_case_number") or "",
             "created_case_id": data.get("created_case_id") or data.get("case_id") or "",
             "error_message": data.get("error_message") or "",
             "created_date": data.get("created_date") or datetime.now(),
         }
+        # Some deployments created laf_email_records.id as AUTO_INCREMENT INT, while
+        # the newer bootstrap schema uses VARCHAR. Only provide an id for text ids.
+        if "id" in cols and not any(k in id_type for k in ("int", "bigint", "smallint", "mediumint", "tinyint")):
+            values_by_col["id"] = data.get("id") or str(uuid.uuid4())
         insert_cols = []
         insert_vals = []
         for name in values_by_col:

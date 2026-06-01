@@ -670,7 +670,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             result["error"] = "missing_case_folder"
             return result
         try:
-            from laf_automation_v2 import OSCCaseCreator
+            from skills.legal.laf import OSCCaseCreator
 
             archiver = OSCCaseCreator(
                 db_manager=self.db,
@@ -2808,7 +2808,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # Execute portal automation (save draft only).
         try:
-            from laf_automation_v2 import _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -2961,7 +2961,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s for %s (%s)", workflow_label, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from laf_automation_v2 import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import LAFWebAutomation, _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3058,7 +3058,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s submit for %s (%s)", wf, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from laf_automation_v2 import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import LAFWebAutomation, _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3108,7 +3108,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     def _get_automation(self):
         """Get or create shared LAFWebAutomation instance."""
-        from laf_automation_v2 import LAFWebAutomation
+        from skills.legal.laf import LAFWebAutomation
         if self._automation:
             # TODO: Add health check or expiry?
             # For now, rely on .login() inside scripts to check cookie validity.
@@ -6553,7 +6553,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return True
 
         try:
-            from laf_automation_v2 import LAFWebAutomation
+            from skills.legal.laf import LAFWebAutomation
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -8225,7 +8225,7 @@ def main():
                         }, ensure_ascii=False))
                     else:
                         try:
-                            from laf_automation_v2 import LAFCaseInfo  # type: ignore
+                            from skills.legal.laf import LAFCaseInfo  # type: ignore
                         except Exception:
                             from skills.legal.laf import LAFCaseInfo  # type: ignore
                         case_info = LAFCaseInfo(

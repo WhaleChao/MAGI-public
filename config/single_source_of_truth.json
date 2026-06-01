@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "features": {
+    "laf_gmail_monitor": {
+      "canonical": "skills.legal.laf",
+      "legacy_modules": [
+        "casper_ecosystem.law_firm_orchestrators.laf_automation_v2"
+      ],
+      "forbidden_imports": [
+        "import laf_automation_v2 as laf",
+        "from laf_automation_v2 import"
+      ],
+      "required_symbols": [
+        "LAFGmailMonitor",
+        "LAFAutomationManager",
+        "LAFCaseTypeParser",
+        "OSCCaseCreator.dedupe_case_folders_by_laf_marker"
+      ]
+    },
+    "file_review_monitor": {
+      "canonical": "skills.file-review-orchestrator.action",
+      "legacy_modules": [
+        "casper_ecosystem.law_firm_orchestrators.file_review_automation",
+        "casper_ecosystem.law_firm_orchestrators.judicial_automation_v2",
+        "skills.legal.judicial"
+      ]
+    },
+    "transcript_downloader": {
+      "canonical": "skills.transcript-downloader.action",
+      "legacy_modules": [
+        "casper_ecosystem.law_firm_orchestrators.judicial_automation_v2",
+        "skills.legal.judicial"
+      ]
+    },
+    "case_path_mapping": {
+      "canonical": "api.case_path_mapper",
+      "legacy_modules": [
+        "casper_ecosystem.law_firm_orchestrators.legalbridge_core",
+        "casper_ecosystem.law_firm_orchestrators.judicial_automation_v2",
+        "skills.file-review-orchestrator.action",
+        "skills.legal.judicial"
+      ]
+    }
+  }
+}

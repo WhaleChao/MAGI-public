@@ -2785,7 +2785,7 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
     general_max = max(10, min(general_max, 200))
     try:
         ensure_orch_on_sys_path()
-        import laf_automation_v2 as laf
+        from skills.legal import laf
 
         cfg_path = _load_primary_config_path()
         cfg = _load_json(cfg_path)
@@ -2816,7 +2816,16 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
         if not ok:
             return {"ok": False, "error": "gmail_auth_failed"}
 
-        cases = manager.gmail_monitor.check_emails(max_results=max_results)
+        laf_exists = None
+        if db_manager and hasattr(db_manager, "check_laf_email_exists"):
+            laf_exists = lambda mid: db_manager.check_laf_email_exists(mid)
+            manager.gmail_monitor.processed_exists_func = laf_exists
+
+        cases = manager.gmail_monitor.check_emails(
+            max_results=max_results,
+            check_exists_func=laf_exists,
+            mark_processed=False,
+        )
         out["cases"] = len(cases or [])
         orchestrator = None
         for ci in (cases or []):
@@ -2829,7 +2838,9 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
                     out["routed"] = int(out.get("routed") or 0) + 1
                 else:
                     # Queue decision logic + attachment handling for first dispatch/opening notices.
-                    manager._on_new_case(ci)
+                    if manager._on_new_case(ci) is False:
+                        raise RuntimeError("laf_on_new_case_failed")
+                manager.gmail_monitor.mark_laf_processed(getattr(ci, "message_id", ""))
             except Exception as e:
                 out["errors"].append(f"on_new_case: {e}")
 

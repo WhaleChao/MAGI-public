@@ -53,6 +53,78 @@ def test_auto_archive_closed_case_moves_folder(tmp_path, monkeypatch):
     assert updates and updates[-1][1][0] == str(target)
 
 
+def test_auto_archive_closed_case_ignores_legacy_delete_guard(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import os
+
+    source = tmp_path / "01_案件" / "A001_王小明"
+    source.mkdir(parents=True)
+    (source / "note.txt").write_text("case file", encoding="utf-8")
+    archive = tmp_path / "99_結案案件"
+    archive.mkdir()
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "A001",
+                "client_name": "王小明",
+                "status": "已結案",
+                "folder_path": str(source),
+            }, None
+        updates.append((sql, params, fetch))
+        return {"rowcount": 1}, None
+
+    orig_unlink = os.unlink
+
+    def guarded_unlink(path, *args, **kwargs):
+        if os.environ.get("MAGI_NO_DELETE") == "1" and "01_案件" in str(path):
+            raise PermissionError(f"legacy guard blocked {path}")
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("MAGI_NO_DELETE", "1")
+    monkeypatch.setenv("MAGI_DB_NO_DELETE", "1")
+    monkeypatch.setattr(mod.os, "unlink", guarded_unlink)
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_get_closed_archive_base", lambda: str(archive))
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda raw: [str(raw)])
+    monkeypatch.setattr(mod, "_osc_norm_path", lambda raw: str(raw))
+
+    result = mod._osc_auto_archive_closed_case("case-1")
+
+    target = archive / source.name
+    assert result["ok"] is True
+    assert target.exists()
+    assert not source.exists()
+    assert os.environ.get("MAGI_NO_DELETE") == "1"
+    assert os.environ.get("MAGI_DB_NO_DELETE") == "1"
+    assert updates and updates[-1][1][0] == str(target)
+
+
+def test_osc_remove_tree_robust_tolerates_vanishing_metadata_file(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import os
+
+    root = tmp_path / "01_案件" / "A001_王小明"
+    root.mkdir(parents=True)
+    ghost = root / "._.DS_Store"
+    ghost.write_bytes(b"")
+    orig_unlink = os.unlink
+
+    def flaky_unlink(path, *args, **kwargs):
+        if str(path).endswith("._.DS_Store"):
+            orig_unlink(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod.os, "unlink", flaky_unlink)
+
+    mod._osc_remove_tree_robust(str(root))
+
+    assert not root.exists()
+
+
 def test_case_folder_creation_refuses_synology_drive_fallback(tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
     import api.nas_mount_guard as nas_mount_guard
