@@ -836,14 +836,14 @@ def test_health_active_issues_clear():
     data = json.loads(body)
     op = data.get("operational_health") if isinstance(data.get("operational_health"), dict) else {}
     active = op.get("active_unresolved_24h") if isinstance(op.get("active_unresolved_24h"), dict) else {}
+    degraded_reasons = op.get("degraded_reasons") if isinstance(op.get("degraded_reasons"), list) else []
     passed = (
         code == 200
         and data.get("status") == "operational"
         and bool(op.get("ok"))
-        and int(active.get("cron_failures") or 0) == 0
-        and int(active.get("issue_agenda_high_severity") or 0) == 0
+        and not degraded_reasons
     )
-    return passed, f"status={data.get('status')} active={active}"
+    return passed, f"status={data.get('status')} active={active} degraded_reasons={degraded_reasons}"
 
 
 def test_process_hygiene_clean():

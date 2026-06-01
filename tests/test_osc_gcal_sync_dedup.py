@@ -2,6 +2,7 @@
 import importlib.util
 import os
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -404,7 +405,7 @@ def test_gcal_sync_repairs_existing_calendar_event_by_patching(monkeypatch):
         "case_number": "2025-0121",
         "client_name": "高弘軒",
         "todo_type": "調解",
-        "todo_date": "2026-06-01",
+        "todo_date": (date.today() + timedelta(days=30)).isoformat(),
         "todo_time": "16:00:00",
         "description": "高弘軒調解",
         "source_file": "notice.pdf",

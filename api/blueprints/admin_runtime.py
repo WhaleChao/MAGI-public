@@ -9,6 +9,7 @@ main server bootstrap.
 from __future__ import annotations
 
 import logging
+import copy
 import importlib.util
 import json
 import os
@@ -499,6 +500,8 @@ def create_admin_runtime_blueprint(
     env_path = root / ".env"
     status_file = static_dir / "magi_status.json"
     server_log_path = agent_dir / "server.log"
+    health_cache: dict[str, Any] = {"ts": 0.0, "checks": None}
+    health_cache_ttl_sec = 10.0
 
     def _is_current_user_admin() -> bool:
         try:
@@ -1294,6 +1297,21 @@ def create_admin_runtime_blueprint(
         from skills.bridge.http_pool import get_session as _get_session
 
         sess = _get_session()
+        cache_now = _time.time()
+        bypass_cache = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached_checks = health_cache.get("checks")
+        if (
+            isinstance(cached_checks, dict)
+            and not bypass_cache
+            and cache_now - float(health_cache.get("ts") or 0.0) < health_cache_ttl_sec
+        ):
+            checks = copy.deepcopy(cached_checks)
+            checks["cached"] = True
+            checks["cache_age_seconds"] = round(cache_now - float(health_cache.get("ts") or 0.0), 3)
+            if not _wants_json_response():
+                return _render_health_html(checks), 200
+            return jsonify(checks), 200
+
         checks: dict[str, Any] = {"status": "operational", "timestamp": _time.time()}
 
         def _extract_port(base_url: str, fallback: int) -> int:
@@ -1686,6 +1704,10 @@ def create_admin_runtime_blueprint(
         if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
+        checks["cached"] = False
+        checks["cache_ttl_seconds"] = health_cache_ttl_sec
+        health_cache["ts"] = _time.time()
+        health_cache["checks"] = copy.deepcopy(checks)
         if not _wants_json_response():
             return _render_health_html(checks), 200
         return jsonify(checks), 200

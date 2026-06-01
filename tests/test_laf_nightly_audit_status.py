@@ -93,6 +93,14 @@ class TestUpdateLafStatusWithApproval:
         scan_src = inspect.getsource(canonical.scan_portal_pending_drafts)
         assert "待轉入" in scan_src
 
+    def test_laf_nightly_uses_canonical_portal_automation(self):
+        import inspect
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as canonical
+
+        src = inspect.getsource(canonical._make_laf_web_automation)
+        assert "laf_automation_v2" in src
+        assert "skills.legal.laf" in src  # fallback only
+
     def test_skips_when_no_case_id(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval
         db = self._make_mock_db()

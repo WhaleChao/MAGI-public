@@ -959,7 +959,13 @@ def _find_missing_portal_files(expected_files: List[str], existing_files: List[s
 
 
 def _make_laf_web_automation(*, log_prefix: str = "LAF-AUDIT"):
-    from skills.legal.laf import LAFWebAutomation
+    try:
+        from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
+            LAFWebAutomation,
+        )
+    except Exception as exc:
+        logger.warning("新版 LAFWebAutomation 載入失敗，退回舊入口: %s", exc)
+        from skills.legal.laf import LAFWebAutomation
 
     config = _load_config()
     laf_cfg = config.get("laf") if isinstance(config.get("laf"), dict) else {}

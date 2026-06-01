@@ -231,9 +231,20 @@ _TITLE_BEFORE_TABLE_RE = re.compile(
     r"前案紀錄表|傳票|送達證書"
     r")"
 )
-_COURT_WATERMARK_LINE_RE = re.compile(
-    r"(?:司法院線上閱卷系統作業平台|喬政翔|林稚芳|\d{2,3}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})"
-)
+def _build_court_watermark_line_re() -> re.Pattern[str]:
+    parts = [
+        r"司法院線上閱卷系統作業平台",
+        r"\d{2,3}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}",
+    ]
+    private_names = os.environ.get("MAGI_BOOKMARKER_WATERMARK_NAMES", "")
+    for raw in re.split(r"[,，;；\n]+", private_names):
+        name = raw.strip()
+        if name:
+            parts.append(re.escape(name))
+    return re.compile(r"(?:" + "|".join(parts) + r")")
+
+
+_COURT_WATERMARK_LINE_RE = _build_court_watermark_line_re()
 _BOUNDARY_SCAN_CHARS = int(os.environ.get("MAGI_BOOKMARKER_BOUNDARY_SCAN_CHARS", "650") or "650")
 
 # ═══════════════════════════════════════════════════════════════════════════════
