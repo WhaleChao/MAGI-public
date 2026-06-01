@@ -12,6 +12,7 @@ the whole transition.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import shutil
@@ -32,7 +33,10 @@ from api.blueprints.osc_cases import (  # noqa: E402
     _osc_archive_relative_parent,
     _osc_find_active_case_folder,
 )
-from api.case_path_mapper import translate_local_path_to_canonical  # noqa: E402
+from api.case_path_mapper import (  # noqa: E402
+    local_case_path_candidates,
+    translate_local_path_to_canonical,
+)
 from api.osc.utils import (  # noqa: E402
     _osc_exec,
     _osc_norm_path,
@@ -134,7 +138,14 @@ def _archive_root(allow_cloud_target: bool = False) -> Path | None:
 def _closed_rows(case_number: str = "", limit: int = 1) -> list[dict[str, Any]]:
     where = [
         "(status LIKE '%結案%' OR legal_aid_status LIKE '%結案%')",
-        "(folder_path LIKE 'Y:%' OR folder_path LIKE 'Y:\\\\%' OR folder_path LIKE '%/03_工作資料/10_結案/%' OR folder_path LIKE '%\\\\03_工作資料\\\\10_結案\\\\%')",
+        "("
+        "folder_path LIKE 'Y:%' OR folder_path LIKE 'Y:\\\\%' "
+        "OR folder_path LIKE '%/03_工作資料/10_結案/%' "
+        "OR folder_path LIKE '%\\\\03_工作資料\\\\10_結案\\\\%' "
+        "OR folder_path LIKE 'Z:%' OR folder_path LIKE 'Z:\\\\%' "
+        "OR folder_path LIKE '%/01_案件/%' "
+        "OR folder_path LIKE '%\\\\01_案件\\\\%'"
+        ")",
     ]
     params: list[Any] = []
     if case_number:
@@ -154,24 +165,74 @@ def _closed_rows(case_number: str = "", limit: int = 1) -> list[dict[str, Any]]:
     return [dict(r) for r in (rows or [])]
 
 
+def _source_candidate_rank(path: str) -> tuple[int, str]:
+    text = str(path or "").replace("\\", "/")
+    if text.startswith("/Volumes/homes/") or text.startswith("/Volumes/homes-"):
+        return (0, text)
+    if "/.magi_mounts/homes/" in text:
+        return (1, text)
+    if text.startswith("/Volumes/"):
+        return (2, text)
+    if "/Library/CloudStorage/SynologyDrive" in text or "/SynologyDrive" in text:
+        return (4, text)
+    return (3, text)
+
+
+def _first_existing_source(candidates: list[str]) -> str:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for raw in sorted([str(c or "") for c in candidates if c], key=_source_candidate_rank):
+        text = raw.rstrip("/")
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(text)
+    for candidate in ordered:
+        if _is_dir_quick(Path(candidate)):
+            return str(Path(candidate))
+    return ""
+
+
+def _active_candidates_for_closed_path(folder_path: str) -> list[str]:
+    normalized = _osc_norm_path(folder_path or "").replace("\\", "/")
+    if "/03_工作資料/10_結案/" not in normalized:
+        return []
+    rel = normalized.split("/03_工作資料/10_結案/", 1)[1].lstrip("/")
+    account = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
+    candidates: list[str] = []
+    for mount in ["/Volumes/homes", *sorted(glob.glob("/Volumes/homes-*"))]:
+        candidates.append(str(Path(mount) / account / "01_案件" / rel))
+    candidates.extend(
+        [
+            str(Path.home() / ".magi_mounts/homes" / account / "01_案件" / rel),
+            str(Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件" / rel),
+            str(Path.home() / "Library/CloudStorage/SynologyDrive-homes" / account / "01_案件" / rel),
+            str(Path.home() / "SynologyDrive/homes/01_案件" / rel),
+            str(Path.home() / "SynologyDrive/homes" / account / "01_案件" / rel),
+            str(Path.home() / "SynologyDrive/01_案件" / rel),
+        ]
+    )
+    return candidates
+
+
 def _active_source_for(row: dict[str, Any]) -> str:
     """Resolve the old active folder without broad NAS scans when possible."""
-    folder_path = _osc_norm_path(row.get("folder_path") or "").replace("\\", "/")
+    raw_folder_path = row.get("folder_path") or ""
+    folder_path = _osc_norm_path(raw_folder_path).replace("\\", "/")
+    if (
+        folder_path.startswith("Z:/")
+        or folder_path.startswith("/Volumes/homes/")
+        or "/01_案件/" in folder_path
+        or "\\01_案件\\" in str(raw_folder_path)
+    ):
+        direct = _first_existing_source(local_case_path_candidates(str(raw_folder_path)))
+        if direct:
+            return direct
     if "/03_工作資料/10_結案/" in folder_path:
-        rel = folder_path.split("/03_工作資料/10_結案/", 1)[1].lstrip("/")
-        account = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
-        direct_candidates = [
-            Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件" / rel,
-            Path.home() / "Library/CloudStorage/SynologyDrive-homes" / account / "01_案件" / rel,
-            Path.home() / "SynologyDrive/homes/01_案件" / rel,
-            Path.home() / "SynologyDrive/homes" / account / "01_案件" / rel,
-            Path.home() / "SynologyDrive/01_案件" / rel,
-            Path("/Volumes/homes") / account / "01_案件" / rel,
-        ]
-        for candidate_path in direct_candidates:
-            candidate = str(candidate_path)
-            if _is_dir_quick(Path(candidate)):
-                return str(Path(candidate))
+        direct = _first_existing_source(_active_candidates_for_closed_path(folder_path))
+        if direct:
+            return direct
     return _osc_find_active_case_folder(row.get("case_number") or "")
 
 
