@@ -1618,7 +1618,14 @@ def _ensure_paperclip_share_tunnel() -> None:
         if gateway_ok and tunnel_ok and public_ok:
             return
 
-        if _paperclip_share_launchd_managed(port):
+        try:
+            launchd_managed = _paperclip_share_launchd_managed(port)
+        except TypeError:
+            # Keep compatibility with tests and older injected health probes that
+            # patched the pre-port-aware zero-argument helper.
+            launchd_managed = _paperclip_share_launchd_managed()
+
+        if launchd_managed:
             logger.warning(
                 "Paperclip share tunnel unhealthy but launchd-managed; kickstarting launchd jobs (gateway=%s tunnel=%s public=%s)",
                 gateway_ok,

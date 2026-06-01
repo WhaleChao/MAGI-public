@@ -1,3 +1,25 @@
+        <script>
+            (function () {
+                if (window.__paperclipCasesStandaloneGuard) return;
+                window.__paperclipCasesStandaloneGuard = true;
+                if (window.location.protocol !== "file:") return;
+                const showStandaloneNotice = function () {
+                    const section = document.getElementById("cases");
+                    if (!section || document.getElementById("casesStandaloneNotice")) return;
+                    const notice = document.createElement("div");
+                    notice.id = "casesStandaloneNotice";
+                    notice.className = "status-banner warn";
+                    notice.style.margin = "12px";
+                    notice.textContent = "這是 MAGI 的案件管理片段頁。請從 MAGI /osc 正式入口開啟，資料夾、預覽、下載、上傳、刪除與分享連結才會連到後端服務。";
+                    section.prepend(notice);
+                };
+                if (document.readyState === "loading") {
+                    document.addEventListener("DOMContentLoaded", showStandaloneNotice, { once: true });
+                } else {
+                    showStandaloneNotice();
+                }
+            })();
+        </script>
         <section id="cases" class="view">
             <div class="case-page">
                 <div class="case-hero">

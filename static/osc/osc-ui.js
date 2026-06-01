@@ -377,9 +377,24 @@ function fmtAmount(v) {
 }
 
 function wbShow(title, html) {
-    document.getElementById("wbTitle").textContent = title;
-    document.getElementById("wbBody").innerHTML = html;
-    document.getElementById("wbMask").classList.add("show");
+    const titleEl = document.getElementById("wbTitle");
+    const bodyEl = document.getElementById("wbBody");
+    const maskEl = document.getElementById("wbMask");
+    if (!titleEl || !bodyEl || !maskEl) {
+        const msg = "MAGI 工作區尚未載入。請從 Paperclip /osc 正式入口開啟，才能使用資料夾、預覽、下載、上傳、刪除與分享連結。";
+        if (typeof showToast === "function") showToast(msg, "warn", 5000);
+        else if (typeof showAlert === "function") showAlert("MAGI說", msg);
+        else if (typeof window !== "undefined" && typeof window.alert === "function") window.alert(`MAGI說：${msg}`);
+        return false;
+    }
+    titleEl.textContent = title;
+    bodyEl.innerHTML = html;
+    maskEl.classList.add("show");
+    requestAnimationFrame(() => {
+        const closeBtn = document.getElementById("wbCloseBtn");
+        if (closeBtn) closeBtn.focus({ preventScroll: true });
+    });
+    return true;
 }
 
 function wbClose() {

@@ -1739,6 +1739,26 @@ function initCardDrag(container) {
     });
 }
 
+async function openCaseFolderWithFeedback(caseId, trigger) {
+    if (!caseId) return;
+    const button = trigger && trigger.closest ? trigger.closest('button') : null;
+    const oldText = button ? button.textContent : "";
+    if (button) {
+        button.disabled = true;
+        button.textContent = "開啟中...";
+    }
+    try {
+        await openCaseFolder(caseId);
+    } catch (err) {
+        showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = oldText || "資料夾";
+        }
+    }
+}
+
 function bindCaseCardOpen(container) {
     container.querySelectorAll('[data-act="case-open"]').forEach(btn => {
         if (btn._caseOpenDirectBound) return;
@@ -1747,12 +1767,7 @@ function bindCaseCardOpen(container) {
             e.preventDefault();
             e.stopPropagation();
             const caseId = btn.dataset.id;
-            if (!caseId) return;
-            try {
-                await openCaseFolder(caseId);
-            } catch (err) {
-                showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
-            }
+            await openCaseFolderWithFeedback(caseId, btn);
         });
     });
     container.querySelectorAll('.case-card').forEach(card => {
@@ -1761,12 +1776,7 @@ function bindCaseCardOpen(container) {
         card.addEventListener('click', async (e) => {
             if (e.target.closest('button,a,input,select,textarea,[data-act]')) return;
             const caseId = card.dataset.caseId;
-            if (!caseId) return;
-            try {
-                await openCaseFolder(caseId);
-            } catch (err) {
-                showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
-            }
+            await openCaseFolderWithFeedback(caseId, card);
         });
     });
 }
