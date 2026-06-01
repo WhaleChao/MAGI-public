@@ -59,10 +59,47 @@ class TestUpdateLafStatusWithApproval:
         assert _update_laf_status(db, case, "已結案，待送出") is True
 
         sql, params = db.execute_write.call_args[0]
-        assert "`legal_aid_status` = %s, `status` = %s" in sql
+        assert "`legal_aid_status` = %s" in sql
+        assert "manual_status_lock" in sql
+        assert "ELSE %s END" in sql
         assert params == ("已結案，待送出", "結案中", 42)
         assert case["legal_aid_status"] == "已結案，待送出"
         assert case["status"] == "結案中"
+
+    def test_manual_status_lock_is_not_overwritten(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status
+        db = self._make_mock_db()
+        case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
+                "legal_aid_status": "進行中", "status": "已結案", "manual_status_lock": 1}
+
+        assert _update_laf_status(db, case, "進行中") is True
+
+        sql, params = db.execute_write.call_args[0]
+        assert "manual_status_lock" in sql
+        assert params == ("進行中", "進行中", 42)
+        assert case["legal_aid_status"] == "進行中"
+        assert case["status"] == "已結案"
+
+    def test_scheduled_script_portal_resolve_respects_manual_lock(self):
+        import inspect
+        import scripts.laf_nightly_audit as scheduled_mod
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as canonical
+
+        assert scheduled_mod.scan_portal_pending_drafts is canonical.scan_portal_pending_drafts
+        src = inspect.getsource(canonical._update_laf_status_with_approval)
+        assert "manual_status_lock" in src
+        assert "CASE WHEN COALESCE" in src
+        assert "legal_aid_approval_status" in src
+        scan_src = inspect.getsource(canonical.scan_portal_pending_drafts)
+        assert "待轉入" in scan_src
+
+    def test_laf_nightly_uses_canonical_portal_automation(self):
+        import inspect
+        import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as canonical
+
+        src = inspect.getsource(canonical._make_laf_web_automation)
+        assert "laf_automation_v2" in src
+        assert "skills.legal.laf" in src  # fallback only
 
     def test_skips_when_no_case_id(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status_with_approval
@@ -443,15 +480,49 @@ class TestLafProgressReminders:
 
 
 class TestLafGoLiveReadiness:
-    """確認開辦資料放在 01_法扶資料 時也能被認列。"""
+    """確認只有 02_開辦資料 的已簽/已填文件才會被認列為可開辦。"""
 
-    def test_notice_and_poa_in_laf_folder_are_go_live_ready_not_overdue(self, tmp_path):
+    def test_notice_and_poa_in_laf_download_folder_are_not_go_live_ready(self, tmp_path):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
 
         laf_dir = tmp_path / "case" / "01_法扶資料"
         laf_dir.mkdir(parents=True)
         (laf_dir / "准予扶助證明書_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
         (laf_dir / "委任狀_1141223-E-021_1141226.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2025-0133",
+                        "client_name": "吳志炳",
+                        "case_type": "刑事",
+                        "case_reason": "公共危險",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1141223-E-021",
+                        "laf_case_no": "1141223-E-021",
+                        "application_no": "1141223-E-021",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-02-23",
+                        "start_date": "2025-12-26",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert status["can_go_live"] == []
+        assert [c["case_number"] for c in status["not_started"]] == ["2025-0133"]
+
+    def test_notice_and_poa_in_prepared_folder_are_go_live_ready_not_overdue(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        go_live_dir = tmp_path / "case" / "02_開辦資料"
+        go_live_dir.mkdir(parents=True)
+        (go_live_dir / "開辦通知書_1141223-E-021_已簽.pdf").write_bytes(b"%PDF-1.4\n")
+        (go_live_dir / "委任狀_1141223-E-021_已簽.pdf").write_bytes(b"%PDF-1.4\n")
 
         class FakeDB:
             def fetch_all(self, *_args, **_kwargs):

@@ -93,6 +93,17 @@ class TestNormal:
         names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
         assert "show_toc" in names
 
+    def test_private_watermark_names_are_runtime_configurable(self, monkeypatch):
+        source = ACTION_PY.read_text(encoding="utf-8")
+        assert "喬政翔" not in source
+        assert "林稚芳" not in source
+
+        monkeypatch.setenv("MAGI_BOOKMARKER_WATERMARK_NAMES", "喬政翔,林稚芳")
+        mod = _load_module()
+
+        assert mod._COURT_WATERMARK_LINE_RE.search("喬政翔")
+        assert mod._COURT_WATERMARK_LINE_RE.search("林稚芳")
+
     def test_scan_and_bookmark_missing_file(self):
         """scan_and_bookmark returns failure dict for non-existent file."""
         mod = _load_module()

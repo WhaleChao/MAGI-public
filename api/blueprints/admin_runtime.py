@@ -8,6 +8,8 @@ main server bootstrap.
 
 from __future__ import annotations
 
+import logging
+import copy
 import importlib.util
 import json
 import os
@@ -58,6 +60,8 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
     omlx = checks.get("omlx") if isinstance(checks.get("omlx"), dict) else {}
     db = checks.get("db") if isinstance(checks.get("db"), dict) else {}
     faiss = checks.get("faiss") if isinstance(checks.get("faiss"), dict) else {}
+    browser_core = checks.get("browser_core") if isinstance(checks.get("browser_core"), dict) else {}
+    drive_sync = checks.get("drive_sync") if isinstance(checks.get("drive_sync"), dict) else {}
     audit = checks.get("operational_audit") if isinstance(checks.get("operational_audit"), dict) else {}
     op = checks.get("operational_health") if isinstance(checks.get("operational_health"), dict) else {}
 
@@ -66,6 +70,8 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
         ("資料庫", db.get("ok"), db.get("detail") or "MariaDB"),
         ("推論服務", omlx.get("ok"), ", ".join(omlx.get("models") or []) or "模型狀態"),
         ("OCR", (checks.get("ocr") or {}).get("ok") if isinstance(checks.get("ocr"), dict) else None, (checks.get("ocr") or {}).get("engine", "")),
+        ("瀏覽器核心", browser_core.get("ok"), browser_core.get("detail") or browser_core.get("reason") or "Playwright Chromium"),
+        ("雲端同步", drive_sync.get("ok"), drive_sync.get("detail") or drive_sync.get("message") or "Google Drive"),
         ("向量資料庫", faiss.get("ok"), f"{faiss.get('vectors', '暖機中')} vectors"),
         ("日常稽核", audit.get("ok"), "最近檢查"),
         ("維運健康", op.get("ok"), ", ".join(op.get("degraded_reasons") or []) or "無重大異常"),
@@ -136,13 +142,17 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
 
 
 def _safe_epoch(value: Any) -> float:
-    try:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
         return float(value)
-    except Exception:
-        pass
     txt = str(value or "").strip()
     if not txt:
         return 0.0
+    try:
+        return float(txt)
+    except (TypeError, ValueError):
+        txt = txt.strip()
     try:
         if txt.endswith("Z"):
             txt = txt[:-1] + "+00:00"
@@ -185,7 +195,7 @@ def _current_omlx_model_ids() -> list[str]:
 def _expected_omlx_keyword_now() -> str:
     now = datetime.now()
     minutes = now.hour * 60 + now.minute
-    return "e4b" if 415 <= minutes < 1310 else "26b"
+    return "e4b" if 395 <= minutes < 1310 else "26b"
 
 
 def _is_omlx_switch_recovered() -> bool:
@@ -355,7 +365,13 @@ def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
         current_free_gb = shutil.disk_usage(str(root)).free / 1024 / 1024 / 1024
     except Exception:
         return False
-    return current_free_gb >= threshold_gb
+    # The hourly disk alarm uses a 50 GB early-warning threshold so MAGI can
+    # clean before the machine is under real pressure.  For active incident
+    # health, only keep it unresolved while the host is still in core-only risk
+    # (<30 GB) or below the original critical threshold.  Otherwise the same
+    # warning would keep /health yellow for a full day after cleanup succeeded.
+    effective_threshold = min(threshold_gb, 30.0) if threshold_gb > 30 else threshold_gb
+    return current_free_gb >= effective_threshold
 
 
 def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
@@ -484,6 +500,8 @@ def create_admin_runtime_blueprint(
     env_path = root / ".env"
     status_file = static_dir / "magi_status.json"
     server_log_path = agent_dir / "server.log"
+    health_cache: dict[str, Any] = {"ts": 0.0, "checks": None}
+    health_cache_ttl_sec = 10.0
 
     def _is_current_user_admin() -> bool:
         try:
@@ -702,7 +720,7 @@ def create_admin_runtime_blueprint(
                 if VISION_AVAILABLE:
                     return {"status": "online", "engine": "macOS Vision", "models": ["VNRecognizeTextRequest"], "count": 1}
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 704, exc_info=True)
             return {"status": "offline", "detail": "macOS Vision OCR unavailable (GLM-OCR retired)"}
 
         def _ollama():
@@ -1279,6 +1297,21 @@ def create_admin_runtime_blueprint(
         from skills.bridge.http_pool import get_session as _get_session
 
         sess = _get_session()
+        cache_now = _time.time()
+        bypass_cache = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached_checks = health_cache.get("checks")
+        if (
+            isinstance(cached_checks, dict)
+            and not bypass_cache
+            and cache_now - float(health_cache.get("ts") or 0.0) < health_cache_ttl_sec
+        ):
+            checks = copy.deepcopy(cached_checks)
+            checks["cached"] = True
+            checks["cache_age_seconds"] = round(cache_now - float(health_cache.get("ts") or 0.0), 3)
+            if not _wants_json_response():
+                return _render_health_html(checks), 200
+            return jsonify(checks), 200
+
         checks: dict[str, Any] = {"status": "operational", "timestamp": _time.time()}
 
         def _extract_port(base_url: str, fallback: int) -> int:
@@ -1395,14 +1428,31 @@ def create_admin_runtime_blueprint(
             service_map = {svc["id"]: svc for svc in services}
             primary = service_map.get("text") or {}
             unmanaged_alive = [svc["id"] for svc in services if svc.get("reachable") and svc.get("management_state") == "unmanaged"]
+            active_profile = ""
+            try:
+                active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
+            except Exception:
+                active_profile = ""
+            day_sidecars_required = active_profile == "day"
+            sidecar_failures = []
+            if day_sidecars_required:
+                for sid in ("phi4", "smol"):
+                    svc = service_map.get(sid) or {}
+                    if not svc.get("ok"):
+                        sidecar_failures.append(sid)
+            primary_ok = bool(primary.get("reachable")) and primary.get("management_state") != "unmanaged"
             checks["omlx"] = {
-                "ok": bool(primary.get("reachable")) and not unmanaged_alive,
+                "ok": primary_ok and not unmanaged_alive and not sidecar_failures,
                 "models": primary.get("models", []),
                 "services": service_map,
                 "unmanaged_alive": unmanaged_alive,
+                "active_profile": active_profile,
+                "day_sidecars_required": day_sidecars_required,
             }
-            if unmanaged_alive:
-                checks["omlx"]["degraded_reasons"] = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons.extend(f"day_sidecar_down:{sid}" for sid in sidecar_failures)
+            if degraded_reasons:
+                checks["omlx"]["degraded_reasons"] = degraded_reasons
         except Exception:
             checks["omlx"] = {"ok": False}
 
@@ -1412,6 +1462,18 @@ def create_admin_runtime_blueprint(
             checks["ocr"] = {"ok": VISION_AVAILABLE, "engine": "macOS Vision", "note": "GLM-OCR retired"}
         except Exception:
             checks["ocr"] = {"ok": False, "engine": "macOS Vision", "note": "import failed"}
+
+        try:
+            from skills.engine.playwright_wrapper import playwright_chromium_health
+
+            checks["browser_core"] = playwright_chromium_health(timeout_seconds=5, cache_ttl_seconds=300)
+        except Exception as exc:
+            checks["browser_core"] = {
+                "ok": False,
+                "engine": "playwright-chromium",
+                "reason": "health_probe_failed",
+                "detail": str(exc)[:120],
+            }
 
         conn = None
         try:
@@ -1462,6 +1524,41 @@ def create_admin_runtime_blueprint(
                 checks["attachment_jobs"] = {"total": len(job_ids), "active": pending}
         except Exception:
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
+
+        try:
+            drive_dir = root / ".runtime" / "drive_sync"
+            auth_required_path = drive_dir / "drive_case_sync_auth_required_latest.json"
+            worker_state_path = drive_dir / "worker_state.json"
+            if auth_required_path.exists():
+                auth_required = json.loads(auth_required_path.read_text(encoding="utf-8"))
+                checks["drive_sync"] = {
+                    "ok": False,
+                    "status": "auth_required",
+                    "message": str(auth_required.get("message") or "Google Drive 授權需重新建立")[:160],
+                    "token_path": str(auth_required.get("token_path") or ""),
+                    "write_scope": bool(auth_required.get("write_scope")),
+                }
+            elif worker_state_path.exists():
+                worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+                last_status = worker_state.get("last_status") if isinstance(worker_state.get("last_status"), dict) else {}
+                last_summary = worker_state.get("last_summary") if isinstance(worker_state.get("last_summary"), dict) else {}
+                if last_status.get("action_required"):
+                    checks["drive_sync"] = {
+                        "ok": False,
+                        "status": str(last_status.get("status") or "action_required"),
+                        "message": str(last_status.get("message") or "Google Drive 同步需要處理")[:160],
+                    }
+                else:
+                    checks["drive_sync"] = {
+                        "ok": True,
+                        "status": str(last_status.get("status") or "ok"),
+                        "detail": "最近同步檢查正常",
+                        "matched_case_folders": int(last_summary.get("matched_case_folders") or 0),
+                    }
+            else:
+                checks["drive_sync"] = {"ok": None, "status": "unknown", "detail": "尚未執行同步檢查"}
+        except Exception as exc:
+            checks["drive_sync"] = {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
 
         try:
             audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
@@ -1569,9 +1666,21 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, get_share_status
+            from api import nas_mount_guard as _nas_guard
 
-            nas_detail = {vol.split("/")[-1]: get_share_status(name, vol) for name, vol in _SHARES}
+            shares = _nas_guard.get_configured_shares(refresh=True)
+            nas_detail = {vol.split("/")[-1]: _nas_guard.get_share_status(name, vol) for name, vol in shares}
+            if any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+                checks["nas_auto_remount_attempted"] = True
+                try:
+                    _nas_guard.ensure_nas_mounts()
+                    shares = _nas_guard.get_configured_shares(refresh=True)
+                    nas_detail = {
+                        vol.split("/")[-1]: _nas_guard.get_share_status(name, vol)
+                        for name, vol in shares
+                    }
+                except Exception as exc:
+                    checks["nas_auto_remount_error"] = str(exc)[:120]
             checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
             checks["nas_detail"] = nas_detail
         except Exception:
@@ -1583,14 +1692,22 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health uptime", exc_info=True)
 
         degraded = not checks.get("omlx", {}).get("ok")
+        if checks.get("browser_core", {}).get("ok") is False:
+            degraded = True
         if checks.get("operational_audit", {}).get("ok") is False:
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded
         if checks.get("operational_health", {}).get("ok") is False:
             degraded = True
+        if checks.get("drive_sync", {}).get("ok") is False:
+            degraded = True
         if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
+        checks["cached"] = False
+        checks["cache_ttl_seconds"] = health_cache_ttl_sec
+        health_cache["ts"] = _time.time()
+        health_cache["checks"] = copy.deepcopy(checks)
         if not _wants_json_response():
             return _render_health_html(checks), 200
         return jsonify(checks), 200

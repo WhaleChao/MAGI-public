@@ -282,6 +282,65 @@ def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     assert body["omlx"]["services"]["smol"]["management_state"] == "unmanaged"
 
 
+def test_health_route_caches_heavy_probes(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    calls: list[str] = []
+
+    def _fake_session_get(url, timeout=0):
+        calls.append(url)
+        return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]})
+
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=_fake_session_get)
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+
+    apple_mod = types.ModuleType("skills.apple.apple_intelligence")
+    apple_mod.VISION_AVAILABLE = True
+    monkeypatch.setitem(sys.modules, "skills.apple.apple_intelligence", apple_mod)
+
+    browser_mod = types.ModuleType("skills.engine.playwright_wrapper")
+    browser_mod.playwright_chromium_health = lambda **kwargs: {"ok": True, "engine": "playwright-chromium"}
+    monkeypatch.setitem(sys.modules, "skills.engine.playwright_wrapper", browser_mod)
+
+    faiss_mod = types.ModuleType("skills.memory.faiss_index")
+    faiss_mod.FAISSMemoryIndex = types.SimpleNamespace(get_instance=lambda: types.SimpleNamespace(total=9))
+    monkeypatch.setitem(sys.modules, "skills.memory.faiss_index", faiss_mod)
+
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: [("homes", "/Volumes/homes")]
+    nas_mod.get_share_status = lambda share, vol: {"mounted": True}
+    nas_mod.ensure_nas_mounts = lambda: {"homes": True}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(percent=50, available=8 * 1024**3)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=20, free=100 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 12.5
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+
+    monkeypatch.setattr(_subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(returncode=0))
+
+    first = client.get("/health")
+    assert first.status_code == 200
+    first_calls = len(calls)
+    assert first.get_json()["cached"] is False
+    assert first_calls >= 1
+
+    second = client.get("/health")
+    assert second.status_code == 200
+    assert second.get_json()["cached"] is True
+    assert len(calls) == first_calls
+
+    fresh = client.get("/health?fresh=1")
+    assert fresh.status_code == 200
+    assert fresh.get_json()["cached"] is False
+    assert len(calls) > first_calls
+
+
 def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     app, _, _ = _make_app(tmp_path, monkeypatch)
     client = app.test_client()
