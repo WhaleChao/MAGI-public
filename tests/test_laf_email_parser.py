@@ -1,5 +1,6 @@
 """Regression tests for LAF Gmail subject classification."""
 
+import base64
 import importlib.util
 import sys
 from pathlib import Path
@@ -77,7 +78,7 @@ def test_laf_parser_files_labor_insurance_dispute_as_admin():
         assert info.case_stage == "一審"
 
 
-def test_indigenous_staff_dispatch_body_fills_pending_consumer_debt_reason(tmp_path):
+def test_indigenous_staff_material_body_fills_pending_consumer_debt_reason(tmp_path):
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
         LAFGmailMonitor,
         LAFCaseTypeParser,
@@ -94,9 +95,10 @@ def test_indigenous_staff_dispatch_body_fills_pending_consumer_debt_reason(tmp_p
     ):
         info = parser.parse_subject(subject)
         assert info is not None
+        assert info.notification_type == "原民中心案件資料"
         assert info.case_reason == "待確認"
         assert info.has_attachment is True
-        assert info.needs_download is True
+        assert info.needs_download is False
 
         monitor = monitor_cls.__new__(monitor_cls)
         monitor._parse_staff_info(body, info)
@@ -104,6 +106,71 @@ def test_indigenous_staff_dispatch_body_fills_pending_consumer_debt_reason(tmp_p
         assert info.case_type == "消費者債務清理"
         assert info.case_stage == "其他"
         assert info.case_reason == "更生"
+
+
+def test_laf_orchestrator_routes_staff_material_without_go_live():
+    from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
+
+    orch = LAFOrchestrator.__new__(LAFOrchestrator)
+    staff = SimpleNamespace(
+        notification_type="原民中心案件資料",
+        subject="【法扶原民中心來信】寄送1150529-W-002 林文俊 案件資料",
+        snippet="",
+        body="",
+        laf_case_number="1150529-W-002",
+    )
+    dispatch = SimpleNamespace(
+        notification_type="派案通知",
+        subject="【法扶花蓮分會派案通知】王惠薰-1150529-E-005-消費者債務清理事件-消費者債務清理程序",
+        snippet="",
+        body="",
+        laf_case_number="1150529-E-005",
+    )
+
+    assert orch._resolve_email_route(staff, staff.notification_type) == "staff_material"
+    assert orch._resolve_email_route(dispatch, dispatch.notification_type) == "dispatch"
+
+
+def test_laf_gmail_queries_cover_full_mailbox_and_non_laf_senders():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFGmailMonitor
+    from skills.legal.laf import LAFGmailMonitor as LegacyLAFGmailMonitor
+
+    for monitor_cls in (LAFGmailMonitor, LegacyLAFGmailMonitor):
+        queries = monitor_cls._laf_mail_search_queries(3)
+        joined = "\n".join(queries)
+        assert len(queries) >= 3
+        assert "in:anywhere" in joined
+        assert "-in:trash" in joined
+        assert "from:@laf.org.tw" in joined
+        assert "原民中心" in joined
+        assert "法律扶助" in joined
+        assert "案件資料" in joined
+
+
+def test_indigenous_staff_material_process_message_keeps_download_disabled(tmp_path):
+    from skills.legal.laf import LAFGmailMonitor
+
+    monitor = LAFGmailMonitor(
+        credentials_path=str(tmp_path / "credentials.json"),
+        token_path=str(tmp_path / "token.pickle"),
+        log_callback=lambda _msg: None,
+    )
+    body = "請參考案件資料，必要時請從系統下載正式文件。"
+    payload = {
+        "mimeType": "text/plain",
+        "headers": [
+            {"name": "Subject", "value": "【法扶原民中心來信】寄送1150529-W-002 林文俊 案件資料"},
+            {"name": "From", "value": "center@example.test"},
+            {"name": "Date", "value": "Mon, 1 Jun 2026 10:00:00 +0800"},
+        ],
+        "body": {"data": base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii")},
+    }
+
+    info = monitor._process_message("MSG-STAFF", {"payload": payload, "labelIds": ["INBOX"]})
+
+    assert info is not None
+    assert info.notification_type == "原民中心案件資料"
+    assert info.needs_download is False
 
 
 def test_laf_report_result_keeps_labor_insurance_as_admin():

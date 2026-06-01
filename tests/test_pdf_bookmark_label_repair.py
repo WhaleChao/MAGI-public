@@ -137,6 +137,32 @@ def test_audit_keeps_actual_report_cover(tmp_path: Path):
     assert item["needs_repair"] is False
 
 
+def test_audit_skips_encrypted_pdf_without_error(tmp_path: Path):
+    mod = load_repair_module()
+    pdf = tmp_path / "06_閱卷資料" / "encrypted.pdf"
+    pdf.parent.mkdir()
+    make_text_pdf(pdf, ["加密卷宗"])
+    encrypted = pdf.with_suffix(".encrypted.pdf")
+    doc = fitz.open(pdf)
+    try:
+        doc.save(
+            encrypted,
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="user",
+        )
+    finally:
+        doc.close()
+    encrypted.replace(pdf)
+
+    bookmarker = mod._load_bookmarker()
+    item = mod.audit_pdf(pdf, bookmarker)
+
+    assert item["classification"] == "encrypted_pdf_skipped"
+    assert item["skipped"] is True
+    assert item["needs_repair"] is False
+
+
 def test_repair_rebuilds_polluted_transcript_toc(tmp_path: Path):
     mod = load_repair_module()
     pdf = tmp_path / "08_筆錄" / "20260513 準備程序筆錄.pdf"

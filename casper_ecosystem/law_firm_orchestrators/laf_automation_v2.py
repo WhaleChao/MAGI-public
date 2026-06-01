@@ -828,7 +828,9 @@ class LAFCaseTypeParser:
         indigenous_match = re.search(r'寄送(\d{7}-[A-Z]-\d{3})[、\d-]*(.+?)案件資料', subject)
         if indigenous_match:
             info.branch = "原住民族法律服務中心"
-            info.notification_type = "派案通知"
+            # 原民中心「寄送案件資料」是補充資料信，不是正式派案信。
+            # 正式派案仍須由「法扶...分會派案通知」觸發建案/開辦流程。
+            info.notification_type = "原民中心案件資料"
             info.laf_case_number = indigenous_match.group(1)
             info.client_name = indigenous_match.group(2).strip()
             
@@ -839,7 +841,7 @@ class LAFCaseTypeParser:
             info.laf_case_type = "一般案件"
             
             info.has_attachment = True  # 這類信通常有附件
-            info.needs_download = True  # 官網仍可能列出接案通知書等正式附件
+            info.needs_download = False  # 不因補充資料信啟動官網正式附件下載/開辦
             return info
 
         # 4. 審核回報格式：通知範例律師回報(結案|附條件)...
@@ -7758,7 +7760,7 @@ class LAFGmailMonitor:
                 max_results = int(os.environ.get("MAGI_LAF_EMAIL_MAX_RESULTS", str(max_results)) or str(max_results))
             except Exception:
                 max_results = int(max_results or 10)
-            max_results = max(10, min(max_results, 200))
+            max_results = max(50, min(max_results, 250))
             self.log("🔍 正在檢查新信件...")
             lookback_days = 3
             try:
@@ -7766,20 +7768,14 @@ class LAFGmailMonitor:
             except Exception:
                 lookback_days = 3
             lookback_days = max(1, min(lookback_days, 14))
-            query = (
-                f'in:anywhere -in:trash '
-                f'(from:@laf.org.tw OR from:laf.server) '
-                f'newer_than:{lookback_days}d '
-                f'-subject:"回報案件辦理進度"'
-            )
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=max_results
-            ).execute()
-            
-            messages = response.get('messages', [])
+
+            messages_by_id = {}
+            for query in self._laf_mail_search_queries(lookback_days):
+                for msg in self._gmail_list_messages(query, max_results=max_results):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             
             for msg in messages:
                 msg_id = msg['id']
@@ -7824,6 +7820,40 @@ class LAFGmailMonitor:
             traceback.print_exc()
 
         return results
+
+    @staticmethod
+    def _laf_mail_search_queries(lookback_days: int) -> List[str]:
+        """Return broad Gmail searches for LAF mail across the whole mailbox."""
+        days = max(1, min(int(lookback_days or 3), 14))
+        base = f'in:anywhere -in:trash newer_than:{days}d -subject:"回報案件辦理進度"'
+        return [
+            f'{base} (from:@laf.org.tw OR from:laf.server)',
+            f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+            f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+        ]
+
+    def _gmail_list_messages(self, query: str, *, max_results: int = 100) -> List[Dict[str, Any]]:
+        """List Gmail messages for one query with bounded pagination."""
+        if not self.service:
+            return []
+        remaining = max(1, int(max_results or 100))
+        messages: List[Dict[str, Any]] = []
+        page_token = None
+        while remaining > 0:
+            req = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=min(100, remaining),
+                pageToken=page_token,
+            )
+            response = req.execute()
+            batch = response.get('messages', []) or []
+            messages.extend(batch)
+            remaining -= len(batch)
+            page_token = response.get('nextPageToken')
+            if not page_token or not batch:
+                break
+        return messages
 
     def check_general_emails(self, rules: List[Dict], max_results: int = 10) -> List[GeneralEmailInfo]:
         """檢查符合規則的一般信件"""
@@ -8166,15 +8196,20 @@ class LAFGmailMonitor:
             except Exception:
                 query_end_date = end_date
 
-            query = f'in:anywhere -in:trash (from:@laf.org.tw OR from:laf.server) after:{start_date} before:{query_end_date}'
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=100  # 增加掃描數量
-            ).execute()
-            
-            messages = response.get('messages', [])
+            base = f'in:anywhere -in:trash after:{start_date} before:{query_end_date}'
+            queries = [
+                f'{base} (from:@laf.org.tw OR from:laf.server)',
+                f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+                f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+            ]
+
+            messages_by_id = {}
+            for query in queries:
+                for msg in self._gmail_list_messages(query, max_results=100):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             self.log(f"📊 區間內共有 {len(messages)} 封相關信件")
             
             for msg in messages:
@@ -8273,7 +8308,11 @@ class LAFGmailMonitor:
                 
                 # 解析信件內文，檢查是否需要下載
                 body = self._get_email_body(msg_data)
-                case_info.needs_download = LAFCaseTypeParser.check_needs_download(body)
+                body_needs_download = LAFCaseTypeParser.check_needs_download(body)
+                if case_info.notification_type in {"原民中心案件資料", "專員來信", "中心案件資料"}:
+                    case_info.needs_download = False
+                else:
+                    case_info.needs_download = bool(case_info.needs_download or body_needs_download)
                 
                 # 檢查附件 (類似一般信件)
                 payload = msg_data.get('payload', {})

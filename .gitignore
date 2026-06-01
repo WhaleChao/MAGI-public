@@ -34,6 +34,7 @@ reports/
 static/exports/
 static/images/gen_*.png
 static/system_test_report.json
+static/laf_portal_new_files_latest.json
 nightly_core_change_pending.json
 nightly_council_agenda.md
 nightly_council_minutes.md

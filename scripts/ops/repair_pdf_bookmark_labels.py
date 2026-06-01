@@ -587,8 +587,22 @@ def audit_pdf(pdf_path: Path, bookmarker, *, verify_rebuild: bool = False) -> di
     doc = None
     try:
         doc = bookmarker.fitz.open(str(pdf_path))
-        existing_toc = doc.get_toc() or []
         item["page_count"] = doc.page_count
+        if getattr(doc, "is_encrypted", False):
+            item["classification"] = "encrypted_pdf_skipped"
+            item["skipped"] = True
+            item["skip_reason"] = "encrypted_pdf"
+            return item
+        try:
+            existing_toc = doc.get_toc() or []
+        except ValueError as exc:
+            if "encrypted" in str(exc).lower() or getattr(doc, "is_encrypted", False):
+                item["classification"] = "encrypted_pdf_skipped"
+                item["skipped"] = True
+                item["skip_reason"] = "encrypted_pdf"
+                item["skip_message"] = str(exc)
+                return item
+            raise
         item["existing_toc_count"] = len(existing_toc)
         if not existing_toc:
             item["classification"] = "no_existing_toc"
@@ -815,6 +829,8 @@ def main(argv: list[str] | None = None) -> int:
         "max_file_mb": args.max_file_mb,
         "scanned_pdf_count": len(pdfs),
         "audited_pdf_count": len(audited),
+        "skipped_pdf_count": sum(1 for item in audited if item.get("skipped")),
+        "skipped_encrypted_pdf_count": sum(1 for item in audited if item.get("classification") == "encrypted_pdf_skipped"),
         "needs_repair_count": sum(1 for item in audited if item.get("needs_repair")),
         "repairable_count": len(repairable),
         "repaired_count": sum(1 for item in repaired if item.get("success")),

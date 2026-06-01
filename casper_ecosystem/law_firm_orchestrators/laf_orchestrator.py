@@ -1253,10 +1253,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         has_review_notice = any(k in merged for k in ("審核結果通知", "審查結果通知", "審查通知"))
         has_report_notice = bool(re.search(r"回報[（(](?:結案|附條件)[)）]", merged))
         has_fee_keywords = ("酬金" in merged) or ("領款單" in merged)
+        is_staff_material = ntype in {"staff_material", "專員來信", "原民中心案件資料", "中心案件資料"}
+        is_indigenous_material = (
+            has_laf_case_no
+            and "原民中心" in merged
+            and "寄送" in merged
+            and "案件資料" in merged
+            and "派案通知" not in merged
+        )
 
         # 審核/審查結果與回報(結案|附條件) 通知，應直接觸發官網附件下載流程
         if has_laf_case_no and (has_review_notice or has_report_notice or has_fee_keywords):
             return "result_download"
+        if is_staff_material or is_indigenous_material:
+            return "staff_material"
 
         if ntype in ("dispatch", "派案", "派案通知"):
             return "dispatch"
@@ -1298,6 +1308,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self.handle_review_result_download(case_info)
         elif route == "dispatch":
             self.handle_go_live(case_info)
+        elif route == "staff_material":
+            self.handle_staff_material(case_info)
         elif route == "withdrawal":
             self.handle_withdrawal(case_info)
         elif route == "inquiry":
@@ -1319,8 +1331,112 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     return
             except Exception as _pe:
                 logger.debug("progress detect skip: %s", _pe)
-            # Default: treat as new case dispatch
-            self.handle_go_live(case_info)
+            # Unknown mail must not silently become a new case.  This prevents
+            # staff/reference messages from accidentally triggering go-live.
+            logger.warning("⚠️ Unknown LAF email route; archived/ignored without go-live: %s", getattr(case_info, "subject", "")[:160])
+            _eventlog(
+                "laf:email:unknown_route",
+                ok=False,
+                payload={
+                    "notification_type": str(notification_type or ""),
+                    "subject": str(getattr(case_info, "subject", "") or "")[:220],
+                },
+                tags={"laf_case_no": laf_number, "client_name": client_name},
+            )
+
+    def handle_staff_material(self, case_info):
+        """Archive LAF staff/center material without treating it as formal dispatch."""
+        subject = str(getattr(case_info, "subject", "") or "").strip()
+        laf_number = self._extract_laf_case_number_from_text(
+            str(getattr(case_info, "laf_case_number", "") or "").strip(),
+            subject,
+            str(getattr(case_info, "snippet", "") or ""),
+            str(getattr(case_info, "body", "") or ""),
+        )
+        client_name = str(getattr(case_info, "client_name", "") or "").strip()
+        case_type = str(getattr(case_info, "case_type", "") or "").strip()
+        case_stage = str(getattr(case_info, "case_stage", "") or "").strip()
+        case_reason = str(getattr(case_info, "case_reason", "") or "").strip()
+
+        db_case = {}
+        if laf_number and self.db:
+            try:
+                db_case = self.db.fetch_one(
+                    "SELECT `case_number`, `client_name`, `case_type`, `case_stage`, `case_reason`, `folder_path` "
+                    "FROM `cases` WHERE `legal_aid_number` = %s ORDER BY `id` DESC LIMIT 1",
+                    (laf_number,),
+                    as_dict=True,
+                ) or {}
+            except Exception as e:
+                logger.warning("Staff-material DB lookup failed (%s): %s", laf_number, e)
+
+        if db_case and self.db:
+            updates = {}
+            if case_type and case_type not in {"民事", "待確認"} and case_type != str(db_case.get("case_type") or ""):
+                updates["case_type"] = case_type
+            if case_stage and case_stage not in {"一審", "待確認"} and case_stage != str(db_case.get("case_stage") or ""):
+                updates["case_stage"] = case_stage
+            if case_reason and case_reason != "待確認" and case_reason != str(db_case.get("case_reason") or ""):
+                updates["case_reason"] = case_reason
+            if client_name and not str(db_case.get("client_name") or "").strip():
+                updates["client_name"] = client_name
+            if updates:
+                try:
+                    assignments = ", ".join(f"`{key}`=%s" for key in updates)
+                    params = list(updates.values()) + [laf_number]
+                    self.db.execute(
+                        f"UPDATE `cases` SET {assignments}, `updated_at`=NOW() WHERE `legal_aid_number`=%s",
+                        tuple(params),
+                    )
+                    logger.info("📝 Staff material updated DB for %s: %s", laf_number, ", ".join(updates))
+                except Exception as e:
+                    logger.warning("Staff-material DB update failed (%s): %s", laf_number, e)
+
+        case_folder = self._resolve_case_folder_for_laf(
+            laf_number,
+            fallback=str(db_case.get("folder_path") or ""),
+        )
+        snapshot = ""
+        attachment_result = {"ok": False, "new_count": 0, "downloaded_count": 0, "error": ""}
+        if case_folder and os.path.isdir(case_folder):
+            try:
+                snapshot = self._archive_case_email_snapshot(case_info, case_folder)
+            except Exception as e:
+                logger.warning("Staff-material snapshot failed (%s): %s", laf_number, e)
+            try:
+                attachment_result = self._download_case_email_attachments(case_info, case_folder)
+            except Exception as e:
+                attachment_result = {"ok": False, "new_count": 0, "downloaded_count": 0, "error": str(e)}
+                logger.warning("Staff-material attachment archive failed (%s): %s", laf_number, e)
+
+            if self.notifier and int(attachment_result.get("new_count") or 0) > 0:
+                self.notifier.notify_admin(
+                    "📎 法扶補充資料已歸檔\n"
+                    f"案號：{laf_number or '-'}\n"
+                    f"當事人：{client_name or db_case.get('client_name') or '-'}\n"
+                    f"新增附件：{attachment_result.get('new_count', 0)} 份\n"
+                    "（此信不是正式派案通知，未啟動開辦流程）",
+                    topic_key="laf_general",
+                )
+        else:
+            logger.info(
+                "ℹ️ Staff material has no existing case folder yet; waiting formal dispatch: %s %s",
+                laf_number,
+                subject[:120],
+            )
+
+        _eventlog(
+            "laf:email:staff_material",
+            ok=bool(case_folder),
+            payload={
+                "subject": subject[:220],
+                "case_folder": os.path.basename(case_folder.rstrip("/\\")) if case_folder else "",
+                "snapshot": snapshot,
+                "attachments": attachment_result,
+                "db_matched": bool(db_case),
+            },
+            tags={"laf_case_no": laf_number, "client_name": client_name},
+        )
 
     def handle_review_result_download(self, case_info):
         """Handle review/result notifications that should trigger portal attachment download."""
