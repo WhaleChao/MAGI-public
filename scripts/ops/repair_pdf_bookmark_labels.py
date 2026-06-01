@@ -258,11 +258,13 @@ def iter_pdf_candidates(
     max_files: int = 200,
     max_dirs: int = 3000,
     max_seconds: int = 600,
+    min_file_mb: int = 0,
     max_file_mb: int = 200,
 ) -> tuple[list[Path], dict[str, Any]]:
     started = time.time()
     pdfs: list[Path] = []
     visited_dirs = 0
+    skipped_small_files = 0
     skipped_large_files = 0
     stopped_reason = ""
     case_number = (case_number or "").strip()
@@ -289,6 +291,7 @@ def iter_pdf_candidates(
             max_files=max_files,
             max_dirs=max_dirs,
             max_seconds=remaining_seconds,
+            min_file_mb=min_file_mb,
             max_file_mb=max_file_mb,
         )
         scan_meta["case_discovery"] = discovery_meta
@@ -339,13 +342,16 @@ def iter_pdf_candidates(
                     continue
                 if in_target:
                     pdf_path = current / name
-                    if max_file_mb > 0:
-                        try:
-                            if pdf_path.stat().st_size > max_file_mb * 1024 * 1024:
-                                skipped_large_files += 1
-                                continue
-                        except OSError:
-                            pass
+                    try:
+                        size = pdf_path.stat().st_size
+                    except OSError:
+                        size = 0
+                    if min_file_mb > 0 and size < min_file_mb * 1024 * 1024:
+                        skipped_small_files += 1
+                        continue
+                    if max_file_mb > 0 and size > max_file_mb * 1024 * 1024:
+                        skipped_large_files += 1
+                        continue
                     pdfs.append(pdf_path)
 
             if stopped_reason:
@@ -358,6 +364,7 @@ def iter_pdf_candidates(
         "visited_dirs": visited_dirs,
         "stopped_reason": stopped_reason or "completed",
         "elapsed_sec": round(time.time() - started, 3),
+        "skipped_small_files": skipped_small_files,
         "skipped_large_files": skipped_large_files,
     }
 
@@ -705,6 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-files", type=int, default=200)
     parser.add_argument("--max-dirs", type=int, default=3000)
     parser.add_argument("--max-seconds", type=int, default=600)
+    parser.add_argument("--min-file-mb", type=int, default=0, help="Skip PDFs smaller than this size; 0 disables.")
     parser.add_argument("--max-file-mb", type=int, default=200, help="Skip PDFs larger than this size; 0 disables.")
     parser.add_argument("--apply", action="store_true", help="Rewrite repairable polluted PDFs.")
     parser.add_argument("--limit", type=int, default=20, help="Maximum repairs to apply in one run.")
@@ -741,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         max_files=args.max_files,
         max_dirs=args.max_dirs,
         max_seconds=args.max_seconds,
+        min_file_mb=args.min_file_mb,
         max_file_mb=args.max_file_mb,
     )
 
@@ -802,6 +811,8 @@ def main(argv: list[str] | None = None) -> int:
         "roots": roots,
         "case_number": args.case_number,
         "target_hints": list(target_hints),
+        "min_file_mb": args.min_file_mb,
+        "max_file_mb": args.max_file_mb,
         "scanned_pdf_count": len(pdfs),
         "audited_pdf_count": len(audited),
         "needs_repair_count": sum(1 for item in audited if item.get("needs_repair")),

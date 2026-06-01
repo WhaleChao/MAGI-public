@@ -427,17 +427,41 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
                 (
                     f"{python_bin} {repo_root / 'scripts' / 'ops' / 'repair_pdf_bookmark_labels.py'} "
                     "--apply --limit 12 --max-files 120 --max-dirs 2500 --max-seconds 1800 "
-                    "--per-file-timeout 90 --max-file-mb 200 "
+                    "--per-file-timeout 90 --max-file-mb 80 "
                     f"--json-out {repo_root / '.runtime' / 'pdf_bookmark_label_repair_latest.json'}"
                 ),
                 block_at="throttle",
             ),
-            "desc": "PDF 既有書籤污染稽核與重標（每日 02:45；只修頁首/邊界規則不支持的標籤）",
+            "desc": "PDF 既有書籤污染稽核與重標（每日 02:45；80MB 以下快修）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
             "enabled": True,
             "timeout_sec": 2100,
+            "no_catchup": True,
+        },
+        {
+            "id": "job_pdf_bookmark_large_volume_repair",
+            "cron": "55 4 * * *",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_pdf_bookmark_large_volume_repair",
+                (
+                    f"{python_bin} {repo_root / 'scripts' / 'ops' / 'repair_pdf_bookmark_labels.py'} "
+                    "--apply --limit 1 --max-files 40 --max-dirs 2500 --max-seconds 3600 "
+                    "--per-file-timeout 900 --min-file-mb 80 --max-file-mb 1600 "
+                    "--target-hint 閱卷資料 --target-hint 判決書 --target-hint 法院通知 --target-hint 程序裁定 "
+                    f"--json-out {repo_root / '.runtime' / 'pdf_bookmark_large_volume_repair_latest.json'}"
+                ),
+                block_at="core_only",
+            ),
+            "desc": "大型卷宗 PDF 書籤污染慢修（每日 04:55；80MB 以上、單次 1 份、負載過高即跳過）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 3900,
             "no_catchup": True,
         },
         {

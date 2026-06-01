@@ -187,3 +187,29 @@ def test_case_number_scan_discovers_case_before_deep_document_walk(tmp_path: Pat
 
     assert candidates == [pdf]
     assert meta["case_discovery"]["case_root_count"] == 1
+
+
+def test_candidate_scan_can_focus_on_large_volume_pdfs(tmp_path: Path):
+    mod = load_repair_module()
+    target = tmp_path / "法扶案件" / "刑事" / "2026-0028-劉信義-一審-殺人" / "06_閱卷資料"
+    target.mkdir(parents=True)
+
+    small_pdf = target / "小型通知.pdf"
+    large_pdf = target / "大型卷宗.pdf"
+    make_text_pdf(small_pdf, ["法院通知"])
+    make_text_pdf(large_pdf, ["卷宗"])
+    with large_pdf.open("ab") as fh:
+        fh.write(b"0" * (1024 * 1024 + 16))
+
+    candidates, meta = mod.iter_pdf_candidates(
+        [str(tmp_path)],
+        min_file_mb=1,
+        max_file_mb=2,
+        max_dirs=50,
+        max_files=5,
+        max_seconds=30,
+    )
+
+    assert candidates == [large_pdf]
+    assert meta["skipped_small_files"] == 1
+    assert meta["skipped_large_files"] == 0

@@ -421,7 +421,15 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_label_repair"]["command"]
     assert "--apply --limit 12" in by_id["job_pdf_bookmark_label_repair"]["command"]
     assert "--per-file-timeout 90" in by_id["job_pdf_bookmark_label_repair"]["command"]
-    assert "--max-file-mb 200" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--max-file-mb 80" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["enabled"] is True
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["no_catchup"] is True
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["cron"] == "55 4 * * *"
+    assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--apply --limit 1" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--per-file-timeout 900" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--min-file-mb 80" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--max-file-mb 1600" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
     assert by_id["job_weekend_bookmark"]["timeout_sec"] == 21600
     assert "--single-doc-fastpath" in by_id["job_weekend_bookmark"]["command"]
     assert by_id["job_nas_pdf_ocr_worker_offpeak"]["cron"] == "45 1,3,5,22 * * *"
