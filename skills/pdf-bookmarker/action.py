@@ -202,6 +202,25 @@ _TRANSCRIPT_INTERNAL_REFERENCE_RE = re.compile(
     r"(?:所附下列證據|逐一提示|告以要旨|有何意見|請辯護人回答|同意有證據能力)|"
     r"(?:被告答|辯護人答).{0,40}(?:請辯護人回答|沒有意見|同意有證據能力)"
 )
+_DOC_REFERENCE_TERMS_RE = (
+    r"判決(?:書)?|裁定(?:書)?|起訴書|追加起訴書|不起訴處分書|緩起訴處分書|"
+    r"聲請簡易判決處刑書|答辯(?:狀|書)|陳報(?:狀|書)|聲請(?:狀|書)|"
+    r"上訴(?:狀|書|理由)|抗告(?:狀|書|理由)|補充(?:理由|上訴|告訴)(?:狀|書)|"
+    r"(?:審判|準備程序|言詞辯論|訊問|調查|勘驗).{0,3}筆錄|"
+    r"鑑定(?:報告|書|意見)|法醫(?:報告|鑑定)|解剖(?:報告|鑑定)|"
+    r"診斷(?:證明|書)|相驗屍體證明書|扣押物品(?:目錄表|清單)|"
+    r"搜索扣押(?:筆錄|紀錄)|勘(?:查|察|驗)(?:報告|紀錄)|前案紀錄表"
+)
+_BODY_DOC_REFERENCE_RE = re.compile(
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+    rf".{{0,90}}(?:{_DOC_REFERENCE_TERMS_RE})|"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE}).{{0,90}}"
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+)
 _TITLE_BEFORE_TABLE_RE = re.compile(
     r"(?:"
     r"判決(?:書)?|裁定(?:書)?|起訴書|不起訴處分書|緩起訴處分書|"
@@ -421,9 +440,11 @@ def _is_reference_only_page(text: str) -> bool:
     region = _boundary_region(text, limit=900)
     if _CONTINUATION_HEADER_RE.search(region):
         return True
-    leading = region[:260]
     first_line = next((line.strip() for line in region.splitlines() if line.strip()), region[:90])
+    first_title_proven = bool(_TITLE_BEFORE_TABLE_RE.search(first_line[:140]))
     if _TRANSCRIPT_INTERNAL_REFERENCE_RE.search(region) and not _TITLE_BEFORE_TABLE_RE.search(first_line[:90]):
+        return True
+    if _BODY_DOC_REFERENCE_RE.search(region) and not first_title_proven:
         return True
     compact = re.sub(r"\s+", "", region)
     table_match = _EVIDENCE_TABLE_HEADER_RE.search(region)

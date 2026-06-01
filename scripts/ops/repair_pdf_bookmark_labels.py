@@ -80,6 +80,39 @@ POLLUTION_PRONE_FALLBACK_LABELS = {
     "言詞辯論筆錄",
 }
 LEGACY_IMAGE_LABEL_RE = re.compile(r"^image\d{4,}$", re.IGNORECASE)
+_DOC_REFERENCE_TERMS_RE = (
+    r"判決(?:書)?|裁定(?:書)?|起訴書|追加起訴書|不起訴處分書|緩起訴處分書|"
+    r"聲請簡易判決處刑書|答辯(?:狀|書)|陳報(?:狀|書)|聲請(?:狀|書)|"
+    r"上訴(?:狀|書|理由)|抗告(?:狀|書|理由)|補充(?:理由|上訴|告訴)(?:狀|書)|"
+    r"(?:審判|準備程序|言詞辯論|訊問|調查|勘驗).{0,3}筆錄|"
+    r"鑑定(?:報告|書|意見)|法醫(?:報告|鑑定)|解剖(?:報告|鑑定)|"
+    r"診斷(?:證明|書)|相驗屍體證明書|扣押物品(?:目錄表|清單)|"
+    r"搜索扣押(?:筆錄|紀錄)|勘(?:查|察|驗)(?:報告|紀錄)|前案紀錄表"
+)
+_BODY_DOC_REFERENCE_RE = re.compile(
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+    rf".{{0,90}}(?:{_DOC_REFERENCE_TERMS_RE})|"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE}).{{0,90}}"
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+)
+_TRANSCRIPT_DIALOGUE_RE = re.compile(
+    r"(?:法官問|檢察官問|檢察官答|被告答|辯護人答|通譯答).{0,180}"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE}|所附下列證據|逐一提示|告以要旨|有何意見)"
+)
+_ATTACHMENT_OR_EVIDENCE_LIST_RE = re.compile(
+    rf"(?:檢證|辯證|證物|證據|附件|附表|附錄|目錄|清單)\s*(?:編號|名稱|項次|待證事實).{{0,160}}"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE})|"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE}).{{0,120}}(?:待證事實|證據能力|調查方式|附件|附表|附錄|目錄|清單)"
+)
+_CONTINUATION_CONTEXT_RE = re.compile(r"^\s*[\(（【\[]?\s*(?:續|接|承|讀)\s*(?:上|前|上頁|前頁)")
+_DOCUMENT_EQUIVALENT_GROUPS = [
+    {"鑑定報告", "精神鑑定報告", "法醫報告"},
+    {"調解/和解", "調解/和解筆錄"},
+]
 
 
 class PerFileTimeout(RuntimeError):
@@ -349,7 +382,75 @@ def _label_in_title(title: str, labels: list[str]) -> str:
 def _same_label(a: str | None, b: str | None) -> bool:
     aa = re.sub(r"\s+", "", str(a or ""))
     bb = re.sub(r"\s+", "", str(b or ""))
-    return bool(aa and bb and (aa == bb or aa in bb or bb in aa))
+    if not aa or not bb:
+        return False
+    if aa == bb:
+        return True
+    for group in _DOCUMENT_EQUIVALENT_GROUPS:
+        compact_group = {re.sub(r"\s+", "", item) for item in group}
+        if aa in compact_group and bb in compact_group:
+            return True
+    return bool(aa in bb or bb in aa)
+
+
+def _compact(text: str | None) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def _page_title_proves_label(bookmarker, text: str, label: str | None) -> bool:
+    """Return True only when the page header/title area itself supports label."""
+    normalized = _compact(label)
+    if not normalized:
+        return False
+    boundary = getattr(bookmarker, "_boundary_region", lambda t, limit=650: str(t or "")[:limit])(text, limit=650)
+    lines = [line.strip() for line in str(boundary or "").splitlines() if line.strip()]
+    early_region = "\n".join(lines[:4]) or str(boundary or "")[:260]
+    try:
+        if getattr(bookmarker, "_is_reference_only_page")(text):
+            return False
+    except Exception:
+        pass
+    if _ATTACHMENT_OR_EVIDENCE_LIST_RE.search(early_region):
+        return False
+    for idx, line in enumerate(lines[:4]):
+        line_compact = _compact(line)
+        if normalized not in line_compact:
+            continue
+        if _BODY_DOC_REFERENCE_RE.search(line) or _TRANSCRIPT_DIALOGUE_RE.search(line):
+            continue
+        title_like = (
+            idx == 0
+            or len(line_compact) <= 36
+            or bool(re.search(r"(?:法院|檢察署|地檢署|法務部|研究所|醫院|鑑定中心)", line))
+        )
+        if title_like:
+            return True
+    detected, _level = getattr(bookmarker, "_detect_doc_type")(text, in_prior_record=False, allow_vision=False)
+    return _same_label(detected, normalized)
+
+
+def _pollution_context_evidence(bookmarker, text: str, label: str | None) -> list[str]:
+    """Collect broad evidence that a label is merely cited, not a page boundary."""
+    if not label:
+        return []
+    evidence: list[str] = []
+    boundary = getattr(bookmarker, "_boundary_region", lambda t, limit=900: str(t or "")[:limit])(text, limit=900)
+    first_line = next((line.strip() for line in str(boundary or "").splitlines() if line.strip()), "")
+    title_proven = _page_title_proves_label(bookmarker, text, label)
+    try:
+        if getattr(bookmarker, "_is_reference_only_page")(text):
+            evidence.append("reference_only_page")
+    except Exception:
+        pass
+    if _CONTINUATION_CONTEXT_RE.search(first_line):
+        evidence.append("continuation_page")
+    if _TRANSCRIPT_DIALOGUE_RE.search(boundary):
+        evidence.append("transcript_dialogue_reference")
+    if _ATTACHMENT_OR_EVIDENCE_LIST_RE.search(boundary):
+        evidence.append("attachment_or_evidence_list")
+    if _BODY_DOC_REFERENCE_RE.search(boundary) and not title_proven:
+        evidence.append("body_reference_context")
+    return sorted(set(evidence))
 
 
 def _page_text(doc, page_number: int) -> str:
@@ -415,30 +516,38 @@ def _audit_existing_toc(
 
         text = text_by_page.get(page_num, "")
         detected, _level = getattr(bookmarker, "_detect_doc_type")(text, in_prior_record=False, allow_vision=False)
-        reference_only = bool(getattr(bookmarker, "_is_reference_only_page", lambda _t: False)(text))
         normalized_title = getattr(bookmarker, "_normalize_doc_type", lambda v, _c="": v)(embedded_label, text)
+        title_proven = _page_title_proves_label(bookmarker, text, normalized_title or embedded_label)
+        context_evidence = _pollution_context_evidence(bookmarker, text, normalized_title or embedded_label)
 
-        if reference_only and not _same_label(detected, normalized_title):
+        if context_evidence and not title_proven and not _same_label(detected, normalized_title):
             issues.append(
                 {
-                    "kind": "embedded_reference_label",
+                    "kind": "context_reference_label",
                     "page": page_num,
                     "title": title_text,
                     "detected": detected,
                     "expected": normalized_title,
-                    "detail": "該頁看起來是引用/證據表/續頁，書籤標籤不是頁面自己的文件標題",
+                    "context_evidence": context_evidence,
+                    "detail": "該頁看起來是在正文、附件表、證據清單或筆錄問答中引用文件名稱，不是該文件首頁",
                 }
             )
             continue
 
-        if detected is None and embedded_label in POLLUTION_PRONE_FALLBACK_LABELS and reference_only:
+        if (
+            detected is None
+            and normalized_title
+            and not title_proven
+            and (context_evidence or embedded_label in POLLUTION_PRONE_FALLBACK_LABELS)
+        ):
             issues.append(
                 {
-                    "kind": "unproven_pollution_prone_label",
+                    "kind": "unproven_document_label",
                     "page": page_num,
                     "title": title_text,
                     "expected": normalized_title,
-                    "detail": "污染高風險標籤未能由頁首證明",
+                    "context_evidence": context_evidence,
+                    "detail": "既有書籤標籤未能由頁面標題區證明，需用現行邊界規則重建",
                 }
             )
             continue

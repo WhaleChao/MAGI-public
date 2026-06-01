@@ -76,7 +76,65 @@ def test_audit_flags_evidence_table_reference_as_polluted_label(tmp_path: Path):
     item = mod.audit_pdf(pdf, bookmarker)
 
     assert item["needs_repair"] is True
-    assert any(issue["kind"] == "embedded_reference_label" for issue in item["issues"])
+    assert any(issue["kind"] == "context_reference_label" for issue in item["issues"])
+
+
+def test_audit_flags_judgment_body_reference_to_indictment(tmp_path: Path):
+    mod = load_repair_module()
+    pdf = tmp_path / "10_判決書" / "判決.pdf"
+    pdf.parent.mkdir()
+    make_text_pdf(
+        pdf,
+        [
+            "理 由\n本院審酌檢察官起訴書所載犯罪事實，並參酌卷附鑑定報告及證人筆錄。",
+        ],
+    )
+    set_toc(pdf, [[1, "起訴書", 1]])
+
+    bookmarker = mod._load_bookmarker()
+    item = mod.audit_pdf(pdf, bookmarker)
+
+    assert item["needs_repair"] is True
+    issue = item["issues"][0]
+    assert issue["kind"] in {"context_reference_label", "unproven_document_label"}
+    assert "body_reference_context" in issue.get("context_evidence", [])
+
+
+def test_audit_flags_pleading_attachment_list_as_polluted_report(tmp_path: Path):
+    mod = load_repair_module()
+    pdf = tmp_path / "07_對方歷次書狀" / "聲請狀.pdf"
+    pdf.parent.mkdir()
+    make_text_pdf(
+        pdf,
+        [
+            "刑事聲請狀\n附件清單\n一、法醫研究所解剖報告暨鑑定報告\n二、相驗屍體證明書",
+        ],
+    )
+    set_toc(pdf, [[1, "法醫報告", 1]])
+
+    bookmarker = mod._load_bookmarker()
+    item = mod.audit_pdf(pdf, bookmarker)
+
+    assert item["needs_repair"] is True
+    assert item["issues"][0]["kind"] == "label_page_mismatch"
+
+
+def test_audit_keeps_actual_report_cover(tmp_path: Path):
+    mod = load_repair_module()
+    pdf = tmp_path / "07_證據資料" / "法醫報告.pdf"
+    pdf.parent.mkdir()
+    make_text_pdf(
+        pdf,
+        [
+            "法務部法醫研究所解剖報告書暨鑑定報告書\n受鑑定人 劉信義\n鑑定日期 中華民國114年6月5日",
+        ],
+    )
+    set_toc(pdf, [[1, "鑑定報告", 1]])
+
+    bookmarker = mod._load_bookmarker()
+    item = mod.audit_pdf(pdf, bookmarker)
+
+    assert item["needs_repair"] is False
 
 
 def test_repair_rebuilds_polluted_transcript_toc(tmp_path: Path):

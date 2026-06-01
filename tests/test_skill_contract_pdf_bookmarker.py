@@ -233,6 +233,28 @@ class TestBoundary:
         assert label is None
         assert level == 0
 
+    def test_detect_doc_type_skips_judgment_body_reference_to_indictment(self):
+        mod = _load_module()
+        text = (
+            "理 由\n"
+            "本院審酌檢察官起訴書所載犯罪事實，並參酌卷附鑑定報告及證人筆錄，"
+            "認被告所辯不足採。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_prefers_pleading_title_over_attachment_mentions(self):
+        mod = _load_module()
+        text = (
+            "刑事聲請狀\n"
+            "附件清單\n"
+            "一、法醫研究所解剖報告暨鑑定報告\n"
+            "二、相驗屍體證明書"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "聲請狀"
+
     def test_detect_doc_type_does_not_mark_reference_to_record_copy_as_cover(self):
         mod = _load_module()
         text = (
