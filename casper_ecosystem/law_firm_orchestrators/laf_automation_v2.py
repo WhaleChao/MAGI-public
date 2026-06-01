@@ -181,6 +181,12 @@ def _safe_move(src: str, dst: str, log=None) -> None:
             log(f"    ⚠️ 移動失敗: {e}")
 
 
+def _is_laf_staff_email_case_info(case_info) -> bool:
+    """Return True for LAF staff email attachments that are not portal files."""
+    sender = str(getattr(case_info, "sender", "") or "").lower()
+    return "@laf.org.tw" in sender or "laf.org.tw" in sender
+
+
 PDFTOTEXT_BIN = os.environ.get("MAGI_PDFTOTEXT_BIN", "/opt/homebrew/bin/pdftotext").strip()
 
 # ==============================================================================
@@ -9204,7 +9210,11 @@ class OSCCaseCreator:
                         # 執行歸檔
                         if final_folder_to_use:
                             self.log(f"  📂 歸檔下載的檔案到: {final_folder_to_use}")
-                            self._archive_files_to_folder(files, final_folder_to_use)
+                            if _is_laf_staff_email_case_info(case_info):
+                                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                                self.archive_staff_email_attachments(files, final_folder_to_use)
+                            else:
+                                self._archive_files_to_folder(files, final_folder_to_use)
                             _write_laf_case_marker(final_folder_to_use, case_info.laf_case_number, log=self.log)
                             fields = _scan_laf_forms_for_client_fields(final_folder_to_use)
                             if fields:
@@ -9302,7 +9312,11 @@ class OSCCaseCreator:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6899, exc_info=True)
 
                 if files:
-                    self._archive_files_to_folder(files, reuse_folder)
+                    if _is_laf_staff_email_case_info(case_info):
+                        self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                        self.archive_staff_email_attachments(files, reuse_folder)
+                    else:
+                        self._archive_files_to_folder(files, reuse_folder)
                     fields2 = _scan_laf_forms_for_client_fields(reuse_folder)
                     if fields2:
                         try:
@@ -9413,7 +9427,11 @@ class OSCCaseCreator:
                 os.makedirs(subfolder_path, exist_ok=True)
             
             # 8. 處理檔案 (ZIP 解壓縮/分類)
-            if files:
+            if files and _is_laf_staff_email_case_info(case_info):
+                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                self.archive_staff_email_attachments(files, case_folder)
+                self.log(f"  ✅ 專員來信附件處理完成")
+            elif files:
                 # 定義檔案分類規則
                 def get_target_subfolder(fname):
                     rules = {
