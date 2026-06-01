@@ -415,6 +415,13 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert by_id["job_nightly_bookmark_regex"]["enabled"] is True
     assert by_id["job_nightly_bookmark_regex"]["no_catchup"] is True
     assert "--enqueue-ocr-followups" in by_id["job_nightly_bookmark_regex"]["command"]
+    assert by_id["job_pdf_bookmark_label_repair"]["enabled"] is True
+    assert by_id["job_pdf_bookmark_label_repair"]["no_catchup"] is True
+    assert by_id["job_pdf_bookmark_label_repair"]["cron"] == "45 2 * * *"
+    assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--apply --limit 12" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--per-file-timeout 90" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--max-file-mb 200" in by_id["job_pdf_bookmark_label_repair"]["command"]
     assert by_id["job_weekend_bookmark"]["timeout_sec"] == 21600
     assert "--single-doc-fastpath" in by_id["job_weekend_bookmark"]["command"]
     assert by_id["job_nas_pdf_ocr_worker_offpeak"]["cron"] == "45 1,3,5,22 * * *"

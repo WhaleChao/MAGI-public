@@ -403,6 +403,29 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "no_catchup": True,
         },
         {
+            "id": "job_pdf_bookmark_label_repair",
+            "cron": "45 2 * * *",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_pdf_bookmark_label_repair",
+                (
+                    f"{python_bin} {repo_root / 'scripts' / 'ops' / 'repair_pdf_bookmark_labels.py'} "
+                    "--apply --limit 12 --max-files 120 --max-dirs 2500 --max-seconds 1800 "
+                    "--per-file-timeout 90 --max-file-mb 200 "
+                    f"--json-out {repo_root / '.runtime' / 'pdf_bookmark_label_repair_latest.json'}"
+                ),
+                block_at="throttle",
+            ),
+            "desc": "PDF 既有書籤污染稽核與重標（每日 02:45；只修頁首/邊界規則不支持的標籤）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "timeout_sec": 2100,
+            "no_catchup": True,
+        },
+        {
             "id": "job_weekend_bookmark",
             "cron": "15 3 * * 6",
             "command": (

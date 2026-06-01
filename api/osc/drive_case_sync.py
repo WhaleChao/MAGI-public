@@ -1815,40 +1815,81 @@ NAS_TO_DRIVE_FIRST_SEGMENT = {
 NAS_TO_DRIVE_PREFIXES = {
     ("08_筆錄",): ("閱卷資料", "筆錄"),
 }
+DRIVE_EXISTING_ALIAS_PRIORITY = {
+    "法扶資料": ("法扶資料",),
+    "開辦資料": ("開辦資料", "開辨資料"),
+    "結案資料": ("結案資料",),
+    "結案酬金領款單": ("結案酬金領款單",),
+    "我方書狀": ("我方書狀", "我方歷次書狀", "歷次書狀"),
+    "對造書狀": ("對造書狀", "對方歷次書狀"),
+    "閱卷資料": ("閱卷資料",),
+    "證據資料": ("證據資料", "法律資料"),
+    "筆錄": ("訊問筆錄", "筆錄"),
+    "法院通知": ("法院通知", "法院資料", "程序裁定"),
+    "法院判決": ("法院裁判", "法院判決", "判決書"),
+    "回執": ("回執", "自行收納款項收據"),
+    "信件往返": ("信件", "信件往返"),
+}
 DRIVE_TO_NAS_FIRST_SEGMENT = {
     "法扶資料": "01_法扶資料",
     "開辦資料": "02_開辦資料",
+    "開辨資料": "02_開辦資料",
     "結案資料": "03_結案資料",
     "結案酬金領款單": "03_結案資料",
     "我方書狀": "04_我方歷次書狀",
     "我方歷次書狀": "04_我方歷次書狀",
+    "歷次書狀": "04_我方歷次書狀",
     "對造書狀": "05_對方歷次書狀",
     "對方歷次書狀": "05_對方歷次書狀",
     "閱卷資料": "06_閱卷資料",
     "證據資料": "07_證據資料",
+    "法律資料": "07_證據資料",
     "筆錄": "08_筆錄",
+    "訊問筆錄": "08_筆錄",
+    "審判筆錄": "08_筆錄",
+    "調查筆錄": "08_筆錄",
     "法院通知": "09_法院通知或程序裁定",
     "法院通知與程序裁定": "09_法院通知或程序裁定",
+    "法院資料": "09_法院通知或程序裁定",
     "程序裁定": "09_法院通知或程序裁定",
+    "起訴書": "10_判決書",
     "法院判決": "10_判決書",
+    "法院裁判": "10_判決書",
     "判決書": "10_判決書",
     "回執": "11_回執",
+    "自行收納款項收據": "11_回執",
+    "信件": "12_信件往返",
     "信件往返": "12_信件往返",
 }
 DRIVE_TO_NAS_PREFIXES = {
     ("閱卷資料", "筆錄"): ("08_筆錄",),
+    ("法院資料", "法院判決"): ("10_判決書",),
+    ("法院資料", "判決書"): ("10_判決書",),
+    ("法院資料", "法院通知"): ("09_法院通知或程序裁定",),
+    ("法院資料", "程序裁定"): ("09_法院通知或程序裁定",),
 }
+COURT_PROCEDURAL_FORM_RE = re.compile(
+    r"(?:通知|通知書|函|傳票|開庭|庭期|補正|陳報|表示意見|文到|繳費|送達|公告|調查命令|準備程序|言詞辯論|調解|羈押|接續羈押|延長羈押|訴訟參與|國民參與審判)"
+)
+COURT_FINAL_DOC_RE = re.compile(
+    r"(?:判決|起訴書|不起訴處分書|緩起訴處分書|確定證明|執行命令|支付命令|調解不成立證明|復權裁定|免責裁定|不免責裁定)"
+)
+COURT_FINAL_RULING_RE = re.compile(
+    r"(?:裁定).{0,24}(?:駁回|准許|許可|認可|免責|不免責|復權|終結|開始更生|開始清算|廢棄|撤銷|移送|確定)"
+)
 SEMANTIC_FIRST_SEGMENT = {
     "01_法扶資料": "法扶資料",
     "法扶資料": "法扶資料",
     "02_開辦資料": "開辦資料",
     "開辦資料": "開辦資料",
+    "開辨資料": "開辦資料",
     "03_結案資料": "結案資料",
     "結案資料": "結案資料",
     "結案酬金領款單": "結案酬金領款單",
     "04_我方歷次書狀": "我方書狀",
     "我方書狀": "我方書狀",
     "我方歷次書狀": "我方書狀",
+    "歷次書狀": "我方書狀",
     "05_對方歷次書狀": "對造書狀",
     "對造書狀": "對造書狀",
     "對方歷次書狀": "對造書狀",
@@ -1856,23 +1897,37 @@ SEMANTIC_FIRST_SEGMENT = {
     "閱卷資料": "閱卷資料",
     "07_證據資料": "證據資料",
     "證據資料": "證據資料",
+    "法律資料": "證據資料",
     "08_筆錄": "筆錄",
     "筆錄": "筆錄",
+    "訊問筆錄": "筆錄",
+    "審判筆錄": "筆錄",
+    "調查筆錄": "筆錄",
     "09_法院通知或程序裁定": "法院通知",
     "法院通知": "法院通知",
     "法院通知與程序裁定": "法院通知",
+    "法院資料": "法院通知",
     "程序裁定": "法院通知",
+    "起訴書": "法院判決",
     "10_判決書": "法院判決",
     "法院判決": "法院判決",
+    "法院裁判": "法院判決",
     "判決書": "法院判決",
     "11_回執": "回執",
     "回執": "回執",
+    "自行收納款項收據": "回執",
     "12_信件往返": "信件往返",
+    "信件": "信件往返",
     "信件往返": "信件往返",
 }
 SEMANTIC_PREFIXES = {
     ("08_筆錄",): ("筆錄",),
     ("閱卷資料", "筆錄"): ("筆錄",),
+    ("法院資料", "法院裁判"): ("法院判決",),
+    ("法院資料", "法院判決"): ("法院判決",),
+    ("法院資料", "判決書"): ("法院判決",),
+    ("法院資料", "法院通知"): ("法院通知",),
+    ("法院資料", "程序裁定"): ("法院通知",),
 }
 
 
@@ -1895,14 +1950,67 @@ def drive_to_nas_relative_path(relative_path: str) -> str:
     for source, target in sorted(DRIVE_TO_NAS_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
         if tuple(parts[: len(source)]) == source:
             return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
+    if parts[0] == "法院裁判" or tuple(parts[:2]) == ("法院資料", "法院裁判"):
+        rest = parts[1:] if parts[0] == "法院裁判" else parts[2:]
+        probe = "/".join(rest)
+        target_first = court_document_target_segment(probe)
+        return PurePosixPath(*([target_first] + rest)).as_posix()
+    if parts[0] == "起訴書" or tuple(parts[:2]) == ("法院資料", "起訴書"):
+        rest = parts[1:] if parts[0] == "起訴書" else parts[2:]
+        probe = PurePosixPath("起訴書", *rest).as_posix()
+        target_first = court_document_target_segment(probe)
+        return PurePosixPath(*([target_first] + rest)).as_posix()
     parts[0] = DRIVE_TO_NAS_FIRST_SEGMENT.get(parts[0], parts[0])
     return PurePosixPath(*parts).as_posix()
 
 
-def nas_to_drive_relative_path(relative_path: str) -> str:
+def court_document_target_segment(relative_path: str) -> str:
+    """Return the NAS folder for a mixed Drive court-document path.
+
+    `法院裁判` on Google Drive is a legacy mixed bucket.  We cannot route it by
+    folder name alone: an indictment can be the dispositive document in an
+    investigation case, while hearing notices and supplemental-order letters are
+    ongoing procedural documents.  The filename/path therefore decides.
+    """
+    text = str(relative_path or "")
+    if COURT_PROCEDURAL_FORM_RE.search(text) and not re.search(r"(?:確定證明|調解不成立證明)", text):
+        return "09_法院通知或程序裁定"
+    if COURT_FINAL_DOC_RE.search(text):
+        return "10_判決書"
+    if "裁定" in text:
+        return "10_判決書" if COURT_FINAL_RULING_RE.search(text) else "09_法院通知或程序裁定"
+    return "09_法院通知或程序裁定"
+
+
+def _existing_drive_first_segments(entries: Iterable[FileEntry]) -> set[str]:
+    out: set[str] = set()
+    for entry in entries or []:
+        parts = split_relative_parts(entry.relative_path)
+        if parts:
+            out.add(parts[0])
+    return out
+
+
+def _prefer_existing_drive_alias(semantic_segment: str, existing_first_segments: set[str]) -> str:
+    for alias in DRIVE_EXISTING_ALIAS_PRIORITY.get(semantic_segment, ()):
+        if alias in existing_first_segments:
+            return alias
+    return ""
+
+
+def nas_to_drive_relative_path(
+    relative_path: str,
+    *,
+    drive_existing_first_segments: set[str] | None = None,
+) -> str:
     parts = split_relative_parts(relative_path)
     if not parts:
         return ""
+    existing_first_segments = drive_existing_first_segments or set()
+    semantic_first = semantic_relative_path(relative_path).split("/", 1)[0]
+    preferred_first = _prefer_existing_drive_alias(semantic_first, existing_first_segments)
+    if preferred_first:
+        return PurePosixPath(*(list([preferred_first]) + parts[1:])).as_posix()
     for source, target in sorted(NAS_TO_DRIVE_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
         if tuple(parts[: len(source)]) == source:
             return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
@@ -1917,6 +2025,16 @@ def semantic_relative_path(relative_path: str) -> str:
     parts = split_relative_parts(relative_path)
     if not parts:
         return ""
+    if parts[0] == "法院裁判" or tuple(parts[:2]) == ("法院資料", "法院裁判"):
+        rest = parts[1:] if parts[0] == "法院裁判" else parts[2:]
+        target = court_document_target_segment("/".join(rest))
+        first = "法院通知" if target == "09_法院通知或程序裁定" else "法院判決"
+        return PurePosixPath(*([first] + rest)).as_posix()
+    if parts[0] == "起訴書" or tuple(parts[:2]) == ("法院資料", "起訴書"):
+        rest = parts[1:] if parts[0] == "起訴書" else parts[2:]
+        target = court_document_target_segment(PurePosixPath("起訴書", *rest).as_posix())
+        first = "法院通知" if target == "09_法院通知或程序裁定" else "法院判決"
+        return PurePosixPath(*([first] + rest)).as_posix()
     for source, target in sorted(SEMANTIC_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
         if tuple(parts[: len(source)]) == source:
             return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
@@ -2340,6 +2458,7 @@ def build_file_sync_plan(
             for e in drive_entries
             if not e.is_folder
         }
+        drive_existing_first_segments = _existing_drive_first_segments(drive_entries)
         for key, drive_entry in sorted(drive_files.items()):
             source_rel = export_relative_path(drive_entry)
             target_rel = drive_to_nas_relative_path(source_rel)
@@ -2401,7 +2520,10 @@ def build_file_sync_plan(
         for key, local_entry in sorted(local_files.items()):
             if key not in drive_files:
                 action = _entry_public_dict(local_entry)
-                action["target_relative_path"] = nas_to_drive_relative_path(local_entry.relative_path)
+                action["target_relative_path"] = nas_to_drive_relative_path(
+                    local_entry.relative_path,
+                    drive_existing_first_segments=drive_existing_first_segments,
+                )
                 case_plan["nas_only"].append(action)
                 summary["nas_missing_in_drive_files"] += 1
         summary["matched_cases_scanned"] += 1

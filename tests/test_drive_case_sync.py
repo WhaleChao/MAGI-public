@@ -674,6 +674,103 @@ def test_build_file_sync_plan_compares_drive_and_nas_semantic_paths(monkeypatch)
     assert case["skipped_existing"] == 2
 
 
+def test_drive_import_aliases_map_to_nas_canonical_folders():
+    assert drive_to_nas_relative_path("法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁判/偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
+    assert drive_to_nas_relative_path("法院資料/法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("法院資料/法院裁判/20260101 開庭通知.pdf") == "09_法院通知或程序裁定/20260101 開庭通知.pdf"
+    assert drive_to_nas_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
+    assert drive_to_nas_relative_path("起訴書/20250306_起訴書.pdf") == "10_判決書/20250306_起訴書.pdf"
+    assert drive_to_nas_relative_path("法院資料/起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("訊問筆錄/b.pdf") == "08_筆錄/b.pdf"
+    assert drive_to_nas_relative_path("信件/c.pdf") == "12_信件往返/c.pdf"
+    assert drive_to_nas_relative_path("自行收納款項收據/d.pdf") == "11_回執/d.pdf"
+
+
+def test_semantic_paths_treat_legacy_drive_folders_as_same_category():
+    assert semantic_relative_path("法院裁判/a.pdf") == "法院通知/a.pdf"
+    assert semantic_relative_path("法院裁判/20260101 開庭通知.pdf") == "法院通知/20260101 開庭通知.pdf"
+    assert semantic_relative_path("10_判決書/a.pdf") == "法院判決/a.pdf"
+    assert semantic_relative_path("起訴書/a.pdf") == "法院判決/a.pdf"
+    assert semantic_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "法院通知/20250306_聲請接續羈押理由書.pdf"
+    assert semantic_relative_path("訊問筆錄/b.pdf") == "筆錄/b.pdf"
+    assert semantic_relative_path("08_筆錄/b.pdf") == "筆錄/b.pdf"
+    assert semantic_relative_path("信件/c.pdf") == "信件往返/c.pdf"
+    assert semantic_relative_path("12_信件往返/c.pdf") == "信件往返/c.pdf"
+
+
+def test_nas_upload_does_not_put_procedural_docs_into_indictment_folder():
+    assert (
+        nas_to_drive_relative_path(
+            "09_法院通知或程序裁定/20260101 開庭通知.pdf",
+            drive_existing_first_segments={"起訴書"},
+        )
+        == "法院通知/20260101 開庭通知.pdf"
+    )
+
+
+def test_build_file_sync_plan_uses_drive_aliases_instead_of_creating_parallel_folders(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/2025-0002-游秀鈴-一審-傷害致死",
+        relative_path="法扶案件/Lumi/2025-0002-游秀鈴-一審-傷害致死",
+        name="2025-0002-游秀鈴-一審-傷害致死",
+        meta=CaseMeta(case_number="2025-0002"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        local_path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        relative_path="法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死",
+        name="2025-0002-游秀鈴-一審-傷害致死",
+        meta=CaseMeta(case_number="2025-0002"),
+    )
+    drive_entries = [
+        FileEntry("drive", "法院裁判", "法院裁判", "法院裁判", True),
+        FileEntry("drive", "訊問筆錄", "訊問筆錄", "訊問筆錄", True),
+        FileEntry("drive", "信件", "信件", "信件", True),
+    ]
+    local_entries = [
+        FileEntry(
+            source="nas",
+            path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/10_判決書/new.pdf",
+            relative_path="10_判決書/new.pdf",
+            name="new.pdf",
+            is_folder=False,
+            size=5,
+        ),
+        FileEntry(
+            source="nas",
+            path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/08_筆錄/t.pdf",
+            relative_path="08_筆錄/t.pdf",
+            name="t.pdf",
+            is_folder=False,
+            size=5,
+        ),
+        FileEntry(
+            source="nas",
+            path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/12_信件往返/mail.pdf",
+            relative_path="12_信件往返/mail.pdf",
+            name="mail.pdf",
+            is_folder=False,
+            size=5,
+        ),
+    ]
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *args, **kwargs: drive_entries)
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *args, **kwargs: local_entries)
+
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object())
+    targets = {item["target_relative_path"] for item in plan["cases"][0]["nas_only"]}
+    assert "法院裁判/new.pdf" in targets
+    assert "訊問筆錄/t.pdf" in targets
+    assert "信件/mail.pdf" in targets
+    assert "法院判決/new.pdf" not in targets
+    assert "閱卷資料/筆錄/t.pdf" not in targets
+
+
 def test_execute_uploads_uses_nas_only_files_without_overwrite(monkeypatch, tmp_path):
     src = tmp_path / "NAS缺雲端.pdf"
     src.write_bytes(b"hello")
