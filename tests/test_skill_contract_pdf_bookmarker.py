@@ -171,6 +171,94 @@ class TestBoundary:
             assert label is not None, f"Failed to detect: {text_fragment}"
             assert expected_label in label, f"Expected '{expected_label}' in '{label}' for '{text_fragment}'"
 
+    def test_detect_doc_type_uses_page_title_not_embedded_evidence_reference(self):
+        mod = _load_module()
+        text = (
+            "臺灣花蓮地方檢察署檢察官準備程序暨補充理由書（一）\n"
+            "114年度國蒞字第15號\n"
+            "檢證編號 證據名稱 待證事實\n"
+            "43 法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "46 刑事警察局鑑定書\n"
+            "2 被告警詢筆錄"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "補充理由狀"
+
+    def test_detect_doc_type_handles_ocr_spaced_transcript_title(self):
+        mod = _load_module()
+        text = (
+            "準 備 程 序 筆 錄\n"
+            "公訴人 臺灣花蓮地方檢察署檢察官\n"
+            "被 告 劉信義\n"
+            "上列被告因115年度原侵重訴字第1號案件行準備程序"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "準備程序筆錄"
+
+    def test_detect_doc_type_skips_continuation_reference_pages(self):
+        mod = _load_module()
+        text = (
+            "（續上頁）\n"
+            "43 法務部法醫研究所114年6月5日法醫理字第11400050460號函附"
+            "解剖報告書暨鑑定報告書\n"
+            "44 相驗屍體證明書\n"
+            "45 血清證物鑑定書"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_skips_evidence_table_without_page_title(self):
+        mod = _load_module()
+        text = (
+            "檢證編號 證據名稱 待證事實\n"
+            "80 臺北榮民總醫院玉里分院精神醫學部司法鑑定報告書\n"
+            "81 花蓮縣警察局函\n"
+            "82 刑事告訴狀"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_skips_transcript_internal_evidence_prompt(self):
+        mod = _load_module()
+        text = (
+            "法官問 對於114年度相字第146號卷所附下列證據，有何意見？"
+            "（逐一提示並告以要旨）\n"
+            "一、法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "二、案發現場照片\n"
+            "被告答 請辯護人回答。辯護人答 沒有意見。同意有證據能力。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_does_not_mark_reference_to_record_copy_as_cover(self):
+        mod = _load_module()
+        text = (
+            "查前列鑑定人為偵查協助花蓮地方檢察署就被告精神狀況為鑑定之鑑定人，"
+            "其於鑑定時已閱畢花蓮地方檢察署所提供之本案偵查卷宗影本，"
+            "故有到庭說明必要。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_standalone_transcript_path_detection_excludes_review_folder(self):
+        mod = _load_module()
+        assert mod._is_standalone_transcript_pdf("/case/08_筆錄/20260513 準備程序筆錄.pdf")
+        assert not mod._is_standalone_transcript_pdf("/case/06_閱卷資料/20260513 準備程序筆錄.pdf")
+
+    def test_detect_doc_type_accepts_actual_report_cover(self):
+        mod = _load_module()
+        text = (
+            "法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "受鑑定人 劉信義\n"
+            "鑑定日期 中華民國114年6月5日"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label in {"鑑定報告", "法醫報告"}
+
     def test_roc_date_western_year(self):
         mod = _load_module()
         result = mod._extract_roc_date("2024年3月15日提出")
