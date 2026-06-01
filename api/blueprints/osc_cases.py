@@ -981,11 +981,36 @@ def _osc_should_auto_create_folder_on_insert(payload: dict, *, is_template: bool
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
     if is_template:
         return False
-    if str(payload.get("folder_path") or "").strip():
-        return False
     if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
         return False
+    folder_path = str(payload.get("folder_path") or "").strip()
+    if folder_path:
+        # Web-created cases may send the expected Windows canonical path before
+        # the NAS folder has actually been created.  Treat that as "needs
+        # folder creation" instead of leaving a DB path that opens forever.
+        return not bool(_osc_resolve_existing_local_path(folder_path, prefer_dir=True))
     return True
+
+
+def _osc_ensure_active_case_folder(row: dict) -> dict:
+    """Ensure a live, non-closed case has a real folder behind its DB path."""
+    if not isinstance(row, dict):
+        return {"ok": False, "error": "case_not_found"}
+    if _osc_should_archive_case_row(row):
+        return {"ok": True, "skipped": True, "reason": "closed_case"}
+    folder_path = str(row.get("folder_path") or "").strip()
+    if folder_path and _osc_resolve_existing_local_path(folder_path, prefer_dir=True):
+        return {"ok": True, "skipped": True, "reason": "folder_exists"}
+    payload = {
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "case_type": row.get("case_type") or "",
+        "case_stage": row.get("case_stage") or "",
+        "case_reason": row.get("case_reason") or "",
+        "status": row.get("status") or "進行中",
+        "legal_aid_status": row.get("legal_aid_status") or "",
+    }
+    return _osc_auto_create_folder_for_case(str(row.get("id") or ""), payload, row.get("case_category") or "一般案件")
 
 
 def _osc_legal_insight_normalized_expr() -> str:
@@ -2935,9 +2960,28 @@ def osc_case_open_folder_api(row_id):
       決定是否彈警告
     """
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
     if not row:
         return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
+    ensure = _osc_ensure_active_case_folder(row)
+    if ensure.get("ok") and not ensure.get("skipped"):
+        row, _ = _osc_exec(
+            """
+            SELECT id, case_number, client_name, case_category, case_type, case_stage,
+                   case_reason, status, legal_aid_status, folder_path
+            FROM cases WHERE id=%s
+            """,
+            (row_id,),
+            fetch="one",
+        )
     resolved = _osc_effective_case_folder_for_row(row, update_db=True)
     folder_path = resolved.get("folder_path") or ""
     if not folder_path:
@@ -3139,9 +3183,28 @@ def osc_case_rename_folder_api(row_id):
 @login_required
 def osc_case_folder_browser_api(row_id):
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
+    ensure = _osc_ensure_active_case_folder(row)
+    if ensure.get("ok") and not ensure.get("skipped"):
+        row, _ = _osc_exec(
+            """
+            SELECT id, case_number, client_name, case_category, case_type, case_stage,
+                   case_reason, status, legal_aid_status, folder_path
+            FROM cases WHERE id=%s
+            """,
+            (row_id,),
+            fetch="one",
+        )
     resolved = _osc_effective_case_folder_for_row(row, update_db=True)
     folder_path = resolved.get("folder_path") or ""
     if not folder_path:

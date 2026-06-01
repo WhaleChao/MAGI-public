@@ -23,6 +23,52 @@ CLOUDFLARED = os.environ.get("MAGI_CLOUDFLARED_PATH") or "/opt/homebrew/bin/clou
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
+def _load_dotenv_value(name: str) -> str:
+    env_path = MAGI_ROOT / ".env"
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            if key.strip() == name:
+                return value.strip().strip("'\"")
+    except Exception:
+        return ""
+    return ""
+
+
+def _normalize_base_url(value: str) -> str:
+    base = str(value or "").strip().strip("'\"")
+    if not base:
+        return ""
+    if "://" not in base:
+        base = "https://" + base
+    return base.rstrip("/")
+
+
+def _stable_share_base_url() -> str:
+    explicit = (
+        os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+        or _load_dotenv_value("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+        or ""
+    )
+    if explicit:
+        return _normalize_base_url(explicit)
+    use_magi = (
+        os.environ.get("MAGI_OSC_FILE_SHARE_USE_MAGI_PUBLIC_BASE")
+        or _load_dotenv_value("MAGI_OSC_FILE_SHARE_USE_MAGI_PUBLIC_BASE")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if use_magi:
+        return _normalize_base_url(
+            os.environ.get("MAGI_PUBLIC_BASE_URL")
+            or _load_dotenv_value("MAGI_PUBLIC_BASE_URL")
+            or ""
+        )
+    return ""
+
+
 def _gateway_health_ok() -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as resp:
@@ -86,6 +132,18 @@ def main() -> int:
     url_path = runtime_dir / "osc_share_public_base_url.txt"
     agent_url_path = agent_dir / "paperclip_share_tunnel_url.txt"
     pid_path = agent_dir / "paperclip_share_cloudflared.pid"
+
+    stable_base = _stable_share_base_url()
+    if stable_base:
+        url_path.write_text(stable_base + "\n", encoding="utf-8")
+        agent_url_path.write_text(stable_base + "\n", encoding="utf-8")
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"\n=== Paperclip share using stable base: {stable_base} ===\n")
+            log.flush()
+            while True:
+                url_path.write_text(stable_base + "\n", encoding="utf-8")
+                agent_url_path.write_text(stable_base + "\n", encoding="utf-8")
+                time.sleep(300)
 
     cmd = [
         CLOUDFLARED,
