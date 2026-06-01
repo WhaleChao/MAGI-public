@@ -39,7 +39,7 @@ from api.case_display import (
 )
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
-from api.laf_case_classifier import normalize_laf_case_type
+from api.laf_case_classifier import extract_laf_staff_case_hint, normalize_laf_case_type
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 # 載入 .env
@@ -1568,6 +1568,38 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
     folder = _to_mac_path((case.get("folder_path") or "").strip())
     if not folder or not os.path.isdir(folder):
         return {}
+    local_hint: dict = {}
+    staff_dir = os.path.join(folder, "01_法扶資料", "專員來信")
+    if os.path.isdir(staff_dir):
+        try:
+            for root, dirs, files in os.walk(staff_dir):
+                depth = root.replace(staff_dir, "").count(os.sep)
+                if depth > 1:
+                    dirs.clear()
+                    continue
+                for fn in files:
+                    if not fn.lower().endswith((".txt", ".eml")):
+                        continue
+                    p = os.path.join(root, fn)
+                    try:
+                        body = Path(p).read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    hint = extract_laf_staff_case_hint(
+                        body,
+                        laf_case_number=str(case.get("legal_aid_number") or ""),
+                        client_name=str(case.get("client_name") or ""),
+                    )
+                    if hint:
+                        if hint.get("case_reason"):
+                            local_hint["reason"] = hint.get("case_reason")
+                        if hint.get("case_stage"):
+                            local_hint["procedure"] = hint.get("case_stage")
+                        break
+                if local_hint:
+                    break
+        except Exception:
+            local_hint = {}
     preferred = (
         "審查表",
         "准予扶助證明書",
@@ -1600,7 +1632,7 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
             continue
     text = "\n".join(text_parts)
     if not text.strip():
-        return {}
+        return local_hint
 
     def _line_after(marker: str) -> str:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -1644,6 +1676,9 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
         out["reason"] = reason
     if stage and stage not in {"扶助內容", "扶助內容程序"}:
         out["procedure"] = stage
+    for key, value in local_hint.items():
+        if value and not out.get(key):
+            out[key] = value
     return out
 
 

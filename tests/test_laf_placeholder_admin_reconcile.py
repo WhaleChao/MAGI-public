@@ -80,3 +80,26 @@ def test_placeholder_reconcile_moves_labor_insurance_case_to_admin(tmp_path, mon
     assert not os.path.exists(old_folder)
     assert os.path.isdir(new_folder)
     assert db.row["folder_path"] == str(new_folder)
+
+
+def test_placeholder_identity_uses_staff_email_body_for_indigenous_dispatch(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators import laf_nightly_audit as mod
+
+    folder = tmp_path / "2026-0060-林文俊-一審-待確認"
+    staff = folder / "01_法扶資料" / "專員來信"
+    staff.mkdir(parents=True)
+    (staff / "派案通知.txt").write_text(
+        "檢陳1150529-W-002 林文俊 消費者債務清理 案件資料，提供律師參考。",
+        encoding="utf-8",
+    )
+
+    result = mod._extract_placeholder_identity_from_local_docs(
+        {
+            "folder_path": str(folder),
+            "legal_aid_number": "1150529-W-002",
+            "client_name": "林文俊",
+        }
+    )
+
+    assert result["reason"] == "更生"
+    assert result["procedure"] == "其他"

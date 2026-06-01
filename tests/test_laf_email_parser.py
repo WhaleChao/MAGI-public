@@ -77,6 +77,35 @@ def test_laf_parser_files_labor_insurance_dispute_as_admin():
         assert info.case_stage == "一審"
 
 
+def test_indigenous_staff_dispatch_body_fills_pending_consumer_debt_reason(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
+        LAFGmailMonitor,
+        LAFCaseTypeParser,
+    )
+    from skills.legal.laf import LAFGmailMonitor as LegacyLAFGmailMonitor
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "【法扶原民中心來信】寄送1150529-W-002 林文俊 案件資料"
+    body = "檢陳1150529-W-002 林文俊 消費者債務清理 案件資料，提供律師參考。"
+
+    for parser, monitor_cls in (
+        (LAFCaseTypeParser, LAFGmailMonitor),
+        (LegacyLAFCaseTypeParser, LegacyLAFGmailMonitor),
+    ):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.case_reason == "待確認"
+        assert info.has_attachment is True
+        assert info.needs_download is True
+
+        monitor = monitor_cls.__new__(monitor_cls)
+        monitor._parse_staff_info(body, info)
+
+        assert info.case_type == "消費者債務清理"
+        assert info.case_stage == "其他"
+        assert info.case_reason == "更生"
+
+
 def test_laf_report_result_keeps_labor_insurance_as_admin():
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
     from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser

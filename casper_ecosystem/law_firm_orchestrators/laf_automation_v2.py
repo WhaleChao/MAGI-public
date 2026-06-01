@@ -60,7 +60,12 @@ from api.runtime_paths import (
     get_magi_root_dir,
 )
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_case_path_to_local
-from api.laf_case_classifier import normalize_laf_case_type
+from api.laf_case_classifier import (
+    extract_laf_staff_case_hint,
+    is_pending_laf_reason,
+    normalize_laf_case_fields,
+    normalize_laf_case_type,
+)
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -834,7 +839,7 @@ class LAFCaseTypeParser:
             info.laf_case_type = "一般案件"
             
             info.has_attachment = True  # 這類信通常有附件
-            info.needs_download = False  # 不需從系統下載
+            info.needs_download = True  # 官網仍可能列出接案通知書等正式附件
             return info
 
         # 4. 審核回報格式：通知範例律師回報(結案|附條件)...
@@ -8380,7 +8385,7 @@ class LAFGmailMonitor:
             return ""
     
     def _parse_staff_info(self, body: str, case_info: LAFCaseInfo):
-        """從信件內文解析承辦人資訊"""
+        """從信件內文解析承辦人與主旨缺漏的案件資訊"""
         try:
             staff_match = re.search(
                 r'本案承辦人員[：:]\s*(\S+)\s+電話[：:]\s*([\d\-#]+)\s+Email[：:]\s*(\S+@\S+)',
@@ -8390,6 +8395,22 @@ class LAFGmailMonitor:
                 case_info.staff_name = staff_match.group(1)
                 case_info.staff_phone = staff_match.group(2)
                 case_info.staff_email = staff_match.group(3)
+
+            hint = extract_laf_staff_case_hint(
+                body,
+                laf_case_number=case_info.laf_case_number,
+                client_name=case_info.client_name,
+            )
+            if hint and is_pending_laf_reason(case_info.case_reason):
+                case_type, case_stage, case_reason = normalize_laf_case_fields(
+                    hint.get("case_type", "") or case_info.case_type,
+                    hint.get("case_stage", "") or case_info.case_stage,
+                    hint.get("case_reason", "") or case_info.case_reason,
+                    case_info.laf_case_type,
+                )
+                case_info.case_type = case_type or case_info.case_type
+                case_info.case_stage = case_stage or case_info.case_stage
+                case_info.case_reason = case_reason or case_info.case_reason
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5999, exc_info=True)
     
@@ -10251,6 +10272,19 @@ class LAFAutomationManager:
             # 建立案件
             if self.case_creator:
                 osc_case_number, case_folder = self.case_creator.create_case(case_info, files)
+                staff_attachment_count = 0
+                if case_folder and case_info.has_attachment and case_info.message_id and self.gmail_monitor:
+                    try:
+                        staff_target = os.path.join(case_folder, "01_法扶資料", "專員來信")
+                        downloaded_staff = self.gmail_monitor.download_attachments_by_msg_id(
+                            case_info.message_id,
+                            staff_target,
+                        )
+                        staff_attachment_count = len(downloaded_staff or [])
+                        if downloaded_staff:
+                            self.case_creator.postprocess_staff_email_attachments(downloaded_staff, case_folder)
+                    except Exception as e:
+                        self.log(f"  ⚠️ 專員來信附件歸檔失敗: {e}")
                 if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
                     try:
                         self.db_manager.execute_write(
@@ -10271,6 +10305,7 @@ class LAFAutomationManager:
                         f"**OSC 案號:** {osc_case_number}\n"
                         f"**當事人:** {case_info.client_name}\n"
                         f"**下載檔案:** {len(files)} 個\n"
+                        f"**專員附件:** {staff_attachment_count} 個\n"
                         f"**儲存位置:** `{display_path}`",
                         color=0x00ff00
                     )
@@ -10279,6 +10314,7 @@ class LAFAutomationManager:
                     "laf_case_number": getattr(case_info, "laf_case_number", ""),
                     "client_name": getattr(case_info, "client_name", ""),
                     "downloaded_files": len(files or []),
+                    "staff_attachments": staff_attachment_count,
                     "osc_case_number": osc_case_number,
                     "case_folder": case_folder,
                 }
