@@ -32,18 +32,16 @@ STATUS_PATH = RUNTIME_DIR / "db_master_backup_latest.json"
 MY_CNF = Path("/opt/homebrew/etc/my.cnf.d/magi.cnf")
 
 DEFAULT_ALLOWED_HOSTS = [
-    "100.116.54.16",
-    "whale.tail6738b7.ts.net",
-    "whale.tail6738b7.ts.net.",
-    "100.111.10.126",
-    "whale-1.tail6738b7.ts.net",
-    "whale-1.tail6738b7.ts.net.",
-    # Tailscale clients may be seen by IP or MagicDNS reverse lookup.
-    # Keep this narrower than '%' while avoiding brittle single-host matching.
-    "100.%",
-    "%.tail6738b7.ts.net",
-    "%.tail6738b7.ts.net.",
+    # Keep public defaults non-sensitive. Private deployments should pass
+    # --allowed-host or set MAGI_DB_MASTER_BACKUP_ALLOWED_HOSTS.
+    "<backup-replica-tailscale-ip>",
+    "<backup-replica-magicdns-name>",
 ]
+
+
+def _csv_env(name: str) -> List[str]:
+    raw = os.environ.get(name, "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 
 def _random_password(length: int = 32) -> str:
@@ -178,15 +176,15 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--restart-mariadb", action="store_true", help="套用 my.cnf 後重啟 MariaDB")
     parser.add_argument("--admin-user", default="ai", help="本機 socket 管理帳號")
     parser.add_argument("--server-id", type=int, default=2)
-    parser.add_argument("--master-host", default="100.97.29.92")
-    parser.add_argument("--master-dns", default="aimac-mini.tail6738b7.ts.net")
+    parser.add_argument("--master-host", default=os.environ.get("MAGI_DB_MASTER_BACKUP_HOST", "<local-magi-tailscale-ip>"))
+    parser.add_argument("--master-dns", default=os.environ.get("MAGI_DB_MASTER_BACKUP_DNS", "<local-magi-magicdns-name>"))
     parser.add_argument("--allowed-host", action="append", default=[])
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
-    allowed_hosts = args.allowed_host or DEFAULT_ALLOWED_HOSTS
+    allowed_hosts = args.allowed_host or _csv_env("MAGI_DB_MASTER_BACKUP_ALLOWED_HOSTS") or DEFAULT_ALLOWED_HOSTS
     payload: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "mode": "apply" if args.apply else "check-only",

@@ -363,12 +363,12 @@ def build_report() -> dict:
         exit_code = RISK_EXIT
         reasons.append("已有待整理裁判資料，但尚未找到晨間整理狀態檔。")
     elif backlog_count >= max(1, backlog_warn_count):
-        if interpretation_status == "CATCHING_UP" and (interpretation_reduced > 0 or interpretation_handled > 0):
+        if interpretation_status in {"CATCHING_UP", "AGING"} and (interpretation_reduced > 0 or interpretation_handled > 0):
             if status == "PIPELINE_HEALTHY":
                 status = "BACKLOG_CATCHING_UP"
                 exit_code = WARNING_EXIT
             reasons.append(
-                f"裁判資料尚有 {backlog_count} 份待整理，但本輪正在處理（消化 {interpretation_reduced}，處理 {interpretation_handled}）。"
+                f"裁判資料尚有 {backlog_count} 份待整理，且已有跨日老化，但本輪正在處理（消化 {interpretation_reduced}，處理 {interpretation_handled}）。"
             )
         elif oldest_backlog_age_hours >= backlog_risk_age_hours:
             status = "BACKLOG_STALE"

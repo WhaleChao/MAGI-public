@@ -21,7 +21,7 @@ def _module():
 def test_change_master_dry_run_redacts_password():
     mod = _module()
     target = mod.ReplicaTarget(
-        host="100.97.29.92",
+        host="db-backup.example.invalid",
         port=3306,
         user="repl",
         password="pw",
@@ -41,7 +41,7 @@ def test_change_master_dry_run_redacts_password():
 def test_change_master_requires_file_position_without_gtid():
     mod = _module()
     target = mod.ReplicaTarget(
-        host="100.97.29.92",
+        host="db-backup.example.invalid",
         port=3306,
         user="repl",
         password="pw",

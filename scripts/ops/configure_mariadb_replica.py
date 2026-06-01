@@ -350,7 +350,7 @@ def _make_profiles(args: argparse.Namespace) -> Tuple[DBProfile, DBProfile, Repl
     )
     repl_password = args.repl_password if args.repl_password is not None else _env("MAGI_DB_REPLICA_PASSWORD", "MAGI_REPL_PASSWORD", default="")
     target = ReplicaTarget(
-        host=args.remote_host or _env("MAGI_DB_REPLICA_REMOTE_HOST", default="100.97.29.92"),
+        host=args.remote_host or _env("MAGI_DB_REPLICA_REMOTE_HOST", default="<remote-master-host>"),
         port=int(args.remote_port or _env("MAGI_DB_REPLICA_REMOTE_PORT", default="3306")),
         user=args.repl_user or _env("MAGI_DB_REPLICA_USER", default="repl"),
         password=repl_password,

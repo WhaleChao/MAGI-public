@@ -43,8 +43,8 @@
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `MAGI_DB_MASTER_BACKUP_ENABLED` | bool | `0` | 是否啟用本機主 DB 對遠端備份庫的同步維運檢查 |
-| `MAGI_DB_MASTER_BACKUP_HOST` | string | `100.97.29.92` | 遠端備份庫應連入的本機 Tailscale IP |
-| `MAGI_DB_MASTER_BACKUP_DNS` | string | `aimac-mini.tail6738b7.ts.net` | 遠端備份庫可使用的本機 MagicDNS |
+| `MAGI_DB_MASTER_BACKUP_HOST` | string | — | 遠端備份庫應連入的本機 Tailscale IP |
+| `MAGI_DB_MASTER_BACKUP_DNS` | string | — | 遠端備份庫可使用的本機 MagicDNS |
 | `MAGI_DB_MASTER_BACKUP_PORT` | int | `3306` | 本機 MariaDB master port |
 | `MAGI_DB_MASTER_BACKUP_SERVER_ID` | int | `2` | 本機 master 的 MariaDB server-id |
 | `MAGI_DB_MASTER_BACKUP_REPL_USER` | string | `repl` | 本機提供給遠端備份庫的 replication 帳號 |

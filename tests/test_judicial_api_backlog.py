@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import time
 from pathlib import Path
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
@@ -114,6 +116,53 @@ def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):
     assert report["status"] == "BACKLOG_CATCHING_UP"
     assert report["exit_code"] == 10
     assert any("裁判資料檔、整理狀態與轉換結果" in item for item in report["reasons"])
+
+
+def test_aging_backlog_is_warning_when_current_run_is_reducing(monkeypatch, tmp_path):
+    cache_root = tmp_path / "judicial_api"
+    raw_root = cache_root / "raw"
+    normalized_root = cache_root / "normalized"
+    raw_root.mkdir(parents=True)
+    normalized_root.mkdir(parents=True)
+    old_raw = raw_root / "old_case.json"
+    old_raw.write_text('{"payload":{"JID":"OLD"}}', encoding="utf-8")
+    os.utime(old_raw, (time.time() - 36 * 3600, time.time() - 36 * 3600))
+    (raw_root / "new_case.json").write_text('{"payload":{"JID":"NEW"}}', encoding="utf-8")
+    process_state = cache_root / "process_state.json"
+    process_state.write_text(
+        """
+{
+  "updated_at": "2999-01-01T00:00:00",
+  "processed": {},
+  "last_run": {
+    "handled": 1,
+    "backlog_before": 3,
+    "db_upserts": 1,
+    "archive_upserts": 1,
+    "vector_ingested": 0,
+    "summarized": 1,
+    "errors": 0,
+    "max_docs": 1
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("JUDICIAL_API_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("JUDICIAL_API_RAW_ROOT", str(raw_root))
+    monkeypatch.setenv("JUDICIAL_API_NORMALIZED_ROOT", str(normalized_root))
+    monkeypatch.setenv("JUDICIAL_API_PROCESS_STATE_PATH", str(process_state))
+    monkeypatch.setenv("JUDICIAL_API_PULL_STATE_PATH", str(cache_root / "missing_pull_state.json"))
+    monkeypatch.setenv("MAGI_JUDICIAL_API_USER", "user")
+    monkeypatch.setenv("MAGI_JUDICIAL_API_PASS", "pass")
+
+    report = build_report()
+
+    assert report["backlog_interpretation"]["status"] == "AGING"
+    assert report["status"] == "BACKLOG_CATCHING_UP"
+    assert report["exit_code"] == 10
+    assert any("跨日老化" in item for item in report["reasons"])
 
 
 def test_extractive_judgment_summary_is_marked_and_source_bound():

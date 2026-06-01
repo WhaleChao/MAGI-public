@@ -17,8 +17,8 @@
 - MAGI 實際 MariaDB：`127.0.0.1:3306`
 - 相容入口：`127.0.0.1:3307`
 - `3307` 由 `com.magi.db-proxy` 轉接到 `127.0.0.1:3306`
-- Tailscale master：`100.97.29.92:3306`
-- MagicDNS：`aimac-mini.tail6738b7.ts.net:3306`
+- Tailscale master：`<本機 MAGI Tailscale IP>:3306`
+- MagicDNS：`<本機 MAGI MagicDNS>:3306`
 - 本機 `server-id`：`2`
 - 本機 `log_bin`：已啟用
 - 本機 `binlog_format`：`ROW`
@@ -65,7 +65,7 @@ venv/bin/python scripts/ops/configure_mariadb_master_backup.py --apply --restart
 - 確認本機 master 狀態。
 - 寫入或更新 binlog 設定。
 - 建立 `repl` 帳號。
-- 允許 `100.116.54.16`、`whale.tail6738b7.ts.net`、`100.111.10.126`、`whale-1.tail6738b7.ts.net` 連入同步。
+- 允許你指定的遠端備份庫 Tailscale IP / MagicDNS 連入同步。
 - 輸出遠端 replica 需要執行的 `CHANGE MASTER` 指令摘要，密碼會遮蔽。
 
 ## 初始化備份
@@ -93,7 +93,7 @@ _db_backups/master_seed/
 STOP SLAVE;
 RESET SLAVE ALL;
 CHANGE MASTER TO
-  MASTER_HOST='100.97.29.92',
+  MASTER_HOST='<本機 MAGI Tailscale IP 或 MagicDNS>',
   MASTER_PORT=3306,
   MASTER_USER='repl',
   MASTER_PASSWORD='請填入本機 .runtime 內的 repl 密碼',
