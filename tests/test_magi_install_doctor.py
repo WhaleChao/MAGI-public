@@ -91,6 +91,8 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_worldmonitor_intel" in cron_text
     assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in cron_text
     assert "job_laf_nightly_audit" in cron_text
+    assert "job_laf_portal_new_files_scan" in cron_text
+    assert "laf_portal_new_files_scan.py" in cron_text
     assert "job_laf_condition_draft" in cron_text
     assert "job_file_review_check" in cron_text
     assert "job_transcript_sync" in cron_text

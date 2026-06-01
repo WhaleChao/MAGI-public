@@ -105,6 +105,21 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "no_catchup": True,
         },
         {
+            "id": "job_laf_portal_new_files_scan",
+            "cron": "15 */6 * * *",
+            "command": (
+                f"{python_bin} {repo_root / 'scripts' / 'ops' / 'laf_portal_new_files_scan.py'} "
+                f"--json-out {repo_root / 'static' / 'laf_portal_new_files_latest.json'}"
+            ),
+            "desc": "法扶官網附件補抓（每 6 小時；成功下載歸檔才更新狀態）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "timeout_sec": 1200,
+        },
+        {
             "id": "job_laf_condition_dedup_scan",
             "cron": "35 8 * * *",
             "command": f"{python_bin} {repo_root / 'casper_ecosystem' / 'law_firm_orchestrators' / 'laf_orchestrator.py'} --mode condition-mark-by-mediation",

@@ -2733,10 +2733,18 @@ def _move_downloaded_to_case_folder(
     return moved, failed
 
 
-def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
+def scan_portal_new_files(
+    all_cases: List[dict],
+    *,
+    only_laf_no: str = "",
+    auto_download: bool = True,
+) -> List[dict]:
     """
     上法扶律師系統的下載頁面，取得所有待下載案件，
     偵測缺檔後自動下載並歸檔到正確子資料夾。
+
+    ``auto_download=False`` 只做官網/本地比對，不下載；用於 live
+    probe 或排程驗證，避免測試本身造成檔案異動。
 
     Returns:
         [{"case_number": ..., "client_name": ..., "laf_no": ...,
@@ -2744,6 +2752,7 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
     """
     laf = None
     new_files_found = []
+    only_laf_no = (only_laf_no or "").strip()
 
     try:
         laf = _make_laf_web_automation(log_prefix="LAF-AUDIT-DOWNLOAD")
@@ -2761,6 +2770,8 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             file_list = _split_portal_file_labels(dc.get("file_list") or [])
 
             if not laf_no:
+                continue
+            if only_laf_no and laf_no != only_laf_no:
                 continue
 
             matched_cases = _local_portal_case_matches(all_cases, dc)
@@ -2782,7 +2793,9 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             auto_downloaded_count = 0
             still_missing = list(missing_files)
 
-            if matched_cases:
+            if matched_cases and not auto_download:
+                logger.info("  🧪 %s: dry-run 僅比對缺檔，不下載", laf_no)
+            elif matched_cases:
                 # 取第一個有效的 case_root 作為歸檔目標
                 case_root = ""
                 for mc in matched_cases:
@@ -2844,6 +2857,68 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
                 logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2808, exc_info=True)
 
     return new_files_found
+
+
+def fetch_laf_cases_for_portal_scan(db) -> List[dict]:
+    """Fetch enough LAF case metadata for portal download de-duplication."""
+    if not db:
+        return []
+    query = """
+        SELECT `id`, `case_number`, `client_name`, `case_type`, `case_stage`,
+               `case_category`, `case_reason`, `status`, `folder_path`,
+               `legal_aid_number`, `laf_case_no`, `application_no`,
+               `legal_aid_status`, `created_date`, `updated_date`
+        FROM `cases`
+        WHERE (`case_category` IN ('法律扶助案件', '法扶案件')
+               OR COALESCE(`legal_aid_number`, '') <> ''
+               OR COALESCE(`laf_case_no`, '') <> ''
+               OR COALESCE(`application_no`, '') <> ''
+               OR `case_reason` LIKE '%法扶%'
+               OR `case_reason` LIKE '%法律扶助%')
+        ORDER BY `case_number` DESC
+    """
+    try:
+        return db.fetch_all(query, (), as_dict=True) or []
+    except Exception as e:
+        logger.error("fetch_laf_cases_for_portal_scan failed: %s", e)
+        return []
+
+
+def run_portal_new_files_scan(
+    *,
+    only_laf_no: str = "",
+    auto_download: bool = True,
+) -> dict:
+    """Run the standalone LAF portal file sweep used by the 6-hour cron job."""
+    db = _get_db()
+    if not db:
+        return {
+            "ok": False,
+            "error": "db_connection_failed",
+            "scanned_cases": 0,
+            "portal_new_files": [],
+        }
+
+    all_cases = fetch_laf_cases_for_portal_scan(db)
+    portal_new_files = scan_portal_new_files(
+        all_cases,
+        only_laf_no=only_laf_no,
+        auto_download=auto_download,
+    )
+    total_auto = sum(int(item.get("auto_downloaded", 0) or 0) for item in portal_new_files)
+    total_missing = sum(int(item.get("new_count", 0) or 0) for item in portal_new_files)
+    return {
+        "ok": True,
+        "mode": "laf_portal_new_files_scan",
+        "only_laf_no": only_laf_no,
+        "auto_download": auto_download,
+        "scanned_cases": len(all_cases),
+        "matched_or_missing_cases": len(portal_new_files),
+        "portal_auto_downloaded": total_auto,
+        "portal_still_missing": total_missing,
+        "portal_new_files": portal_new_files,
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 # ─── 2d. Portal 暫存/待處理全清單掃描 ────────────────────────────
