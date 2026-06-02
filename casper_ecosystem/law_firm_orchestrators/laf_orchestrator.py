@@ -85,6 +85,25 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
     except Exception:
         return
 
+
+def _safe_listdir(path: str, *, timeout_sec: float = 2.0) -> list[str]:
+    """List a NAS/Synology Drive directory without letting stale mounts block LAF."""
+    out: dict[str, list[str]] = {"items": []}
+
+    def _runner() -> None:
+        try:
+            out["items"] = list(os.listdir(path))
+        except Exception:
+            out["items"] = []
+
+    t = threading.Thread(target=_runner, daemon=True, name="laf-safe-listdir")
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        logger.warning("LAF safe listdir timeout after %.1fs: %s", timeout_sec, path)
+        return []
+    return out.get("items") or []
+
 # -------------------------------------------------------------------
 # Lazy imports (avoid import-time failures on missing deps)
 # -------------------------------------------------------------------
@@ -4078,26 +4097,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return super()._scan_case_folder_docs(case_folder)
 
     def _scan_go_live_docs(self, case_folder: str) -> tuple[dict, str]:
-        """Scan go-live source folders.
+        """Scan prepared go-live source folder.
 
-        Newer LAF portal downloads often land opening notices and POAs in
-        01_法扶資料.  The legacy portal draft path only looked at 02_開辦資料,
-        which made nightly audit and actual draft execution disagree.
+        01_法扶資料保存 portal 下載的空白表件；不可當成已簽/已填的開辦資料。
         """
         base = self._to_local_case_folder(case_folder) or case_folder
         docs = self._empty_docs_map()
-        scanned_dirs: list[str] = []
-        for subdir in ("02_開辦資料", "01_法扶資料"):
-            scan_dir = os.path.join(base, subdir)
-            if not os.path.isdir(scan_dir):
-                continue
-            scanned_dirs.append(scan_dir)
+        scan_dir = os.path.join(base, "02_開辦資料")
+        if os.path.isdir(scan_dir):
             part = self._scan_case_folder_docs(scan_dir)
             for key, value in (part or {}).items():
                 if isinstance(value, list):
                     docs.setdefault(key, [])
                     docs[key].extend(x for x in value if x not in docs[key])
-        return docs, " + ".join(scanned_dirs) if scanned_dirs else os.path.join(base, "02_開辦資料")
+        return docs, scan_dir
 
     def _existing_laf_portal_attachment_files(self, case_folder: str) -> list[str]:
         """Return existing official portal attachments under 01_法扶資料.
@@ -5667,6 +5680,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     @staticmethod
     def _norm_token(v: str) -> str:
         s = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", str(v or "").strip()).lower()
+        try:
+            from api.case_display import normalize_person_name
+            s = normalize_person_name(s)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch name normalization", exc_info=True)
         for orig, repl in LAFOrchestrator._VARIANT_MAP.items():
             s = s.replace(orig, repl)
         return s

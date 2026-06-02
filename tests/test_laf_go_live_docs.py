@@ -1,6 +1,12 @@
 from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
 
 
+def _orchestrator_without_private_config() -> LAFOrchestrator:
+    orch = LAFOrchestrator.__new__(LAFOrchestrator)
+    orch._db = None
+    return orch
+
+
 def test_go_live_docs_scan_ignores_laf_download_folder(tmp_path):
     case_dir = tmp_path / "2026-0055-測試甲-二審-測試案由"
     laf_dir = case_dir / "01_法扶資料"
@@ -10,7 +16,7 @@ def test_go_live_docs_scan_ignores_laf_download_folder(tmp_path):
     notice.write_bytes(b"%PDF-1.4\n")
     poa.write_bytes(b"%PDF-1.4\n")
 
-    orch = LAFOrchestrator(dry_run=True)
+    orch = _orchestrator_without_private_config()
     docs, scan_scope = orch._scan_go_live_docs(str(case_dir))
 
     assert str(notice) not in docs["opening_notice_files"]
@@ -35,7 +41,7 @@ def test_laf_portal_attachment_summary_counts_existing_blank_forms(tmp_path):
     (laf_dir / ".gitkeep").write_text("", encoding="utf-8")
     (staff_dir / "1150527-E-024 測試當事人 2A.pdf").write_bytes(b"%PDF-1.4\n")
 
-    orch = LAFOrchestrator(dry_run=True)
+    orch = _orchestrator_without_private_config()
 
     assert {p.split("/")[-1] for p in orch._existing_laf_portal_attachment_files(str(case_dir))} == {
         path.name for path in official
@@ -54,7 +60,7 @@ def test_go_live_docs_scan_uses_prepared_opening_folder(tmp_path):
     notice.write_bytes(b"%PDF-1.4\n")
     poa.write_bytes(b"%PDF-1.4\n")
 
-    orch = LAFOrchestrator(dry_run=True)
+    orch = _orchestrator_without_private_config()
     docs, scan_scope = orch._scan_go_live_docs(str(case_dir))
 
     assert str(notice) in docs["opening_notice_files"]
