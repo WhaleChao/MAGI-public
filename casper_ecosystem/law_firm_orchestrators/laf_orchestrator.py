@@ -1756,16 +1756,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             else:
                 missing_parts = []
                 if not open_doc:
-                    missing_parts.append("開辦通知")
+                    missing_parts.append("開辦通知/接案通知/准予扶助證明")
                 if not poa_doc:
                     missing_parts.append("委任狀")
-                go_live_reminder = f"⚠️ 尚缺{'、'.join(missing_parts)}，請補齊後手動開辦。"
+                go_live_reminder = (
+                    f"⚠️ 尚缺 02_開辦資料 的已簽/已填{'、'.join(missing_parts)}，"
+                    "請補齊後手動開辦；01_法扶資料的官網空白表件不視為可開辦文件。"
+                )
             logger.info("  📋 Go-live reminder: %s", go_live_reminder)
 
         # Step 5: Notify (text + opening notice image for confirmation)
         # 通知計數以 02_開辦資料 為準
         opening_notice_count = len(go_live_docs.get("opening_notice_files") or [])
         poa_count = len(go_live_docs.get("poa_files") or [])
+        portal_existing_files = self._existing_laf_portal_attachment_files(db_path)
         folder_label = os.path.basename(str(db_path or "").rstrip("/\\")) if db_path else ""
         _is_existing = existing is not None
         notify_lines = [
@@ -1783,7 +1787,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             dl_skipped_files = dl_archive.get("skipped_existing") or []
             dl_new_count = len(dl_new_files)
             dl_skipped_count = len(dl_skipped_files)
-            notify_lines.append(f"官網附件: 新增 {dl_new_count} 份")
+            notify_lines.append(f"官網附件: 本輪新增 {dl_new_count} 份")
             if dl_skipped_count:
                 notify_lines.append(f"官網附件去重: 略過 {dl_skipped_count} 份")
             for fn in dl_new_files[:10]:
@@ -1794,7 +1798,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會每 5 分鐘自動補查。")
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result['error']}")
-        notify_lines.append(f"開辦資料: 開辦通知 {opening_notice_count} 份、委任狀 {poa_count} 份")
+        elif portal_existing_files:
+            notify_lines.append("官網附件: 本輪新增 0 份")
+        if portal_existing_files:
+            notify_lines.append(f"官網附件既有: {len(portal_existing_files)} 份（01_法扶資料）")
+        notify_lines.append(f"開辦資料（02_開辦資料，已簽/已填）: 開辦通知 {opening_notice_count} 份、委任狀 {poa_count} 份")
         if email_attachment_result.get("downloaded_count"):
             notify_lines.append(f"專員來信附件: 新增 {int(email_attachment_result.get('new_count') or 0)} 份")
             skipped_email = int(email_attachment_result.get("skipped_existing_count") or 0)
@@ -4090,6 +4098,45 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     docs.setdefault(key, [])
                     docs[key].extend(x for x in value if x not in docs[key])
         return docs, " + ".join(scanned_dirs) if scanned_dirs else os.path.join(base, "02_開辦資料")
+
+    def _existing_laf_portal_attachment_files(self, case_folder: str) -> list[str]:
+        """Return existing official portal attachments under 01_法扶資料.
+
+        These are downloaded/reference forms from the LAF portal.  They are
+        intentionally counted separately from 02_開辦資料 because blank portal
+        forms must not make a case look ready for go-live.
+        """
+        base = self._to_local_case_folder(case_folder) or translate_case_path_to_local(case_folder, require_existing=True) or case_folder
+        laf_dir = os.path.join(base, "01_法扶資料")
+        if not os.path.isdir(laf_dir):
+            return []
+        official_keywords = (
+            "扶助律師接案通知書",
+            "接案通知書",
+            "委任狀",
+            "法律扶助申請書",
+            "案件概述單",
+            "資力詢問表",
+            "審查表",
+            "准予扶助證明書",
+            "預付酬金領款單",
+            "結案回報書",
+            "結案審查通知書",
+            "結案酬金領款單",
+        )
+        out: list[str] = []
+        for fn in _safe_listdir(laf_dir):
+            if not fn or fn.startswith("."):
+                continue
+            full = os.path.join(laf_dir, fn)
+            if not os.path.isfile(full):
+                continue
+            lower = fn.lower()
+            if lower.endswith(".zip") or lower.endswith(".txt"):
+                continue
+            if any(keyword in fn for keyword in official_keywords):
+                out.append(full)
+        return sorted(out)
 
     def _dump_missing_docs_diagnostics(
         self,
