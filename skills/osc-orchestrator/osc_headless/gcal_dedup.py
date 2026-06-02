@@ -154,10 +154,35 @@ def normalize_case_key(todo_or_event: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def classify_event_kind(text: str, todo_type: str = "") -> str:
-    t = f"{_coerce_text(todo_type)} {_coerce_text(text)}"
+    """Classify calendar obligations narrowly enough for safe de-duplication.
+
+    A plain "deadline" bucket is too broad: a court notice can require both a
+    payment and a correction on the same date.  Response-like words such as
+    "陳報" and "提出資料", however, often describe the same obligation in
+    different extraction paths, so they share a dedicated family.
+    """
+    tt = _coerce_text(todo_type)
+    if tt in {"繳費"}:
+        return "deadline_payment"
+    if tt in {"補正"}:
+        return "deadline_correction"
+    if tt in {"上訴", "抗告", "再抗告", "異議", "再議"}:
+        return "deadline_challenge"
+    if tt in {"陳報", "陳述意見", "提出資料", "表示意見"}:
+        return "deadline_response"
+
+    t = f"{tt} {_coerce_text(text)}"
     if any(k in t for k in ("開庭", "準備程序", "言詞辯論", "審理程序", "訊問", "調解", "協商程序")):
         return "hearing"
-    if any(k in t for k in ("補正", "繳費", "上訴", "抗告", "再抗告", "異議", "陳述意見", "提出資料", "期限")):
+    if any(k in t for k in ("繳納", "繳費", "裁判費", "規費", "聲請費")):
+        return "deadline_payment"
+    if any(k in t for k in ("補正", "補繳", "補提", "補送", "補件")):
+        return "deadline_correction"
+    if any(k in t for k in ("上訴", "抗告", "再抗告", "異議", "再議")):
+        return "deadline_challenge"
+    if any(k in t for k in ("陳報", "陳述意見", "表示意見", "提出資料", "提出", "具狀表示", "回覆", "確答", "陳明")):
+        return "deadline_response"
+    if any(k in t for k in ("期限", "日內", "日前", "文到", "送達後", "送達翌日起")):
         return "deadline"
     if any(k in t for k in ("開會", "會議", "律見", "接見", "視訊會議", "法律諮詢", "來所")):
         return "meeting"
@@ -289,6 +314,8 @@ def confidence_for_match(a: Dict[str, Any], b: Dict[str, Any]) -> str:
         _, time_b = _event_start_date_time(b)
 
     if kind_a == kind_b and time_a and time_b and time_a == time_b:
+        return "high"
+    if kind_a == kind_b and not time_a and not time_b and kind_a.startswith("deadline"):
         return "high"
     if kind_a == kind_b:
         return "medium"

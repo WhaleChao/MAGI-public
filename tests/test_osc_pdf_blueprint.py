@@ -299,6 +299,58 @@ def test_pdf_calendar_scan_preview_detects_absolute_deadline_in_pdf_text(client,
     assert todo["time"] == ""
 
 
+def test_pdf_calendar_scan_dedupes_response_deadline_type_drift(tmp_path):
+    from api.blueprints import osc_pdf
+
+    items = osc_pdf._dedupe_todos(
+        [
+            {
+                "type": "提出資料",
+                "date": "2026-06-08",
+                "time": "",
+                "description": "📝 PDF 擷取：如有異議，10日內提出資料（基準日 05/29）",
+                "source": "pdf_text",
+            },
+            {
+                "type": "陳報",
+                "date": "2026-06-08",
+                "time": "",
+                "description": "📝 10日內陳報 (05/29文到)",
+                "source": "filename",
+            },
+        ]
+    )
+
+    assert len(items) == 1
+    assert items[0]["type"] == "陳報"
+
+
+def test_pdf_calendar_scan_keeps_distinct_payment_and_correction_same_day(tmp_path):
+    from api.blueprints import osc_pdf
+
+    items = osc_pdf._dedupe_todos(
+        [
+            {
+                "type": "補正",
+                "date": "2026-06-08",
+                "time": "",
+                "description": "補正委任狀",
+                "source": "pdf_text",
+            },
+            {
+                "type": "繳費",
+                "date": "2026-06-08",
+                "time": "",
+                "description": "繳納裁判費",
+                "source": "pdf_text",
+            },
+        ]
+    )
+
+    assert len(items) == 2
+    assert {item["type"] for item in items} == {"補正", "繳費"}
+
+
 def test_pdf_calendar_scan_falls_back_to_filename_when_pdf_placeholder_unreadable(client, tmp_path, monkeypatch):
     path = tmp_path / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
     path.write_bytes(b"not a real local pdf yet")

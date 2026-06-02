@@ -595,8 +595,60 @@ def _tentative_no_deadline_todo(path: Path, text: str = "") -> list[dict[str, An
     ]
 
 
+def _todo_semantic_family(item: dict[str, Any]) -> str:
+    todo_type = str(item.get("type") or "").strip()
+    if todo_type == "繳費":
+        return "deadline_payment"
+    if todo_type == "補正":
+        return "deadline_correction"
+    if todo_type in {"上訴", "抗告", "再抗告", "異議", "再議"}:
+        return "deadline_challenge"
+    if todo_type in {"陳報", "陳述意見", "提出資料", "表示意見"}:
+        return "deadline_response"
+    text = f"{todo_type} {item.get('description') or ''}"
+    if any(k in text for k in ("開庭", "準備程序", "言詞辯論", "審理程序", "審判程序", "審理", "宣判", "訊問", "調解", "調查")):
+        return "hearing"
+    if any(k in text for k in ("繳納", "繳費", "裁判費", "規費", "聲請費")):
+        return "deadline_payment"
+    if any(k in text for k in ("補正", "補繳", "補提", "補送", "補件")):
+        return "deadline_correction"
+    if any(k in text for k in ("上訴", "抗告", "再抗告", "異議", "再議")):
+        return "deadline_challenge"
+    if any(k in text for k in ("陳報", "陳述意見", "表示意見", "提出資料", "提出", "具狀表示", "回覆", "確答", "陳明")):
+        return "deadline_response"
+    return str(item.get("type") or "待辦").strip() or "待辦"
+
+
+def _todo_priority(item: dict[str, Any]) -> tuple[int, int]:
+    todo_type = str(item.get("type") or "").strip()
+    text = str(item.get("description") or "")
+    type_rank = {
+        "繳費": 100,
+        "補正": 95,
+        "陳報": 90,
+        "陳述意見": 88,
+        "上訴": 86,
+        "抗告": 86,
+        "再抗告": 86,
+        "異議": 84,
+        "提出資料": 72,
+        "確認": 20,
+        "待辦": 10,
+    }.get(todo_type, 50)
+    source_rank = {
+        "filename": 4,
+        "pdf_text": 3,
+        "pdf_tentative_no_deadline": 1,
+    }.get(str(item.get("source") or ""), 2)
+    if "MAGI分享連結：" in text or "來源PDF：" in text:
+        source_rank += 1
+    return type_rank, source_rank
+
+
 def _dedupe_todos(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str, str]] = set()
+    semantic: dict[tuple[str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str]] = []
     out: list[dict[str, Any]] = []
     for item in items:
         key = (
@@ -608,7 +660,23 @@ def _dedupe_todos(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
+        family = _todo_semantic_family(item)
+        if family in {"deadline_response"}:
+            semantic_key = (
+                str(item.get("date") or ""),
+                str(item.get("time") or ""),
+                family,
+            )
+            current = semantic.get(semantic_key)
+            if current is None:
+                semantic[semantic_key] = item
+                order.append(semantic_key)
+                continue
+            if _todo_priority(item) > _todo_priority(current):
+                semantic[semantic_key] = item
+            continue
         out.append(item)
+    out.extend(semantic[k] for k in order if k in semantic)
     return out
 
 

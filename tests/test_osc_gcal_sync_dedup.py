@@ -317,6 +317,96 @@ def test_cleanup_duplicate_calendar_todos_treats_import_as_dedup_candidate():
     assert out["items"][0]["kept_id"] == 3775
 
 
+def test_cleanup_duplicate_calendar_todos_merges_response_deadline_type_drift():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 4123,
+            "case_number": "2025-0059",
+            "client_name": "吳美蓮",
+            "todo_type": "陳報",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "📝 10日內陳報 (05/29文到)",
+            "source_file": "20260529 宜蘭地方法院函（吳美蓮；如有異議10日內提出）.pdf",
+            "google_calendar_id": "keep-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 4134,
+            "case_number": "2025-0059",
+            "client_name": "吳美蓮",
+            "todo_type": "提出資料",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "提出資料 (2026-06-08 00:00) - 20260529 宜蘭地方法院函（吳美蓮；如有異議，請於收受後10日內提出）.pdf",
+            "source_file": "20260529 宜蘭地方法院函（吳美蓮；如有異議10日內提出）.pdf",
+            "google_calendar_id": "duplicate-event-id",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 1
+    assert out["marked"] == 1
+    assert out["deleted_events"] == 1
+    assert conn.updates == [(4134,)]
+    assert service.events_api.delete_calls == [{"calendarId": "primary", "eventId": "duplicate-event-id"}]
+
+
+def test_cleanup_duplicate_calendar_todos_does_not_merge_payment_and_correction_same_day():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 501,
+            "case_number": "2026-0001",
+            "client_name": "王小明",
+            "todo_type": "補正",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "補正委任狀",
+            "source_file": "notice.pdf",
+            "google_calendar_id": "correction-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 502,
+            "case_number": "2026-0001",
+            "client_name": "王小明",
+            "todo_type": "繳費",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "繳納裁判費",
+            "source_file": "notice.pdf",
+            "google_calendar_id": "payment-event-id",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 0
+    assert out["marked"] == 0
+    assert service.events_api.delete_calls == []
+
+
 def test_gcal_sync_dedup_dry_run_avoids_insert(monkeypatch):
     mod = _load_action_module()
     monkeypatch.setenv("MAGI_GCAL_DEDUP_ENABLED", "1")
