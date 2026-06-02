@@ -125,6 +125,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     # Match original OSC behavior: filename rules are authoritative. Text/OCR is
     # a fallback for ambiguous filenames, not a second pass for every matched PDF.
     text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "0").strip().lower() in {"1", "true", "yes", "on"}
+    filename_sweep = os.environ.get("OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP", "1").strip().lower() in {"1", "true", "yes", "on"}
+    filename_sweep_limit = max(1, min(5000, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "5000") or "5000")))
     file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
     budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
     outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
@@ -135,6 +137,10 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         no_todo_cache_days = 0
     started = time.monotonic()
     scanned = inserted = updated = skipped = todo_count = event_count = warning_count = 0
+    filename_sweep_scanned = 0
+    text_scanned = 0
+    filename_sweep_targets_count = 0
+    text_targets_count = 0
     past_todo_count = 0
     implausible_todo_count = 0
     timeout_count = 0
@@ -207,14 +213,72 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         case_offset = 0
 
     target_timeout_sec = max(5, min(max(10, budget_sec or 10), int(os.environ.get("OSC_PDF_CALENDAR_TARGET_TIMEOUT_SEC", "45") or "45")))
-    try:
+
+    def _load_targets(
+        *,
+        wanted_limit: int,
+        wanted_offset: int,
+        wanted_batch: int,
+        filename_only: bool = False,
+    ) -> list[tuple[Any, str, str]]:
         with _pdf_scan_time_limit(target_timeout_sec):
             try:
-                targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit, case_offset=case_offset, case_batch=case_batch)
+                return osc_pdf._iter_all_case_pdf_targets(
+                    limit=wanted_limit,
+                    case_offset=wanted_offset,
+                    case_batch=wanted_batch,
+                    filename_only=filename_only,
+                )
             except TypeError:
                 # Unit tests and older private plugins may monkeypatch the old
                 # one-argument helper; keep dry-run verification compatible.
-                targets = osc_pdf._iter_all_case_pdf_targets(limit=target_limit)
+                return osc_pdf._iter_all_case_pdf_targets(limit=wanted_limit)
+
+    target_specs: list[tuple[Any, str, str, bool, str]] = []
+    target_seen: set[tuple[str, str]] = set()
+
+    def _append_targets(items: list[tuple[Any, str, str]], *, use_text: bool, mode: str) -> None:
+        nonlocal filename_sweep_targets_count, text_targets_count
+        for path, case_number, client_name in items or []:
+            key = (str(path), str(case_number or ""))
+            if key in target_seen:
+                # If the full filename sweep saw this first, upgrade the queued
+                # item to a text/OCR fallback pass when it is also in the bounded
+                # recent/rotating candidate set.
+                if use_text:
+                    for idx, (old_path, old_case, old_client, old_use_text, old_mode) in enumerate(target_specs):
+                        if (str(old_path), str(old_case or "")) == key and not old_use_text:
+                            target_specs[idx] = (old_path, old_case, old_client or client_name, True, "filename_then_text")
+                            text_targets_count += 1
+                            break
+                continue
+            target_seen.add(key)
+            target_specs.append((path, case_number, client_name, use_text, mode))
+            if use_text:
+                text_targets_count += 1
+            else:
+                filename_sweep_targets_count += 1
+
+    if filename_sweep:
+        try:
+            sweep_batch = max(case_batch, total_case_rows or case_batch)
+            sweep_limit = max(target_limit, filename_sweep_limit)
+            _append_targets(
+                _load_targets(wanted_limit=sweep_limit, wanted_offset=0, wanted_batch=sweep_batch, filename_only=True),
+                use_text=False,
+                mode="filename_sweep",
+            )
+        except _PdfScanTimeout as exc:
+            errors.append(f"filename_sweep_target_timeout:{str(exc)[:120]}")
+        except Exception as exc:
+            errors.append(f"filename_sweep_target_error:{type(exc).__name__}: {str(exc)[:160]}")
+
+    try:
+        _append_targets(
+            _load_targets(wanted_limit=target_limit, wanted_offset=case_offset, wanted_batch=case_batch, filename_only=False),
+            use_text=True,
+            mode="text_fallback",
+        )
     except _PdfScanTimeout as exc:
         return {
             "ok": False,
@@ -226,6 +290,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             "case_offset": case_offset,
             "case_batch": case_batch,
             "total_case_rows": total_case_rows,
+            "filename_sweep": filename_sweep,
+            "filename_sweep_targets": filename_sweep_targets_count,
         }
     except Exception as exc:
         return {
@@ -238,28 +304,39 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             "case_offset": case_offset,
             "case_batch": case_batch,
             "total_case_rows": total_case_rows,
+            "filename_sweep": filename_sweep,
+            "filename_sweep_targets": filename_sweep_targets_count,
         }
 
-    for path, case_number, client_name in targets:
+    for path, case_number, client_name, use_text, scan_mode in target_specs:
         try:
-            if scanned >= limit:
-                break
+            if use_text and text_scanned >= limit:
+                continue
+            if not use_text and filename_sweep_scanned >= filename_sweep_limit:
+                continue
             if budget_sec and time.monotonic() - started > budget_sec:
                 errors.append(f"budget_exhausted:{budget_sec}s")
                 break
             signature = _file_signature(path)
             cache_key = signature[0] if signature else ""
-            if signature and no_todo_cache_days:
+            if use_text and signature and no_todo_cache_days:
                 cached = cache_files.get(cache_key) if isinstance(cache_files, dict) else None
                 if isinstance(cached, dict):
                     same_file = int(cached.get("mtime") or 0) == signature[1] and int(cached.get("size") or -1) == signature[2]
                     same_rule = str(cached.get("rule_version") or "") == PDF_SCAN_RULE_VERSION
+                    cached_text_error = str(cached.get("text_error") or "").strip()
                     scanned_at = str(cached.get("scanned_at") or "")
                     try:
                         age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(scanned_at)).total_seconds() / 86400
                     except Exception:
                         age_days = no_todo_cache_days + 1
-                    if same_file and same_rule and int(cached.get("todo_count") or 0) == 0 and age_days < no_todo_cache_days:
+                    if (
+                        same_file
+                        and same_rule
+                        and int(cached.get("todo_count") or 0) == 0
+                        and not cached_text_error
+                        and age_days < no_todo_cache_days
+                    ):
                         cache_skipped += 1
                         continue
             with _pdf_scan_time_limit(file_timeout_sec):
@@ -269,10 +346,14 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                     client_name=client_name,
                     max_pages=max_pages,
                     include_share_link=not dry_run,
-                    scan_text=scan_text,
+                    scan_text=bool(scan_text and use_text),
                     text_when_filename=text_when_filename,
                 )
             scanned += 1
+            if use_text:
+                text_scanned += 1
+            else:
+                filename_sweep_scanned += 1
             raw_todos = item.get("todos") or []
             todos, past_skipped, implausible_skipped = _active_pdf_todos(raw_todos)
             past_todo_count += past_skipped
@@ -280,16 +361,26 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             todo_count += len(todos)
             event_count += len(todos)
             if signature and isinstance(cache_files, dict):
-                cache_files[cache_key] = {
-                    "mtime": signature[1],
-                    "size": signature[2],
-                    "todo_count": len(todos),
-                    "rule_version": PDF_SCAN_RULE_VERSION,
-                    "text_available": bool(item.get("text_available")),
-                    "text_error": str(item.get("text_error") or "")[:200],
-                    "scanned_at": datetime.now(timezone.utc).isoformat(),
-                }
-                cache_changed = True
+                text_error = str(item.get("text_error") or "")[:200]
+                # Do not cache "no todo" when text/OCR was skipped or failed.
+                # A transient OCR timeout or Synology placeholder must be retried
+                # on the next sweep, otherwise court deadlines can silently vanish.
+                if len(todos) == 0 and text_error:
+                    if cache_key in cache_files:
+                        cache_files.pop(cache_key, None)
+                        cache_changed = True
+                else:
+                    cache_files[cache_key] = {
+                        "mtime": signature[1],
+                        "size": signature[2],
+                        "todo_count": len(todos),
+                        "rule_version": PDF_SCAN_RULE_VERSION,
+                        "text_available": bool(item.get("text_available")),
+                        "text_error": text_error,
+                        "scan_mode": scan_mode,
+                        "scanned_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    cache_changed = True
             if todos and not item.get("case_number"):
                 warning_count += 1
             write_result = {"inserted": 0, "updated": 0, "skipped": 0}
@@ -310,6 +401,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                         "case_number": item.get("case_number") or case_number,
                         "client_name": item.get("client_name") or client_name,
                         "file_name": path.name,
+                        "scan_mode": scan_mode,
                         "todo_count": len(todos),
                         "event_count": len(todos),
                         "write_result": write_result,
@@ -360,6 +452,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "max_pages": max_pages,
         "scan_text": scan_text,
         "text_when_filename": text_when_filename,
+        "filename_sweep": filename_sweep,
+        "filename_sweep_limit": filename_sweep_limit,
         "file_timeout_sec": file_timeout_sec,
         "budget_sec": budget_sec,
         "target_timeout_sec": target_timeout_sec,
@@ -369,8 +463,12 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "total_case_rows": total_case_rows,
         "no_todo_cache_days": no_todo_cache_days,
         "rule_version": PDF_SCAN_RULE_VERSION,
-        "targets": len(targets),
+        "targets": len(target_specs),
+        "filename_sweep_targets": filename_sweep_targets_count,
+        "text_targets": text_targets_count,
         "scanned": scanned,
+        "filename_sweep_scanned": filename_sweep_scanned,
+        "text_scanned": text_scanned,
         "cache_skipped": cache_skipped,
         "todo_count": todo_count,
         "event_count": event_count,
@@ -545,12 +643,18 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     "limit": args.calendar_limit,
                     "incremental": True,
                 }
-                cal = mod.task_gcal_import(calendar_payload)
+                import_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_IMPORT_TIMEOUT_SEC", "180") or "180"))
+                with _pdf_scan_time_limit(import_timeout):
+                    cal = mod.task_gcal_import(calendar_payload)
                 result["calendar_import"] = cal
                 if not cal.get("ok") and cal.get("need_interactive_oauth"):
                     result["warnings"].append("google_calendar_oauth_required")
                 elif not cal.get("ok"):
                     result["ok"] = False
+            except _PdfScanTimeout as exc:
+                result["ok"] = False
+                result["warnings"].append("google_calendar_import_timeout")
+                result["calendar_import"] = {"ok": False, "error": str(exc)}
             except Exception as exc:
                 result["ok"] = False
                 result["calendar_import"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
@@ -562,7 +666,9 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     "repair_limit": args.gcal_push_limit,
                     "retry_max_attempts": 3,
                 }
-                pushed = mod.task_gcal_sync(push_payload)
+                push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
+                with _pdf_scan_time_limit(push_timeout):
+                    pushed = mod.task_gcal_sync(push_payload)
                 result["calendar_push"] = pushed
                 if not pushed.get("ok") and pushed.get("need_interactive_oauth"):
                     result["warnings"].append("google_calendar_oauth_required")
@@ -572,13 +678,19 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                         result["warnings"].append("google_calendar_oauth_required")
                     else:
                         result["ok"] = False
+            except _PdfScanTimeout as exc:
+                result["ok"] = False
+                result["warnings"].append("google_calendar_push_timeout")
+                result["calendar_push"] = {"ok": False, "error": str(exc)}
             except Exception as exc:
                 result["ok"] = False
                 result["calendar_push"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
             if not getattr(args, "skip_calendar_audit", False):
                 try:
-                    audit = mod.task_gcal_integrity_audit({"limit": args.gcal_push_limit})
+                    audit_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_AUDIT_TIMEOUT_SEC", "120") or "120"))
+                    with _pdf_scan_time_limit(audit_timeout):
+                        audit = mod.task_gcal_integrity_audit({"limit": args.gcal_push_limit})
                     result["calendar_audit"] = audit
                     if not audit.get("ok"):
                         if audit.get("need_interactive_oauth"):
@@ -591,6 +703,9 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                             # but must not make the six-hour todo refresh look
                             # failed after scan/import/push already succeeded.
                             result["warnings"].append("google_calendar_integrity_needs_attention")
+                except _PdfScanTimeout as exc:
+                    result["warnings"].append("google_calendar_integrity_timeout")
+                    result["calendar_audit"] = {"ok": False, "error": str(exc)}
                 except Exception as exc:
                     result["ok"] = False
                     result["calendar_audit"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}

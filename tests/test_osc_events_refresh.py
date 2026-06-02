@@ -443,3 +443,106 @@ def test_pdf_calendar_scan_rescans_when_rule_version_changes(monkeypatch, tmp_pa
     assert calls == [str(pdf)]
     updated = json.loads(cache_path.read_text(encoding="utf-8"))
     assert updated["files"][str(pdf)]["rule_version"] == "new-rule"
+
+
+def test_pdf_calendar_scan_rescans_cached_no_todo_when_text_error_exists(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    cache_path = tmp_path / "pdf_calendar_scan_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "files": {
+                    str(pdf): {
+                        "mtime": int(pdf.stat().st_mtime),
+                        "size": int(pdf.stat().st_size),
+                        "todo_count": 0,
+                        "rule_version": osc_events_refresh.PDF_SCAN_RULE_VERSION,
+                        "text_error": "pdf_scan_timeout:12s",
+                        "scanned_at": "2026-06-01T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(str(path))
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "補正", "date": "2026-06-10", "time": "", "description": "補正"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["scanned"] == 1
+    assert result["cache_skipped"] == 0
+    assert calls == [str(pdf)]
+
+
+def test_pdf_calendar_scan_full_filename_sweep_uses_all_cases_before_bounded_text(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    target_calls = []
+    scan_calls = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", tmp_path / "cursor.json")
+    monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 123)
+    monkeypatch.setenv("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "50")
+
+    def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
+        target_calls.append({"limit": limit, "case_offset": case_offset, "case_batch": case_batch, "filename_only": filename_only})
+        if filename_only and case_offset == 0 and case_batch == 123:
+            return [(pdf, "2026-0001", "測試")]
+        return []
+
+    monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: scan_calls.append(kwargs)
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "補正", "date": "2026-06-10", "time": "", "description": "補正"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert target_calls[0] == {"limit": 50, "case_offset": 0, "case_batch": 123, "filename_only": True}
+    assert result["filename_sweep_targets"] == 1
+    assert result["filename_sweep_scanned"] == 1
+    assert scan_calls[0]["scan_text"] is False

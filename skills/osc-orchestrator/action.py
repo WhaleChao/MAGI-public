@@ -2060,6 +2060,52 @@ def _is_google_gone_error(exc: Exception) -> bool:
         return "404" in str(exc) or "410" in str(exc)
 
 
+_CHALLENGE_CALENDAR_TYPES = {"上訴", "抗告", "再抗告", "異議", "再議"}
+_COURT_DOC_KIND_RE = re.compile(r"(判決|裁定|不起訴處分書|支付命令)")
+_COURT_CASE_NO_RE = re.compile(r"(\d{2,3})年度(.{1,12}?字)第0*(\d{1,6})號")
+
+
+def _calendar_court_doc_identity(row: Dict[str, Any]) -> tuple[str, str]:
+    text = re.sub(r"\s+", "", f"{row.get('source_file') or ''} {row.get('description') or ''}")
+    kind_match = _COURT_DOC_KIND_RE.search(text)
+    kind = kind_match.group(1) if kind_match else ""
+    case_match = _COURT_CASE_NO_RE.search(text)
+    if not case_match:
+        return kind, ""
+    roc_year, case_word, serial = case_match.groups()
+    return kind, f"{int(roc_year)}年度{case_word}第{int(serial)}號"
+
+
+def _calendar_source_specificity(row: Dict[str, Any]) -> int:
+    source = str(row.get("source_file") or "")
+    desc = str(row.get("description") or "")
+    score = 0
+    if re.search(r"^(20\d{6}|\d{7})(?:\s|$)", Path(source).name):
+        score += 20
+    kind, court_no = _calendar_court_doc_identity(row)
+    if kind:
+        score += 10
+    if court_no:
+        score += 20
+    score += min(len(Path(source).name), 120) // 20
+    if "MAGI分享連結：" in desc:
+        score += 2
+    return score
+
+
+def _calendar_row_date(row: Dict[str, Any]) -> Optional[datetime]:
+    raw = row.get("todo_date")
+    if isinstance(raw, datetime):
+        return raw
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d")
+    except Exception:
+        return None
+
+
 def _cleanup_duplicate_calendar_todos(
     conn: Any,
     service: Any,
@@ -2067,6 +2113,7 @@ def _cleanup_duplicate_calendar_todos(
     calendar_id: str,
     target_calendar_ids: set[str],
     limit: int = 300,
+    lookback_days: int = 14,
 ) -> Dict[str, Any]:
     """Merge duplicate future calendar todos regardless of source calendar.
 
@@ -2081,28 +2128,91 @@ def _cleanup_duplicate_calendar_todos(
         "deleted_events": 0,
         "delete_failed": 0,
         "db_only_marked": 0,
+        "purged_deleted_events": 0,
+        "purge_failed": 0,
         "items": [],
     }
+    lookback_days = max(0, min(int(lookback_days or 0), 90))
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            """
+            f"""
             SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
                    description, source_file, google_calendar_id, status
             FROM case_todos
             WHERE todo_date IS NOT NULL
-              AND todo_date >= CURDATE()
+              AND todo_date >= DATE_SUB(CURDATE(), INTERVAL {lookback_days} DAY)
               AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
-              AND (status IS NULL OR status = '' OR status = 'pending')
+              AND (status IS NULL OR status = '' OR status IN ('pending', 'calendar_deduped', 'deleted'))
             ORDER BY todo_date ASC, todo_time ASC, id ASC
             LIMIT %s
             """,
             (max(1, min(int(limit or 300), 1000)),),
         )
         rows = [dict(r) for r in (cur.fetchall() or []) if isinstance(r, dict)]
+
+        def _event_calendar_for(row: Dict[str, Any]) -> str:
+            source = str(row.get("source_file") or "")
+            if source.startswith("gcal_import:"):
+                return source.split(":", 1)[1].strip()
+            return calendar_id or "primary"
+
+        active_rows: list[Dict[str, Any]] = []
+        for row in rows:
+            row_id = int(row.get("id") or 0)
+            status = str(row.get("status") or "").strip()
+            if status != "deleted":
+                active_rows.append(row)
+                continue
+            gid = str(row.get("google_calendar_id") or "").strip()
+            if not row_id or not gid:
+                continue
+            event_calendar_id = _event_calendar_for(row)
+            delete_ok = True
+            try:
+                service.events().delete(calendarId=event_calendar_id, eventId=gid).execute()
+            except Exception as exc:
+                if not _is_google_gone_error(exc):
+                    delete_ok = False
+                    out["purge_failed"] += 1
+                    if len(out["items"]) < 20:
+                        out["items"].append({
+                            "id": row_id,
+                            "case_number": str(row.get("case_number") or ""),
+                            "todo_date": str(row.get("todo_date") or ""),
+                            "todo_time": str(row.get("todo_time") or ""),
+                            "source_file": str(row.get("source_file") or ""),
+                            "google_calendar_id": gid,
+                            "calendar_id": event_calendar_id,
+                            "action": "deleted_event_purge_failed",
+                            "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                        })
+            if not delete_ok:
+                continue
+            cur.execute(
+                """
+                UPDATE case_todos
+                SET google_calendar_id=''
+                WHERE id=%s
+                """,
+                (row_id,),
+            )
+            out["purged_deleted_events"] += int(getattr(cur, "rowcount", 0) or 0)
+            if len(out["items"]) < 20:
+                out["items"].append({
+                    "id": row_id,
+                    "case_number": str(row.get("case_number") or ""),
+                    "todo_date": str(row.get("todo_date") or ""),
+                    "todo_time": str(row.get("todo_time") or ""),
+                    "source_file": str(row.get("source_file") or ""),
+                    "google_calendar_id": gid,
+                    "calendar_id": event_calendar_id,
+                    "action": "deleted_event_purged",
+                })
+
         known_by_slot: Dict[tuple[str, str, str], list[Dict[str, Any]]] = {}
         groups: Dict[tuple[str, str, str, str], list[Dict[str, Any]]] = {}
-        for row in rows:
+        for row in active_rows:
             kind = _todo_calendar_kind(str(row.get("todo_type") or ""), str(row.get("description") or ""))
             if kind == "other":
                 kind = str(row.get("todo_type") or "other")
@@ -2112,7 +2222,7 @@ def _cleanup_duplicate_calendar_todos(
                 slot = (str(row.get("todo_date") or "").strip(), str(row.get("todo_time") or "").strip(), kind)
                 known_by_slot.setdefault(slot, []).append(row)
 
-        for row in rows:
+        for row in active_rows:
             kind = str(row.get("_calendar_kind") or "")
             case_no = str(row.get("case_number") or "").strip()
             if not case_no:
@@ -2137,26 +2247,116 @@ def _cleanup_duplicate_calendar_todos(
             )
             groups.setdefault(key, []).append(row)
 
-        def _canonical_sort_key(row: Dict[str, Any]) -> tuple[int, int, int]:
+        # Google Drive/NAS imports can leave two filenames for the same court
+        # judgment/ruling.  Their appeal/objection deadlines may differ by a day
+        # because one file has an OSC received-date prefix and the other falls
+        # back to mtime.  Collapse same court document within a small date window.
+        challenge_buckets: Dict[tuple[str, str, str], list[tuple[Dict[str, Any], str, Optional[datetime]]]] = {}
+        for row in active_rows:
+            todo_type = str(row.get("todo_type") or "").strip()
+            if todo_type not in _CHALLENGE_CALENDAR_TYPES:
+                continue
+            case_no = str(row.get("case_number") or row.get("_resolved_case_number") or "").strip()
+            if not case_no:
+                continue
+            kind, court_no = _calendar_court_doc_identity(row)
+            if not kind:
+                continue
+            challenge_buckets.setdefault((case_no, todo_type, kind), []).append((row, court_no, _calendar_row_date(row)))
+
+        for (case_no, todo_type, kind), bucket_rows in challenge_buckets.items():
+            clusters: list[list[tuple[Dict[str, Any], str, Optional[datetime]]]] = []
+            for row, court_no, row_date in sorted(bucket_rows, key=lambda item: (
+                item[2] or datetime.max,
+                -_calendar_source_specificity(item[0]),
+                int(item[0].get("id") or 0),
+            )):
+                placed = False
+                for cluster in clusters:
+                    compatible = True
+                    for other, other_court_no, other_date in cluster:
+                        if row_date and other_date and abs((row_date.date() - other_date.date()).days) > 3:
+                            compatible = False
+                            break
+                        if court_no and other_court_no and court_no != other_court_no:
+                            compatible = False
+                            break
+                    if compatible:
+                        cluster.append((row, court_no, row_date))
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append([(row, court_no, row_date)])
+
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
+                rows_only = [item[0] for item in cluster]
+                preferred = sorted(rows_only, key=lambda r: (-_calendar_source_specificity(r), int(r.get("id") or 0)))[0]
+                preferred_kind, preferred_court_no = _calendar_court_doc_identity(preferred)
+                identity = preferred_court_no or str(preferred.get("source_file") or preferred.get("description") or "")[:80]
+                group_date = str(preferred.get("todo_date") or "").strip()
+                group_time = str(preferred.get("todo_time") or "").strip()
+                group_key = (case_no, group_date, group_time, f"doc:{todo_type}:{preferred_kind or kind}:{identity}")
+                members = groups.setdefault(group_key, [])
+                for candidate in rows_only:
+                    if not any(int(m.get("id") or 0) == int(candidate.get("id") or 0) for m in members):
+                        members.append(candidate)
+
+        # A PDF scanner bug or old Google import can create two hearing rows from
+        # the same court notice (same case/date/source file) with different times.
+        # Keep the richer OSC/PDF row and mark the older row as a DB duplicate so
+        # it cannot keep overwriting the calendar event.
+        source_hearing_buckets: Dict[tuple[str, str, str, str, str], list[Dict[str, Any]]] = {}
+        for row in active_rows:
+            kind = str(row.get("_calendar_kind") or "")
+            if kind != "hearing":
+                continue
+            case_no = str(row.get("case_number") or row.get("_resolved_case_number") or "").strip()
+            source = str(row.get("source_file") or "").strip()
+            if not case_no or not source or source.startswith("gcal_import:") or source.startswith("gcal_mirror:"):
+                continue
+            source_hearing_buckets.setdefault(
+                (
+                    case_no,
+                    str(row.get("todo_date") or "").strip(),
+                    kind,
+                    str(row.get("todo_type") or "").strip(),
+                    source,
+                ),
+                [],
+            ).append(row)
+
+        for (case_no, todo_date, kind, todo_type, source), rows_only in source_hearing_buckets.items():
+            if len(rows_only) < 2:
+                continue
+            preferred = sorted(rows_only, key=lambda r: (-_calendar_source_specificity(r), int(r.get("id") or 0)))[0]
+            group_time = str(preferred.get("todo_time") or "").strip()
+            group_key = (case_no, todo_date, group_time, f"source:{kind}:{todo_type}:{Path(source).name}")
+            members = groups.setdefault(group_key, [])
+            for candidate in rows_only:
+                if not any(int(m.get("id") or 0) == int(candidate.get("id") or 0) for m in members):
+                    members.append(candidate)
+
+        def _canonical_sort_key(row: Dict[str, Any]) -> tuple[int, int, int, int, int]:
             source = str(row.get("source_file") or "")
             gid = str(row.get("google_calendar_id") or "").strip()
+            status = str(row.get("status") or "").strip()
             row_id = int(row.get("id") or 0)
+            inactive = 1 if status == "calendar_deduped" else 0
             priority = -_calendar_todo_type_priority(str(row.get("todo_type") or ""))
+            specificity = -_calendar_source_specificity(row)
             if not source.startswith("gcal_import:") and gid:
-                return (0, priority, row_id)
+                return (inactive, 0, priority, specificity, row_id)
             if not source.startswith("gcal_import:"):
-                return (1, priority, row_id)
+                return (inactive, 1, priority, specificity, row_id)
             if gid:
-                return (2, priority, row_id)
-            return (3, priority, row_id)
+                return (inactive, 2, priority, specificity, row_id)
+            return (inactive, 3, priority, specificity, row_id)
 
-        def _event_calendar_for(row: Dict[str, Any]) -> str:
-            source = str(row.get("source_file") or "")
-            if source.startswith("gcal_import:"):
-                return source.split(":", 1)[1].strip()
-            return calendar_id or "primary"
-
+        processed_duplicate_ids: set[int] = set()
         for key, members in groups.items():
+            members = [m for m in members if int(m.get("id") or 0) not in processed_duplicate_ids]
             if len(members) < 2:
                 continue
             # Same case/date/time/kind is already a same obligation. Collapse it
@@ -2166,6 +2366,7 @@ def _cleanup_duplicate_calendar_todos(
             out["groups"] += 1
             canonical = sorted(members, key=_canonical_sort_key)[0]
             canonical_id = int(canonical.get("id") or 0)
+            canonical_gid = str(canonical.get("google_calendar_id") or "").strip()
             for row in members:
                 row_id = int(row.get("id") or 0)
                 if not row_id or row_id == canonical_id:
@@ -2173,7 +2374,7 @@ def _cleanup_duplicate_calendar_todos(
                 source = str(row.get("source_file") or "")
                 gid = str(row.get("google_calendar_id") or "").strip()
                 event_calendar_id = _event_calendar_for(row)
-                should_delete_event = bool(gid) and bool(event_calendar_id)
+                should_delete_event = bool(gid) and bool(event_calendar_id) and gid != canonical_gid
                 delete_ok = True
                 if should_delete_event:
                     try:
@@ -2200,12 +2401,14 @@ def _cleanup_duplicate_calendar_todos(
                 cur.execute(
                     """
                     UPDATE case_todos
-                    SET status='calendar_deduped'
+                    SET status='calendar_deduped',
+                        google_calendar_id=''
                     WHERE id=%s
                     """,
                     (row_id,),
                 )
                 out["marked"] += int(getattr(cur, "rowcount", 0) or 0)
+                processed_duplicate_ids.add(row_id)
                 if not should_delete_event:
                     out["db_only_marked"] += 1
                 if len(out["items"]) < 20:
@@ -2222,7 +2425,7 @@ def _cleanup_duplicate_calendar_todos(
                         "calendar_id": event_calendar_id,
                         "action": "calendar_deduped",
                     })
-        if out["marked"]:
+        if out["marked"] or out["purged_deleted_events"]:
             conn.commit()
     finally:
         cur.close()

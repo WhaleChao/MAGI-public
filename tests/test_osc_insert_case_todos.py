@@ -13,13 +13,39 @@ class _FakeCursor:
         self.rowcount = 0
         self.executed = []
         self._fetchone = None
+        self._fetchall = []
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
         normalized = " ".join(sql.split())
         self.rowcount = 0
+        self._fetchall = []
         if "AND `description`=%s" in normalized:
             self._fetchone = None
+        elif "ABS(DATEDIFF(`todo_date`, %s)) <= 3" in normalized:
+            self._fetchone = None
+            if self.mode == "challenge_duplicate_short_existing":
+                self._fetchall = [
+                    (
+                        3977,
+                        "判決送達後 20 日內上訴",
+                        "游秀鈴",
+                        "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴；主文：共同犯傷害致人於死罪，處有期徒刑拾年).pdf",
+                        "2026-06-08",
+                        "pending",
+                    )
+                ]
+            elif self.mode == "challenge_duplicate_full_replaces_short":
+                self._fetchall = [
+                    (
+                        3976,
+                        "游秀鈴_台北地院刑事判決.pdf",
+                        "游秀鈴",
+                        "游秀鈴_台北地院刑事判決.pdf",
+                        "2026-06-09",
+                        "pending",
+                    )
+                ]
         elif "AND `source_file`=%s AND (status IS NULL" in normalized and "`todo_type`=%s" not in normalized:
             if self.mode == "same_datetime":
                 self._fetchone = (42,)
@@ -61,6 +87,9 @@ class _FakeCursor:
 
     def fetchone(self):
         return self._fetchone
+
+    def fetchall(self):
+        return self._fetchall
 
     def close(self):
         pass
@@ -233,6 +262,51 @@ def test_insert_case_todos_still_skips_same_hearing_from_non_gcal_source():
 
     assert result == {"inserted": 0, "skipped": 1, "updated": 0}
     assert not any("INSERT INTO `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_skips_short_drive_duplicate_of_same_judgment():
+    conn = _FakeConn("challenge_duplicate_short_existing")
+    result = insert_case_todos(
+        conn,
+        case_number="2025-0002",
+        client_name="游秀鈴",
+        todos=[
+            {
+                "type": "上訴",
+                "date": "2026-06-09",
+                "time": "",
+                "description": "游秀鈴_台北地院刑事判決.pdf",
+            }
+        ],
+        source_file="游秀鈴_台北地院刑事判決.pdf",
+    )
+
+    assert result == {"inserted": 0, "skipped": 1, "updated": 0}
+    assert not any("INSERT INTO `case_todos`" in sql for sql, _ in conn.cursor_obj.executed)
+
+
+def test_insert_case_todos_replaces_short_duplicate_with_full_judgment_filename():
+    conn = _FakeConn("challenge_duplicate_full_replaces_short")
+    source = "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴；主文：共同犯傷害致人於死罪，處有期徒刑拾年).pdf"
+    result = insert_case_todos(
+        conn,
+        case_number="2025-0002",
+        client_name="游秀鈴",
+        todos=[
+            {
+                "type": "上訴",
+                "date": "2026-06-08",
+                "time": "",
+                "description": "判決送達後 20 日內上訴",
+            }
+        ],
+        source_file=source,
+    )
+
+    assert result == {"inserted": 0, "skipped": 0, "updated": 1}
+    updates = [params for sql, params in conn.cursor_obj.executed if "UPDATE `case_todos`" in sql]
+    assert updates
+    assert updates[0][4] == source
 
 
 def test_list_unsynced_todos_only_returns_today_or_future_items():

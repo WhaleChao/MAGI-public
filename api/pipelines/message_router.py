@@ -103,6 +103,111 @@ def handle_laf_progress_reported_message(user_id, message: str) -> Optional[str]
     return f"❌ 找不到 {target} 的法扶案件，無法設定進度回報冷卻。"
 
 
+_OSC_TODO_COMPLETION_SUFFIXES = (
+    "繳費完成",
+    "補正完成",
+    "已完成",
+    "完成了",
+    "繳費了",
+    "補正了",
+    "已繳費",
+    "已補正",
+    "已繳",
+    "已交",
+    "繳了",
+    "交了",
+)
+_OSC_TODO_COMPLETION_PREFIXES = (
+    "幫我關掉",
+    "請關掉",
+    "關掉",
+    "取消提醒",
+    "關閉提醒",
+)
+_OSC_TODO_COMPLETION_BLOCK_TOPICS = {"translation", "summary", "verbatim", "market"}
+_OSC_TODO_COMPLETION_STOP_TARGETS = {
+    "翻譯",
+    "摘要",
+    "逐字稿",
+    "報告",
+    "文件",
+    "資料",
+    "這份",
+    "這個",
+    "那份",
+    "那個",
+    "測試",
+    "功能",
+}
+
+
+def extract_osc_todo_completion_target(message: str) -> str:
+    """Extract a case/person query from "XXX 已完成/繳了/補正了" replies.
+
+    This is deliberately deterministic.  It lets DC/TG/LINE replies close OSC
+    todos through the same DB path as the web UI instead of falling into chat.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    if any(k in text for k in _LAF_PROGRESS_REPORTED_KEYWORDS):
+        return ""
+    if not any(k in text for k in _OSC_TODO_COMPLETION_SUFFIXES) and not any(text.startswith(k) for k in _OSC_TODO_COMPLETION_PREFIXES):
+        return ""
+    cleaned = re.sub(r"^@(?:magi|MAGI)\s*", "", text).strip()
+    for prefix in _OSC_TODO_COMPLETION_PREFIXES:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+    cleaned = cleaned.strip(" \t\r\n<>《》「」『』[]()（）,，。；;：:")
+    for suffix in sorted(_OSC_TODO_COMPLETION_SUFFIXES, key=len, reverse=True):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[:-len(suffix)].strip()
+            break
+    cleaned = re.sub(r"(?:的)?(?:提醒|待辦|警報|通知)$", "", cleaned).strip()
+    cleaned = cleaned.strip(" \t\r\n<>《》「」『』[]()（）,，。；;：:")
+    if not cleaned:
+        return ""
+    if cleaned in _OSC_TODO_COMPLETION_STOP_TARGETS:
+        return ""
+    if len(cleaned) > 80:
+        return ""
+    has_case_no = bool(re.search(r"\b\d{4}-\d{4}\b|\d{6,8}-[A-Za-z]-\d{3}|\d{2,3}年度", cleaned))
+    has_name = bool(re.search(r"[\u4e00-\u9fff]{2,}", cleaned))
+    if not (has_case_no or has_name):
+        return ""
+    return cleaned
+
+
+def _run_court_hearing_done(query: str) -> str:
+    import importlib.util
+
+    action_path = os.path.join(_MAGI_ROOT, "skills", "court-hearing-reminder", "action.py")
+    spec = importlib.util.spec_from_file_location("magi_court_hearing_reminder_action", action_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {action_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return str(mod.task_done(query, notify=False) or "").strip()
+
+
+def handle_osc_todo_completion_message(user_id, message: str, platform: str = "", topic_key: str = "") -> Optional[str]:
+    topic = str(topic_key or "").strip().lower()
+    if topic in _OSC_TODO_COMPLETION_BLOCK_TOPICS or topic.startswith("research_"):
+        return None
+    target = extract_osc_todo_completion_target(message)
+    if not target:
+        return None
+    try:
+        reply = _run_court_hearing_done(target)
+    except Exception as e:
+        logger.warning("OSC todo completion reply failed: %s", e)
+        return f"❌ 待辦狀態更新失敗：{e}"
+    if not reply:
+        return f"❌ 已收到「{target}」的待辦完成回覆，但沒有取得處理結果。"
+    return reply
+
+
 # ── Gibberish report ───────────────────────────────────────────────
 
 _GIBBERISH_REPORT_RE = re.compile(
@@ -622,6 +727,10 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
     若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
     """
+    todo_completion_reply = handle_osc_todo_completion_message(user_id, message, platform=platform, topic_key=topic_key)
+    if todo_completion_reply:
+        return todo_completion_reply
+
     # ── 筆錄-通知頻道 (transcript) 自動補全 ──
     if topic_key == "transcript":
         _tr_aliases = ["同步筆錄", "筆錄同步", "下載筆錄", "筆錄下載"]

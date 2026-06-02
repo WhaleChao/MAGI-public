@@ -69,6 +69,43 @@ def _should_refresh_share_description(old_desc: str, new_desc: str) -> bool:
         return False
     return _share_host(old_url) != _share_host(new_url) or _share_expires_soon(old_desc)
 
+
+_CHALLENGE_TODO_TYPES = {"上訴", "抗告", "再抗告", "異議", "再議"}
+_COURT_DOC_KIND_RE = re.compile(r"(判決|裁定|不起訴處分書|支付命令)")
+_COURT_CASE_NO_RE = re.compile(r"(\d{2,3})年度(.{1,12}?字)第0*(\d{1,6})號")
+
+
+def _normalize_court_doc_identity(source_file: str, desc: str = "") -> tuple[str, str]:
+    """Return a stable court-document identity for duplicate deadline guards.
+
+    Google Drive/NAS sync can produce two filenames for the same judgment, e.g.
+    a full OSC filename and a short Drive-imported filename.  The original OSC
+    was single-machine and mostly saw one path; MAGI needs a semantic guard so
+    the same judgment does not create two appeal deadlines.
+    """
+    text = re.sub(r"\s+", "", f"{source_file or ''} {desc or ''}")
+    kind_match = _COURT_DOC_KIND_RE.search(text)
+    kind = kind_match.group(1) if kind_match else ""
+    case_match = _COURT_CASE_NO_RE.search(text)
+    if not case_match:
+        return kind, ""
+    roc_year, case_word, serial = case_match.groups()
+    return kind, f"{int(roc_year)}年度{case_word}第{int(serial)}號"
+
+
+def _source_specificity_score(source_file: str, desc: str = "") -> int:
+    text = f"{source_file or ''} {desc or ''}"
+    score = 0
+    if re.search(r"^(20\d{6}|\d{7})(?:\s|$)", os.path.basename(source_file or "")):
+        score += 20
+    kind, court_no = _normalize_court_doc_identity(source_file, desc)
+    if kind:
+        score += 10
+    if court_no:
+        score += 20
+    score += min(len(os.path.basename(source_file or "")), 120) // 20
+    return score
+
 # --- Load .env for subprocess/cron credential access ---
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -916,6 +953,62 @@ def insert_case_todos(
                         else:
                             skipped += 1
                         continue
+
+                if todo_type in _CHALLENGE_TODO_TYPES and todo_date:
+                    new_kind, new_court_no = _normalize_court_doc_identity(source_file, desc)
+                    if new_kind:
+                        cur.execute(
+                            """
+                            SELECT `id`, `description`, `client_name`, `source_file`, `todo_date`, `status`
+                            FROM `case_todos`
+                            WHERE `case_number`=%s
+                              AND `todo_type`=%s
+                              AND `todo_date` IS NOT NULL
+                              AND ABS(DATEDIFF(`todo_date`, %s)) <= 3
+                              AND (status IS NULL OR status='' OR status='pending')
+                              AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
+                            ORDER BY `id` ASC
+                            """,
+                            (case_number, todo_type, todo_date),
+                        )
+                        near_rows = cur.fetchall() or []
+                        best_row = None
+                        best_score = -1
+                        new_score = _source_specificity_score(source_file, desc)
+                        for row in near_rows:
+                            old_source = row[3] if isinstance(row, tuple) and len(row) > 3 else ""
+                            old_desc = row[1] if isinstance(row, tuple) and len(row) > 1 else ""
+                            old_kind, old_court_no = _normalize_court_doc_identity(str(old_source or ""), str(old_desc or ""))
+                            if old_kind != new_kind:
+                                continue
+                            if old_court_no and new_court_no and old_court_no != new_court_no:
+                                continue
+                            score = _source_specificity_score(str(old_source or ""), str(old_desc or ""))
+                            if score > best_score:
+                                best_row = row
+                                best_score = score
+                        if best_row is not None:
+                            old_id = best_row[0] if isinstance(best_row, tuple) else best_row
+                            old_desc = best_row[1] if isinstance(best_row, tuple) and len(best_row) > 1 else ""
+                            old_client = best_row[2] if isinstance(best_row, tuple) and len(best_row) > 2 else ""
+                            if old_id and new_score > best_score:
+                                cur.execute(
+                                    """
+                                    UPDATE `case_todos`
+                                    SET `client_name`=%s,
+                                        `todo_date`=%s,
+                                        `todo_time`=%s,
+                                        `description`=%s,
+                                        `source_file`=%s,
+                                        `status`='pending'
+                                    WHERE `id`=%s
+                                    """,
+                                    (client_name or old_client or "", todo_date, todo_time, desc or old_desc or "", source_file, old_id),
+                                )
+                                updated += int(getattr(cur, "rowcount", 0) or 0)
+                            else:
+                                skipped += 1
+                            continue
 
                 cur.execute(
                     """

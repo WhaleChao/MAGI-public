@@ -67,6 +67,57 @@ def test_laf_progress_target_extracts_name_without_angle_brackets():
     assert message_router.extract_laf_progress_reported_target("進度已回報 謝依穎") == "謝依穎"
 
 
+def test_osc_todo_completion_extracts_target_without_angle_brackets():
+    assert message_router.extract_osc_todo_completion_target("高弘軒補正已完成") == "高弘軒補正"
+    assert message_router.extract_osc_todo_completion_target("曾昌義繳了") == "曾昌義"
+    assert message_router.extract_osc_todo_completion_target("翻譯已完成") == ""
+    assert message_router.extract_osc_todo_completion_target("謝依穎已回報") == ""
+
+
+def test_osc_todo_completion_reply_uses_deterministic_handler(monkeypatch):
+    calls = []
+    monkeypatch.setattr(message_router, "_run_court_hearing_done", lambda target: calls.append(target) or "✅ 已標記完成：高弘軒（調解）")
+
+    out = message_router.handle_osc_todo_completion_message(
+        "user-1",
+        "高弘軒調解已完成",
+        platform="discord",
+        topic_key="filing",
+    )
+
+    assert calls == ["高弘軒調解"]
+    assert "已標記完成" in out
+
+
+def test_osc_todo_completion_does_not_intercept_translation_channel(monkeypatch):
+    monkeypatch.setattr(message_router, "_run_court_hearing_done", lambda target: (_ for _ in ()).throw(AssertionError(target)))
+
+    out = message_router.handle_osc_todo_completion_message(
+        "user-1",
+        "翻譯已完成",
+        platform="discord",
+        topic_key="translation",
+    )
+
+    assert out is None
+
+
+def test_topic_fast_path_handles_todo_completion_before_chat(monkeypatch):
+    monkeypatch.setattr(message_router, "_run_court_hearing_done", lambda target: f"✅ 已標記完成：{target}")
+
+    out = message_router.topic_fast_path(
+        _DummyOrch(),
+        "filing",
+        "user-1",
+        "曾昌義調解已完成",
+        "user",
+        "discord",
+    )
+
+    assert "已標記完成" in out
+    assert "Gemma" not in out
+
+
 def test_laf_progress_channel_does_not_fall_through_to_chat():
     out = message_router.topic_fast_path(
         _DummyOrch(),

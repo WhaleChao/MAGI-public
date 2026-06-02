@@ -36,6 +36,32 @@ def _get_conn():
 
 
 _SUPPORTED_TODO_TYPES = ("開庭", "補正", "繳費")
+_COMPLETABLE_TODO_TYPES = (
+    "法扶進度回報確認",
+    "準備程序",
+    "言詞辯論",
+    "審理程序",
+    "審判程序",
+    "陳述意見",
+    "提出資料",
+    "表示意見",
+    "再抗告",
+    "開庭",
+    "補正",
+    "繳費",
+    "調解",
+    "審理",
+    "宣判",
+    "訊問",
+    "調查",
+    "陳報",
+    "確認",
+    "待辦",
+    "上訴",
+    "抗告",
+    "異議",
+    "再議",
+)
 
 
 def _fetch_upcoming_hearings(conn, days_ahead: int = 7, todo_types: Optional[tuple] = None) -> List[Dict[str, Any]]:
@@ -541,14 +567,25 @@ def _match_pending_todos(query: str, todo_types: Optional[tuple] = None) -> List
             conn.close()
     except Exception:
         return []
-    q = query.lower()
+    q = query.lower().strip()
+    if not q:
+        return []
     return [
         h for h in hearings
-        if q in str(h.get("case_number", "")).lower()
-        or q in str(h.get("client_name", "")).lower()
-        or q in str(h.get("court_case_number", "")).lower()
-        or q in str(h.get("case_reason", "")).lower()
+        if q in " ".join(
+            str(h.get(k, "") or "").lower()
+            for k in ("case_number", "client_name", "court_case_number", "case_reason", "todo_type", "description")
+        )
     ]
+
+
+def _extract_completion_type_hint(clean: str) -> tuple[str, tuple | None]:
+    text = str(clean or "").strip()
+    for todo_type in sorted(_COMPLETABLE_TODO_TYPES, key=len, reverse=True):
+        if todo_type and todo_type in text:
+            narrowed = text.replace(todo_type, "", 1).strip(" -_，,。；;：:　")
+            return (narrowed or text), (todo_type,)
+    return text, None
 
 
 def task_done(query: str, notify: bool = True) -> str:
@@ -576,11 +613,14 @@ def task_done(query: str, notify: bool = True) -> str:
     if not clean:
         return "❌ 請指定案件名稱或案號，例如：「張國賢繳了」「補字第54號交了」"
 
-    matched = _match_pending_todos(clean, todo_types=("繳費", "補正"))
+    search_query, type_hint = _extract_completion_type_hint(clean)
+    primary_types = type_hint or ("繳費", "補正")
+    matched = _match_pending_todos(search_query, todo_types=primary_types)
 
     if len(matched) == 0:
-        # 如果搜不到，擴大到全部類型（含開庭）
-        matched = _match_pending_todos(clean)
+        # 如果搜不到，擴大到全部 OSC 待辦類型，讓 DC/TG 回覆「陳報已完成」
+        # 「調解已完成」「上訴已完成」都能走同一個 DB 權威路徑。
+        matched = _match_pending_todos(search_query or clean, todo_types=_COMPLETABLE_TODO_TYPES)
         if len(matched) == 0:
             return f"❌ 找不到「{clean}」的待辦排程。目前待辦：\n\n{task_list()}"
 

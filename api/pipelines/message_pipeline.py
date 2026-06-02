@@ -439,6 +439,29 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return _fast_result
         # fast path returned None → fall through to general logic
 
+    # DC/TG/LINE 使用者常直接回覆「某案已完成」「某案繳了」。
+    # 這類訊息必須更新 OSC 待辦 DB，不得落入聊天模型。
+    try:
+        from api.pipelines.message_router import handle_osc_todo_completion_message
+        _todo_completion_reply = handle_osc_todo_completion_message(
+            user_id,
+            message,
+            platform=str(platform or ""),
+            topic_key=_topic_key,
+        )
+        if _todo_completion_reply:
+            orch._append_route_trace(
+                str(user_id or ""),
+                str(platform or ""),
+                "top_level",
+                "osc_todo_completion_reply",
+                {"topic_key": _topic_key},
+            )
+            orch._append_history(user_id, "assistant", _todo_completion_reply)
+            return _todo_completion_reply
+    except Exception as _todo_done_err:
+        logger.warning("OSC todo completion fast path skipped: %s", _todo_done_err)
+
     # If the user is responding to a "should I remember this rule?" prompt, handle it first.
     try:
         handled, reply = orch._handle_memory_confirmation_if_any(str(user_id or ""), str(platform or ""), message)

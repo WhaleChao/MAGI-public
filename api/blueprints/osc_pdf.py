@@ -779,7 +779,11 @@ def _create_calendar_share_link(path: Path) -> dict[str, Any]:
             "created_by": "osc_pdf_calendar_scan",
             "downloads": 0,
         }
-        osc_files._ensure_share_cached_copy(token_hash, row, local)
+        # Calendar todo generation must not block on copying a NAS-backed PDF.
+        # The public share endpoint can stage the file lazily on first access;
+        # this keeps deadline creation ahead of tunnel/SMB hiccups.
+        if str(os.environ.get("MAGI_OSC_PDF_CALENDAR_SHARE_STAGE_NOW") or "0").strip().lower() in {"1", "true", "yes", "on"}:
+            osc_files._ensure_share_cached_copy(token_hash, row, local)
         data = osc_files._prune_share_store(osc_files._load_share_store())
         data.setdefault("shares", {})[token_hash] = row
         osc_files._save_share_store(data)
@@ -981,8 +985,8 @@ def _scan_pdf_for_calendar(
     if not todos:
         todos = _tentative_no_deadline_todo(path, text)
     todos = [_json_safe(t) for t in todos]
-    share_link = _create_calendar_share_link(path) if include_share_link else {}
-    if include_share_link:
+    share_link = _create_calendar_share_link(path) if include_share_link and todos else {}
+    if include_share_link and todos:
         for todo in todos:
             todo["description"] = _append_calendar_source_reference(str(todo.get("description") or ""), source_path=path, share=share_link)
     events = [
@@ -1038,11 +1042,20 @@ def _count_all_case_pdf_case_rows() -> int:
     return 0
 
 
-def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: int | None = None) -> list[tuple[Path, str, str]]:
+def _iter_all_case_pdf_targets(
+    limit: int,
+    *,
+    case_offset: int = 0,
+    case_batch: int | None = None,
+    filename_only: bool = False,
+) -> list[tuple[Path, str, str]]:
     from api.case_path_mapper import _is_dir_accessible, local_case_path_candidates
 
     started = time.monotonic()
-    target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "45") or "45"))
+    if filename_only:
+        target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_TARGET_BUDGET_SEC", "180") or "180"))
+    else:
+        target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "45") or "45"))
     max_items = max(1, min(limit, 5000))
     row_limit = max(1, min(2000, int(case_batch or 0) or max(20, max_items * 2)))
     row_offset = max(0, int(case_offset or 0))
@@ -1058,8 +1071,8 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
         (row_limit, row_offset),
         fetch="all",
     )
-    recent_sweep_hours = max(0, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS", "96") or "96"))
-    recent_case_limit = max(0, min(1000, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_CASE_LIMIT", "300") or "300")))
+    recent_sweep_hours = 0 if filename_only else max(0, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS", "96") or "96"))
+    recent_case_limit = 0 if filename_only else max(0, min(1000, int(os.environ.get("OSC_PDF_CALENDAR_RECENT_SWEEP_CASE_LIMIT", "300") or "300")))
     recent_cutoff = time.time() - recent_sweep_hours * 3600
     recent_rows: list[dict[str, Any]] = []
     if recent_sweep_hours and recent_case_limit:
@@ -1098,7 +1111,7 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
         "04_判決書",
         "10_判決書",
     )
-    candidate_cap = min(max(max_items * 4, max_items, 4), max_items * 8)
+    candidate_cap = max_items if filename_only else min(max(max_items * 4, max_items, 4), max_items * 8)
     existing_sources: set[tuple[str, str]] = set()
 
     try:
@@ -1191,7 +1204,10 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
 
     # Recent PDFs must win over the rotating cursor batch.  Otherwise a newly
     # arrived court notice can wait several six-hour cycles behind older cases.
-    _add_rows(recent_rows, recent_only=True)
+    # The filename-only sweep is different: it is the governance pass and must
+    # walk the full open-case batch without the recent-file shortcut/filter.
+    if not filename_only:
+        _add_rows(recent_rows, recent_only=True)
     _add_rows(rows, recent_only=False)
 
     for row, recent_only in row_entries:
@@ -1221,7 +1237,7 @@ def _iter_all_case_pdf_targets(limit: int, *, case_offset: int = 0, case_batch: 
                     continue
                 case_number = str(row.get("case_number") or "")
                 mtime = _pdf_mtime_timeout(pdf)
-                if recent_only and recent_sweep_hours and mtime < recent_cutoff:
+                if not filename_only and recent_only and recent_sweep_hours and mtime < recent_cutoff:
                     continue
                 processed_rank = 1 if (case_number, pdf.name) in existing_sources else 0
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
