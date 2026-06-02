@@ -28,7 +28,7 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.runtime_paths import ensure_orch_on_sys_path, get_config_path, get_orch_dir, get_skill_python
-from api.case_path_mapper import preferred_case_roots, translate_local_path_to_canonical
+from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_local_path_to_canonical
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 PENDING_QUEUE_PATH = os.path.join(SKILL_DIR, "_pending_todos.jsonl")
@@ -310,30 +310,128 @@ def _extract_court_hint_and_case_no_from_filename(fn: str) -> Dict[str, str]:
     }
 
 
-def _candidate_court_info_dirs(case_path: str, *, max_dirs: int = 32) -> List[str]:
+def _court_case_word_from_number(court_case_number: str) -> str:
+    m = re.search(r"\d{2,3}年度(.+?)字第\d{1,6}號", court_case_number or "")
+    return (m.group(1) if m else "").strip()
+
+
+def _court_case_number_quality(court_case_number: str) -> int:
+    """Prefer substantive case numbers over procedural/interim numbers."""
+
+    word = _court_case_word_from_number(court_case_number)
+    if not word:
+        return 0
+    # Procedural/interim numbers must not keep a case stale after the main
+    # case number appears in a judgment, indictment, or substantive notice.
+    if any(k in word for k in ("強處", "聲羈", "偵聲", "國審聲", "科偵控", "限出")):
+        return 10
+    if "聲" in word and "訴" not in word:
+        return 20
+    if word.startswith("國蒞") or word.startswith("偵"):
+        return 30
+    if "上訴" in word:
+        return 100
+    if "訴" in word:
+        return 96
+    if any(k in word for k in ("易", "簡", "小", "消債", "司執", "司促", "家", "訴更")):
+        return 90
+    return 60
+
+
+def _court_info_source_priority(source_path: str, filename: str) -> int:
+    text = f"{source_path or ''}/{filename or ''}"
+    if "判決書" in text or "判決" in filename:
+        return 100
+    if "起訴書" in filename:
+        return 92
+    if "法院通知" in text and "程序裁定" not in text:
+        return 70
+    if "程序裁定" in text or "裁定" in filename:
+        return 55
+    if "對方歷次書狀" in text:
+        return 45
+    if "我方歷次書狀" in text:
+        return 40
+    if "電子筆錄" in text or "筆錄" in text:
+        return 35
+    if "回執" in text:
+        return 20
+    return 30
+
+
+def _court_info_rank(source_path: str, filename: str, info: Dict[str, str]) -> Tuple[Any, ...]:
+    has_case_no = 1 if (info.get("court_case_number") or "").strip() else 0
+    has_court_name = 1 if (info.get("court_name") or "").strip() else 0
+    has_division = 1 if (info.get("court_division") or "").strip() else 0
+    return (
+        has_case_no,
+        _court_info_source_priority(source_path, filename),
+        _court_case_number_quality(info.get("court_case_number") or ""),
+        info.get("doc_date") or "",
+        int(_stat_mtime(os.path.join(source_path, filename)) or 0),
+        has_court_name,
+        has_division,
+        filename or "",
+    )
+
+
+def _candidate_court_info_dirs(case_path: str, *, max_dirs: int = 48) -> List[str]:
     p = (case_path or "").strip()
-    if not p or not _is_dir_fast(p):
+    if not p:
         return []
     preferred_keywords = (
-        "法院通知", "程序裁定", "判決書", "對方歷次書狀", "我方歷次書狀",
+        "判決書", "法院通知", "程序裁定", "對方歷次書狀", "我方歷次書狀",
         "回執", "筆錄",
     )
-    out: List[str] = [p]
-    for name in _listdir_timeout(p, timeout_sec=6):
-        child = os.path.join(p, name)
-        if not _is_dir_fast(child):
-            continue
-        if any(k in name for k in preferred_keywords):
+
+    def _dedupe(items: List[str]) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for item in items:
+            key = item.rstrip("/")
+            if key and key not in seen:
+                seen.add(key)
+                out.append(key)
+        return out
+
+    bases = _dedupe([p] + [c for c in local_case_path_candidates(p) if c])
+    bases = [b for b in bases if _is_dir_fast(b)]
+    if not bases:
+        return []
+    out: List[str] = []
+    top_dirs: List[Tuple[int, str]] = []
+
+    def _rank(name: str) -> int:
+        for idx, kw in enumerate(preferred_keywords):
+            if kw in name:
+                return idx
+        return 999
+
+    for base in bases:
+        if len(out) < max_dirs:
+            out.append(base)
+        for name in _listdir_timeout(base, timeout_sec=6):
+            child = os.path.join(base, name)
+            if not _is_dir_fast(child):
+                continue
+            rank = _rank(name)
+            if rank < 999:
+                top_dirs.append((rank, child))
+
+    for _, child in sorted(top_dirs, key=lambda item: (item[0], item[1])):
+        if child not in out:
             out.append(child)
             if len(out) >= max_dirs:
                 return out
-            # One extra level catches folders like "20251103 民事起訴狀繕本".
-            for sub in _listdir_timeout(child, timeout_sec=4)[: max(1, max_dirs)]:
-                grand = os.path.join(child, sub)
-                if _is_dir_fast(grand):
-                    out.append(grand)
-                    if len(out) >= max_dirs:
-                        return out
+
+    for _, child in sorted(top_dirs, key=lambda item: (item[0], item[1])):
+        # One extra level catches folders like "20251103 民事起訴狀繕本".
+        for sub in _listdir_timeout(child, timeout_sec=4)[: max(1, max_dirs)]:
+            grand = os.path.join(child, sub)
+            if _is_dir_fast(grand) and grand not in out:
+                out.append(grand)
+                if len(out) >= max_dirs:
+                    return out
     return out
 
 
@@ -343,12 +441,14 @@ def _discover_case_court_info(case_path: str, *, max_files: int = 120) -> Dict[s
     No PDF parsing; filename-only.
     """
     p = (case_path or "").strip()
-    if not p or not _is_dir_fast(p):
+    if not p:
         return {"court_name": "", "court_case_number": "", "court_division": ""}
 
     picked = {"court_name": "", "court_case_number": "", "court_division": ""}
     ranked: List[Tuple[Tuple[Any, ...], Dict[str, str]]] = []
     dirs = _candidate_court_info_dirs(p)
+    if not dirs:
+        return picked
 
     for sp in dirs:
         names = _listdir_timeout(sp, timeout_sec=6)[: max(1, int(max_files))]
@@ -358,23 +458,12 @@ def _discover_case_court_info(case_path: str, *, max_files: int = 120) -> Dict[s
             info = _extract_court_hint_and_case_no_from_filename(fn)
             if info.get("excluded"):
                 continue
-            score = 0
-            if info.get("court_name"):
-                score += 1
-            if info.get("court_case_number"):
-                score += 2
-            if info.get("court_division"):
-                score += 1
-            if score <= 0:
+            if not any(info.get(k) for k in ("court_name", "court_case_number", "court_division")):
                 continue
-            doc_date = info.get("doc_date") or ""
-            try:
-                mtime = _stat_mtime(os.path.join(sp, fn))
-            except Exception:
-                mtime = 0.0
-            # Latest real document wins; this prevents old mediation numbers
-            # from keeping the DB stale after a case is assigned a new number.
-            ranked.append(((score, doc_date, mtime, fn), info))
+            # Pick the most authoritative document first.  A later procedural
+            # ruling (e.g. 國審強處/聲字) should not override a substantive
+            # judgment or main case number.
+            ranked.append((_court_info_rank(sp, fn, info), info))
     if ranked:
         ranked.sort(key=lambda item: item[0], reverse=True)
         picked = ranked[0][1]
@@ -1913,6 +2002,33 @@ def _materialize_imported_calendar_mirrors(
     return out
 
 
+def _calendar_todo_type_priority(todo_type: str) -> int:
+    t = str(todo_type or "").strip()
+    return {
+        "繳費": 100,
+        "補正": 96,
+        "陳報": 92,
+        "陳述意見": 90,
+        "表示意見": 88,
+        "上訴": 86,
+        "抗告": 86,
+        "再抗告": 86,
+        "異議": 84,
+        "再議": 84,
+        "提出資料": 74,
+        "開庭": 72,
+        "調解": 72,
+        "準備程序": 72,
+        "言詞辯論": 72,
+        "審理": 72,
+        "審理程序": 72,
+        "訊問": 72,
+        "調查": 72,
+        "確認": 30,
+        "待辦": 10,
+    }.get(t, 50)
+
+
 def _todo_calendar_kind(todo_type: str, description: str = "") -> str:
     try:
         from osc_headless.gcal_dedup import classify_event_kind
@@ -1920,9 +2036,18 @@ def _todo_calendar_kind(todo_type: str, description: str = "") -> str:
         return classify_event_kind(f"{todo_type or ''} {description or ''}", todo_type=todo_type or "")
     except Exception:
         text = f"{todo_type or ''} {description or ''}"
+        tt = str(todo_type or "").strip()
         if any(k in text for k in ("開庭", "準備程序", "言詞辯論", "審理", "訊問", "調解", "調查")):
             return "hearing"
-        if any(k in text for k in ("補正", "繳費", "上訴", "抗告", "陳報", "表示意見", "提出資料")):
+        if tt == "繳費" or any(k in text for k in ("繳納", "繳費", "裁判費", "規費", "聲請費")):
+            return "deadline_payment"
+        if tt == "補正" or any(k in text for k in ("補正", "補繳", "補提", "補送", "補件")):
+            return "deadline_correction"
+        if tt in {"上訴", "抗告", "再抗告", "異議", "再議"} or any(k in text for k in ("上訴", "抗告", "再抗告", "異議", "再議")):
+            return "deadline_challenge"
+        if tt in {"陳報", "陳述意見", "提出資料", "表示意見"} or any(k in text for k in ("陳報", "陳述意見", "表示意見", "提出資料", "具狀表示", "回覆", "確答", "陳明")):
+            return "deadline_response"
+        if any(k in text for k in ("期限", "日內", "日前", "文到", "送達後", "送達翌日起")):
             return "deadline"
         return "other"
 
@@ -1955,6 +2080,7 @@ def _cleanup_duplicate_calendar_todos(
         "marked": 0,
         "deleted_events": 0,
         "delete_failed": 0,
+        "db_only_marked": 0,
         "items": [],
     }
     cur = conn.cursor(dictionary=True)
@@ -1968,37 +2094,61 @@ def _cleanup_duplicate_calendar_todos(
               AND todo_date >= CURDATE()
               AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (status IS NULL OR status = '' OR status = 'pending')
-              AND COALESCE(case_number, '') <> ''
             ORDER BY todo_date ASC, todo_time ASC, id ASC
             LIMIT %s
             """,
             (max(1, min(int(limit or 300), 1000)),),
         )
         rows = [dict(r) for r in (cur.fetchall() or []) if isinstance(r, dict)]
+        known_by_slot: Dict[tuple[str, str, str], list[Dict[str, Any]]] = {}
         groups: Dict[tuple[str, str, str, str], list[Dict[str, Any]]] = {}
         for row in rows:
             kind = _todo_calendar_kind(str(row.get("todo_type") or ""), str(row.get("description") or ""))
             if kind == "other":
                 kind = str(row.get("todo_type") or "other")
+            row["_calendar_kind"] = kind
+            case_no = str(row.get("case_number") or "").strip()
+            if case_no:
+                slot = (str(row.get("todo_date") or "").strip(), str(row.get("todo_time") or "").strip(), kind)
+                known_by_slot.setdefault(slot, []).append(row)
+
+        for row in rows:
+            kind = str(row.get("_calendar_kind") or "")
+            case_no = str(row.get("case_number") or "").strip()
+            if not case_no:
+                desc = str(row.get("description") or "")
+                slot = (str(row.get("todo_date") or "").strip(), str(row.get("todo_time") or "").strip(), kind)
+                matched = [
+                    cand for cand in known_by_slot.get(slot, [])
+                    if str(cand.get("client_name") or "").strip()
+                    and str(cand.get("client_name") or "").strip() in desc
+                ]
+                matched_case_numbers = {str(c.get("case_number") or "").strip() for c in matched if str(c.get("case_number") or "").strip()}
+                if len(matched_case_numbers) == 1:
+                    case_no = next(iter(matched_case_numbers))
+                    row["_resolved_case_number"] = case_no
+                else:
+                    continue
             key = (
-                str(row.get("case_number") or "").strip(),
+                case_no,
                 str(row.get("todo_date") or "").strip(),
                 str(row.get("todo_time") or "").strip(),
                 kind,
             )
             groups.setdefault(key, []).append(row)
 
-        def _canonical_sort_key(row: Dict[str, Any]) -> tuple[int, int]:
+        def _canonical_sort_key(row: Dict[str, Any]) -> tuple[int, int, int]:
             source = str(row.get("source_file") or "")
             gid = str(row.get("google_calendar_id") or "").strip()
             row_id = int(row.get("id") or 0)
+            priority = -_calendar_todo_type_priority(str(row.get("todo_type") or ""))
             if not source.startswith("gcal_import:") and gid:
-                return (0, row_id)
+                return (0, priority, row_id)
             if not source.startswith("gcal_import:"):
-                return (1, row_id)
+                return (1, priority, row_id)
             if gid:
-                return (2, row_id)
-            return (3, row_id)
+                return (2, priority, row_id)
+            return (3, priority, row_id)
 
         def _event_calendar_for(row: Dict[str, Any]) -> str:
             source = str(row.get("source_file") or "")
@@ -2009,11 +2159,10 @@ def _cleanup_duplicate_calendar_todos(
         for key, members in groups.items():
             if len(members) < 2:
                 continue
-            # Only merge rows that have a real same-kind collision. This avoids
-            # merging unrelated same-day admin notes.
-            with_event = [m for m in members if str(m.get("google_calendar_id") or "").strip()]
-            if len(with_event) < 2:
-                continue
+            # Same case/date/time/kind is already a same obligation. Collapse it
+            # before sync so a DB-only duplicate cannot be pushed into Google
+            # later. The kind is intentionally narrow (payment/correction/
+            # response/challenge) to avoid merging separate duties.
             out["groups"] += 1
             canonical = sorted(members, key=_canonical_sort_key)[0]
             canonical_id = int(canonical.get("id") or 0)
@@ -2057,11 +2206,14 @@ def _cleanup_duplicate_calendar_todos(
                     (row_id,),
                 )
                 out["marked"] += int(getattr(cur, "rowcount", 0) or 0)
+                if not should_delete_event:
+                    out["db_only_marked"] += 1
                 if len(out["items"]) < 20:
                     out["items"].append({
                         "id": row_id,
                         "kept_id": canonical_id,
                         "case_number": key[0],
+                        "resolved_case_number": str(row.get("_resolved_case_number") or ""),
                         "todo_date": key[1],
                         "todo_time": key[2],
                         "kind": key[3],
@@ -2823,7 +2975,7 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
               AND todo_date IS NOT NULL
               AND todo_date >= CURDATE()
               AND todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
-              AND COALESCE(status, '') <> 'deleted'
+              AND (status IS NULL OR status = '' OR status = 'pending')
               AND COALESCE(case_number, '') <> ''
               AND google_calendar_id IS NOT NULL
               AND google_calendar_id <> ''

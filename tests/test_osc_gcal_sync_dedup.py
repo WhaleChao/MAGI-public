@@ -363,6 +363,204 @@ def test_cleanup_duplicate_calendar_todos_merges_response_deadline_type_drift():
     assert service.events_api.delete_calls == [{"calendarId": "primary", "eventId": "duplicate-event-id"}]
 
 
+def test_cleanup_duplicate_calendar_todos_marks_db_only_duplicate_before_push():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 4123,
+            "case_number": "2025-0059",
+            "client_name": "吳美蓮",
+            "todo_type": "陳報",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "📝 10日內陳報 (05/29文到)",
+            "source_file": "20260529 宜蘭地方法院函（吳美蓮）.pdf",
+            "google_calendar_id": "keep-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 4134,
+            "case_number": "2025-0059",
+            "client_name": "吳美蓮",
+            "todo_type": "提出資料",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "提出資料 - 10日內提出異議",
+            "source_file": "20260529 宜蘭地方法院函（吳美蓮）.pdf",
+            "google_calendar_id": "",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 1
+    assert out["marked"] == 1
+    assert out["db_only_marked"] == 1
+    assert out["deleted_events"] == 0
+    assert conn.updates == [(4134,)]
+    assert service.events_api.delete_calls == []
+
+
+def test_cleanup_duplicate_calendar_todos_keeps_more_specific_db_only_type():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 501,
+            "case_number": "2026-0001",
+            "client_name": "王小明",
+            "todo_type": "提出資料",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "10日內提出資料",
+            "source_file": "notice.pdf",
+            "google_calendar_id": "",
+            "status": "pending",
+        },
+        {
+            "id": 502,
+            "case_number": "2026-0001",
+            "client_name": "王小明",
+            "todo_type": "陳報",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "10日內陳報",
+            "source_file": "notice.pdf",
+            "google_calendar_id": "",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 1
+    assert out["marked"] == 1
+    assert out["db_only_marked"] == 1
+    assert conn.updates == [(501,)]
+    assert out["items"][0]["kept_id"] == 502
+
+
+def test_cleanup_duplicate_calendar_todos_resolves_no_case_import_shadow_by_client():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 3977,
+            "case_number": "2025-0002",
+            "client_name": "游秀鈴",
+            "todo_type": "上訴",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "⚖️ 游秀鈴 114年度訴字第000972號 上訴",
+            "source_file": "20260521 臺北地方法院裁定（游秀鈴；上訴期間）.pdf",
+            "google_calendar_id": "official-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 3849,
+            "case_number": "",
+            "client_name": "",
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "游秀鈴案上訴末日",
+            "source_file": "gcal_import:whalelawyer@gmail.com",
+            "google_calendar_id": "import-shadow-id",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 1
+    assert out["marked"] == 1
+    assert out["deleted_events"] == 1
+    assert conn.updates == [(3849,)]
+    assert service.events_api.delete_calls == [{"calendarId": "whalelawyer@gmail.com", "eventId": "import-shadow-id"}]
+    assert out["items"][0]["kept_id"] == 3977
+    assert out["items"][0]["resolved_case_number"] == "2025-0002"
+
+
+def test_cleanup_duplicate_calendar_todos_does_not_resolve_no_case_import_without_unique_match():
+    mod = _load_action_module()
+    rows = [
+        {
+            "id": 3977,
+            "case_number": "2025-0002",
+            "client_name": "游秀鈴",
+            "todo_type": "上訴",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "游秀鈴上訴",
+            "source_file": "notice.pdf",
+            "google_calendar_id": "official-event-id",
+            "status": "pending",
+        },
+        {
+            "id": 3988,
+            "case_number": "2026-0055",
+            "client_name": "游秀鈴",
+            "todo_type": "上訴",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "游秀鈴另案上訴",
+            "source_file": "notice2.pdf",
+            "google_calendar_id": "official-event-id-2",
+            "status": "pending",
+        },
+        {
+            "id": 3849,
+            "case_number": "",
+            "client_name": "",
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-06-08",
+            "todo_time": None,
+            "description": "游秀鈴案上訴末日",
+            "source_file": "gcal_import:whalelawyer@gmail.com",
+            "google_calendar_id": "import-shadow-id",
+            "status": "pending",
+        },
+    ]
+    conn = _DuplicateCleanupConn(rows)
+    service = _FakeService()
+
+    out = mod._cleanup_duplicate_calendar_todos(
+        conn,
+        service,
+        calendar_id="primary",
+        target_calendar_ids={"primary", "zl.hualien@gmail.com"},
+        limit=10,
+    )
+
+    assert out["groups"] == 0
+    assert out["marked"] == 0
+    assert conn.updates == []
+    assert service.events_api.delete_calls == []
+
+
 def test_cleanup_duplicate_calendar_todos_does_not_merge_payment_and_correction_same_day():
     mod = _load_action_module()
     rows = [
