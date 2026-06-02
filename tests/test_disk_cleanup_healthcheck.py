@@ -250,24 +250,29 @@ def test_rejected_distill_cleanup_preserves_deployed_symlink_target(sandbox, mon
 
 def test_cleanup_empty_synology_case_shells_removes_only_empty_case_roots(sandbox, monkeypatch):
     root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
-    empty_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    empty_closed_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    empty_active_case = root / "一般案件" / "民事" / "2026-0101-新案-一審-給付"
     real_case = root / "一般案件" / "民事" / "2026-0100-保留-一審-給付"
     non_case = root / "一般案件" / "民事" / "範本"
-    (empty_case / "02_我方歷次書狀").mkdir(parents=True)
-    (empty_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    (empty_closed_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_closed_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    (empty_active_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_active_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
     (real_case / "02_我方歷次書狀").mkdir(parents=True)
     (real_case / "02_我方歷次書狀" / "書狀.pdf").write_bytes(b"pdf")
     non_case.mkdir(parents=True)
     old = time.time() - 24 * 3600
-    for p in (empty_case, real_case, non_case):
+    for p in (empty_closed_case, empty_active_case, real_case, non_case):
         os.utime(p, (old, old))
 
     monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
     monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
 
     actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
 
-    assert not empty_case.exists()
+    assert not empty_closed_case.exists()
+    assert empty_active_case.exists()
     assert real_case.exists()
     assert non_case.exists()
     assert actions[0]["deleted_dirs"] == 1
@@ -279,6 +284,7 @@ def test_cleanup_empty_synology_case_shells_dry_run_preserves(sandbox, monkeypat
     empty_case.mkdir(parents=True)
     monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
     monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
 
     actions = dc.cleanup_empty_synology_case_shells(dry_run=True)
 
@@ -313,6 +319,7 @@ def test_cleanup_empty_synology_case_shells_ignores_legacy_delete_guard(sandbox,
     monkeypatch.setenv("MAGI_NO_DELETE", "1")
     monkeypatch.setenv("MAGI_DB_NO_DELETE", "1")
     monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
     orig_unlink = os.unlink
 
     def guarded_unlink(path, *args, **kwargs):

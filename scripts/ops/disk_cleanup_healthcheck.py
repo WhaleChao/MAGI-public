@@ -1426,8 +1426,6 @@ def _closed_case_numbers_for_shell_cleanup() -> set[str]:
 
 
 def _iter_empty_synology_case_shells() -> List[Path]:
-    now = time.time()
-    cutoff = now - max(0.0, SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS) * 3600
     closed_case_numbers = _closed_case_numbers_for_shell_cleanup()
     out: List[Path] = []
     for root in _synology_drive_active_roots():
@@ -1449,10 +1447,7 @@ def _iter_empty_synology_case_shells() -> List[Path]:
                         continue
                     case_number = _case_number_from_shell_name(case_dir.name)
                     known_closed = bool(case_number and case_number in closed_case_numbers)
-                    try:
-                        if not known_closed and case_dir.stat().st_mtime >= cutoff:
-                            continue
-                    except OSError:
+                    if not known_closed:
                         continue
                     if _case_shell_has_real_file(case_dir):
                         continue
@@ -1463,11 +1458,11 @@ def _iter_empty_synology_case_shells() -> List[Path]:
 
 
 def cleanup_empty_synology_case_shells(dry_run: bool) -> List[Dict[str, Any]]:
-    """Remove stale empty case shells created by Synology Drive fallback writes.
+    """Remove empty active-folder shells only for cases known to be closed.
 
-    MAGI must create case folders on real NAS/SMB roots.  Synology Drive is a
-    read fallback only; empty case shells under it are safe to remove when they
-    contain no real files.
+    New manually created cases can legitimately contain only OSC's standard
+    subfolders before documents arrive.  Never delete active/open case roots
+    simply because they do not yet contain files.
     """
     if not SYNOLOGY_EMPTY_CASE_SHELL_CLEANUP_ENABLE:
         return [{"enabled": False, "reason": "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE=0"}]
