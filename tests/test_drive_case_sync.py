@@ -1165,6 +1165,57 @@ def test_run_priority_case_sync_uses_direct_db_mapping(monkeypatch, tmp_path):
     assert "2026-0099-" not in report["matched"][0]["drive"]["relative_path"]
 
 
+def test_run_priority_case_sync_no_create_does_not_ensure_folder(monkeypatch, tmp_path):
+    local_case = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        local_path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        relative_path="一般案件/行政/2026-0099-測試甲-一審-訴願",
+        name="2026-0099-測試甲-一審-訴願",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0099", client_hint="測試甲", reason_hint="訴願"),
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.load_local_env", lambda: None)
+    monkeypatch.setattr("api.osc.drive_case_sync.build_drive_service", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.find_drive_root",
+        lambda *_args, **_kwargs: {"id": "root", "name": "案件辦理", "webViewLink": "https://drive.example/root"},
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.db_local_cases_for_numbers", lambda nums: ([local_case], []))
+
+    def fail_ensure(*_args, **_kwargs):
+        raise AssertionError("ensure_drive_case_folder_for_local_case must not run when creation is disabled")
+
+    monkeypatch.setattr("api.osc.drive_case_sync.ensure_drive_case_folder_for_local_case", fail_ensure)
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.find_existing_drive_case_folder_for_local_case",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "drive_id": "drive-case",
+            "relative_path": "一般案件/Lumi/測試甲-一審-訴願",
+            "created_count": 0,
+            "created_folders": [],
+            "status": "existing_by_name",
+        },
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *_args, **_kwargs: [])
+    report = run_priority_case_sync(
+        case_numbers=["2026-0099"],
+        root_name="案件辦理",
+        output_dir=tmp_path,
+        file_diff=True,
+        execute_downloads=False,
+        execute_uploads=True,
+        upload_limit=1,
+        ensure_drive_case_folders=False,
+        drive_owner_bucket_name="Lumi",
+    )
+    assert report["drive_folder_result"]["summary"]["created_folders"] == 0
+
+
 def test_create_missing_drive_case_folders_only_for_recent_nas_cases(monkeypatch):
     recent = datetime.now(timezone.utc).isoformat()
     old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()

@@ -717,6 +717,26 @@ def test_pdf_calendar_scan_tentative_14_days_when_court_pdf_has_no_deadline(tmp_
     assert item["todos"][0]["source"] == "pdf_tentative_no_deadline"
 
 
+def test_pdf_calendar_scan_no_tentative_for_plain_ruling_or_forwarding_letter(tmp_path):
+    from api.blueprints import osc_pdf
+
+    ruling = tmp_path / "20260602 花蓮地方法院115年度聲字第169號刑事裁定（劉信義；主文：准許聲請人A女之父、A女之母參與本案訴訟）.pdf"
+    forwarding = tmp_path / "20250821 高等法院114年度聲再字第157號刑事庭函（蕭仁俊；主旨：檢送刑事再審抗告理由續狀）.pdf"
+    for path in (ruling, forwarding):
+        path.write_bytes(b"%PDF-1.4\n")
+        item = osc_pdf._scan_pdf_for_calendar(path, case_number="2026-0001", client_name="測試", scan_text=False)
+        assert item["todos"] == []
+
+
+def test_pdf_text_deadline_requires_deadline_cue_for_absolute_dates(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260602 花蓮地方法院刑事裁定（劉信義）.pdf"
+    text = "臺灣花蓮地方法院115年度蒞字第001346號 提出資料 115年6月2日 主文准許參與訴訟"
+
+    assert osc_pdf._extract_todos_from_pdf_text(path, text) == []
+
+
 def test_pdf_text_uses_ocr_fallback_when_native_text_empty(tmp_path, monkeypatch):
     from api.blueprints import osc_pdf
 

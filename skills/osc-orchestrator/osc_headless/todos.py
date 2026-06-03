@@ -401,12 +401,16 @@ def _todo_sort_key(todo: Dict) -> tuple[str, str, str]:
 
 def _infer_absolute_deadline_type(context: str) -> Optional[str]:
     text = context or ""
+    data_request = re.search(
+        r"(?:提出|檢送|檢附|補送|補提).{0,20}(?:資料|文件|清冊|報告書|截圖|證據)"
+        r"|(?:資料|文件|清冊|報告書|截圖|證據).{0,20}(?:提出|檢送|檢附|補送|補提)",
+        text,
+    )
     ordered = [
         ("繳費", ("繳納", "繳費", "裁判費", "規費", "聲請費")),
         ("補正", ("補正", "補繳", "補提")),
         ("陳述意見", ("陳述意見",)),
         ("陳報", ("陳報", "回覆", "表示意見", "具狀表示", "確答", "陳明", "說明")),
-        ("提出資料", ("提出", "檢送", "檢附", "補送", "補提", "資料", "文件", "清冊", "報告書", "截圖", "證據")),
         ("上訴", ("上訴",)),
         ("抗告", ("抗告",)),
         ("閱卷期限", ("閱卷",)),
@@ -414,6 +418,8 @@ def _infer_absolute_deadline_type(context: str) -> Optional[str]:
     for todo_type, keywords in ordered:
         if any(keyword in text for keyword in keywords):
             return todo_type
+    if data_request:
+        return "提出資料"
     return None
 
 
@@ -435,6 +441,12 @@ def _extract_absolute_deadline_todos(filename: str, document_date: datetime) -> 
         before = text[max(0, m.start() - 24) : m.start()]
         tail = m.group(4) or ""
         context = f"{before}{tail}"
+        matched_text = m.group(0) or ""
+        if not (
+            re.match(r"(請惠予|應|請|命|限|惠予)", matched_text)
+            or re.search(r"(請惠予|應於|請於|命於|限於|惠予於|應|請|命|限).{0,16}$", before)
+        ):
+            continue
         todo_type = _infer_absolute_deadline_type(context)
         if not todo_type:
             continue
@@ -460,7 +472,7 @@ def _extract_absolute_deadline_todos(filename: str, document_date: datetime) -> 
         )
 
     separated_date_pat = re.compile(
-        r"(?:(?:期限|至|於|應於|限於|請於|繳費期限|繳費日期)[:：]?)?(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
+        r"(?:期限|至|應於|限於|請於|命於|繳費期限|繳費日期)[:：]?\s*(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
     )
     for m in separated_date_pat.finditer(text):
         before = text[max(0, m.start() - 28) : m.start()]
@@ -488,7 +500,7 @@ def _extract_absolute_deadline_todos(filename: str, document_date: datetime) -> 
         )
 
     compact_date_pat = re.compile(
-        r"(?:繳費期限|繳費日期|期限|至|於|應於|限於|請於)[:：]?\s*(\d{7,8})(?!\d)"
+        r"(?:繳費期限|繳費日期|期限|至|應於|限於|請於|命於)[:：]?\s*(\d{7,8})(?!\d)"
     )
     for m in compact_date_pat.finditer(text):
         before = text[max(0, m.start() - 28) : m.start()]

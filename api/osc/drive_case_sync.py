@@ -3128,7 +3128,7 @@ def run_priority_case_sync(
     folder_records: list[dict[str, Any]] = []
     for local_case in local_cases:
         try:
-            if ensure_drive_case_folders or execute_uploads:
+            if ensure_drive_case_folders:
                 folder_result = ensure_drive_case_folder_for_local_case(
                     service,
                     str(drive_root.get("id") or ""),

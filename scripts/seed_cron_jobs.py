@@ -256,6 +256,39 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "resource_block_at": "core_only",
         },
         {
+            "id": "job_drive_case_sync_all_files",
+            "cron": "12 */6 * * *",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_drive_case_sync_all_files",
+                (
+                    f"MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=5 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=15 "
+                    f"{python_bin} {repo_root / 'scripts' / 'drive_case_sync_worker.py'} "
+                    "--direct-all-cases --direct-all-case-limit 16 "
+                    "--download-limit 60 --upload-limit 60 "
+                    "--max-download-bytes 700000000 --max-upload-bytes 700000000 "
+                    "--max-case-depth 5 --max-case-items 220 "
+                    "--create-drive-folder-limit 12 --create-drive-folder-max-age-hours 168 "
+                    "--priority-upcoming-days 0 --inventory-timeout-sec 1800"
+                ),
+                block_at="core_only",
+                require_disk_free_gb=30,
+                require_free_inactive_gb=3,
+                timeout_sec=2100,
+            ),
+            "desc": "Google Drive/NAS 全案件輪巡雙向同步（每 6 小時；依 DB folder_path 輪巡，不改兩邊命名規則；缺檔才補，不覆蓋、不刪除）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "long_job": True,
+            "timeout_sec": 3600,
+            "resource_guarded": True,
+            "resource_block_at": "core_only",
+        },
+        {
             "id": "job_osc_events_refresh",
             "cron": "35 */6 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=5000 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",

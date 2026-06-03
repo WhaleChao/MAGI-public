@@ -169,6 +169,62 @@ def load_priority_case_numbers(days: int, *, limit: int = 80) -> list[str]:
             pass
 
 
+def load_all_sync_case_numbers(*, limit: int = 24, offset: int = 0) -> tuple[list[str], int, int]:
+    """Return a stable DB-backed slice of case numbers for all-file sync.
+
+    This avoids a full NAS/Drive inventory scan every six hours.  The worker
+    rotates over canonical DB cases and uses DB folder_path as the NAS source of
+    truth while Drive keeps its own folder naming rules.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "osc-orchestrator"))
+        from osc_headless.db import connect_mysql, db_config_from_env  # type: ignore
+    except Exception:
+        return [], 0, 0
+    conn = None
+    try:
+        conn = connect_mysql(db_config_from_env(prefix="OSC_DB_"))
+        cur = conn.cursor()
+        try:
+            where = """
+                COALESCE(case_number, '') != ''
+                AND COALESCE(folder_path, '') != ''
+                AND case_number REGEXP '^[0-9]{4}-[0-9]{4}$'
+                AND COALESCE(client_name, '') NOT IN ('範本', '模板', 'Template')
+                AND COALESCE(case_reason, '') NOT IN ('upsert-smoke')
+            """
+            cur.execute(f"SELECT COUNT(*) FROM cases WHERE {where}")
+            total_row = cur.fetchone()
+            total = int((total_row or [0])[0] or 0)
+            if total <= 0:
+                return [], 0, 0
+            safe_limit = max(1, min(int(limit or 24), 200))
+            safe_offset = max(0, int(offset or 0)) % total
+            cur.execute(
+                f"""
+                SELECT case_number
+                FROM cases
+                WHERE {where}
+                ORDER BY case_number ASC
+                LIMIT %s OFFSET %s
+                """,
+                (safe_limit, safe_offset),
+            )
+            numbers = [str(row[0] or "").strip() for row in (cur.fetchall() or []) if str(row[0] or "").strip()]
+            next_offset = (safe_offset + max(len(numbers), 1)) % total
+            return numbers, total, next_offset
+        finally:
+            cur.close()
+    except Exception:
+        return [], 0, 0
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="MAGI bounded Drive/NAS bidirectional sync worker")
     parser.add_argument("--root-id", default="")
@@ -188,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--priority-upcoming-days", type=int, default=21)
     parser.add_argument("--priority-case-limit", type=int, default=80)
     parser.add_argument("--direct-priority-case-limit", type=int, default=24)
+    parser.add_argument("--direct-all-cases", action="store_true")
+    parser.add_argument("--direct-all-case-limit", type=int, default=24)
     parser.add_argument("--inventory-timeout-sec", type=int, default=1200)
     parser.add_argument("--no-downloads", action="store_true")
     parser.add_argument("--no-uploads", action="store_true")
@@ -198,25 +256,40 @@ def main(argv: list[str] | None = None) -> int:
 
     state = load_state()
     offset = max(0, int(state.get("matched_case_offset") or 0))
+    all_case_offset = max(0, int(state.get("all_case_offset") or 0))
     priority_case_numbers = load_priority_case_numbers(
         args.priority_upcoming_days,
         limit=args.priority_case_limit,
     )
-    direct_numbers = priority_case_numbers[: max(0, int(args.direct_priority_case_limit or 0))]
-    direct_mode_requested = bool(direct_numbers and not args.no_direct_priority_sync)
+    all_case_numbers: list[str] = []
+    all_case_total = 0
+    all_case_next_offset = all_case_offset
+    if args.direct_all_cases:
+        all_case_numbers, all_case_total, all_case_next_offset = load_all_sync_case_numbers(
+            limit=args.direct_all_case_limit,
+            offset=all_case_offset,
+        )
+    direct_numbers = all_case_numbers if args.direct_all_cases else priority_case_numbers[: max(0, int(args.direct_priority_case_limit or 0))]
+    direct_mode_requested = bool(direct_numbers and (args.direct_all_cases or not args.no_direct_priority_sync))
+    direct_mode_label = "direct_all_case_sync_running" if args.direct_all_cases else "direct_priority_sync_running"
     needs_write_scope = not args.no_uploads or not args.no_create_drive_folders
     started_at = iso_now()
     save_worker_status({
         "ok": None,
-        "status": "direct_priority_sync_running" if direct_mode_requested else "inventory_running",
+        "status": direct_mode_label if direct_mode_requested else "inventory_running",
         "action_required": False,
         "started_at": started_at,
         "matched_case_offset": offset,
+        "all_case_offset": all_case_offset,
+        "all_case_total": all_case_total,
+        "all_case_numbers": all_case_numbers[:30],
         "priority_case_count": len(priority_case_numbers),
         "priority_case_numbers": priority_case_numbers[:30],
         "limits": {
             "matched_case_limit": args.matched_case_limit,
             "direct_priority_case_limit": args.direct_priority_case_limit,
+            "direct_all_cases": bool(args.direct_all_cases),
+            "direct_all_case_limit": args.direct_all_case_limit,
             "download_limit": 0 if args.no_downloads else args.download_limit,
             "upload_limit": 0 if args.no_uploads else args.upload_limit,
             "max_case_depth": args.max_case_depth,
@@ -284,6 +357,9 @@ def main(argv: list[str] | None = None) -> int:
             "started_at": started_at,
             "finished_at": iso_now(),
             "matched_case_offset": offset,
+            "all_case_offset": all_case_offset,
+            "all_case_total": all_case_total,
+            "all_case_numbers": all_case_numbers[:30],
             "priority_case_count": len(priority_case_numbers),
             "priority_case_numbers": priority_case_numbers[:30],
             "next_step": "下次排程會從同一批近期待辦案件重試；若連續逾時，請降低 matched-case-limit 或檢查 Google Drive/NAS 連線。",
@@ -299,7 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     direct_mode = report.get("mode") == "direct_db_case_sync"
     matched_total = int((report.get("summary") or {}).get("matched_case_folders") or 0)
     scanned = int(((report.get("file_sync_plan") or {}).get("summary") or {}).get("matched_cases_scanned") or 0)
-    if direct_mode:
+    if direct_mode and args.direct_all_cases:
+        state["all_case_offset"] = all_case_next_offset
+        state["matched_case_offset"] = offset
+    elif direct_mode:
         state["matched_case_offset"] = offset
     elif matched_total > 0:
         state["matched_case_offset"] = (offset + max(scanned, 1)) % matched_total
@@ -311,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     state["last_execution_summary"] = (report.get("execution_result") or {}).get("summary") or {}
     state["last_drive_folder_summary"] = (report.get("drive_folder_result") or {}).get("summary") or {}
     state["last_priority_case_numbers"] = priority_case_numbers[:30]
+    state["last_all_case_numbers"] = all_case_numbers[:30]
     success_status = {
         "ok": True,
         "status": "ok",
@@ -319,6 +399,9 @@ def main(argv: list[str] | None = None) -> int:
         "finished_at": iso_now(),
         "matched_case_offset_before": offset,
         "matched_case_offset_after": state["matched_case_offset"],
+        "all_case_offset_before": all_case_offset,
+        "all_case_offset_after": state.get("all_case_offset", all_case_offset),
+        "all_case_total": all_case_total,
         "mode": report.get("mode") or "",
     }
     state["last_status"] = success_status
@@ -331,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         "execution_summary": state["last_execution_summary"],
         "drive_folder_summary": state["last_drive_folder_summary"],
         "priority_case_numbers": priority_case_numbers[:30],
+        "all_case_numbers": all_case_numbers[:30],
         "mode": report.get("mode") or "",
     })
 
@@ -338,9 +422,13 @@ def main(argv: list[str] | None = None) -> int:
         "ok": True,
         "matched_case_offset_before": offset,
         "matched_case_offset_after": state["matched_case_offset"],
+        "all_case_offset_before": all_case_offset,
+        "all_case_offset_after": state.get("all_case_offset", all_case_offset),
+        "all_case_total": all_case_total,
         "summary": report.get("summary") or {},
         "mode": report.get("mode") or "",
         "priority_case_numbers": priority_case_numbers[:30],
+        "all_case_numbers": all_case_numbers[:30],
         "file_sync_summary": state["last_file_sync_summary"],
         "execution_summary": state["last_execution_summary"],
         "drive_folder_summary": state["last_drive_folder_summary"],

@@ -347,12 +347,16 @@ _PDF_TODO_HINT_RE = re.compile(
 
 def _infer_deadline_type_from_context(context: str) -> str | None:
     text = context or ""
+    data_request = re.search(
+        r"(?:提出|檢送|檢附|補送|補提).{0,20}(?:資料|文件|清冊|報告書|截圖|證據)"
+        r"|(?:資料|文件|清冊|報告書|截圖|證據).{0,20}(?:提出|檢送|檢附|補送|補提)",
+        text,
+    )
     mapping = [
         ("繳費", ("繳納", "繳費", "裁判費", "規費", "聲請費")),
         ("補正", ("補正", "補繳", "補提")),
         ("陳述意見", ("陳述意見",)),
         ("陳報", ("陳報", "回覆", "表示意見", "具狀表示", "確答", "陳明", "說明")),
-        ("提出資料", ("提出", "檢送", "檢附", "補送", "補提", "資料", "文件", "清冊", "報告書", "截圖", "證據")),
         ("上訴", ("上訴",)),
         ("抗告", ("抗告",)),
         ("閱卷期限", ("閱卷",)),
@@ -360,6 +364,8 @@ def _infer_deadline_type_from_context(context: str) -> str | None:
     for todo_type, keywords in mapping:
         if any(keyword in text for keyword in keywords):
             return todo_type
+    if data_request:
+        return "提出資料"
     return None
 
 
@@ -452,6 +458,12 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     for m in absolute_deadline_pat.finditer(body):
         before = body[max(0, m.start() - 24) : m.start()]
         tail = m.group(4) or ""
+        matched_text = m.group(0) or ""
+        if not (
+            re.match(r"(請惠予|應|請|命|限|惠予)", matched_text)
+            or re.search(r"(請惠予|應於|請於|命於|限於|惠予於|應|請|命|限).{0,16}$", before)
+        ):
+            continue
         todo_type = _infer_deadline_type_from_context(f"{before}{tail}")
         if not todo_type:
             continue
@@ -470,7 +482,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
         )
 
     separated_deadline_pat = re.compile(
-        r"(?:(?:期限|至|於|應於|限於|請於|繳費期限|繳費日期)[:：]?)?(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
+        r"(?:期限|至|應於|限於|請於|命於|繳費期限|繳費日期)[:：]?\s*(\d{2,4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\s*\d{1,2}[:：]\d{2})?"
     )
     for m in separated_deadline_pat.finditer(body):
         before = body[max(0, m.start() - 28) : m.start()]
@@ -492,7 +504,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
             }
         )
 
-    compact_deadline_pat = re.compile(r"(?:繳費期限|繳費日期|期限|至|於|應於|限於|請於)[:：]?\s*(\d{7,8})(?!\d)")
+    compact_deadline_pat = re.compile(r"(?:繳費期限|繳費日期|期限|至|應於|限於|請於|命於)[:：]?\s*(\d{7,8})(?!\d)")
     for m in compact_deadline_pat.finditer(body):
         before = body[max(0, m.start() - 28) : m.start()]
         after = body[m.end() : m.end() + 40]
@@ -567,9 +579,32 @@ def _is_court_calendar_pdf(path: Path, text: str = "") -> bool:
     )
 
 
+def _looks_like_tentative_confirmation_request(path: Path, text: str = "") -> bool:
+    """Return True only for no-deadline PDFs that still ask us to confirm/reply.
+
+    The original desktop OSC did not invent generic "確認" todos for every
+    court letter or ruling.  MAGI keeps a narrow 14-day fallback only for
+    documents that are themselves a confirmation/reply request, such as a court
+    hearing-method inquiry form.  Plain rulings, judgments, "檢送...狀", and
+    documents whose text merely mentions data/evidence must not create work.
+    """
+    haystack = re.sub(r"\s+", "", f"{path.name}\n{(text or '')[:4000]}")
+    if not haystack:
+        return False
+    if any(token in haystack for token in ("開庭方式意願徵詢", "意願徵詢表", "確認開庭方式")):
+        return True
+    if re.search(r"(?:請|應|命|限|惠予).{0,16}(?:確認|回覆|回復).{0,40}(?:是否|意願|開庭方式|視訊|到庭方式)", haystack):
+        return True
+    if re.search(r"(?:請|應|命|限|惠予).{0,20}(?:回覆|回復).{0,40}(?:是否同意|有無意見)", haystack):
+        return True
+    return False
+
+
 def _tentative_no_deadline_todo(path: Path, text: str = "") -> list[dict[str, Any]]:
     enabled = str(os.environ.get("OSC_PDF_CALENDAR_TENTATIVE_IF_NO_DEADLINE", "1")).strip().lower() in {"1", "true", "yes", "on"}
     if not enabled or not _is_court_calendar_pdf(path, text):
+        return []
+    if not _looks_like_tentative_confirmation_request(path, text):
         return []
     try:
         st = path.stat()
