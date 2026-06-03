@@ -674,6 +674,46 @@ def test_build_file_sync_plan_compares_drive_and_nas_semantic_paths(monkeypatch)
     assert case["skipped_existing"] == 2
 
 
+def test_build_file_sync_plan_prioritizes_upcoming_todo_cases(monkeypatch):
+    def make_pair(case_number: str):
+        drive = CaseFolder(
+            source="drive",
+            path=f"一般案件/Lumi/{case_number}-測試-一審-損害賠償",
+            relative_path=f"一般案件/Lumi/{case_number}-測試-一審-損害賠償",
+            name=f"{case_number}-測試-一審-損害賠償",
+            meta=CaseMeta(case_number=case_number),
+            drive_id=f"drive-{case_number}",
+        )
+        local = CaseFolder(
+            source="nas",
+            path=f"/cases/一般案件/民事/{case_number}-測試-一審-損害賠償",
+            local_path=f"/cases/一般案件/民事/{case_number}-測試-一審-損害賠償",
+            relative_path=f"一般案件/民事/{case_number}-測試-一審-損害賠償",
+            name=f"{case_number}-測試-一審-損害賠償",
+            meta=CaseMeta(case_number=case_number),
+        )
+        return {"drive": drive, "local": local}
+
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *args, **kwargs: [])
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *args, **kwargs: [])
+
+    plan = build_file_sync_plan(
+        {
+            "matched": [
+                make_pair("2026-0001"),
+                make_pair("2026-0002"),
+                make_pair("2026-0003"),
+            ]
+        },
+        drive_service=object(),
+        matched_case_limit=2,
+        matched_case_offset=1,
+        priority_case_numbers={"2026-0003"},
+    )
+
+    assert [case["case_number"] for case in plan["cases"]] == ["2026-0003", "2026-0002"]
+
+
 def test_drive_import_aliases_map_to_nas_canonical_folders():
     assert drive_to_nas_relative_path("法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"

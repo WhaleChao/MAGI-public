@@ -365,7 +365,12 @@ def test_six_hour_event_refresh_is_seeded():
     jobs = json.loads(Path("cron_jobs.json").read_text(encoding="utf-8"))
     job = next(x for x in jobs if x.get("id") == "job_osc_events_refresh")
 
-    assert job["cron"] == "5 */6 * * *"
+    drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_bidirectional")
+    assert drive_job["cron"] == "1 */6 * * *"
+    assert "drive_case_sync_worker.py" in drive_job["command"]
+    assert "--timeout-sec 1500" in drive_job["command"]
+    assert "--priority-upcoming-days 21" in drive_job["command"]
+    assert job["cron"] == "35 */6 * * *"
     assert job["enabled"] is True
     assert "osc_events_refresh.py" in job["command"]
     assert job["no_catchup"] is True

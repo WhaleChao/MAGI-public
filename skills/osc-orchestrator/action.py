@@ -112,6 +112,217 @@ def _extract_case_number_from_path(path: str) -> str:
             return cn
     return ""
 
+
+_GCAL_CLOSED_STATUSES = {"已結案", "結案", "closed", "Closed", "CLOSED"}
+
+
+def _gcal_norm_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("臺", "台")
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[，,。；;：:／/\\|_\-–—\[\]（）()【】<>《》「」『』]", "", text)
+    return text
+
+
+def _gcal_client_tokens(client_name: str) -> list[str]:
+    raw = str(client_name or "").strip()
+    if not raw:
+        return []
+    tokens: list[str] = []
+    for item in (raw, raw.split()[0] if raw.split() else ""):
+        n = _gcal_norm_text(item)
+        if len(n) >= 2 and n not in tokens:
+            tokens.append(n)
+    for run in re.findall(r"[\u4e00-\u9fff○Ｏ]{2,12}", raw):
+        n = _gcal_norm_text(run)
+        if len(n) >= 2 and n not in tokens:
+            tokens.append(n)
+    return tokens
+
+
+def _gcal_date_before_case_start(event_date: str, row: dict[str, Any]) -> bool:
+    if not event_date:
+        return False
+    start = str(row.get("start_date") or row.get("approval_date") or "").strip()[:10]
+    return bool(start and event_date[:10] < start)
+
+
+def _lookup_gcal_case_by_number(conn: Any, case_number: str) -> tuple[str, str]:
+    case_number = str(case_number or "").strip()
+    if not case_number:
+        return "", ""
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT case_number, client_name
+                FROM cases
+                WHERE case_number=%s
+                   OR court_case_no=%s
+                   OR court_case_number=%s
+                   OR laf_case_no=%s
+                   OR application_no=%s
+                ORDER BY CASE WHEN case_number=%s THEN 0 ELSE 1 END, case_number DESC
+                LIMIT 1
+                """,
+                (case_number, case_number, case_number, case_number, case_number, case_number),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if row:
+            return str(row.get("case_number") or case_number), str(row.get("client_name") or "")
+    except Exception:
+        logging.getLogger(__name__).debug("gcal case lookup by number failed", exc_info=True)
+    return case_number, ""
+
+
+def _resolve_gcal_event_case_identity(conn: Any, summary: str, description: str = "", event_date: str = "") -> tuple[str, str]:
+    """Resolve a manually-entered Google Calendar event to a unique active case.
+
+    This is deliberately conservative: if a name appears in multiple active
+    cases and the event text does not contain a case/law-aid number or reason
+    hint, MAGI leaves the calendar row unassigned instead of mixing procedures.
+    """
+    text = f"{summary or ''}\n{description or ''}"
+    norm_text = _gcal_norm_text(text)
+    if not norm_text:
+        return "", ""
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT case_number, client_name, case_reason, case_type, case_category,
+                       court_case_no, court_case_number, laf_case_no, application_no,
+                       status, start_date, approval_date
+                FROM cases
+                WHERE COALESCE(case_number, '') != ''
+                  AND COALESCE(client_name, '') != ''
+                  AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed', 'CLOSED')
+                ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+                LIMIT 2000
+                """
+            )
+            rows = cur.fetchall() or []
+        finally:
+            cur.close()
+    except Exception:
+        logging.getLogger(__name__).debug("gcal active case identity cache failed", exc_info=True)
+        return "", ""
+
+    scored: list[tuple[int, str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _gcal_date_before_case_start(event_date, row):
+            continue
+        case_no = str(row.get("case_number") or "").strip()
+        client = str(row.get("client_name") or "").strip()
+        if not case_no or not client:
+            continue
+        best_token_len = 0
+        for token in _gcal_client_tokens(client):
+            if token and token in norm_text:
+                best_token_len = max(best_token_len, len(token))
+        if best_token_len <= 0:
+            continue
+        score = 100 + best_token_len
+        for field in ("court_case_no", "court_case_number", "laf_case_no", "application_no", "case_number"):
+            raw = str(row.get(field) or "").strip()
+            if raw and _gcal_norm_text(raw) in norm_text:
+                score += 80
+        reason = str(row.get("case_reason") or row.get("case_type") or "").strip()
+        for hint in {reason, reason[:2], str(row.get("case_type") or "").strip()}:
+            hint_norm = _gcal_norm_text(hint)
+            if len(hint_norm) >= 2 and hint_norm in norm_text:
+                score += 10
+        category_norm = _gcal_norm_text(row.get("case_category") or "")
+        if category_norm and category_norm in norm_text:
+            score += 5
+        scored.append((score, case_no, client))
+
+    if not scored:
+        return "", ""
+    scored.sort(reverse=True)
+    top_score = scored[0][0]
+    top = [(case_no, client) for score, case_no, client in scored if score == top_score]
+    top_case_numbers = {case_no for case_no, _client in top}
+    if len(top_case_numbers) == 1:
+        case_no, client = top[0]
+        return case_no, client
+    return "", ""
+
+
+def _backfill_gcal_import_case_identity(
+    conn: Any,
+    *,
+    lookback_days: int = 30,
+    lookahead_days: int = 180,
+    limit: int = 300,
+) -> dict[str, Any]:
+    today = datetime.now(timezone.utc).date()
+    start = (today - timedelta(days=max(0, lookback_days))).isoformat()
+    end = (today + timedelta(days=max(1, lookahead_days))).isoformat()
+    out: dict[str, Any] = {"updated": 0, "skipped": 0, "items": []}
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT id, todo_type, todo_date, todo_time, description, source_file
+                FROM case_todos
+                WHERE source_file LIKE 'gcal_import%%'
+                  AND COALESCE(case_number, '') = ''
+                  AND (
+                    status IS NULL OR status=''
+                    OR status NOT IN ('deleted', 'calendar_deduped', 'completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消')
+                  )
+                  AND todo_date BETWEEN %s AND %s
+                ORDER BY todo_date ASC, id ASC
+                LIMIT %s
+                """,
+                (start, end, max(1, int(limit or 300))),
+            )
+            rows = cur.fetchall() or []
+            for row in rows:
+                summary = str(row.get("description") or "").strip()
+                todo_type = str(row.get("todo_type") or "").strip()
+                event_date = str(row.get("todo_date") or "").strip()[:10]
+                case_no, client = _resolve_gcal_event_case_identity(
+                    conn,
+                    f"{summary} {todo_type}".strip(),
+                    "",
+                    event_date,
+                )
+                if not case_no:
+                    out["skipped"] += 1
+                    continue
+                cur.execute(
+                    """
+                    UPDATE case_todos
+                    SET case_number=%s, client_name=%s
+                    WHERE id=%s
+                    """,
+                    (case_no, client, row.get("id")),
+                )
+                out["updated"] += int(getattr(cur, "rowcount", 0) or 0)
+                if len(out["items"]) < 20:
+                    out["items"].append({
+                        "id": row.get("id"),
+                        "case_number": case_no,
+                        "client_name": client,
+                        "description": summary[:120],
+                    })
+        finally:
+            cur.close()
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+    return out
+
 def _is_dir_fast(path: str, timeout_sec: float = 1.0) -> bool:
     """
     Fast directory check that avoids Finder/CloudStorage stalls.
@@ -3203,6 +3414,7 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
     primary_ok = 0
     source_calendar_not_listed: list[Dict[str, Any]] = []
     source_calendar_errors: list[Dict[str, Any]] = []
+    cancelled_source_imports: list[Dict[str, Any]] = []
     source_list_ok = 0
     if check_google and service:
         for row in rows_to_check:
@@ -3275,11 +3487,52 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
                 gid = str(row.get("google_calendar_id") or "").strip()
                 if gid in listed_ids:
                     source_list_ok += 1
-                else:
-                    source_calendar_not_listed.append({
-                        **_brief(row),
-                        "source_calendar": source_calendar,
-                    })
+                    continue
+                try:
+                    ev = service.events().get(calendarId=source_calendar, eventId=gid).execute()
+                    status = str((ev or {}).get("status") or "").lower()
+                    if status == "cancelled":
+                        cancelled_source_imports.append({
+                            **_brief(row),
+                            "source_calendar": source_calendar,
+                            "status": "cancelled",
+                        })
+                        continue
+                    source_list_ok += 1
+                    continue
+                except Exception:
+                    pass
+                source_calendar_not_listed.append({
+                    **_brief(row),
+                    "source_calendar": source_calendar,
+                })
+
+    cancelled_source_imports_marked = 0
+    if cancelled_source_imports:
+        try:
+            conn2 = connect_mysql(db_config_from_env(prefix="OSC_DB_"))
+            cur2 = conn2.cursor()
+            try:
+                for row in cancelled_source_imports:
+                    cur2.execute(
+                        """
+                        UPDATE case_todos
+                        SET status='deleted', google_calendar_id=''
+                        WHERE id=%s
+                          AND source_file LIKE 'gcal_import%%'
+                          AND (status IS NULL OR status='' OR status!='deleted')
+                        """,
+                        (row.get("id"),),
+                    )
+                    cancelled_source_imports_marked += int(getattr(cur2, "rowcount", 0) or 0)
+                conn2.commit()
+            finally:
+                cur2.close()
+                conn2.close()
+        except Exception as exc:
+            source_calendar_errors.append({
+                "error": f"cancelled_source_mark_failed:{type(exc).__name__}: {str(exc)[:160]}",
+            })
 
     findings = {
         "missing_google_id": missing_google_id,
@@ -3291,6 +3544,7 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         "stale_google_events": stale_google_events,
         "source_calendar_not_listed": source_calendar_not_listed,
         "source_calendar_errors": source_calendar_errors,
+        "cancelled_source_imports": cancelled_source_imports,
     }
     summary = {
         "missing_google_id": len(missing_google_id),
@@ -3306,11 +3560,12 @@ def task_gcal_integrity_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
         "source_list_ok": source_list_ok,
         "source_calendar_not_listed": len(source_calendar_not_listed),
         "source_calendar_errors": len(source_calendar_errors),
+        "cancelled_source_imports_marked": cancelled_source_imports_marked,
     }
     ok = all(
         v == 0
         for k, v in summary.items()
-        if k not in {"checked_primary_events", "primary_ok", "checked_source_events", "source_list_ok"}
+        if k not in {"checked_primary_events", "primary_ok", "checked_source_events", "source_list_ok", "cancelled_source_imports_marked"}
     )
     out = {
         "ok": bool(ok),
@@ -3602,6 +3857,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Try to extract case_number from summary/description
         case_number = ""
+        client_name = ""
         if callable(normalize_case_key):
             ck, ck_source = normalize_case_key(
                 {
@@ -3626,6 +3882,15 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
                     else:
                         case_number = candidate
                     break
+        if case_number:
+            case_number, client_name = _lookup_gcal_case_by_number(conn, case_number)
+        else:
+            case_number, client_name = _resolve_gcal_event_case_identity(
+                conn,
+                summary,
+                description,
+                start_date or "",
+            )
 
         # Determine todo_type from summary keywords
         todo_type = "行事曆事件"
@@ -3681,7 +3946,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
                 """,
                 (
                     case_number or "",
-                    "",
+                    client_name or "",
                     todo_type,
                     start_date or None,
                     start_time or None,
@@ -3695,11 +3960,17 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             errors.append(f"insert_failed:{gcal_id[:20]}:{e}")
 
+    resolved_existing = _backfill_gcal_import_case_identity(
+        conn,
+        lookback_days=lookback_days,
+        lookahead_days=lookahead_days,
+        limit=int(p.get("resolve_existing_limit") or 300),
+    )
     conn.commit()
     cur.close()
     conn.close()
 
-    _eventlog("osc:gcal_import", ok=True, payload={"imported": imported, "skipped": skipped, "errors": len(errors)})
+    _eventlog("osc:gcal_import", ok=True, payload={"imported": imported, "skipped": skipped, "errors": len(errors), "resolved_existing": resolved_existing.get("updated", 0)})
     return {
         "ok": True,
         "imported": imported,
@@ -3712,6 +3983,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         "incremental": bool(incremental),
         "incremental_used": bool(incremental_used),
         "sync_token_resets": sync_token_resets,
+        "resolved_existing": resolved_existing,
         "errors": errors[:10],
     }
 

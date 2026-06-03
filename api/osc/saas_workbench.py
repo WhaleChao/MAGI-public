@@ -31,6 +31,19 @@ NOTIFICATION_PREFS_PATH = ROOT / ".runtime" / "osc_saas_notification_prefs.json"
 WORKFLOW_TEMPLATES_PATH = ROOT / ".runtime" / "osc_saas_workflow_templates.json"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
+INACTIVE_TODO_STATUSES = CLOSED_CASE_STATUSES + (
+    "完成",
+    "completed",
+    "done",
+    "cancelled",
+    "canceled",
+    "deleted",
+    "calendar_deduped",
+    "已完成",
+    "已刪除",
+    "刪除",
+    "取消",
+)
 NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
 TASK_REFRESH_INTERVAL_HOURS = 6
 
@@ -400,7 +413,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _status_open_sql(alias: str = "") -> str:
     p = f"{alias}." if alias else ""
-    closed = "','".join(CLOSED_CASE_STATUSES + ("完成", "completed", "done", "cancelled", "canceled"))
+    closed = "','".join(INACTIVE_TODO_STATUSES)
     return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('{closed}'))"
 
 

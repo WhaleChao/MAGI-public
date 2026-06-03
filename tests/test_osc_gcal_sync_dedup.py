@@ -1088,3 +1088,98 @@ def test_gcal_import_incremental_410_resets_token_and_full_syncs(monkeypatch, tm
     assert "syncToken" not in fake_service.events_api.calls[1]
     assert "timeMin" in fake_service.events_api.calls[1]
     assert "fresh-token" in state_path.read_text(encoding="utf-8")
+
+
+def test_gcal_import_resolves_manual_event_by_unique_client_name():
+    mod = _load_action_module()
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            if "FROM cases" in self.sql:
+                return [
+                    {
+                        "case_number": "2025-0064",
+                        "client_name": "賴麗卿Sera Cang",
+                        "case_reason": "清算",
+                        "case_type": "消費者債務清理",
+                        "case_category": "法律扶助案件",
+                        "court_case_no": "",
+                        "court_case_number": "",
+                        "laf_case_no": "1131227-E-001",
+                        "application_no": "",
+                        "status": "進行中",
+                        "start_date": "2025-01-01",
+                        "approval_date": None,
+                    }
+                ]
+
+        def close(self):
+            return None
+
+    class Conn:
+        def cursor(self, dictionary=False):
+            return Cursor()
+
+    assert mod._resolve_gcal_event_case_identity(Conn(), "賴麗卿案陳報末日", "", "2026-06-11") == (
+        "2025-0064",
+        "賴麗卿Sera Cang",
+    )
+
+
+def test_gcal_import_leaves_ambiguous_manual_event_unassigned():
+    mod = _load_action_module()
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            if "FROM cases" in self.sql:
+                return [
+                    {
+                        "case_number": "2026-0002",
+                        "client_name": "測試人",
+                        "case_reason": "清算",
+                        "case_type": "消費者債務清理",
+                        "case_category": "法律扶助案件",
+                        "court_case_no": "",
+                        "court_case_number": "",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "status": "進行中",
+                        "start_date": "2026-01-01",
+                        "approval_date": None,
+                    },
+                    {
+                        "case_number": "2026-0001",
+                        "client_name": "測試人",
+                        "case_reason": "監護",
+                        "case_type": "民事",
+                        "case_category": "一般案件",
+                        "court_case_no": "",
+                        "court_case_number": "",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "status": "進行中",
+                        "start_date": "2026-01-01",
+                        "approval_date": None,
+                    },
+                ]
+
+        def close(self):
+            return None
+
+    class Conn:
+        def cursor(self, dictionary=False):
+            return Cursor()
+
+    assert mod._resolve_gcal_event_case_identity(Conn(), "測試人案開庭", "", "2026-06-11") == ("", "")

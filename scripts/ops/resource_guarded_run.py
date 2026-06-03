@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,42 @@ def _append_event(payload: dict[str, Any]) -> None:
         rotate_at=500,
         keep_tail=300,
     )
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int) -> None:
+    if not job_id.startswith("job_drive_case_sync"):
+        return
+    status = {
+        "ok": False,
+        "status": "timeout",
+        "action_required": False,
+        "message": f"outer_guard_timeout:{timeout_sec}s",
+        "finished_at": _iso_now(),
+        "next_step": "外層 watchdog 已中止卡住的 Drive/NAS 同步；下次排程會重試近期待辦案件。",
+    }
+    drive_dir = runtime_dir.root() / "drive_sync"
+    _write_json_atomic(drive_dir / "drive_case_sync_worker_status_latest.json", status)
+    state_path = drive_dir / "worker_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        if not isinstance(state, dict):
+            state = {}
+        state["last_status"] = status
+        state["last_summary"] = {"timeout": True, "outer_guard_timeout": True}
+        _write_json_atomic(state_path, state)
+    except Exception:
+        pass
 
 
 def _strip_separator(command: list[str]) -> list[str]:
@@ -82,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--require-disk-free-gb", type=float)
     parser.add_argument("--require-free-inactive-gb", type=float)
+    parser.add_argument("--timeout-sec", type=int, default=0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -120,10 +160,32 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
-    proc = subprocess.run(command, check=False)
-    event["returncode"] = int(proc.returncode)
+    proc = subprocess.Popen(command, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=max(0, int(args.timeout_sec or 0)) or None)
+    except subprocess.TimeoutExpired:
+        event["timeout"] = True
+        event["timeout_sec"] = int(args.timeout_sec or 0)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        returncode = 124
+        _mark_drive_sync_guard_timeout(args.job_id, int(args.timeout_sec or 0))
+    event["returncode"] = int(returncode)
     _append_event(event)
-    return int(proc.returncode)
+    return int(returncode)
 
 
 if __name__ == "__main__":

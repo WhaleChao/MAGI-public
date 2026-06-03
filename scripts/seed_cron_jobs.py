@@ -40,6 +40,8 @@ def guarded_cron_command(
     *,
     block_at: str = "core_only",
     require_disk_free_gb: float | None = None,
+    require_free_inactive_gb: float | None = None,
+    timeout_sec: int | None = None,
 ) -> str:
     """Wrap rebuildable/heavy cron commands with the resource guard.
 
@@ -57,6 +59,10 @@ def guarded_cron_command(
     ]
     if require_disk_free_gb is not None:
         parts.extend(["--require-disk-free-gb", f"{require_disk_free_gb:g}"])
+    if require_free_inactive_gb is not None:
+        parts.extend(["--require-free-inactive-gb", f"{require_free_inactive_gb:g}"])
+    if timeout_sec is not None:
+        parts.extend(["--timeout-sec", str(max(1, int(timeout_sec)))])
     parts.extend(["--", command])
     return " ".join(parts)
 
@@ -219,8 +225,39 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "timeout_sec": 300,
         },
         {
+            "id": "job_drive_case_sync_bidirectional",
+            "cron": "1 */6 * * *",
+            "command": guarded_cron_command(
+                repo_root,
+                python_bin,
+                "job_drive_case_sync_bidirectional",
+                (
+                    f"{python_bin} {repo_root / 'scripts' / 'drive_case_sync_worker.py'} "
+                    "--matched-case-limit 12 --download-limit 40 --upload-limit 40 "
+                    "--max-download-bytes 500000000 --max-upload-bytes 500000000 "
+                    "--max-case-depth 4 --max-case-items 160 "
+                    "--create-drive-folder-limit 10 --create-drive-folder-max-age-hours 168 "
+                    "--priority-upcoming-days 21 --priority-case-limit 80 --inventory-timeout-sec 1200"
+                ),
+                block_at="core_only",
+                require_disk_free_gb=30,
+                require_free_inactive_gb=3,
+                timeout_sec=1500,
+            ),
+            "desc": "Google Drive/NAS 案件辦理 bounded 雙向同步（每 6 小時；先同步近期待辦案件；新案補建 Drive 資料夾；缺檔才補，不覆蓋、不刪除）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "long_job": True,
+            "timeout_sec": 3600,
+            "resource_guarded": True,
+            "resource_block_at": "core_only",
+        },
+        {
             "id": "job_osc_events_refresh",
-            "cron": "5 */6 * * *",
+            "cron": "35 */6 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=5000 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",
             "desc": "OSC/PDF/筆錄待辦與行事曆事件更新（每 6 小時；檔名全量巡檢 + bounded OCR/text 補漏 + GCal 去重/修復）",
             "channel_id": None,

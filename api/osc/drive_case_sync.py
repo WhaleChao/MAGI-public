@@ -2392,6 +2392,7 @@ def build_file_sync_plan(
     max_case_items: int = 10000,
     matched_case_limit: int = 0,
     matched_case_offset: int = 0,
+    priority_case_numbers: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Build a conservative per-file plan for uniquely matched cases.
 
@@ -2412,7 +2413,28 @@ def build_file_sync_plan(
         "case_errors": 0,
         "matched_case_offset": max(0, int(matched_case_offset or 0)),
     }
-    for item in (comparison.get("matched", []) or [])[max(0, int(matched_case_offset or 0)) :]:
+    matched_items = list(comparison.get("matched", []) or [])
+    priority_set = {str(x or "").strip() for x in (priority_case_numbers or []) if str(x or "").strip()}
+    if priority_set:
+        priority_items: list[dict[str, Any]] = []
+        normal_items: list[dict[str, Any]] = []
+        for item in matched_items:
+            local: CaseFolder | None = item.get("local")
+            drive: CaseFolder | None = item.get("drive")
+            case_no = ""
+            if local and local.meta:
+                case_no = local.meta.case_number
+            if not case_no and drive and drive.meta:
+                case_no = drive.meta.case_number
+            if case_no in priority_set:
+                priority_items.append(item)
+            else:
+                normal_items.append(item)
+        ordered_items = priority_items + normal_items[max(0, int(matched_case_offset or 0)) :]
+    else:
+        ordered_items = matched_items[max(0, int(matched_case_offset or 0)) :]
+
+    for item in ordered_items:
         if matched_case_limit and summary["matched_cases_scanned"] >= matched_case_limit:
             break
         drive: CaseFolder = item.get("drive")
@@ -3176,6 +3198,7 @@ def run_inventory(
     max_case_items: int = 10000,
     matched_case_limit: int = 0,
     matched_case_offset: int = 0,
+    priority_case_numbers: Iterable[str] | None = None,
     ensure_drive_case_folders: bool = False,
     create_drive_folder_limit: int = 0,
     create_drive_folder_max_age_hours: int = 0,
@@ -3221,6 +3244,7 @@ def run_inventory(
             max_case_items=max_case_items,
             matched_case_limit=matched_case_limit,
             matched_case_offset=matched_case_offset,
+            priority_case_numbers=priority_case_numbers,
         )
     drive_folder_result: dict[str, Any] | None = None
     if ensure_drive_case_folders:

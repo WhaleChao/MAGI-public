@@ -216,7 +216,19 @@ def _quick_action_rows(sql: str, params: tuple = (), fetch: str = "all"):
 
 
 def _osc_todo_done_statuses() -> tuple[str, ...]:
-    return ("completed", "done", "已完成", "完成", "cancelled", "canceled", "取消")
+    return (
+        "completed",
+        "done",
+        "已完成",
+        "完成",
+        "cancelled",
+        "canceled",
+        "取消",
+        "deleted",
+        "已刪除",
+        "刪除",
+        "calendar_deduped",
+    )
 
 
 def _osc_is_todo_done_status(status: str) -> bool:
@@ -3830,7 +3842,7 @@ def osc_dashboard_api():
         """
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消')
+        WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消', 'deleted', '已刪除', '刪除', 'calendar_deduped')
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
@@ -3840,7 +3852,7 @@ def osc_dashboard_api():
         """
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
+        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消', 'deleted', '已刪除', '刪除', 'calendar_deduped'))
           AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
           AND COALESCE(todo_type, '') <> '行事曆事件'
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
@@ -3852,7 +3864,7 @@ def osc_dashboard_api():
         """
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
+        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消', 'deleted', '已刪除', '刪除', 'calendar_deduped'))
           AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
