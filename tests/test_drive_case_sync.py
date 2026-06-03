@@ -11,10 +11,12 @@ from api.osc.drive_case_sync import (
     classify_local_case_folder,
     compare_case_folders,
     create_missing_drive_case_folders,
+    db_local_cases_for_numbers,
     drive_relative_path_for_local_case,
     ensure_drive_case_folder_for_local_case,
     ensure_drive_folder_path,
     execute_nas_to_drive_uploads,
+    find_existing_drive_case_folder_for_local_case,
     default_active_case_roots,
     drive_to_nas_relative_path,
     export_relative_path,
@@ -34,6 +36,8 @@ from api.osc.drive_case_sync import (
     sync_scope_exclusion_reason,
     load_case_aliases,
     load_case_exclusions,
+    run_priority_case_sync,
+    _drive_list_children,
 )
 
 
@@ -1048,6 +1052,119 @@ def test_ensure_drive_case_folder_renames_legacy_osc_number_folder(monkeypatch):
     ]
 
 
+def test_find_existing_drive_case_folder_does_not_create(monkeypatch):
+    existing = {
+        ("root", "法扶案件"): "laf",
+        ("laf", "Lumi"): "lumi",
+        ("lumi", "01.消債"): "debt",
+        ("debt", "金李連芯-1150519-E-014-消費者債務清理事件-消費者債務清理事件"): "drive-case",
+    }
+    created = []
+
+    def fake_find(_service, parent_id, name):
+        return existing.get((parent_id, name), "")
+
+    def fake_create(_service, parent_id, name):
+        created.append((parent_id, name))
+        return "unexpected"
+
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder", fake_find)
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder_by_osc_case_number", lambda *_args: "")
+    monkeypatch.setattr("api.osc.drive_case_sync.create_drive_folder", fake_create)
+    case = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/消費者債務清理/2026-0051-金李連芯-消費者債務清理-更生",
+        relative_path="法扶案件/消費者債務清理/2026-0051-金李連芯-消費者債務清理-更生",
+        name="2026-0051-金李連芯-消費者債務清理-更生",
+        category="法律扶助案件",
+        status="active",
+        case_kind="消費者債務清理",
+        meta=CaseMeta(case_number="2026-0051", laf_case_no="1150519-E-014", client_hint="金李連芯"),
+    )
+    result = find_existing_drive_case_folder_for_local_case(object(), "root", case, owner_bucket="Lumi")
+    assert result["ok"] is True
+    assert result["drive_id"] == "drive-case"
+    assert created == []
+
+
+def test_db_local_cases_for_numbers_uses_db_canonical_path(monkeypatch, tmp_path):
+    case_dir = tmp_path / "01_案件" / "法扶案件" / "消費者債務清理" / "2026-0051-金李連芯-消費者債務清理-更生"
+    case_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.lookup_db_case_contexts",
+        lambda nums: {
+            "2026-0051": {
+                "case_number": "2026-0051",
+                "client_name": "金李連芯",
+                "case_category": "法律扶助案件",
+                "case_type": "消費者債務清理",
+                "case_stage": "更生",
+                "case_reason": "消費者債務清理",
+                "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\消費者債務清理\2026-0051-金李連芯-消費者債務清理-更生",
+                "laf_case_no": "1150519-E-014",
+                "status": "進行中",
+            }
+        },
+    )
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda _path: [str(case_dir)])
+    cases, skipped = db_local_cases_for_numbers(["2026-0051"])
+    assert skipped == []
+    assert len(cases) == 1
+    assert cases[0].local_path == str(case_dir)
+    assert cases[0].relative_path == "法扶案件/消費者債務清理/2026-0051-金李連芯-消費者債務清理-更生"
+    assert cases[0].category == "法扶案件"
+    assert cases[0].case_kind == "消費者債務清理"
+    assert cases[0].meta.laf_case_no == "1150519-E-014"
+
+
+def test_run_priority_case_sync_uses_direct_db_mapping(monkeypatch, tmp_path):
+    local_case = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        local_path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        relative_path="一般案件/行政/2026-0099-測試甲-一審-訴願",
+        name="2026-0099-測試甲-一審-訴願",
+        category="一般案件",
+        status="active",
+        case_kind="行政",
+        meta=CaseMeta(case_number="2026-0099", client_hint="測試甲", reason_hint="訴願"),
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.load_local_env", lambda: None)
+    monkeypatch.setattr("api.osc.drive_case_sync.build_drive_service", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.find_drive_root",
+        lambda *_args, **_kwargs: {"id": "root", "name": "案件辦理", "webViewLink": "https://drive.example/root"},
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.db_local_cases_for_numbers", lambda nums: ([local_case], []))
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.ensure_drive_case_folder_for_local_case",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "drive_id": "drive-case",
+            "relative_path": "一般案件/Lumi/測試甲-一審-訴願",
+            "created_count": 0,
+            "created_folders": [],
+            "status": "existing_by_name",
+        },
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *_args, **_kwargs: [])
+    report = run_priority_case_sync(
+        case_numbers=["2026-0099"],
+        root_name="案件辦理",
+        output_dir=tmp_path,
+        file_diff=True,
+        execute_downloads=False,
+        execute_uploads=False,
+        ensure_drive_case_folders=True,
+        drive_owner_bucket_name="Lumi",
+    )
+    assert report["mode"] == "direct_db_case_sync"
+    assert report["summary"]["matched_case_folders"] == 1
+    assert report["matched"][0]["drive"]["relative_path"] == "一般案件/Lumi/測試甲-一審-訴願"
+    assert "2026-0099-" not in report["matched"][0]["drive"]["relative_path"]
+
+
 def test_create_missing_drive_case_folders_only_for_recent_nas_cases(monkeypatch):
     recent = datetime.now(timezone.utc).isoformat()
     old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -1121,3 +1238,67 @@ def test_build_file_sync_plan_supports_matched_case_offset(monkeypatch):
     assert plan["summary"]["matched_cases_scanned"] == 1
     assert plan["summary"]["matched_case_offset"] == 1
     assert plan["cases"][0]["case_number"] == "2026-0201"
+
+
+def test_build_file_sync_plan_marks_local_scan_timeout_without_download_actions(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/測試甲-一審-訴願",
+        relative_path="一般案件/Lumi/測試甲-一審-訴願",
+        name="測試甲-一審-訴願",
+        meta=CaseMeta(case_number="2026-0099"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        local_path="/cases/一般案件/行政/2026-0099-測試甲-一審-訴願",
+        relative_path="一般案件/行政/2026-0099-測試甲-一審-訴願",
+        name="2026-0099-測試甲-一審-訴願",
+        meta=CaseMeta(case_number="2026-0099"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                source="drive",
+                path="法院裁判/a.pdf",
+                relative_path="法院裁判/a.pdf",
+                name="a.pdf",
+                is_folder=False,
+                drive_id="file",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("local_scandir_timeout:/cases")),
+    )
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, object())
+    assert plan["summary"]["case_errors"] == 1
+    assert plan["summary"]["drive_missing_in_nas_files"] == 0
+    assert plan["cases"][0]["download_missing"] == []
+    assert "local_scandir_timeout" in plan["cases"][0]["error"]
+
+
+def test_drive_list_children_timeout_is_not_treated_as_empty(monkeypatch):
+    class SlowRequest:
+        def execute(self):
+            __import__("time").sleep(0.7)
+            return {"files": []}
+
+    class Files:
+        def list(self, **_kwargs):
+            return SlowRequest()
+
+    class Service:
+        def files(self):
+            return Files()
+
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC", "0.01")
+    try:
+        _drive_list_children(Service(), "folder")
+    except Exception as exc:
+        assert "drive_api_timeout:list_children:folder" in str(exc)
+    else:
+        raise AssertionError("Drive API timeout should raise instead of returning an empty listing")

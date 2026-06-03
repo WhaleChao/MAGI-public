@@ -14,6 +14,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -972,7 +973,7 @@ def _drive_list_children(service: Any, folder_id: str) -> list[dict[str, Any]]:
         "webViewLink,driveId,shortcutDetails,appProperties)"
     )
     while True:
-        resp = service.files().list(
+        request = service.files().list(
             q=f"'{folder_id}' in parents and trashed = false",
             spaces="drive",
             corpora="allDrives",
@@ -981,11 +982,34 @@ def _drive_list_children(service: Any, folder_id: str) -> list[dict[str, Any]]:
             pageSize=1000,
             pageToken=token,
             fields=fields,
-        ).execute()
+        )
+        resp = _drive_execute_with_timeout(request, context=f"list_children:{folder_id}")
         out.extend(resp.get("files", []))
         token = resp.get("nextPageToken")
         if not token:
             return sorted(out, key=lambda x: str(x.get("name") or ""))
+
+
+def _drive_execute_with_timeout(request: Any, *, context: str) -> dict[str, Any]:
+    timeout = float(os.environ.get("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC") or "20")
+    result: dict[str, Any] = {"done": False, "value": None, "error": None}
+
+    def _execute() -> None:
+        try:
+            result["value"] = request.execute()
+        except Exception as exc:
+            result["error"] = exc
+        result["done"] = True
+
+    worker = threading.Thread(target=_execute, daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.5, timeout))
+    if not result["done"]:
+        raise DriveCaseSyncError(f"drive_api_timeout:{context}:{timeout:g}s")
+    if result["error"] is not None:
+        raise result["error"]
+    value = result.get("value")
+    return value if isinstance(value, dict) else {}
 
 
 def drive_descendant_context(
@@ -1028,6 +1052,78 @@ def drive_descendant_context(
     return entries
 
 
+def _safe_local_is_dir(path: str, *, timeout_sec: float | None = None) -> bool:
+    timeout = float(
+        timeout_sec
+        if timeout_sec is not None
+        else os.environ.get("MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC") or "5"
+    )
+    result = {"done": False, "value": False}
+
+    def _check() -> None:
+        try:
+            result["value"] = os.path.isdir(path)
+        except OSError:
+            result["value"] = False
+        result["done"] = True
+
+    worker = threading.Thread(target=_check, daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.1, timeout))
+    if not result["done"]:
+        raise DriveCaseSyncError(f"local_dir_probe_timeout:{path}")
+    return bool(result["value"])
+
+
+def _safe_local_dir_children(path: str, *, timeout_sec: float | None = None) -> list[dict[str, Any]]:
+    """Return stat'd children or raise before blocking the whole worker.
+
+    NAS SMB and macOS File Provider can occasionally block in os.scandir/stat.
+    A timeout is treated as a case-level scan error, not as an empty folder; this
+    prevents false "NAS missing" actions and duplicate downloads.
+    """
+    timeout = float(
+        timeout_sec
+        if timeout_sec is not None
+        else os.environ.get("MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC") or "5"
+    )
+    result: dict[str, Any] = {"done": False, "children": [], "error": None}
+
+    def _scan() -> None:
+        children: list[dict[str, Any]] = []
+        try:
+            with os.scandir(path) as it:
+                dirents = sorted(list(it), key=lambda e: e.name)
+            for child in dirents:
+                if _ignore_name(child.name):
+                    continue
+                try:
+                    is_dir = child.is_dir(follow_symlinks=False)
+                    st = child.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                children.append({
+                    "name": child.name,
+                    "path": child.path,
+                    "is_dir": is_dir,
+                    "mtime": float(st.st_mtime),
+                    "size": None if is_dir else int(st.st_size),
+                })
+        except Exception as exc:
+            result["error"] = exc
+        result["children"] = children
+        result["done"] = True
+
+    worker = threading.Thread(target=_scan, daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.1, timeout))
+    if not result["done"]:
+        raise DriveCaseSyncError(f"local_scandir_timeout:{path}")
+    if result["error"] is not None:
+        raise result["error"]
+    return list(result["children"] or [])
+
+
 def local_descendant_context(
     root: str,
     *,
@@ -1036,38 +1132,33 @@ def local_descendant_context(
 ) -> list[FileEntry]:
     entries: list[FileEntry] = []
     base = Path(root)
-    if not base.exists():
+    if not _safe_local_is_dir(str(base)):
         return entries
     stack: list[Path] = [base]
     while stack and len(entries) < max_items:
         cur = stack.pop()
-        try:
-            children = sorted(list(os.scandir(cur)), key=lambda e: e.name)
-        except OSError:
-            continue
+        children = _safe_local_dir_children(str(cur))
         for child in children:
-            if _ignore_name(child.name):
-                continue
             try:
-                rel = Path(child.path).relative_to(base).as_posix()
+                child_path = Path(str(child["path"]))
+                rel = child_path.relative_to(base).as_posix()
                 depth = len(Path(rel).parts)
-                st = child.stat()
-                is_dir = child.is_dir(follow_symlinks=False)
-            except OSError:
+                is_dir = bool(child["is_dir"])
+            except (OSError, KeyError, ValueError):
                 continue
             if depth > max_depth:
                 continue
             entries.append(FileEntry(
                 source="nas",
-                path=child.path,
+                path=str(child_path),
                 relative_path=rel,
-                name=child.name,
+                name=str(child["name"]),
                 is_folder=is_dir,
-                modified_time=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                size=None if is_dir else int(st.st_size),
+                modified_time=datetime.fromtimestamp(float(child["mtime"]), tz=timezone.utc).isoformat(),
+                size=child.get("size"),
             ))
             if is_dir and depth < max_depth:
-                stack.append(Path(child.path))
+                stack.append(child_path)
             if len(entries) >= max_items:
                 break
     return entries
@@ -1208,6 +1299,7 @@ def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, 
         rows, _ = _osc_exec(
             f"""
             SELECT id, case_number, client_name, case_reason, court_name, court_case_no,
+                   case_category, case_type, case_stage,
                    notes, folder_path, status, legal_aid_status, manual_status_lock,
                    legal_aid_number, laf_case_no, application_no
             FROM cases
@@ -1240,6 +1332,121 @@ def lookup_db_case_contexts(case_numbers: Iterable[str]) -> dict[str, dict[str, 
         if cn in out:
             out[cn].setdefault("opponents", []).append(dict(opp))
     return out
+
+
+def _db_case_status(row: dict[str, Any]) -> str:
+    return "closed" if _db_context_marks_closed(row) else "active"
+
+
+def _local_case_kind_from_db(row: dict[str, Any], folder_name: str = "") -> str:
+    text = str(row.get("case_type") or "").strip()
+    if text:
+        return text
+    category = normalize_drive_case_category(str(row.get("case_category") or "").strip())
+    reason = str(row.get("case_reason") or "").strip()
+    if reason:
+        kind, _confidence = infer_case_kind(category, reason, folder_name)
+        if kind:
+            return kind
+    return ""
+
+
+def _db_row_to_local_case(row: dict[str, Any]) -> CaseFolder | None:
+    """Build a NAS-side CaseFolder directly from the DB canonical path.
+
+    This is the fast path used by the worker for urgent/upcoming cases.  It
+    avoids a full Drive and NAS inventory pass, while preserving both sides'
+    native folder layouts through the existing boundary mapping functions.
+    """
+    folder_path = str(row.get("folder_path") or "").strip()
+    if not folder_path:
+        return None
+    try:
+        from api.case_path_mapper import local_case_path_candidates
+    except Exception:
+        local_case_path_candidates = None  # type: ignore[assignment]
+
+    local_path = ""
+    candidates: list[str] = []
+    if local_case_path_candidates is not None:
+        try:
+            candidates = [str(p) for p in local_case_path_candidates(folder_path)]
+        except Exception:
+            candidates = []
+    if not candidates:
+        candidates = [folder_path.replace("\\", "/")]
+    for candidate in candidates:
+        try:
+            if candidate and os.path.isdir(candidate):
+                local_path = candidate
+                break
+        except OSError:
+            continue
+    if not local_path:
+        return None
+
+    name = Path(local_path).name
+    status = _db_case_status(row)
+    category = normalize_drive_case_category(str(row.get("case_category") or "").strip()) or "一般案件"
+    case_kind = _local_case_kind_from_db(row, name)
+    meta = extract_case_meta(name)
+    meta.case_number = str(row.get("case_number") or meta.case_number or "").strip()
+    meta.laf_case_no = (
+        str(row.get("laf_case_no") or "").strip()
+        or str(row.get("legal_aid_number") or "").strip()
+        or str(row.get("application_no") or "").strip()
+        or meta.laf_case_no
+    )
+    meta.client_hint = str(row.get("client_name") or meta.client_hint or "").strip()
+    meta.reason_hint = str(row.get("case_reason") or meta.reason_hint or "").strip()
+    meta.court_case_no = str(row.get("court_case_no") or meta.court_case_no or "").strip()
+    relative_path = _relative_case_path_from_db_row(row, local_path)
+    return CaseFolder(
+        source="nas",
+        path=local_path,
+        local_path=local_path,
+        relative_path=relative_path,
+        name=name,
+        category=category,
+        status=status,
+        case_kind=case_kind,
+        meta=meta,
+    )
+
+
+def _relative_case_path_from_db_row(row: dict[str, Any], local_path: str) -> str:
+    folder_path = str(row.get("folder_path") or "").replace("\\", "/").strip("/")
+    for marker in ("01_案件/", "03_工作資料/10_結案/"):
+        idx = folder_path.find(marker)
+        if idx >= 0:
+            return folder_path[idx + len(marker) :].strip("/")
+    path = str(local_path or "").replace("\\", "/").strip("/")
+    for marker in ("01_案件/", "03_工作資料/10_結案/"):
+        idx = path.find(marker)
+        if idx >= 0:
+            return path[idx + len(marker) :].strip("/")
+    return Path(local_path).name
+
+
+def db_local_cases_for_numbers(case_numbers: Iterable[str]) -> tuple[list[CaseFolder], list[dict[str, Any]]]:
+    contexts = lookup_db_case_contexts(case_numbers)
+    local_cases: list[CaseFolder] = []
+    skipped: list[dict[str, Any]] = []
+    for case_number in [str(x or "").strip() for x in case_numbers if str(x or "").strip()]:
+        row = contexts.get(case_number)
+        if not row:
+            skipped.append({"case_number": case_number, "reason": "db_case_not_found"})
+            continue
+        case = _db_row_to_local_case(row)
+        if not case:
+            skipped.append({
+                "case_number": case_number,
+                "reason": "local_case_folder_not_accessible",
+                "folder_path": str(row.get("folder_path") or ""),
+            })
+            continue
+        local_cases.append(case)
+    return local_cases, skipped
 
 
 def _closed_status_text(value: str) -> bool:
@@ -2274,6 +2481,75 @@ def ensure_drive_case_folder_for_local_case(
     return result
 
 
+def find_existing_drive_case_folder_for_local_case(
+    service: Any,
+    drive_root_id: str,
+    case: CaseFolder,
+    *,
+    owner_bucket: str | None = None,
+) -> dict[str, Any]:
+    """Find the Drive case folder for a local OSC case without creating it."""
+    relative_path = drive_relative_path_for_local_case(case, owner_bucket=owner_bucket)
+    if not relative_path:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "cannot_build_drive_case_path",
+            "case": _case_to_dict(case),
+        }
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "empty_drive_case_path",
+            "case": _case_to_dict(case),
+        }
+    current = drive_root_id
+    for part in parts[:-1]:
+        found = find_drive_child_folder(service, current, part)
+        if not found:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "drive_parent_folder_missing",
+                "relative_path": relative_path,
+                "missing_part": part,
+            }
+        current = found
+    case_folder_name = parts[-1]
+    case_number = (case.meta.case_number or extract_case_meta(case.name).case_number or "").strip()
+    folder_id = find_drive_child_folder_by_osc_case_number(service, current, case_number)
+    status = "existing_by_osc_metadata"
+    if not folder_id:
+        folder_id = find_drive_child_folder(service, current, case_folder_name)
+        status = "existing_by_name" if folder_id else "missing"
+    if not folder_id:
+        legacy_name = (case.name or "").strip()
+        if legacy_name and legacy_name != case_folder_name:
+            folder_id = find_drive_child_folder(service, current, legacy_name)
+            status = "existing_by_legacy_osc_number_folder" if folder_id else "missing"
+    if not folder_id:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_case_folder_missing",
+            "relative_path": relative_path,
+            "case_number": case_number,
+        }
+    return {
+        "ok": True,
+        "drive_id": folder_id,
+        "relative_path": PurePosixPath(*parts).as_posix(),
+        "created_folders": [],
+        "created_count": 0,
+        "status": status,
+        "case_number": case_number,
+        "case_name": case.name,
+        "drive_visible_name": case_folder_name,
+    }
+
+
 def ensure_drive_case_folder_for_new_case(
     service: Any,
     drive_root_id: str,
@@ -2775,6 +3051,205 @@ def combine_execution_results(
         "download_result": download_result or {},
         "upload_result": upload_result or {},
     }
+
+
+def _drive_case_from_local_case_result(local_case: CaseFolder, result: dict[str, Any]) -> CaseFolder | None:
+    drive_id = str(result.get("drive_id") or "").strip()
+    relative_path = str(result.get("relative_path") or "").strip()
+    if not drive_id or not relative_path:
+        return None
+    name = PurePosixPath(relative_path).name
+    return CaseFolder(
+        source="drive",
+        path=relative_path,
+        relative_path=relative_path,
+        name=name,
+        category=local_case.category,
+        status=local_case.status,
+        case_kind=local_case.case_kind,
+        owner_bucket=drive_owner_bucket(),
+        meta=CaseMeta(
+            case_number=local_case.meta.case_number,
+            laf_case_no=local_case.meta.laf_case_no,
+            court_case_no=local_case.meta.court_case_no,
+            client_hint=local_case.meta.client_hint,
+            reason_hint=local_case.meta.reason_hint,
+        ),
+        drive_id=drive_id,
+    )
+
+
+def run_priority_case_sync(
+    *,
+    case_numbers: Iterable[str],
+    root_id: str = "",
+    root_name: str = DEFAULT_DRIVE_ROOT_NAME,
+    output_dir: Path | None = None,
+    interactive: bool = False,
+    file_diff: bool = True,
+    execute_downloads: bool = False,
+    execute_uploads: bool = False,
+    download_limit: int = 0,
+    max_download_bytes: int = 0,
+    upload_limit: int = 0,
+    max_upload_bytes: int = 0,
+    max_case_depth: int = 20,
+    max_case_items: int = 10000,
+    ensure_drive_case_folders: bool = False,
+    drive_owner_bucket_name: str = "",
+) -> dict[str, Any]:
+    """Synchronize explicit DB cases without full Drive/NAS inventory.
+
+    This is the production path for upcoming todos.  It keeps Google Drive and
+    NAS folder conventions independent: DB paths decide the NAS side, while
+    ``drive_relative_path_for_local_case`` decides the visible Drive side.
+    """
+    clean_numbers = []
+    seen_numbers: set[str] = set()
+    for raw in case_numbers or []:
+        value = str(raw or "").strip()
+        if value and value not in seen_numbers:
+            seen_numbers.add(value)
+            clean_numbers.append(value)
+
+    load_local_env()
+    write = execute_uploads or ensure_drive_case_folders
+    service = build_drive_service(interactive=interactive, write=write)
+    drive_root = find_drive_root(
+        service,
+        root_id=root_id or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""),
+        root_name=root_name,
+    )
+    owner_bucket = drive_owner_bucket_name or drive_owner_bucket()
+    local_cases, skipped_db_cases = db_local_cases_for_numbers(clean_numbers)
+
+    matched: list[dict[str, Any]] = []
+    drive_cases: list[CaseFolder] = []
+    folder_records: list[dict[str, Any]] = []
+    for local_case in local_cases:
+        try:
+            if ensure_drive_case_folders or execute_uploads:
+                folder_result = ensure_drive_case_folder_for_local_case(
+                    service,
+                    str(drive_root.get("id") or ""),
+                    local_case,
+                    owner_bucket=owner_bucket,
+                )
+            else:
+                folder_result = find_existing_drive_case_folder_for_local_case(
+                    service,
+                    str(drive_root.get("id") or ""),
+                    local_case,
+                    owner_bucket=owner_bucket,
+                )
+        except Exception as exc:
+            folder_result = {
+                "ok": False,
+                "status": "failed",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "case_number": local_case.meta.case_number,
+                "case_name": local_case.name,
+            }
+        folder_records.append(folder_result)
+        drive_case = _drive_case_from_local_case_result(local_case, folder_result)
+        if not drive_case:
+            continue
+        drive_cases.append(drive_case)
+        matched.append({
+            "drive": drive_case,
+            "local": local_case,
+            "match_keys": match_keys(local_case.meta),
+            "context_resolution": {"status": "resolved_by_db_case_number_direct"},
+        })
+
+    comparison = {
+        "matched": matched,
+        "drive_only": [],
+        "local_only": [],
+        "ambiguous": [],
+        "out_of_scope": [
+            {
+                "local": CaseFolder(
+                    source="nas",
+                    path=str(item.get("folder_path") or ""),
+                    local_path="",
+                    relative_path=str(item.get("folder_path") or item.get("case_number") or ""),
+                    name=str(item.get("case_number") or ""),
+                    meta=CaseMeta(case_number=str(item.get("case_number") or "")),
+                ),
+                "reason": str(item.get("reason") or ""),
+            }
+            for item in skipped_db_cases
+        ],
+    }
+
+    file_sync_plan: dict[str, Any] | None = None
+    if file_diff or execute_downloads or execute_uploads:
+        file_sync_plan = build_file_sync_plan(
+            comparison,
+            service,
+            max_case_depth=max_case_depth,
+            max_case_items=max_case_items,
+            matched_case_limit=0,
+            matched_case_offset=0,
+            priority_case_numbers=clean_numbers,
+        )
+        file_sync_plan["mode"] = "direct_db_case_file_diff"
+
+    download_result: dict[str, Any] | None = None
+    upload_result: dict[str, Any] | None = None
+    if execute_downloads:
+        download_result = execute_drive_to_nas_downloads(
+            service,
+            file_sync_plan or {},
+            download_limit=download_limit,
+            max_download_bytes=max_download_bytes,
+        )
+    if execute_uploads:
+        upload_result = execute_nas_to_drive_uploads(
+            service,
+            file_sync_plan or {},
+            upload_limit=upload_limit,
+            max_upload_bytes=max_upload_bytes,
+        )
+    execution_result = None
+    if download_result or upload_result:
+        execution_result = combine_execution_results(
+            download_result=download_result,
+            upload_result=upload_result,
+        )
+    drive_folder_result = {
+        "mode": "direct_db_case_drive_folder_resolution",
+        "write_actions_enabled": bool(ensure_drive_case_folders or execute_uploads),
+        "safety": "find_or_create_case_folder_only_no_file_delete",
+        "summary": {
+            "attempted": len(local_cases),
+            "resolved": sum(1 for item in folder_records if item.get("ok")),
+            "created_or_existing": sum(1 for item in folder_records if item.get("ok")),
+            "created_folders": sum(int(item.get("created_count") or 0) for item in folder_records if item.get("ok")),
+            "skipped": sum(1 for item in folder_records if item.get("skipped")),
+            "failed": sum(1 for item in folder_records if (not item.get("ok")) and not item.get("skipped")),
+        },
+        "records": folder_records,
+        "db_skipped_cases": skipped_db_cases,
+    }
+    report = build_report(
+        drive_root=drive_root,
+        drive_entries=[],
+        drive_cases=drive_cases,
+        local_entries=[],
+        local_cases=local_cases,
+        local_roots=[],
+        comparison=comparison,
+        file_sync_plan=file_sync_plan,
+        execution_result=execution_result,
+        drive_folder_result=drive_folder_result,
+    )
+    report["mode"] = "direct_db_case_sync"
+    report["direct_case_numbers"] = clean_numbers
+    paths = write_report_files(report, output_dir or runtime_dir())
+    report["output_paths"] = paths
+    return report
 
 
 def create_missing_drive_case_folders(
