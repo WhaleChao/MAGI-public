@@ -366,7 +366,10 @@ def translation_idiom_issues(source_text: str, translated_text: str) -> list[str
         issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世、前生或前半生")
     if re.search(r"\bCitizen Judges? Act\b|\bcitizen judges?\b", src, flags=re.IGNORECASE) and "公民法官" in tgt:
         issues.append("Citizen Judges Act / citizen judges 於本文件應譯為「國民法官法／國民法官」")
-    if re.search(r"\bcourt interpreters?\b", src, flags=re.IGNORECASE) and re.search(r"(法庭|法院).{0,4}(翻譯|口譯員)", tgt):
+    if re.search(r"\bcourt interpreters?\b", src, flags=re.IGNORECASE) and re.search(
+        r"(?:法庭|法院)(?:翻譯員|翻譯人員|翻譯|口譯員)",
+        tgt,
+    ):
         issues.append("court interpreter 於本文件應譯為「司法通譯」，不可譯為法庭翻譯")
     if re.search(r"\bspeech styles?\b", src, flags=re.IGNORECASE) and re.search(r"(演講|言語|語音)風格", tgt):
         issues.append("speech style 於本文件應譯為「語言風格」")
@@ -906,6 +909,144 @@ def is_file_protocol_user(user_id: str) -> bool:
     )
 
 
+_TRANSLATION_DOCX_BLOCK_TERMS: tuple[str, ...] = (
+    "doi:",
+    "doi：",
+    "公民法官",
+    "法庭翻譯",
+    "法庭口譯員",
+    "法院翻譯",
+    "法院口譯員",
+    "演講風格",
+    "言語風格",
+    "無權組",
+    "無權力組",
+    "強大組",
+    "有權力組",
+    "辯護人的印象",
+    "前世",
+    "前生",
+    "前半生",
+)
+
+
+def _read_translation_docx_metrics(path: str) -> dict:
+    """Read a generated bilingual DOCX back for delivery-quality checks."""
+    try:
+        from docx import Document
+    except Exception as exc:
+        return {"ok": False, "error": f"python_docx_unavailable:{exc}"}
+
+    p = str(path or "").strip()
+    if not p or not os.path.exists(p):
+        return {"ok": False, "error": "docx_missing"}
+    try:
+        doc = Document(p)
+    except Exception as exc:
+        return {"ok": False, "error": f"docx_read_failed:{exc}"}
+
+    parts: list[str] = []
+    table_rows = 0
+    sparse_rows = 0
+    for paragraph in doc.paragraphs:
+        if paragraph.text:
+            parts.append(paragraph.text)
+    for table in doc.tables:
+        for row_index, row in enumerate(table.rows):
+            cells = [str(cell.text or "").strip() for cell in row.cells]
+            if not any(cells):
+                continue
+            parts.extend(cells)
+            if row_index == 0:
+                continue
+            table_rows += 1
+            if len(cells) >= 2:
+                source_cell = cells[-2].strip()
+                target_cell = cells[-1].strip()
+                if not source_cell or not target_cell:
+                    sparse_rows += 1
+
+    text = "\n".join(p for p in parts if p)
+    try:
+        size = os.path.getsize(p)
+    except OSError:
+        size = 0
+    return {
+        "ok": True,
+        "path": p,
+        "size": size,
+        "chars": len(text),
+        "text": text,
+        "table_rows": table_rows,
+        "sparse_rows": sparse_rows,
+    }
+
+
+def validate_translation_docx(
+    path: str,
+    *,
+    source_text: str = "",
+    translated_text: str = "",
+    source_name: str = "",
+) -> dict:
+    """Validate that a translation DOCX is complete enough to deliver.
+
+    This is intentionally stricter than a generic "file exists" check.  Long
+    legal/academic translations must be read back from the DOCX and checked for
+    truncation, empty table cells, high-risk terminology drift, and idiom
+    mistranslation before MAGI sends them to a user.
+    """
+    metrics = _read_translation_docx_metrics(path)
+    issues: list[str] = []
+    if not metrics.get("ok"):
+        return {"ok": False, "issues": [str(metrics.get("error") or "docx_read_failed")], "metrics": metrics}
+
+    src = normalize_txt_body(source_text or "")
+    tgt = polish_translated_document_text(translated_text or "") if translated_text else ""
+    docx_text = str(metrics.get("text") or "")
+    source_len = len(src)
+    size = int(metrics.get("size") or 0)
+    read_chars = int(metrics.get("chars") or 0)
+    table_rows = int(metrics.get("table_rows") or 0)
+    sparse_rows = int(metrics.get("sparse_rows") or 0)
+
+    if source_len >= 50_000 and size < max(50_000, min(220_000, source_len // 3)):
+        issues.append(f"docx_too_small_for_long_source:{size}/{source_len}")
+    elif source_len >= 15_000 and size < max(24_000, source_len // 4):
+        issues.append(f"docx_too_small_for_source:{size}/{source_len}")
+
+    if source_len >= 8_000 and read_chars < int(source_len * 0.45):
+        issues.append(f"docx_readback_too_short:{read_chars}/{source_len}")
+    if source_len >= 3_000 and table_rows < 4:
+        issues.append(f"docx_table_rows_too_few:{table_rows}")
+    if table_rows >= 8 and sparse_rows / max(1, table_rows) > 0.12:
+        issues.append(f"docx_sparse_rows:{sparse_rows}/{table_rows}")
+
+    combined = "\n".join([docx_text, tgt])
+    lower = combined.lower()
+    bad_terms = [term for term in _TRANSLATION_DOCX_BLOCK_TERMS if term.lower() in lower]
+    if bad_terms:
+        issues.append("blocked_terms:" + ",".join(bad_terms[:8]))
+
+    if src and (tgt or docx_text):
+        idiom_issues = translation_idiom_issues(src, tgt or docx_text)
+        if idiom_issues:
+            issues.append("idiom:" + "；".join(idiom_issues[:2]))
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "source_name": source_name,
+        "metrics": {
+            "size": size,
+            "chars": read_chars,
+            "table_rows": table_rows,
+            "sparse_rows": sparse_rows,
+            "source_chars": source_len,
+        },
+    }
+
+
 def export_translation_txt(
     *,
     translated_text: str,
@@ -970,6 +1111,8 @@ def export_translation_docx(
 
     import re as _re
 
+    glossary_text = normalize_txt_body(term_glossary or build_translation_term_glossary(source_text))
+
     # Prefer chunk-level pairs from translation handler (already aligned)
     _src_chunks = source_chunks or []
     _tgt_chunks = translated_chunks or []
@@ -994,13 +1137,24 @@ def export_translation_docx(
             {"page": i + 1, "source": s, "target": t}
             for i, (s, t) in enumerate(zip(src_paras, tgt_paras))
         ]
+    for page in pages:
+        try:
+            page["target"] = ensure_translation_terms_visible(
+                str(page.get("source") or ""),
+                str(page.get("target") or ""),
+                term_glossary=glossary_text,
+                target_lang="繁體中文",
+            )
+            page["target"] = polish_translated_document_text(str(page.get("target") or "")) or str(page.get("target") or "")
+        except Exception:
+            logger.debug("translation term visibility pass skipped for one row", exc_info=True)
+
     include_glossary_row = os.environ.get("MAGI_FILE_TRANSLATE_INCLUDE_GLOSSARY_ROW", "0").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    glossary_text = normalize_txt_body(term_glossary or build_translation_term_glossary(source_text))
     if glossary_text and include_glossary_row:
         readable_glossary = []
         for row in parse_translation_term_glossary(glossary_text):
@@ -1036,6 +1190,16 @@ def export_translation_docx(
 
     path = str(ex.get("path") or "").strip()
     url = str(ex.get("url") or "").strip()
+    validation = validate_translation_docx(
+        path,
+        source_text=source_text,
+        translated_text=translated_text,
+        source_name=title or subtitle or "",
+    )
+    if not validation.get("ok"):
+        logger.warning("translation DOCX quality gate failed: %s", validation)
+        return None
+
     head = "📄 已輸出雙語對照 DOCX 表格檔案。"
     if url:
         head = f"{head}\n{url}"

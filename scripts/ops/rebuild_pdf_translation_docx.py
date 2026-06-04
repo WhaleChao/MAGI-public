@@ -128,6 +128,7 @@ def rebuild(pdf: Path, *, prefix: str) -> dict[str, Any]:
         normalize_tw_legal_translation_terms,
         polish_translated_document_text,
         prepare_document_text_for_llm,
+        validate_translation_docx,
     )
     from skills.ops.export_docx import export_bilingual_docx
 
@@ -162,8 +163,16 @@ def rebuild(pdf: Path, *, prefix: str) -> dict[str, Any]:
     text = _read_docx_text(path) if path.exists() else ""
     lower = text.lower()
     bad = [term for term in BAD_TERMS if term.lower() in lower]
+    source_joined = "\n\n".join(str(row.get("source") or "") for row in rows)
+    target_joined = "\n\n".join(str(row.get("target") or "") for row in rows)
+    gate = validate_translation_docx(
+        str(path),
+        source_text=source_joined,
+        translated_text=target_joined,
+        source_name=pdf.name,
+    ) if path.exists() else {"ok": False, "issues": ["missing_output"]}
     return {
-        "success": bool(export.get("success")) and path.exists() and not bad,
+        "success": bool(export.get("success")) and path.exists() and not bad and bool(gate.get("ok")),
         "path": str(path) if path else "",
         "pages": len(reader.pages),
         "rows": len(rows),
@@ -172,6 +181,7 @@ def rebuild(pdf: Path, *, prefix: str) -> dict[str, Any]:
         "chars": len(text),
         "size": path.stat().st_size if path.exists() else 0,
         "bad_terms": bad,
+        "quality_gate": gate,
     }
 
 

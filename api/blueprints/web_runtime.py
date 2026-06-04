@@ -347,6 +347,22 @@ def _run_direct_web_upload_text_task(
                 title=original_name or "檔案翻譯",
                 user_id=user_id,
             )
+            if not bilingual_artifact and suffix == ".pdf":
+                try:
+                    from api.domains.multimedia_flow import _try_rebuild_pdf_translation_delivery
+
+                    rebuilt_reply = _try_rebuild_pdf_translation_delivery(
+                        pdf_path=str(target),
+                        filename=original_name or Path(target).name,
+                        source_text=src_text,
+                        user_id=user_id,
+                    )
+                    rebuilt_path = _path_from_export_reply(rebuilt_reply)
+                    if rebuilt_path:
+                        bilingual_artifact = _artifact_dict(rebuilt_path, label="HEAVY 完整雙語對照 Word", fmt="docx")
+                        bilingual_reply = rebuilt_reply
+                except Exception:
+                    logging.getLogger(__name__).debug("PDF translation rebuild fallback skipped", exc_info=True)
             if bilingual_artifact:
                 notes.insert(0, "📄 已產出原文/翻譯雙語對照 Word 表格。")
             elif bilingual_reply:
