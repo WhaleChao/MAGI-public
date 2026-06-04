@@ -48,7 +48,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 6577,
+      "elapsed_ms": 3203,
       "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
       "term_hit_rate": 1.0
     },
@@ -57,7 +57,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 3221,
+      "elapsed_ms": 923,
       "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
       "term_hit_rate": 0.75
     },
@@ -66,7 +66,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 4623,
+      "elapsed_ms": 2361,
       "text": "Prayer for Relief: The defendant shall pay the plaintiff the sum of NT$200,000.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -76,7 +76,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3904,
+      "elapsed_ms": 1830,
       "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
       "term_hit_rate": 1.0
     },
@@ -85,7 +85,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2474,
+      "elapsed_ms": 697,
       "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
       "term_hit_rate": 0.6666666666666666
     },
@@ -94,7 +94,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3679,
+      "elapsed_ms": 1751,
       "text": "The defendant was convicted of fraud and sentenced to six months' imprisonment.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -104,7 +104,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3957,
+      "elapsed_ms": 1884,
       "text": "The defendant shall be liable for damages arising from the plaintiff's injuries.",
       "term_hit_rate": 1.0
     },
@@ -113,7 +113,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 2391,
+      "elapsed_ms": 734,
       "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
       "term_hit_rate": 1.0
     },
@@ -122,7 +122,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 3690,
+      "elapsed_ms": 1778,
       "text": "The defendant shall be liable for damages for the plaintiff's injuries.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -132,8 +132,8 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5230,
-      "text": "The matter, Case No. 114年度原訴字第000024號, is currently under adjudication before this Court.",
+      "elapsed_ms": 2592,
+      "text": "The matter, Original Lawsuit No. 000024 of the current year of this Court, is presently under adjudication. (Case No.: 114年度原訴字第000024號)",
       "term_hit_rate": 1.0
     },
     {
@@ -141,7 +141,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 3059,
+      "elapsed_ms": 898,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
       "term_hit_rate": 0.5
     },
@@ -150,11 +150,11 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 4693,
-      "text": "The matter, Case No. 114年度原訴字第000024號, is currently under the consideration of this Court.",
+      "elapsed_ms": 2441,
+      "text": "The matter, Original Suit No. 000024 of the current year of this Court, is presently under adjudication. (Case No.: 114年度原訴字第000024號)",
       "validator_reasons": [],
       "term_hit_rate": 1.0
     }
   ],
-  "generated_at": "2026-06-04T13:16:41.937667"
+  "generated_at": "2026-06-04T21:44:17.630616"
 }

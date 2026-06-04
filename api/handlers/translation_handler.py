@@ -409,6 +409,44 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
         return auto_out
 
+    def _char_counts_for_lang(text_part: str) -> tuple[int, int]:
+        s = str(text_part or "")
+        return (
+            len(re.findall(r"[\u4e00-\u9fff]", s)),
+            len(re.findall(r"[A-Za-z]", s)),
+        )
+
+    def _should_preserve_target_chinese_source(text_part: str) -> bool:
+        """Target zh-TW + source already Chinese: preserve instead of paraphrasing.
+
+        File translation is often used on Taiwan legal/academic PDFs that already
+        contain Traditional Chinese plus a few English titles/citations. Sending a
+        Chinese-dominant chunk back through an LLM causes semantic drift
+        (e.g. 被告 -> 辯護人). In zh-TW target mode, a Chinese-dominant source chunk
+        is already in the desired language, so the safest high-quality translation
+        is an identity-preserving output.
+        """
+        if not target_is_zh:
+            return False
+        s = str(text_part or "").strip()
+        if not s:
+            return False
+        cjk, latin = _char_counts_for_lang(s)
+        if cjk < 50:
+            return False
+        if re.search(
+            r"(司法通譯|國民法官|公民法官|被告|證詞|量刑|法庭|法院|判決|裁定|犯罪|受試者|"
+            r"當事人|辯護人|檢察官|律師|上訴|審判|法律|訴訟|證據|法官)",
+            s,
+        ):
+            return True
+        if cjk < 80:
+            return False
+        # Mixed Chinese/English title pages and abstracts often contain both
+        # scripts. If Chinese is a substantial part of the chunk, preserve it
+        # whole; English-only chunks still go through the normal translator.
+        return (cjk / max(1, cjk + latin)) >= 0.25
+
     def _translation_needs_rescue(src_part: str, translated_part: str) -> bool:
         from api.handlers import text_processing_handler as _tp
         src = str(src_part or "").strip()
@@ -733,6 +771,9 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     def _process_chunk(idx, part):
         def _translate_piece(text_part: str, *, label: str, depth: int) -> tuple[str, str, int]:
             glossary = doc_glossary  # 使用 document-level glossary 確保全文術語一致
+            if _should_preserve_target_chinese_source(text_part):
+                preserved = _dh.polish_translated_document_text(text_part) or str(text_part or "").strip()
+                return preserved, "source_zh_preserved", 0
             # 2026-04-24：動態 NIM 壅塞偵測 — 若最近 NIM 呼叫成功率低或延遲超高，直接走 GTX 省時間
             _skip_nim_this_chunk = False
             _pure_mode = os.environ.get("MAGI_HEAVY_STRICT_NIM_PURE", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -1115,7 +1156,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     from concurrent.futures import FIRST_COMPLETED, wait
     from api.thread_pools import inference_pool
-    checkpoint_version = 4
+    checkpoint_version = 5
     checkpoint_active = checkpoint_enabled and total >= checkpoint_threshold
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
     result_buffer = [None] * total
@@ -1144,7 +1185,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             cached_source = str(cached.get("source_lang") or "")
             cached_target = str(cached.get("target_lang") or "")
             cached_results = cached.get("results") or []
-            if cached_version in {2, checkpoint_version} and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
+            if cached_version == checkpoint_version and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
                 cached_final = str(cached.get("final_text") or "").strip()
                 cached_translated = str(cached.get("translated_text") or "").strip()
                 if not cached_translated and isinstance(cached_results, list) and cached_results:
