@@ -173,11 +173,19 @@ def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool
     """
     prev = state.get("cases", {}).get(case_number, {})
     prev_hashes = prev.get("source_hashes", {})
+    structural_only = os.environ.get("MAGI_WIKI_STRUCTURAL_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     # Re-synthesize retryable fallbacks, such as multi-document cases where
     # an LLM merge is materially better.  Single-note cases can safely keep
-    # the structural overview without becoming nightly churn.
-    if prev and not prev.get("llm_synthesized", True) and prev.get("fallback_retryable", True):
+    # the structural overview without becoming nightly churn.  Structural-only
+    # recovery runs should repair freshness without repeatedly selecting the
+    # same fallback pages just because the local LLM is unavailable.
+    if (
+        prev
+        and not structural_only
+        and not prev.get("llm_synthesized", True)
+        and prev.get("fallback_retryable", True)
+    ):
         return True
 
     for note in notes:
