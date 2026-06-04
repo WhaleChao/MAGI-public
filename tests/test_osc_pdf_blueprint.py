@@ -424,7 +424,7 @@ def test_pdf_calendar_scan_write_uses_single_machine_todo_writer(client, tmp_pat
     assert writer_calls
     assert writer_calls[0]["case_number"] == "2026-0002"
     assert writer_calls[0]["client_name"] == "林小華"
-    assert writer_calls[0]["source_file"] == path.name
+    assert writer_calls[0]["source_file"] == str(path)
     assert "來源PDF：" in writer_calls[0]["todos"][0]["description"]
     assert "MAGI分享狀態：分享連結暫不可用" in writer_calls[0]["todos"][0]["description"]
     joined_sql = "\n".join(c[0] for c in osc_exec_calls)
@@ -516,6 +516,69 @@ def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch)
     targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
 
     assert targets == [(pdf.resolve(), "2025-0121", "高弘軒")]
+
+
+def test_all_case_pdf_targets_uses_document_index_when_case_number_missing(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    case_dir = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2026-0059-吳志炳-一審-公共危險"
+    notice_dir = case_dir / "01_法扶資料" / "專員來信"
+    notice_dir.mkdir(parents=True)
+    pdf = notice_dir / "(有紙本)吳志炳 114原交易49-1150731下午1530開庭.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_todos" in sql:
+            return [], {}
+        if "FROM document_index" in sql:
+            return [
+                {
+                    "case_number": None,
+                    "file_path": str(pdf),
+                    "file_name": pdf.name,
+                    "party": "吳志炳",
+                    "subfolder_name": "專員來信",
+                    "modified_date": "2026-06-04 08:00:00",
+                    "id": 1,
+                }
+            ], {}
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0059",
+                    "client_name": "吳志炳",
+                    "folder_path": str(case_dir),
+                    "status": "進行中",
+                }
+            ], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(case_dir)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=10, filename_only=True)
+
+    assert targets == [(pdf, "2026-0059", "吳志炳")]
+
+
+def test_pdf_calendar_scan_detects_compact_roc_datetime_filename(client, tmp_path, monkeypatch):
+    path = tmp_path / "(有紙本)吳志炳 114原交易49-1150731下午1530開庭.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0059", "client_name": "吳志炳", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "開庭"
+    assert todo["date"] == "2026-07-31"
+    assert todo["time"] == "15:30"
 
 
 def test_all_case_pdf_targets_recent_sweep_reaches_fresh_pdf_outside_cursor_batch(tmp_path, monkeypatch):

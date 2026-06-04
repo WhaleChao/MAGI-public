@@ -29,7 +29,7 @@ PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
 PDF_SCAN_RULE_VERSION = os.environ.get(
     "OSC_PDF_CALENDAR_RULE_VERSION",
-    "2026-05-28-original-osc-rules-ocr-tentative14",
+    "2026-06-04-original-osc-indexed-filename-sweep",
 )
 
 
@@ -240,7 +240,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     def _append_targets(items: list[tuple[Any, str, str]], *, use_text: bool, mode: str) -> None:
         nonlocal filename_sweep_targets_count, text_targets_count
         for path, case_number, client_name in items or []:
-            key = (str(path), str(case_number or ""))
+            key = (Path(str(path)).name, str(case_number or ""))
             if key in target_seen:
                 # If the full filename sweep saw this first, upgrade the queued
                 # item to a text/OCR fallback pass when it is also in the bounded
@@ -389,7 +389,7 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                     todos,
                     case_number=str(item.get("case_number") or ""),
                     client_name=str(item.get("client_name") or ""),
-                    source_file=path.name,
+                    source_file=str(path),
                     allow_duplicates=False,
                 )
                 inserted += int(write_result.get("inserted") or 0)

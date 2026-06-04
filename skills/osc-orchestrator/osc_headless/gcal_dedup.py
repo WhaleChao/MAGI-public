@@ -172,7 +172,7 @@ def classify_event_kind(text: str, todo_type: str = "") -> str:
         return "deadline_response"
 
     t = f"{tt} {_coerce_text(text)}"
-    if any(k in t for k in ("開庭", "準備程序", "言詞辯論", "審理程序", "訊問", "調解", "協商程序")):
+    if any(k in t for k in ("開庭", "準備程序", "言詞辯論", "辯論", "審理", "審理程序", "審判程序", "訊問", "調解", "協商程序", "調查", "宣判")):
         return "hearing"
     if any(k in t for k in ("繳納", "繳費", "裁判費", "規費", "聲請費")):
         return "deadline_payment"

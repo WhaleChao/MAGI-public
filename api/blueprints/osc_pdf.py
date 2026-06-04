@@ -181,17 +181,7 @@ def _pdf_text(path: Path, max_pages: int = 5) -> str:
 
 
 def _infer_case_from_path(path: Path) -> dict[str, str]:
-    text = str(path)
-    case_number = ""
-    client_name = ""
-    for part in reversed(path.parts):
-        m = re.search(r"(20\d{2}-\d{3,5})", part)
-        if m:
-            case_number = m.group(1)
-            rest = part.replace(case_number, "")
-            rest = re.sub(r"^[\\/_\-\s]+|[\\/_\-\s]+$", "", rest)
-            client_name = rest.split("-")[0].split("_")[0].strip()
-            break
+    case_number, client_name = _case_folder_identity_from_path(path)
     try:
         row, _ = _osc_exec(
             """
@@ -343,6 +333,97 @@ def _next_tw_workday(dt: datetime) -> datetime:
 _PDF_TODO_HINT_RE = re.compile(
     r"(開庭|調解|審理|辯論|宣判|訊問|調查|補正|陳報|表示意見|提出|檢送|檢附|繳納|繳費|裁判費|抗告|上訴|日內|日前|文到|送達後|送達翌日起|訂於|定於)"
 )
+
+_PDF_CALENDAR_SOURCE_HINTS = (
+    "法院通知",
+    "程序裁定",
+    "法院通知或程序裁定",
+    "法院通知及程序裁定",
+    "法院通知與程序裁定",
+    "法院_通知",
+    "法院_傳票",
+    "判決書",
+    "開庭通知",
+    "法庭通知",
+    "庭期通知",
+    "民事庭通知",
+    "刑事庭通知",
+    "地檢署通知",
+    "檢察署通知",
+)
+
+_PDF_CALENDAR_SOURCE_DIR_NAMES = (
+    "法院通知與程序裁定",
+    "02_法院通知與程序裁定",
+    "01_法院通知與程序裁定",
+    "法院通知",
+    "程序裁定",
+    "法院通知或程序裁定",
+    "法院通知及程序裁定",
+    "09_法院通知或程序裁定",
+    "09_法院通知及程序裁定",
+    "法院_通知",
+    "法院_傳票",
+    "判決書",
+    "03_判決書",
+    "04_判決書",
+    "10_判決書",
+    "開庭通知",
+    "法庭通知",
+    "庭期通知",
+    "民事庭通知",
+    "刑事庭通知",
+    "地檢署通知",
+    "檢察署通知",
+)
+
+_PDF_CALENDAR_EXCLUDED_PATH_HINTS = (
+    "我方歷次書狀",
+    "對方歷次書狀",
+    "歷次書狀",
+    "書狀",
+    "證據資料",
+    "閱卷資料",
+    "電子筆錄",
+    "訊問筆錄",
+    "筆錄",
+    "開辦資料",
+    "結案資料",
+    "回執",
+    "信件往返",
+    "自行收納款項收據",
+)
+
+
+def _case_folder_identity_from_path(path: Path) -> tuple[str, str]:
+    case_number = ""
+    client_name = ""
+    for part in reversed(path.parts):
+        m = re.search(r"(20\d{2}-\d{3,5})", part)
+        if not m:
+            continue
+        case_number = m.group(1)
+        rest = part.replace(case_number, "")
+        rest = re.sub(r"^[\\/_\-\s]+|[\\/_\-\s]+$", "", rest)
+        client_name = rest.split("-")[0].split("_")[0].strip()
+        break
+    return case_number, client_name
+
+
+def _is_pdf_calendar_candidate_path(path: Path) -> bool:
+    name = path.name
+    if not name or name.startswith(".") or name.startswith("~$"):
+        return False
+    if path.suffix.lower() != ".pdf":
+        return False
+    text = str(path).replace("\\", "/")
+    if any(hint in text for hint in _PDF_CALENDAR_EXCLUDED_PATH_HINTS):
+        return False
+    if any(hint in text for hint in _PDF_CALENDAR_SOURCE_HINTS):
+        return True
+    if "專員來信" in text and _PDF_TODO_HINT_RE.search(name):
+        return True
+    return False
 
 
 def _infer_deadline_type_from_context(context: str) -> str | None:
@@ -1077,6 +1158,140 @@ def _count_all_case_pdf_case_rows() -> int:
     return 0
 
 
+def _parse_index_timestamp(value: Any) -> float:
+    if isinstance(value, datetime):
+        return value.timestamp()
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[: len(fmt)], fmt).timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
+def _iter_indexed_case_pdf_candidates(
+    limit: int,
+    *,
+    existing_sources: set[tuple[str, str]],
+) -> list[tuple[int, int, float, str, Path, str, str]]:
+    """Use document_index as the fast path for full filename sweeps.
+
+    Synology Drive/NAS path walking can time out before reaching fresh court
+    PDFs.  The index already records file paths, but older rows often have an
+    empty document_index.case_number, so we infer the case from the folder name
+    and keep only open cases.
+    """
+    max_items = max(1, min(limit, 5000))
+    case_rows, _ = _osc_exec(
+        """
+        SELECT case_number, client_name, folder_path, status
+        FROM cases
+        WHERE folder_path IS NOT NULL AND folder_path!=''
+          AND """ + _open_case_status_sql("status") + """
+        """,
+        fetch="all",
+    )
+    open_cases: dict[str, dict[str, Any]] = {}
+    for row in case_rows or []:
+        case_number = str((row or {}).get("case_number") or "").strip()
+        if not case_number:
+            continue
+        open_cases[case_number] = row
+    if not open_cases:
+        return []
+
+    indexed_limit = max(max_items * 6, int(os.environ.get("OSC_PDF_CALENDAR_INDEX_TARGET_LIMIT", "2500") or "2500"))
+    indexed_limit = max(100, min(indexed_limit, 10000))
+    try:
+        rows, _ = _osc_exec(
+            """
+            SELECT case_number, file_path, file_name, party, subfolder_name, modified_date, id
+            FROM document_index
+            WHERE (
+                    LOWER(COALESCE(file_name, '')) LIKE '%%.pdf'
+                 OR LOWER(COALESCE(file_path, '')) LIKE '%%.pdf'
+            )
+              AND (
+                    file_path LIKE '%%法院通知%%'
+                 OR file_path LIKE '%%程序裁定%%'
+                 OR file_path LIKE '%%判決書%%'
+                 OR file_path LIKE '%%開庭通知%%'
+                 OR file_path LIKE '%%法庭通知%%'
+                 OR file_path LIKE '%%庭期通知%%'
+                 OR file_path LIKE '%%地檢署通知%%'
+                 OR file_path LIKE '%%檢察署通知%%'
+                 OR file_path LIKE '%%專員來信%%'
+                 OR file_name LIKE '%%開庭%%'
+                 OR file_name LIKE '%%調解%%'
+                 OR file_name LIKE '%%審理%%'
+                 OR file_name LIKE '%%補正%%'
+                 OR file_name LIKE '%%陳報%%'
+                 OR file_name LIKE '%%繳費%%'
+                 OR file_name LIKE '%%上訴%%'
+                 OR file_name LIKE '%%抗告%%'
+              )
+            ORDER BY modified_date DESC, id DESC
+            LIMIT %s
+            """,
+            (indexed_limit,),
+            fetch="all",
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("document_index pdf candidate fast path failed", exc_info=True)
+        return []
+
+    candidates: list[tuple[int, int, float, str, Path, str, str]] = []
+    seen_paths: set[str] = set()
+    seen_case_names: set[tuple[str, str]] = set()
+    for row in rows or []:
+        raw_path = str((row or {}).get("file_path") or "").strip()
+        if not raw_path:
+            raw_path = str((row or {}).get("file_name") or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path).expanduser()
+        path_key = str(path)
+        if path_key in seen_paths:
+            continue
+        if not _is_pdf_calendar_candidate_path(path):
+            continue
+        inferred_case, inferred_client = _case_folder_identity_from_path(path)
+        row_case = str((row or {}).get("case_number") or "").strip()
+        case_number = row_case if row_case in open_cases else inferred_case
+        if case_number not in open_cases:
+            continue
+        case_name_key = (case_number, path.name)
+        if case_name_key in seen_case_names:
+            continue
+        case_row = open_cases[case_number]
+        client_name = (
+            str(case_row.get("client_name") or "").strip()
+            or str((row or {}).get("party") or "").strip()
+            or inferred_client
+        )
+        source_text = path_key
+        processed_rank = 1 if (
+            (case_number, source_text) in existing_sources
+            or (case_number, path.name) in existing_sources
+        ) else 0
+        hint_rank = 0 if _PDF_TODO_HINT_RE.search(path.name) else 1
+        mtime = _parse_index_timestamp((row or {}).get("modified_date"))
+        candidates.append((processed_rank, hint_rank, -mtime, path.name, path, case_number, client_name))
+        seen_paths.add(path_key)
+        seen_case_names.add(case_name_key)
+        if len(candidates) >= max_items * 4:
+            break
+    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return candidates[:max_items]
+
+
 def _iter_all_case_pdf_targets(
     limit: int,
     *,
@@ -1128,24 +1343,8 @@ def _iter_all_case_pdf_targets(
             recent_rows = []
     out: list[tuple[Path, str, str]] = []
     candidates: list[tuple[int, int, float, str, Path, str, str]] = []
-    wanted = ("法院通知", "程序裁定", "判決書", "法院_通知", "法院_傳票")
-    wanted_dir_names = (
-        "法院通知與程序裁定",
-        "02_法院通知與程序裁定",
-        "01_法院通知與程序裁定",
-        "法院通知",
-        "程序裁定",
-        "法院通知或程序裁定",
-        "法院通知及程序裁定",
-        "09_法院通知或程序裁定",
-        "09_法院通知及程序裁定",
-        "法院_通知",
-        "法院_傳票",
-        "判決書",
-        "03_判決書",
-        "04_判決書",
-        "10_判決書",
-    )
+    wanted = _PDF_CALENDAR_SOURCE_HINTS
+    wanted_dir_names = _PDF_CALENDAR_SOURCE_DIR_NAMES
     candidate_cap = max_items if filename_only else min(max(max_items * 4, max_items, 4), max_items * 8)
     existing_sources: set[tuple[str, str]] = set()
 
@@ -1164,8 +1363,21 @@ def _iter_all_case_pdf_targets(
             for r in (source_rows or [])
             if str(r.get("source_file") or "").strip()
         }
+        existing_sources.update(
+            {
+                (str(r.get("case_number") or ""), str(r.get("source_file") or ""))
+                for r in (source_rows or [])
+                if str(r.get("source_file") or "").strip()
+            }
+        )
     except Exception:
         existing_sources = set()
+
+    if filename_only:
+        candidates.extend(_iter_indexed_case_pdf_candidates(candidate_cap, existing_sources=existing_sources))
+        if len(candidates) >= candidate_cap:
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+            return [(pdf, case_number, client_name) for _p, _h, _m, _n, pdf, case_number, client_name in candidates[:max_items]]
 
     def _run_path_probe(fn, *, timeout_sec: float = 3.0, fallback=None):
         import threading
@@ -1267,14 +1479,14 @@ def _iter_all_case_pdf_targets(
                     break
                 if pdf.name.startswith(".") or pdf.name.startswith("~$"):
                     continue
-                text = str(pdf)
-                if wanted and not any(k in text for k in wanted):
+                if not _is_pdf_calendar_candidate_path(pdf):
                     continue
                 case_number = str(row.get("case_number") or "")
                 mtime = _pdf_mtime_timeout(pdf)
                 if not filename_only and recent_only and recent_sweep_hours and mtime < recent_cutoff:
                     continue
-                processed_rank = 1 if (case_number, pdf.name) in existing_sources else 0
+                source_text = str(pdf)
+                processed_rank = 1 if ((case_number, source_text) in existing_sources or (case_number, pdf.name) in existing_sources) else 0
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
                 candidates.append((processed_rank, hint_rank, -mtime, pdf.name, _pdf_resolve_timeout(pdf), case_number, str(row.get("client_name") or "")))
 
@@ -1608,7 +1820,7 @@ def osc_pdf_calendar_scan_api():
                     item.get("todos") or [],
                     case_number=item.get("case_number") or "",
                     client_name=item.get("client_name") or "",
-                    source_file=Path(item.get("path") or "").name,
+                    source_file=str(Path(item.get("path") or "")),
                     allow_duplicates=allow_duplicates,
                 )
                 item["todo_write"] = insert_result

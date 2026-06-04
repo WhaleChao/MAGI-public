@@ -197,6 +197,35 @@ def _time_from_period(period: str, hour_token: str, minute_token: str = "") -> O
     return hour, minute, label
 
 
+def _time_from_period_compact(period: str, hour_or_time_token: str, minute_token: str = "") -> Optional[tuple[int, int, str, int]]:
+    """Parse court compact times such as 下午1530 and 下午330.
+
+    Returns (24h hour, minute, period label, display hour).
+    """
+    label = _normalize_time_period(period)
+    raw = (hour_or_time_token or "").strip()
+    minute_text = (minute_token or "").strip()
+    if raw.isdigit() and not minute_text and len(raw) in {3, 4}:
+        hour = int(raw[:-2])
+        minute = int(raw[-2:])
+        if hour >= 13:
+            display_hour = hour - 12 if label in {"下午", "晚上", "晚間", "傍晚", "夜間"} else hour
+            return hour, minute, label, display_hour
+        parsed = _time_from_period(label, str(hour), str(minute))
+        if parsed is None:
+            return None
+        hour24, minute24, period_label = parsed
+        return hour24, minute24, period_label, hour
+    parsed = _time_from_period(label, raw, minute_text)
+    if parsed is None:
+        return None
+    hour24, minute, period_label = parsed
+    display_hour = _parse_number_token(raw) or hour24
+    if display_hour >= 13 and period_label in {"下午", "晚上", "晚間", "傍晚", "夜間"}:
+        display_hour -= 12
+    return hour24, minute, period_label, display_hour
+
+
 def _duration_days(match: re.Match) -> Optional[int]:
     try:
         days = _parse_number_token(match.group(1))
@@ -583,6 +612,7 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime, base
     """Extract every hearing datetime in filenames with multiple sessions."""
     kind = _infer_hearing_procedure_type(filename) or "開庭"
     year_for_yearless = base_year or document_date.year
+    label_alt = "|".join(map(re.escape, _HEARING_LABELS))
     todos: List[Dict] = []
 
     explicit_pat = re.compile(
@@ -641,6 +671,33 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime, base
                 ),
             )
 
+    compact_pat = re.compile(
+        rf"(?<!\d)(\d{{7,8}}){_TIME_PERIOD_RE}(\d{{1,4}})(?:時([0-5]?\d))?(?:分|整)?.{{0,24}}?({label_alt})?"
+    )
+    for m in compact_pat.finditer(filename):
+        dt = _parse_compact_roc_or_ad_date(m.group(1))
+        if not dt:
+            continue
+        parsed_time = _time_from_period_compact(m.group(2), m.group(3), m.group(4) or "")
+        if parsed_time is None:
+            continue
+        hour, minute, period_label, original_hour = parsed_time
+        label = m.group(5) or kind or "開庭"
+        dt = dt.replace(hour=hour, minute=minute)
+        if dt.date() < document_date.date() - timedelta(days=3650):
+            continue
+        _append_unique_todo(
+            todos,
+            _make_hearing_todo(
+                filename=filename,
+                kind=label,
+                dt=dt,
+                period_label=period_label,
+                original_hour=original_hour,
+                minute=minute,
+            ),
+        )
+
     shared_time_pat = re.compile(
         rf"(?P<dates>(?:(?:\d{{2,4}}年)?\d{{1,2}}月\d{{1,2}}日[、，,及和\s]*){{2,}}){_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?"
     )
@@ -675,7 +732,6 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime, base
                     ),
                 )
 
-    label_alt = "|".join(map(re.escape, _HEARING_LABELS))
     explicit_date_only_pat = re.compile(
         rf"(?:定|訂)於?(?:民國)?(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{{0,30}}?({label_alt})"
     )
