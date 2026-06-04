@@ -19,8 +19,78 @@ logger = logging.getLogger("DocumentHandler")
 # Text normalization
 # ---------------------------------------------------------------------------
 
+_PDF_RUNNING_DOI_RE = re.compile(
+    r"(?i)\s*\bdoi\s*[:：]\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+(?:\s+(?:[ivxlcdm]+|\d{1,4}))?"
+)
+
+
+_TW_LEGAL_TRANSLATION_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("公民法官法", "國民法官法"),
+    ("公民法官制度", "國民法官制度"),
+    ("公民法官系統", "國民法官制度"),
+    ("公民法官", "國民法官"),
+    ("台灣", "臺灣"),
+    ("法庭翻譯員", "司法通譯"),
+    ("法庭翻譯", "司法通譯"),
+    ("法庭口譯員", "司法通譯"),
+    ("法院口譯員", "司法通譯"),
+    ("法院翻譯", "司法通譯"),
+    ("演講風格", "語言風格"),
+    ("言語風格", "語言風格"),
+    ("語音風格", "語言風格"),
+    ("說話風格", "語言風格"),
+    ("匹配偽裝技術", "假冒配對測試法"),
+    ("配對偽裝技術", "假冒配對測試法"),
+    ("配對偽裝法", "假冒配對測試法"),
+    ("無能為力組", "無力風格組"),
+    ("無權組", "無力風格組"),
+    ("無力組", "無力風格組"),
+    ("強大組", "有力風格組"),
+    ("有權組", "有力風格組"),
+    ("強力組", "有力風格組"),
+    ("無能為力風格", "無力風格"),
+    ("無權風格", "無力風格"),
+    ("弱勢風格", "無力風格"),
+    ("強大風格", "有力風格"),
+    ("強力風格", "有力風格"),
+)
+
+
+def strip_pdf_running_identifiers(text: str) -> str:
+    """Remove repeated PDF running identifiers from extracted text.
+
+    Academic PDFs often place DOI/handle strings in page headers or footers.
+    OCR/text extraction then injects them into every page and pollutes
+    translation/summary output.  Keep bibliographic identifiers out of body
+    text; callers can preserve source metadata separately.
+    """
+    s = str(text or "")
+    if not s:
+        return ""
+    s = _PDF_RUNNING_DOI_RE.sub(" ", s)
+    s = re.sub(r"(?im)^\s*(?:[ivxlcdm]+|\d{1,4})\s*$", "", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def normalize_tw_legal_translation_terms(text: str) -> str:
+    """Normalize high-risk translation drift to Taiwan legal/academic terms."""
+    s = str(text or "")
+    if not s:
+        return ""
+    for old, new in _TW_LEGAL_TRANSLATION_REPLACEMENTS:
+        s = s.replace(old, new)
+    s = re.sub(r"被告的智力、可信度、說服力", "被告的智力程度、可信賴度、證詞可信度", s)
+    s = re.sub(r"被告的智力、可信賴度、說服力", "被告的智力程度、可信賴度、證詞可信度", s)
+    s = re.sub(r"外籍罪犯", "外籍犯罪人", s)
+    s = re.sub(r"外國被告", "外籍犯罪被告", s)
+    s = re.sub(r"臺灣's", "臺灣的", s, flags=re.IGNORECASE)
+    return s
+
+
 def normalize_txt_body(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     lines = [ln.rstrip() for ln in s.split("\n")]
     out = []
     prev_blank = False
@@ -36,7 +106,7 @@ def normalize_txt_body(text: str) -> str:
 
 
 def prepare_document_text_for_llm(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     if not s:
         return ""
 
@@ -85,6 +155,7 @@ def prepare_document_text_for_llm(text: str) -> str:
         for raw in page_lines:
             line = str(raw or "").replace("\u00ad", "").replace("\u2011", "-").replace("\u2010", "-")
             line = line.replace("\u0008", " ").strip()
+            line = strip_pdf_running_identifiers(line)
             if not line:
                 if cleaned and cleaned[-1]:
                     cleaned.append("")
@@ -218,7 +289,9 @@ def prepare_document_text_for_llm(text: str) -> str:
 
 
 def polish_translated_document_text(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = normalize_tw_legal_translation_terms(
+        strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+    )
     if not s:
         return ""
     try:
@@ -286,6 +359,14 @@ def translation_idiom_issues(source_text: str, translated_text: str) -> list[str
     )
     if previous_life_role_re.search(src) and re.search(r"(?:前世|上輩子|前一世)", tgt):
         issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世或上輩子")
+    if re.search(r"\bCitizen Judges? Act\b|\bcitizen judges?\b", src, flags=re.IGNORECASE) and "公民法官" in tgt:
+        issues.append("Citizen Judges Act / citizen judges 於本文件應譯為「國民法官法／國民法官」")
+    if re.search(r"\bcourt interpreters?\b", src, flags=re.IGNORECASE) and re.search(r"(法庭|法院).{0,4}(翻譯|口譯員)", tgt):
+        issues.append("court interpreter 於本文件應譯為「司法通譯」，不可譯為法庭翻譯")
+    if re.search(r"\bspeech styles?\b", src, flags=re.IGNORECASE) and re.search(r"(演講|言語|語音)風格", tgt):
+        issues.append("speech style 於本文件應譯為「語言風格」")
+    if re.search(r"\bPowerless Group\b|\bPowerful Group\b", src, flags=re.IGNORECASE) and re.search(r"(無權組|無能為力組|強大組|有權組)", tgt):
+        issues.append("Powerless/Powerful Group 於本文件應譯為「無力風格組／有力風格組」")
     return issues
 
 
@@ -296,6 +377,21 @@ def extract_translation_terms_for_review(text: str, *, target_lang: str = "繁�
         return []
 
     known_terms = {
+        "Citizen Judges Act": "國民法官法",
+        "citizen judge": "國民法官",
+        "citizen judges": "國民法官",
+        "court interpreter": "司法通譯",
+        "court interpreters": "司法通譯",
+        "court interpreter system": "司法通譯制度",
+        "defendant": "被告",
+        "defendants": "被告",
+        "speech style": "語言風格",
+        "speech styles": "語言風格",
+        "powerless style": "無力風格",
+        "Powerless Group": "無力風格組",
+        "Powerful Group": "有力風格組",
+        "matched guise technique": "假冒配對測試法",
+        "Taiwan": "臺灣",
         "addiction": "成癮",
         "addictions": "成癮",
         "addicts": "成癮者",
@@ -498,6 +594,21 @@ def _source_term_translation_candidates(source_term: str) -> list[str]:
         ],
         "mental health": ["心理健康", "精神健康"],
         "traditional chinese": ["繁體中文"],
+        "citizen judges act": ["國民法官法"],
+        "citizen judge": ["國民法官"],
+        "citizen judges": ["國民法官"],
+        "court interpreter": ["司法通譯"],
+        "court interpreters": ["司法通譯"],
+        "court interpreter system": ["司法通譯制度"],
+        "defendant": ["被告"],
+        "defendants": ["被告"],
+        "speech style": ["語言風格"],
+        "speech styles": ["語言風格"],
+        "powerless style": ["無力風格"],
+        "powerless group": ["無力風格組"],
+        "powerful group": ["有力風格組"],
+        "matched guise technique": ["假冒配對測試法"],
+        "taiwan": ["臺灣"],
         "la trobe university": ["拉籌伯大學", "拉籌伯大學"],
         "australian research centre in sex, health and society": ["澳大利亞性、健康與社會研究中心", "澳洲性、健康與社會研究中心"],
         "psychiatry, psychology and law": ["精神病學、心理學和法律", "精神醫學、心理學與法律"],
@@ -525,7 +636,8 @@ def _translation_contains_source_term(translated_text: str, source_term: str) ->
         return True
     escaped = re.escape(term)
     if re.fullmatch(r"[A-Za-z][A-Za-z'’ -]*", term):
-        direct_pattern = rf"(?<![A-Za-z]){escaped}(?![A-Za-z])"
+        plural_suffix = "s?" if not term.lower().endswith("s") else ""
+        direct_pattern = rf"(?<![A-Za-z]){escaped}{plural_suffix}(?![A-Za-z])"
     else:
         direct_pattern = escaped
     if re.search(direct_pattern, tgt, flags=re.IGNORECASE):
@@ -598,7 +710,7 @@ def ensure_translation_terms_visible(
     if "中文" not in str(target_lang or "") and not target_lower.startswith("zh"):
         return translated_text or ""
     src = str(source_text or "")
-    out = str(translated_text or "")
+    out = normalize_tw_legal_translation_terms(translated_text or "")
     if not src.strip() or not out.strip():
         return out
 
@@ -669,7 +781,7 @@ def ensure_translation_terms_visible(
         missing = missing_translation_source_terms(src, out, term_glossary=term_glossary, max_terms=12)
         if missing and "【原文專有名詞保留】" not in out:
             out = out.rstrip() + "\n\n【原文專有名詞保留】" + "；".join(missing)
-    return out
+    return normalize_tw_legal_translation_terms(out)
 
 
 def _split_bilingual_blocks(text: str, max_chars: int = 700) -> list[str]:

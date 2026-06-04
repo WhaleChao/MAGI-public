@@ -1156,7 +1156,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     from concurrent.futures import FIRST_COMPLETED, wait
     from api.thread_pools import inference_pool
-    checkpoint_version = 5
+    checkpoint_version = 6
     checkpoint_active = checkpoint_enabled and total >= checkpoint_threshold
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
     result_buffer = [None] * total
