@@ -121,6 +121,84 @@ def _parse_subprocess_json(stdout_text: str):
         except Exception:
             logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 121, exc_info=True)
     return None
+
+
+def _short_diag_text(value, limit: int = 900) -> str:
+    """Return a compact one-line diagnostic string for user-facing failure messages."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            value = str(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _laf_failure_code_and_detail(data: dict, stdout_text: str = "", stderr_text: str = "", *, action: str = ""):
+    """Normalize LAF subprocess failures so users never see a bare ``unknown``."""
+    if not isinstance(data, dict):
+        return "subprocess_result_unparsed", _short_diag_text(stdout_text or stderr_text)
+    raw_error = _short_diag_text(data.get("error"), 120)
+    err = raw_error if raw_error and raw_error.lower() != "unknown" else ""
+    detail_parts = []
+    for key in (
+        "detail",
+        "message",
+        "portal_error",
+        "last_portal_error",
+        "reason",
+        "hint",
+        "portal_status",
+    ):
+        val = _short_diag_text(data.get(key))
+        if val and val not in detail_parts and val.lower() != "unknown":
+            detail_parts.append(val)
+    preview = data.get("preview") if isinstance(data.get("preview"), dict) else {}
+    for key in ("png", "html"):
+        val = _short_diag_text(preview.get(key), 260)
+        if val:
+            detail_parts.append(f"{key}: {val}")
+    if not detail_parts:
+        for text in (stderr_text, stdout_text):
+            val = _short_diag_text(text, 700)
+            if val:
+                detail_parts.append(val)
+                break
+    if not err:
+        err = "portal_prefill_failed" if action == "go_live" else "portal_draft_failed"
+    return err, "；".join(detail_parts)
+
+
+def _record_laf_failure_diag(payload_obj: dict, data: dict, stdout_text: str, stderr_text: str, *, err: str, detail: str) -> str:
+    """Persist every LAF report failure for retry/debug instead of losing it in chat."""
+    try:
+        _diag_dir = os.path.join(str(get_magi_root_dir()), ".runtime")
+        os.makedirs(_diag_dir, exist_ok=True)
+        _fail_path = os.path.join(_diag_dir, "laf_portal_draft_failures.jsonl")
+        _fail_record = {
+            "ts": __import__("time").time(),
+            "ts_iso": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+            "action": payload_obj.get("action"),
+            "client_name": payload_obj.get("client_name"),
+            "laf_case_no": payload_obj.get("laf_case_no"),
+            "case_number": payload_obj.get("case_number"),
+            "error": err,
+            "detail": detail,
+            "stderr_tail": (stderr_text or "")[-4000:],
+            "stdout_tail": (stdout_text or "")[-4000:],
+            "data": data if isinstance(data, dict) else None,
+        }
+        with open(_fail_path, "a", encoding="utf-8") as _fp:
+            _fp.write(json.dumps(_fail_record, ensure_ascii=False, default=str) + "\n")
+        return _fail_path
+    except Exception as exc:
+        logger.warning("LAF failure diagnostic dump failed: %s", exc)
+        return ""
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$")
 _RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
@@ -1522,7 +1600,20 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 except Exception as _db_err2:
                                     logger.warning("closing DB status update failed: %s", _db_err2)
                         else:
-                            err = str(data.get("error") or "unknown").strip()
+                            err, detail = _laf_failure_code_and_detail(
+                                data,
+                                stdout_text=stdout_text,
+                                stderr_text=stderr_text,
+                                action=action,
+                            )
+                            _diag_path = _record_laf_failure_diag(
+                                payload_obj,
+                                data,
+                                stdout_text,
+                                stderr_text,
+                                err=err,
+                                detail=detail,
+                            )
                             if err == "missing_target":
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}失敗：缺少目標。\n"
@@ -1569,48 +1660,23 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "請回覆：`<當事人/案號> 結案回報 原因 <理由>`"
                                 )
                             elif err == "portal_prefill_failed":
-                                detail = str(data.get("detail") or data.get("message") or "").strip()
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}預填失敗。\n"
                                     "開辦沒有暫存流程；MAGI 只會先填寫並截圖，確認後才送出。\n"
                                     f"{'原因：' + detail if detail else '請稍後重試，或手動在法扶系統確認。'}"
                                 )
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                             elif err == "portal_draft_failed":
-                                detail = str(data.get("detail") or data.get("message") or "").strip()
-                                # 把 subprocess stderr / stdout 完整 dump，方便事後追查 portal 為何失敗
-                                try:
-                                    from api.runtime_paths import get_magi_root_dir as _grd
-                                    _diag_dir = os.path.join(str(_grd()), ".runtime")
-                                    os.makedirs(_diag_dir, exist_ok=True)
-                                    _fail_path = os.path.join(_diag_dir, "laf_portal_draft_failures.jsonl")
-                                    _fail_record = {
-                                        "ts": __import__("time").time(),
-                                        "ts_iso": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
-                                        "action": payload_obj.get("action"),
-                                        "client_name": payload_obj.get("client_name"),
-                                        "laf_case_no": payload_obj.get("laf_case_no"),
-                                        "case_number": payload_obj.get("case_number"),
-                                        "detail": detail,
-                                        "stderr_tail": stderr_text[-4000:] if stderr_text else "",
-                                        "stdout_tail": stdout_text[-4000:] if stdout_text else "",
-                                        "data": data if isinstance(data, dict) else None,
-                                    }
-                                    with open(_fail_path, "a", encoding="utf-8") as _fp:
-                                        _fp.write(json.dumps(_fail_record, ensure_ascii=False, default=str) + "\n")
-                                    logger.warning(
-                                        "[LAF portal_draft_failed] action=%s client=%s laf_no=%s — stderr/stdout dumped to %s",
-                                        payload_obj.get("action"), payload_obj.get("client_name"),
-                                        payload_obj.get("laf_case_no"), _fail_path,
-                                    )
-                                except Exception as _dump_err:
-                                    logger.warning("portal_draft_failed dump failed: %s", _dump_err)
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}表單填寫失敗。\n"
                                     "可能原因：法扶網站登入逾時、頁面載入異常或按鈕找不到。\n"
-                                    "請稍後重試，或手動在法扶系統確認。"
+                                    "MAGI 已留下診斷並會依排程重試；若同案連續失敗，請以診斷截圖確認入口網頁面。"
                                 )
                                 if detail:
                                     result_text += f"\n細節：{detail[:300]}"
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                             elif err == "identity_needs_manual_confirmation":
                                 _identity = data.get("identity") or {}
                                 _reason = _identity.get("manual_reason", "")
@@ -1644,6 +1710,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 result_text = "\n".join(_hint_lines)
                             else:
                                 result_text = f"❌ 法扶{payload_obj.get('action_label','回報')}存檔失敗：{err}"
+                                if detail:
+                                    result_text += f"\n細節：{detail[:300]}"
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                     else:
                         result_text = f"✅ 法扶{payload_obj.get('action_label','回報')}流程完成（未送出）。\n{stdout_text[:1200] if stdout_text else '(無輸出)'}"
             except subprocess.TimeoutExpired:

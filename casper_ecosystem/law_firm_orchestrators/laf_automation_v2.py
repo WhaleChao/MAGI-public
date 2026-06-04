@@ -1372,6 +1372,7 @@ class LAFWebAutomation:
         self._engine_logged = False
         self.last_debug_artifact = {}
         self.last_upload_result = {}
+        self.last_portal_error = ""
         # Pass log_callback specifically to capture OCR logs in UI
         self.captcha_solver = CaptchaSolver(callback_on_fail=on_captcha_fail, log_callback=self.log)
         # 驗證碼處理：優先 OCR 自動辨識，失敗才透過 LINE 請求人工輸入。
@@ -2055,6 +2056,23 @@ class LAFWebAutomation:
         except Exception:
             return {}
         return artifact
+
+    def _set_portal_error(self, code: str, detail: str = "", *, debug_tag: str = "") -> bool:
+        """Record a structured portal failure and capture the current page for retry diagnostics."""
+        text = str(code or "portal_error").strip()
+        detail = str(detail or "").strip()
+        if detail:
+            detail = re.sub(r"\s+", " ", detail)
+            text = f"{text}: {detail[:700]}"
+        self.last_portal_error = text
+        if debug_tag:
+            try:
+                artifact = self._save_page_debug_html(debug_tag, force=True)
+                if isinstance(artifact, dict) and artifact:
+                    self.last_debug_artifact = dict(artifact)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2059, exc_info=True)
+        return False
 
     def _workflow_form_modal_selectors(self, workflow: str) -> List[str]:
         wf = (workflow or "").strip().lower()
@@ -5185,7 +5203,7 @@ return null;
         Auto-navigates from Page 1 (toCR) to Page 2 (toClosedSummaryLawyer).
         """
         if not self.driver:
-            return False
+            return self._set_portal_error("closing_driver_missing", "報結瀏覽器尚未初始化")
         zero_reasons = zero_reasons or {}
         on_page2 = False
 
@@ -5418,7 +5436,13 @@ return null;
                         var xhr = new XMLHttpRequest();
                         xhr.open('POST', '/lafcsp/insertClosedSummaryBasic', true);
                         xhr.onload = function() {
-                            callback({status: xhr.status, ok: xhr.status === 200});
+                            callback({
+                                status: xhr.status,
+                                ok: xhr.status === 200,
+                                responseText: (xhr.responseText || '').slice(0, 1200),
+                                url: location.href,
+                                title: document.title || ''
+                            });
                         };
                         xhr.onerror = function() {
                             callback({status: -1, ok: false, error: 'xhr_error'});
@@ -5435,11 +5459,15 @@ return null;
                 except Exception as e:
                     self.log(f"  ⚠️ Page 1 AJAX save exception: {e}")
                     _save_ok = False
+                    _ajax_result = {"error": str(e), "status": -9}
 
                 if not _save_ok:
                     self.log("  ❌ Page 1 存檔失敗")
-                    self._save_page_debug_html("closing_page1_save_failed")
-                    return False
+                    return self._set_portal_error(
+                        "closing_page1_ajax_save_failed",
+                        json.dumps(_ajax_result or {}, ensure_ascii=False, default=str),
+                        debug_tag="closing_page1_save_failed",
+                    )
 
                 # 頁面仍在 Page 1，toPrevious() 可用
                 self.log("  🚀 toPrevious() → Page 2...")
@@ -5490,15 +5518,17 @@ return null;
                     self.log("✅ 已進入報結第二頁 (Handling Info)")
                 except Exception as e:
                     self.log(f"⚠️ 無法確認是否進入第二頁: {e}")
-                    self._save_page_debug_html("closing_page2_wait_failed")
                     if not on_page2:
-                        self._save_page_debug_html("closing_page2_open_failed")
-                        return False
+                        return self._set_portal_error(
+                            "closing_page2_open_failed",
+                            str(e),
+                            debug_tag="closing_page2_open_failed",
+                        )
             else:
                 on_page2 = len(self.driver.find_elements("id", "meet_times")) > 0 or "toClosedSummaryLawyer" in self.driver.current_url
         except Exception as e:
             self.log(f"⚠️ 換頁過程發生異常：{e}")
-            return False
+            return self._set_portal_error("closing_page_transition_failed", str(e), debug_tag="closing_page_transition_failed")
 
         if not on_page2:
             try:
@@ -5508,8 +5538,7 @@ return null;
             on_page2 = len(self.driver.find_elements("id", "meet_times")) > 0 or "meet_times" in src_now
         if not on_page2:
             self.log("❌ 報結第二頁未就緒，停止填寫。")
-            self._save_page_debug_html("closing_page2_not_ready")
-            return False
+            return self._set_portal_error("closing_page2_not_ready", "未偵測到 meet_times/toClosedSummaryLawyer", debug_tag="closing_page2_not_ready")
 
         # 2. Wait for page stable
         try:
@@ -5937,8 +5966,9 @@ return null;
         """
         報結暫存：進入 toCR → 換頁至 toClosedSummaryLawyer → 填寫 → doTempSave()。
         """
+        self.last_portal_error = ""
         if not self.open_closing_report_page(laf_case_number):
-            return False
+            return self._set_portal_error("closing_open_page_failed", laf_case_number, debug_tag="closing_open_page_failed")
 
         try:
             src_probe = (self.driver.page_source or "")
@@ -5946,6 +5976,7 @@ return null;
             src_probe = ""
         if ("目前已有回報資料正在處理中" in src_probe) or ("已有回報資料正在處理中" in src_probe):
             self.log("ℹ️ 報結：系統顯示已有回報資料正在處理中，略過本次存檔。")
+            self.last_portal_error = ""
             self.last_upload_result = {
                 "ok": True,
                 "workflow": "closing",
@@ -5974,7 +6005,9 @@ return null;
 
         if not self.fill_closing_report(counts=counts or {}, zero_reasons=zero_reasons or {}):
             self.log("❌ 報結第二頁填寫前置失敗")
-            self._save_page_debug_html("closing_fill_failed")
+            if not self.last_portal_error:
+                return self._set_portal_error("closing_fill_failed", "報結第二頁填寫前置失敗", debug_tag="closing_fill_failed")
+            self._save_page_debug_html("closing_fill_failed", force=True)
             return False
 
         # Capture Page 2 HTML after fill (Debug)
@@ -6052,11 +6085,11 @@ return null;
                     save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave exception: {e}")
+            self.last_portal_error = f"closing_do_temp_save_exception: {e}"
 
         if not save_attempted:
             self.log("❌ 找不到暫存方法")
-            self._save_page_debug_html("closing_save_failed")
-            return False
+            return self._set_portal_error("closing_save_method_missing", "找不到 doTempSave/save_btn/存檔按鈕", debug_tag="closing_save_failed")
 
         # Wait for form submission and server response
         time.sleep(4.0)
@@ -6078,12 +6111,12 @@ return null;
                     self.log(f"  ℹ️ Modal message: {modal_msg.strip()[:100]}")
                     if "存檔成功" in modal_msg or "暫存成功" in modal_msg or "儲存成功" in modal_msg:
                         self.log("✅ 報結存檔完成（Modal 確認成功）")
+                        self.last_portal_error = ""
                         self._save_page_debug_html("closing_save_success")
                         return True
                     elif "錯誤" in modal_msg or "失敗" in modal_msg:
                         self.log(f"❌ 報結存檔失敗: {modal_msg.strip()[:200]}")
-                        self._save_page_debug_html("closing_save_error")
-                        return False
+                        return self._set_portal_error("closing_modal_save_failed", modal_msg.strip(), debug_tag="closing_save_error")
                     else:
                         # 提醒 Modal（如「未閱卷…請填原因」）→ 點「繼續」按鈕提交表單
                         # 法扶 checkData() 在偵測到零值欄位且 noarrivereason 為空時，
@@ -6117,6 +6150,7 @@ return null;
 
         if any(k in src for k in ["存檔成功", "暫存成功"]):
             self.log("✅ 報結存檔完成（偵測到成功訊息）")
+            self.last_portal_error = ""
             self._save_page_debug_html("closing_save_success")
             return True
 
@@ -6129,6 +6163,7 @@ return null;
             # Form was submitted — check if response contains success
             if "存檔成功" in src or "暫存成功" in src:
                 self.log("✅ 報結存檔完成（更新回應頁確認成功）")
+                self.last_portal_error = ""
                 return True
 
         # Also check for JS alert (just in case)
@@ -6139,6 +6174,7 @@ return null;
             alert.accept()
             if any(k in alert_text for k in ["存檔成功", "暫存成功", "儲存成功"]):
                 self.log("✅ 報結存檔完成（Alert 確認成功）")
+                self.last_portal_error = ""
                 return True
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4500, exc_info=True)
@@ -6153,20 +6189,18 @@ return null;
                 closing_status = (status.get("closing") or {}).get("status", "")
                 if closing_status in ("暫存", "待轉入", "已轉入"):
                     self.log(f"✅ 報結存檔完成（資料庫驗證：{closing_status}）")
+                    self.last_portal_error = ""
                     self._save_page_debug_html("closing_save_verified")
                     return True
                 else:
                     self.log(f"❌ 報結存檔失敗（資料庫查無有效紀錄，狀態：'{closing_status}'）")
-                    self._save_page_debug_html("closing_save_db_mismatch")
-                    return False
+                    return self._set_portal_error("closing_save_db_mismatch", f"closing_status={closing_status!r}", debug_tag="closing_save_db_mismatch")
             except Exception as e:
                 self.log(f"⚠️ 報結資料庫驗證異常: {e}")
-                self._save_page_debug_html("closing_save_verify_error")
-                return False
+                return self._set_portal_error("closing_save_verify_error", str(e), debug_tag="closing_save_verify_error")
 
         self.log("❌ 報結存檔結果不明確（未偵測到成功訊息或跳轉）")
-        self._save_page_debug_html("closing_save_unclear")
-        return False
+        return self._set_portal_error("closing_save_unclear", f"url={cur_url}", debug_tag="closing_save_unclear")
 
     def final_submit_closing_report(self, laf_case_number: str) -> bool:
         """

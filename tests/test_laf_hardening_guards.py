@@ -73,3 +73,55 @@ def test_condition_batch_uses_permanent_dedup_after_draft():
     block = src.split("def _was_condition_drafted_recently", 1)[1].split("def _get_pending_condition_cases", 1)[0]
     assert "永久 dedup" in block
     assert "DATE_SUB(NOW()" not in block
+
+
+def test_closing_failure_returns_structured_portal_error():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("# closing", 1)[1].split("def execute_portal_action_submit", 1)[0]
+    assert 'result["error"] = "portal_draft_failed"' in block
+    assert 'result["detail"] = str(getattr(self, "_last_portal_error"' in block
+    assert '"closing_portal_save_failed"' in block
+
+
+def test_closing_automation_records_failure_diagnostics():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py")
+    assert "self.last_portal_error = \"\"" in src
+    assert "def _set_portal_error" in src
+    assert "closing_page1_ajax_save_failed" in src
+    assert "closing_save_unclear" in src
+    assert "responseText" in src
+
+
+def test_portal_workflows_use_laf_automation_v2_not_legacy_downloader():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _get_automation", 1)[1].split("def close", 1)[0]
+    assert "laf_automation_v2 import LAFWebAutomation" in block
+    assert "skills.legal.laf import LAFWebAutomation" not in block
+
+
+def test_legacy_laf_import_path_points_to_unified_v2_class():
+    from skills.legal.laf import LAFWebAutomation
+
+    assert LAFWebAutomation.__module__ == "casper_ecosystem.law_firm_orchestrators.laf_automation_v2"
+    assert hasattr(LAFWebAutomation, "save_closing_report_draft")
+    assert hasattr(LAFWebAutomation, "download_case_files")
+
+
+def test_casper_laf_handler_is_compat_wrapper_for_api_rules():
+    from api.handlers import laf_handler as api_handler
+    from casper_ecosystem.law_firm_orchestrators import laf_handler as compat_handler
+
+    assert compat_handler.parse_laf_report_payload is api_handler.parse_laf_report_payload
+    assert compat_handler._STATUS_MAP is api_handler._STATUS_MAP
+    assert compat_handler._STATUS_MAP["報結"] == "已結案"
+
+
+def test_laf_dispatch_never_reports_bare_unknown_for_portal_failures():
+    from api.pipelines.command_dispatch import _laf_failure_code_and_detail
+
+    err, detail = _laf_failure_code_and_detail(
+        {"ok": False, "action": "closing", "preview": {"png": "/tmp/closing.png"}},
+        action="closing",
+    )
+    assert err == "portal_draft_failed"
+    assert "closing.png" in detail

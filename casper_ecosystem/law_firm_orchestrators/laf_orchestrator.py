@@ -2931,6 +2931,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return True
 
         # Execute portal automation (save draft only).
+        self._last_portal_error = ""
+        self._last_portal_artifact = {}
+        automation = None
         try:
             from skills.legal.laf import _export_file_to_static
 
@@ -2952,7 +2955,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     upload_files=resolved_uploads,
                 )
                 if not ok:
-                    raise RuntimeError("portal draft save failed")
+                    _portal_error = str(getattr(automation, "last_portal_error", "") or "").strip()
+                    if not _portal_error:
+                        _portal_error = "portal draft save failed"
+                    raw_art = getattr(automation, "last_debug_artifact", {}) or {}
+                    upload_res = getattr(automation, "last_upload_result", {}) or {}
+                    art = {}
+                    if isinstance(raw_art, dict) and raw_art:
+                        art = dict(raw_art)
+                    if upload_res:
+                        art["upload_result"] = upload_res
+                    self._last_portal_artifact = art
+                    raise RuntimeError(_portal_error)
                 raw_art = getattr(automation, "last_debug_artifact", {}) or {}
                 upload_res = getattr(automation, "last_upload_result", {}) or {}
                 art = {}
@@ -2982,6 +2996,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 pass
         except Exception as e:
             # Do not silently pass. Report to admin and mark an error event.
+            self._last_portal_error = str(e)
+            try:
+                if automation is not None:
+                    raw_art = getattr(automation, "last_debug_artifact", {}) or {}
+                    upload_res = getattr(automation, "last_upload_result", {}) or {}
+                    art = dict(raw_art) if isinstance(raw_art, dict) else {}
+                    if upload_res:
+                        art["upload_result"] = upload_res
+                    if art:
+                        self._last_portal_artifact = art
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2989, exc_info=True)
             if not suppress_notify:
                 try:
                     self.notifier.notify_admin(f"❌ 報結暫存失敗 — {case_number}\n原因：{e}", topic_key="laf_closing")
@@ -3085,7 +3111,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s for %s (%s)", workflow_label, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from skills.legal.laf import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3182,7 +3208,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s submit for %s (%s)", wf, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from skills.legal.laf import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3231,8 +3257,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return True
 
     def _get_automation(self):
-        """Get or create shared LAFWebAutomation instance."""
-        from skills.legal.laf import LAFWebAutomation
+        """Get or create the v2 shared LAFWebAutomation instance.
+
+        Portal workflows such as closing/go_live/condition require methods that
+        do not exist in the legacy ``skills.legal.laf.LAFWebAutomation`` class.
+        Always use the v2 automation here so report closing cannot silently fall
+        back to the old downloader-only implementation.
+        """
+        from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFWebAutomation
         if self._automation:
             # TODO: Add health check or expiry?
             # For now, rely on .login() inside scripts to check cookie validity.
@@ -4764,6 +4796,59 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             candidates.sort(reverse=True)
             return candidates[0][3]
 
+        def _make_portal_sized_pdf(src: str, label: str = "") -> str:
+            """Create a compressed temp PDF for portal upload without touching the original file."""
+            if not src or not os.path.isfile(src):
+                return ""
+            if _fits_portal_upload_limit(src):
+                return src
+            if str(os.environ.get("MAGI_LAF_COMPRESS_OVERSIZE_PDFS", "1")).strip().lower() not in {"1", "true", "yes", "on"}:
+                return ""
+            stem = Path(src).stem
+            safe_stem = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", stem)[:80] or "document"
+            out = os.path.join(staging_dir, f"{safe_stem}.portal.pdf")
+            gs = shutil.which("gs") or "/opt/homebrew/bin/gs"
+            if os.path.exists(gs):
+                compression_timeout = max(15, int(os.environ.get("MAGI_LAF_PDF_COMPRESS_TIMEOUT_SEC", "20") or "20"))
+                for setting in ("/ebook", "/screen"):
+                    try:
+                        cmd = [
+                            gs,
+                            "-q",
+                            "-dNOPAUSE",
+                            "-dBATCH",
+                            "-dSAFER",
+                            "-sDEVICE=pdfwrite",
+                            "-dCompatibilityLevel=1.4",
+                            f"-dPDFSETTINGS={setting}",
+                            "-dDetectDuplicateImages=true",
+                            "-dCompressFonts=true",
+                            "-dSubsetFonts=true",
+                            f"-sOutputFile={out}",
+                            src,
+                        ]
+                        subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=compression_timeout)
+                        if os.path.exists(out) and _fits_portal_upload_limit(out):
+                            result["large_case_guard"].setdefault("compressed_oversize_files", 0)
+                            result["large_case_guard"]["compressed_oversize_files"] += 1
+                            return out
+                    except Exception as e:
+                        logger.debug("PDF compression failed (%s, %s): %s", src, setting, e)
+            qpdf_enabled = str(os.environ.get("MAGI_LAF_TRY_QPDF_OVERSIZE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            qpdf = shutil.which("qpdf") or "/opt/homebrew/bin/qpdf"
+            if qpdf_enabled and os.path.exists(qpdf):
+                try:
+                    qout = os.path.join(staging_dir, f"{safe_stem}.linearized.pdf")
+                    qpdf_timeout = max(10, int(os.environ.get("MAGI_LAF_QPDF_TIMEOUT_SEC", "20") or "20"))
+                    subprocess.run([qpdf, "--linearize", src, qout], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=qpdf_timeout)
+                    if os.path.exists(qout) and _fits_portal_upload_limit(qout):
+                        result["large_case_guard"].setdefault("compressed_oversize_files", 0)
+                        result["large_case_guard"]["compressed_oversize_files"] += 1
+                        return qout
+                except Exception as e:
+                    logger.debug("qpdf linearize failed (%s): %s", src, e)
+            return ""
+
         max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
         include_closing_pleadings = str(
             os.environ.get("MAGI_LAF_CLOSING_INCLUDE_PLEADINGS", "1")
@@ -4776,8 +4861,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             ]
             basis_pdfs = []
             for p in raw_basis_pdfs:
-                if _fits_portal_upload_limit(p):
-                    basis_pdfs.append(p)
+                uploadable = _make_portal_sized_pdf(p, "closing_basis")
+                if uploadable:
+                    basis_pdfs.append(uploadable)
+                    if uploadable != p:
+                        result["converted"].append({"source": p, "pdf": uploadable, "fallback": "compressed_oversize_pdf"})
                 else:
                     result["failed"].append({
                         "source": p,
@@ -4967,6 +5055,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         for src_pdf in (judgment_pdfs + procedural_ruling_pdfs)[: max(1, max_files)]:
             try:
                 if not _fits_portal_upload_limit(src_pdf):
+                    compressed_pdf = _make_portal_sized_pdf(src_pdf, "judgment")
+                    if compressed_pdf:
+                        if compressed_pdf not in dedup:
+                            out_pdf.append(compressed_pdf)
+                            dedup.add(compressed_pdf)
+                            converted.append({"source": src_pdf, "pdf": compressed_pdf, "fallback": "compressed_oversize_pdf"})
+                        continue
                     failed.append({"source": src_pdf, "error": f"oversize_skipped>{max_upload_mb:g}MB"})
                     continue
                 if str(os.environ.get("MAGI_LAF_COPY_PDF_UPLOADS", "0")).strip().lower() in {"1", "true", "yes", "on"}:
@@ -5881,7 +5976,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
             except Exception as _db_err:
                 logger.warning("  ⚠️ DB status 更新失敗: %s", _db_err)
-        return {
+        result = {
             "ok": bool(ok),
             "action": act,
             "identity": identity,
@@ -5892,6 +5987,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "upload_bundle": upload_bundle,
             "preview": self._last_portal_artifact,
         }
+        if not ok:
+            result["error"] = "portal_draft_failed"
+            result["detail"] = str(getattr(self, "_last_portal_error", "") or "closing_portal_save_failed")
+            result["portal_error"] = result["detail"]
+        return result
 
     def execute_portal_action_submit(
         self,
@@ -6716,8 +6816,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return True
 
         try:
-            from skills.legal.laf import LAFWebAutomation
-
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
             download_folder = self.laf_config.get("download_folder", "./laf_downloads")

@@ -2182,6 +2182,23 @@ class LAFWebAutomation:
             return False
 
 
+# Keep the public import path stable while unifying the implementation.
+# Portal workflows, downloads, and Gmail-triggered case handling must all use
+# the same v2 browser automation class.  The legacy class above remains only as
+# a source-compatible fallback if v2 cannot be imported during early bootstrap.
+_LegacyLAFWebAutomation = LAFWebAutomation
+try:
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
+        LAFWebAutomation as _UnifiedLAFWebAutomation,
+    )
+    LAFWebAutomation = _UnifiedLAFWebAutomation
+except Exception as _unified_laf_import_error:
+    _logging.getLogger(__name__).warning(
+        "Unified LAFWebAutomation unavailable; falling back to legacy class: %s",
+        _unified_laf_import_error,
+    )
+
+
 # ==============================================================================
 # Gmail 監控器
 # ==============================================================================

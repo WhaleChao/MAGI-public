@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,51 @@ def test_laf_flow_legacy_import_is_thin_wrapper():
     src = _read("casper_ecosystem/law_firm_orchestrators/laf_flow.py")
     assert "source of truth lives" in src.lower()
     assert "_parse_subprocess_result" not in src
+
+
+def test_laf_open_case_vision_skill_is_thin_wrapper():
+    import casper_ecosystem.law_firm_orchestrators.open_case_vision as canonical
+
+    wrapper_path = ROOT / "skills" / "laf-portal-automation" / "open_case_vision.py"
+    spec = importlib.util.spec_from_file_location("laf_portal_open_case_vision_wrapper", wrapper_path)
+    assert spec and spec.loader
+    wrapper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wrapper)
+
+    assert wrapper.extract_open_case_date is canonical.extract_open_case_date
+    assert wrapper.build_go_live_remark is canonical.build_go_live_remark
+
+    src = _read("skills/laf-portal-automation/open_case_vision.py")
+    assert "source of truth lives" in src.lower()
+    assert "def extract_open_case_date" not in src
+
+
+def test_laf_simulated_line_skill_is_thin_wrapper():
+    import casper_ecosystem.law_firm_orchestrators.simulated_line as canonical
+
+    wrapper_path = ROOT / "skills" / "laf-portal-automation" / "simulated_line.py"
+    spec = importlib.util.spec_from_file_location("laf_portal_simulated_line_wrapper", wrapper_path)
+    assert spec and spec.loader
+    wrapper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wrapper)
+
+    assert wrapper.send_line_notify is canonical.send_line_notify
+
+    src = _read("skills/laf-portal-automation/simulated_line.py")
+    assert "source of truth lives" in src.lower()
+    assert "def send_line_notify" not in src
+
+
+def test_laf_deep_extract_script_is_thin_wrapper():
+    import scripts.ops.laf_deep_extract_backfill as script_mod
+    import casper_ecosystem.law_firm_orchestrators.laf_deep_extract_backfill as canonical
+
+    assert script_mod.run is canonical.run
+    assert script_mod.main is canonical.main
+
+    src = _read("scripts/ops/laf_deep_extract_backfill.py")
+    assert "source of truth lives" in src.lower()
+    assert "def _fetch_candidates" not in src
 
 
 def test_skill_listing_is_single_source_and_openclaw_opt_in(monkeypatch, tmp_path):
