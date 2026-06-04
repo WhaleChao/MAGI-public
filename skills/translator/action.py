@@ -129,109 +129,44 @@ def _export_docx_bilingual(
 ) -> dict:
     """
     將原文與翻譯結果以雙語對照 docx 表格輸出。
-    自動按段落配對，每段一列。
+    2026-06: delegate to api.handlers.document_handler.export_translation_docx
+    so Discord/TG/web/tool translation exports share one layout and quality
+    policy.  Keeping a second local pairing algorithm caused duplicated source
+    rows and empty target cells in long legal translations.
     """
     try:
-        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-        from ops.export_docx import export_bilingual_docx  # type: ignore
-    except Exception:
-        return {"success": False, "error": "export_docx_not_available"}
+        from api.handlers.document_handler import export_translation_docx
+    except Exception as exc:
+        return {"success": False, "error": f"export_docx_not_available:{exc}"}
 
-    # Split both texts into fine-grained segments. MarkItDown / LLM output
-    # often uses single newlines (or markdown table markers) instead of blank
-    # lines, so splitting only on \n{2,} produces a handful of massive blobs
-    # and the bilingual table collapses into one row. Split on single \n,
-    # drop markdown noise, and merge very-short fragments back into their
-    # predecessor so each row holds a readable chunk.
-    def _segments(raw: str) -> List[str]:
-        if not raw:
-            return []
-        md_noise = re.compile(r"^\s*\|?\s*[-:| ]+\s*\|?\s*$")
-        sent_split = re.compile(r"(?<=[。！？!?])\s+|(?<=\.)\s{2,}")
-        out: List[str] = []
-        for line in raw.splitlines():
-            s = line.strip()
-            if not s or md_noise.match(s):
-                continue
-            # Explode markdown table rows ("| a | b | c |") into separate cells.
-            if "|" in s and s.count("|") >= 2:
-                pieces = [p.strip() for p in s.split("|") if p.strip()]
-            else:
-                pieces = [s]
-            for piece in pieces:
-                # Further split long pieces on bullets / sentence boundaries.
-                if len(piece) > 180:
-                    # Split on TOC bullets and dot-leaders first.
-                    bullet_parts = re.split(r"\s*[•·]\s*|\.{3,}", piece)
-                    parts: List[str] = []
-                    for bp in bullet_parts:
-                        bp = bp.strip(" .")
-                        if not bp:
-                            continue
-                        if len(bp) > 180:
-                            parts.extend(sent_split.split(bp))
-                        else:
-                            parts.append(bp)
-                else:
-                    parts = [piece]
-                for part in parts:
-                    t = part.strip()
-                    if not t:
-                        continue
-                    if out and len(t) < 8:
-                        out[-1] = (out[-1] + " " + t).strip()
-                        continue
-                    out.append(t)
-        return out
-
-    src_lines = _segments(source_text)
-    tgt_lines = _segments(translated_text)
-
-    # Drop obvious LLM preamble / apology lines from target.
-    _preamble_re = re.compile(
-        r"^(?:好的|以下是|以下為|這是|這裡是|作為專業|身為|我將|我會|我是|Sure|Here('s| is)|As an? |I('ll| will) )",
-        re.IGNORECASE,
-    )
-    tgt_lines = [t for t in tgt_lines if not _preamble_re.match(t)]
-
-    # Align the two sequences by proportional interleave when lengths differ.
-    n = max(len(src_lines), len(tgt_lines), 1)
-    def _stretch(seq: List[str], target_len: int) -> List[str]:
-        if not seq:
-            return ["" for _ in range(target_len)]
-        if len(seq) == target_len:
-            return seq
-        out: List[str] = []
-        for i in range(target_len):
-            j = int(i * len(seq) / target_len)
-            out.append(seq[j])
-        # Dedupe consecutive duplicates produced by stretching, keep position.
-        cleaned: List[str] = []
-        last = None
-        for v in out:
-            if v == last:
-                cleaned.append("")
-            else:
-                cleaned.append(v)
-                last = v
-        return cleaned
-
-    src_rows = _stretch(src_lines, n)
-    tgt_rows = _stretch(tgt_lines, n)
-
-    pages = []
-    for i, (s, t) in enumerate(zip(src_rows, tgt_rows)):
-        if not s and not t:
-            continue
-        pages.append({"page": i + 1, "source": s, "target": t})
-
-    return export_bilingual_docx(
-        pages,
+    reply = export_translation_docx(
+        source_text=source_text,
+        translated_text=translated_text,
         title=title,
         subtitle=subtitle,
-        header_text=title,
         prefix=prefix,
+        user_id="translator_skill",
     )
+    if not reply:
+        return {"success": False, "error": "export_translation_docx_failed"}
+
+    path = ""
+    if "|||FILE_PATH|||" in reply:
+        path = reply.split("|||FILE_PATH|||", 1)[1].strip().splitlines()[0].strip()
+    else:
+        for line in reversed(str(reply).splitlines()):
+            candidate = line.strip()
+            if candidate and os.path.exists(candidate):
+                path = candidate
+                break
+    if not path or not os.path.exists(path):
+        return {"success": False, "error": "export_translation_docx_path_missing", "reply": reply}
+    return {
+        "success": True,
+        "path": path,
+        "filename": os.path.basename(path),
+        "url": "",
+    }
 
 
 def _load_text_from_file(path: str) -> str:

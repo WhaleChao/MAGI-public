@@ -36,6 +36,9 @@ BAD_TERMS = (
     "無權組",
     "強大組",
     "有權組",
+    "前世",
+    "前生",
+    "前半生",
     "辯護人的印象",
 )
 
@@ -221,6 +224,19 @@ def run_gate(*, pdf_path: Path, run_live_nim: bool, timeout: int) -> dict[str, A
     _check(checks, "tw_term_normalization", all(term in corrected for term in REQUIRED_TERMS))
     _check(checks, "source_terms_inline", all(term.lower() in lowered_corrected for term in REQUIRED_SOURCE_ANNOTATIONS))
     _check(checks, "bad_terms_removed", not any(term.lower() in lowered_corrected for term in BAD_TERMS))
+
+    idiom_source = "In my previous life as a prosecutor, I saw defendants misunderstand court interpreters."
+    idiom_bad = "在我擔任檢察官的前半生中，我看到被告誤解法庭翻譯。"
+    idiom_fixed = normalize_tw_legal_translation_terms(
+        ensure_translation_terms_visible(idiom_source, idiom_bad, target_lang="繁體中文")
+    )
+    _check(
+        checks,
+        "previous_life_idiom_fixed",
+        "我之前擔任檢察官時" in idiom_fixed
+        and "前半生" not in idiom_fixed
+        and "司法通譯" in idiom_fixed,
+    )
 
     export = export_bilingual_docx(
         [

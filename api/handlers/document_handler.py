@@ -44,9 +44,11 @@ _TW_LEGAL_TRANSLATION_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("配對偽裝法", "假冒配對測試法"),
     ("無能為力組", "無力風格組"),
     ("無權組", "無力風格組"),
+    ("無權力組", "無力風格組"),
     ("無力組", "無力風格組"),
     ("強大組", "有力風格組"),
     ("有權組", "有力風格組"),
+    ("有權力組", "有力風格組"),
     ("強力組", "有力風格組"),
     ("無能為力風格", "無力風格"),
     ("無權風格", "無力風格"),
@@ -85,6 +87,9 @@ def normalize_tw_legal_translation_terms(text: str) -> str:
     s = re.sub(r"被告的智力、可信賴度、說服力", "被告的智力程度、可信賴度、證詞可信度", s)
     s = re.sub(r"外籍罪犯", "外籍犯罪人", s)
     s = re.sub(r"外國被告", "外籍犯罪被告", s)
+    s = re.sub(r"在我擔任([^，。；、\n]{1,24})的前半生中", r"我之前擔任\1時", s)
+    s = re.sub(r"我擔任([^，。；、\n]{1,24})的前半生", r"我之前擔任\1時", s)
+    s = re.sub(r"在我前半生擔任([^，。；、\n]{1,24})時", r"我之前擔任\1時", s)
     s = re.sub(r"臺灣's", "臺灣的", s, flags=re.IGNORECASE)
     return s
 
@@ -357,8 +362,8 @@ def translation_idiom_issues(source_text: str, translated_text: str) -> list[str
         r"(?:prosecutor|lawyer|judge|defen[cs]e\s+lawyer|practitioner|police\s+officer|researcher|academic)\b",
         re.IGNORECASE,
     )
-    if previous_life_role_re.search(src) and re.search(r"(?:前世|上輩子|前一世)", tgt):
-        issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世或上輩子")
+    if previous_life_role_re.search(src) and re.search(r"(?:前世|前生|前半生|上輩子|前一世)", tgt):
+        issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世、前生或前半生")
     if re.search(r"\bCitizen Judges? Act\b|\bcitizen judges?\b", src, flags=re.IGNORECASE) and "公民法官" in tgt:
         issues.append("Citizen Judges Act / citizen judges 於本文件應譯為「國民法官法／國民法官」")
     if re.search(r"\bcourt interpreters?\b", src, flags=re.IGNORECASE) and re.search(r"(法庭|法院).{0,4}(翻譯|口譯員)", tgt):
