@@ -600,6 +600,8 @@ def create_admin_runtime_blueprint(
             return False
 
     def _cloudflare_tunnel_url() -> str:
+        if not cloudflared_alive():
+            return ""
         candidates = [
             agent_dir / "cloudflare_tunnel_url.txt",
             root / ".agent" / "cloudflare_tunnel_url.txt",

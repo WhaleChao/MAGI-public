@@ -301,12 +301,32 @@ async def _run_shell(cmd: str, timeout_sec: int = 20) -> tuple[int, str, str]:
 
 async def _line_self_heal_funnel() -> str:
     """
-    Best-effort recovery for LINE webhook connectivity via Cloudflare Quick Tunnel.
-    Starts cloudflared if not running, extracts URL, registers with LINE API.
-    IMPORTANT: Always point to the MAGI webhook proxy (18790), never to retired legacy ports.
+    Best-effort recovery for LINE webhook connectivity.
+
+    Prefer the configured stable public base (Tailscale Funnel / fixed HTTPS).
+    Cloudflare Quick Tunnel is now opt-in only, because rotating hosts can fight
+    with stable public links and leave stale calendar/share URLs.
     """
     import glob as _glob
     notes = []
+
+    try:
+        from api.startup import (
+            _register_messaging_webhooks_for_base,
+            _stable_webhook_base_url,
+            _truthy_env,
+        )
+
+        stable_base = _stable_webhook_base_url()
+        if stable_base and not _truthy_env("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+            await asyncio.to_thread(
+                _register_messaging_webhooks_for_base,
+                stable_base,
+                source="discord_line_self_heal",
+            )
+            return f"stable_webhook={stable_base}"
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_line_self_heal_funnel/stable", exc_info=True)
 
     # Check if cloudflared is already running
     code, out, _ = await _run_shell("pgrep -f 'cloudflared tunnel'", timeout_sec=5)

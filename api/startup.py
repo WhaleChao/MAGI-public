@@ -247,6 +247,13 @@ def _normalize_public_base_url(base: str) -> str:
     return s.rstrip("/") + "/"
 
 
+def _is_trycloudflare_base_url(base: str) -> bool:
+    try:
+        return str(urlparse(base).hostname or "").lower().endswith(".trycloudflare.com")
+    except Exception:
+        return False
+
+
 def _base_from_webhook_url(url: str) -> str:
     s = (url or "").strip().strip("'\"")
     if not s:
@@ -260,6 +267,111 @@ def _base_from_webhook_url(url: str) -> str:
         return f"{p.scheme}://{p.netloc}/"
     except Exception:
         return ""
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        value = _load_dotenv_value(name, default)
+    return str(value or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _stable_webhook_base_url() -> str:
+    """Return a fixed public webhook base when one is configured."""
+    candidates = [
+        _base_from_webhook_url(
+            os.environ.get("MAGI_LINE_WEBHOOK_ENDPOINT")
+            or _load_dotenv_value("MAGI_LINE_WEBHOOK_ENDPOINT")
+        ),
+        _normalize_public_base_url(
+            os.environ.get("MAGI_PUBLIC_BASE_URL")
+            or _load_dotenv_value("MAGI_PUBLIC_BASE_URL")
+        ),
+        _normalize_public_base_url(
+            os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+            or _load_dotenv_value("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+        ),
+    ]
+    for base in candidates:
+        if base and not _is_loopback_base_url(base) and not _is_trycloudflare_base_url(base):
+            return base
+    return ""
+
+
+def _load_line_channel_access_token() -> str:
+    return (
+        os.environ.get("MAGI_LINE_CHANNEL_ACCESS_TOKEN")
+        or _load_dotenv_value("MAGI_LINE_CHANNEL_ACCESS_TOKEN")
+        or ""
+    ).strip()
+
+
+def _register_messaging_webhooks_for_base(base: str, *, source: str) -> None:
+    """Register LINE/Telegram webhooks against a stable public base URL."""
+    import urllib.parse
+
+    base = _normalize_public_base_url(base)
+    if not base:
+        return
+
+    webhook_url = base.rstrip("/") + "/line/webhook"
+    try:
+        with open(LINE_LAST_BASE_URL_FILE, "w", encoding="utf-8") as f:
+            json.dump({"base_url": base, "updated_at": int(time.time()), "source": source}, f, ensure_ascii=False)
+        with open(os.path.join(AGENT_DIR, "line_webhook_url.txt"), "w", encoding="utf-8") as f:
+            f.write(webhook_url + "\n")
+        try:
+            os.remove(os.path.join(AGENT_DIR, "cloudflare_tunnel_url.txt"))
+        except FileNotFoundError:
+            pass
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_register_messaging_webhooks_for_base/save_urls", exc_info=True
+        )
+
+    token = _load_line_channel_access_token()
+    if not token:
+        logger.warning("No LINE token, stable webhook URL recorded but not registered")
+    else:
+        try:
+            get_req = urllib.request.Request(
+                "https://api.line.me/v2/bot/channel/webhook/endpoint",
+                method="GET",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(get_req, timeout=10) as resp:
+                current = json.loads(resp.read())
+            if current.get("endpoint") == webhook_url:
+                logger.info("LINE webhook already correct: %s", webhook_url)
+            else:
+                logger.info("LINE webhook mismatch: %s -> %s", current.get("endpoint"), webhook_url)
+                data = json.dumps({"endpoint": webhook_url}).encode()
+                req = urllib.request.Request(
+                    "https://api.line.me/v2/bot/channel/webhook/endpoint",
+                    data=data,
+                    method="PUT",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    logger.info("LINE webhook registered: %s -> %s", webhook_url, resp.status)
+        except Exception:
+            logger.warning("LINE stable webhook registration failed", exc_info=True)
+
+    try:
+        from api.webhooks.telegram import _load_telegram_bot_token, _load_telegram_webhook_secret
+
+        tg_token = _load_telegram_bot_token()
+        tg_secret = _load_telegram_webhook_secret()
+        if tg_token:
+            tg_webhook_url = base.rstrip("/") + "/telegram/webhook"
+            tg_data = urllib.parse.urlencode(
+                {"url": tg_webhook_url, **({"secret_token": tg_secret} if tg_secret else {})}
+            ).encode()
+            tg_req = urllib.request.Request(f"https://api.telegram.org/bot{tg_token}/setWebhook", data=tg_data)
+            with urllib.request.urlopen(tg_req, timeout=10) as tg_resp:
+                logger.info("Telegram webhook registered: %s -> %s", tg_webhook_url, tg_resp.status)
+    except Exception as tg_e:
+        logger.warning("Telegram webhook registration failed: %s", tg_e)
 
 
 def _record_last_public_base_url():
@@ -1246,11 +1358,50 @@ def _cloudflared_pids_for_port(port: str) -> list[str]:
         return []
 
 
+def _stop_unmanaged_cloudflared_tunnels(*, allowed_ports: set[str]) -> None:
+    """Terminate quick tunnels that are not owned by the current MAGI policy."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "cloudflared tunnel --url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_stop_unmanaged_cloudflared_tunnels/pgrep", exc_info=True
+        )
+        return
+
+    for line in (result.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        match_pid = re.match(r"\s*(\d+)\s+", line)
+        match_port = re.search(r"cloudflared tunnel --url\s+https?://127\.0\.0\.1:(\d+)", line)
+        if not match_pid or not match_port:
+            continue
+        pid = match_pid.group(1)
+        port = match_port.group(1)
+        if port in allowed_ports:
+            continue
+        try:
+            logger.warning("Stopping unmanaged cloudflared tunnel pid=%s port=%s", pid, port)
+            subprocess.run(["kill", pid], capture_output=True, timeout=3)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "silent-catch at %s:%s", __name__, "_stop_unmanaged_cloudflared_tunnels/kill", exc_info=True
+            )
+
+
 def _magi_webhook_port() -> str:
     return (
-        os.environ.get("MAGI_SERVER_PORT")
-        or _load_dotenv_value("MAGI_SERVER_PORT")
-        or "5002"
+        os.environ.get("MAGI_WEBHOOK_PROXY_PORT")
+        or _load_dotenv_value("MAGI_WEBHOOK_PROXY_PORT")
+        or os.environ.get("MAGI_TAILSCALE_PORT")
+        or _load_dotenv_value("MAGI_TAILSCALE_PORT")
+        or "18790"
     ).strip()
 
 
@@ -1268,6 +1419,18 @@ def _ensure_cloudflared():
     import re as _re
     import time as _time
     try:
+        stable_base = _stable_webhook_base_url()
+        if stable_base and not _truthy_env("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+            logger.info("Using stable public webhook base; Cloudflare Quick Tunnel disabled: %s", stable_base)
+            _stop_unmanaged_cloudflared_tunnels(allowed_ports={_paperclip_share_gateway_port()})
+            threading.Thread(
+                target=_register_messaging_webhooks_for_base,
+                kwargs={"base": stable_base, "source": "stable_public_base"},
+                daemon=True,
+                name="stable-webhook-register",
+            ).start()
+            return
+
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "cloudflared.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         already_running = False
@@ -1458,6 +1621,9 @@ def _cloudflared_watchdog():
     _time.sleep(60)  # wait 60s after startup before first check
     while True:
         try:
+            if _stable_webhook_base_url() and not _truthy_env("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+                _time.sleep(300)
+                continue
             if not _is_cloudflared_alive():
                 logger.warning("cloudflared died -- restarting...")
                 _ensure_cloudflared()

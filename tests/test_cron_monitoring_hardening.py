@@ -19,6 +19,16 @@ def _cron_jobs_or_skip() -> list[dict]:
     return json.loads(_cron_jobs_text_or_skip())
 
 
+class _NoProcessRun:
+    stdout = ""
+    stderr = ""
+    returncode = 1
+
+
+def _silence_process_scan(monkeypatch, audit) -> None:
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: _NoProcessRun())
+
+
 def test_cron_result_policy_suppresses_structured_success_payload():
     from skills.ops.cron_result_policy import should_log_cron_issue
 
@@ -65,6 +75,148 @@ def test_operational_audit_ignores_macro_cron_companions(tmp_path, monkeypatch):
     report = audit.audit_cron()
 
     assert report["collision_count"] == 0
+
+
+def test_operational_audit_flags_duplicate_transcript_indexers(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "legacy_transcript_index",
+            "enabled": True,
+            "cron": "0 2 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "legacy",
+        },
+        {
+            "id": "job_transcript_indexer",
+            "enabled": True,
+            "cron": "30 6,21 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "canonical",
+        },
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    _silence_process_scan(monkeypatch, audit)
+
+    report = audit.audit_domain_interference()
+
+    assert report["issue_count"] == 1
+    assert report["issues"][0]["domain"] == "transcript_indexer"
+
+
+def test_operational_audit_allows_single_transcript_indexer(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "legacy_transcript_index",
+            "enabled": False,
+            "cron": "0 2 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "legacy",
+        },
+        {
+            "id": "job_transcript_indexer",
+            "enabled": True,
+            "cron": "30 6,21 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "canonical",
+        },
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    _silence_process_scan(monkeypatch, audit)
+
+    report = audit.audit_domain_interference()
+
+    assert report["ok"] is True
+    assert report["issue_count"] == 0
+
+
+def test_operational_audit_flags_unmanaged_cloudflared_port(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    (tmp_path / "cron_jobs.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", raising=False)
+
+    class _Proc:
+        stdout = "40654 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5002 --no-autoupdate\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    report = audit.audit_domain_interference()
+
+    assert report["issue_count"] == 1
+    assert report["issues"][0]["domain"] == "cloudflare_quick_tunnel"
+    assert report["issues"][0]["processes"][0]["port"] == "5002"
+
+
+def test_startup_prefers_stable_webhook_base_and_proxy_port(monkeypatch):
+    import api.startup as startup
+
+    monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://aimac-mini.example.ts.net")
+    monkeypatch.setenv("MAGI_LINE_WEBHOOK_ENDPOINT", "https://temporary-host.trycloudflare.com/line/webhook")
+    monkeypatch.setenv("MAGI_SERVER_PORT", "5002")
+    monkeypatch.delenv("MAGI_WEBHOOK_PROXY_PORT", raising=False)
+    monkeypatch.delenv("MAGI_TAILSCALE_PORT", raising=False)
+
+    assert startup._stable_webhook_base_url() == "https://aimac-mini.example.ts.net/"
+    assert startup._magi_webhook_port() == "18790"
+
+    monkeypatch.setenv("MAGI_WEBHOOK_PROXY_PORT", "18791")
+    assert startup._magi_webhook_port() == "18791"
+
+
+def test_startup_stops_only_unmanaged_cloudflared_ports(monkeypatch):
+    import api.startup as startup
+
+    calls = []
+
+    class _Proc:
+        stdout = "\n".join(
+            [
+                "40654 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5002 --no-autoupdate",
+                "11353 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5014 --no-autoupdate",
+            ]
+        )
+        stderr = ""
+        returncode = 0
+
+    def _fake_run(argv, *args, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["pgrep", "-fl"]:
+            return _Proc()
+
+        class _Killed:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        return _Killed()
+
+    monkeypatch.setattr(startup.subprocess, "run", _fake_run)
+
+    startup._stop_unmanaged_cloudflared_tunnels(allowed_ports={"5014"})
+
+    assert ["kill", "40654"] in calls
+    assert ["kill", "11353"] not in calls
+
+
+def test_discord_line_self_heal_prefers_stable_webhook_before_quick_tunnel():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    stable_pos = source.index("_stable_webhook_base_url")
+    tunnel_pos = source.index("cloudflared tunnel --url")
+
+    assert stable_pos < tunnel_pos
+    assert "MAGI_ENABLE_CLOUDFLARE_WEBHOOK" in source
 
 
 def test_operational_audit_treats_runtime_cache_as_generated(monkeypatch):

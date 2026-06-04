@@ -1167,7 +1167,7 @@ def _parse_index_timestamp(value: Any) -> float:
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("timestamp ISO parse failed: %r", text, exc_info=True)
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(text[: len(fmt)], fmt).timestamp()

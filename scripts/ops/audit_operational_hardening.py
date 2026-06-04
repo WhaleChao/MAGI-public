@@ -238,6 +238,49 @@ def _load_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _load_dotenv_value(key: str, default: str = "") -> str:
+    env_value = os.environ.get(key)
+    if env_value is not None:
+        return env_value
+    env_path = ROOT / ".env"
+    try:
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == key:
+                return v.strip().strip("'\"")
+    except Exception:
+        return default
+    return default
+
+
+def _truthy_config(name: str, default: str = "0") -> bool:
+    return str(_load_dotenv_value(name, default) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _active_cloudflared_tunnels() -> list[dict[str, Any]]:
+    proc = subprocess.run(
+        ["pgrep", "-fl", "cloudflared tunnel --url"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    tunnels: list[dict[str, Any]] = []
+    for line in (proc.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        if "pgrep -fl" in line or "audit_operational_hardening.py" in line or "pytest" in line:
+            continue
+        match = re.search(r"cloudflared tunnel --url\s+https?://127\.0\.0\.1:(\d+)", line)
+        if not match:
+            continue
+        tunnels.append({"line": line.strip(), "port": match.group(1)})
+    return tunnels
+
+
 def audit_cron() -> dict[str, Any]:
     jobs = _load_json(ROOT / "cron_jobs.json", [])
     enabled = [j for j in jobs if j.get("enabled", True)]
@@ -284,6 +327,110 @@ def audit_cron() -> dict[str, Any]:
         "parse_failures": parse_failures,
         "collision_count": len(collisions),
         "collisions": collisions,
+    }
+
+
+def audit_domain_interference() -> dict[str, Any]:
+    """Find enabled cron jobs that can fight over the same business domain.
+
+    Time-slot collision checks catch jobs that run at the exact same minute, but
+    user-facing interference often comes from two enabled entrypoints that touch
+    the same state at different times.  Keep these rules narrow and explainable:
+    each violation points to a known canonical job.
+    """
+    jobs = _load_json(ROOT / "cron_jobs.json", [])
+    enabled = [j for j in jobs if j.get("enabled", True)]
+    issues: list[dict[str, Any]] = []
+
+    def _matching_jobs(needle: str) -> list[dict[str, Any]]:
+        return [j for j in enabled if needle in str(j.get("command") or "")]
+
+    transcript_indexers = [
+        j
+        for j in _matching_jobs("skills/transcript-indexer/action.py")
+        if "--task index" in str(j.get("command") or "")
+    ]
+    if len(transcript_indexers) > 1:
+        issues.append(
+            {
+                "domain": "transcript_indexer",
+                "canonical_job": "job_transcript_indexer",
+                "issue": "多個啟用排程會執行 transcript-indexer --task index，可能在筆錄同步前後重複處理同一批資料。",
+                "jobs": [
+                    {"id": j.get("id"), "cron": j.get("cron"), "desc": j.get("desc")}
+                    for j in transcript_indexers
+                ],
+            }
+        )
+
+    osc_events_refresh = _matching_jobs("scripts/ops/osc_events_refresh.py")
+    legacy_gcal_sync = _matching_jobs("scripts/ops/osc_gcal_sync.py")
+    if osc_events_refresh and legacy_gcal_sync:
+        issues.append(
+            {
+                "domain": "osc_calendar_todos",
+                "canonical_job": "job_osc_events_refresh",
+                "issue": "osc_events_refresh 與舊 osc_gcal_sync 同時啟用，可能讓 PDF/筆錄待辦與 Google 日曆匯入互相覆寫。",
+                "jobs": [
+                    {"id": j.get("id"), "cron": j.get("cron"), "desc": j.get("desc")}
+                    for j in (osc_events_refresh + legacy_gcal_sync)
+                ],
+            }
+        )
+
+    share_tunnel_jobs = [
+        j
+        for j in enabled
+        if "start_paperclip_share_tunnel.sh" in str(j.get("command") or "")
+        or "cloudflared tunnel" in str(j.get("command") or "")
+    ]
+    tailscale_funnel_jobs = _matching_jobs("tailscale_funnel_healthcheck.py")
+    if share_tunnel_jobs and tailscale_funnel_jobs:
+        issues.append(
+            {
+                "domain": "external_share_tunnel",
+                "canonical_job": "job_tailscale_funnel_healthcheck",
+                "issue": "Tailscale Funnel 與 cloudflared trycloudflare 分享通道同時由 cron 維持，可能產生過期分享連結或殭屍 tunnel。",
+                "jobs": [
+                    {"id": j.get("id"), "cron": j.get("cron"), "desc": j.get("desc")}
+                    for j in (tailscale_funnel_jobs + share_tunnel_jobs)
+                ],
+            }
+        )
+
+    allowed_cloudflared_ports = {
+        str(_load_dotenv_value("PAPERCLIP_SHARE_GATEWAY_PORT", "5014") or "5014").strip(),
+    }
+    if _truthy_config("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+        allowed_cloudflared_ports.add(
+            str(
+                _load_dotenv_value(
+                    "MAGI_WEBHOOK_PROXY_PORT",
+                    _load_dotenv_value("MAGI_TAILSCALE_PORT", "18790"),
+                )
+                or "18790"
+            ).strip()
+        )
+    active_cloudflared = _active_cloudflared_tunnels()
+    unexpected_cloudflared = [
+        item for item in active_cloudflared if str(item.get("port") or "") not in allowed_cloudflared_ports
+    ]
+    if unexpected_cloudflared:
+        issues.append(
+            {
+                "domain": "cloudflare_quick_tunnel",
+                "canonical_job": "job_tailscale_funnel_healthcheck",
+                "issue": "偵測到非授權 cloudflared Quick Tunnel。固定外網應走 Tailscale Funnel；分享檔案只允許 Paperclip gateway port。",
+                "allowed_ports": sorted(allowed_cloudflared_ports),
+                "processes": unexpected_cloudflared,
+            }
+        )
+
+    return {
+        "ok": not issues,
+        "issue_count": len(issues),
+        "issues": issues,
+        "requirement": "Each business domain should have one canonical scheduled entrypoint; companion audits may exist but must not mutate the same state.",
     }
 
 
@@ -579,6 +726,7 @@ def main() -> int:
 
     report = {
         "cron": audit_cron(),
+        "domain_interference": audit_domain_interference(),
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
         "gmail_monitor": audit_gmail_monitor_mode(),
@@ -594,6 +742,7 @@ def main() -> int:
     print(json.dumps({
         "cron_parse_failures": report["cron"]["parse_failure_count"],
         "cron_collisions": report["cron"]["collision_count"],
+        "domain_interference_count": report["domain_interference"]["issue_count"],
         "dirty_count": report["git"]["dirty_count"],
         "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
@@ -609,6 +758,7 @@ def main() -> int:
     if args.fail_on_red and (
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
+        or report["domain_interference"]["issue_count"] > 0
         or not report["gmail_monitor"]["ok"]
         or not report["omlx_profile"]["ok"]
         or not report["retired_feature_residue"]["ok"]
