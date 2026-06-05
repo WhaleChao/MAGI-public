@@ -561,6 +561,43 @@ def test_all_case_pdf_targets_uses_document_index_when_case_number_missing(tmp_p
     assert targets == [(pdf, "2026-0059", "吳志炳")]
 
 
+def test_all_case_pdf_targets_walks_laf_staff_court_mail_without_index(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    case_dir = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2026-0038-陳建華-偵查-傷害"
+    staff_dir = case_dir / "01_法扶資料" / "專員來信"
+    staff_dir.mkdir(parents=True)
+    court_pdf = staff_dir / "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf"
+    court_pdf.write_bytes(b"%PDF-1.4\n")
+    legal_aid_pdf = staff_dir / "扶助律師接案通知書_1150512-J-005_1150514.pdf"
+    legal_aid_pdf.write_bytes(b"%PDF-1.4\n")
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_todos" in sql:
+            return [], {}
+        if "FROM document_index" in sql:
+            return [], {}
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0038",
+                    "client_name": "陳建華",
+                    "folder_path": str(case_dir),
+                    "status": "進行中",
+                }
+            ], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(case_dir)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
+
+    assert targets == [(court_pdf.resolve(), "2026-0038", "陳建華")]
+    assert osc_pdf._is_pdf_calendar_candidate_path(court_pdf)
+    assert not osc_pdf._is_pdf_calendar_candidate_path(legal_aid_pdf)
+
+
 def test_pdf_calendar_scan_detects_compact_roc_datetime_filename(client, tmp_path, monkeypatch):
     path = tmp_path / "(有紙本)吳志炳 114原交易49-1150731下午1530開庭.pdf"
     path.write_bytes(b"%PDF-1.4\n")

@@ -615,6 +615,107 @@ def _run_drive_case_sync_before_pdf(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _run_calendar_source_audit(args: argparse.Namespace) -> dict[str, Any]:
+    """List imported calendar todos that still lack a MAGI/PDF source row.
+
+    These rows may be legitimate manual entries.  The important part is that
+    they are not evidence that PDF todo extraction worked, because they have no
+    source PDF/share link attached.  Do not let manual rows or non-calendar
+    placeholders hide this gap: a matching OSC row must point to a PDF source.
+    """
+    if os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_ENABLE", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "disabled_by_env"}
+    try:
+        skill_dir = ROOT / "skills" / "osc-orchestrator"
+        if str(skill_dir) not in sys.path:
+            sys.path.insert(0, str(skill_dir))
+        from osc_headless.db import connect_mysql, db_config_from_env  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "error": f"load_db_helper_failed:{type(exc).__name__}"}
+
+    lookahead_days = max(1, int(getattr(args, "lookahead_days", 30) or 30))
+    limit = max(1, min(int(getattr(args, "gcal_push_limit", 120) or 120), 300))
+    start = date.today()
+    end = start + timedelta(days=lookahead_days)
+    inactive = (
+        "deleted",
+        "calendar_deduped",
+        "completed",
+        "done",
+        "已完成",
+        "完成",
+        "cancelled",
+        "canceled",
+        "取消",
+    )
+    inactive_placeholders = ",".join(["%s"] * len(inactive))
+    conn = None
+    try:
+        conn = connect_mysql(db_config_from_env(prefix="OSC_DB_"))
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT
+                  g.id, g.case_number, g.client_name, g.todo_type, g.todo_date,
+                  g.todo_time, g.status, g.source_file, LEFT(COALESCE(g.description,''), 220) AS description
+                FROM case_todos g
+                WHERE COALESCE(g.case_number, '') != ''
+                  AND g.todo_date BETWEEN %s AND %s
+                  AND (g.source_file LIKE 'gcal_import%%' OR g.todo_type = '行事曆事件')
+                  AND (g.status IS NULL OR g.status = '' OR g.status NOT IN ({inactive_placeholders}))
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM case_todos o
+                    WHERE o.case_number = g.case_number
+                      AND o.id <> g.id
+                      AND o.todo_date = g.todo_date
+                      AND (
+                        (o.todo_time = g.todo_time)
+                        OR (o.todo_time IS NULL AND g.todo_time IS NULL)
+                      )
+                      AND (o.status IS NULL OR o.status = '' OR o.status NOT IN ({inactive_placeholders}))
+                      AND COALESCE(o.source_file, '') LIKE '%%.pdf%%'
+                      AND o.source_file NOT LIKE 'gcal_import%%'
+                      AND o.source_file NOT LIKE 'gcal_mirror:%%'
+                      AND COALESCE(o.todo_type, '') <> '行事曆事件'
+                  )
+                ORDER BY g.todo_date ASC, g.todo_time ASC, g.case_number ASC, g.id ASC
+                LIMIT %s
+                """,
+                (
+                    start.isoformat(),
+                    end.isoformat(),
+                    *inactive,
+                    *inactive,
+                    limit,
+                ),
+            )
+            rows = [dict(r) for r in (cur.fetchall() or [])]
+        finally:
+            cur.close()
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:220]}"}
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    for row in rows:
+        for key in ("todo_date", "todo_time"):
+            if row.get(key) is not None:
+                row[key] = str(row.get(key))
+    return {
+        "ok": True,
+        "lookahead_days": lookahead_days,
+        "calendar_import_only_count": len(rows),
+        "sample_items": rows[:20],
+        "message": "這些是人工/Google 匯入行程，尚無同日期同時間的 MAGI/PDF 來源待辦。",
+    }
+
+
 def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
@@ -635,6 +736,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "calendar_import": {},
         "calendar_push": {},
         "calendar_audit": {},
+        "calendar_source_audit": {},
         "warnings": [],
     }
 
@@ -643,6 +745,68 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         if total <= 0:
             return None
         return max(0, total - int(time.monotonic() - started))
+
+    def _run_transcript_todo_step() -> dict[str, Any]:
+        try:
+            remaining = _remaining_scan_budget_sec()
+            if remaining is not None and remaining <= 0:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": f"transcript_todo_budget_exhausted:{args.scan_time_budget_sec}s",
+                }
+            os.environ.setdefault("TRANSCRIPT_TODO_LISTING_BUDGET_SEC", "45")
+            env_timeout = int(os.environ.get("OSC_TRANSCRIPT_TODO_TIMEOUT_SEC", "0") or "0")
+            transcript_timeout = env_timeout if env_timeout > 0 else 120
+            min_dry_run_budget = max(1, int(os.environ.get("OSC_TRANSCRIPT_TODO_MIN_DRY_RUN_BUDGET_SEC", "120") or "120"))
+            if (
+                bool(getattr(args, "dry_run", False))
+                and remaining is not None
+                and remaining < min_dry_run_budget
+            ):
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "transcript_todo_dry_run_budget_too_small",
+                    "remaining_sec": remaining,
+                    "required_sec": min_dry_run_budget,
+                }
+            if remaining is not None:
+                transcript_timeout = max(1, min(transcript_timeout, remaining))
+            transcript_mod = _load_transcript_todo_module()
+            transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
+            transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
+            with _pdf_scan_time_limit(transcript_timeout):
+                paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
+                scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
+                if bool(getattr(args, "dry_run", False)):
+                    write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
+                else:
+                    write = transcript_mod.apply_high_confidence(scan.get("items") or [])
+            return {
+                "ok": True,
+                "timeout_sec": transcript_timeout,
+                "scanned": scan.get("scanned", 0),
+                "high_count": scan.get("high_count", 0),
+                "review_count": scan.get("review_count", 0),
+                "past_skipped": scan.get("past_skipped", 0),
+                "implausible_skipped": scan.get("implausible_skipped", 0),
+                "errors_count": scan.get("errors_count", 0),
+                "write_result": {
+                    "inserted": write.get("inserted", 0),
+                    "updated": write.get("updated", 0),
+                    "skipped": write.get("skipped", 0),
+                    "past_skipped": write.get("past_skipped", 0),
+                },
+                "sample_items": (scan.get("items") or [])[:10],
+                "errors": scan.get("errors", [])[:10],
+            }
+        except _PdfScanTimeout as exc:
+            result["warnings"].append("transcript_todo_timeout")
+            return {"ok": False, "skipped": True, "error": str(exc)}
+        except Exception as exc:
+            result["ok"] = False
+            return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
     if not args.calendar_only:
         if bool(getattr(args, "legacy_scan", False)):
@@ -685,65 +849,11 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 result["pdf_calendar_scan"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
         if not getattr(args, "skip_transcript_todos", False):
-            try:
-                remaining = _remaining_scan_budget_sec()
-                if remaining is not None and remaining <= 0:
-                    result["transcript_todos"] = {
-                        "ok": True,
-                        "skipped": True,
-                        "reason": f"transcript_todo_budget_exhausted:{args.scan_time_budget_sec}s",
-                    }
-                else:
-                    env_timeout = int(os.environ.get("OSC_TRANSCRIPT_TODO_TIMEOUT_SEC", "0") or "0")
-                    transcript_timeout = env_timeout if env_timeout > 0 else 300
-                    min_dry_run_budget = max(1, int(os.environ.get("OSC_TRANSCRIPT_TODO_MIN_DRY_RUN_BUDGET_SEC", "120") or "120"))
-                    if (
-                        bool(getattr(args, "dry_run", False))
-                        and remaining is not None
-                        and remaining < min_dry_run_budget
-                    ):
-                        result["transcript_todos"] = {
-                            "ok": True,
-                            "skipped": True,
-                            "reason": "transcript_todo_dry_run_budget_too_small",
-                            "remaining_sec": remaining,
-                            "required_sec": min_dry_run_budget,
-                        }
-                    else:
-                        if remaining is not None:
-                            transcript_timeout = max(1, min(transcript_timeout, remaining))
-                        transcript_mod = _load_transcript_todo_module()
-                        transcript_limit = max(1, int(getattr(args, "transcript_limit", 120)))
-                        transcript_tail_pages = max(1, int(getattr(args, "transcript_tail_pages", 3)))
-                        with _pdf_scan_time_limit(transcript_timeout):
-                            paths = transcript_mod._iter_pdf_targets("", limit=transcript_limit)
-                            scan = transcript_mod.scan_targets(paths, tail_pages=transcript_tail_pages)
-                            if bool(getattr(args, "dry_run", False)):
-                                write = {"dry_run": True, "inserted": 0, "updated": 0, "skipped": 0, "past_skipped": 0}
-                            else:
-                                write = transcript_mod.apply_high_confidence(scan.get("items") or [])
-                        result["transcript_todos"] = {
-                            "ok": True,
-                            "timeout_sec": transcript_timeout,
-                            "scanned": scan.get("scanned", 0),
-                            "high_count": scan.get("high_count", 0),
-                            "review_count": scan.get("review_count", 0),
-                            "errors_count": scan.get("errors_count", 0),
-                            "write_result": {
-                                "inserted": write.get("inserted", 0),
-                                "updated": write.get("updated", 0),
-                                "skipped": write.get("skipped", 0),
-                                "past_skipped": write.get("past_skipped", 0),
-                            },
-                            "sample_items": (scan.get("items") or [])[:10],
-                            "errors": scan.get("errors", [])[:10],
-                        }
-            except _PdfScanTimeout as exc:
-                result["warnings"].append("transcript_todo_timeout")
-                result["transcript_todos"] = {"ok": False, "skipped": True, "error": str(exc)}
-            except Exception as exc:
-                result["ok"] = False
-                result["transcript_todos"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+            result["transcript_todos"] = {
+                "ok": True,
+                "deferred": True,
+                "reason": "runs_after_calendar_push_so_pdf_todos_cannot_be_blocked",
+            }
 
     if not args.scan_only:
         if bool(getattr(args, "dry_run", False)):
@@ -823,6 +933,39 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 except Exception as exc:
                     result["ok"] = False
                     result["calendar_audit"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+            result["calendar_source_audit"] = _run_calendar_source_audit(args)
+            if not result["calendar_source_audit"].get("ok"):
+                result["warnings"].append("calendar_source_audit_failed")
+            elif int(result["calendar_source_audit"].get("calendar_import_only_count") or 0) > 0:
+                result["warnings"].append("calendar_import_only_without_pdf_source")
+
+    if not args.calendar_only and not getattr(args, "skip_transcript_todos", False):
+        result["transcript_todos"] = _run_transcript_todo_step()
+        write_result = result["transcript_todos"].get("write_result") or {}
+        transcript_changed = int(write_result.get("inserted") or 0) + int(write_result.get("updated") or 0)
+        if transcript_changed and not args.scan_only and not bool(getattr(args, "dry_run", False)):
+            try:
+                push_payload = {
+                    "limit": min(max(20, args.gcal_push_limit), 200),
+                    "repair_existing": True,
+                    "repair_limit": min(max(20, args.gcal_push_limit), 200),
+                    "retry_max_attempts": 3,
+                }
+                push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
+                with _pdf_scan_time_limit(push_timeout):
+                    result["calendar_push_after_transcript"] = mod.task_gcal_sync(push_payload)
+                if not result["calendar_push_after_transcript"].get("ok"):
+                    if result["calendar_push_after_transcript"].get("need_interactive_oauth"):
+                        result["warnings"].append("google_calendar_oauth_required")
+                    else:
+                        result["warnings"].append("calendar_push_after_transcript_failed")
+            except _PdfScanTimeout as exc:
+                result["warnings"].append("calendar_push_after_transcript_timeout")
+                result["calendar_push_after_transcript"] = {"ok": False, "error": str(exc)}
+            except Exception as exc:
+                result["warnings"].append("calendar_push_after_transcript_failed")
+                result["calendar_push_after_transcript"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
     result["elapsed_sec"] = round(time.monotonic() - started, 3)
     _write_latest(result, Path(args.json_out) if args.json_out else LATEST_PATH)

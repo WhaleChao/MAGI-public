@@ -781,11 +781,28 @@ def scan_targets(paths: list[Path], *, tail_pages: int = TAIL_PAGES) -> dict[str
     items: list[TodoCandidate] = []
     errors: list[dict[str, str]] = []
     scanned = 0
+    past_skipped = 0
+    implausible_skipped = 0
+    today = date.today()
     for path in paths:
         try:
             candidates = extract_candidates_from_pdf(path, tail_pages=tail_pages)
             scanned += 1
-            items.extend(candidates)
+            for candidate in candidates:
+                if candidate.confidence != "high":
+                    items.append(candidate)
+                    continue
+                parsed_date = _parse_iso_date(candidate.date)
+                if parsed_date is None:
+                    items.append(candidate)
+                    continue
+                if parsed_date < today:
+                    past_skipped += 1
+                    continue
+                if not _is_plausible_todo_date(parsed_date):
+                    implausible_skipped += 1
+                    continue
+                items.append(candidate)
         except Exception as exc:
             errors.append({"path": str(path), "error": str(exc)})
     items = _dedupe_candidates(items)
@@ -796,6 +813,8 @@ def scan_targets(paths: list[Path], *, tail_pages: int = TAIL_PAGES) -> dict[str
         "scanned": scanned,
         "high_count": len(high),
         "review_count": len(review),
+        "past_skipped": past_skipped,
+        "implausible_skipped": implausible_skipped,
         "errors_count": len(errors),
         "items": [asdict(x) for x in items],
         "errors": errors,

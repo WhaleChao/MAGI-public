@@ -394,6 +394,19 @@ _PDF_CALENDAR_EXCLUDED_PATH_HINTS = (
     "自行收納款項收據",
 )
 
+_PDF_LAF_STAFF_MAIL_DIR_NAMES = (
+    "專員來信",
+)
+
+_PDF_LAF_DATA_DIR_NAMES = (
+    "01_法扶資料",
+    "法扶資料",
+)
+
+_PDF_LAF_STAFF_COURT_ATTACHMENT_RE = re.compile(
+    r"(法院|地院|高院|最高法院|地檢|檢察署|執行處|民事庭|刑事庭|家事庭|行政庭|法庭)"
+)
+
 
 def _case_folder_identity_from_path(path: Path) -> tuple[str, str]:
     case_number = ""
@@ -417,11 +430,14 @@ def _is_pdf_calendar_candidate_path(path: Path) -> bool:
     if path.suffix.lower() != ".pdf":
         return False
     text = str(path).replace("\\", "/")
+    if "專員來信" in text:
+        return bool(
+            _PDF_TODO_HINT_RE.search(name)
+            or _PDF_LAF_STAFF_COURT_ATTACHMENT_RE.search(name)
+        )
     if any(hint in text for hint in _PDF_CALENDAR_EXCLUDED_PATH_HINTS):
         return False
     if any(hint in text for hint in _PDF_CALENDAR_SOURCE_HINTS):
-        return True
-    if "專員來信" in text and _PDF_TODO_HINT_RE.search(name):
         return True
     return False
 
@@ -1378,6 +1394,13 @@ def _iter_all_case_pdf_targets(
         if len(candidates) >= candidate_cap:
             candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
             return [(pdf, case_number, client_name) for _p, _h, _m, _n, pdf, case_number, client_name in candidates[:max_items]]
+    candidate_path_keys: set[str] = set()
+    for _processed_rank, _hint_rank, _mtime, _name, pdf, _case_number, _client_name in candidates:
+        candidate_path_keys.add(str(pdf))
+        try:
+            candidate_path_keys.add(str(pdf.resolve()))
+        except Exception:
+            pass
 
     def _run_path_probe(fn, *, timeout_sec: float = 3.0, fallback=None):
         import threading
@@ -1420,6 +1443,22 @@ def _iter_all_case_pdf_targets(
                 roots.append(folder)
             for name in wanted_dir_names:
                 child = folder / name
+                try:
+                    if child.is_dir():
+                        roots.append(child)
+                except OSError:
+                    continue
+            for laf_name in _PDF_LAF_DATA_DIR_NAMES:
+                laf_root = folder / laf_name
+                for mail_name in _PDF_LAF_STAFF_MAIL_DIR_NAMES:
+                    child = laf_root / mail_name
+                    try:
+                        if child.is_dir():
+                            roots.append(child)
+                    except OSError:
+                        continue
+            for mail_name in _PDF_LAF_STAFF_MAIL_DIR_NAMES:
+                child = folder / mail_name
                 try:
                     if child.is_dir():
                         roots.append(child)
@@ -1485,10 +1524,15 @@ def _iter_all_case_pdf_targets(
                 mtime = _pdf_mtime_timeout(pdf)
                 if not filename_only and recent_only and recent_sweep_hours and mtime < recent_cutoff:
                     continue
+                resolved_pdf = _pdf_resolve_timeout(pdf)
+                path_keys = {str(pdf), str(resolved_pdf)}
+                if any(key in candidate_path_keys for key in path_keys):
+                    continue
                 source_text = str(pdf)
                 processed_rank = 1 if ((case_number, source_text) in existing_sources or (case_number, pdf.name) in existing_sources) else 0
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
-                candidates.append((processed_rank, hint_rank, -mtime, pdf.name, _pdf_resolve_timeout(pdf), case_number, str(row.get("client_name") or "")))
+                candidates.append((processed_rank, hint_rank, -mtime, pdf.name, resolved_pdf, case_number, str(row.get("client_name") or "")))
+                candidate_path_keys.update(path_keys)
 
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
     for _processed_rank, _hint_rank, _mtime, _name, pdf, case_number, client_name in candidates[:max_items]:

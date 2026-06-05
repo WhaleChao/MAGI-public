@@ -74,6 +74,54 @@ def save_worker_status(status: dict) -> None:
     tmp.replace(path)
 
 
+def load_worker_status() -> dict:
+    path = worker_status_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def clear_stale_running_status() -> dict:
+    """Return metadata about a stale running marker from a crashed worker."""
+    previous = load_worker_status()
+    status = str(previous.get("status") or "")
+    if "running" not in status:
+        return {}
+    pid = int(previous.get("pid") or 0)
+    if pid and _pid_is_alive(pid):
+        return {}
+    stale = {
+        "ok": False,
+        "status": "stale_running_cleared",
+        "action_required": False,
+        "previous_status": status,
+        "previous_pid": pid,
+        "previous_started_at": previous.get("started_at") or "",
+        "finished_at": iso_now(),
+        "message": "上一輪 Drive/NAS 同步狀態停在 running，但找不到對應程序；已清除殘留狀態。",
+    }
+    save_worker_status(stale)
+    return stale
+
+
 def load_state() -> dict:
     path = state_path()
     if not path.exists():
@@ -274,11 +322,14 @@ def main(argv: list[str] | None = None) -> int:
     direct_mode_label = "direct_all_case_sync_running" if args.direct_all_cases else "direct_priority_sync_running"
     needs_write_scope = not args.no_uploads or not args.no_create_drive_folders
     started_at = iso_now()
+    stale_status = clear_stale_running_status()
     save_worker_status({
         "ok": None,
         "status": direct_mode_label if direct_mode_requested else "inventory_running",
         "action_required": False,
+        "pid": os.getpid(),
         "started_at": started_at,
+        "previous_stale_status": stale_status,
         "matched_case_offset": offset,
         "all_case_offset": all_case_offset,
         "all_case_total": all_case_total,
@@ -395,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         "ok": True,
         "status": "ok",
         "action_required": False,
+        "pid": os.getpid(),
         "started_at": started_at,
         "finished_at": iso_now(),
         "matched_case_offset_before": offset,

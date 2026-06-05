@@ -160,6 +160,11 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         "_run_drive_case_sync_before_pdf",
         lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
     )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_calendar_source_audit",
+        lambda args: {"ok": True, "calendar_import_only_count": 0, "sample_items": []},
+    )
     monkeypatch.delenv("MAGI_GCAL_DEDUP_DRY_RUN", raising=False)
 
     args = SimpleNamespace(
@@ -188,17 +193,30 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["drive_sync", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
+    assert [name for name, _ in calls] == [
+        "drive_sync",
+        "pdf_scan",
+        "import",
+        "push",
+        "audit",
+        "transcript_targets",
+        "transcript_scan",
+        "transcript_apply",
+        "push",
+    ]
     assert result["scan"] == {
         "ok": True,
         "skipped": True,
         "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
     }
     assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
-    assert calls[-1][1]["limit"] == 7
+    assert calls[3][1]["limit"] == 7
+    assert calls[-1][1]["limit"] == 20
     assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1
+    assert result["calendar_push_after_transcript"]["inserted"] == 1
     assert result["calendar_audit"]["ok"] is True
+    assert result["calendar_source_audit"]["calendar_import_only_count"] == 0
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
 
 

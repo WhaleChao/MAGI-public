@@ -201,3 +201,47 @@ def test_default_targets_include_recent_unindexed_transcript(tmp_path, monkeypat
     targets = mod._iter_pdf_targets("", limit=10)
 
     assert pdf in targets
+
+
+def test_scan_targets_filters_past_high_confidence_candidates(tmp_path, monkeypatch):
+    mod = _load_module()
+    pdf = _pdf_path(tmp_path)
+
+    monkeypatch.setattr(
+        mod,
+        "extract_candidates_from_pdf",
+        lambda _path, tail_pages=mod.TAIL_PAGES: [
+            mod.TodoCandidate(
+                type="開庭",
+                date="2026-01-14",
+                time="10:00",
+                description="past hearing",
+                source_file="past.pdf#p1",
+                confidence="high",
+                rule="scheduled_hearing",
+                page=1,
+                excerpt="過期待辦",
+                case_number="2025-0001",
+                client_name="測試當事人",
+            ),
+            mod.TodoCandidate(
+                type="開庭",
+                date="2026-07-14",
+                time="10:00",
+                description="future hearing",
+                source_file="future.pdf#p1",
+                confidence="high",
+                rule="scheduled_hearing",
+                page=1,
+                excerpt="未來待辦",
+                case_number="2025-0001",
+                client_name="測試當事人",
+            ),
+        ],
+    )
+
+    payload = mod.scan_targets([pdf])
+
+    assert payload["high_count"] == 1
+    assert payload["past_skipped"] == 1
+    assert [x["description"] for x in payload["items"]] == ["future hearing"]
