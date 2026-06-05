@@ -247,6 +247,103 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
 
 
+def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+    calls = []
+    audit_calls = {"count": 0}
+
+    class FakeOscAction:
+        @staticmethod
+        def task_gcal_import(payload):
+            calls.append(("import", payload))
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(payload):
+            calls.append(("push", payload))
+            return {"ok": True, "inserted": 1, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    def fake_calendar_source_audit(args):
+        audit_calls["count"] += 1
+        calls.append(("source_audit", {"skip_drive_sync": bool(getattr(args, "skip_drive_sync", False))}))
+        if audit_calls["count"] == 1:
+            return {
+                "ok": True,
+                "calendar_import_only_count": 1,
+                "sample_items": [{"case_number": "2025-0122", "description": "張國賢補正"}],
+                "drive_remediation": {"ok": True, "execution_summary": {"downloaded": 2, "failed": 0}},
+            }
+        return {
+            "ok": True,
+            "calendar_import_only_count": 0,
+            "sample_items": [],
+            "drive_remediation": {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"},
+        }
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: calls.append(("pdf_scan", {"limit": args.pdf_limit}))
+        or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}},
+    )
+    monkeypatch.setattr(osc_events_refresh, "_run_calendar_source_audit", fake_calendar_source_audit)
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=False,
+        legacy_scan=False,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=300,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert [name for name, _payload in calls] == [
+        "drive_sync",
+        "pdf_scan",
+        "import",
+        "push",
+        "audit",
+        "source_audit",
+        "pdf_scan",
+        "push",
+        "source_audit",
+    ]
+    assert calls[-1][1]["skip_drive_sync"] is True
+    assert result["pdf_calendar_scan_after_drive_remediation"]["write_result"]["inserted"] == 1
+    assert result["calendar_push_after_drive_remediation"]["inserted"] == 1
+    assert result["calendar_source_audit_after_drive_remediation"]["calendar_import_only_count"] == 0
+    assert "calendar_import_only_without_pdf_source" not in result["warnings"]
+
+
 def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, tmp_path):
     out = tmp_path / "osc_events_refresh_latest.json"
     calls = []

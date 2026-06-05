@@ -853,6 +853,37 @@ def _run_calendar_source_audit(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _copy_args(args: argparse.Namespace, **updates: Any) -> argparse.Namespace:
+    data = dict(vars(args))
+    data.update(updates)
+    return argparse.Namespace(**data)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _calendar_source_audit_downloaded_count(audit: dict[str, Any]) -> int:
+    remediation = audit.get("drive_remediation") if isinstance(audit, dict) else {}
+    if not isinstance(remediation, dict):
+        return 0
+    summary = remediation.get("execution_summary") or {}
+    if not isinstance(summary, dict):
+        return 0
+    return max(
+        _safe_int(summary.get("downloaded")),
+        _safe_int(summary.get("download_downloaded")),
+    )
+
+
+def _remove_warning(warnings: list[str], value: str) -> None:
+    while value in warnings:
+        warnings.remove(value)
+
+
 def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
@@ -1076,6 +1107,62 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 result["warnings"].append("calendar_source_audit_failed")
             elif int(result["calendar_source_audit"].get("calendar_import_only_count") or 0) > 0:
                 result["warnings"].append("calendar_import_only_without_pdf_source")
+
+            remediation_downloaded = _calendar_source_audit_downloaded_count(result["calendar_source_audit"])
+            if remediation_downloaded > 0 and not getattr(args, "skip_pdf_todos", False):
+                try:
+                    result["pdf_calendar_scan_after_drive_remediation"] = _run_pdf_calendar_scan(args)
+                    if not result["pdf_calendar_scan_after_drive_remediation"].get("ok"):
+                        err = str(result["pdf_calendar_scan_after_drive_remediation"].get("error") or "")
+                        if err.startswith("pdf_scan_timeout"):
+                            result["warnings"].append("pdf_calendar_rescan_after_drive_remediation_timeout")
+                        else:
+                            result["ok"] = False
+                            result["warnings"].append("pdf_calendar_rescan_after_drive_remediation_failed")
+                except Exception as exc:
+                    result["ok"] = False
+                    result["warnings"].append("pdf_calendar_rescan_after_drive_remediation_failed")
+                    result["pdf_calendar_scan_after_drive_remediation"] = {
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+                    }
+
+                if result.get("pdf_calendar_scan_after_drive_remediation", {}).get("ok"):
+                    try:
+                        push_payload = {
+                            "limit": args.gcal_push_limit,
+                            "repair_existing": True,
+                            "repair_limit": args.gcal_push_limit,
+                            "retry_max_attempts": 3,
+                        }
+                        push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
+                        with _pdf_scan_time_limit(push_timeout):
+                            result["calendar_push_after_drive_remediation"] = mod.task_gcal_sync(push_payload)
+                        if not result["calendar_push_after_drive_remediation"].get("ok"):
+                            if result["calendar_push_after_drive_remediation"].get("need_interactive_oauth"):
+                                result["warnings"].append("google_calendar_oauth_required")
+                            else:
+                                result["warnings"].append("calendar_push_after_drive_remediation_failed")
+                    except _PdfScanTimeout as exc:
+                        result["warnings"].append("calendar_push_after_drive_remediation_timeout")
+                        result["calendar_push_after_drive_remediation"] = {"ok": False, "error": str(exc)}
+                    except Exception as exc:
+                        result["warnings"].append("calendar_push_after_drive_remediation_failed")
+                        result["calendar_push_after_drive_remediation"] = {
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+                        }
+
+                    audit_args = _copy_args(args, skip_drive_sync=True)
+                    result["calendar_source_audit_after_drive_remediation"] = _run_calendar_source_audit(audit_args)
+                    if result["calendar_source_audit_after_drive_remediation"].get("ok"):
+                        remaining_count = int(
+                            result["calendar_source_audit_after_drive_remediation"].get("calendar_import_only_count") or 0
+                        )
+                        if remaining_count <= 0:
+                            _remove_warning(result["warnings"], "calendar_import_only_without_pdf_source")
+                    else:
+                        result["warnings"].append("calendar_source_audit_after_drive_remediation_failed")
 
     if not args.calendar_only and not getattr(args, "skip_transcript_todos", False):
         result["transcript_todos"] = _run_transcript_todo_step()
