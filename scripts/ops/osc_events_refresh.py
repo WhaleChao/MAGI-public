@@ -615,6 +615,139 @@ def _run_drive_case_sync_before_pdf(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+_CALENDAR_SOURCE_AUDIT_EXCLUDE_TEXT = (
+    "法扶進度",
+    "未結案件進度回報",
+    "進度回報末日",
+    "法扶開辦",
+    "開辦末日",
+    "律見",
+    "接見",
+    "親見",
+    "會議",
+    "電話",
+    "諮詢",
+)
+
+_CALENDAR_SOURCE_AUDIT_INCLUDE_TEXT = (
+    "補正",
+    "陳報",
+    "提出",
+    "起訴",
+    "上訴",
+    "抗告",
+    "異議",
+    "聲明",
+    "承受訴訟",
+    "繳費",
+    "開庭",
+    "調解",
+    "審理",
+    "準備程序",
+    "言詞辯論",
+    "辯論",
+    "訊問",
+    "確認",
+    "候核",
+    "法院",
+    "地院",
+    "高院",
+    "最高法院",
+    "地檢",
+    "檢察署",
+    "裁定",
+    "判決",
+    "通知",
+    "函",
+    "庭",
+)
+
+
+def _calendar_row_likely_needs_pdf_source(row: dict[str, Any]) -> bool:
+    text = "".join(str(row.get(key) or "") for key in ("todo_type", "description", "client_name"))
+    compact = "".join(text.split())
+    if not compact:
+        return False
+    if any(token in compact for token in _CALENDAR_SOURCE_AUDIT_EXCLUDE_TEXT):
+        return False
+    return any(token in compact for token in _CALENDAR_SOURCE_AUDIT_INCLUDE_TEXT)
+
+
+def _run_calendar_gap_drive_remediation(
+    rows: list[dict[str, Any]],
+    *,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    if not rows:
+        return {"ok": True, "skipped": True, "reason": "no_calendar_source_gaps"}
+    if bool(getattr(args, "dry_run", False)):
+        return {"ok": True, "skipped": True, "reason": "dry_run"}
+    if bool(getattr(args, "skip_drive_sync", False)):
+        return {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
+    if os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_REMEDIATE_ENABLE", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "disabled_by_env"}
+
+    case_numbers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        case_number = str(row.get("case_number") or "").strip()
+        if case_number and case_number not in seen:
+            seen.add(case_number)
+            case_numbers.append(case_number)
+    if not case_numbers:
+        return {"ok": True, "skipped": True, "reason": "no_case_numbers"}
+
+    try:
+        from api.osc.drive_case_sync import run_priority_case_sync
+    except Exception as exc:
+        return {"ok": False, "error": f"load_drive_sync_failed:{type(exc).__name__}"}
+
+    download_limit = max(1, min(80, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DOWNLOAD_LIMIT", "24") or "24")))
+    max_download_bytes = max(
+        1,
+        min(
+            1_500_000_000,
+            int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_DOWNLOAD_BYTES", "400000000") or "400000000"),
+        ),
+    )
+    try:
+        report = run_priority_case_sync(
+            case_numbers=case_numbers,
+            root_name=os.environ.get("MAGI_DRIVE_SYNC_ROOT_NAME", "案件辦理"),
+            file_diff=True,
+            execute_downloads=True,
+            execute_uploads=False,
+            download_limit=download_limit,
+            max_download_bytes=max_download_bytes,
+            upload_limit=0,
+            max_upload_bytes=0,
+            max_case_depth=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_DEPTH", "5") or "5")),
+            max_case_items=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_ITEMS", "260") or "260")),
+            ensure_drive_case_folders=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "case_numbers": case_numbers,
+            "error": f"{type(exc).__name__}: {str(exc)[:220]}",
+        }
+
+    execution = report.get("execution_result") or report.get("execution_summary") or {}
+    file_sync = report.get("file_sync_plan") or report.get("file_sync_summary") or {}
+    return {
+        "ok": bool(report.get("ok", True)),
+        "case_numbers": case_numbers,
+        "download_limit": download_limit,
+        "max_download_bytes": max_download_bytes,
+        "summary": report.get("summary") or {},
+        "file_sync_summary": file_sync.get("summary") if isinstance(file_sync, dict) else file_sync,
+        "execution_summary": execution.get("summary") if isinstance(execution, dict) else execution,
+        "drive_folder_summary": (report.get("drive_folder_result") or {}).get("summary") or report.get("drive_folder_summary") or {},
+        "output_paths": report.get("output_paths") or {},
+        "message": "已先依案件號到 Google Drive 對應資料夾補檔；若 Google 也沒有，才保留缺來源警示。",
+    }
+
+
 def _run_calendar_source_audit(args: argparse.Namespace) -> dict[str, Any]:
     """List imported calendar todos that still lack a MAGI/PDF source row.
 
@@ -703,6 +836,9 @@ def _run_calendar_source_audit(args: argparse.Namespace) -> dict[str, Any]:
         except Exception:
             pass
 
+    rows = [row for row in rows if _calendar_row_likely_needs_pdf_source(row)]
+    drive_remediation = _run_calendar_gap_drive_remediation(rows, args=args)
+
     for row in rows:
         for key in ("todo_date", "todo_time"):
             if row.get(key) is not None:
@@ -712,7 +848,8 @@ def _run_calendar_source_audit(args: argparse.Namespace) -> dict[str, Any]:
         "lookahead_days": lookahead_days,
         "calendar_import_only_count": len(rows),
         "sample_items": rows[:20],
-        "message": "這些是人工/Google 匯入行程，尚無同日期同時間的 MAGI/PDF 來源待辦。",
+        "drive_remediation": drive_remediation,
+        "message": "這些是人工/Google 匯入且看起來應由 PDF 支撐的行程；MAGI 已先嘗試從 Google Drive 補檔，補不到才保留缺來源。",
     }
 
 

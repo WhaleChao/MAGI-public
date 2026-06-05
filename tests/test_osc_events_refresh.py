@@ -96,6 +96,33 @@ def test_write_latest_serializes_datetime_nested_payload(tmp_path):
     assert data["scan"]["results"][0]["items"][0]["todos"][0]["datetime"] == "2026-05-13T12:00:00+00:00"
 
 
+def test_calendar_source_audit_only_flags_pdf_backed_business_events():
+    assert osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "賴麗卿案陳報末日"}
+    )
+    assert osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "調解", "description": "陳文明調解與審理@宜蘭地院"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "謝易霖律見"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "郭麗卿未結案件進度回報末日"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "【法扶開辦末日】2026-0045 李秀英"}
+    )
+
+
+def test_calendar_gap_drive_remediation_respects_skip_drive_sync():
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=True),
+    )
+
+    assert out == {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
+
+
 def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     out = tmp_path / "osc_events_refresh_latest.json"
     calls = []

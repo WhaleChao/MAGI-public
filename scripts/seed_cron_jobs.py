@@ -589,9 +589,9 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
                 f"{python_bin} {repo_root / 'scripts' / 'ops' / 'resource_guarded_run.py'} "
                 "--job-id job_nas_pdf_ocr_worker_offpeak --block-at throttle "
                 "--require-disk-free-gb 80 --require-free-inactive-gb 4 -- "
-                f"{python_bin} {repo_root / 'skills' / 'documents' / 'nas_pdf_ocr_worker.py'} work --batch 2"
+                f"{python_bin} {repo_root / 'skills' / 'documents' / 'nas_pdf_ocr_worker.py'} work --batch 1"
             ),
-            "desc": "NAS PDF OCR 離峰佇列處理（每次 2 份；資源不足自動略過，避免拖垮 NAS/Mac）",
+            "desc": "NAS PDF OCR 離峰佇列處理（每次 1 份；資源不足自動略過，避免拖垮 NAS/Mac）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
