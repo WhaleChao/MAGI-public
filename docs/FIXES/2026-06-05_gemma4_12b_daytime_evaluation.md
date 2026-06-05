@@ -1,12 +1,18 @@
 # Gemma 4 12B 日間模型替換評估（2026-06-05）
 
-## 結論
+## 2026-06-06 更新結論
 
-Gemma 4 12B 暫不替換 MAGI 日間 E4B 模型。
+Gemma 4 12B 已可透過 MAGI 的 Gemma4 unified oMLX source overlay 進行文字推論與工具調用測試，但仍暫不替換 MAGI 日間 E4B 模型。
 
-原因不是模型本身不適合，而是目前 MAGI 使用的本機 oMLX / MLX runtime 尚未支援 `gemma4_unified` 架構。實測 12B 可下載、可被 oMLX 列為模型，但一旦呼叫 chat completions 會回傳 HTTP 500，因此不能上線，也不能留下半套替換。
+原因不是模型本身不適合，而是 Homebrew 正式安裝的 oMLX / MLX runtime 尚未支援 `gemma4_unified` 架構。MAGI 已建立一個不覆蓋正式 oMLX 的 source overlay，將 oMLX、mlx-lm、mlx-vlm 固定到已驗證 commit，並補上 oMLX model discovery 對 `gemma4_unified` / `Gemma4UnifiedForConditionalGeneration` 的辨識。
 
-正式路由維持既有日夜模型輪值，12B 僅保留為候選模型。
+正式路由維持既有日夜模型輪值，12B 僅登錄為候選日間模型。
+
+Overlay wrapper：
+
+```text
+/Users/ai/.omlx/bin/omlx-gemma4-unified-serve
+```
 
 ## 外部來源
 
@@ -14,7 +20,7 @@ Gemma 4 12B 暫不替換 MAGI 日間 E4B 模型。
 - Hugging Face 官方模型：`google/gemma-4-12B-it`，Apache 2.0，模型標籤包含 `gemma4_unified`。
 - MLX 量化候選：`mlx-community/gemma-4-12B-it-4bit`。
 
-## 本機測試
+## 2026-06-05 本機測試
 
 下載位置：
 
@@ -45,11 +51,42 @@ omlx serve \
   - `mlx_lm.models.gemma4_unified`: 不存在
   - `mlx_vlm.models.gemma4_unified`: 不存在
 
-## 不替換原因
+## 2026-06-06 overlay 測試
 
-1. 目前 runtime 不能成功推論，替換後會造成 MAGI 日間主模型直接不可用。
-2. MAGI 已退役 Ollama 作為主服務，不應為單一模型臨時恢復第二套推論路由。
-3. 12B 是新的 unified multimodal 架構，必須先通過工具調用、摘要、翻譯、逐字稿、法律 RAG 與壓力測試 gate，才能替換 E4B。
+Overlay 建立指令：
+
+```bash
+./venv/bin/python3 scripts/ops/prepare_omlx_gemma4_unified_runtime.py
+```
+
+Source pins：
+
+- oMLX：`bac678ec72c97e497d05c3c6d637fa54f1b3d7e3`
+- mlx-lm：`04a19108d4a7fd6606319784d07c5be3017b073a`
+- mlx-vlm：`d02eee1d51170e8d46e4266261445134c0535979`
+
+驗證結果：
+
+- `mlx.core.new_thread_local_stream`：存在
+- `mlx_lm.models.gemma4`：存在
+- `mlx_vlm.models.gemma4_unified`：存在
+- oMLX model discovery：`gemma-4-12B-it-4bit` 偵測為 `vlm`
+- `/v1/models`：通過，列出 `gemma-4-12B-it-4bit`
+- 中文短答：通過
+- 法律摘要：通過
+- OpenAI tool call：通過，行程查詢正確呼叫 `calendar_lookup`，未誤呼叫 `weather_lookup`
+
+Live 證據：
+
+```text
+.runtime/gemma4_12b_omlx_overlay_live_20260606.json
+```
+
+## 不立即替換原因
+
+1. 正式 Homebrew oMLX 仍未原生支援 `gemma4_unified`，目前靠 source overlay。
+2. 12B 是 dense 12B，雖然比 26B MoE 更穩定可預期，但仍須完成長時間壓力測試，確認不會 OOM。
+3. MAGI 不能只因聊天與工具調用通過就替換日間模型；翻譯、逐字稿、摘要、法律 RAG、PDF 命名、法扶與 OSC 任務都要通過完整 gate。
 
 ## 後續部署條件
 
@@ -64,6 +101,6 @@ omlx serve \
 
 ## 狀態
 
-狀態：候選模型，等待 runtime 支援。
+狀態：候選模型，overlay runtime 已可用，等待完整 MAGI gate 與長測。
 
-禁止行為：不要把 `gemma-4-12B-it-4bit` 設為日間預設模型，也不要改寫 production model routing 指向 12B。
+禁止行為：不要把 `gemma-4-12B-it-4bit` 設為日間預設模型，也不要改寫 production model routing 指向 12B，除非完整 live gate 通過。

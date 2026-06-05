@@ -59,6 +59,32 @@
       }
     },
     {
+      "id": "gemma-4-12B-it-4bit",
+      "provider": "omlx",
+      "origin": "google",
+      "tier": "candidate_day_local_unified",
+      "total_parameters_b": 12,
+      "active_parameters_b": 12,
+      "quantization": "4bit",
+      "local_dir": "~/.omlx/models/gemma-4-12B-it-4bit",
+      "safe_context_tokens": 8192,
+      "max_concurrency": 1,
+      "public_allowed": false,
+      "private_allowed": true,
+      "tasks": ["general", "summary", "translate", "legal_analysis", "tool_calling"],
+      "gates": {
+        "runtime_overlay": "gemma4-unified",
+        "wrapper": "~/.omlx/bin/omlx-gemma4-unified-serve",
+        "min_disk_free_gb": 80,
+        "min_free_plus_inactive_gb": 8,
+        "max_swap_used_gb": 20,
+        "allowed_resource_levels": ["normal"],
+        "require_model_live": true,
+        "require_tool_call_gate": true
+      },
+      "notes": "候選日間模型；已可用 Gemma4 unified oMLX overlay 推論，但不得直接替換 E4B，須先通過完整 MAGI live gate 與壓力測試。"
+    },
+    {
       "id": "gemma-4-31b-experimental",
       "provider": "omlx",
       "origin": "google",
