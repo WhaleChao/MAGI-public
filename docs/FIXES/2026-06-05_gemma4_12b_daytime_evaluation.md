@@ -82,6 +82,27 @@ Live 證據：
 .runtime/gemma4_12b_omlx_overlay_live_20260606.json
 ```
 
+完整 gate 證據：
+
+```text
+.runtime/gemma4_12b_overlay_full_gate_final2_20260606.json
+.runtime/gemma4_12b_overlay_full_gate_final2_20260606.txt
+```
+
+完整 gate 通過項目：
+
+- overlay import / model discovery
+- `/v1/models`
+- 繁體中文短答
+- 法律摘要日期保真
+- @heavy 類翻譯術語保留（司法通譯、能動性、responsibility 等）
+- 正式筆錄待辦抽取器：候核辦 = 無下次庭期，7日後追蹤
+- 12B 結構化筆錄待辦輸出：候核辦追蹤，不誤寫庭期前
+- 工具調用：日曆、天氣、法扶、閱卷/繳費、筆錄、實務見解
+- 純摘要不得誤叫工具
+- 長輸入中擷取正確期限
+- 8 次連續壓力請求
+
 ## 不立即替換原因
 
 1. 正式 Homebrew oMLX 仍未原生支援 `gemma4_unified`，目前靠 source overlay。
