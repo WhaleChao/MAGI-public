@@ -19,6 +19,7 @@ from api.osc.drive_case_sync import (
     ensure_drive_folder_path,
     execute_nas_to_drive_uploads,
     find_existing_drive_case_folder_for_local_case,
+    find_drive_case_folder_by_broad_search,
     default_active_case_roots,
     drive_to_nas_relative_path,
     export_relative_path,
@@ -607,6 +608,45 @@ def test_file_sync_plan_reports_both_sides_missing_and_content_conflict(monkeypa
     assert case["download_missing"][0]["target_relative_path"] == "雲端缺NAS.pdf"
     assert case["nas_only"][0]["relative_path"] == "NAS缺雲端.pdf"
     assert case["conflicts"][0]["reason"] == "same_relative_path_md5_differs"
+
+
+def test_file_sync_plan_skips_drive_shortcuts(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="一般案件/Lumi/張國賢(確認決議無效)",
+        relative_path="一般案件/Lumi/張國賢(確認決議無效)",
+        name="張國賢(確認決議無效)",
+        meta=CaseMeta(case_number="2025-0122"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/民事/2025-0122-張國賢-一審-確認決議無效",
+        local_path="/cases/一般案件/民事/2025-0122-張國賢-一審-確認決議無效",
+        relative_path="一般案件/民事/2025-0122-張國賢-一審-確認決議無效",
+        name="2025-0122-張國賢-一審-確認決議無效",
+        meta=CaseMeta(case_number="2025-0122"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "drive",
+                "張國賢案件",
+                "張國賢案件",
+                "張國賢案件",
+                False,
+                drive_id="shortcut",
+                mime_type="application/vnd.google-apps.shortcut",
+            )
+        ],
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *_args, **_kwargs: [])
+
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object())
+
+    assert plan["summary"]["drive_missing_in_nas_files"] == 0
+    assert plan["cases"][0]["download_missing"] == []
 
 
 def test_build_file_sync_plan_compares_drive_and_nas_semantic_paths(monkeypatch):
@@ -1222,6 +1262,80 @@ def test_find_existing_drive_case_folder_does_not_create(monkeypatch):
     assert result["ok"] is True
     assert result["drive_id"] == "drive-case"
     assert created == []
+
+
+def test_find_existing_drive_case_folder_uses_broad_search_when_expected_name_moved(monkeypatch):
+    existing = {
+        ("root", "一般案件"): "general",
+        ("general", "Lumi"): "lumi",
+    }
+
+    def fake_find(_service, parent_id, name):
+        return existing.get((parent_id, name), "")
+
+    candidates = [
+        {"id": "consult", "name": "張國賢案件", "mimeType": "application/vnd.google-apps.folder"},
+        {"id": "case", "name": "張國賢(確認決議無效)", "mimeType": "application/vnd.google-apps.folder"},
+    ]
+    rels = {
+        "consult": "諮詢案件/實體諮詢案件/張國賢案件",
+        "case": "一般案件/Lumi/張國賢(確認決議無效)",
+    }
+
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder", fake_find)
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder_by_osc_case_number", lambda *_args: "")
+    monkeypatch.setattr("api.osc.drive_case_sync._search_drive_folders_by_name_tokens", lambda *_args, **_kwargs: candidates)
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_folder_relative_path_to_root", lambda _service, folder_id, _root_id: rels[folder_id])
+
+    case = CaseFolder(
+        source="nas",
+        path="/cases/一般案件/民事/2025-0122-張國賢-一審-確認決議無效",
+        relative_path="一般案件/民事/2025-0122-張國賢-一審-確認決議無效",
+        name="2025-0122-張國賢-一審-確認決議無效",
+        category="一般案件",
+        status="active",
+        case_kind="民事",
+        meta=CaseMeta(case_number="2025-0122", client_hint="張國賢", reason_hint="確認決議無效"),
+    )
+
+    result = find_existing_drive_case_folder_for_local_case(object(), "root", case, owner_bucket="Lumi")
+
+    assert result["ok"] is True
+    assert result["status"] == "existing_by_broad_search"
+    assert result["drive_id"] == "case"
+    assert result["relative_path"] == "一般案件/Lumi/張國賢(確認決議無效)"
+    assert result["matched_terms"] == ["確認決議無效", "張國賢"]
+
+
+def test_broad_search_prefers_laf_number_over_same_name_closed_case(monkeypatch):
+    candidates = [
+        {"id": "active", "name": "張偉銘-1140306-W-001-刑事一審辯護-妨害秩序等", "mimeType": "application/vnd.google-apps.folder"},
+        {"id": "closed", "name": "張偉銘-1131018-W-001-刑事偵查中辯護-殺人未遂等", "mimeType": "application/vnd.google-apps.folder"},
+    ]
+    rels = {
+        "active": "法扶案件/Lumi/張偉銘-1140306-W-001-刑事一審辯護-妨害秩序等",
+        "closed": "結案案件/法扶案件/Lumi-2/張偉銘-1131018-W-001-刑事偵查中辯護-殺人未遂等",
+    }
+    monkeypatch.setattr("api.osc.drive_case_sync._search_drive_folders_by_name_tokens", lambda *_args, **_kwargs: candidates)
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_folder_relative_path_to_root", lambda _service, folder_id, _root_id: rels[folder_id])
+
+    case = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2025-0007-張偉銘-一審-傷害致死",
+        relative_path="法扶案件/刑事/2025-0007-張偉銘-一審-傷害致死",
+        name="2025-0007-張偉銘-一審-傷害致死",
+        category="法扶案件",
+        status="active",
+        case_kind="刑事",
+        meta=CaseMeta(case_number="2025-0007", laf_case_no="1140306-W-001", client_hint="張偉銘", reason_hint="傷害致死"),
+    )
+
+    result = find_drive_case_folder_by_broad_search(object(), "root", case)
+
+    assert result["ok"] is True
+    assert result["drive_id"] == "active"
+    assert result["relative_path"] == "法扶案件/Lumi/張偉銘-1140306-W-001-刑事一審辯護-妨害秩序等"
+    assert "1140306-W-001" in result["matched_terms"]
 
 
 def test_db_local_cases_for_numbers_uses_db_canonical_path(monkeypatch, tmp_path):

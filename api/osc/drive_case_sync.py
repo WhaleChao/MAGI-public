@@ -2314,6 +2314,15 @@ def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
     }
 
 
+def _drive_entry_downloadable(entry: FileEntry) -> bool:
+    if entry.is_folder:
+        return False
+    mime = str(entry.mime_type or "")
+    if mime.startswith("application/vnd.google-apps.") and mime not in GOOGLE_EXPORT_MIME_MAP:
+        return False
+    return True
+
+
 def find_drive_child_folder(service: Any, parent_id: str, name: str) -> str:
     for item in _drive_list_children(service, parent_id):
         if item.get("mimeType") == GOOGLE_FOLDER_MIME and str(item.get("name") or "") == name:
@@ -2376,6 +2385,257 @@ def find_drive_child_folder_by_osc_case_number(service: Any, parent_id: str, cas
     if len(files) == 1:
         return str(files[0].get("id") or "")
     return ""
+
+
+def _drive_folder_relative_path_to_root(
+    service: Any,
+    folder_id: str,
+    root_folder_id: str,
+    *,
+    max_hops: int = 12,
+) -> str:
+    """Return a folder path relative to the configured Drive root.
+
+    Google Drive search is global, so a name hit must still be proven to live
+    under the user's `案件辦理` root before MAGI may treat it as a case folder.
+    """
+    current = str(folder_id or "").strip()
+    root_id = str(root_folder_id or "").strip()
+    if not current or not root_id:
+        return ""
+    names: list[str] = []
+    seen: set[str] = set()
+    for _ in range(max(1, max_hops)):
+        if current in seen:
+            return ""
+        seen.add(current)
+        item = service.files().get(
+            fileId=current,
+            supportsAllDrives=True,
+            fields="id,name,parents,mimeType,appProperties,modifiedTime,webViewLink,driveId",
+        ).execute()
+        item_id = str(item.get("id") or "")
+        if item_id == root_id:
+            return PurePosixPath(*reversed(names)).as_posix() if names else ""
+        names.append(str(item.get("name") or ""))
+        parents = item.get("parents") or []
+        if not parents:
+            return ""
+        current = str(parents[0] or "")
+    return ""
+
+
+def _drive_case_search_tokens(case: CaseFolder) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    display_name = drive_case_display_name_for_local_case(case)
+    candidates = [
+        case.meta.case_number,
+        case.meta.laf_case_no,
+        case.meta.court_case_no,
+        case.meta.client_hint,
+        case.meta.reason_hint,
+        display_name,
+        re.sub(r"[\-_－—]+", " ", display_name),
+    ]
+    for value in candidates:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        normalized = normalize_text(text)
+        if normalized in seen:
+            continue
+        if (
+            OSC_CASE_RE.fullmatch(text)
+            or LAF_CASE_RE.fullmatch(text)
+            or ROC_COURT_NO_RE.search(text)
+            or len(normalized) >= 3
+        ):
+            seen.add(normalized)
+            tokens.append(text)
+    return tokens
+
+
+def _search_drive_folders_by_name_tokens(
+    service: Any,
+    tokens: Iterable[str],
+    *,
+    page_size: int = 25,
+    max_results: int = 80,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for token in tokens:
+        text = str(token or "").strip()
+        if not text:
+            continue
+        resp = service.files().list(
+            q=(
+                f"mimeType = '{GOOGLE_FOLDER_MIME}' and trashed = false "
+                f"and name contains {_drive_query_literal(text)}"
+            ),
+            spaces="drive",
+            corpora="allDrives",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=max(1, min(100, page_size)),
+            fields="files(id,name,mimeType,parents,modifiedTime,webViewLink,driveId,appProperties)",
+        ).execute()
+        for item in resp.get("files", []) if isinstance(resp, dict) else []:
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            out.append(item)
+            if len(out) >= max_results:
+                return out
+    return out
+
+
+def _drive_case_from_search_candidate(
+    item: dict[str, Any],
+    relative_path: str,
+    *,
+    local_case: CaseFolder,
+) -> CaseFolder:
+    name = str(item.get("name") or PurePosixPath(relative_path).name)
+    cls = classify_drive_case_folder(relative_path) or {}
+    meta = extract_case_meta(name)
+    app_props = item.get("appProperties") or {}
+    if isinstance(app_props, dict):
+        hidden_case_no = str(app_props.get("magi_osc_case_number") or "").strip()
+        if OSC_CASE_RE.fullmatch(hidden_case_no):
+            meta.case_number = hidden_case_no
+        hidden_laf_no = str(app_props.get("magi_laf_case_no") or "").strip()
+        if LAF_CASE_RE.fullmatch(hidden_laf_no):
+            meta.laf_case_no = hidden_laf_no
+    return CaseFolder(
+        source="drive",
+        path=relative_path,
+        relative_path=relative_path,
+        name=name,
+        category=str(cls.get("category") or local_case.category),
+        status=str(cls.get("status") or ("closed" if relative_path.startswith("結案案件/") else local_case.status or "active")),
+        case_kind=str(cls.get("case_kind") or local_case.case_kind),
+        owner_bucket=str(cls.get("owner_bucket") or drive_owner_bucket()),
+        modified_time=str(item.get("modifiedTime") or ""),
+        meta=meta,
+        drive_id=str(item.get("id") or ""),
+        web_url=str(item.get("webViewLink") or ""),
+    )
+
+
+def _score_drive_search_candidate(candidate: CaseFolder, local_case: CaseFolder) -> tuple[int, list[str]]:
+    text = normalize_text(" ".join([
+        candidate.name,
+        candidate.relative_path,
+        candidate.meta.case_number,
+        candidate.meta.laf_case_no,
+        candidate.meta.court_case_no,
+        candidate.meta.client_hint,
+        candidate.meta.reason_hint,
+    ]))
+    matched: list[str] = []
+    score = 0
+    local_laf = str(local_case.meta.laf_case_no or "").strip()
+    candidate_laf = str(candidate.meta.laf_case_no or "").strip()
+    if local_laf and candidate_laf and normalize_text(local_laf) != normalize_text(candidate_laf):
+        return -1000, [f"法扶案號不同:{candidate_laf}"]
+    local_case_no = str(local_case.meta.case_number or "").strip()
+    if local_case_no and _contains_term(text, local_case_no):
+        score += 90
+        matched.append(local_case_no)
+    if local_laf and _contains_term(text, local_laf):
+        score += 100
+        matched.append(local_laf)
+    court_no = str(local_case.meta.court_case_no or "").strip()
+    if court_no and normalize_court_case_no(court_no) in text:
+        score += 80
+        matched.append(court_no)
+    client = str(local_case.meta.client_hint or "").strip()
+    if client and _contains_term(text, client):
+        score += 35
+        matched.append(client)
+    reason = str(local_case.meta.reason_hint or "").strip()
+    if reason and reason not in GENERIC_CONTEXT_TERMS and _contains_term(text, reason):
+        score += 25
+        matched.append(reason)
+    if candidate.category and local_case.category and normalize_drive_case_category(candidate.category) == normalize_drive_case_category(local_case.category):
+        score += 5
+    if candidate.status and local_case.status and candidate.status == local_case.status:
+        score += 5
+    elif candidate.status and local_case.status and candidate.status != local_case.status:
+        score -= 20
+    if candidate.case_kind and local_case.case_kind and candidate.case_kind == local_case.case_kind:
+        score += 5
+    return score, sorted(set(matched), key=lambda x: (-len(x), x))
+
+
+def find_drive_case_folder_by_broad_search(
+    service: Any,
+    drive_root_id: str,
+    case: CaseFolder,
+    *,
+    min_score: int = 50,
+) -> dict[str, Any]:
+    """Fallback Drive search for legacy folders outside MAGI's expected path."""
+    tokens = _drive_case_search_tokens(case)
+    if not tokens:
+        return {"ok": False, "skipped": True, "reason": "no_broad_search_tokens"}
+    candidates: list[dict[str, Any]] = []
+    for item in _search_drive_folders_by_name_tokens(service, tokens):
+        rel = _drive_folder_relative_path_to_root(service, str(item.get("id") or ""), drive_root_id)
+        if not rel:
+            continue
+        drive_case = _drive_case_from_search_candidate(item, rel, local_case=case)
+        score, matched_terms = _score_drive_search_candidate(drive_case, case)
+        if score < min_score:
+            continue
+        candidates.append({
+            "drive_case": drive_case,
+            "score": score,
+            "matched_terms": matched_terms,
+        })
+    candidates.sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+    if not candidates:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_case_folder_missing_after_broad_search",
+            "searched_tokens": tokens,
+        }
+    if len(candidates) > 1 and int(candidates[0]["score"]) <= int(candidates[1]["score"]) + 10:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_case_folder_broad_search_ambiguous",
+            "searched_tokens": tokens,
+            "candidates": [
+                {
+                    "relative_path": item["drive_case"].relative_path,
+                    "drive_id": item["drive_case"].drive_id,
+                    "score": item["score"],
+                    "matched_terms": item["matched_terms"],
+                }
+                for item in candidates[:10]
+            ],
+        }
+    best = candidates[0]
+    drive_case: CaseFolder = best["drive_case"]
+    return {
+        "ok": True,
+        "drive_id": drive_case.drive_id,
+        "relative_path": drive_case.relative_path,
+        "created_folders": [],
+        "created_count": 0,
+        "status": "existing_by_broad_search",
+        "case_number": case.meta.case_number,
+        "case_name": case.name,
+        "drive_visible_name": drive_case.name,
+        "search_score": best["score"],
+        "matched_terms": best["matched_terms"],
+        "searched_tokens": tokens,
+    }
 
 
 def update_drive_folder_app_properties(
@@ -2463,13 +2723,6 @@ def ensure_drive_case_folder_for_local_case(
         }
     parent_parts = parts[:-1]
     case_folder_name = parts[-1]
-    created_folders: list[str] = []
-    if parent_parts:
-        parent_result = ensure_drive_folder_path(service, drive_root_id, PurePosixPath(*parent_parts).as_posix())
-        parent_id = str(parent_result.get("drive_id") or "")
-        created_folders.extend(parent_result.get("created_folders") or [])
-    else:
-        parent_id = drive_root_id
     case_number = (case.meta.case_number or extract_case_meta(case.name).case_number or "").strip()
     app_props = {
         "magi_osc_case_number": case_number,
@@ -2478,6 +2731,27 @@ def ensure_drive_case_folder_for_local_case(
     laf_case_no = (case.meta.laf_case_no or extract_case_meta(case.name).laf_case_no or "").strip()
     if laf_case_no:
         app_props["magi_laf_case_no"] = laf_case_no
+    if parent_parts:
+        probe_parent = drive_root_id
+        parent_missing = False
+        for part in parent_parts:
+            found = find_drive_child_folder(service, probe_parent, part)
+            if not found:
+                parent_missing = True
+                break
+            probe_parent = found
+        if parent_missing:
+            broad = find_drive_case_folder_by_broad_search(service, drive_root_id, case)
+            if broad.get("ok"):
+                update_drive_folder_app_properties(service, str(broad.get("drive_id") or ""), app_props)
+                return broad
+    created_folders: list[str] = []
+    if parent_parts:
+        parent_result = ensure_drive_folder_path(service, drive_root_id, PurePosixPath(*parent_parts).as_posix())
+        parent_id = str(parent_result.get("drive_id") or "")
+        created_folders.extend(parent_result.get("created_folders") or [])
+    else:
+        parent_id = drive_root_id
     folder_id = find_drive_child_folder_by_osc_case_number(service, parent_id, case_number)
     if folder_id:
         status = "existing_by_osc_metadata"
@@ -2497,6 +2771,15 @@ def ensure_drive_case_folder_for_local_case(
                 update_drive_folder_metadata(service, folder_id, name=case_folder_name, app_properties=app_props)
                 status = "renamed_legacy_osc_number_folder"
             else:
+                broad = find_drive_case_folder_by_broad_search(service, drive_root_id, case)
+                if broad.get("ok"):
+                    folder_id = str(broad.get("drive_id") or "")
+                    update_drive_folder_app_properties(service, folder_id, app_props)
+                    status = str(broad.get("status") or "existing_by_broad_search")
+                    result = dict(broad)
+                    result["created_folders"] = created_folders
+                    result["created_count"] = len(created_folders)
+                    return result
                 folder_id = create_drive_folder(service, parent_id, case_folder_name, app_properties=app_props)
                 created_folders.append(PurePosixPath(*parts).as_posix())
                 status = "created"
@@ -2563,12 +2846,17 @@ def find_existing_drive_case_folder_for_local_case(
             folder_id = find_drive_child_folder(service, current, legacy_name)
             status = "existing_by_legacy_osc_number_folder" if folder_id else "missing"
     if not folder_id:
+        broad = find_drive_case_folder_by_broad_search(service, drive_root_id, case)
+        if broad.get("ok"):
+            return broad
         return {
             "ok": False,
             "skipped": True,
-            "reason": "drive_case_folder_missing",
+            "reason": broad.get("reason") or "drive_case_folder_missing",
             "relative_path": relative_path,
             "case_number": case_number,
+            "searched_tokens": broad.get("searched_tokens") or [],
+            "candidates": broad.get("candidates") or [],
         }
     return {
         "ok": True,
@@ -2794,7 +3082,7 @@ def build_file_sync_plan(
         drive_files = {
             normalized_relative_file_key(semantic_relative_path(export_relative_path(e))): e
             for e in drive_entries
-            if not e.is_folder
+            if _drive_entry_downloadable(e)
         }
         drive_existing_first_segments = _existing_drive_first_segments(drive_entries)
         for key, drive_entry in sorted(drive_files.items()):
