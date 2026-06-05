@@ -265,9 +265,9 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                 (
                     f"MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=5 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=15 "
                     f"{python_bin} {repo_root / 'scripts' / 'drive_case_sync_worker.py'} "
-                    "--direct-all-cases --direct-all-case-limit 16 "
-                    "--download-limit 60 --upload-limit 60 "
-                    "--max-download-bytes 700000000 --max-upload-bytes 700000000 "
+                    "--direct-all-cases --direct-all-case-limit 48 "
+                    "--download-limit 120 --upload-limit 120 "
+                    "--max-download-bytes 1200000000 --max-upload-bytes 1200000000 "
                     "--max-case-depth 5 --max-case-items 220 "
                     "--create-drive-folder-limit 12 --create-drive-folder-max-age-hours 168 "
                     "--priority-upcoming-days 0 --inventory-timeout-sec 1800"
@@ -275,7 +275,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                 block_at="core_only",
                 require_disk_free_gb=30,
                 require_free_inactive_gb=3,
-                timeout_sec=2100,
+                timeout_sec=2700,
             ),
             "desc": "Google Drive/NAS 全案件輪巡雙向同步（每 6 小時；依 DB folder_path 輪巡，不改兩邊命名規則；缺檔才補，不覆蓋、不刪除）",
             "channel_id": None,
@@ -292,7 +292,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "id": "job_osc_events_refresh",
             "cron": "35 */6 * * *",
             "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=5000 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'}",
-            "desc": "OSC/PDF/筆錄待辦與行事曆事件更新（每 6 小時；檔名全量巡檢 + bounded OCR/text 補漏 + GCal 去重/修復）",
+            "desc": "OSC/PDF/筆錄待辦與行事曆事件更新（每 6 小時；先補 Drive/NAS 缺檔，再檔名全量巡檢 + bounded OCR/text 補漏 + GCal 去重/修復）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
@@ -303,8 +303,8 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_osc_todo_governance",
             "cron": "35 3 * * *",
-            "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=5000 OSC_EVENTS_REFRESH_PDF_LIMIT=500 OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=1800 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'} --force-rebuild",
-            "desc": "OSC 待辦治理巡檢（每日 03:35；全檔名掃描、補漏、重複/殘影日曆清理，不依賴使用者回報）",
+            "command": f"{python_bin} {run_with_env} MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=5000 OSC_EVENTS_REFRESH_PDF_LIMIT=500 OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=1800 OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASES=1 OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASE_LIMIT=64 -- {python_bin} {repo_root / 'scripts' / 'ops' / 'osc_events_refresh.py'} --force-rebuild",
+            "desc": "OSC 待辦治理巡檢（每日 03:35；先做 Drive/NAS 全案件切片補檔，再全檔名掃描、補漏、重複/殘影日曆清理，不依賴使用者回報）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,

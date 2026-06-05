@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime, timedelta, timezone
 
 from api.osc.drive_case_sync import (
@@ -26,6 +28,7 @@ from api.osc.drive_case_sync import (
     match_keys,
     meaningful_terms,
     normalize_court_case_no,
+    nas_filesystem_relative_path,
     resolve_ambiguous_cases_with_context,
     resolve_drive_only_cases_with_context,
     nas_to_drive_relative_path,
@@ -37,6 +40,7 @@ from api.osc.drive_case_sync import (
     load_case_aliases,
     load_case_exclusions,
     run_priority_case_sync,
+    _download_drive_entry,
     _drive_list_children,
 )
 
@@ -523,6 +527,7 @@ def test_runtime_exclusions_remove_drive_case_from_sync_scope(monkeypatch):
 
 
 def test_file_sync_plan_reports_both_sides_missing_and_content_conflict(monkeypatch):
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_COMPARE_MD5", "1")
     drive = CaseFolder(
         source="drive",
         path="一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
@@ -743,6 +748,138 @@ def test_semantic_paths_treat_legacy_drive_folders_as_same_category():
     assert semantic_relative_path("08_筆錄/b.pdf") == "筆錄/b.pdf"
     assert semantic_relative_path("信件/c.pdf") == "信件往返/c.pdf"
     assert semantic_relative_path("12_信件往返/c.pdf") == "信件往返/c.pdf"
+
+
+def test_file_sync_plan_does_not_hash_existing_nas_files_by_default(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試",
+        relative_path="法扶案件/Lumi/測試",
+        name="測試",
+        meta=CaseMeta(case_number="2026-0001"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        local_path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        relative_path="法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        name="2026-0001-測試-一審-詐欺",
+        meta=CaseMeta(case_number="2026-0001"),
+    )
+    monkeypatch.delenv("MAGI_DRIVE_SYNC_COMPARE_MD5", raising=False)
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry("drive", "法院通知/a.pdf", "法院通知/a.pdf", "a.pdf", False, size=12, md5="drive-md5")
+        ],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry("nas", "/cases/09_法院通知或程序裁定/a.pdf", "09_法院通知或程序裁定/a.pdf", "a.pdf", False, size=12)
+        ],
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.local_file_md5", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not hash NAS files")))
+
+    plan = build_file_sync_plan(
+        {"matched": [{"drive": drive, "local": local}]},
+        drive_service=object(),
+        matched_case_limit=1,
+    )
+
+    assert plan["summary"]["skipped_existing_files"] == 1
+    assert plan["summary"]["conflict_files"] == 0
+
+
+def test_drive_to_nas_long_filename_is_shortened_and_not_reuploaded(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試",
+        relative_path="法扶案件/Lumi/測試",
+        name="測試",
+        meta=CaseMeta(case_number="2026-0001"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/民事/2026-0001-測試-一審-清算",
+        local_path="/cases/法扶案件/民事/2026-0001-測試-一審-清算",
+        relative_path="法扶案件/民事/2026-0001-測試-一審-清算",
+        name="2026-0001-測試-一審-清算",
+        meta=CaseMeta(case_number="2026-0001"),
+    )
+    long_name = "20251015 新北地方法院民事執行處函（測試；" + "請於文到七日內提出資料" * 18 + "）.pdf"
+    raw_target = f"09_法院通知或程序裁定/{long_name}"
+    safe_target = nas_filesystem_relative_path(raw_target)
+    assert safe_target != raw_target
+    assert len(safe_target.rsplit("/", 1)[-1].encode("utf-8")) <= 220
+
+    drive_entry = FileEntry("drive", f"法院通知/{long_name}", f"法院通知/{long_name}", long_name, False, size=12, drive_id="drive-file")
+    monkeypatch.setattr("api.osc.drive_case_sync.drive_descendant_context", lambda *_args, **_kwargs: [drive_entry])
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *_args, **_kwargs: [])
+
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
+    action = plan["cases"][0]["download_missing"][0]
+    assert action["target_relative_path"] == safe_target
+    assert action["filename_shortened_for_nas"] is True
+
+    safe_name = safe_target.rsplit("/", 1)[-1]
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: [FileEntry("nas", f"/cases/{safe_target}", safe_target, safe_name, False, size=12)],
+    )
+    plan2 = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
+    assert plan2["cases"][0]["download_missing"] == []
+    assert plan2["cases"][0]["nas_only"] == []
+
+
+def test_drive_download_uses_short_temp_name_for_long_court_filenames(monkeypatch, tmp_path):
+    """Long court filenames must not make the temporary download filename exceed OS limits."""
+
+    class FakeDownloader:
+        def __init__(self, fh, _request, chunksize=0):
+            self.fh = fh
+            self.done = False
+
+        def next_chunk(self):
+            if not self.done:
+                self.fh.write(b"%PDF-1.4\n")
+                self.done = True
+            return None, True
+
+    class FakeFiles:
+        def get_media(self, **_kwargs):
+            return object()
+
+    class FakeService:
+        def files(self):
+            return FakeFiles()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "googleapiclient.http",
+        types.SimpleNamespace(MediaIoBaseDownload=FakeDownloader),
+    )
+    long_name = "20251015_notice_" + "A" * 210 + ".pdf"
+    target = tmp_path / long_name
+    result = _download_drive_entry(
+        FakeService(),
+        FileEntry(
+            source="drive",
+            path=long_name,
+            relative_path=long_name,
+            name=long_name,
+            is_folder=False,
+            drive_id="drive-file",
+            mime_type="application/pdf",
+        ),
+        target,
+    )
+
+    assert result["status"] == "downloaded"
+    assert target.exists()
+    assert not list(tmp_path.glob(".magi-drive-sync-*"))
 
 
 def test_nas_upload_does_not_put_procedural_docs_into_indictment_folder():

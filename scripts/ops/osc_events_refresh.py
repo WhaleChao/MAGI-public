@@ -16,6 +16,7 @@ import importlib.util
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -507,6 +508,113 @@ def _write_latest(data: dict[str, Any], out_path: Path = LATEST_PATH) -> None:
     tmp.replace(out_path)
 
 
+def _run_drive_case_sync_before_pdf(args: argparse.Namespace) -> dict[str, Any]:
+    """Run a bounded Drive/NAS missing-file sync before PDF todo extraction.
+
+    Google Drive and NAS intentionally keep different folder naming rules.  The
+    worker handles that mapping; this hook only makes sure Drive-only PDFs reach
+    the NAS before the filename/OCR todo scanner runs.
+    """
+    if bool(getattr(args, "dry_run", False)):
+        return {"ok": True, "skipped": True, "reason": "dry_run"}
+    if os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_ENABLE", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "disabled_by_env"}
+
+    all_cases = bool(getattr(args, "drive_sync_all_cases", False) or getattr(args, "force_rebuild", False))
+    download_limit = max(0, int(getattr(args, "drive_sync_download_limit", 24)))
+    upload_limit = max(0, int(getattr(args, "drive_sync_upload_limit", 0)))
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "drive_case_sync_worker.py"),
+        "--max-download-bytes",
+        str(max(0, int(getattr(args, "drive_sync_max_download_bytes", 400_000_000)))),
+        "--max-upload-bytes",
+        str(max(0, int(getattr(args, "drive_sync_max_upload_bytes", 400_000_000)))),
+        "--max-case-depth",
+        str(max(1, int(getattr(args, "drive_sync_max_case_depth", 5)))),
+        "--max-case-items",
+        str(max(1, int(getattr(args, "drive_sync_max_case_items", 220)))),
+        "--create-drive-folder-limit",
+        str(max(0, int(getattr(args, "drive_sync_create_folder_limit", 12)))),
+        "--priority-upcoming-days",
+        str(max(0, int(getattr(args, "drive_sync_priority_days", 21)))),
+        "--priority-case-limit",
+        str(max(1, int(getattr(args, "drive_sync_priority_case_limit", 80)))),
+        "--inventory-timeout-sec",
+        str(max(30, int(getattr(args, "drive_sync_timeout_sec", 900)))),
+    ]
+    if download_limit <= 0:
+        cmd.append("--no-downloads")
+    else:
+        cmd.extend(["--download-limit", str(download_limit)])
+    if upload_limit <= 0:
+        cmd.append("--no-uploads")
+    else:
+        cmd.extend(["--upload-limit", str(upload_limit)])
+    if all_cases:
+        cmd.extend([
+            "--direct-all-cases",
+            "--direct-all-case-limit",
+            str(max(1, int(getattr(args, "drive_sync_all_case_limit", 32)))),
+        ])
+    else:
+        cmd.extend([
+            "--direct-priority-case-limit",
+            str(max(1, int(getattr(args, "drive_sync_priority_direct_limit", 24)))),
+        ])
+
+    env = os.environ.copy()
+    env.setdefault("MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC", "5")
+    env.setdefault("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC", "15")
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=max(60, int(getattr(args, "drive_sync_timeout_sec", 900)) + 30),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "status": "timeout",
+            "mode": "direct_all_cases" if all_cases else "priority_cases",
+            "error": f"drive_case_sync_timeout:{exc.timeout}s",
+        }
+    stdout = (completed.stdout or "").strip()
+    parsed: dict[str, Any] = {}
+    if stdout:
+        try:
+            parsed = json.loads(stdout[stdout.find("{"):])
+        except Exception:
+            parsed = {"raw_stdout": stdout[-1200:]}
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "status": "failed",
+            "mode": "direct_all_cases" if all_cases else "priority_cases",
+            "returncode": completed.returncode,
+            "summary": parsed.get("summary") or {},
+            "execution_summary": parsed.get("execution_summary") or {},
+            "stderr": (completed.stderr or "")[-1200:],
+        }
+    return {
+        "ok": bool(parsed.get("ok", True)),
+        "status": "ok",
+        "mode": parsed.get("mode") or ("direct_all_cases" if all_cases else "priority_cases"),
+        "all_case_total": parsed.get("all_case_total", 0),
+        "summary": parsed.get("summary") or {},
+        "file_sync_summary": parsed.get("file_sync_summary") or {},
+        "execution_summary": parsed.get("execution_summary") or {},
+        "drive_folder_summary": parsed.get("drive_folder_summary") or {},
+        "priority_case_numbers": (parsed.get("priority_case_numbers") or [])[:20],
+        "all_case_numbers": (parsed.get("all_case_numbers") or [])[:20],
+        "output_paths": parsed.get("output_paths") or {},
+    }
+
+
 def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
@@ -521,6 +629,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "interval_hours": 6,
         "dry_run": bool(getattr(args, "dry_run", False)),
         "scan": {},
+        "drive_case_sync": {},
         "pdf_calendar_scan": {},
         "transcript_todos": {},
         "calendar_import": {},
@@ -557,6 +666,11 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
             }
 
+        if not getattr(args, "skip_drive_sync", False):
+            result["drive_case_sync"] = _run_drive_case_sync_before_pdf(args)
+            if not result["drive_case_sync"].get("ok"):
+                result["warnings"].append("drive_case_sync_before_pdf_failed")
+
         if not getattr(args, "skip_pdf_todos", False):
             try:
                 result["pdf_calendar_scan"] = _run_pdf_calendar_scan(args)
@@ -581,7 +695,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     }
                 else:
                     env_timeout = int(os.environ.get("OSC_TRANSCRIPT_TODO_TIMEOUT_SEC", "0") or "0")
-                    transcript_timeout = env_timeout if env_timeout > 0 else 120
+                    transcript_timeout = env_timeout if env_timeout > 0 else 300
                     min_dry_run_budget = max(1, int(os.environ.get("OSC_TRANSCRIPT_TODO_MIN_DRY_RUN_BUDGET_SEC", "120") or "120"))
                     if (
                         bool(getattr(args, "dry_run", False))
@@ -728,6 +842,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--transcript-tail-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_TAIL_PAGES", "3")))
     parser.add_argument("--pdf-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_LIMIT", "240")))
     parser.add_argument("--pdf-max-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_MAX_PAGES", "8")))
+    parser.add_argument("--skip-drive-sync", action="store_true")
+    parser.add_argument("--drive-sync-all-cases", action="store_true", default=os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASES", "0") == "1")
+    parser.add_argument("--drive-sync-all-case-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASE_LIMIT", "32")))
+    parser.add_argument("--drive-sync-priority-direct-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_PRIORITY_DIRECT_LIMIT", "24")))
+    parser.add_argument("--drive-sync-priority-case-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_PRIORITY_CASE_LIMIT", "80")))
+    parser.add_argument("--drive-sync-priority-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_PRIORITY_DAYS", "21")))
+    parser.add_argument("--drive-sync-download-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_DOWNLOAD_LIMIT", "24")))
+    parser.add_argument("--drive-sync-upload-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_UPLOAD_LIMIT", "0")))
+    parser.add_argument("--drive-sync-max-download-bytes", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_MAX_DOWNLOAD_BYTES", "400000000")))
+    parser.add_argument("--drive-sync-max-upload-bytes", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_MAX_UPLOAD_BYTES", "400000000")))
+    parser.add_argument("--drive-sync-max-case-depth", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_MAX_CASE_DEPTH", "5")))
+    parser.add_argument("--drive-sync-max-case-items", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_MAX_CASE_ITEMS", "220")))
+    parser.add_argument("--drive-sync-create-folder-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_CREATE_FOLDER_LIMIT", "12")))
+    parser.add_argument("--drive-sync-timeout-sec", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_DRIVE_SYNC_TIMEOUT_SEC", "900")))
     parser.add_argument("--skip-pdf-todos", action="store_true")
     parser.add_argument("--skip-transcript-todos", action="store_true")
     parser.add_argument("--skip-calendar-audit", action="store_true")

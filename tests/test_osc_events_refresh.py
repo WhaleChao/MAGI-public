@@ -155,6 +155,11 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
             or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}}
         ),
     )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
     monkeypatch.delenv("MAGI_GCAL_DEDUP_DRY_RUN", raising=False)
 
     args = SimpleNamespace(
@@ -175,13 +180,15 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         transcript_tail_pages=3,
         skip_transcript_todos=False,
         skip_calendar_audit=False,
+        skip_drive_sync=False,
         json_out=str(out),
+        dry_run=False,
     )
 
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
+    assert [name for name, _ in calls] == ["drive_sync", "pdf_scan", "transcript_targets", "transcript_scan", "transcript_apply", "import", "push", "audit"]
     assert result["scan"] == {
         "ok": True,
         "skipped": True,
@@ -226,6 +233,11 @@ def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, t
         "_run_pdf_calendar_scan",
         lambda args: calls.append(("pdf_scan", {"limit": args.pdf_limit})) or {"ok": True, "scanned": 0},
     )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
 
     args = SimpleNamespace(
         calendar_only=False,
@@ -246,6 +258,7 @@ def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, t
         transcript_tail_pages=3,
         skip_transcript_todos=True,
         skip_calendar_audit=False,
+        skip_drive_sync=False,
         json_out=str(out),
         dry_run=False,
     )
@@ -253,7 +266,7 @@ def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, t
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["scan", "pdf_scan"]
+    assert [name for name, _ in calls] == ["scan", "drive_sync", "pdf_scan"]
     assert result["scan"]["inserted"] == 1
 
 

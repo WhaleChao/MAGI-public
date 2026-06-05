@@ -374,10 +374,12 @@ def test_six_hour_event_refresh_is_seeded():
     assert all_drive_job["cron"] == "12 */6 * * *"
     assert "drive_case_sync_worker.py" in all_drive_job["command"]
     assert "--direct-all-cases" in all_drive_job["command"]
-    assert "--timeout-sec 2100" in all_drive_job["command"]
+    assert "--direct-all-case-limit 48" in all_drive_job["command"]
+    assert "--timeout-sec 2700" in all_drive_job["command"]
     assert job["cron"] == "35 */6 * * *"
     assert job["enabled"] is True
     assert "osc_events_refresh.py" in job["command"]
+    assert "先補 Drive/NAS 缺檔" in job["desc"]
     assert job["no_catchup"] is True
 
 

@@ -2252,6 +2252,39 @@ def semantic_relative_path(relative_path: str) -> str:
     return PurePosixPath(*parts).as_posix()
 
 
+def _fit_filename_utf8(name: str, *, max_bytes: int = 220) -> str:
+    """Fit a filename into SMB/APFS byte limits while preserving identity."""
+    raw = str(name or "").strip()
+    if not raw or len(raw.encode("utf-8")) <= max_bytes:
+        return raw
+    suffix = ""
+    if "." in raw:
+        dot = raw.rfind(".")
+        suffix = raw[dot:]
+        stem = raw[:dot]
+    else:
+        stem = raw
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    tail = f"-{digest}{suffix}"
+    allowance = max(16, max_bytes - len(tail.encode("utf-8")))
+    out = stem
+    while out and len(out.encode("utf-8")) > allowance:
+        out = out[:-1]
+    out = out.rstrip(" -_，,；;（）()")
+    if not out:
+        out = "drive-file"
+    return f"{out}{tail}"
+
+
+def nas_filesystem_relative_path(relative_path: str) -> str:
+    """Return a NAS-safe relative path without changing Drive naming rules."""
+    parts = list(split_relative_parts(relative_path))
+    if not parts:
+        return ""
+    parts[-1] = _fit_filename_utf8(parts[-1])
+    return PurePosixPath(*parts).as_posix()
+
+
 def safe_child_path(base: Path, relative_path: str) -> Path:
     rel = str(relative_path or "").replace("\\", "/").strip("/")
     parts = PurePosixPath(rel).parts
@@ -2676,6 +2709,12 @@ def build_file_sync_plan(
     category.  The comparison uses semantic paths, while executable actions
     preserve the target side's native folder layout.
     """
+    compare_md5 = os.environ.get("MAGI_DRIVE_SYNC_COMPARE_MD5", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     cases: list[dict[str, Any]] = []
     summary = {
         "matched_cases_scanned": 0,
@@ -2728,6 +2767,7 @@ def build_file_sync_plan(
             "skipped_existing": 0,
             "error": "",
         }
+        matched_local_keys: set[str] = set()
         try:
             drive_entries = drive_descendant_context(
                 drive_service,
@@ -2759,18 +2799,29 @@ def build_file_sync_plan(
         drive_existing_first_segments = _existing_drive_first_segments(drive_entries)
         for key, drive_entry in sorted(drive_files.items()):
             source_rel = export_relative_path(drive_entry)
-            target_rel = drive_to_nas_relative_path(source_rel)
+            raw_target_rel = drive_to_nas_relative_path(source_rel)
+            target_rel = nas_filesystem_relative_path(raw_target_rel)
             local_entry = local_files.get(key)
+            local_key = key
+            if not local_entry:
+                target_key = normalized_relative_file_key(semantic_relative_path(target_rel))
+                if target_key != key:
+                    local_entry = local_files.get(target_key)
+                    local_key = target_key
             if not local_entry:
                 action = _entry_public_dict(drive_entry)
                 action["source_relative_path"] = source_rel
                 action["target_relative_path"] = target_rel
+                if target_rel != raw_target_rel:
+                    action["original_target_relative_path"] = raw_target_rel
+                    action["filename_shortened_for_nas"] = True
                 action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
                 action["export_mime_type"] = (GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type) or [""])[0]
                 case_plan["download_missing"].append(action)
                 summary["drive_missing_in_nas_files"] += 1
                 summary["drive_missing_in_nas_bytes"] += int(drive_entry.size or 0)
                 continue
+            matched_local_keys.add(local_key)
             if drive_entry.size is not None and local_entry.size is not None and int(drive_entry.size) != int(local_entry.size):
                 case_plan["conflicts"].append({
                     "relative_path": target_rel,
@@ -2780,7 +2831,7 @@ def build_file_sync_plan(
                     "reason": "same_relative_path_size_differs",
                 })
                 summary["conflict_files"] += 1
-            elif drive_entry.md5 and local_entry.path:
+            elif compare_md5 and drive_entry.md5 and local_entry.path:
                 try:
                     local_md5 = local_file_md5(local_entry.path)
                 except Exception as exc:
@@ -2816,7 +2867,7 @@ def build_file_sync_plan(
                 case_plan["skipped_existing"] += 1
                 summary["skipped_existing_files"] += 1
         for key, local_entry in sorted(local_files.items()):
-            if key not in drive_files:
+            if key not in drive_files and key not in matched_local_keys:
                 action = _entry_public_dict(local_entry)
                 action["target_relative_path"] = nas_to_drive_relative_path(
                     local_entry.relative_path,
@@ -2848,8 +2899,11 @@ def _download_drive_entry(service: Any, entry: FileEntry, target_path: Path) -> 
         request = service.files().export_media(fileId=entry.drive_id, mimeType=export[0])
     else:
         request = service.files().get_media(fileId=entry.drive_id, supportsAllDrives=True)
+    # Keep the temporary filename short.  Court PDFs often have intentionally
+    # long descriptive names; reusing the target filename as the temp prefix can
+    # exceed SMB/APFS filename limits even though the final target name is valid.
     fd, tmp_name = tempfile.mkstemp(
-        prefix=f".magi-drive-sync-{target_path.name}-",
+        prefix=".magi-drive-sync-",
         suffix=".tmp",
         dir=str(target_path.parent),
     )

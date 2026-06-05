@@ -3295,8 +3295,59 @@ def _parse_naming_response(text: str) -> dict:
 
     return result
 
+def _filename_may_have_osc_todo(name: str, result: dict | None = None) -> bool:
+    """Return True when a renamed court PDF may create an OSC todo.
+
+    Original OSC rules are filename-first.  The quick trigger therefore must
+    include hearing/procedure terms, not only "N日內" deadline wording.
+    """
+    text = str(name or "")
+    result = result or {}
+    if any(str(result.get(key) or "").strip() for key in ("deadline", "deadline_type", "hearing_date", "hearing_time")):
+        return True
+    deadline_actions = (
+        "補正",
+        "補提",
+        "補陳",
+        "陳報",
+        "陳述意見",
+        "表示意見",
+        "提出資料",
+        "具狀",
+        "上訴",
+        "抗告",
+        "繳納",
+        "繳費",
+        "裁判費",
+        "規費",
+        "閱卷",
+        "末日",
+    )
+    if re.search(r"(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)\s*(?:內|内)?", text) and any(term in text for term in deadline_actions):
+        return True
+    if re.search(r"(?:文到|送達|收受).{0,12}(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)", text) and any(term in text for term in deadline_actions):
+        return True
+    hearing_terms = (
+        "開庭",
+        "庭期",
+        "期日",
+        "調解",
+        "調查",
+        "審理",
+        "準備程序",
+        "言詞辯論",
+        "辯論",
+        "訊問",
+        "協商",
+        "宣判",
+    )
+    if any(term in text for term in hearing_terms) and re.search(r"(?:\d{6,8}|[一二三四五六七八九十百]+年|\d{2,3}年|\d{1,2}月\d{1,2}日)", text):
+        return True
+    return False
+
+
 def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
-    """快速 regex 預檢檔名 bracket 是否含期限，命中才呼 OSC sync。
+    """快速 regex 預檢檔名是否可能有 OSC 待辦，命中才呼 OSC sync。
 
     避免每次 rename 都 spawn subprocess（45s timeout × 兩次）。
     """
@@ -3304,7 +3355,7 @@ def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
         return
 
     name = os.path.basename(new_path)
-    if not re.search(r"\d+日內(補正|上訴|陳述意見|繳納|繳費|閱卷)", name):
+    if not _filename_may_have_osc_todo(name, result):
         return
 
     try:
