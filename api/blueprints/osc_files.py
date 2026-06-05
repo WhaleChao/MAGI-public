@@ -1123,6 +1123,11 @@ def osc_folders_move_api():
         target_parent = _safe_join_under(base_real, dst_rel)
         if target_parent is None or not _osc_is_safe_local_path(target_parent) or not os.path.isdir(target_parent):
             return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
+        if os.path.isdir(src):
+            src_real = os.path.realpath(src)
+            target_parent_real = os.path.realpath(target_parent)
+            if target_parent_real == src_real or target_parent_real.startswith(src_real + os.sep):
+                return jsonify({"ok": False, "error": "nested_target"}), 400
         dst = os.path.join(target_parent, src_name)
         if os.path.exists(dst):
             return jsonify({"ok": False, "error": "target_exists"}), 409

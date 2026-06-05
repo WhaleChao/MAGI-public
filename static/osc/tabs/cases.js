@@ -1,4 +1,7 @@
 /* tabs/cases.js – Case management + workbench */
+const WB_FOLDER_DRAG_TYPE = "application/x-paperclip-workbench-file-rel";
+let wbFolderDragPayload = null;
+
 async function loadCaseCourtOptions(force = false) {
     if (!force && state.caseCourtOptionsLoaded) return;
     try {
@@ -843,12 +846,12 @@ function renderCaseFolderBrowser(data) {
     const folderExists = !!data.folder_exists;
     const normalizedFolderPath = folderPath.replace(/\\/g, "/").replace(/\/$/, "");
     const parentButton = rel
-        ? `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(data.parent_relative_path || "")}">↩ 上一層</button>`
+        ? `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(data.parent_relative_path || "")}" data-wb-drop-target="folder">↩ 上一層</button>`
         : "";
     const treeNodes = [
-        `<button class="case-drive-node ${rel ? "" : "active"}" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="">📁 ${esc(c.case_number || "案件根目錄")}</button>`,
+        `<button class="case-drive-node ${rel ? "" : "active"}" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="" data-wb-drop-target="folder">📁 ${esc(c.case_number || "案件根目錄")}</button>`,
         parentButton,
-        ...dirs.map(item => `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}">📁 ${esc(item.name || "")}</button>`),
+        ...dirs.map(item => `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-wb-drop-target="folder">📁 ${esc(item.name || "")}</button>`),
     ].filter(Boolean).join("");
     const rows = entries.length ? entries.map(item => {
         const isDir = item.type === "dir";
@@ -870,7 +873,7 @@ function renderCaseFolderBrowser(data) {
             ? `<button class="btn slim" data-act="wb-file-edit" data-id="${esc(c.id || "")}" data-path="${esc(targetPath)}" data-return-path="${esc(rel)}">編輯</button>`
             : "";
         return `
-        <tr>
+        <tr class="wb-folder-row ${isDir ? "dir" : "file"}" draggable="true" data-wb-rel="${esc(item.relative_path || "")}" data-wb-type="${esc(item.type || "")}" data-wb-name="${esc(item.name || "")}">
             <td>${isDir ? "資料夾" : "檔案"}</td>
             <td>${esc(item.name || "")}</td>
             <td>${esc(item.modified_at || "")}</td>
@@ -901,9 +904,9 @@ function renderCaseFolderBrowser(data) {
         </div>
         <div class="wb-breadcrumb">${esc(rel ? `${folderPath} / ${rel}` : folderPath)}</div>
         ${folderExists ? `
-        <div class="wb-drop-zone" aria-label="拖拉檔案上傳">
-            <strong>可將多個檔案拖拉到這裡上傳</strong>
-            <span>目前位置：${esc(rel || "案件根目錄")}。同名檔案會先詢問是否覆蓋。</span>
+        <div class="wb-drop-zone" aria-label="拖拉檔案上傳或移動" data-wb-drop-target="folder" data-path="${esc(rel || "")}">
+            <strong>可將多個檔案拖拉到這裡上傳，也可拖拉既有檔案移到目前位置</strong>
+            <span>目前位置：${esc(rel || "案件根目錄")}。同名上傳會先詢問是否覆蓋；既有檔案移動遇同名項目會保留原檔並提示。</span>
         </div>
         <div class="case-drive-shell">
             <aside class="case-drive-tree" aria-label="案件資料夾結構">
@@ -928,6 +931,7 @@ async function openCaseFolder(id, relativePath = "") {
     state.wb = { mode: "case-folder", id, data };
     wbShow(`案件資料夾｜${c.case_number || id}`, renderCaseFolderBrowser(data));
     bindWorkbenchFolderDropZone();
+    bindWorkbenchFolderMoveDrag();
     wbSetStatus(
         data.folder_exists
             ? `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`
@@ -1166,6 +1170,112 @@ async function trashWorkbenchEntry(caseId, folderPath, relativePath = "", curren
     }
 }
 
+function wbSelectedFolderRows() {
+    return Array.from(document.querySelectorAll(".wb-folder-row.selected")).map(row => ({
+        basePath: state.wb?.data?.folder_path || "",
+        rel: row.dataset.wbRel || "",
+        type: row.dataset.wbType || "file",
+        name: row.dataset.wbName || "",
+    })).filter(item => item.rel);
+}
+
+function wbApplyFolderSelection(rows) {
+    const rels = new Set((rows || []).map(row => row.rel || row.dataset?.wbRel || "").filter(Boolean));
+    document.querySelectorAll(".wb-folder-row").forEach(row => {
+        row.classList.toggle("selected", rels.has(row.dataset.wbRel || ""));
+    });
+}
+
+function wbFolderRowPayload(row) {
+    if (!row) return null;
+    const rel = row.dataset.wbRel || "";
+    if (!rel) return null;
+    return {
+        basePath: state.wb?.data?.folder_path || "",
+        rel,
+        type: row.dataset.wbType || "file",
+        name: row.dataset.wbName || rel.split("/").pop() || rel,
+    };
+}
+
+function wbFolderParentRel(rel) {
+    const parts = String(rel || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+}
+
+function wbFolderTargetRel(target) {
+    const node = target && target.closest ? target.closest("[data-wb-drop-target='folder'], .wb-folder-row") : null;
+    if (!node) return state.wb?.data?.current_relative_path || "";
+    if (node.dataset.wbDropTarget === "folder") return node.dataset.path || "";
+    if (node.dataset.wbType === "dir") return node.dataset.wbRel || "";
+    return state.wb?.data?.current_relative_path || "";
+}
+
+function wbFolderMoveErrorText(error) {
+    const msg = String(error || "");
+    if (msg.includes("target_exists")) return "目標資料夾已有同名項目，請先改名或刪除原項目。";
+    if (msg.includes("nested_target")) return "不能把資料夾移到自己或自己的子資料夾底下。";
+    if (msg.includes("target_dir_not_found")) return "目標資料夾目前不存在或尚未同步。";
+    if (msg.includes("source_not_found")) return "來源檔案已不存在或尚未同步。";
+    return msg || "未知錯誤";
+}
+
+function wbValidateMovePayload(payload, targetRel) {
+    const entries = (payload?.entries || [payload]).filter(item => item && item.rel);
+    if (!entries.length) return "missing_source";
+    const basePath = state.wb?.data?.folder_path || "";
+    if (!basePath || entries.some(item => item.basePath !== basePath)) return "different_base";
+    const target = targetRel || "";
+    if (entries.every(item => wbFolderParentRel(item.rel) === target)) return "same_parent";
+    if (entries.some(item => item.type === "dir" && (target === item.rel || target.startsWith(item.rel + "/")))) return "nested_target";
+    return "";
+}
+
+function wbInternalFolderDrag(e) {
+    if (e?.dataTransfer && Array.from(e.dataTransfer.types || []).includes(WB_FOLDER_DRAG_TYPE)) return true;
+    return !!wbFolderDragPayload;
+}
+
+function wbReadFolderDrag(e) {
+    const raw = e?.dataTransfer?.getData(WB_FOLDER_DRAG_TYPE);
+    if (raw) {
+        try { return JSON.parse(raw); } catch (_) {}
+    }
+    return wbFolderDragPayload;
+}
+
+async function moveWorkbenchEntries(payload, targetRel) {
+    const entries = (payload?.entries || [payload]).filter(item => item && item.rel);
+    const basePath = state.wb?.data?.folder_path || "";
+    const caseId = state.wb?.data?.case?.id || state.wb?.id || "";
+    const currentPath = state.wb?.data?.current_relative_path || "";
+    const label = entries.length > 1 ? `${entries.length} 個項目` : (entries[0]?.name || entries[0]?.rel || "項目");
+    wbSetStatus(`移動中：${label}。`, "info");
+    const errors = [];
+    let moved = 0;
+    for (const item of entries) {
+        try {
+            const data = await api("/api/osc/folders/move", "POST", {
+                base_path: basePath,
+                source_relative_path: item.rel,
+                target_relative_path: targetRel || "",
+            });
+            if (data.ok) moved += 1;
+            else errors.push(`${item.name || item.rel}：${wbFolderMoveErrorText(data.error)}`);
+        } catch (e) {
+            errors.push(`${item.name || item.rel}：${wbFolderMoveErrorText(e.message || e)}`);
+        }
+    }
+    if (errors.length) {
+        wbSetStatus(`移動完成 ${moved} 個，失敗 ${errors.length} 個：${errors.slice(0, 2).join("；")}`, "warn");
+    } else {
+        wbSetStatus(`已移動：${label}。`, "ok");
+        showToast(`已移動：${label}`, "ok", 2500);
+    }
+    await openCaseFolder(caseId, currentPath || "");
+}
+
 async function handleFolderUploadFiles(fileList, opts = {}) {
     const ctx = state.folderUpload || {};
     const folderPath = String(ctx.folderPath || "").trim();
@@ -1257,6 +1367,105 @@ function bindWorkbenchFolderDropZone() {
             relativePath: data.current_relative_path || "",
         };
         await handleFolderUploadFiles(files);
+    });
+}
+
+function bindWorkbenchFolderMoveDrag() {
+    const card = document.querySelector(".case-drive-card");
+    if (!card || card._wbMoveDragBound) return;
+    card._wbMoveDragBound = true;
+
+    card.addEventListener("click", (e) => {
+        const row = e.target.closest(".wb-folder-row");
+        if (!row || e.target.closest("button,a,input,select,textarea,[data-act]")) return;
+        const rows = Array.from(card.querySelectorAll(".wb-folder-row"));
+        const payload = wbFolderRowPayload(row);
+        if (!payload) return;
+        if (e.shiftKey && state.wbFolderLastRel) {
+            const start = rows.findIndex(x => (x.dataset.wbRel || "") === state.wbFolderLastRel);
+            const end = rows.findIndex(x => (x.dataset.wbRel || "") === payload.rel);
+            if (start >= 0 && end >= 0) {
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                wbApplyFolderSelection(rows.slice(lo, hi + 1).map(wbFolderRowPayload));
+                return;
+            }
+        }
+        if (e.ctrlKey || e.metaKey) {
+            row.classList.toggle("selected");
+            state.wbFolderLastRel = payload.rel;
+            return;
+        }
+        state.wbFolderLastRel = payload.rel;
+        wbApplyFolderSelection([payload]);
+    });
+
+    card.addEventListener("dragstart", (e) => {
+        const row = e.target.closest(".wb-folder-row");
+        if (!row || e.target.closest("button,a,input,select,textarea,[data-act]")) return;
+        const payload = wbFolderRowPayload(row);
+        if (!payload) return;
+        if (!row.classList.contains("selected")) {
+            wbApplyFolderSelection([payload]);
+            state.wbFolderLastRel = payload.rel;
+        }
+        const selected = wbSelectedFolderRows();
+        wbFolderDragPayload = selected.length > 1
+            ? { basePath: payload.basePath, rel: payload.rel, type: payload.type, name: `${selected.length} 個項目`, entries: selected }
+            : payload;
+        try {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData(WB_FOLDER_DRAG_TYPE, JSON.stringify(wbFolderDragPayload));
+            e.dataTransfer.setData("text/plain", wbFolderDragPayload.name || payload.name);
+        } catch (_) {}
+        row.classList.add("dragging");
+    });
+
+    card.addEventListener("dragend", () => {
+        wbFolderDragPayload = null;
+        card.querySelectorAll(".dragging,.wb-drop-target").forEach(el => el.classList.remove("dragging", "wb-drop-target"));
+    });
+
+    const mark = (e, active) => {
+        const target = e.target.closest("[data-wb-drop-target='folder'], .wb-folder-row");
+        if (!target) return;
+        if (active) target.classList.add("wb-drop-target");
+        else target.classList.remove("wb-drop-target");
+    };
+
+    card.addEventListener("dragover", (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        const target = e.target.closest("[data-wb-drop-target='folder'], .wb-folder-row");
+        if (!target) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        mark(e, true);
+    });
+    card.addEventListener("dragleave", (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        mark(e, false);
+    });
+    card.addEventListener("drop", async (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        e.preventDefault();
+        card.querySelectorAll(".wb-drop-target").forEach(el => el.classList.remove("wb-drop-target"));
+        const payload = wbReadFolderDrag(e);
+        const targetRel = wbFolderTargetRel(e.target);
+        const reason = wbValidateMovePayload(payload, targetRel);
+        if (reason === "same_parent") {
+            wbSetStatus("選取項目已經在目標資料夾。", "warn");
+            return;
+        }
+        if (reason === "nested_target") {
+            wbSetStatus("不能把資料夾移到自己或自己的子資料夾底下。", "warn");
+            return;
+        }
+        if (reason) {
+            wbSetStatus("只能在同一個案件根目錄內移動檔案或資料夾。", "warn");
+            return;
+        }
+        await moveWorkbenchEntries(payload, targetRel);
+        wbFolderDragPayload = null;
     });
 }
 

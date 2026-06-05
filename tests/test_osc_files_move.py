@@ -117,6 +117,63 @@ def test_move_file_to_case_root_is_allowed(tmp_path: Path):
     assert (tmp_path / "要移回根目錄.txt").read_text(encoding="utf-8") == "root-target"
 
 
+def test_move_file_does_not_overwrite_existing_target(tmp_path: Path):
+    client = _client()
+    src_dir = tmp_path / "來源"
+    dst_dir = tmp_path / "目標"
+    src_dir.mkdir()
+    dst_dir.mkdir()
+    src = src_dir / "同名.pdf"
+    dst = dst_dir / "同名.pdf"
+    src.write_bytes(b"new")
+    dst.write_bytes(b"old")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(tmp_path)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/folders/move",
+            json={
+                "base_path": str(tmp_path),
+                "source_relative_path": "來源/同名.pdf",
+                "target_relative_path": "目標",
+            },
+        )
+
+    assert r.status_code == 409
+    data = r.get_json()
+    assert data["ok"] is False
+    assert data["error"] == "target_exists"
+    assert src.read_bytes() == b"new"
+    assert dst.read_bytes() == b"old"
+
+
+def test_move_folder_into_itself_is_rejected(tmp_path: Path):
+    client = _client()
+    folder = tmp_path / "證據資料"
+    child = folder / "子資料夾"
+    child.mkdir(parents=True)
+    (folder / "內容.txt").write_text("payload", encoding="utf-8")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(tmp_path)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.post(
+            "/api/osc/folders/move",
+            json={
+                "base_path": str(tmp_path),
+                "source_relative_path": "證據資料",
+                "target_relative_path": "證據資料/子資料夾",
+            },
+        )
+
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data["ok"] is False
+    assert data["error"] == "nested_target"
+    assert folder.is_dir()
+    assert child.is_dir()
+    assert (folder / "內容.txt").read_text(encoding="utf-8") == "payload"
+
+
 def test_upload_multi_accepts_batch_files_and_reports_conflicts(tmp_path: Path):
     client = _client()
     case_dir = tmp_path / "案件A"

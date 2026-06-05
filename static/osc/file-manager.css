@@ -959,6 +959,20 @@ body.theme-dark .fm-move-pending {
     margin-bottom: 8px;
 }
 
+.fm-entry-dragging {
+    opacity: 0.55;
+}
+
+.fm-drop-target {
+    outline: 2px solid var(--apple-blue, #007aff);
+    outline-offset: -2px;
+    background: rgba(0, 122, 255, 0.12) !important;
+}
+
+tr.fm-drop-target > td {
+    background: rgba(0, 122, 255, 0.12) !important;
+}
+
 /* === Upload queue panel (Phase 2 commit 9, floating) === */
 .fm-upload-queue {
     position: fixed;

@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import time
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +86,25 @@ def _strip_separator(command: list[str]) -> list[str]:
     return command
 
 
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+
+
+def _split_env_prefix(command: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Extract leading KEY=value tokens from guarded cron commands.
+
+    Cron job builders sometimes prepend environment overrides before the
+    executable. ``subprocess.Popen(list)`` does not understand shell-style
+    assignments, so the guard must translate them into the child environment.
+    """
+    env: dict[str, str] = {}
+    idx = 0
+    while idx < len(command) and _ENV_ASSIGNMENT_RE.match(command[idx] or ""):
+        key, value = command[idx].split("=", 1)
+        env[key] = value
+        idx += 1
+    return env, command[idx:]
+
+
 def _should_block(
     decision: resource_governor.ResourceDecision,
     *,
@@ -127,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     command = _strip_separator(args.command)
+    env_prefix, command = _split_env_prefix(command)
     if not command:
         parser.error("missing command after --")
 
@@ -142,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         "job_id": args.job_id,
         "block_at": args.block_at,
         "command": command,
+        "env_prefix_keys": sorted(env_prefix),
         "decision": asdict(decision),
         "blocked": blocked,
         "block_reasons": block_reasons,
@@ -160,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
-    proc = subprocess.Popen(command, start_new_session=True)
+    child_env = os.environ.copy()
+    child_env.update(env_prefix)
+    proc = subprocess.Popen(command, start_new_session=True, env=child_env)
     try:
         returncode = proc.wait(timeout=max(0, int(args.timeout_sec or 0)) or None)
     except subprocess.TimeoutExpired:

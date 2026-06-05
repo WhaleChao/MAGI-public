@@ -2206,6 +2206,28 @@ body.theme-dark .btn.selected-toggle {
     color: var(--accent);
 }
 
+.wb-folder-row {
+    cursor: grab;
+}
+
+.wb-folder-row.selected {
+    background: rgba(14, 165, 233, 0.12);
+}
+
+.wb-folder-row.dragging {
+    opacity: 0.55;
+}
+
+.wb-drop-target {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: rgba(14, 165, 233, 0.14) !important;
+}
+
+tr.wb-drop-target > td {
+    background: rgba(14, 165, 233, 0.14) !important;
+}
+
 .case-osc-functions {
     border: 1px solid var(--line);
     border-radius: 10px;

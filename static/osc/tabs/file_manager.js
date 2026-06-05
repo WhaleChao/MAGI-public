@@ -30,10 +30,14 @@
         selectedRel: null,
         selectedType: null,
         selectedName: '',
+        selectedEntries: [],
+        lastSelectedRel: null,
         movePending: null,
+        dragMove: null,
         lastCaseResults: [],
         driveRoots: [],
     };
+    const FM_INTERNAL_DRAG_TYPE = 'application/x-paperclip-file-manager-rel';
 
     // ── Icons ──────────────────────────────────────────────────────────
     const ICON_FOLDER = '📂';
@@ -299,6 +303,7 @@
         head.className = 'fm-tree-node';
         head.dataset.rootId = root.id || '';
         head.dataset.rel = node.relative_path || '';
+        head.dataset.fmDropTarget = 'folder';
         const tw = document.createElement('span');
         tw.className = 'tw';
         tw.textContent = node.has_subdirs ? '▶' : '';
@@ -357,6 +362,8 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         cancelMovePending(false);
         FM.hasLoadedEntries = false;
         FM.lastEntries = { folders: [], files: [] };
@@ -387,14 +394,14 @@
         const pieces = [];
         const rootName = rootDisplayName();
         pieces.push('<span class="crumb' + (parts.length === 0 ? ' current' : '')
-            + '" data-rel="" title="' + escapeHTML(rootName) + '">📁 ' + escapeHTML(rootName) + '</span>');
+            + '" data-rel="" data-fm-drop-target="folder" title="' + escapeHTML(rootName) + '">📁 ' + escapeHTML(rootName) + '</span>');
         let acc = '';
         parts.forEach((p, i) => {
             acc = acc ? acc + '/' + p : p;
             const last = i === parts.length - 1;
             pieces.push('<span class="sep">›</span>');
             pieces.push('<span class="crumb' + (last ? ' current' : '')
-                + '" data-rel="' + escapeHTML(acc) + '" title="' + escapeHTML(p) + '">' + escapeHTML(p) + '</span>');
+                + '" data-rel="' + escapeHTML(acc) + '" data-fm-drop-target="folder" title="' + escapeHTML(p) + '">' + escapeHTML(p) + '</span>');
         });
         bc.innerHTML = pieces.join('');
         bc.querySelectorAll('.crumb').forEach(el => {
@@ -511,7 +518,7 @@
                     ? (f.child_files + ' 檔 ' + (f.child_folders ? '/ ' + f.child_folders + ' 子夾 ' : '')
                        + (f.child_size_label || ''))
                     : '';
-                html += '<tr class="fm-row dir" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir" data-name="' + escapeHTML(f.name) + '">'
+                html += '<tr class="fm-row dir" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(meta) + '</td>'
@@ -526,7 +533,7 @@
             html += '<table class="fm-table"><thead><tr>'
                 + '<th>名稱</th><th>大小</th><th>修改時間</th><th class="fm-actions-head">操作</th></tr></thead><tbody>';
             for (const f of files) {
-                html += '<tr class="fm-row file" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
+                html += '<tr class="fm-row file" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(f.size_label || '') + '</td>'
@@ -562,7 +569,7 @@
         const meta = f.type === 'dir'
             ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
             : (f.size_label || '');
-        return '<div class="fm-grid-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+        return '<div class="fm-grid-item ' + f.type + '" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path)
             + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
             + '<span class="fm-grid-icon">' + iconFor(f) + '</span>'
             + '<div class="fm-grid-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</div>'
@@ -584,7 +591,7 @@
         const meta = f.type === 'dir'
             ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
             : (f.size_label || '');
-        return '<li class="fm-compact-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+        return '<li class="fm-compact-item ' + f.type + '" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path)
             + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
             + '<span class="fm-icon">' + iconFor(f) + '</span>'
             + '<span class="fm-compact-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span>'
@@ -632,8 +639,9 @@
             const type = el.dataset.type;
             el.addEventListener('click', (ev) => {
                 if (ev.target.closest('.fm-action-btn')) return;
-                if (ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
-                selectEntry(rel, type, el);
+                const mode = ev.shiftKey ? 'range' : ((ev.metaKey || ev.ctrlKey) ? 'toggle' : 'replace');
+                selectEntry(rel, type, el, { mode });
+                if (mode !== 'replace') return;
                 if (type === 'dir') {
                     navigateTo(rel);
                 } else {
@@ -645,20 +653,80 @@
         });
     }
 
-    function selectEntry(rel, type, el) {
-        FM.selectedRel = rel;
-        FM.selectedType = type;
-        FM.selectedName = (el && el.dataset && el.dataset.name) || pathBaseName(rel);
+    function entryFromElement(el) {
+        if (!el || !el.dataset) return null;
+        const rel = el.dataset.rel || '';
+        if (!rel) return null;
+        return {
+            basePath: FM.basePath,
+            rel,
+            type: el.dataset.type || 'file',
+            name: el.dataset.name || pathBaseName(rel),
+        };
+    }
+
+    function dedupeEntries(entries) {
+        const seen = new Set();
+        const out = [];
+        (entries || []).forEach(entry => {
+            if (!entry || !entry.rel || seen.has(entry.rel)) return;
+            seen.add(entry.rel);
+            out.push(entry);
+        });
+        return out;
+    }
+
+    function applySelectedEntries(entries) {
+        const selected = dedupeEntries(entries);
+        FM.selectedEntries = selected;
+        const last = selected[selected.length - 1] || null;
+        FM.selectedRel = last ? last.rel : null;
+        FM.selectedType = last ? last.type : null;
+        FM.selectedName = last ? last.name : '';
         const main = document.getElementById('fmEntriesArea');
-        if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
-        if (el) el.classList.add('selected');
+        if (main) {
+            const rels = new Set(selected.map(item => item.rel));
+            main.querySelectorAll('[data-fm-entry="1"]').forEach(node => {
+                node.classList.toggle('selected', rels.has(node.dataset.rel || ''));
+            });
+        }
         updateSelectionControls();
+    }
+
+    function selectEntry(rel, type, el, options) {
+        const mode = (options && options.mode) || 'replace';
+        const entry = entryFromElement(el) || { basePath: FM.basePath, rel, type, name: pathBaseName(rel) };
+        const main = document.getElementById('fmEntriesArea');
+        if (mode === 'range' && main && FM.lastSelectedRel) {
+            const nodes = Array.from(main.querySelectorAll('[data-fm-entry="1"]'));
+            const start = nodes.findIndex(node => (node.dataset.rel || '') === FM.lastSelectedRel);
+            const end = nodes.findIndex(node => (node.dataset.rel || '') === rel);
+            if (start >= 0 && end >= 0) {
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                applySelectedEntries(nodes.slice(lo, hi + 1).map(entryFromElement));
+                return;
+            }
+        }
+        if (mode === 'toggle') {
+            const exists = (FM.selectedEntries || []).some(item => item.rel === rel);
+            const next = exists
+                ? (FM.selectedEntries || []).filter(item => item.rel !== rel)
+                : [...(FM.selectedEntries || []), entry];
+            FM.lastSelectedRel = rel;
+            applySelectedEntries(next);
+            return;
+        }
+        FM.lastSelectedRel = rel;
+        applySelectedEntries([entry]);
     }
 
     function clearSelection() {
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         const main = document.getElementById('fmEntriesArea');
         if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
         updateSelectionControls();
@@ -669,11 +737,14 @@
         const moveBtn = document.getElementById('fmMoveBtn');
         const trashBtn = document.getElementById('fmTrashBtn');
         const shareBtn = document.getElementById('fmShareBtn');
-        const hasSelection = !!(FM.basePath && FM.selectedRel);
-        const hasFileSelection = hasSelection && FM.selectedType === 'file';
+        const count = (FM.selectedEntries || []).length;
+        const hasSelection = !!(FM.basePath && count);
+        const hasFileSelection = count === 1 && FM.selectedType === 'file';
         if (nameEl) {
-            nameEl.textContent = hasSelection ? ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))) : '尚未選取檔案';
-            nameEl.title = hasSelection ? FM.selectedRel : '';
+            nameEl.textContent = hasSelection
+                ? (count > 1 ? ('已選取 ' + count + ' 個項目') : ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))))
+                : '尚未選取檔案';
+            nameEl.title = hasSelection ? (FM.selectedEntries || []).map(item => item.rel).join('\n') : '';
         }
         if (moveBtn) moveBtn.disabled = !hasSelection;
         if (trashBtn) trashBtn.disabled = !hasSelection;
@@ -716,6 +787,7 @@
         const head = document.createElement('div');
         head.className = 'fm-tree-node';
         head.dataset.rel = node.relative_path || '';
+        head.dataset.fmDropTarget = 'folder';
         const tw = document.createElement('span');
         tw.className = 'tw';
         tw.textContent = node.has_subdirs ? '▶' : '';
@@ -775,6 +847,8 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         updateSelectionControls();
         setStatus('載入中…');
         const data = await apiBrowse(FM.basePath, rel);
@@ -805,6 +879,8 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         cancelMovePending(false);
         FM.hasLoadedEntries = false;
         FM.lastEntries = { folders: [], files: [] };
@@ -1097,15 +1173,19 @@
         const pending = FM.movePending;
         bar.hidden = !pending;
         if (nameEl && pending) {
-            nameEl.textContent = pending.name || pathBaseName(pending.rel);
-            nameEl.title = pending.rel;
+            const entries = pendingEntries(pending);
+            nameEl.textContent = entries.length > 1
+                ? (entries.length + ' 個項目')
+                : (pending.name || pathBaseName(pending.rel));
+            nameEl.title = entries.map(entry => entry.rel).join('\n');
         }
         if (hereBtn && pending) {
             const target = FM.currentRel || '';
-            const fromParent = parentRel(pending.rel);
-            const invalidNested = pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'));
-            hereBtn.disabled = !FM.basePath || target === fromParent || invalidNested;
-            hereBtn.title = invalidNested ? '不能把資料夾移到自己底下' : (target === fromParent ? '已在這個資料夾' : '移到目前資料夾');
+            const reason = invalidMoveReason(pending, target);
+            hereBtn.disabled = !FM.basePath || !!reason;
+            hereBtn.title = reason === 'nested_target'
+                ? '不能把資料夾移到自己底下'
+                : (reason === 'same_parent' ? '已在這個資料夾' : '移到目前資料夾');
         }
     }
 
@@ -1115,19 +1195,127 @@
         return parts.join('/');
     }
 
+    function dataTransferTypes(e) {
+        return Array.from((e && e.dataTransfer && e.dataTransfer.types) || []);
+    }
+
+    function hasInternalMoveDrag(e) {
+        return dataTransferTypes(e).includes(FM_INTERNAL_DRAG_TYPE) || !!FM.dragMove;
+    }
+
+    function internalMovePayload(e) {
+        if (!e || !e.dataTransfer) return FM.dragMove;
+        const raw = e.dataTransfer.getData(FM_INTERNAL_DRAG_TYPE);
+        if (raw) {
+            try { return JSON.parse(raw); } catch (_) {}
+        }
+        return FM.dragMove;
+    }
+
+    function pendingEntries(pending) {
+        if (!pending) return [];
+        if (Array.isArray(pending.entries) && pending.entries.length) return pending.entries;
+        return [pending].filter(entry => entry && entry.rel);
+    }
+
+    function moveTargetRelFromElement(target) {
+        const el = target && target.closest
+            ? target.closest('[data-fm-drop-target="folder"], [data-fm-entry="1"]')
+            : null;
+        if (!el) return FM.currentRel || '';
+        if (el.dataset.fmDropTarget === 'folder') return el.dataset.rel || '';
+        if (el.dataset.type === 'dir') return el.dataset.rel || '';
+        return FM.currentRel || '';
+    }
+
+    function invalidMoveReason(pending, targetRel) {
+        const entries = pendingEntries(pending);
+        if (!entries.length) return 'missing_source';
+        if (!FM.basePath || entries.some(entry => entry.basePath !== FM.basePath)) return 'different_base';
+        const target = targetRel || '';
+        if (entries.every(entry => target === parentRel(entry.rel))) return 'same_parent';
+        if (entries.some(entry => entry.type === 'dir' && (target === entry.rel || target.startsWith(entry.rel + '/')))) {
+            return 'nested_target';
+        }
+        return '';
+    }
+
+    function moveErrorText(error) {
+        const msg = String(error || '');
+        if (msg.includes('target_exists')) return '目標資料夾已有同名項目，請先改名或刪除原項目。';
+        if (msg.includes('nested_target')) return '不能把資料夾移到自己或自己的子資料夾底下。';
+        if (msg.includes('target_dir_not_found')) return '目標資料夾目前不存在或尚未同步。';
+        if (msg.includes('source_not_found')) return '來源檔案已不存在或尚未同步。';
+        return msg || '未知';
+    }
+
+    function markFmDropTarget(el, active) {
+        if (!el) return;
+        const target = el.closest && el.closest('[data-fm-drop-target="folder"], [data-fm-entry="1"]');
+        if (!target) return;
+        if (active) target.classList.add('fm-drop-target');
+        else target.classList.remove('fm-drop-target');
+    }
+
+    async function moveDraggedEntry(e) {
+        const pending = internalMovePayload(e);
+        const target = moveTargetRelFromElement(e.target);
+        const reason = invalidMoveReason(pending, target);
+        if (reason === 'same_parent') {
+            setStatus('這個項目已經在目標資料夾。', true);
+            return;
+        }
+        if (reason === 'nested_target') {
+            setStatus('不能把資料夾移到自己底下。', true);
+            return;
+        }
+        if (reason) {
+            setStatus('只能在同一個案件根目錄內移動檔案或資料夾。', true);
+            return;
+        }
+        await moveEntriesToTarget(pending, target);
+    }
+
+    async function moveEntriesToTarget(pending, target) {
+        const entries = pendingEntries(pending);
+        const label = entries.length > 1 ? (entries.length + ' 個項目') : (entries[0].name || pathBaseName(entries[0].rel));
+        setStatus('移動中：' + label + ' …');
+        const errors = [];
+        let moved = 0;
+        for (const entry of entries) {
+            const r = await apiMove(FM.basePath, entry.rel, target);
+            if (r && r.ok) moved += 1;
+            else errors.push((entry.name || pathBaseName(entry.rel)) + '：' + moveErrorText(r && r.error));
+        }
+        if (!errors.length) {
+            clearSelection();
+            setStatus('已移動：' + label);
+            await navigateTo(FM.currentRel || '');
+            setTimeout(() => setStatus(''), 2200);
+        } else {
+            if (moved) await navigateTo(FM.currentRel || '');
+            setStatus('移動完成 ' + moved + ' 個，失敗 ' + errors.length + ' 個：' + errors.slice(0, 2).join('；'), true);
+        }
+    }
+
     function startMoveSelected(rel, type, name) {
         if (!FM.basePath || !rel) {
             setStatus('請先選取要移動的檔案或資料夾。', true);
             return;
         }
+        const selected = (FM.selectedEntries || []).length > 1
+            ? FM.selectedEntries
+            : [{ basePath: FM.basePath, rel, type: type || FM.selectedType || 'file', name: name || FM.selectedName || pathBaseName(rel) }];
         FM.movePending = {
             basePath: FM.basePath,
             rel,
             type: type || FM.selectedType || 'file',
             name: name || FM.selectedName || pathBaseName(rel),
+            entries: selected,
         };
         updateMovePendingBar();
-        setStatus('已準備移動「' + FM.movePending.name + '」；請切到目標資料夾後按「移到目前資料夾」。');
+        const label = selected.length > 1 ? (selected.length + ' 個項目') : ('「' + FM.movePending.name + '」');
+        setStatus('已準備移動' + label + '；請切到目標資料夾後按「移到目前資料夾」。');
     }
 
     function cancelMovePending(showStatus) {
@@ -1142,31 +1330,23 @@
     async function movePendingHere() {
         const pending = FM.movePending;
         if (!pending) return;
-        if (!FM.basePath || FM.basePath !== pending.basePath) {
+        const entries = pendingEntries(pending);
+        if (!FM.basePath || entries.some(entry => entry.basePath !== FM.basePath)) {
             setStatus('目標資料夾不在同一個案件根目錄，請重新選取。', true);
             return;
         }
         const target = FM.currentRel || '';
-        const fromParent = parentRel(pending.rel);
-        if (target === fromParent) {
-            setStatus('這個檔案已經在目前資料夾。', true);
+        const reason = invalidMoveReason(pending, target);
+        if (reason === 'same_parent') {
+            setStatus('選取項目已經在目前資料夾。', true);
             return;
         }
-        if (pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'))) {
+        if (reason === 'nested_target') {
             setStatus('不能把資料夾移到自己底下。', true);
             return;
         }
-        const r = await apiMove(FM.basePath, pending.rel, target);
-        if (r && r.ok) {
-            const movedName = pending.name || pathBaseName(pending.rel);
-            FM.movePending = null;
-            clearSelection();
-            setStatus('已移動到目前資料夾：' + movedName);
-            await navigateTo(target);
-            setTimeout(() => setStatus(''), 2500);
-        } else {
-            setStatus('移動失敗：' + ((r && r.error) || '未知'), true);
-        }
+        await moveEntriesToTarget(pending, target);
+        FM.movePending = null;
         updateMovePendingBar();
     }
 
@@ -1643,6 +1823,114 @@
         });
     }
 
+    function bindInternalMoveDrag() {
+        const main = document.getElementById('fmEntriesArea');
+        if (main && !main._fmMoveDragBound) {
+            main._fmMoveDragBound = true;
+            main.addEventListener('dragstart', (e) => {
+                const el = e.target.closest('[data-fm-entry="1"]');
+                if (!el || e.target.closest('.fm-action-btn')) return;
+                const entry = {
+                    basePath: FM.basePath,
+                    rel: el.dataset.rel || '',
+                    type: el.dataset.type || 'file',
+                    name: el.dataset.name || pathBaseName(el.dataset.rel || ''),
+                };
+                if (!entry.basePath || !entry.rel) return;
+                if (!(FM.selectedEntries || []).some(item => item.rel === entry.rel)) {
+                    applySelectedEntries([entry]);
+                    FM.lastSelectedRel = entry.rel;
+                }
+                const entries = (FM.selectedEntries || []).length ? FM.selectedEntries : [entry];
+                const payload = entries.length > 1
+                    ? { basePath: FM.basePath, rel: entry.rel, type: entry.type, name: entries.length + ' 個項目', entries }
+                    : entry;
+                FM.dragMove = payload;
+                try {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData(FM_INTERNAL_DRAG_TYPE, JSON.stringify(payload));
+                    e.dataTransfer.setData('text/plain', payload.name);
+                } catch (_) {}
+                el.classList.add('fm-entry-dragging');
+            });
+            main.addEventListener('dragend', () => {
+                FM.dragMove = null;
+                main.querySelectorAll('.fm-entry-dragging,.fm-drop-target').forEach(el => {
+                    el.classList.remove('fm-entry-dragging', 'fm-drop-target');
+                });
+            });
+            main.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                markFmDropTarget(e.target, true);
+            });
+            main.addEventListener('dragleave', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                markFmDropTarget(e.target, false);
+            });
+            main.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                e.preventDefault();
+                main.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
+
+        const tree = document.getElementById('fmTree');
+        if (tree && !tree._fmMoveDropBound) {
+            tree._fmMoveDropBound = true;
+            tree.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                target.classList.add('fm-drop-target');
+            });
+            tree.addEventListener('dragleave', (e) => {
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (target) target.classList.remove('fm-drop-target');
+            });
+            tree.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                tree.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
+
+        const bc = document.getElementById('fmBreadcrumb');
+        if (bc && !bc._fmMoveDropBound) {
+            bc._fmMoveDropBound = true;
+            bc.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                target.classList.add('fm-drop-target');
+            });
+            bc.addEventListener('dragleave', (e) => {
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (target) target.classList.remove('fm-drop-target');
+            });
+            bc.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                bc.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
+    }
+
     function collectEntries(entry, prefix, out) {
         return new Promise(resolve => {
             if (entry.isFile) {
@@ -1902,6 +2190,7 @@
         }
         updateSelectionControls();
         bindDropZone();
+        bindInternalMoveDrag();
 
         // Phase 2 commit 11: keyboard shortcuts (F2 rename / Del trash)
         if (!document._fmKeysBound) {
