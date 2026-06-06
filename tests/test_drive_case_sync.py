@@ -14,6 +14,7 @@ from api.osc.drive_case_sync import (
     compare_case_folders,
     create_missing_drive_case_folders,
     db_local_cases_for_numbers,
+    drive_to_nas_download_skip_reason,
     drive_relative_path_for_local_case,
     ensure_drive_case_folder_for_local_case,
     ensure_drive_folder_path,
@@ -768,11 +769,21 @@ def test_drive_import_aliases_map_to_nas_canonical_folders():
     assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
     assert drive_to_nas_relative_path("法院裁判/偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
+    assert drive_to_nas_relative_path("法院裁定/20260101 普通裁定.pdf") == "09_法院通知或程序裁定/20260101 普通裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁定/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
     assert drive_to_nas_relative_path("法院資料/法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院資料/法院裁判/20260101 開庭通知.pdf") == "09_法院通知或程序裁定/20260101 開庭通知.pdf"
     assert drive_to_nas_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
     assert drive_to_nas_relative_path("起訴書/20250306_起訴書.pdf") == "10_判決書/20250306_起訴書.pdf"
     assert drive_to_nas_relative_path("法院資料/起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("開庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("法庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("傳票/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("地檢署通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert drive_to_nas_relative_path("地檢署起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("電子筆錄/b.pdf") == "08_筆錄/b.pdf"
+    assert drive_to_nas_relative_path("調解筆錄/b.pdf") == "08_筆錄/b.pdf"
+    assert drive_to_nas_relative_path("書狀資料/c.pdf") == "04_我方歷次書狀/c.pdf"
     assert drive_to_nas_relative_path("訊問筆錄/b.pdf") == "08_筆錄/b.pdf"
     assert drive_to_nas_relative_path("信件/c.pdf") == "12_信件往返/c.pdf"
     assert drive_to_nas_relative_path("自行收納款項收據/d.pdf") == "11_回執/d.pdf"
@@ -781,9 +792,12 @@ def test_drive_import_aliases_map_to_nas_canonical_folders():
 def test_semantic_paths_treat_legacy_drive_folders_as_same_category():
     assert semantic_relative_path("法院裁判/a.pdf") == "法院通知/a.pdf"
     assert semantic_relative_path("法院裁判/20260101 開庭通知.pdf") == "法院通知/20260101 開庭通知.pdf"
+    assert semantic_relative_path("開庭通知/a.pdf") == "法院通知/a.pdf"
+    assert semantic_relative_path("法院裁定/20260101 復權裁定.pdf") == "法院判決/20260101 復權裁定.pdf"
     assert semantic_relative_path("10_判決書/a.pdf") == "法院判決/a.pdf"
     assert semantic_relative_path("起訴書/a.pdf") == "法院判決/a.pdf"
     assert semantic_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "法院通知/20250306_聲請接續羈押理由書.pdf"
+    assert semantic_relative_path("電子筆錄/b.pdf") == "筆錄/b.pdf"
     assert semantic_relative_path("訊問筆錄/b.pdf") == "筆錄/b.pdf"
     assert semantic_relative_path("08_筆錄/b.pdf") == "筆錄/b.pdf"
     assert semantic_relative_path("信件/c.pdf") == "信件往返/c.pdf"
@@ -872,6 +886,39 @@ def test_drive_to_nas_long_filename_is_shortened_and_not_reuploaded(monkeypatch)
     plan2 = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
     assert plan2["cases"][0]["download_missing"] == []
     assert plan2["cases"][0]["nas_only"] == []
+
+
+def test_drive_download_plan_skips_unmapped_drive_folder_instead_of_copying_raw_folder(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試",
+        relative_path="法扶案件/Lumi/測試",
+        name="測試",
+        meta=CaseMeta(case_number="2026-0001"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        local_path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        relative_path="法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        name="2026-0001-測試-一審-詐欺",
+        meta=CaseMeta(case_number="2026-0001"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry("drive", "未知雲端資料夾/a.pdf", "未知雲端資料夾/a.pdf", "a.pdf", False, size=12)
+        ],
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.local_descendant_context", lambda *_args, **_kwargs: [])
+
+    assert drive_to_nas_download_skip_reason("未知雲端資料夾/a.pdf", "未知雲端資料夾/a.pdf") == "unmapped_drive_folder:未知雲端資料夾"
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
+    assert plan["cases"][0]["download_missing"] == []
+    assert plan["cases"][0]["download_skipped"][0]["reason"] == "unmapped_drive_folder:未知雲端資料夾"
+    assert plan["summary"]["skipped_unmapped_drive_downloads"] == 1
+    assert plan["summary"]["drive_missing_in_nas_files"] == 0
 
 
 def test_drive_download_uses_short_temp_name_for_long_court_filenames(monkeypatch, tmp_path):

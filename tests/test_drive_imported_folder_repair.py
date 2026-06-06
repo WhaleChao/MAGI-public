@@ -11,14 +11,20 @@ from scripts.ops.repair_drive_imported_case_folders import (
 
 def test_drive_imported_alias_detection_and_mapping():
     assert is_noncanonical_drive_folder("法院裁判") is True
+    assert is_noncanonical_drive_folder("開庭通知") is True
+    assert is_noncanonical_drive_folder("電子筆錄") is True
+    assert is_noncanonical_drive_folder("地檢署起訴書") is True
     assert is_noncanonical_drive_folder("訊問筆錄") is True
     assert is_noncanonical_drive_folder("10_判決書") is False
     assert mapped_file_relative_path("法院裁判", "a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert mapped_file_relative_path("法院裁判", "20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
     assert mapped_file_relative_path("法院裁判", "20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
     assert mapped_file_relative_path("法院裁判", "偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
+    assert mapped_file_relative_path("開庭通知", "a.pdf") == "09_法院通知或程序裁定/a.pdf"
+    assert mapped_file_relative_path("法院裁定", "20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
     assert mapped_file_relative_path("起訴書", "20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
     assert mapped_file_relative_path("法院資料", "起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert mapped_file_relative_path("電子筆錄", "b.pdf") == "08_筆錄/b.pdf"
     assert mapped_file_relative_path("訊問筆錄", "b.pdf") == "08_筆錄/b.pdf"
 
 

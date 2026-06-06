@@ -173,6 +173,77 @@ def clear_auth_required() -> None:
         pass
 
 
+def repair_imported_drive_alias_folders(
+    report: dict,
+    *,
+    apply: bool = True,
+    delete_duplicate: bool = True,
+    max_cases: int = 80,
+    max_files_per_case: int = 300,
+    max_seconds_per_case: int = 60,
+) -> dict:
+    """Repair Drive-style alias folders that already landed in local case roots."""
+    if os.environ.get("MAGI_DRIVE_SYNC_REPAIR_IMPORTED_FOLDERS", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return {"enabled": False, "reason": "MAGI_DRIVE_SYNC_REPAIR_IMPORTED_FOLDERS=0"}
+    try:
+        from scripts.ops.repair_drive_imported_case_folders import repair_case_folder
+    except Exception as exc:
+        return {"enabled": False, "reason": f"import_failed:{type(exc).__name__}: {exc}"}
+
+    cases = ((report.get("file_sync_plan") or {}).get("cases") or [])[: max(0, int(max_cases or 0))]
+    summary = {
+        "enabled": True,
+        "mode": "apply" if apply else "dry_run",
+        "cases_checked": 0,
+        "cases_with_aliases": 0,
+        "alias_folders": 0,
+        "planned_moves": 0,
+        "duplicates": 0,
+        "conflicts": 0,
+        "errors": 0,
+    }
+    items: list[dict] = []
+    for case in cases:
+        local_path = Path(str(case.get("local_path") or ""))
+        if not local_path.is_dir():
+            continue
+        summary["cases_checked"] += 1
+        case_report = repair_case_folder(
+            local_path,
+            apply=apply,
+            delete_duplicate=delete_duplicate,
+            max_files=max_files_per_case,
+            max_seconds=max_seconds_per_case,
+        )
+        alias_count = len(case_report.get("alias_folders") or [])
+        move_count = len(case_report.get("planned_moves") or [])
+        duplicate_count = len(case_report.get("duplicates") or [])
+        conflict_count = len(case_report.get("conflicts") or [])
+        error_count = len(case_report.get("errors") or [])
+        if alias_count or move_count or duplicate_count or conflict_count or error_count:
+            summary["cases_with_aliases"] += 1 if alias_count else 0
+            summary["alias_folders"] += alias_count
+            summary["planned_moves"] += move_count
+            summary["duplicates"] += duplicate_count
+            summary["conflicts"] += conflict_count
+            summary["errors"] += error_count
+            items.append({
+                "case_number": case.get("case_number") or "",
+                "local_path": str(local_path),
+                "alias_folders": case_report.get("alias_folders") or [],
+                "planned_moves": move_count,
+                "duplicates": duplicate_count,
+                "conflicts": conflict_count,
+                "errors": case_report.get("errors") or [],
+            })
+    return {"enabled": True, "summary": summary, "items": items[:40]}
+
+
 def load_priority_case_numbers(days: int, *, limit: int = 80) -> list[str]:
     """Return upcoming case numbers so Drive/NAS sync reaches urgent files first."""
     if days <= 0:
@@ -300,6 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-create-drive-folders", action="store_true")
     parser.add_argument("--no-context-resolve", action="store_true")
     parser.add_argument("--no-direct-priority-sync", action="store_true")
+    parser.add_argument("--no-repair-imported-folders", action="store_true")
+    parser.add_argument("--repair-max-cases", type=int, default=80)
+    parser.add_argument("--repair-max-files-per-case", type=int, default=300)
+    parser.add_argument("--repair-max-seconds-per-case", type=int, default=60)
     args = parser.parse_args(argv)
 
     state = load_state()
@@ -440,6 +515,20 @@ def main(argv: list[str] | None = None) -> int:
     state["last_file_sync_summary"] = (report.get("file_sync_plan") or {}).get("summary") or {}
     state["last_execution_summary"] = (report.get("execution_result") or {}).get("summary") or {}
     state["last_drive_folder_summary"] = (report.get("drive_folder_result") or {}).get("summary") or {}
+    repair_summary = (
+        {"enabled": False, "reason": "--no-repair-imported-folders"}
+        if args.no_repair_imported_folders
+        else repair_imported_drive_alias_folders(
+            report,
+            apply=True,
+            delete_duplicate=True,
+            max_cases=args.repair_max_cases,
+            max_files_per_case=args.repair_max_files_per_case,
+            max_seconds_per_case=args.repair_max_seconds_per_case,
+        )
+    )
+    report["drive_imported_folder_repair"] = repair_summary
+    state["last_drive_imported_folder_repair"] = repair_summary.get("summary") or repair_summary
     state["last_priority_case_numbers"] = priority_case_numbers[:30]
     state["last_all_case_numbers"] = all_case_numbers[:30]
     success_status = {
@@ -465,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         "file_sync_summary": state["last_file_sync_summary"],
         "execution_summary": state["last_execution_summary"],
         "drive_folder_summary": state["last_drive_folder_summary"],
+        "drive_imported_folder_repair": state["last_drive_imported_folder_repair"],
         "priority_case_numbers": priority_case_numbers[:30],
         "all_case_numbers": all_case_numbers[:30],
         "mode": report.get("mode") or "",
@@ -484,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
         "file_sync_summary": state["last_file_sync_summary"],
         "execution_summary": state["last_execution_summary"],
         "drive_folder_summary": state["last_drive_folder_summary"],
+        "drive_imported_folder_repair": state["last_drive_imported_folder_repair"],
         "output_paths": report.get("output_paths") or {},
     }, ensure_ascii=False, indent=2))
     return 0

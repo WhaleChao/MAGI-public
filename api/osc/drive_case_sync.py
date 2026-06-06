@@ -2024,47 +2024,88 @@ NAS_TO_DRIVE_PREFIXES = {
 }
 DRIVE_EXISTING_ALIAS_PRIORITY = {
     "法扶資料": ("法扶資料",),
-    "開辦資料": ("開辦資料", "開辨資料"),
+    "開辦資料": ("開辦資料", "開辨資料", "委任狀", "委任契約書、委任狀"),
     "結案資料": ("結案資料",),
     "結案酬金領款單": ("結案酬金領款單",),
-    "我方書狀": ("我方書狀", "我方歷次書狀", "歷次書狀"),
+    "我方書狀": ("我方書狀", "我方歷次書狀", "歷次書狀", "書狀資料"),
     "對造書狀": ("對造書狀", "對方歷次書狀"),
-    "閱卷資料": ("閱卷資料",),
-    "證據資料": ("證據資料", "法律資料"),
-    "筆錄": ("訊問筆錄", "筆錄"),
-    "法院通知": ("法院通知", "法院資料", "程序裁定"),
-    "法院判決": ("法院裁判", "法院判決", "判決書"),
-    "回執": ("回執", "自行收納款項收據"),
+    "閱卷資料": ("閱卷資料", "01卷宗", "卷宗"),
+    "證據資料": ("證據資料", "法律資料", "提供資料", "鑑定資料", "資助人聲明書"),
+    "筆錄": ("訊問筆錄", "電子筆錄", "調解筆錄", "筆錄"),
+    "法院通知": (
+        "法院通知",
+        "開庭通知",
+        "法庭通知",
+        "傳票",
+        "地檢署通知",
+        "調解通知",
+        "調解委員會通知",
+        "法院資料",
+        "程序裁定",
+    ),
+    "法院判決": (
+        "法院裁判",
+        "法院裁定",
+        "法院判決",
+        "判決書",
+        "起訴書",
+        "地檢署起訴書",
+        "調解不成立證明書",
+    ),
+    "回執": ("回執", "自行收納款項收據", "法院收據", "律師酬金收據"),
     "信件往返": ("信件", "信件往返"),
 }
 DRIVE_TO_NAS_FIRST_SEGMENT = {
     "法扶資料": "01_法扶資料",
     "開辦資料": "02_開辦資料",
     "開辨資料": "02_開辦資料",
+    "委任狀": "02_開辦資料",
+    "委任契約書、委任狀": "02_開辦資料",
     "結案資料": "03_結案資料",
     "結案酬金領款單": "03_結案資料",
     "我方書狀": "04_我方歷次書狀",
     "我方歷次書狀": "04_我方歷次書狀",
     "歷次書狀": "04_我方歷次書狀",
+    "書狀資料": "04_我方歷次書狀",
     "對造書狀": "05_對方歷次書狀",
     "對方歷次書狀": "05_對方歷次書狀",
     "閱卷資料": "06_閱卷資料",
+    "01卷宗": "06_閱卷資料",
+    "卷宗": "06_閱卷資料",
     "證據資料": "07_證據資料",
     "法律資料": "07_證據資料",
+    "提供資料": "07_證據資料",
+    "鑑定資料": "07_證據資料",
+    "資助人聲明書": "07_證據資料",
     "筆錄": "08_筆錄",
     "訊問筆錄": "08_筆錄",
+    "電子筆錄": "08_筆錄",
+    "調解筆錄": "08_筆錄",
     "審判筆錄": "08_筆錄",
     "調查筆錄": "08_筆錄",
     "法院通知": "09_法院通知或程序裁定",
     "法院通知與程序裁定": "09_法院通知或程序裁定",
+    "開庭通知": "09_法院通知或程序裁定",
+    "法庭通知": "09_法院通知或程序裁定",
+    "傳票": "09_法院通知或程序裁定",
+    "另案傳票": "09_法院通知或程序裁定",
+    "地檢署通知": "09_法院通知或程序裁定",
+    "調解通知": "09_法院通知或程序裁定",
+    "調解委員會通知": "09_法院通知或程序裁定",
+    "最高檢察署函": "09_法院通知或程序裁定",
     "法院資料": "09_法院通知或程序裁定",
     "程序裁定": "09_法院通知或程序裁定",
     "起訴書": "10_判決書",
+    "地檢署起訴書": "10_判決書",
+    "另案起訴書": "10_判決書",
     "法院判決": "10_判決書",
     "法院裁判": "10_判決書",
     "判決書": "10_判決書",
+    "調解不成立證明書": "10_判決書",
     "回執": "11_回執",
     "自行收納款項收據": "11_回執",
+    "法院收據": "11_回執",
+    "律師酬金收據": "11_回執",
     "信件": "12_信件往返",
     "信件往返": "12_信件往返",
 }
@@ -2090,6 +2131,8 @@ SEMANTIC_FIRST_SEGMENT = {
     "02_開辦資料": "開辦資料",
     "開辦資料": "開辦資料",
     "開辨資料": "開辦資料",
+    "委任狀": "開辦資料",
+    "委任契約書、委任狀": "開辦資料",
     "03_結案資料": "結案資料",
     "結案資料": "結案資料",
     "結案酬金領款單": "結案酬金領款單",
@@ -2097,32 +2140,54 @@ SEMANTIC_FIRST_SEGMENT = {
     "我方書狀": "我方書狀",
     "我方歷次書狀": "我方書狀",
     "歷次書狀": "我方書狀",
+    "書狀資料": "我方書狀",
     "05_對方歷次書狀": "對造書狀",
     "對造書狀": "對造書狀",
     "對方歷次書狀": "對造書狀",
     "06_閱卷資料": "閱卷資料",
     "閱卷資料": "閱卷資料",
+    "01卷宗": "閱卷資料",
+    "卷宗": "閱卷資料",
     "07_證據資料": "證據資料",
     "證據資料": "證據資料",
     "法律資料": "證據資料",
+    "提供資料": "證據資料",
+    "鑑定資料": "證據資料",
+    "資助人聲明書": "證據資料",
     "08_筆錄": "筆錄",
     "筆錄": "筆錄",
     "訊問筆錄": "筆錄",
+    "電子筆錄": "筆錄",
+    "調解筆錄": "筆錄",
     "審判筆錄": "筆錄",
     "調查筆錄": "筆錄",
     "09_法院通知或程序裁定": "法院通知",
     "法院通知": "法院通知",
     "法院通知與程序裁定": "法院通知",
+    "開庭通知": "法院通知",
+    "法庭通知": "法院通知",
+    "傳票": "法院通知",
+    "另案傳票": "法院通知",
+    "地檢署通知": "法院通知",
+    "調解通知": "法院通知",
+    "調解委員會通知": "法院通知",
+    "最高檢察署函": "法院通知",
     "法院資料": "法院通知",
     "程序裁定": "法院通知",
     "起訴書": "法院判決",
+    "地檢署起訴書": "法院判決",
+    "另案起訴書": "法院判決",
     "10_判決書": "法院判決",
     "法院判決": "法院判決",
     "法院裁判": "法院判決",
+    "法院裁定": "法院判決",
     "判決書": "法院判決",
+    "調解不成立證明書": "法院判決",
     "11_回執": "回執",
     "回執": "回執",
     "自行收納款項收據": "回執",
+    "法院收據": "回執",
+    "律師酬金收據": "回執",
     "12_信件往返": "信件往返",
     "信件": "信件往返",
     "信件往返": "信件往返",
@@ -2157,9 +2222,9 @@ def drive_to_nas_relative_path(relative_path: str) -> str:
     for source, target in sorted(DRIVE_TO_NAS_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
         if tuple(parts[: len(source)]) == source:
             return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
-    if parts[0] == "法院裁判" or tuple(parts[:2]) == ("法院資料", "法院裁判"):
-        rest = parts[1:] if parts[0] == "法院裁判" else parts[2:]
-        probe = "/".join(rest)
+    if parts[0] in {"法院裁判", "法院裁定"} or tuple(parts[:2]) in {("法院資料", "法院裁判"), ("法院資料", "法院裁定")}:
+        rest = parts[1:] if parts[0] in {"法院裁判", "法院裁定"} else parts[2:]
+        probe = PurePosixPath(parts[0] if parts[0] in {"法院裁判", "法院裁定"} else parts[1], *rest).as_posix()
         target_first = court_document_target_segment(probe)
         return PurePosixPath(*([target_first] + rest)).as_posix()
     if parts[0] == "起訴書" or tuple(parts[:2]) == ("法院資料", "起訴書"):
@@ -2232,9 +2297,11 @@ def semantic_relative_path(relative_path: str) -> str:
     parts = split_relative_parts(relative_path)
     if not parts:
         return ""
-    if parts[0] == "法院裁判" or tuple(parts[:2]) == ("法院資料", "法院裁判"):
-        rest = parts[1:] if parts[0] == "法院裁判" else parts[2:]
-        target = court_document_target_segment("/".join(rest))
+    if parts[0] in {"法院裁判", "法院裁定"} or tuple(parts[:2]) in {("法院資料", "法院裁判"), ("法院資料", "法院裁定")}:
+        rest = parts[1:] if parts[0] in {"法院裁判", "法院裁定"} else parts[2:]
+        target = court_document_target_segment(
+            PurePosixPath(parts[0] if parts[0] in {"法院裁判", "法院裁定"} else parts[1], *rest).as_posix()
+        )
         first = "法院通知" if target == "09_法院通知或程序裁定" else "法院判決"
         return PurePosixPath(*([first] + rest)).as_posix()
     if parts[0] == "起訴書" or tuple(parts[:2]) == ("法院資料", "起訴書"):
@@ -2250,6 +2317,30 @@ def semantic_relative_path(relative_path: str) -> str:
     else:
         parts[0] = SEMANTIC_FIRST_SEGMENT.get(parts[0], parts[0])
     return PurePosixPath(*parts).as_posix()
+
+
+def drive_to_nas_download_skip_reason(source_relative_path: str, target_relative_path: str) -> str:
+    """Return a reason when a Drive file would be copied as a raw Drive folder.
+
+    Google Drive case folders intentionally use different first-level buckets from
+    OSC/NAS.  A file under an unknown Drive bucket must not be downloaded with
+    that bucket name unchanged, because it creates mixed layouts such as
+    `開庭通知/` next to `09_法院通知或程序裁定/`.  Unknown buckets are reported for
+    rule review instead of silently polluting the case folder.
+    """
+    source_parts = split_relative_parts(source_relative_path)
+    target_parts = split_relative_parts(target_relative_path)
+    if len(source_parts) <= 1 or not target_parts:
+        return ""
+    source_first = source_parts[0]
+    target_first = target_parts[0]
+    if source_first.startswith("."):
+        return "drive_admin_folder"
+    if target_first != source_first:
+        return ""
+    if re.match(r"^\d{2}_", target_first):
+        return ""
+    return f"unmapped_drive_folder:{source_first}"
 
 
 def _fit_filename_utf8(name: str, *, max_bytes: int = 220) -> str:
@@ -3012,6 +3103,7 @@ def build_file_sync_plan(
         "conflict_files": 0,
         "content_mismatch_files": 0,
         "skipped_existing_files": 0,
+        "skipped_unmapped_drive_downloads": 0,
         "unverified_existing_files": 0,
         "case_errors": 0,
         "matched_case_offset": max(0, int(matched_case_offset or 0)),
@@ -3050,6 +3142,7 @@ def build_file_sync_plan(
             "drive_id": drive.drive_id,
             "local_path": local.local_path or local.path,
             "download_missing": [],
+            "download_skipped": [],
             "nas_only": [],
             "conflicts": [],
             "skipped_existing": 0,
@@ -3096,19 +3189,26 @@ def build_file_sync_plan(
                 if target_key != key:
                     local_entry = local_files.get(target_key)
                     local_key = target_key
-            if not local_entry:
-                action = _entry_public_dict(drive_entry)
-                action["source_relative_path"] = source_rel
-                action["target_relative_path"] = target_rel
-                if target_rel != raw_target_rel:
-                    action["original_target_relative_path"] = raw_target_rel
-                    action["filename_shortened_for_nas"] = True
-                action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
-                action["export_mime_type"] = (GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type) or [""])[0]
-                case_plan["download_missing"].append(action)
-                summary["drive_missing_in_nas_files"] += 1
-                summary["drive_missing_in_nas_bytes"] += int(drive_entry.size or 0)
-                continue
+                if not local_entry:
+                    action = _entry_public_dict(drive_entry)
+                    action["source_relative_path"] = source_rel
+                    action["target_relative_path"] = target_rel
+                    skip_reason = drive_to_nas_download_skip_reason(source_rel, target_rel)
+                    if skip_reason:
+                        action["reason"] = skip_reason
+                        action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
+                        case_plan["download_skipped"].append(action)
+                        summary["skipped_unmapped_drive_downloads"] += 1
+                        continue
+                    if target_rel != raw_target_rel:
+                        action["original_target_relative_path"] = raw_target_rel
+                        action["filename_shortened_for_nas"] = True
+                    action["target_path"] = str(safe_child_path(Path(local.local_path or local.path), target_rel))
+                    action["export_mime_type"] = (GOOGLE_EXPORT_MIME_MAP.get(drive_entry.mime_type) or [""])[0]
+                    case_plan["download_missing"].append(action)
+                    summary["drive_missing_in_nas_files"] += 1
+                    summary["drive_missing_in_nas_bytes"] += int(drive_entry.size or 0)
+                    continue
             matched_local_keys.add(local_key)
             if drive_entry.size is not None and local_entry.size is not None and int(drive_entry.size) != int(local_entry.size):
                 case_plan["conflicts"].append({
