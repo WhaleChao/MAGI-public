@@ -2125,6 +2125,10 @@ COURT_FINAL_DOC_RE = re.compile(
 COURT_FINAL_RULING_RE = re.compile(
     r"(?:裁定).{0,24}(?:駁回|准許|許可|認可|免責|不免責|復權|終結|開始更生|開始清算|廢棄|撤銷|移送|確定)"
 )
+PLEADING_FILENAME_RE = re.compile(
+    r"(?:書狀|(?<!證)狀|上訴理由|上訴|抗告|聲請|陳報|補正|答辯|準備|意見|更生方案)"
+)
+EVIDENCE_FILENAME_RE = re.compile(r"(?:證據|附件|照片|截圖|錄音|錄影|鑑定|診斷證明|病歷)")
 SEMANTIC_FIRST_SEGMENT = {
     "01_法扶資料": "法扶資料",
     "法扶資料": "法扶資料",
@@ -2208,6 +2212,44 @@ def split_relative_parts(value: str) -> list[str]:
     return [p for p in PurePosixPath(text).parts if p and p not in {"."}]
 
 
+def looks_like_drive_case_folder_segment(segment: str) -> bool:
+    text = str(segment or "").strip()
+    if not text or text in DRIVE_TO_NAS_FIRST_SEGMENT or text in NAS_TO_DRIVE_FIRST_SEGMENT:
+        return False
+    if OSC_CASE_RE.search(text) or LAF_CASE_RE.search(text) or ROC_COURT_NO_RE.search(text):
+        return True
+    # Drive-side LAF folders often omit OSC case numbers but include
+    # "client-lafNo-stage-reason"; the LAF number is enough to prove this is an
+    # outer case folder, not a document category.
+    return False
+
+
+def strip_embedded_drive_case_folder(relative_path: str) -> str:
+    parts = split_relative_parts(relative_path)
+    if len(parts) <= 1:
+        return PurePosixPath(*parts).as_posix() if parts else ""
+    if looks_like_drive_case_folder_segment(parts[0]):
+        return PurePosixPath(*parts[1:]).as_posix()
+    return PurePosixPath(*parts).as_posix()
+
+
+def infer_nas_folder_for_drive_root_file(filename: str) -> str:
+    name = PurePosixPath(str(filename or "")).name
+    if not name:
+        return ""
+    if COURT_PROCEDURAL_FORM_RE.search(name) or COURT_FINAL_DOC_RE.search(name) or "裁定" in name:
+        return court_document_target_segment(name)
+    if "筆錄" in name:
+        return "08_筆錄"
+    if PLEADING_FILENAME_RE.search(name) and not re.search(r"(?:對造|對方|被告|原告).{0,12}(?:書狀|答辯|陳報)", name):
+        return "04_我方歷次書狀"
+    if EVIDENCE_FILENAME_RE.search(name):
+        return "07_證據資料"
+    if "回執" in name or "收據" in name:
+        return "11_回執"
+    return ""
+
+
 def closing_drive_folder_for_nas_path(parts: list[str]) -> str:
     filename = parts[-1] if parts else ""
     if any(term in filename for term in ("結案酬金", "結案審查", "變動審查")):
@@ -2219,6 +2261,13 @@ def drive_to_nas_relative_path(relative_path: str) -> str:
     parts = split_relative_parts(relative_path)
     if not parts:
         return ""
+    stripped = strip_embedded_drive_case_folder(relative_path)
+    if stripped and stripped != PurePosixPath(*parts).as_posix():
+        return drive_to_nas_relative_path(stripped)
+    if len(parts) == 1:
+        inferred = infer_nas_folder_for_drive_root_file(parts[0])
+        if inferred:
+            return PurePosixPath(inferred, parts[0]).as_posix()
     for source, target in sorted(DRIVE_TO_NAS_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
         if tuple(parts[: len(source)]) == source:
             return PurePosixPath(*(list(target) + parts[len(source) :])).as_posix()
@@ -2297,6 +2346,13 @@ def semantic_relative_path(relative_path: str) -> str:
     parts = split_relative_parts(relative_path)
     if not parts:
         return ""
+    stripped = strip_embedded_drive_case_folder(relative_path)
+    if stripped and stripped != PurePosixPath(*parts).as_posix():
+        return semantic_relative_path(stripped)
+    if len(parts) == 1:
+        inferred = infer_nas_folder_for_drive_root_file(parts[0])
+        if inferred:
+            return semantic_relative_path(PurePosixPath(inferred, parts[0]).as_posix())
     if parts[0] in {"法院裁判", "法院裁定"} or tuple(parts[:2]) in {("法院資料", "法院裁判"), ("法院資料", "法院裁定")}:
         rest = parts[1:] if parts[0] in {"法院裁判", "法院裁定"} else parts[2:]
         target = court_document_target_segment(
@@ -2403,6 +2459,35 @@ def _entry_public_dict(entry: FileEntry) -> dict[str, Any]:
         "web_url": entry.web_url,
         "mime_type": entry.mime_type,
     }
+
+
+def _find_same_content_local_entry(drive_entry: FileEntry, local_entries: Iterable[FileEntry]) -> tuple[FileEntry | None, str]:
+    """Find an already archived NAS file with the same name, size and hash.
+
+    This is intentionally conservative: MAGI only treats cross-folder content as
+    duplicate when Drive supplies an MD5 and the local file with the same visible
+    filename has identical size and MD5.  It prevents duplicate downloads caused
+    by Drive/NAS folder vocabulary differences without deleting or overwriting
+    anything.
+    """
+    if not drive_entry.md5 or drive_entry.size is None:
+        return None, ""
+    drive_name_key = normalized_relative_file_key(PurePosixPath(export_relative_path(drive_entry)).name)
+    for local_entry in local_entries:
+        if local_entry.is_folder or not local_entry.path or local_entry.size is None:
+            continue
+        if int(local_entry.size) != int(drive_entry.size):
+            continue
+        if normalized_relative_file_key(PurePosixPath(local_entry.relative_path).name) != drive_name_key:
+            continue
+        try:
+            local_md5 = local_file_md5(local_entry.path)
+        except Exception:
+            continue
+        if normalize_text(local_md5) == normalize_text(drive_entry.md5):
+            key = normalized_relative_file_key(semantic_relative_path(local_entry.relative_path))
+            return local_entry, key
+    return None, ""
 
 
 def _drive_entry_downloadable(entry: FileEntry) -> bool:
@@ -3104,6 +3189,7 @@ def build_file_sync_plan(
         "content_mismatch_files": 0,
         "skipped_existing_files": 0,
         "skipped_unmapped_drive_downloads": 0,
+        "skipped_duplicate_content_downloads": 0,
         "unverified_existing_files": 0,
         "case_errors": 0,
         "matched_case_offset": max(0, int(matched_case_offset or 0)),
@@ -3190,6 +3276,20 @@ def build_file_sync_plan(
                     local_entry = local_files.get(target_key)
                     local_key = target_key
                 if not local_entry:
+                    duplicate_entry, duplicate_key = _find_same_content_local_entry(drive_entry, local_entries)
+                    if duplicate_entry:
+                        action = _entry_public_dict(drive_entry)
+                        action["source_relative_path"] = source_rel
+                        action["target_relative_path"] = target_rel
+                        action["reason"] = "same_content_elsewhere"
+                        action["local_duplicate"] = _entry_public_dict(duplicate_entry)
+                        case_plan["download_skipped"].append(action)
+                        if duplicate_key:
+                            matched_local_keys.add(duplicate_key)
+                        case_plan["skipped_existing"] += 1
+                        summary["skipped_existing_files"] += 1
+                        summary["skipped_duplicate_content_downloads"] += 1
+                        continue
                     action = _entry_public_dict(drive_entry)
                     action["source_relative_path"] = source_rel
                     action["target_relative_path"] = target_rel

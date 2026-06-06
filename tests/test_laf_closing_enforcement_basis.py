@@ -73,3 +73,29 @@ def test_closing_metadata_extracts_short_district_court_name(tmp_path):
     assert meta["court_case_year"] == "114"
     assert meta["court_case_code"] == "訴"
     assert meta["court_case_no"] == "972"
+
+
+def test_consumer_debt_transfer_ruling_does_not_trigger_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0087-張慧敏-消費者債務清理-更生"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    transfer = judgment_dir / "20251124 基隆地方法院114年度司消債調字第207號民事裁定（張慧敏；主文：本件移送臺北地方法院）.pdf"
+    transfer.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(transfer) not in docs["closing_basis_files"]
+
+
+def test_consumer_debt_terminal_rulings_are_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0088-王小明-消費者債務清理-清算"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    terminal = judgment_dir / "20260601 臺灣花蓮地方法院114年度消債清字第12號免責裁定（王小明）.pdf"
+    terminal.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(terminal) in docs["closing_basis_files"]

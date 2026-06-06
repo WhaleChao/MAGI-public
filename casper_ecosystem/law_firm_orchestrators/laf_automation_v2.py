@@ -66,6 +66,7 @@ from api.laf_case_classifier import (
     normalize_laf_case_fields,
     normalize_laf_case_type,
 )
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -8974,7 +8975,7 @@ class OSCCaseCreator:
             "db_updates": updated_db,
         }
     
-    def _archive_files_to_folder(self, files: List[str], case_folder: str):
+    def _archive_files_to_folder(self, files: List[str], case_folder: str, case_info: Optional[LAFCaseInfo] = None):
         """
         將下載的檔案歸檔到案件資料夾
         
@@ -8993,6 +8994,24 @@ class OSCCaseCreator:
         }
         if not files:
             return result
+
+        def ensure_poa_word_copy(pdf_path: str) -> None:
+            if not is_laf_power_of_attorney_pdf(pdf_path):
+                return
+            metadata = {}
+            if case_info:
+                metadata = {
+                    "client_name": case_info.client_name,
+                    "laf_case_number": case_info.laf_case_number,
+                    "branch": case_info.branch,
+                    "case_type": case_info.case_type,
+                    "case_reason": case_info.case_reason,
+                }
+            converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=metadata)
+            if converted.get("status") == "created":
+                self.log(f"    📝 已產生委任狀 Word 可填寫版: {os.path.basename(str(converted.get('docx_path') or ''))}")
+            elif not converted.get("ok"):
+                self.log(f"    ⚠️ 委任狀 Word 可填寫版產生失敗: {converted.get('error')}")
         
         # 定義檔案分類規則
         def get_target_subfolder(fname):
@@ -9044,10 +9063,12 @@ class OSCCaseCreator:
                             if os.path.exists(target_path):
                                 self.log(f"    ⏭️ 已存在，跳過: {base_name}")
                                 result["skipped_existing"].append(target_path)
+                                ensure_poa_word_copy(target_path)
                                 continue
                             
                             with open(target_path, "wb") as target_file, zip_ref.open(member) as source_file:
                                 shutil.copyfileobj(source_file, target_file)
+                            ensure_poa_word_copy(target_path)
                             
                             self.log(f"    ✓ {base_name} → {target_sub}/")
                             result["new_files"].append(target_path)
@@ -9104,6 +9125,7 @@ class OSCCaseCreator:
                 else:
                     self.log(f"    ⏭️ 已存在，跳過: {filename}")
                     result["skipped_existing"].append(dest_path)
+                ensure_poa_word_copy(dest_path)
         
         self.log(f"  ✅ 檔案歸檔完成")
         return result
@@ -9308,7 +9330,7 @@ class OSCCaseCreator:
                                 self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
                                 self.archive_staff_email_attachments(files, final_folder_to_use)
                             else:
-                                self._archive_files_to_folder(files, final_folder_to_use)
+                                self._archive_files_to_folder(files, final_folder_to_use, case_info)
                             _write_laf_case_marker(final_folder_to_use, case_info.laf_case_number, log=self.log)
                             fields = _scan_laf_forms_for_client_fields(final_folder_to_use)
                             if fields:
@@ -9410,7 +9432,7 @@ class OSCCaseCreator:
                         self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
                         self.archive_staff_email_attachments(files, reuse_folder)
                     else:
-                        self._archive_files_to_folder(files, reuse_folder)
+                        self._archive_files_to_folder(files, reuse_folder, case_info)
                     fields2 = _scan_laf_forms_for_client_fields(reuse_folder)
                     if fields2:
                         try:

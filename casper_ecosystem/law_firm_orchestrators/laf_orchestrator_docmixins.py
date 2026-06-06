@@ -40,6 +40,22 @@ _CLOSING_BASIS_KEYWORDS = (
     "併辦意旨書", "追加起訴書",
 )
 
+_PROCEDURAL_NONCLOSING_KEYWORDS = (
+    "移送", "管轄", "補正", "命補正", "調解不成立", "開始更生",
+    "開始清算", "裁定開始", "期日", "開庭通知", "庭期通知", "陳報",
+    "函詢", "通知", "閱卷", "繳費", "補繳", "選任", "改期",
+)
+
+_CONSUMER_DEBT_TERMINAL_KEYWORDS = (
+    "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+    "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
+    "更生程序終結", "更生程序終止", "終止更生", "終結更生",
+    "清算程序終結", "清算程序終止", "清算終結", "終結清算",
+    "終止清算", "駁回更生聲請", "駁回清算聲請",
+    "調解成立", "和解成立", "協商成立",
+    "撤回聲請", "撤回更生", "撤回清算",
+)
+
 _ENFORCEMENT_CLOSING_KEYWORDS = (
     "執行命令", "債權憑證", "執行結果", "終結執行",
 )
@@ -272,9 +288,23 @@ class LAFOrchestratorDocumentMixin:
     def _is_consumer_debt_terminal_doc(filename: str) -> bool:
         """Check if filename is a terminal document for consumer debt case."""
         fn = str(filename or "")
-        terminal_keywords = ("免責裁定", "不免責裁定", "認可更生方案", "清算終結",
-                             "更生方案認可", "終止更生", "終結清算")
-        return any(k in fn for k in terminal_keywords)
+        if any(k in fn for k in _PROCEDURAL_NONCLOSING_KEYWORDS) and not any(
+            k in fn for k in _CONSUMER_DEBT_TERMINAL_KEYWORDS
+        ):
+            return False
+        return any(k in fn for k in _CONSUMER_DEBT_TERMINAL_KEYWORDS)
+
+    @staticmethod
+    def _is_procedural_nonclosing_doc(filename: str) -> bool:
+        """Return True for procedural documents that must not trigger closing."""
+        fn = str(filename or "")
+        if not fn:
+            return False
+        if any(k in fn for k in _PROCEDURAL_NONCLOSING_KEYWORDS):
+            # A terminal consumer-debt document may still contain words such as
+            # 「終止」 or 「裁定」; terminal signals win over generic procedure words.
+            return not LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_doc(fn)
+        return False
 
     @staticmethod
     def _is_fee_related_receipt_doc(filename: str) -> bool:
@@ -457,7 +487,15 @@ class LAFOrchestratorDocumentMixin:
 
         # ── Closing basis files (判決/裁定/不起訴處分書 etc.) ──
         is_enforcement_basis = LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, full_path, subdir)
-        if any(k in fn for k in _CLOSING_BASIS_KEYWORDS) or is_enforcement_basis:
+        is_closing_keyword = any(k in fn for k in _CLOSING_BASIS_KEYWORDS)
+        is_consumer_debt = LAFOrchestratorDocumentMixin._is_consumer_debt_case_folder(full_path)
+        is_terminal_debt_doc = LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_doc(fn)
+        is_procedural_nonclosing = LAFOrchestratorDocumentMixin._is_procedural_nonclosing_doc(fn)
+        if is_consumer_debt and is_closing_keyword and not is_terminal_debt_doc:
+            is_closing_keyword = False
+        if is_procedural_nonclosing and not is_enforcement_basis:
+            is_closing_keyword = False
+        if is_closing_keyword or is_enforcement_basis:
             # Exclude templates/drafts
             if "範本" not in fn and "模板" not in fn and "草稿" not in fn:
                 out.setdefault("closing_basis_files", []).append(full_path)

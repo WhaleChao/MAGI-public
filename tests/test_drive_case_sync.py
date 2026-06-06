@@ -435,6 +435,14 @@ def test_drive_nas_relative_path_mapping_preserves_each_side_layout():
         == "結案酬金領款單/結案酬金領款單_foo.pdf"
     )
     assert semantic_relative_path("法院判決/a.pdf") == semantic_relative_path("10_判決書/a.pdf")
+    assert (
+        drive_to_nas_relative_path("游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等/上訴理由一狀.pdf")
+        == "04_我方歷次書狀/上訴理由一狀.pdf"
+    )
+    assert (
+        drive_to_nas_relative_path("李明志-1131106-I-007-消費者債務清理事件/更生方案.pdf")
+        == "04_我方歷次書狀/更生方案.pdf"
+    )
 
 
 def test_safe_child_path_rejects_parent_escape(tmp_path):
@@ -918,6 +926,65 @@ def test_drive_download_plan_skips_unmapped_drive_folder_instead_of_copying_raw_
     assert plan["cases"][0]["download_missing"] == []
     assert plan["cases"][0]["download_skipped"][0]["reason"] == "unmapped_drive_folder:未知雲端資料夾"
     assert plan["summary"]["skipped_unmapped_drive_downloads"] == 1
+    assert plan["summary"]["drive_missing_in_nas_files"] == 0
+
+
+def test_drive_download_plan_skips_same_content_existing_in_different_nas_folder(monkeypatch, tmp_path):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/李明志-1131106-I-007-消費者債務清理事件",
+        relative_path="法扶案件/Lumi/李明志-1131106-I-007-消費者債務清理事件",
+        name="李明志-1131106-I-007-消費者債務清理事件",
+        meta=CaseMeta(case_number="2025-0058"),
+        drive_id="drive-case",
+    )
+    case_dir = tmp_path / "法扶案件" / "消費者債務清理" / "2025-0058-李明志-消費者債務清理-更生"
+    local_file = case_dir / "04_我方歷次書狀" / "更生方案.pdf"
+    local_file.parent.mkdir(parents=True)
+    local_file.write_bytes(b"same-plan")
+    digest = __import__("hashlib").md5(b"same-plan").hexdigest()
+    local = CaseFolder(
+        source="nas",
+        path=str(case_dir),
+        local_path=str(case_dir),
+        relative_path="法扶案件/消費者債務清理/2025-0058-李明志-消費者債務清理-更生",
+        name="2025-0058-李明志-消費者債務清理-更生",
+        meta=CaseMeta(case_number="2025-0058"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "drive",
+                "提供資料/更生方案.pdf",
+                "提供資料/更生方案.pdf",
+                "更生方案.pdf",
+                False,
+                size=len(b"same-plan"),
+                md5=digest,
+                drive_id="drive-file",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "nas",
+                str(local_file),
+                "04_我方歷次書狀/更生方案.pdf",
+                "更生方案.pdf",
+                False,
+                size=len(b"same-plan"),
+            )
+        ],
+    )
+
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
+    case = plan["cases"][0]
+    assert case["download_missing"] == []
+    assert case["download_skipped"][0]["reason"] == "same_content_elsewhere"
+    assert plan["summary"]["skipped_duplicate_content_downloads"] == 1
     assert plan["summary"]["drive_missing_in_nas_files"] == 0
 
 

@@ -9,6 +9,7 @@ folder layout; file sync remains missing-only and never overwrites or deletes.
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import json
 import os
@@ -34,6 +35,10 @@ def state_path() -> Path:
 
 def worker_status_path() -> Path:
     return runtime_dir() / "drive_case_sync_worker_status_latest.json"
+
+
+def worker_lock_path() -> Path:
+    return runtime_dir() / "drive_case_sync_worker.pid"
 
 
 def iso_now() -> str:
@@ -97,6 +102,61 @@ def _pid_is_alive(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _read_worker_lock_pid(path: Path | None = None) -> int:
+    path = path or worker_lock_path()
+    try:
+        return int(path.read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        return 0
+
+
+def _release_worker_lock(path: Path | None = None, pid: int | None = None) -> None:
+    path = path or worker_lock_path()
+    pid = int(pid or os.getpid())
+    try:
+        if _read_worker_lock_pid(path) == pid:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def acquire_worker_lock() -> dict:
+    """Acquire a real PID lock so scheduled Drive/NAS sync cannot overlap.
+
+    The status JSON is intentionally not used as a lock because short scheduled
+    jobs can overwrite it while a longer manual/full sync is still running.
+    """
+    path = worker_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current_pid = os.getpid()
+    previous_pid = _read_worker_lock_pid(path)
+    stale: dict = {}
+    if previous_pid and previous_pid != current_pid and _pid_is_alive(previous_pid):
+        return {
+            "acquired": False,
+            "status": "already_running",
+            "active_pid": previous_pid,
+            "lock_path": str(path),
+        }
+    if previous_pid and previous_pid != current_pid:
+        stale = {
+            "previous_pid": previous_pid,
+            "previous_status": "stale_lock_cleared",
+        }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(f"{current_pid}\n", encoding="utf-8")
+    tmp.replace(path)
+    atexit.register(_release_worker_lock, path, current_pid)
+    return {
+        "acquired": True,
+        "pid": current_pid,
+        "lock_path": str(path),
+        "stale_lock": stale,
+    }
 
 
 def clear_stale_running_status() -> dict:
@@ -377,6 +437,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repair-max-seconds-per-case", type=int, default=60)
     args = parser.parse_args(argv)
 
+    worker_lock = acquire_worker_lock()
+    if not worker_lock.get("acquired"):
+        status = {
+            "ok": True,
+            "status": "already_running",
+            "action_required": False,
+            "pid": os.getpid(),
+            "active_worker_pid": worker_lock.get("active_pid"),
+            "lock_path": worker_lock.get("lock_path") or "",
+            "started_at": iso_now(),
+            "finished_at": iso_now(),
+            "message": "Drive/NAS 同步已在執行中，本次排程已略過，避免同時上傳/下載造成重複或錯放。",
+        }
+        save_worker_status(status)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0
+
     state = load_state()
     offset = max(0, int(state.get("matched_case_offset") or 0))
     all_case_offset = max(0, int(state.get("all_case_offset") or 0))
@@ -405,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         "pid": os.getpid(),
         "started_at": started_at,
         "previous_stale_status": stale_status,
+        "worker_lock": worker_lock,
         "matched_case_offset": offset,
         "all_case_offset": all_case_offset,
         "all_case_total": all_case_total,

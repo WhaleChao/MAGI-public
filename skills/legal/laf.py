@@ -57,6 +57,7 @@ from api.laf_case_classifier import (
     normalize_laf_case_fields,
     normalize_laf_case_type,
 )
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
 
 from api.runtime_paths import config_candidates, ensure_orch_on_sys_path, get_config_path
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
@@ -3786,7 +3787,7 @@ class OSCCaseCreator:
             "db_updates": updated_db,
         }
     
-    def _archive_files_to_folder(self, files: List[str], case_folder: str):
+    def _archive_files_to_folder(self, files: List[str], case_folder: str, case_info: Optional[LAFCaseInfo] = None):
         """
         將下載的檔案歸檔到案件資料夾
         
@@ -3798,6 +3799,24 @@ class OSCCaseCreator:
             return
         
         get_target_subfolder = _laf_target_subfolder_for_attachment
+
+        def ensure_poa_word_copy(pdf_path: str) -> None:
+            if not is_laf_power_of_attorney_pdf(pdf_path):
+                return
+            metadata = {}
+            if case_info:
+                metadata = {
+                    "client_name": case_info.client_name,
+                    "laf_case_number": case_info.laf_case_number,
+                    "branch": case_info.branch,
+                    "case_type": case_info.case_type,
+                    "case_reason": case_info.case_reason,
+                }
+            converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=metadata)
+            if converted.get("status") == "created":
+                self.log(f"    📝 已產生委任狀 Word 可填寫版: {os.path.basename(str(converted.get('docx_path') or ''))}")
+            elif not converted.get("ok"):
+                self.log(f"    ⚠️ 委任狀 Word 可填寫版產生失敗: {converted.get('error')}")
         
         for file_path in files:
             if not os.path.exists(file_path):
@@ -3836,10 +3855,12 @@ class OSCCaseCreator:
                             # 檢查檔案是否已存在
                             if os.path.exists(target_path):
                                 self.log(f"    ⏭️ 已存在，跳過: {base_name}")
+                                ensure_poa_word_copy(target_path)
                                 continue
                             
                             with open(target_path, "wb") as target_file, zip_ref.open(member) as source_file:
                                 shutil.copyfileobj(source_file, target_file)
+                            ensure_poa_word_copy(target_path)
                             
                             self.log(f"    ✓ {base_name} → {target_sub}/")
                     
@@ -3885,6 +3906,7 @@ class OSCCaseCreator:
                 if not os.path.exists(dest_path):
                     shutil.copy2(file_path, dest_path)
                     self.log(f"    ✓ {filename} → {target_sub}/")
+                ensure_poa_word_copy(dest_path)
         
         self.log(f"  ✅ 檔案歸檔完成")
 
@@ -4094,7 +4116,7 @@ class OSCCaseCreator:
                                 self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
                                 self.archive_staff_email_attachments(files, final_folder_to_use)
                             else:
-                                self._archive_files_to_folder(files, final_folder_to_use)
+                                self._archive_files_to_folder(files, final_folder_to_use, case_info)
                             # 補齊法扶案號 marker + 當事人基本資料（住址/電話/Email/身分證字號）
                             _write_laf_case_marker(final_folder_to_use, case_info.laf_case_number, log=self.log)
                             fields = _scan_laf_forms_for_client_fields(final_folder_to_use)
@@ -4177,7 +4199,7 @@ class OSCCaseCreator:
                         self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
                         self.archive_staff_email_attachments(files, reuse_folder)
                     else:
-                        self._archive_files_to_folder(files, reuse_folder)
+                        self._archive_files_to_folder(files, reuse_folder, case_info)
                     fields2 = _scan_laf_forms_for_client_fields(reuse_folder)
                     if fields2:
                         try:

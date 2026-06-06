@@ -40,6 +40,7 @@ from api.case_display import (
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
 from api.laf_case_classifier import extract_laf_staff_case_hint, normalize_laf_case_type
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 # 載入 .env
@@ -2676,6 +2677,7 @@ def _filter_can_close_by_portal_status(can_close: List[dict], portal_status: dic
 def _move_downloaded_to_case_folder(
     downloaded_paths: List[str],
     case_root: str,
+    case_metadata: Optional[dict] = None,
 ) -> Tuple[List[str], List[str]]:
     """將下載的檔案移動到案件對應子資料夾。
 
@@ -2686,6 +2688,15 @@ def _move_downloaded_to_case_folder(
     import zipfile
     moved, failed = [], []
 
+    def _ensure_poa_word_copy(pdf_path: str) -> None:
+        if not is_laf_power_of_attorney_pdf(pdf_path):
+            return
+        converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=case_metadata)
+        if converted.get("status") == "created":
+            logger.info("  📝 已產生委任狀 Word 可填寫版: %s", os.path.basename(str(converted.get("docx_path") or "")))
+        elif not converted.get("ok"):
+            logger.warning("  ⚠️ 委任狀 Word 可填寫版產生失敗 %s: %s", os.path.basename(pdf_path), converted.get("error"))
+
     def _move_regular_file(src_path: str, display_name: str) -> bool:
         subfolder = _classify_portal_file(display_name)
         target_dir = os.path.join(case_root, subfolder)
@@ -2693,9 +2704,11 @@ def _move_downloaded_to_case_folder(
         dest = os.path.join(target_dir, display_name)
         if os.path.abspath(src_path) == os.path.abspath(dest):
             logger.info("  ⏭️ 檔案已在正確位置: %s", display_name)
+            _ensure_poa_word_copy(dest)
             return True
         if os.path.exists(dest):
             logger.info("  ⏭️ 檔案已存在，跳過: %s", display_name)
+            _ensure_poa_word_copy(dest)
             try:
                 os.remove(src_path)
             except Exception:
@@ -2703,6 +2716,7 @@ def _move_downloaded_to_case_folder(
             return True
         shutil.move(src_path, dest)
         logger.info("  ✅ 已移至 %s/%s", subfolder, display_name)
+        _ensure_poa_word_copy(dest)
         return True
 
     for fpath in downloaded_paths:
@@ -2722,10 +2736,12 @@ def _move_downloaded_to_case_folder(
                         dest = os.path.join(target_dir, member_name)
                         if os.path.exists(dest):
                             logger.info("  ⏭️ ZIP 內檔案已存在，跳過: %s", member_name)
+                            _ensure_poa_word_copy(dest)
                             moved.append(member_name)
                             continue
                         with zf.open(member) as src, open(dest, "wb") as out:
                             shutil.copyfileobj(src, out)
+                        _ensure_poa_word_copy(dest)
                         moved.append(member_name)
                         logger.info("  ✅ ZIP 展開至 %s/%s", subfolder, member_name)
                 _move_regular_file(fpath, fname)
@@ -2819,7 +2835,15 @@ def scan_portal_new_files(
                         )
                         if downloaded_paths:
                             moved, move_failed = _move_downloaded_to_case_folder(
-                                downloaded_paths, case_root,
+                                downloaded_paths,
+                                case_root,
+                                {
+                                    "client_name": client,
+                                    "laf_case_number": laf_no,
+                                    "case_type": dc.get("case_type") or "",
+                                    "case_reason": dc.get("case_reason") or "",
+                                    "branch": dc.get("branch") or "",
+                                },
                             )
                             auto_downloaded_count = len(moved)
                             logger.info(

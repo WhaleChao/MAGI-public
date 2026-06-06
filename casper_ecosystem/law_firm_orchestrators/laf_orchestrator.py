@@ -6569,7 +6569,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         Find LAF cases ready for auto closing draft:
         - legal_aid_status in (進行中, 已開辦, 待報結, 已結案，待報結)
-        - 10_判決書 has files
+        - unified closing scanner finds terminal closing-basis files
         - Not already drafted recently
         """
         if not self.db:
@@ -6600,33 +6600,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             folder = self._to_local_case_folder(r.get("folder_path") or "")
             if not laf_no or not folder or not os.path.isdir(folder):
                 continue
-            # Must have judgment files
-            judg_dir = os.path.join(folder, "10_判決書")
-            if not os.path.isdir(judg_dir):
-                continue
-            try:
-                has_file = any(not fn.startswith(".") for fn in os.listdir(judg_dir))
-            except OSError:
-                continue
-            if not has_file:
-                continue
             # Dedup
             if self._was_closing_drafted_recently(laf_no, days=30):
                 continue
             if osc_no and self._was_closing_drafted_recently(osc_no, days=30):
                 continue
-            # Collect judgment PDFs as closing_basis_files
-            basis = []
-            allowed_ext = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-            try:
-                judg_files = sorted(os.listdir(judg_dir))
-            except OSError:
+
+            docs = self._scan_case_folder_docs(folder, action="closing")
+            basis = self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
+            if not basis:
                 continue
-            for fn in judg_files:
-                if fn.startswith("."):
-                    continue
-                if Path(fn).suffix.lower() in allowed_ext:
-                    basis.append(os.path.join(judg_dir, fn))
             out.append({
                 "osc_case_number": osc_no,
                 "laf_case_number": laf_no,
@@ -8542,6 +8525,7 @@ for _name in (
     "_dedupe_sorted",
     "_is_consumer_debt_case_folder",
     "_is_consumer_debt_terminal_doc",
+    "_is_procedural_nonclosing_doc",
     "_is_fee_related_receipt_doc",
     "_filter_receipt_evidence_files",
     "_closing_basis_sort_key",
