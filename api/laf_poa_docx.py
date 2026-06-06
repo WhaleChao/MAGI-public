@@ -1,16 +1,37 @@
 from __future__ import annotations
 
+import datetime as _dt
+import html
 import os
+import re
+import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
+TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "laf_poa"
+TEMPLATE_FILENAMES = {
+    "general": "general.docx",
+    "indigenous_center": "indigenous_center.docx",
+}
+BRANCH_PHONE_BY_LABEL = {
+    # Only keep phones that MAGI can prove from checked template sources.  Unknown
+    # branches are left visibly editable instead of silently inserting a wrong phone.
+    "台北分會": "02-23225151",
+    "臺北分會": "02-23225151",
+    "原住民族法律服務中心": "03-8509917",
+}
 
 
 def laf_poa_docx_enabled() -> bool:
     return os.environ.get("MAGI_LAF_POA_DOCX", "1").strip().lower() not in FALSE_VALUES
+
+
+def laf_poa_docx_templates_enabled() -> bool:
+    return os.environ.get("MAGI_LAF_POA_DOCX_TEMPLATES", "1").strip().lower() not in FALSE_VALUES
 
 
 def is_laf_power_of_attorney_pdf(path: str | os.PathLike[str]) -> bool:
@@ -32,20 +53,318 @@ def laf_poa_case_docx_path(pdf_path: str | os.PathLike[str]) -> Path:
     return laf_poa_docx_path(pdf_path)
 
 
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _metadata_first(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _text(data.get(key))
+        if value:
+            return value
+    return ""
+
+
+def normalize_laf_branch_label(branch: str) -> str:
+    value = _text(branch)
+    if not value:
+        return ""
+    value = value.removeprefix("法扶").strip()
+    if "原住民" in value or value in {"原民", "原民中心", "原住民族法律服務"}:
+        return "原住民族法律服務中心"
+    if value.endswith(("分會", "中心")):
+        return value
+    return f"{value}分會"
+
+
+def _laf_branch_phone(data: dict[str, Any], branch_label: str) -> str:
+    explicit = _metadata_first(
+        data,
+        "branch_phone",
+        "laf_branch_phone",
+        "office_phone",
+        "division_phone",
+        "phone",
+    )
+    if explicit:
+        return explicit
+    return (
+        BRANCH_PHONE_BY_LABEL.get(branch_label)
+        or BRANCH_PHONE_BY_LABEL.get(branch_label.replace("臺", "台"))
+        or BRANCH_PHONE_BY_LABEL.get(branch_label.replace("台", "臺"))
+        or "待確認"
+    )
+
+
+def _default_lawyer_name(case_type: str, case_reason: str) -> str:
+    joined = f"{case_type} {case_reason}"
+    if "消費者債務清理" in joined or "消債" in joined or "更生" in joined or "清算" in joined:
+        return "林稚芳律師"
+    return "喬政翔律師"
+
+
+def _normalize_lawyer_name(value: str, case_type: str, case_reason: str) -> str:
+    name = _text(value) or _default_lawyer_name(case_type, case_reason)
+    return name if name.endswith("律師") else f"{name}律師"
+
+
+def _roc_date_parts(data: dict[str, Any]) -> tuple[str, str, str]:
+    explicit_roc = (
+        _metadata_first(data, "roc_year", "roc_y"),
+        _metadata_first(data, "roc_month", "roc_m"),
+        _metadata_first(data, "roc_day", "roc_d"),
+    )
+    if all(explicit_roc):
+        return explicit_roc
+
+    raw = _metadata_first(data, "document_date", "poa_date", "date", "download_date")
+    parsed: _dt.date | None = None
+    if raw:
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+            try:
+                parsed = _dt.datetime.strptime(raw, fmt).date()
+                break
+            except ValueError:
+                pass
+    if parsed is None:
+        parsed = _dt.date.today()
+    return str(parsed.year - 1911), str(parsed.month), str(parsed.day)
+
+
+def _roc_date_from_filename(path: Path) -> dict[str, str]:
+    # Official LAF files usually end with a ROC date, e.g.
+    # 委任狀_1150421-W-004_1150529.pdf.
+    matches = list(re.finditer(r"(?:^|_)(1\d{2})(\d{2})(\d{2})(?:\D|$)", path.stem))
+    if not matches:
+        return {}
+    match = matches[-1]
+    return {
+        "roc_year": str(int(match.group(1))),
+        "roc_month": str(int(match.group(2))),
+        "roc_day": str(int(match.group(3))),
+    }
+
+
+def _stage_marks(data: dict[str, Any]) -> str:
+    stage = _metadata_first(data, "stage", "trial_stage", "instance", "審級")
+    if "偵" in stage:
+        return "□第　　審　■偵 查 中　□"
+    if "二" in stage or "2" in stage:
+        return "□第 一 審　■第 二 審　□偵 查 中　□"
+    if "三" in stage or "3" in stage:
+        return "□第 一 審　□第 二 審　■第 三 審　□偵 查 中　□"
+    if "一" in stage or "1" in stage:
+        return "■第 一 審　□第 二 審　□偵 查 中　□"
+    return "□第　　審　□偵 查 中　□"
+
+
+def _role_marks(data: dict[str, Any], case_type: str) -> str:
+    role = _metadata_first(data, "poa_role", "role", "case_role")
+    joined = f"{case_type} {role}"
+    if "刑" in joined or "辯" in joined:
+        return "□代 理 人　□告訴代理人　■辯 護 人　□輔 佐 人"
+    if "告訴" in joined:
+        return "□代 理 人　■告訴代理人　□辯 護 人　□輔 佐 人"
+    return "■代 理 人　□告訴代理人　□辯 護 人　□輔 佐 人"
+
+
+def _court_line(data: dict[str, Any]) -> str:
+    court = _metadata_first(data, "court", "court_name", "法院", "prosecutor_office")
+    if not court:
+        return "□　　　　　　　法 院　□　　　　　　檢察署　□轉呈　□　　　　　委員會"
+    if "檢" in court:
+        return f"□ 法 院　■ {court}　□轉呈　□ 委員會"
+    if "委員會" in court:
+        return f"□ 法 院　□ 檢察署　□轉呈　■ {court}"
+    return f"■ {court}　□ 檢察署　□轉呈　□ 委員會"
+
+
+def _compact_pdf_line(line: str) -> str:
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def _next_meaningful_line(lines: list[str], start: int) -> str:
+    for line in lines[start:]:
+        value = _compact_pdf_line(line)
+        if value:
+            return value
+    return ""
+
+
+def _extract_laf_poa_pdf_metadata(path: Path) -> dict[str, str]:
+    """Extract official fields from the downloaded LAF POA PDF itself."""
+
+    data: dict[str, str] = {}
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(str(path)) as pdf:
+            text = "\n".join(page.get_text("text") for page in pdf)
+    except Exception:
+        return data
+
+    normalized_text = re.sub(r"[ \t\u3000]+", " ", text)
+    lines = [_compact_pdf_line(line) for line in text.splitlines()]
+
+    laf_match = re.search(r"本會申請編號[:：]\s*([0-9]{6,7}-[A-Z]-\d{3})", normalized_text)
+    if laf_match:
+        data["laf_case_number"] = laf_match.group(1)
+
+    branch_match = re.search(r"本事件經本會\s*(.+?)\s*審核准予扶助", normalized_text, re.S)
+    if branch_match:
+        data["branch"] = _compact_pdf_line(branch_match.group(1))
+    phone_match = re.search(r"逕致電分會\(([^)]+)\)", normalized_text)
+    if phone_match:
+        data["branch_phone"] = _compact_pdf_line(phone_match.group(1))
+
+    if "受原住民族委員會委託辦理原住民法律扶助專用委任狀" in normalized_text:
+        data["branch"] = data.get("branch") or "原住民族法律服務中心"
+
+    court_case_match = re.search(r"案號[:：]\s*([^\n\r]+)", normalized_text)
+    if court_case_match:
+        court_case = _compact_pdf_line(court_case_match.group(1))
+        if any(ch.isdigit() for ch in court_case):
+            data["court_case_number"] = court_case
+
+    id_match = re.search(r"\b([A-Z][12]\d{8})\b", normalized_text)
+    if id_match:
+        data["client_id"] = id_match.group(1)
+
+    lawyer_match = re.search(r"([\u4e00-\u9fff]{2,4}律師)", normalized_text)
+    if lawyer_match:
+        data["lawyer_name"] = lawyer_match.group(1)
+
+    reason_match = re.search(r"為\s*([^\n\r]{1,40}?)\s*事[（(]案[）)]件", normalized_text)
+    if reason_match:
+        reason = _compact_pdf_line(reason_match.group(1))
+        if reason and " " not in reason:
+            data["case_reason"] = reason
+
+    for idx, line in enumerate(lines):
+        if line == "姓名" and not data.get("client_name"):
+            name = _next_meaningful_line(lines, idx + 1)
+            if name and "律師" not in name and len(name) <= 20:
+                data["client_name"] = name
+        elif line == "出生年月日" and not data.get("client_birthday"):
+            birthday = _next_meaningful_line(lines, idx + 1)
+            if re.search(r"\d+\s*年\s*\d+\s*月\s*\d+\s*日", birthday):
+                data["client_birthday"] = birthday.replace(" ", "")
+
+    data.update({k: v for k, v in _roc_date_from_filename(path).items() if v})
+    return data
+
+
 def _normalize_case_metadata(case_metadata: dict[str, Any] | None) -> dict[str, str]:
     data = case_metadata or {}
+    case_type = _metadata_first(data, "case_type", "type", "category", "case_category")
+    case_reason = _metadata_first(data, "case_reason", "reason", "cause", "案由")
+    branch_label = normalize_laf_branch_label(_metadata_first(data, "branch", "laf_branch", "division"))
+    branch_phone = _laf_branch_phone(data, branch_label)
+    roc_year, roc_month, roc_day = _roc_date_parts(data)
+    lawyer_name = _normalize_lawyer_name(
+        _metadata_first(data, "lawyer_name", "lawyer", "attorney", "assigned_lawyer"),
+        case_type,
+        case_reason,
+    )
     return {
-        "client_name": str(data.get("client_name") or data.get("name") or "").strip(),
-        "laf_case_number": str(
-            data.get("laf_case_number")
-            or data.get("legal_aid_number")
-            or data.get("case_number")
-            or ""
-        ).strip(),
-        "branch": str(data.get("branch") or data.get("laf_branch") or "").strip(),
-        "case_reason": str(data.get("case_reason") or data.get("reason") or "").strip(),
-        "case_type": str(data.get("case_type") or "").strip(),
+        "client_name": _metadata_first(data, "client_name", "name", "party_name", "當事人"),
+        "client_birthday": _metadata_first(data, "client_birthday", "birthday", "birth_date", "birth"),
+        "client_id": _metadata_first(data, "client_id", "id_number", "identity_number", "national_id"),
+        "client_address_phone": _metadata_first(data, "client_address_phone", "address_phone", "address"),
+        "laf_case_number": _metadata_first(data, "laf_case_number", "legal_aid_number", "applyno", "case_number"),
+        "court_case_number": _metadata_first(data, "court_case_number", "court_case_no", "court_no", "court_number"),
+        "branch": branch_label,
+        "branch_phone": branch_phone,
+        "case_reason": case_reason,
+        "case_type": case_type,
+        "lawyer_name": lawyer_name,
+        "court_line": _court_line(data),
+        "stage_marks": _stage_marks(data),
+        "role_marks": _role_marks(data, case_type),
+        "roc_year": roc_year,
+        "roc_month": roc_month,
+        "roc_day": roc_day,
     }
+
+
+def select_laf_poa_template(
+    case_metadata: dict[str, str] | None = None,
+) -> tuple[str, Path] | None:
+    if not laf_poa_docx_templates_enabled():
+        return None
+    data = case_metadata or {}
+    key = "indigenous_center" if "原住民族" in _text(data.get("branch")) else "general"
+    template_path = TEMPLATE_DIR / TEMPLATE_FILENAMES[key]
+    if not template_path.exists():
+        return None
+    return key, template_path
+
+
+def _template_values(metadata: dict[str, str]) -> dict[str, str]:
+    return {
+        "LAF_CASE_NUMBER": metadata["laf_case_number"],
+        "COURT_CASE_NUMBER": metadata["court_case_number"],
+        "CLIENT_NAME": metadata["client_name"],
+        "CLIENT_BIRTHDAY": metadata["client_birthday"],
+        "CLIENT_ID": metadata["client_id"],
+        "LAWYER_NAME": metadata["lawyer_name"],
+        "CASE_REASON": metadata["case_reason"],
+        "COURT_LINE": metadata["court_line"],
+        "STAGE_MARKS": metadata["stage_marks"],
+        "ROLE_MARKS": metadata["role_marks"],
+        "BRANCH_LABEL": metadata["branch"] or "待確認分會",
+        "BRANCH_PHONE": metadata["branch_phone"],
+        "ROC_YEAR": metadata["roc_year"],
+        "ROC_MONTH": metadata["roc_month"],
+        "ROC_DAY": metadata["roc_day"],
+    }
+
+
+def _replace_docx_placeholders(template_path: Path, output_path: Path, values: dict[str, str]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with zipfile.ZipFile(template_path, "r") as src, zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            payload = src.read(item.filename)
+            if item.filename.endswith(".xml"):
+                xml = payload.decode("utf-8")
+                for key, value in values.items():
+                    xml = xml.replace(f"{{{{{key}}}}}", html.escape(_text(value)))
+                payload = xml.encode("utf-8")
+            dst.writestr(item, payload)
+    try:
+        from docx import Document  # type: ignore
+
+        Document(str(tmp_path))
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    os.replace(tmp_path, output_path)
+
+
+def _create_from_laf_poa_template(
+    template_key: str,
+    template_path: Path,
+    template_target: Path,
+    target: Path,
+    metadata: dict[str, str],
+) -> dict[str, str]:
+    tmp_template = template_target.with_suffix(template_target.suffix + ".tmp")
+    template_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(template_path, tmp_template)
+    try:
+        from docx import Document  # type: ignore
+
+        Document(str(tmp_template))
+    except Exception:
+        tmp_template.unlink(missing_ok=True)
+        raise
+    os.replace(tmp_template, template_target)
+
+    values = _template_values(metadata)
+    _replace_docx_placeholders(template_path, target, values)
+    values["template_key"] = template_key
+    return values
 
 
 def ensure_laf_poa_docx_companion(
@@ -63,7 +382,6 @@ def ensure_laf_poa_docx_companion(
     source = Path(pdf_path)
     template_target = laf_poa_template_docx_path(source)
     target = laf_poa_case_docx_path(source)
-    normalized_metadata = _normalize_case_metadata(case_metadata)
     result: dict[str, Any] = {
         "ok": False,
         "status": "",
@@ -73,6 +391,8 @@ def ensure_laf_poa_docx_companion(
         "pages": 0,
         "error": "",
         "filled_fields": {},
+        "template_key": "",
+        "warnings": [],
     }
 
     if not laf_poa_docx_enabled():
@@ -84,6 +404,15 @@ def ensure_laf_poa_docx_companion(
     if not source.exists():
         result.update(status="missing_pdf", error="pdf_not_found")
         return result
+
+    pdf_metadata = _extract_laf_poa_pdf_metadata(source)
+    combined_metadata: dict[str, Any] = dict(case_metadata or {})
+    # The official POA PDF is authoritative for its own case number, party, and
+    # branch footer. DB/email metadata only fills fields the PDF leaves blank.
+    combined_metadata.update({k: v for k, v in pdf_metadata.items() if v})
+    normalized_metadata = _normalize_case_metadata(combined_metadata)
+    result["pdf_extracted_fields"] = pdf_metadata
+
     if target.exists() and template_target.exists() and not overwrite:
         try:
             if target.stat().st_mtime >= source.stat().st_mtime and target.stat().st_size > 0:
@@ -91,6 +420,33 @@ def ensure_laf_poa_docx_companion(
                 return result
         except OSError:
             pass
+
+    selected_template = select_laf_poa_template(normalized_metadata)
+    if selected_template is not None:
+        template_key, template_path = selected_template
+        try:
+            filled_fields = _create_from_laf_poa_template(
+                template_key,
+                template_path,
+                template_target,
+                target,
+                normalized_metadata,
+            )
+            result.update(
+                ok=True,
+                status="created",
+                pages=1,
+                filled_fields={k: v for k, v in normalized_metadata.items() if v},
+                template_key=template_key,
+                branch_label=normalized_metadata.get("branch", ""),
+                branch_phone=normalized_metadata.get("branch_phone", ""),
+                template_values={k: v for k, v in filled_fields.items() if v},
+            )
+            if normalized_metadata.get("branch_phone") == "待確認":
+                result["warnings"].append("missing_branch_phone")
+            return result
+        except Exception as exc:
+            result["warnings"].append(f"template_failed:{exc}")
 
     try:
         import fitz  # type: ignore
