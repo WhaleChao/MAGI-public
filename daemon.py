@@ -249,7 +249,7 @@ def _expected_omlx_profile_now() -> tuple[str, str]:
 
         now = datetime.datetime.now()
         minutes = now.hour * 60 + now.minute
-        return ("day", "e4b") if 395 <= minutes < 1310 else ("night", "26b")
+        return ("day", "12b") if 395 <= minutes < 1310 else ("night", "26b")
 
 
 def _is_omlx_night_window() -> bool:

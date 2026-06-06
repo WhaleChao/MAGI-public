@@ -18,7 +18,12 @@ MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
-from scripts.ops.omlx_profile_policy import expected_profile_now as expected_omlx_profile_now  # noqa: E402
+from scripts.ops.omlx_profile_policy import (  # noqa: E402
+    DAY_FALLBACK_MODEL_KEYWORD,
+    DAY_MODEL_KEYWORD,
+    NIGHT_MODEL_KEYWORD,
+    expected_profile_now as expected_omlx_profile_now,
+)
 
 
 @dataclass
@@ -83,8 +88,18 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
     warnings: list[str] = []
 
     if expected == "day":
-        if not _has_keyword(by_port[8080], "e4b"):
-            failures.append(f"8080 expected E4B, got {by_port[8080].model_id or by_port[8080].error or 'down'}")
+        if _has_keyword(by_port[8080], DAY_MODEL_KEYWORD):
+            pass
+        elif _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
+            warnings.append(
+                f"8080 is day fallback {DAY_FALLBACK_MODEL_KEYWORD.upper()}, "
+                f"expected {DAY_MODEL_KEYWORD.upper()}"
+            )
+        else:
+            failures.append(
+                f"8080 expected {DAY_MODEL_KEYWORD.upper()}, "
+                f"got {by_port[8080].model_id or by_port[8080].error or 'down'}"
+            )
         if not _has_keyword(by_port[8081], "embed"):
             warnings.append(f"8081 embed not ready: {by_port[8081].model_id or by_port[8081].error or 'down'}")
         if require_aux:
@@ -97,21 +112,32 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
                 if not _has_keyword(by_port[port], keyword):
                     warnings.append(f"{port} auxiliary not ready")
     else:
-        if not _has_keyword(by_port[8080], "26b"):
-            failures.append(f"8080 expected 26B, got {by_port[8080].model_id or by_port[8080].error or 'down'}")
+        if not _has_keyword(by_port[8080], NIGHT_MODEL_KEYWORD):
+            failures.append(
+                f"8080 expected {NIGHT_MODEL_KEYWORD.upper()}, "
+                f"got {by_port[8080].model_id or by_port[8080].error or 'down'}"
+            )
         if by_port[8082].ok or by_port[8083].ok:
             warnings.append("night profile has auxiliary models still online")
 
     active = active_profile()
-    if active and active != expected and not (expected == "night" and active == "night-e4b-degraded"):
+    allowed_active = {expected}
+    if expected == "day":
+        allowed_active.add("day-e4b-degraded")
+    if expected == "night":
+        allowed_active.add("night-e4b-degraded")
+    if active and active not in allowed_active:
         failures.append(f"active_profile expected {expected}, got {active}")
 
     degraded = False
     degraded_reason = ""
+    if expected == "day" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
+        degraded = True
+        degraded_reason = "day_fell_back_to_e4b"
     if expected == "day" and not failures and (not by_port[8082].ok or not by_port[8083].ok):
         degraded = True
-        degraded_reason = "day_auxiliary_missing"
-    if expected == "night" and _has_keyword(by_port[8080], "e4b"):
+        degraded_reason = degraded_reason or "day_auxiliary_missing"
+    if expected == "night" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
         degraded = True
         degraded_reason = "night_fell_back_to_e4b"
 

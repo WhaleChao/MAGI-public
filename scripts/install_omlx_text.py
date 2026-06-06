@@ -47,6 +47,15 @@ def build_launch_agent_plist(project_root: Path, runtime_root: Path) -> dict:
             "OMLX_TEXT_HOT_CACHE_MAX_SIZE": os.environ.get("OMLX_TEXT_HOT_CACHE_MAX_SIZE", "512MB"),
             "OMLX_TEXT_MAX_TOKENS": os.environ.get("OMLX_TEXT_MAX_TOKENS", "8192"),
             "OMLX_TEXT_MAX_CONTEXT_WINDOW": os.environ.get("OMLX_TEXT_MAX_CONTEXT_WINDOW", "8192"),
+            "OMLX_GEMMA4_UNIFIED_RUNTIME": os.environ.get("OMLX_GEMMA4_UNIFIED_RUNTIME", "0"),
+            "OMLX_GEMMA4_UNIFIED_WRAPPER": os.environ.get(
+                "OMLX_GEMMA4_UNIFIED_WRAPPER",
+                str(Path.home() / ".omlx" / "bin" / "omlx-gemma4-unified-serve"),
+            ),
+            "MAGI_OMLX_GEMMA4_PYTHON": os.environ.get(
+                "MAGI_OMLX_GEMMA4_PYTHON",
+                str(project_root / "venv" / "bin" / "python3"),
+            ),
         },
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),

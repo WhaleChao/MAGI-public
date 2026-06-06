@@ -62,7 +62,7 @@
       "id": "gemma-4-12B-it-4bit",
       "provider": "omlx",
       "origin": "google",
-      "tier": "candidate_day_local_unified",
+      "tier": "day_primary_local_unified",
       "total_parameters_b": 12,
       "active_parameters_b": 12,
       "quantization": "4bit",
@@ -82,7 +82,7 @@
         "require_model_live": true,
         "require_tool_call_gate": true
       },
-      "notes": "候選日間模型；已可用 Gemma4 unified oMLX overlay 推論，但不得直接替換 E4B，須先通過完整 MAGI live gate 與壓力測試。"
+      "notes": "私有版日間主模型；須透過 Gemma4 unified oMLX overlay 啟動。E4B 僅作為 day-e4b-degraded fallback，不得與日間主模型並行混用。"
     },
     {
       "id": "gemma-4-31b-experimental",

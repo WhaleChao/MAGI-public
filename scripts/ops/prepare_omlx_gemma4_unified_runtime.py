@@ -75,7 +75,7 @@ def _write_wrapper(root: Path, python_bin: Path, wrapper: Path) -> None:
 set -euo pipefail
 MAGI_OMLX_GEMMA4_PYTHON="${{MAGI_OMLX_GEMMA4_PYTHON:-{shlex.quote(str(python_bin))}}}"
 export PYTHONPATH="{shlex.quote(str(omlx))}:{shlex.quote(str(mlx_lm))}:{shlex.quote(str(mlx_vlm))}:${{PYTHONPATH:-}}"
-exec "$MAGI_OMLX_GEMMA4_PYTHON" -m omlx.cli serve "$@"
+exec "$MAGI_OMLX_GEMMA4_PYTHON" -m omlx.cli "$@"
 """
     wrapper.write_text(content, encoding="utf-8")
     wrapper.chmod(0o755)
