@@ -82,6 +82,16 @@ class AccountingSheetRow:
     fingerprint: str | None = None
 
 
+@dataclass
+class AccountingSheetFetch:
+    values: list[list[Any]]
+    source_kind: str
+    source_label: str = ""
+    gid: int | None = None
+    selected_by_month: bool = False
+    date_filter_enabled: bool = True
+
+
 class AccountingImportError(RuntimeError):
     pass
 
@@ -193,6 +203,24 @@ def month_window(month: str | None = None, today: date | None = None) -> tuple[d
             year, mon = int(match.group(1)), int(match.group(2))
     last_day = calendar.monthrange(year, mon)[1]
     return date(year, mon, 1), date(year, mon, last_day), f"{year:04d}-{mon:02d}"
+
+
+def sheet_title_matches_month(title: str, month: str | None) -> bool:
+    if not month:
+        return False
+    _, _, key = month_window(month)
+    year, mon = key.split("-")
+    month_int = int(mon)
+    normalized = re.sub(r"\s+", "", str(title or ""))
+    tokens = {
+        f"{year}年{month_int}月",
+        f"{year}年{mon}月",
+        f"{year}-{mon}",
+        f"{year}-{month_int}",
+        f"{year}/{mon}",
+        f"{year}/{month_int}",
+    }
+    return any(token in normalized for token in tokens)
 
 
 def normalize_header(value: Any) -> str:
@@ -373,6 +401,7 @@ def parse_sheet_values(
     gid: int = DEFAULT_GID,
     source_label: str = "",
     allow_no_header: bool = False,
+    filter_by_transaction_month: bool = True,
 ) -> tuple[list[AccountingSheetRow], dict[str, Any]]:
     start, end, month_key = month_window(month)
     if source_label and any(marker in source_label for marker in SKIP_OWNER_MARKERS):
@@ -385,6 +414,7 @@ def parse_sheet_values(
             "skipped_outside_month": 0,
             "skipped_invalid": 0,
             "header_rows": [],
+            "date_filter_enabled": filter_by_transaction_month,
         }
 
     header_rows: list[int] = []
@@ -399,6 +429,7 @@ def parse_sheet_values(
                 "skipped_invalid": 0,
                 "header_rows": [],
                 "no_header": True,
+                "date_filter_enabled": filter_by_transaction_month,
             }
         raise AccountingImportError("找不到日期與金額欄位，請確認試算表標題列")
 
@@ -447,7 +478,7 @@ def parse_sheet_values(
         if not tx_date:
             skipped_invalid += 1
             continue
-        if tx_date < start or tx_date > end:
+        if filter_by_transaction_month and (tx_date < start or tx_date > end):
             skipped_month += 1
             continue
 
@@ -493,6 +524,7 @@ def parse_sheet_values(
         "skipped_owner": skipped_owner,
         "skipped_outside_month": skipped_month,
         "skipped_invalid": skipped_invalid,
+        "date_filter_enabled": filter_by_transaction_month,
     }
 
 
@@ -584,6 +616,29 @@ def fetch_sheet_values(
     force_auth: bool = False,
     month: str | None = None,
 ) -> list[list[Any]]:
+    return fetch_sheet_values_with_meta(
+        spreadsheet_id=spreadsheet_id,
+        gid=gid,
+        token_path=token_path,
+        credentials_path=credentials_path,
+        account_hint=account_hint,
+        interactive=interactive,
+        force_auth=force_auth,
+        month=month,
+    ).values
+
+
+def fetch_sheet_values_with_meta(
+    *,
+    spreadsheet_id: str = DEFAULT_SPREADSHEET_ID,
+    gid: int = DEFAULT_GID,
+    token_path: Path | None = None,
+    credentials_path: Path | None = None,
+    account_hint: str = DEFAULT_ACCOUNT_HINT,
+    interactive: bool = False,
+    force_auth: bool = False,
+    month: str | None = None,
+) -> AccountingSheetFetch:
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -626,7 +681,7 @@ def fetch_sheet_values(
                 f"Google 找不到帳務表；請確認 spreadsheet_id 正確，且 {account_hint} 可讀取這份檔案。"
             ) from exc
         if status == 400 and "Office file" in message:
-            return fetch_office_spreadsheet_values(
+            return fetch_office_spreadsheet_values_with_meta(
                 spreadsheet_id=spreadsheet_id,
                 creds=creds,
                 credentials_path=credentials_path or _default_credentials_path(),
@@ -636,9 +691,19 @@ def fetch_sheet_values(
             )
         raise
     title = None
+    selected_by_month = False
+    if month:
+        for sheet in meta.get("sheets", []):
+            props = sheet.get("properties") or {}
+            candidate = str(props.get("title") or "")
+            if sheet_title_matches_month(candidate, month):
+                title = candidate
+                gid = int(props.get("sheetId") or gid)
+                selected_by_month = True
+                break
     for sheet in meta.get("sheets", []):
         props = sheet.get("properties") or {}
-        if int(props.get("sheetId") or -1) == int(gid):
+        if not title and int(props.get("sheetId") or -1) == int(gid):
             title = props.get("title")
             break
     if not title:
@@ -659,7 +724,14 @@ def fetch_sheet_values(
                 f"Google 找不到帳務表分頁；請確認 gid 正確，且 {account_hint} 可讀取這份檔案。"
             ) from exc
         raise
-    return result.get("values", [])
+    return AccountingSheetFetch(
+        values=result.get("values", []),
+        source_kind="google_sheet",
+        source_label=str(title or ""),
+        gid=gid,
+        selected_by_month=selected_by_month,
+        date_filter_enabled=not selected_by_month,
+    )
 
 
 def fetch_office_spreadsheet_values(
@@ -671,6 +743,25 @@ def fetch_office_spreadsheet_values(
     interactive: bool,
     month: str | None = None,
 ) -> list[list[Any]]:
+    return fetch_office_spreadsheet_values_with_meta(
+        spreadsheet_id=spreadsheet_id,
+        creds=creds,
+        credentials_path=credentials_path,
+        account_hint=account_hint,
+        interactive=interactive,
+        month=month,
+    ).values
+
+
+def fetch_office_spreadsheet_values_with_meta(
+    *,
+    spreadsheet_id: str,
+    creds: Any,
+    credentials_path: Path,
+    account_hint: str,
+    interactive: bool,
+    month: str | None = None,
+) -> AccountingSheetFetch:
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -706,19 +797,18 @@ def fetch_office_spreadsheet_values(
         raise
 
     workbook = openpyxl.load_workbook(BytesIO(content), data_only=True, read_only=True)
-    target_month = None
-    if month:
-        _, _, target_month = month_window(month)
     best_values: list[list[Any]] | None = None
+    best_title = ""
+    best_selected_by_month = False
     best_score = -1
     for worksheet in workbook.worksheets:
         title = str(worksheet.title or "")
         if any(marker in title for marker in SKIP_OWNER_MARKERS):
             continue
-        if target_month:
-            year, mon = target_month.split("-")
-            month_tokens = {f"{year}年{int(mon)}月", f"{year}年{mon}月"}
-            if not any(token in title for token in month_tokens):
+        selected_by_month = False
+        if month:
+            selected_by_month = sheet_title_matches_month(title, month)
+            if not selected_by_month:
                 continue
         values = [[cell for cell in row] for row in worksheet.iter_rows(values_only=True)]
         score = 0
@@ -736,10 +826,19 @@ def fetch_office_spreadsheet_values(
                 break
         if score > best_score:
             best_values = values
+            best_title = title
+            best_selected_by_month = selected_by_month
             best_score = score
     if best_values is None:
         raise AccountingImportError("Excel 帳務檔內找不到可辨識的日期/金額標題列")
-    return best_values
+    return AccountingSheetFetch(
+        values=best_values,
+        source_kind="office_excel",
+        source_label=best_title,
+        gid=None,
+        selected_by_month=best_selected_by_month,
+        date_filter_enabled=not best_selected_by_month,
+    )
 
 
 def _get_osc_helpers():
@@ -1005,7 +1104,7 @@ def run_import(
     _, _, month_key = month_window(month)
     if not spreadsheet_id:
         raise AccountingImportError("尚未設定 MAGI_ACCOUNTING_SHEET_ID，請在 .env 設定同事帳務表檔案 ID")
-    values = fetch_sheet_values(
+    fetched = fetch_sheet_values_with_meta(
         spreadsheet_id=spreadsheet_id,
         gid=gid,
         interactive=interactive,
@@ -1014,16 +1113,25 @@ def run_import(
         month=month_key,
     )
     rows, stats = parse_sheet_values(
-        values,
+        fetched.values,
         month=month_key,
         spreadsheet_id=spreadsheet_id,
-        gid=gid,
+        gid=fetched.gid if fetched.gid is not None else gid,
+        source_label=fetched.source_label,
         allow_no_header=True,
+        filter_by_transaction_month=fetched.date_filter_enabled,
     )
     result = import_rows(rows, month=month_key, dry_run=dry_run)
     result["sheet_stats"] = stats
     result["spreadsheet_id"] = spreadsheet_id
     result["gid"] = gid
+    result["source"] = {
+        "kind": fetched.source_kind,
+        "label": fetched.source_label,
+        "gid": fetched.gid,
+        "selected_by_month": fetched.selected_by_month,
+        "date_filter_enabled": fetched.date_filter_enabled,
+    }
     return result
 
 

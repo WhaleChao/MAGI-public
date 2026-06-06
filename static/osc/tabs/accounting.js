@@ -127,11 +127,20 @@ function renderAccountingImportResult(data) {
         <div class="muted" style="margin-top:10px;">
             對帳樣本：${sample.map(x => `${esc(x.date || "")} ${esc(x.category || "")} ${esc(x.description || "")}`).join("；")}
         </div>` : "";
+    const source = data.source || {};
+    const sheetStats = data.sheet_stats || {};
+    const sourceText = source.label
+        ? `來源：${source.kind === "office_excel" ? "Google 雲端 Excel" : "Google 試算表"}「${source.label}」`
+        : "來源：尚未回傳分頁資訊";
+    const dateFilterText = source.selected_by_month
+        ? "已按月份分頁讀取；分頁內前後日期也會匯入並由去重保護。"
+        : "使用交易日期月份過濾。";
     box.innerHTML = `
         <div class="stat-grid">
             ${rows.map(([k, v]) => `<div class="stat-card"><div class="k">${esc(k)}</div><div class="v">${fmtAmount(v)}</div></div>`).join("")}
         </div>
         <div class="muted" style="margin-top:10px;">月份：${esc(data.month || accountingImportMonthValue())}；${data.dry_run ? "目前是預覽，尚未寫入。" : "已完成匯入與對帳。"}</div>
+        <div class="muted" style="margin-top:6px;">${esc(sourceText)}；${esc(dateFilterText)} 解析 ${fmtAmount(sheetStats.parsed || 0)} 筆，跳過非本月份日期 ${fmtAmount(sheetStats.skipped_outside_month || 0)} 筆。</div>
         ${conflictHtml}
         ${sampleHtml}
     `;

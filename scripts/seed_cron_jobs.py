@@ -87,7 +87,6 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
     """Core single-machine business jobs that must exist on fresh installs."""
     python_bin = python_path or default_python_path(repo_root)
     run_with_env = repo_root / "scripts" / "ops" / "run_with_env.py"
-    accounting_account_hint = os.environ.get("MAGI_ACCOUNTING_GOOGLE_ACCOUNT_HINT", "primary").strip() or "primary"
     return [
         {
             "id": "job_laf_pending_scan",
@@ -203,7 +202,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_accounting_sheet_import",
             "cron": "20 9 * * 1,5",
-            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'import_accounting_sheet.py'} --commit --include-previous --account-hint {accounting_account_hint}",
+            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'import_accounting_sheet.py'} --commit --include-previous",
             "desc": "同事帳務 Google Sheet 匯入（每週一、五 09:20；跳過標識俊儒，檢查本月與前月並去重）",
             "channel_id": None,
             "last_run": None,
@@ -215,7 +214,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_accounting_monthly_bonus",
             "cron": "0 12 * * *",
-            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'accounting_monthly_bonus.py'} --commit --refresh-import --catch-up --export-xlsx --account-hint {accounting_account_hint}",
+            "command": f"{python_bin} {run_with_env} -- {python_bin} {repo_root / 'scripts' / 'accounting_monthly_bonus.py'} --commit --refresh-import --catch-up --export-xlsx",
             "desc": "每月帳務獎金結算（24 日中午起自動重新匯入帳務、計算法扶消債酬金獎金與案件獎金，月初可重算前月）",
             "channel_id": None,
             "last_run": None,

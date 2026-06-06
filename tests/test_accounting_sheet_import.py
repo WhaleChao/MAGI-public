@@ -149,6 +149,31 @@ def test_parse_colleague_month_sheet_loose_fixed_layout():
     assert rows[2].category == "雜支"
 
 
+def test_parse_selected_month_sheet_keeps_cross_month_rows_when_date_filter_disabled():
+    values = [
+        ["每月收支清單\n2026年", "六月", "", "", ""],
+        ["類別", "時間", "姓名", "備註", "收入"],
+        ["一般案件", "2026-05-29 00:00:00", "謝易霖", "委任費", 50000],
+        ["", "2026-06-01 00:00:00", "胡盺茹", "諮詢費用", 3000],
+    ]
+    rows, stats = parse_sheet_values(values, month="2026-06")
+    assert [r.description for r in rows] == ["胡盺茹｜諮詢費用"]
+    assert stats["skipped_outside_month"] == 1
+
+    rows, stats = parse_sheet_values(values, month="2026-06", filter_by_transaction_month=False)
+    assert [r.description for r in rows] == ["謝易霖｜委任費", "胡盺茹｜諮詢費用"]
+    assert stats["skipped_outside_month"] == 0
+    assert stats["date_filter_enabled"] is False
+
+
+def test_sheet_title_matches_month_requires_target_year():
+    from api.osc.accounting_sheet_import import sheet_title_matches_month
+
+    assert sheet_title_matches_month("2026年6月", "2026-06")
+    assert sheet_title_matches_month("2026年06月（本所）", "2026-06")
+    assert not sheet_title_matches_month("2025年6月", "2026-06")
+
+
 def test_fixed_expense_overlap_skips_payroll(monkeypatch):
     from api.osc.accounting_sheet_import import AccountingSheetRow, is_fixed_expense_overlap
 
