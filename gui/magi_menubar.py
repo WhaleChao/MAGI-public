@@ -47,6 +47,23 @@ import sys
 if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 
+try:
+    from scripts.ops.omlx_profile_policy import (
+        DAY_FALLBACK_MODEL_KEYWORD,
+        DAY_MODEL_KEYWORD,
+        NIGHT_MODEL_KEYWORD,
+        expected_profile_now as expected_omlx_profile_now,
+    )
+except Exception:
+    DAY_MODEL_KEYWORD = "12b"
+    DAY_FALLBACK_MODEL_KEYWORD = "e4b"
+    NIGHT_MODEL_KEYWORD = "26b"
+
+    def expected_omlx_profile_now():
+        now = datetime.now()
+        minutes = now.hour * 60 + now.minute
+        return ("day", DAY_MODEL_KEYWORD) if 395 <= minutes < 1310 else ("night", NIGHT_MODEL_KEYWORD)
+
 
 def _load_local_env_keys(keys: set[str]) -> None:
     """Load non-secret menubar settings when LaunchAgent lacks shell env."""
@@ -167,11 +184,6 @@ def _check_omlx(port: int) -> str:
             data = json.loads(resp.read())
             models = data.get("data", [])
             if models:
-                if port in (8080, 11434):
-                    main_kw = os.environ.get("MAGI_MAIN_MODEL", "gemma").lower().split("-")[0]
-                    for m in models:
-                        if main_kw in m.get("id", "").lower():
-                            return m["id"]
                 return models[0].get("id", "")
     except Exception:
         pass
@@ -247,6 +259,82 @@ def _service_alive(services: dict, *aliases: str) -> bool:
         if name and bool(services.get(name)):
             return True
     return False
+
+
+def _active_omlx_profile() -> str:
+    try:
+        with open(os.path.expanduser("~/.omlx/active_profile"), encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _short_model_id(model_id: str, limit: int = 28) -> str:
+    model_id = str(model_id or "").strip()
+    return model_id[:limit] if len(model_id) > limit else model_id
+
+
+def _omlx_text_status(model_id: str, expected_profile: str, expected_keyword: str, active_profile: str) -> dict:
+    """Return user-facing text-model status for the menubar."""
+    model_low = (model_id or "").lower()
+    expected_keyword = (expected_keyword or "").lower()
+    fallback_keyword = DAY_FALLBACK_MODEL_KEYWORD.lower()
+    expected_profile = expected_profile or "day"
+    active_profile = active_profile or ""
+
+    profile_zh = "日間" if expected_profile == "day" else "夜間"
+    expected_label = "12B" if expected_keyword == DAY_MODEL_KEYWORD.lower() else "26B"
+
+    allowed_active = {expected_profile}
+    if expected_profile == "day":
+        allowed_active.add("day-e4b-degraded")
+    if expected_profile == "night":
+        allowed_active.add("night-e4b-degraded")
+    profile_mismatch = bool(active_profile and active_profile not in allowed_active)
+
+    if not model_id:
+        return {
+            "icon": "🔴",
+            "label": f"{profile_zh}主模型離線（預期{expected_label}）",
+            "degraded": False,
+            "ok": False,
+            "mismatch": True,
+        }
+
+    if expected_keyword and expected_keyword in model_low:
+        label = f"{profile_zh}{expected_label}  {_short_model_id(model_id)}"
+        if profile_mismatch:
+            label += f"・profile={active_profile}"
+        return {
+            "icon": "🟡" if profile_mismatch else "🟢",
+            "label": label,
+            "degraded": False,
+            "ok": not profile_mismatch,
+            "mismatch": profile_mismatch,
+        }
+
+    if fallback_keyword and fallback_keyword in model_low:
+        label = f"{profile_zh}降級E4B（預期{expected_label}）"
+        if profile_mismatch:
+            label += f"・profile={active_profile}"
+        return {
+            "icon": "🟡",
+            "label": label,
+            "degraded": True,
+            "ok": not profile_mismatch,
+            "mismatch": profile_mismatch,
+        }
+
+    label = f"{profile_zh}模型不符：{_short_model_id(model_id)}（預期{expected_label}）"
+    if profile_mismatch:
+        label += f"・profile={active_profile}"
+    return {
+        "icon": "🔴",
+        "label": label,
+        "degraded": False,
+        "ok": False,
+        "mismatch": True,
+    }
 
 
 _MAGI_ZOMBIE_PARENTS = {
@@ -581,6 +669,19 @@ class MAGIMenuBar(rumps.App):
         for name, port in OMLX_ENGINES:
             engines[name] = _check_omlx(port)
         cache["engines"] = engines
+        expected_profile, expected_keyword = expected_omlx_profile_now()
+        active_profile = _active_omlx_profile()
+        cache["omlx_profile"] = {
+            "expected_profile": expected_profile,
+            "expected_keyword": expected_keyword,
+            "active_profile": active_profile,
+            "text_status": _omlx_text_status(
+                engines.get("文字推理", ""),
+                expected_profile,
+                expected_keyword,
+                active_profile,
+            ),
+        }
 
         # ── 遠端節點 ──
         nodes = {}
@@ -803,14 +904,41 @@ class MAGIMenuBar(rumps.App):
         # ── 推理引擎 ──
         omlx_up = 0
         engines = c.get("engines", {})
+        profile_info = c.get("omlx_profile", {})
+        text_status = profile_info.get("text_status", {}) if isinstance(profile_info, dict) else {}
+        expected_profile = profile_info.get("expected_profile", "") if isinstance(profile_info, dict) else ""
+        expected_keyword = profile_info.get("expected_keyword", "") if isinstance(profile_info, dict) else ""
+        active_profile = profile_info.get("active_profile", "") if isinstance(profile_info, dict) else ""
+        expected_label = "12B" if str(expected_keyword).lower() == DAY_MODEL_KEYWORD.lower() else "26B"
+        profile_label = "日間" if expected_profile == "day" else "夜間"
+        if text_status.get("degraded"):
+            _set_colored_title(self.omlx_header, f"── 推理引擎（{profile_label}{expected_label}→E4B降級）──", None)
+        elif expected_profile:
+            _set_colored_title(self.omlx_header, f"── 推理引擎（{profile_label}{expected_label}）──", None)
+        else:
+            _set_colored_title(self.omlx_header, "── 推理引擎 ──", None)
         for name, _ in OMLX_ENGINES:
             model_id = engines.get(name, "")
             if model_id:
-                short = model_id[:28] if len(model_id) > 28 else model_id
-                _set_colored_title(self.omlx_items[name], f"  🟢 {name}  {short}", None)
+                if name == "文字推理" and text_status:
+                    _set_colored_title(
+                        self.omlx_items[name],
+                        f"  {text_status.get('icon', '🟢')} {name}  {text_status.get('label', _short_model_id(model_id))}",
+                        None,
+                    )
+                else:
+                    short = _short_model_id(model_id)
+                    _set_colored_title(self.omlx_items[name], f"  🟢 {name}  {short}", None)
                 omlx_up += 1
             else:
-                _set_colored_title(self.omlx_items[name], f"  🔴 {name}  離線", None)
+                if name == "文字推理" and text_status:
+                    _set_colored_title(
+                        self.omlx_items[name],
+                        f"  {text_status.get('icon', '🔴')} {name}  {text_status.get('label', '離線')}",
+                        None,
+                    )
+                else:
+                    _set_colored_title(self.omlx_items[name], f"  🔴 {name}  離線", None)
         # macOS Vision OCR status
         try:
             from skills.apple.apple_intelligence import VISION_AVAILABLE
@@ -960,10 +1088,7 @@ class MAGIMenuBar(rumps.App):
             _set_colored_title(self.zombie_item, f"  🔴 殭屍程序  {zombies}個 {z_detail}", None)
 
         # ── 選單列圖示 ──
-        try:
-            _profile = open("/Users/ai/.omlx/active_profile").read().strip()
-        except Exception:
-            _profile = "day"
+        _profile = active_profile or expected_profile or "day"
 
         total = core_up + omlx_up
         # 離峰模式 8082/8083 不啟動，預期只有 E4B + embed = 2 個 oMLX
@@ -973,7 +1098,7 @@ class MAGIMenuBar(rumps.App):
         else:
             expected = len(SERVICES) + len(OMLX_ENGINES)
         nodes_ok = nodes_up >= 1 if REMOTE_NODES else True
-        if total >= expected and zombies == 0 and nodes_ok:
+        if total >= expected and zombies == 0 and nodes_ok and not text_status.get("degraded") and not text_status.get("mismatch"):
             self.title = " MAGI " if not _night_mode else " MAGI \U0001f319"
         elif core_up >= 2:
             self.title = " MAGI \u26a0"
