@@ -64,7 +64,10 @@ def test_laf_poa_pdf_creates_fillable_word_companion(tmp_path):
     assert "王惠薰" in xml
     assert "1150529-E-005" in xml
     assert "花蓮分會" in xml
-    assert "待確認" in xml
+    assert "03-8222128" in xml
+    assert "喬政翔律師" in xml
+    assert "970花蓮縣花蓮市明禮路18之6號1樓" in xml
+    assert "03-835-7186" in xml
     assert "{{" in _docx_xml(template_path)
 
     second = ensure_laf_poa_docx_companion(pdf)
@@ -183,6 +186,31 @@ def test_laf_poa_pdf_itself_is_authoritative_metadata_source(tmp_path, monkeypat
     assert "原住民族法律服務中心" in xml
     assert "03-8509917" in xml
     assert "115 年 5 月 29 日" in _docx_text(laf_poa_docx_path(pdf))
+
+
+def test_laf_poa_lawyer_is_not_overridden_by_assigned_lawyer(tmp_path):
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
+
+    pdf = tmp_path / "委任狀_1150529-E-005_1150601.pdf"
+    _make_pdf(pdf)
+
+    result = ensure_laf_poa_docx_companion(
+        pdf,
+        case_metadata={
+            "client_name": "王惠薰",
+            "laf_case_number": "1150529-E-005",
+            "branch": "花蓮",
+            "case_type": "消費者債務清理",
+            "case_reason": "更生",
+            "lawyer_name": "林稚芳律師",
+            "assigned_lawyer": "林稚芳",
+        },
+    )
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert "喬政翔律師" in xml
+    assert "林稚芳" not in xml
 
 
 def test_laf_poa_roc_date_uses_file_tail_not_laf_number():

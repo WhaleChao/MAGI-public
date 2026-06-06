@@ -10,19 +10,19 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from api.laf_branch_profiles import (
+    DEFAULT_LAWYER_NAME,
+    get_law_firm_profile,
+    normalize_branch_label,
+    resolve_laf_branch_profile,
+)
+
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "laf_poa"
 TEMPLATE_FILENAMES = {
     "general": "general.docx",
     "indigenous_center": "indigenous_center.docx",
-}
-BRANCH_PHONE_BY_LABEL = {
-    # Only keep phones that MAGI can prove from checked template sources.  Unknown
-    # branches are left visibly editable instead of silently inserting a wrong phone.
-    "台北分會": "02-23225151",
-    "臺北分會": "02-23225151",
-    "原住民族法律服務中心": "03-8509917",
 }
 
 
@@ -66,15 +66,7 @@ def _metadata_first(data: dict[str, Any], *keys: str) -> str:
 
 
 def normalize_laf_branch_label(branch: str) -> str:
-    value = _text(branch)
-    if not value:
-        return ""
-    value = value.removeprefix("法扶").strip()
-    if "原住民" in value or value in {"原民", "原民中心", "原住民族法律服務"}:
-        return "原住民族法律服務中心"
-    if value.endswith(("分會", "中心")):
-        return value
-    return f"{value}分會"
+    return normalize_branch_label(branch)
 
 
 def _laf_branch_phone(data: dict[str, Any], branch_label: str) -> str:
@@ -88,24 +80,17 @@ def _laf_branch_phone(data: dict[str, Any], branch_label: str) -> str:
     )
     if explicit:
         return explicit
-    return (
-        BRANCH_PHONE_BY_LABEL.get(branch_label)
-        or BRANCH_PHONE_BY_LABEL.get(branch_label.replace("臺", "台"))
-        or BRANCH_PHONE_BY_LABEL.get(branch_label.replace("台", "臺"))
-        or "待確認"
-    )
+    profile = resolve_laf_branch_profile(branch_label)
+    return profile.phone if profile and profile.phone else "待確認"
 
 
 def _default_lawyer_name(case_type: str, case_reason: str) -> str:
-    joined = f"{case_type} {case_reason}"
-    if "消費者債務清理" in joined or "消債" in joined or "更生" in joined or "清算" in joined:
-        return "林稚芳律師"
-    return "喬政翔律師"
+    return DEFAULT_LAWYER_NAME
 
 
 def _normalize_lawyer_name(value: str, case_type: str, case_reason: str) -> str:
-    name = _text(value) or _default_lawyer_name(case_type, case_reason)
-    return name if name.endswith("律師") else f"{name}律師"
+    # 法扶委任狀受任人固定為喬政翔律師；不得受 DB 承辦律師或案件種類干擾。
+    return DEFAULT_LAWYER_NAME
 
 
 def _roc_date_parts(data: dict[str, Any]) -> tuple[str, str, str]:
@@ -301,13 +286,19 @@ def select_laf_poa_template(
 
 
 def _template_values(metadata: dict[str, str]) -> dict[str, str]:
+    firm = get_law_firm_profile()
     return {
         "LAF_CASE_NUMBER": metadata["laf_case_number"],
         "COURT_CASE_NUMBER": metadata["court_case_number"],
         "CLIENT_NAME": metadata["client_name"],
         "CLIENT_BIRTHDAY": metadata["client_birthday"],
         "CLIENT_ID": metadata["client_id"],
-        "LAWYER_NAME": metadata["lawyer_name"],
+        "LAWYER_NAME": firm.lawyer_name,
+        "LAW_FIRM_OFFICE_NAME": firm.office_name,
+        "LAW_FIRM_ADDRESS_LINE": firm.address_line,
+        "LAW_FIRM_PHONE": firm.phone,
+        "LAW_FIRM_FAX": firm.fax,
+        "LAW_FIRM_MOBILE": firm.mobile,
         "CASE_REASON": metadata["case_reason"],
         "COURT_LINE": metadata["court_line"],
         "STAGE_MARKS": metadata["stage_marks"],
