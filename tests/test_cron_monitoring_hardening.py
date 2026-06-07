@@ -556,7 +556,8 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "cleanup_synology_empty_case_shells.py" in by_id["job_empty_case_shell_cleanup"]["command"]
     assert by_id["job_slow_archive_closed_cases"]["enabled"] is True
     assert by_id["job_slow_archive_closed_cases"]["no_catchup"] is True
-    assert "slow_archive_closed_cases.py" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert by_id["job_slow_archive_closed_cases"]["cron"] == "40 5 * * *"
+    assert "start_slow_archive_closed_cases.py" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--limit 3" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--min-size-mb 0" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--bwlimit-mbps 80" in by_id["job_slow_archive_closed_cases"]["command"]
@@ -587,7 +588,7 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "--enqueue-ocr-followups" in by_id["job_nightly_bookmark_regex"]["command"]
     assert by_id["job_pdf_bookmark_label_repair"]["enabled"] is True
     assert by_id["job_pdf_bookmark_label_repair"]["no_catchup"] is True
-    assert by_id["job_pdf_bookmark_label_repair"]["cron"] == "45 2 * * *"
+    assert by_id["job_pdf_bookmark_label_repair"]["cron"] == "35 4 * * *"
     assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_label_repair"]["command"]
     assert "--apply --limit 12" in by_id["job_pdf_bookmark_label_repair"]["command"]
     assert "--per-file-timeout 90" in by_id["job_pdf_bookmark_label_repair"]["command"]
@@ -605,6 +606,46 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert by_id["job_nas_pdf_ocr_worker_offpeak"]["cron"] == "45 1,3,5,22 * * *"
     assert "--batch 1" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
     assert "--require-free-inactive-gb 4" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
+
+
+def test_seed_cron_jobs_disables_deprecated_pdf_annotator(tmp_path):
+    import scripts.seed_cron_jobs as seed
+
+    legacy = {
+        "id": "job_1772867062892_e33b6a",
+        "cron": "10 2 * * *",
+        "command": "python3 skills/pdf-annotator/action.py --task annotate",
+        "desc": "PDF 自動標籤（舊）",
+        "enabled": True,
+    }
+    (tmp_path / "cron_jobs.json").write_text(json.dumps([legacy], ensure_ascii=False), encoding="utf-8")
+
+    result = seed.seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    jobs = json.loads((tmp_path / "cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+
+    assert result["ok"] is True
+    assert by_id["job_1772867062892_e33b6a"]["enabled"] is False
+    assert by_id["job_1772867062892_e33b6a"]["no_catchup"] is True
+    assert by_id["job_1772867062892_e33b6a"]["desc"].startswith("已停用：")
+
+
+def test_discord_cron_scheduler_dispatches_without_blocking_loop():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    assert "_execute_scheduled_job" in source
+    assert "asyncio.create_task" in source
+    assert "_CRON_RUNNING_TASKS" in source
+    assert "skip overlapping launch" in source
+
+
+def test_daemon_cron_fallback_dispatches_without_blocking_loop():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+
+    assert "ThreadPoolExecutor" in source
+    assert "magi-cron-fallback" in source
+    assert "executor.submit(_run_fallback_job, job)" in source
+    assert "skip overlapping launch" in source
 
 
 def test_seed_cron_jobs_installs_monthly_accounting_bonus_job(tmp_path):

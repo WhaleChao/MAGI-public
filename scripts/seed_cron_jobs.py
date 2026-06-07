@@ -13,6 +13,11 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEPRECATED_JOB_IDS = {
+    # Replaced by pdf-bookmarker/pdf-namer. Keeping it enabled caused an extra
+    # 02:10 NAS scan and duplicated PDF tagging logic.
+    "job_1772867062892_e33b6a",
+}
 
 
 def default_python_path(repo_root: Path = REPO_ROOT) -> Path:
@@ -100,9 +105,9 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         },
         {
             "id": "job_laf_nightly_audit",
-            "cron": "50 2 * * *",
+            "cron": "55 2 * * *",
             "command": f"{python_bin} {repo_root / 'scripts' / 'laf_nightly_audit.py'}",
-            "desc": "法扶夜間審計",
+            "desc": "法扶夜間審計（02:55；避開 02:15 PDF 書籤增量高峰）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
@@ -419,17 +424,17 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
         },
         {
             "id": "job_slow_archive_closed_cases",
-            "cron": "35 2 * * *",
+            "cron": "40 5 * * *",
             "command": (
                 f"{python_bin} {run_with_env} "
                 "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=80 "
                 "MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=7200 "
                 "MAGI_SLOW_ARCHIVE_RSYNC_TIMEOUT_SEC=600 "
-                f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'slow_archive_closed_cases.py'} "
+                f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'start_slow_archive_closed_cases.py'} "
                 "--apply --limit 3 --min-size-mb 0 --bwlimit-mbps 80 --max-runtime-sec 7200 --rsync-timeout-sec 600 "
                 f"--json-out {repo_root / '.runtime' / 'slow_archive_closed_cases_latest.json'}"
             ),
-            "desc": "已結案案件離峰慢搬（02:35；80MB/s 升級 NAS 限速可續傳；清掉仍留在進行中根目錄的殘留資料夾，游秀鈴 2025-0002 仍優先）",
+            "desc": "已結案案件離峰慢搬（05:40 背景啟動；80MB/s 升級 NAS 限速可續傳；清掉仍留在進行中根目錄的殘留資料夾，游秀鈴 2025-0002 仍優先）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
@@ -519,7 +524,7 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
         },
         {
             "id": "job_pdf_bookmark_label_repair",
-            "cron": "45 2 * * *",
+            "cron": "35 4 * * *",
             "command": guarded_cron_command(
                 repo_root,
                 python_bin,
@@ -532,7 +537,7 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
                 ),
                 block_at="throttle",
             ),
-            "desc": "PDF 既有書籤污染稽核與重標（每日 02:45；80MB 以下快修）",
+            "desc": "PDF 既有書籤污染稽核與重標（每日 04:35；80MB 以下快修，避開 02:15 增量書籤）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
@@ -697,10 +702,22 @@ def seed_jobs(repo_root: Path = REPO_ROOT, *, python_path: Path | None = None) -
             continue
         if job_id:
             seen.add(job_id)
+        if job_id in DEPRECATED_JOB_IDS and (
+            job.get("enabled") is not False
+            or job.get("no_catchup") is not True
+            or not str(job.get("desc") or "").startswith("已停用：")
+        ):
+            job = {
+                **job,
+                "enabled": False,
+                "no_catchup": True,
+                "desc": f"已停用：{job.get('desc') or job_id}",
+            }
+            changed = True
         deduped.append(job)
     if len(deduped) != len(jobs):
-        jobs = deduped
         changed = True
+    jobs = deduped
 
     if changed:
         cron_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

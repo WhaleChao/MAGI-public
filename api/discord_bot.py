@@ -459,6 +459,160 @@ def _likely_long_task(user_text: str, attachment: Optional[dict]) -> bool:
     return any(k in t for k in heavy_keywords)
 
 
+_CRON_RUNNING_TASKS: dict[str, asyncio.Task] = {}
+
+
+def _cron_max_concurrent_jobs() -> int:
+    try:
+        raw = int(os.environ.get("MAGI_CRON_MAX_CONCURRENT_JOBS", "3") or "3")
+    except Exception:
+        raw = 3
+    return max(1, min(6, raw))
+
+
+def _cron_job_timeout(job: dict) -> int:
+    _LONG_JOBS = {
+        "job_nightly_regression",
+        "job_distill_train",
+        "job_weekend_resummary",
+        "job_pdf_namer_nightly",
+        "job_reprocess_insights",
+        "job_obsidian_ingest",
+        "job_laf_nightly_audit",
+        "job_nightly_autopilot",
+        "job_judicial_api_night_pull",
+        "job_judicial_api_morning",
+        "job_weekly_legal_crawl",
+        "job_transcript_sync",
+        "job_file_review_check",
+        "job_weekend_bookmark",
+        "job_nightly_bookmark_regex",
+        "job_market_briefing_script",
+        "job_wiki_synthesizer",
+        "job_knowledge_lint",
+        "job_smoke_external_chat",
+        "job_translator_ape_regression",
+        "job_omlx_switch_night",
+        "job_omlx_switch_day",
+        "job_benchmark_pdf_bookmarker",
+        "job_research_brief_daily",
+        "job_disk_cleanup_healthcheck",
+        "job_1772867062892_6cef0b",
+        "job_1776221713533_0a5366",
+        "job_weekly_cache_cleanup",
+        "job_benchmark_pdf_namer",
+        "job_case_index_sync",
+        "job_self_repair_reporter",
+    }
+    _LONG_JOB_TIMEOUTS = {
+        "job_nightly_autopilot": 28800,
+        "job_weekend_bookmark": 21600,
+    }
+    _custom_timeout = job.get("timeout_sec")
+    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
+        return int(_custom_timeout)
+    job_id = job.get("id")
+    if job_id in _LONG_JOB_TIMEOUTS:
+        return _LONG_JOB_TIMEOUTS[job_id]
+    if job.get("long_job") is True:
+        return 7200
+    return 7200 if job_id in _LONG_JOBS else 600
+
+
+async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> None:
+    """Run one cron job without blocking the minute-by-minute scheduler loop."""
+    async with semaphore:
+        loop = asyncio.get_running_loop()
+        command = str(job.get("command") or "")
+        job_id = str(job.get("id") or "?")
+        logger.info("⏰ Executing scheduled job %s: %s", job_id, command[:300])
+
+        if command.startswith("@MAGI"):
+            clean_cmd = command.replace("@MAGI", "").strip()
+            response = await loop.run_in_executor(
+                _CRON_EXECUTOR,
+                lambda: orchestrator.process_message(
+                    "SYSTEM_CRON",
+                    clean_cmd,
+                    platform="DISCORD_CRON",
+                    role="admin",
+                ),
+            )
+            if response:
+                try:
+                    await loop.run_in_executor(
+                        _CRON_EXECUTOR,
+                        lambda: orchestrator.record_assistant_reply("SYSTEM_CRON", response),
+                    )
+                except Exception:
+                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 512, exc_info=True)
+                logger.info("⏰ Cron job [%s] result (%d chars): %.200s", job_id, len(response), response)
+            return
+
+        _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "bash ", "MAGI_", "JUDICIAL_")
+        if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
+            logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
+            return
+
+        _timeout = _cron_job_timeout(job)
+        _shell_env = {"MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
+        try:
+            from api.platforms.safe_process import parse_cron_command, run as _safe_run
+            from skills.ops.cron_result_policy import should_log_cron_issue
+
+            _argv = parse_cron_command(command)
+            _sr = await loop.run_in_executor(
+                _CRON_EXECUTOR,
+                lambda: _safe_run(
+                    _argv,
+                    timeout_sec=_timeout,
+                    cwd=_MAGI_ROOT,
+                    env_extra=_shell_env,
+                ),
+            )
+            _stdout_text = _sr.stdout or ""
+            _stderr_text = _sr.stderr or ""
+            if _sr.timed_out:
+                logger.warning("⚠️ Shell job %s timed out (%ds)", job_id, _timeout)
+            if _sr.returncode != 0:
+                _err_text = _stderr_text[-4000:] if len(_stderr_text) > 4000 else _stderr_text
+                _out_tail = ""
+                if not _err_text.strip():
+                    _out_tail = _stdout_text[-1500:] if _stdout_text else ""
+                if should_log_cron_issue(_sr.returncode, _stdout_text, _stderr_text):
+                    try:
+                        from skills.management.issue_tracker import log_issue
+
+                        log_issue(
+                            command=f"cron:{job.get('name') or job_id}",
+                            error_msg=f"exit={_sr.returncode} stderr={_err_text}" + (f" stdout_tail={_out_tail}" if _out_tail else ""),
+                            context=f"schedule={job.get('schedule')} command={str(job.get('command'))[:200]}",
+                            severity="High",
+                            source="discord_bot.cron_scheduler",
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 568, exc_info=True)
+                    logger.warning("⚠️ Shell job %s exited %d: %s", job_id, _sr.returncode, _err_text)
+                else:
+                    logger.info("✅ Shell job %s returned %d but stdout indicates success; issue suppressed", job_id, _sr.returncode)
+            else:
+                logger.info("✅ Shell job %s completed OK", job_id)
+        except Exception as _se:
+            logger.warning("⚠️ Shell job %s error: %s", job_id, _se)
+
+
+def _cron_task_done(job_id: str, task: asyncio.Task) -> None:
+    if _CRON_RUNNING_TASKS.get(job_id) is task:
+        _CRON_RUNNING_TASKS.pop(job_id, None)
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        logger.warning("⚠️ Cron job %s task was cancelled", job_id)
+        return
+    if exc:
+        logger.warning("⚠️ Cron job %s task crashed: %s", job_id, exc)
+
+
 async def bg_scheduler_loop():
     """Background loop to check for scheduled tasks every minute."""
     await client.wait_until_ready()
@@ -473,6 +627,7 @@ async def bg_scheduler_loop():
     _catchup_min_hour = int(os.environ.get("MAGI_CRON_CATCHUP_MIN_HOUR", "6"))
     _late_catchup_enabled = os.environ.get("MAGI_CRON_LATE_CATCHUP_ENABLED", "1").strip().lower() in {"1", "true", "on", "yes"}
     _late_catchup_every = max(1, int(os.environ.get("MAGI_CRON_LATE_CATCHUP_EVERY_LOOPS", "1") or "1"))
+    cron_semaphore = asyncio.Semaphore(_cron_max_concurrent_jobs())
 
     while not client.is_closed():
         try:
@@ -531,195 +686,20 @@ async def bg_scheduler_loop():
             # ─────────────────────────────────────────────────────────────────────────
 
             for job in due_jobs:
-                command = job["command"]
-                channel_id = job.get("channel_id")
-                
-                logger.info(f"⏰ Executing scheduled job: {command}")
-                
-                # 2. Find target channel
-                # Use fetch_channel (API call) not get_channel (cache-only) so jobs
-                # still run after bot restarts before guild cache is populated.
-                channel = None
-                _cid_to_try = channel_id or DISCORD_CHANNEL_ID or _load_last_channel_id()
-                if _cid_to_try:
-                    global _DISCORD_CHANNEL_FORBIDDEN_UNTIL
-                    if time.time() < _DISCORD_CHANNEL_FORBIDDEN_UNTIL:
-                        logger.debug("⏳ Discord channel in 403 backoff, skipping job: %s", job.get("id"))
-                    else:
-                        try:
-                            channel = await client.fetch_channel(int(_cid_to_try))
-                        except discord.Forbidden:
-                            _DISCORD_CHANNEL_FORBIDDEN_UNTIL = time.time() + _DISCORD_CHANNEL_FORBIDDEN_BACKOFF
-                            logger.warning("⚠️ Bot missing access (403) for channel %s — job: %s. Backing off %ds.",
-                                           _cid_to_try, job.get("id"), _DISCORD_CHANNEL_FORBIDDEN_BACKOFF)
-                        except discord.NotFound:
-                            logger.warning("⚠️ Channel %s not found (404) — job: %s", _cid_to_try, job.get("id"))
-                        except Exception as _ce:
-                            logger.warning("⚠️ fetch_channel(%s) error for job %s: %s", _cid_to_try, job.get("id"), _ce)
-
-                # 3. Execute — run the job even without a Discord channel.
-                #    The orchestrator call is the important part; channel is only for
-                #    sending the response back to Discord.
-                if command.startswith("@MAGI"):
-                    # Clean command
-                    clean_cmd = command.replace("@MAGI", "").strip()
-
-                    # Let Orchestrator handle it (use cron_pool, not channel_pool)
-                    response = await loop.run_in_executor(
-                        _CRON_EXECUTOR,
-                        lambda: orchestrator.process_message(
-                            "SYSTEM_CRON",
-                            clean_cmd,
-                            platform="DISCORD_CRON",
-                            role="admin",
-                        )
-                    )
-
-                    if response:
-                        try:
-                            await loop.run_in_executor(
-                                _CRON_EXECUTOR,
-                                lambda: orchestrator.record_assistant_reply("SYSTEM_CRON", response),
-                            )
-                        except Exception:
-                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 466, exc_info=True)
-
-                    # Cron results go to logs only — Discord is for interactive use.
-                    if response:
-                        logger.info("⏰ Cron job [%s] result (%d chars): %.200s",
-                                    job.get("id", "?"), len(response), response)
-                    if False and response and channel:  # disabled: no cron output to Discord
-                        response = _normalize_discord_output_text(response)
-                        export_threshold = int(os.environ.get("DISCORD_EXPORT_TEXT_THRESHOLD", "6500"))
-                        try:
-                            if len(response) >= export_threshold:
-                                path = _export_text_to_tmp(response, prefix="casper_reply")
-                                if path and os.path.exists(path):
-                                    try:
-                                        await channel.send(
-                                            "內容比較長，我改用 TXT 檔附上：",
-                                            file=discord.File(path, filename=pathlib.Path(path).name),
-                                        )
-                                    finally:
-                                        try:
-                                            _safe_remove_tmp(path)
-                                        except Exception:
-                                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 488, exc_info=True)
-                                else:
-                                    await channel.send("內容比較長，但輸出 TXT 失敗，我改用分段傳送。")
-                                    for chunk in _split_discord_chunks(response, 1900):
-                                        await channel.send(chunk)
-                            elif len(response) > 2000:
-                                for chunk in _split_discord_chunks(response, 1900):
-                                    await channel.send(chunk)
-                            else:
-                                await channel.send(response)
-                        except discord.Forbidden:
-                            logger.warning("⚠️ 403 傳送訊息被拒 (channel=%s, job=%s) — 請確認 bot 有該頻道的傳送訊息權限",
-                                           getattr(channel, 'id', '?'), job.get("id"))
-                        except discord.HTTPException as _he:
-                            logger.warning("⚠️ Discord send failed (channel=%s, job=%s): %s",
-                                           getattr(channel, 'id', '?'), job.get("id"), _he)
-                    elif response and not channel:
-                        logger.info("📋 Job %s executed OK (no Discord channel to send response, len=%d)", job.get("id"), len(response))
-                else:
-                    # Non-@MAGI command: execute as async subprocess via asyncio
-                    # (native async — does NOT consume any thread pool workers)
-                    _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "bash ", "MAGI_", "JUDICIAL_")
-                    if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-                        logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
-                    else:
-                        _LONG_JOBS = {"job_nightly_regression", "job_distill_train", "job_weekend_resummary",
-                                      "job_pdf_namer_nightly", "job_reprocess_insights", "job_obsidian_ingest",
-                                      "job_laf_nightly_audit", "job_nightly_autopilot", "job_judicial_api_night_pull",
-                                      "job_judicial_api_morning", "job_weekly_legal_crawl",
-                                      "job_transcript_sync", "job_file_review_check",
-                                      "job_weekend_bookmark", "job_nightly_bookmark_regex",
-                                      "job_market_briefing_script",
-                                      "job_wiki_synthesizer", "job_knowledge_lint",
-                                      "job_smoke_external_chat",
-                                      "job_translator_ape_regression",
-                                      "job_omlx_switch_night", "job_omlx_switch_day",
-                                      "job_benchmark_pdf_bookmarker",
-                                      "job_research_brief_daily",
-                                      "job_disk_cleanup_healthcheck",
-                                      # 2026-04-25: 補入 timestamp-style + 新加 cron 的 long jobs
-                                      "job_1772867062892_6cef0b",  # 筆錄向量化（NAS walk + fitz）
-                                      "job_1776221713533_0a5366",  # wiki synthesizer
-                                      "job_weekly_cache_cleanup",  # cache 掃描可能慢
-                                      # 2026-04-25 second pass: bug scan 找出仍 600s timeout 的長任務
-                                      "job_benchmark_pdf_namer",   # 過去 3× exit=1 stderr 空（被 SIGTERM）
-                                      "job_case_index_sync",       # 過去 2× exit=255（DB query + Obsidian write）
-                                      "job_self_repair_reporter"}  # JSONL 讀取 + TG 發送，保守給 7200s
-                        # 2026-04-25: 支援 cron_jobs.json 自定義 timeout_sec / long_job，
-                        # 免於每加新長任務都要動 _LONG_JOBS hardcoded set。
-                        # 優先順序：timeout_sec > hardcoded override > long_job=true > _LONG_JOBS (legacy)
-                        _LONG_JOB_TIMEOUTS = {
-                            "job_nightly_autopilot": 28800,  # 22:00 啟動，需跨過 00:00 司法院夜拉
-                            "job_weekend_bookmark": 21600,   # 週末卷宗 PDF/NAS 掃描可能超過 2h
-                        }
-                        _custom_timeout = job.get("timeout_sec")
-                        if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
-                            _timeout = int(_custom_timeout)
-                        elif job.get("id") in _LONG_JOB_TIMEOUTS:
-                            _timeout = _LONG_JOB_TIMEOUTS[job.get("id")]
-                        elif job.get("long_job") is True:
-                            _timeout = 7200
-                        else:
-                            _timeout = 7200 if job.get("id") in _LONG_JOBS else 600
-                        _job_id = job.get("id", "?")
-                        _shell_env = {"MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
-                        try:
-                            from api.platforms.safe_process import parse_cron_command, run as _safe_run
-                            from skills.ops.cron_result_policy import should_log_cron_issue
-
-                            _argv = parse_cron_command(command)
-                            _sr = await loop.run_in_executor(
-                                _CRON_EXECUTOR,
-                                lambda: _safe_run(
-                                    _argv,
-                                    timeout_sec=_timeout,
-                                    cwd=_MAGI_ROOT,
-                                    env_extra=_shell_env,
-                                ),
-                            )
-                            _stdout_text = _sr.stdout or ""
-                            _stderr_text = _sr.stderr or ""
-                            if _sr.timed_out:
-                                logger.warning("⚠️ Shell job %s timed out (%ds)", _job_id, _timeout)
-                            if _sr.returncode != 0:
-                                # 2026-04-25: stderr 取 tail [-4000:]（Python traceback 在尾段，
-                                # head 多半是 progress log 把根因擠出截斷視窗）；補 stdout tail。
-                                _err_text = _stderr_text[-4000:] if len(_stderr_text) > 4000 else _stderr_text
-                                _out_tail = ""
-                                if not _err_text.strip():
-                                    _out_tail = _stdout_text[-1500:] if _stdout_text else ""
-                                if should_log_cron_issue(_sr.returncode, _stdout_text, _stderr_text):
-                                    try:
-                                        from skills.management.issue_tracker import log_issue
-
-                                        log_issue(
-                                            command=f"cron:{job.get('name') or _job_id}",
-                                            error_msg=f"exit={_sr.returncode} stderr={_err_text}" + (f" stdout_tail={_out_tail}" if _out_tail else ""),
-                                            context=f"schedule={job.get('schedule')} command={str(job.get('command'))[:200]}",
-                                            severity="High",
-                                            source="discord_bot.cron_scheduler",
-                                        )
-                                    except Exception:
-                                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 688, exc_info=True)
-                                    logger.warning("⚠️ Shell job %s exited %d: %s", _job_id, _sr.returncode, _err_text)
-                                else:
-                                    logger.info(
-                                        "✅ Shell job %s returned %d but stdout indicates success; issue suppressed",
-                                        _job_id,
-                                        _sr.returncode,
-                                    )
-                            else:
-                                logger.info("✅ Shell job %s completed OK", _job_id)
-                        except Exception as _se:
-                            logger.warning("⚠️ Shell job %s error: %s", _job_id, _se)
-                    # Shell job results go to logs only — not to Discord general channel.
-                    # (Individual scripts handle their own notifications via red_phone with proper topic_key routing.)
+                job_id = str(job.get("id") or "")
+                if not job_id:
+                    continue
+                running = _CRON_RUNNING_TASKS.get(job_id)
+                if running and not running.done():
+                    logger.info("⏭️ Cron job %s already running; skip overlapping launch", job_id)
+                    continue
+                task = asyncio.create_task(
+                    _execute_scheduled_job(job, cron_semaphore),
+                    name=f"magi-cron:{job_id}",
+                )
+                _CRON_RUNNING_TASKS[job_id] = task
+                task.add_done_callback(lambda t, jid=job_id: _cron_task_done(jid, t))
+                logger.info("🚀 Cron job %s dispatched asynchronously", job_id)
             
             # Health check cadence is configurable to reduce LINE API rate-limit.
             if _LINE_HEALTH_MONITORING_ENABLED and loop_counter % _LINE_HEALTH_CHECK_EVERY_LOOPS == 0:

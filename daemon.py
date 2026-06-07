@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 import json
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any
 
@@ -792,68 +793,81 @@ def _start_cron_fallback() -> None:
             logger.error("❌ CronScheduler fallback init failed: %s", e)
             return
 
+        fallback_workers = max(1, min(4, int(os.environ.get("MAGI_CRON_FALLBACK_WORKERS", "2") or "2")))
+        executor = ThreadPoolExecutor(max_workers=fallback_workers, thread_name_prefix="magi-cron-fallback")
+        running: dict[str, Any] = {}
+
+        def _run_fallback_job(job: dict[str, Any]) -> None:
+            command = job.get("command", "")
+            job_id = job.get("id", "?")
+            logger.info("⏰ [CronFallback] Executing job: %s", job_id)
+            try:
+                if command.startswith("@MAGI"):
+                    clean_cmd = command.replace("@MAGI", "").strip()
+                    response = orchestrator.process_message(
+                        "SYSTEM_CRON", clean_cmd,
+                        platform="DAEMON_CRON", role="admin",
+                    )
+                    if response:
+                        try:
+                            orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                        except Exception:
+                            pass
+                        logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
+                                    job_id, len(response), response)
+                    return
+
+                _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
+                if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
+                    logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
+                    return
+
+                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
+                result_returncode = -1
+                result_stderr = ""
+                try:
+                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                    argv = parse_cron_command(command)
+                    _custom_timeout = job.get("timeout_sec")
+                    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
+                        _timeout_sec = float(_custom_timeout)
+                    elif job.get("long_job") is True:
+                        _timeout_sec = 7200
+                    else:
+                        _legacy_long_jobs = {
+                            "job_transcript_sync",
+                            "job_file_review_check",
+                            "job_1772867062892_6cef0b",
+                        }
+                        _timeout_sec = 7200 if job_id in _legacy_long_jobs else 600
+                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT, env_extra=_shell_env)
+                    result_returncode = _sr.returncode
+                    result_stderr = _sr.stderr
+                except Exception as _e:
+                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
+                    result_returncode = 1
+                    result_stderr = str(_e)
+                if result_returncode != 0:
+                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
+                                   job_id, result_returncode, (result_stderr or "")[:300])
+                else:
+                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
+            except Exception as je:
+                logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+
         while True:
             try:
                 due_jobs = scheduler.check_due_jobs()
                 for job in due_jobs:
-                    command = job.get("command", "")
-                    job_id = job.get("id", "?")
-                    logger.info("⏰ [CronFallback] Executing job: %s", job_id)
-                    try:
-                        if command.startswith("@MAGI"):
-                            clean_cmd = command.replace("@MAGI", "").strip()
-                            response = orchestrator.process_message(
-                                "SYSTEM_CRON", clean_cmd,
-                                platform="DAEMON_CRON", role="admin",
-                            )
-                            if response:
-                                try:
-                                    orchestrator.record_assistant_reply("SYSTEM_CRON", response)
-                                except Exception:
-                                    pass
-                                logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
-                                            job_id, len(response), response)
-                        else:
-                            _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
-                            if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
-                                # ===== R2 Phase 3: SafeProcess 正式路徑（legacy 已清除）=====
-                                result_returncode = -1
-                                result_stdout = ""
-                                result_stderr = ""
-                                try:
-                                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
-                                    argv = parse_cron_command(command)
-                                    _custom_timeout = job.get("timeout_sec")
-                                    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
-                                        _timeout_sec = float(_custom_timeout)
-                                    elif job.get("long_job") is True:
-                                        _timeout_sec = 7200
-                                    else:
-                                        _legacy_long_jobs = {
-                                            "job_transcript_sync",
-                                            "job_file_review_check",
-                                            "job_1772867062892_6cef0b",  # transcript-indexer nightly index
-                                        }
-                                        _timeout_sec = 7200 if job_id in _legacy_long_jobs else 600
-                                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT)
-                                    result_returncode = _sr.returncode
-                                    result_stdout = _sr.stdout
-                                    result_stderr = _sr.stderr
-                                except Exception as _e:
-                                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
-                                    result_returncode = 1
-                                    result_stderr = str(_e)
-                                # ===== R2 Phase 3 end =====
-                                if result_returncode != 0:
-                                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
-                                                   job_id, result_returncode, (result_stderr or "")[:300])
-                                else:
-                                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
-                            else:
-                                logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
-                    except Exception as je:
-                        logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                    job_id = str(job.get("id") or "")
+                    if not job_id:
+                        continue
+                    current = running.get(job_id)
+                    if current and not current.done():
+                        logger.info("⏭️ [CronFallback] Job %s already running; skip overlapping launch", job_id)
+                        continue
+                    running[job_id] = executor.submit(_run_fallback_job, job)
+                    logger.info("🚀 [CronFallback] Job %s dispatched asynchronously", job_id)
             except Exception as loop_err:
                 logger.error("⚠️ [CronFallback] Loop error: %s", loop_err)
             time.sleep(60)
