@@ -232,16 +232,16 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                 "job_drive_case_sync_bidirectional",
                 (
                     f"{python_bin} {repo_root / 'scripts' / 'drive_case_sync_worker.py'} "
-                    "--matched-case-limit 12 --download-limit 40 --upload-limit 40 "
-                    "--max-download-bytes 500000000 --max-upload-bytes 500000000 "
-                    "--max-case-depth 4 --max-case-items 160 "
+                    "--matched-case-limit 24 --download-limit 80 --upload-limit 80 "
+                    "--max-download-bytes 1500000000 --max-upload-bytes 1500000000 "
+                    "--max-case-depth 5 --max-case-items 240 "
                     "--create-drive-folder-limit 10 --create-drive-folder-max-age-hours 168 "
                     "--priority-upcoming-days 21 --priority-case-limit 80 --inventory-timeout-sec 1200"
                 ),
                 block_at="core_only",
                 require_disk_free_gb=30,
                 require_free_inactive_gb=3,
-                timeout_sec=1500,
+                timeout_sec=2400,
             ),
             "desc": "Google Drive/NAS 案件辦理 bounded 雙向同步（每 6 小時；先同步近期待辦案件；新案補建 Drive 資料夾；缺檔才補，不覆蓋、不刪除）",
             "channel_id": None,
@@ -262,21 +262,21 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                 python_bin,
                 "job_drive_case_sync_all_files",
                 (
-                    f"MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=5 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=15 "
+                    f"MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=8 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=20 "
                     f"{python_bin} {repo_root / 'scripts' / 'drive_case_sync_worker.py'} "
-                    "--direct-all-cases --direct-all-case-limit 48 "
-                    "--download-limit 120 --upload-limit 120 "
-                    "--max-download-bytes 1200000000 --max-upload-bytes 1200000000 "
-                    "--max-case-depth 5 --max-case-items 220 "
-                    "--create-drive-folder-limit 12 --create-drive-folder-max-age-hours 168 "
-                    "--priority-upcoming-days 0 --inventory-timeout-sec 1800"
+                    "--direct-all-cases --direct-all-case-limit 96 "
+                    "--download-limit 240 --upload-limit 240 "
+                    "--max-download-bytes 3000000000 --max-upload-bytes 3000000000 "
+                    "--max-case-depth 6 --max-case-items 360 "
+                    "--create-drive-folder-limit 24 --create-drive-folder-max-age-hours 168 "
+                    "--priority-upcoming-days 0 --inventory-timeout-sec 2400"
                 ),
                 block_at="core_only",
                 require_disk_free_gb=30,
                 require_free_inactive_gb=3,
-                timeout_sec=2700,
+                timeout_sec=4800,
             ),
-            "desc": "Google Drive/NAS 全案件輪巡雙向同步（每 6 小時；依 DB folder_path 輪巡，不改兩邊命名規則；缺檔才補，不覆蓋、不刪除）",
+            "desc": "Google Drive/NAS 全案件輪巡雙向同步（每 6 小時；升級 NAS 模式加速；依 DB folder_path 輪巡，不改兩邊命名規則；缺檔才補，不覆蓋、不刪除）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
@@ -422,14 +422,14 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "cron": "35 2 * * *",
             "command": (
                 f"{python_bin} {run_with_env} "
-                "MAGI_SLOW_ARCHIVE_CASE_NUMBER=2025-0002 "
-                "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=3 "
+                "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=40 "
                 "MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=5400 "
+                "MAGI_SLOW_ARCHIVE_RSYNC_TIMEOUT_SEC=600 "
                 f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'slow_archive_closed_cases.py'} "
-                "--apply --case-number 2025-0002 --limit 1 --bwlimit-mbps 3 --max-runtime-sec 5400 "
+                "--apply --limit 3 --min-size-mb 0 --bwlimit-mbps 40 --max-runtime-sec 5400 --rsync-timeout-sec 600 "
                 f"--json-out {repo_root / '.runtime' / 'slow_archive_closed_cases_latest.json'}"
             ),
-            "desc": "大型已結案案件離峰慢搬（02:35；限速可續傳，游秀鈴 2025-0002 優先，不使用 Synology Drive 雲端目標）",
+            "desc": "已結案案件離峰慢搬（02:35；40MB/s 升級 NAS 限速可續傳；清掉仍留在進行中根目錄的殘留資料夾，游秀鈴 2025-0002 仍優先）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,

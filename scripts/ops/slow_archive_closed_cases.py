@@ -15,6 +15,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -87,6 +88,101 @@ def _is_dir_quick(path: Path, timeout: float = 1.5) -> bool:
 
 def _is_skip_name(name: str) -> bool:
     return name in {".DS_Store", ".gitkeep", "Thumbs.db"} or name.startswith("._")
+
+
+def _rsync_append_flag(rsync: str) -> str:
+    try:
+        proc = subprocess.run([rsync, "--help"], capture_output=True, text=True, timeout=5)
+        help_text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    except Exception:
+        help_text = ""
+    if "--append-verify" in help_text:
+        return "--append-verify"
+    if "--append" in help_text:
+        return "--append"
+    return ""
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _server_path_map() -> list[dict[str, str]]:
+    raw = os.environ.get("MAGI_NAS_SERVER_PATH_MAP_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    out: list[dict[str, str]] = []
+    for item in parsed if isinstance(parsed, list) else []:
+        if not isinstance(item, dict):
+            continue
+        local_prefix = str(item.get("local_prefix") or "").rstrip("/")
+        remote_prefix = str(item.get("remote_prefix") or "").rstrip("/")
+        if local_prefix and remote_prefix:
+            out.append({"local_prefix": local_prefix, "remote_prefix": remote_prefix})
+    return sorted(out, key=lambda x: len(x["local_prefix"]), reverse=True)
+
+
+def _map_local_to_server_path(path: Path) -> str:
+    text = str(path).rstrip("/")
+    for item in _server_path_map():
+        local_prefix = item["local_prefix"]
+        if text == local_prefix or text.startswith(local_prefix + "/"):
+            suffix = text[len(local_prefix) :].lstrip("/")
+            return item["remote_prefix"] + ("/" + suffix if suffix else "")
+    return ""
+
+
+def _ssh_target() -> str:
+    host = os.environ.get("MAGI_NAS_SSH_HOST", "").strip()
+    user = os.environ.get("MAGI_NAS_SSH_USER", "").strip()
+    if not host:
+        return ""
+    return f"{user}@{host}" if user else host
+
+
+def _build_server_side_rsync_command(
+    src: Path,
+    dst: Path,
+    *,
+    dry_run: bool,
+    bwlimit_mbps: float,
+    rsync_timeout_sec: int,
+) -> list[str]:
+    if not _truthy_env("MAGI_SLOW_ARCHIVE_SERVER_SIDE"):
+        return []
+    target = _ssh_target()
+    remote_src = _map_local_to_server_path(src)
+    remote_dst = _map_local_to_server_path(dst)
+    if not target or not remote_src or not remote_dst:
+        return []
+    bw_kbps = max(1, int(max(0.05, bwlimit_mbps) * 1024))
+    dry = "--dry-run " if dry_run else ""
+    # Resolve append support on the NAS side so old DSM rsync versions still work.
+    remote_script = (
+        "set -e; "
+        "if rsync --help 2>&1 | grep -q -- '--append-verify'; then APP='--append-verify'; "
+        "elif rsync --help 2>&1 | grep -q -- '--append'; then APP='--append'; else APP=''; fi; "
+        f"mkdir -p {shlex.quote(remote_dst)}; "
+        "rsync -a --partial ${APP} --human-readable "
+        f"--bwlimit={bw_kbps} --timeout={max(30, int(rsync_timeout_sec))} "
+        "--exclude=.DS_Store --exclude='._*' "
+        f"{dry}{shlex.quote(remote_src.rstrip('/') + '/')} {shlex.quote(remote_dst.rstrip('/') + '/')}"
+    )
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+        target,
+        remote_script,
+    ]
 
 
 def _tree_signature(path: Path) -> dict[str, Any]:
@@ -246,11 +342,87 @@ def _target_for(row: dict[str, Any], archive_root: Path) -> tuple[Path, str]:
     return target, active
 
 
-def _run_rsync(src: Path, dst: Path, *, dry_run: bool, bwlimit_mbps: float, timeout_sec: int) -> dict[str, Any]:
+def _run_rsync(
+    src: Path,
+    dst: Path,
+    *,
+    dry_run: bool,
+    bwlimit_mbps: float,
+    timeout_sec: int,
+    rsync_timeout_sec: int,
+) -> dict[str, Any]:
     rsync = shutil.which("rsync")
     if not rsync:
         return {"ok": False, "reason": "rsync_missing"}
     dst.mkdir(parents=True, exist_ok=True)
+    server_cmd = _build_server_side_rsync_command(
+        src,
+        dst,
+        dry_run=dry_run,
+        bwlimit_mbps=bwlimit_mbps,
+        rsync_timeout_sec=rsync_timeout_sec,
+    )
+    if server_cmd:
+        started = time.time()
+        proc = subprocess.Popen(
+            server_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            out, err = proc.communicate(timeout=max(10, timeout_sec))
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                out, err = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                out, err = proc.communicate()
+        if proc.returncode == 0 and not timed_out:
+            return {
+                "ok": True,
+                "partial": False,
+                "returncode": proc.returncode,
+                "duration_sec": round(time.time() - started, 2),
+                "mode": "nas_server_side_rsync",
+                "cmd": server_cmd[:5] + ["..."],
+                "stdout_tail": (out or "")[-2000:],
+                "stderr_tail": (err or "")[-2000:],
+            }
+        if not _truthy_env("MAGI_SLOW_ARCHIVE_SERVER_SIDE_STRICT"):
+            server_attempt = {
+                "ok": False,
+                "partial": bool(timed_out),
+                "returncode": proc.returncode,
+                "duration_sec": round(time.time() - started, 2),
+                "mode": "nas_server_side_rsync",
+                "cmd": server_cmd[:5] + ["..."],
+                "stdout_tail": (out or "")[-2000:],
+                "stderr_tail": (err or "")[-2000:],
+            }
+        else:
+            return {
+                "ok": False,
+                "partial": bool(timed_out),
+                "returncode": proc.returncode,
+                "duration_sec": round(time.time() - started, 2),
+                "mode": "nas_server_side_rsync",
+                "cmd": server_cmd[:5] + ["..."],
+                "stdout_tail": (out or "")[-2000:],
+                "stderr_tail": (err or "")[-2000:],
+            }
+    else:
+        server_attempt = {}
     bw_kbps = max(1, int(max(0.05, bwlimit_mbps) * 1024))
     cmd = [
         rsync,
@@ -258,9 +430,13 @@ def _run_rsync(src: Path, dst: Path, *, dry_run: bool, bwlimit_mbps: float, time
         "--partial",
         "--human-readable",
         f"--bwlimit={bw_kbps}",
+        f"--timeout={max(30, int(rsync_timeout_sec))}",
         "--exclude=.DS_Store",
         "--exclude=._*",
     ]
+    append_flag = _rsync_append_flag(rsync)
+    if append_flag:
+        cmd.insert(3, append_flag)
     if dry_run:
         cmd.append("--dry-run")
     cmd.extend([str(src).rstrip("/") + "/", str(dst).rstrip("/") + "/"])
@@ -294,6 +470,8 @@ def _run_rsync(src: Path, dst: Path, *, dry_run: bool, bwlimit_mbps: float, time
         "partial": bool(timed_out),
         "returncode": proc.returncode,
         "duration_sec": round(time.time() - started, 2),
+        "mode": "mac_smb_rsync",
+        "server_side_attempt": server_attempt,
         "cmd": cmd[:3] + ["..."],
         "stdout_tail": (out or "")[-2000:],
         "stderr_tail": (err or "")[-2000:],
@@ -371,6 +549,7 @@ def _process(row: dict[str, Any], archive_root: Path, args: argparse.Namespace) 
         dry_run=False,
         bwlimit_mbps=float(args.bwlimit_mbps),
         timeout_sec=int(args.max_runtime_sec),
+        rsync_timeout_sec=int(args.rsync_timeout_sec),
     )
     item["rsync"] = rsync_result
     target_sig = _tree_signature(target)
@@ -418,6 +597,7 @@ def main() -> int:
     parser.add_argument("--min-size-mb", type=float, default=float(os.environ.get("MAGI_SLOW_ARCHIVE_MIN_SIZE_MB", "100") or 100))
     parser.add_argument("--bwlimit-mbps", type=float, default=float(os.environ.get("MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS", "3") or 3))
     parser.add_argument("--max-runtime-sec", type=int, default=int(os.environ.get("MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC", "5400") or 5400))
+    parser.add_argument("--rsync-timeout-sec", type=int, default=int(os.environ.get("MAGI_SLOW_ARCHIVE_RSYNC_TIMEOUT_SEC", "600") or 600))
     parser.add_argument("--allow-now", action="store_true", help="Allow apply outside off-peak.")
     parser.add_argument("--allow-cloud-target", action="store_true", help="Allow Synology Drive archive target when SMB archive is unavailable.")
     parser.add_argument("--keep-source", action="store_true")

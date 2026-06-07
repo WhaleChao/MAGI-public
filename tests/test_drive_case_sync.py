@@ -988,6 +988,67 @@ def test_drive_download_plan_skips_same_content_existing_in_different_nas_folder
     assert plan["summary"]["drive_missing_in_nas_files"] == 0
 
 
+def test_drive_download_plan_skips_large_same_name_size_without_hashing(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/李明志-1131106-I-007-消費者債務清理事件",
+        relative_path="法扶案件/Lumi/李明志-1131106-I-007-消費者債務清理事件",
+        name="李明志-1131106-I-007-消費者債務清理事件",
+        meta=CaseMeta(case_number="2025-0058"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/消費者債務清理/2025-0058-李明志-消費者債務清理-更生",
+        local_path="/cases/法扶案件/消費者債務清理/2025-0058-李明志-消費者債務清理-更生",
+        relative_path="法扶案件/消費者債務清理/2025-0058-李明志-消費者債務清理-更生",
+        name="2025-0058-李明志-消費者債務清理-更生",
+        meta=CaseMeta(case_number="2025-0058"),
+    )
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES", "10")
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "drive",
+                "提供資料/更生方案.pdf",
+                "提供資料/更生方案.pdf",
+                "更生方案.pdf",
+                False,
+                size=50,
+                md5="drive-md5",
+                drive_id="drive-file",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "nas",
+                "/cases/04_我方歷次書狀/更生方案.pdf",
+                "04_我方歷次書狀/更生方案.pdf",
+                "更生方案.pdf",
+                False,
+                size=50,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_file_md5",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("large NAS file must not be hashed")),
+    )
+
+    plan = build_file_sync_plan({"matched": [{"drive": drive, "local": local}]}, drive_service=object(), matched_case_limit=1)
+
+    case = plan["cases"][0]
+    assert case["download_missing"] == []
+    assert case["download_skipped"][0]["reason"] == "same_content_elsewhere"
+    assert case["download_skipped"][0]["hash_verification"] == "skipped_large_same_name_size"
+    assert plan["summary"]["skipped_duplicate_content_downloads"] == 1
+    assert plan["summary"]["drive_missing_in_nas_files"] == 0
+
+
 def test_drive_download_uses_short_temp_name_for_long_court_filenames(monkeypatch, tmp_path):
     """Long court filenames must not make the temporary download filename exceed OS limits."""
 

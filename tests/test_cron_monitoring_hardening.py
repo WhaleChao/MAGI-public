@@ -554,6 +554,24 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert by_id["job_empty_case_shell_cleanup"]["no_catchup"] is True
     assert "--max-seconds 240" in by_id["job_empty_case_shell_cleanup"]["command"]
     assert "cleanup_synology_empty_case_shells.py" in by_id["job_empty_case_shell_cleanup"]["command"]
+    assert by_id["job_slow_archive_closed_cases"]["enabled"] is True
+    assert by_id["job_slow_archive_closed_cases"]["no_catchup"] is True
+    assert "slow_archive_closed_cases.py" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--limit 3" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--min-size-mb 0" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--bwlimit-mbps 40" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--rsync-timeout-sec 600" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--case-number 2025-0002" not in by_id["job_slow_archive_closed_cases"]["command"]
+    assert by_id["job_drive_case_sync_bidirectional"]["enabled"] is True
+    assert "--matched-case-limit 24" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--download-limit 80" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--upload-limit 80" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--max-download-bytes 1500000000" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert by_id["job_drive_case_sync_all_files"]["enabled"] is True
+    assert "--direct-all-case-limit 96" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--download-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--upload-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--max-download-bytes 3000000000" in by_id["job_drive_case_sync_all_files"]["command"]
     assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
     assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
     assert by_id["job_nas_recycle_heavy_cleanup"]["cron"] == "20 4 * * *"

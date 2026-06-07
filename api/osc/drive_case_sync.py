@@ -65,6 +65,7 @@ SYNC_IGNORE_NAMES = {
     ".Trashes",
 }
 SYNC_IGNORE_PREFIXES = ("~$", "._")
+DEFAULT_LOCAL_HASH_MAX_BYTES = 25_000_000
 OSC_CASE_RE = re.compile(r"(20\d{2}-\d{4})")
 LAF_CASE_RE = re.compile(r"(\d{6,7}-[A-Z]-\d{3})")
 COURT_CASE_RE = re.compile(r"(\d{2,3}年度[^\\/\s()（）-]{1,12}字第?\d{1,8}號)")
@@ -2473,6 +2474,7 @@ def _find_same_content_local_entry(drive_entry: FileEntry, local_entries: Iterab
     if not drive_entry.md5 or drive_entry.size is None:
         return None, ""
     drive_name_key = normalized_relative_file_key(PurePosixPath(export_relative_path(drive_entry)).name)
+    max_hash_bytes = int(os.environ.get("MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES") or DEFAULT_LOCAL_HASH_MAX_BYTES)
     for local_entry in local_entries:
         if local_entry.is_folder or not local_entry.path or local_entry.size is None:
             continue
@@ -2480,12 +2482,17 @@ def _find_same_content_local_entry(drive_entry: FileEntry, local_entries: Iterab
             continue
         if normalized_relative_file_key(PurePosixPath(local_entry.relative_path).name) != drive_name_key:
             continue
+        key = normalized_relative_file_key(semantic_relative_path(local_entry.relative_path))
+        if max_hash_bytes > 0 and int(local_entry.size) > max_hash_bytes:
+            # Large court files and OCR PDFs can block SMB while hashing.  Same
+            # visible filename + identical size is strong enough to skip a
+            # duplicate download, but the manifest marks it as unverified.
+            return local_entry, key
         try:
             local_md5 = local_file_md5(local_entry.path)
         except Exception:
             continue
         if normalize_text(local_md5) == normalize_text(drive_entry.md5):
-            key = normalized_relative_file_key(semantic_relative_path(local_entry.relative_path))
             return local_entry, key
     return None, ""
 
@@ -3146,7 +3153,16 @@ def upload_local_file_to_drive(
     }
 
 
-def local_file_md5(path: str, *, chunk_size: int = 1024 * 1024) -> str:
+def local_file_md5(path: str, *, chunk_size: int = 1024 * 1024, max_bytes: int | None = None) -> str:
+    if max_bytes is None:
+        max_bytes = int(os.environ.get("MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES") or DEFAULT_LOCAL_HASH_MAX_BYTES)
+    if max_bytes > 0:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size > max_bytes:
+            raise DriveCaseSyncError(f"local_hash_skipped_large_file:{size}>{max_bytes}:{path}")
     digest = hashlib.md5()
     with open(path, "rb") as fh:
         while True:
@@ -3283,6 +3299,13 @@ def build_file_sync_plan(
                         action["target_relative_path"] = target_rel
                         action["reason"] = "same_content_elsewhere"
                         action["local_duplicate"] = _entry_public_dict(duplicate_entry)
+                        max_hash_bytes = int(os.environ.get("MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES") or DEFAULT_LOCAL_HASH_MAX_BYTES)
+                        if (
+                            max_hash_bytes > 0
+                            and duplicate_entry.size is not None
+                            and int(duplicate_entry.size) > max_hash_bytes
+                        ):
+                            action["hash_verification"] = "skipped_large_same_name_size"
                         case_plan["download_skipped"].append(action)
                         if duplicate_key:
                             matched_local_keys.add(duplicate_key)
