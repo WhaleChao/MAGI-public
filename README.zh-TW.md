@@ -553,6 +553,7 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 | `NVIDIA_NIM_ENABLE` | `0` | 啟用 NVIDIA NIM 雲端重型後備（Plan A） |
 | `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key（build.nvidia.com 免費層，40 req/min） |
 | `NVIDIA_NIM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | @heavy 重型主力；405B 歷史設定會自動映射到此模型 |
+| `NVIDIA_NIM_TRANSLATE_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | 重型翻譯專用模型；避免一般 heavy 調整影響交付品質 |
 | `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | 一般 @heavy 請求的快速模型 |
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | 強制使用者主動 `@heavy` / `@重型` 觸發 |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | 送雲端前強制 PII 遮蔽（永不關閉） |

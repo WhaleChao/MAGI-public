@@ -32,6 +32,7 @@ NIM_EOL_MODELS = {
     "meta/llama-3.1-405b-instruct",
 }
 NIM_HEAVY_TARGET_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+NIM_TRANSLATION_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 # Backward-compatible constant name used by older tests/imports.
 NIM_405B_TARGET_MODEL = NIM_HEAVY_TARGET_MODEL
 NIM_LARGE_FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b"
@@ -161,13 +162,18 @@ def _log_usage(payload: Dict[str, Any]) -> None:
 
 
 def _pick_model(task_type: str, heavy: bool = False) -> str:
+    task_key = (task_type or "").strip().lower()
+    translate_model = os.environ.get("NVIDIA_NIM_TRANSLATE_MODEL", NIM_TRANSLATION_MODEL).strip()
     heavy_model = os.environ.get("NVIDIA_NIM_MODEL", NIM_HEAVY_TARGET_MODEL).strip()
     large_fallback = os.environ.get("NVIDIA_NIM_MODEL_LARGE_FALLBACK", NIM_LARGE_FALLBACK_MODEL).strip()
     fast_model = os.environ.get("NVIDIA_NIM_MODEL_FAST", NIM_FINAL_FALLBACK_MODEL).strip()
     # heavy flag 或長 prompt（另由 caller 判斷）→ heavy model；否則 fast model。
     # 2026-06: public NVIDIA API may return 404 for the literal 405B id on
     # some accounts, so legacy heavy configs are mapped to Super 120B.
-    chosen = heavy_model if heavy else fast_model
+    if heavy and task_key in {"translate", "translation", "file_translate", "legal_translation"}:
+        chosen = translate_model or heavy_model
+    else:
+        chosen = heavy_model if heavy else fast_model
     if chosen in NIM_EOL_MODELS:
         logger.warning("NIM model %s is unavailable on this account; using large fallback %s", chosen, large_fallback)
         chosen = large_fallback

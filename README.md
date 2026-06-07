@@ -584,6 +584,7 @@ Key environment variables (set in `.env`):
 | `NVIDIA_NIM_ENABLE` | `0` | Enable NVIDIA NIM cloud fallback for heavy tasks (Plan A) |
 | `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key from build.nvidia.com (free tier, 40 req/min) |
 | `NVIDIA_NIM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Heavy model; legacy 405B configs are mapped to this model |
+| `NVIDIA_NIM_TRANSLATE_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Heavy translation model; isolates legal translation quality from general heavy experiments |
 | `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | Fast model for general @heavy requests |
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | Require `@heavy` / `@重型` prefix to trigger NIM |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | PII scrub before sending to cloud (never disable) |
