@@ -422,19 +422,19 @@ def operational_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = Non
             "cron": "35 2 * * *",
             "command": (
                 f"{python_bin} {run_with_env} "
-                "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=40 "
-                "MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=5400 "
+                "MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=80 "
+                "MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=7200 "
                 "MAGI_SLOW_ARCHIVE_RSYNC_TIMEOUT_SEC=600 "
                 f"-- {python_bin} {repo_root / 'scripts' / 'ops' / 'slow_archive_closed_cases.py'} "
-                "--apply --limit 3 --min-size-mb 0 --bwlimit-mbps 40 --max-runtime-sec 5400 --rsync-timeout-sec 600 "
+                "--apply --limit 3 --min-size-mb 0 --bwlimit-mbps 80 --max-runtime-sec 7200 --rsync-timeout-sec 600 "
                 f"--json-out {repo_root / '.runtime' / 'slow_archive_closed_cases_latest.json'}"
             ),
-            "desc": "已結案案件離峰慢搬（02:35；40MB/s 升級 NAS 限速可續傳；清掉仍留在進行中根目錄的殘留資料夾，游秀鈴 2025-0002 仍優先）",
+            "desc": "已結案案件離峰慢搬（02:35；80MB/s 升級 NAS 限速可續傳；清掉仍留在進行中根目錄的殘留資料夾，游秀鈴 2025-0002 仍優先）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,
             "enabled": True,
-            "timeout_sec": 5700,
+            "timeout_sec": 7500,
             "no_catchup": True,
         },
         {

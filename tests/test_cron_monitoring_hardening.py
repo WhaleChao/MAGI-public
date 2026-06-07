@@ -559,7 +559,7 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "slow_archive_closed_cases.py" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--limit 3" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--min-size-mb 0" in by_id["job_slow_archive_closed_cases"]["command"]
-    assert "--bwlimit-mbps 40" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--bwlimit-mbps 80" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--rsync-timeout-sec 600" in by_id["job_slow_archive_closed_cases"]["command"]
     assert "--case-number 2025-0002" not in by_id["job_slow_archive_closed_cases"]["command"]
     assert by_id["job_drive_case_sync_bidirectional"]["enabled"] is True
