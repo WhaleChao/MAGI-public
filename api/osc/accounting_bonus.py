@@ -18,6 +18,7 @@ from typing import Any
 
 
 BONUS_SOURCE = "magi_monthly_bonus"
+COLLEAGUE_IMPORT_SOURCE = "colleague_google_sheet"
 BONUS_CATEGORY = "人事費"
 BONUS_SUB_TYPE = "獎金"
 LAF_BONUS_LABEL = "法扶消債酬金獎金"
@@ -111,6 +112,37 @@ def _parse_iso_date(value: Any) -> date | None:
         return datetime.strptime(text[:10], "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+def _transaction_month_scope_sql(
+    *,
+    transaction_alias: str,
+    source_month: str | None,
+    start: date,
+    end: date,
+) -> tuple[str, str, tuple[Any, ...]]:
+    """Return SQL fragments for accounting-month scoping.
+
+    Imported colleague XLSX rows belong to the worksheet month. Native/manual
+    MAGI rows still belong to their transaction date window.
+    """
+    alias = transaction_alias
+    if not source_month:
+        return "", f"{alias}.date >= %s AND {alias}.date <= %s", (start.isoformat(), end.isoformat())
+    join_sql = f"""
+          LEFT JOIN (
+            SELECT transaction_id, MAX(source_month) AS source_month
+              FROM accounting_import_records
+             WHERE source=%s
+               AND transaction_id IS NOT NULL
+             GROUP BY transaction_id
+          ) air ON air.transaction_id={alias}.id
+    """
+    where_sql = f"""(
+                (air.transaction_id IS NOT NULL AND air.source_month=%s)
+             OR (air.transaction_id IS NULL AND {alias}.date >= %s AND {alias}.date <= %s)
+           )"""
+    return join_sql, where_sql, (COLLEAGUE_IMPORT_SOURCE, source_month, start.isoformat(), end.isoformat())
 
 
 def ensure_bonus_schema() -> None:
@@ -239,18 +271,25 @@ def query_laf_debt_fee_rows(
     end: date,
     *,
     exclude_transaction_ids: set[int] | None = None,
+    source_month: str | None = None,
 ) -> list[dict[str, Any]]:
     exclude_transaction_ids = exclude_transaction_ids or set()
     _osc_exec = _get_osc_helpers()
+    scope_join, scope_where, scope_params = _transaction_month_scope_sql(
+        transaction_alias="t",
+        source_month=source_month,
+        start=start,
+        end=end,
+    )
     rows, _ = _osc_exec(
-        """
+        f"""
         SELECT t.id, t.case_id, t.date, t.type, t.sub_type, t.category, t.description, t.amount,
                c.case_number, c.client_name, c.case_type, c.case_category, c.case_subject,
                c.case_reason, c.folder_path, c.folder_name, c.legal_aid_number, c.laf_case_no
           FROM case_transactions t
           LEFT JOIN cases c ON c.id=t.case_id
-         WHERE t.date >= %s
-           AND t.date <= %s
+          {scope_join}
+         WHERE {scope_where}
            AND t.type LIKE '收入%%'
            AND COALESCE(t.description,'') NOT LIKE %s
            AND (
@@ -264,7 +303,7 @@ def query_laf_debt_fee_rows(
            )
          ORDER BY t.date ASC, t.id ASC
         """,
-        (start.isoformat(), end.isoformat(), f"{BONUS_DESC_PREFIX}%"),
+        (*scope_params, f"{BONUS_DESC_PREFIX}%"),
         fetch="all",
     )
     out: list[dict[str, Any]] = []
@@ -336,21 +375,27 @@ def _laf_fee_basis_start(month_key: str, period_start: date, period_end: date) -
     return period_start
 
 
-def _query_totals_before_bonus(start: date, end: date) -> dict[str, float]:
+def _query_totals_before_bonus(start: date, end: date, *, source_month: str | None = None) -> dict[str, float]:
     _osc_exec = _get_osc_helpers()
+    scope_join, scope_where, scope_params = _transaction_month_scope_sql(
+        transaction_alias="t",
+        source_month=source_month,
+        start=start,
+        end=end,
+    )
     row, _ = _osc_exec(
-        """
+        f"""
         SELECT
-          COALESCE(SUM(CASE WHEN type LIKE '收入%%' THEN ABS(amount)
-                            WHEN amount>=0 AND type NOT LIKE '支出%%' THEN amount ELSE 0 END),0) AS income_total,
-          COALESCE(SUM(CASE WHEN type LIKE '支出%%' THEN ABS(amount)
-                            WHEN amount<0 THEN ABS(amount) ELSE 0 END),0) AS expense_total
-          FROM case_transactions
-         WHERE date >= %s
-           AND date <= %s
-           AND COALESCE(description,'') NOT LIKE %s
+          COALESCE(SUM(CASE WHEN t.type LIKE '收入%%' THEN ABS(t.amount)
+                            WHEN t.amount>=0 AND t.type NOT LIKE '支出%%' THEN t.amount ELSE 0 END),0) AS income_total,
+          COALESCE(SUM(CASE WHEN t.type LIKE '支出%%' THEN ABS(t.amount)
+                            WHEN t.amount<0 THEN ABS(t.amount) ELSE 0 END),0) AS expense_total
+          FROM case_transactions t
+          {scope_join}
+         WHERE {scope_where}
+           AND COALESCE(t.description,'') NOT LIKE %s
         """,
-        (start.isoformat(), end.isoformat(), f"{BONUS_DESC_PREFIX}%"),
+        (*scope_params, f"{BONUS_DESC_PREFIX}%"),
         fetch="one",
     )
     return {
@@ -531,17 +576,27 @@ def calculate_monthly_bonus(
 
     settled_fee_ids = _settled_fee_transaction_ids(month_key)
     fee_basis_start = _laf_fee_basis_start(month_key, start, end)
-    fee_rows = query_laf_debt_fee_rows(fee_basis_start, end, exclude_transaction_ids=settled_fee_ids)
+    xlsx_source_month = month_key if fee_basis_start == start else None
+    fee_rows = query_laf_debt_fee_rows(
+        fee_basis_start,
+        end,
+        exclude_transaction_ids=settled_fee_ids,
+        source_month=xlsx_source_month,
+    )
     fee_total = _round_money(sum(_as_float(r.get("amount")) for r in fee_rows))
     legal_aid_bonus = _round_money(fee_total * float(os.environ.get("MAGI_ACCOUNTING_LAF_BONUS_RATE", "0.5") or "0.5"))
-    totals = _query_totals_before_bonus(start, end)
+    totals = _query_totals_before_bonus(start, end, source_month=month_key)
     period_income_before = totals["income_total"]
     expense_before = totals["expense_total"]
-    prior_period_fee_income = _round_money(
-        sum(
-            _as_float(r.get("amount"))
-            for r in fee_rows
-            if (tx_date := _parse_iso_date(r.get("date"))) and tx_date < start
+    prior_period_fee_income = (
+        0.0
+        if xlsx_source_month
+        else _round_money(
+            sum(
+                _as_float(r.get("amount"))
+                for r in fee_rows
+                if (tx_date := _parse_iso_date(r.get("date"))) and tx_date < start
+            )
         )
     )
     income_before = _round_money(period_income_before + prior_period_fee_income)

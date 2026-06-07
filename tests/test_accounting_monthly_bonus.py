@@ -127,6 +127,58 @@ def test_query_laf_debt_fee_rows_matches_single_debt_case_by_client_name(monkeyp
     assert rows[0]["amount"] == 4000
 
 
+def test_query_laf_debt_fee_rows_can_scope_by_import_source_month(monkeypatch):
+    from api.osc import accounting_bonus as mod
+
+    candidate_rows = [
+        {
+            "id": 18,
+            "date": "2026-05-25",
+            "type": "收入",
+            "category": "法扶案件",
+            "description": "1150303-I-004 林亮宏｜預付酬金",
+            "amount": 4000,
+            "case_type": "消費者債務清理",
+            "case_category": "法律扶助案件",
+            "case_reason": "清算",
+            "case_number": "2026-0022",
+            "client_name": "林亮宏",
+        }
+    ]
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_transactions t" in sql:
+            assert "accounting_import_records" in sql
+            assert params[:4] == ("colleague_google_sheet", "2026-06", "2026-05-26", "2026-06-25")
+            return candidate_rows, {}
+        if "FROM cases" in sql:
+            return None, {}
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(mod, "_get_osc_helpers", lambda: fake_exec)
+    rows = mod.query_laf_debt_fee_rows(
+        date(2026, 5, 26),
+        date(2026, 6, 25),
+        source_month="2026-06",
+    )
+    assert len(rows) == 1
+    assert rows[0]["date"] == "2026-05-25"
+
+
+def test_query_totals_before_bonus_can_scope_by_import_source_month(monkeypatch):
+    from api.osc import accounting_bonus as mod
+
+    def fake_exec(sql, params=(), fetch="none"):
+        assert "accounting_import_records" in sql
+        assert "air.source_month=%s" in sql
+        assert params[:4] == ("colleague_google_sheet", "2026-06", "2026-05-26", "2026-06-25")
+        return {"income_total": 50000, "expense_total": 1290}, {}
+
+    monkeypatch.setattr(mod, "_get_osc_helpers", lambda: fake_exec)
+    totals = mod._query_totals_before_bonus(date(2026, 5, 26), date(2026, 6, 25), source_month="2026-06")
+    assert totals == {"income_total": 50000, "expense_total": 1290}
+
+
 def test_calculate_monthly_bonus_waits_when_no_laf_fee(monkeypatch):
     from api.osc import accounting_bonus as mod
 
@@ -138,10 +190,10 @@ def test_calculate_monthly_bonus_waits_when_no_laf_fee(monkeypatch):
             return {}, {}
         if sql.strip().startswith("SHOW COLUMNS"):
             return [{"Field": "xlsx_path"}], {}
-        if "FROM case_transactions t" in sql:
-            return [], {}
         if "income_total" in sql and "expense_total" in sql:
             return {"income_total": 30000, "expense_total": 10000}, {}
+        if "FROM case_transactions t" in sql:
+            return [], {}
         if "SELECT id FROM case_transactions" in sql:
             return None, {}
         if "INSERT INTO accounting_monthly_bonus_runs" in sql:
@@ -185,6 +237,8 @@ def test_calculate_monthly_bonus_posts_two_expenses(monkeypatch):
             return {}, {}
         if sql.strip().startswith("SHOW COLUMNS"):
             return [{"Field": "xlsx_path"}], {}
+        if "income_total" in sql and "expense_total" in sql:
+            return {"income_total": 30000, "expense_total": 10000}, {}
         if "FROM case_transactions t" in sql:
             return [
                 {
@@ -202,8 +256,6 @@ def test_calculate_monthly_bonus_posts_two_expenses(monkeypatch):
                     "laf_case_no": "1150317-E-009",
                 }
             ], {}
-        if "income_total" in sql and "expense_total" in sql:
-            return {"income_total": 30000, "expense_total": 10000}, {}
         if "SELECT id FROM case_transactions" in sql:
             return None, {}
         if "INSERT INTO case_transactions" in sql:

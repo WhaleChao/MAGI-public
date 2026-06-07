@@ -149,7 +149,7 @@ def test_parse_colleague_month_sheet_loose_fixed_layout():
     assert rows[2].category == "雜支"
 
 
-def test_parse_selected_month_sheet_keeps_cross_month_rows_when_date_filter_disabled():
+def test_parse_selected_month_sheet_uses_worksheet_month_as_accounting_month():
     values = [
         ["每月收支清單\n2026年", "六月", "", "", ""],
         ["類別", "時間", "姓名", "備註", "收入"],
