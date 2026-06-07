@@ -188,6 +188,52 @@ def test_laf_poa_pdf_itself_is_authoritative_metadata_source(tmp_path, monkeypat
     assert "115 年 5 月 29 日" in _docx_text(laf_poa_docx_path(pdf))
 
 
+def test_laf_poa_reason_falls_back_to_case_folder(tmp_path):
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
+
+    case_dir = tmp_path / "法扶案件" / "消費者債務清理" / "2026-0058-王惠薰-消費者債務清理-更生" / "01_法扶資料"
+    case_dir.mkdir(parents=True)
+    pdf = case_dir / "委任狀_1150529-E-005_1150601.pdf"
+    _make_pdf(
+        pdf,
+        "財團法人法律扶助基金會專用委任狀\n"
+        "本會申請編號：1150529-E-005\n"
+        "姓名\n王惠薰\n"
+        "本事件經本會 花蓮分會 審核准予扶助，請逕致電分會(03-8222128)。",
+    )
+
+    result = ensure_laf_poa_docx_companion(pdf)
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert result["filled_fields"]["case_type"] == "消費者債務清理"
+    assert result["filled_fields"]["case_reason"] == "更生"
+    assert "更生" in xml
+    assert "王惠薰" in xml
+    assert "1150529-E-005" in xml
+
+
+def test_laf_poa_laf_number_falls_back_to_filename(tmp_path, monkeypatch):
+    import api.laf_poa_docx as poa
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
+
+    pdf = tmp_path / "委任狀_1150521-A-044_1150525.pdf"
+    _make_pdf(pdf)
+
+    monkeypatch.setattr(
+        poa,
+        "_extract_laf_poa_pdf_metadata",
+        lambda path: {"client_name": "游秀鈴", "branch": "台北分會", "branch_phone": "02-23225151"},
+    )
+
+    result = ensure_laf_poa_docx_companion(pdf)
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert result["filled_fields"]["laf_case_number"] == "1150521-A-044"
+    assert "1150521-A-044" in xml
+
+
 def test_laf_poa_lawyer_is_not_overridden_by_assigned_lawyer(tmp_path):
     from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
 

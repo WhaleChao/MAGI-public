@@ -130,6 +130,45 @@ def _roc_date_from_filename(path: Path) -> dict[str, str]:
     }
 
 
+def _laf_case_number_from_filename(path: Path) -> str:
+    match = re.search(r"委任狀[_-]([0-9]{6,7}-[A-Z]-\d{3})(?:[_-]|\D|$)", path.stem)
+    return match.group(1) if match else ""
+
+
+def _case_folder_metadata_from_path(path: Path) -> dict[str, str]:
+    """Infer stable case fields from MAGI/OSC case folder names.
+
+    Official LAF POA PDFs intentionally leave the case reason blank.  The case
+    folder is therefore a safe fallback for draft Word companions, while PDF
+    fields still remain authoritative for party name, LAF number, branch, and
+    branch phone.
+    """
+
+    known_types = {"刑事", "民事", "行政", "非訟", "消費者債務清理", "無償案件"}
+    data: dict[str, str] = {}
+    for parent in path.parents:
+        name = parent.name
+        match = re.match(r"^(20\d{2}-\d{4})-(.+?)-([^-]+)-(.+)$", name)
+        if not match:
+            continue
+        data["case_number"] = match.group(1)
+        data["client_name"] = match.group(2).strip()
+        stage_or_type = match.group(3).strip()
+        reason = match.group(4).strip()
+        data["case_reason"] = reason
+        if stage_or_type and stage_or_type != "消費者債務清理":
+            data["stage"] = stage_or_type
+        for ancestor in parent.parents:
+            if ancestor.name in known_types:
+                data["case_type"] = ancestor.name
+                break
+        if stage_or_type == "消費者債務清理" or data.get("case_type") == "消費者債務清理":
+            data["case_type"] = "消費者債務清理"
+            data.setdefault("stage", "")
+        return {k: v for k, v in data.items() if v}
+    return data
+
+
 def _stage_marks(data: dict[str, Any]) -> str:
     stage = _metadata_first(data, "stage", "trial_stage", "instance", "審級")
     if "偵" in stage:
@@ -194,6 +233,10 @@ def _extract_laf_poa_pdf_metadata(path: Path) -> dict[str, str]:
     laf_match = re.search(r"本會申請編號[:：]\s*([0-9]{6,7}-[A-Z]-\d{3})", normalized_text)
     if laf_match:
         data["laf_case_number"] = laf_match.group(1)
+    else:
+        filename_laf_number = _laf_case_number_from_filename(path)
+        if filename_laf_number:
+            data["laf_case_number"] = filename_laf_number
 
     branch_match = re.search(r"本事件經本會\s*(.+?)\s*審核准予扶助", normalized_text, re.S)
     if branch_match:
@@ -397,7 +440,13 @@ def ensure_laf_poa_docx_companion(
         return result
 
     pdf_metadata = _extract_laf_poa_pdf_metadata(source)
-    combined_metadata: dict[str, Any] = dict(case_metadata or {})
+    if not pdf_metadata.get("laf_case_number"):
+        filename_laf_number = _laf_case_number_from_filename(source)
+        if filename_laf_number:
+            pdf_metadata["laf_case_number"] = filename_laf_number
+    combined_metadata: dict[str, Any] = {}
+    combined_metadata.update(_case_folder_metadata_from_path(source))
+    combined_metadata.update(case_metadata or {})
     # The official POA PDF is authoritative for its own case number, party, and
     # branch footer. DB/email metadata only fills fields the PDF leaves blank.
     combined_metadata.update({k: v for k, v in pdf_metadata.items() if v})
