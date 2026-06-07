@@ -327,7 +327,7 @@ _shutdown_requested = False
 
 
 def _summarize_with_nim(raw_text: str, case_reason: str) -> Optional[str]:
-    """Use NVIDIA NIM 405B (InferenceGateway heavy) to generate verbatim extraction."""
+    """Use NVIDIA NIM heavy (InferenceGateway heavy) to generate verbatim extraction."""
     try:
         from skills.bridge.inference_gateway import InferenceGateway
 

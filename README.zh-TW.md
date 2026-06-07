@@ -279,7 +279,7 @@ MAGI 依時段自動切換模型組合：
 當本機 oMLX 失敗或需要 SOTA 推理時，MAGI 可向 NVIDIA NIM 免費雲端推理後備：
 
 - **觸發方式**：使用者訊息加 `@heavy` 或 `@重型` 前綴（opt-in，永不自動）
-- **重型主力**：`meta/llama-3.1-405b-instruct`（128K context、多語、無內容審查）
+- **重型主力**：`nvidia/nemotron-3-super-120b-a12b`（多語、長文本、已通過 MAGI 翻譯品質閘門）
 - **快速模型**：`meta/llama-3.3-70b-instruct`（簡單重型任務）
 - **硬編封鎖清單**：中國模型（DeepSeek / Qwen / MiniMax / Kimi / GLM / Yi / Baichuan / Moonshot / InternLM / ChatGLM / SenseTime）— 因內容審查不適用於律師業務
 - **PII 遮蔽**：可逆遮蔽台灣身分證、法扶案號、法院案號、手機、DB 已知當事人姓名（回覆時還原）
@@ -552,7 +552,7 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 | `MAGI_JUDICIAL_VERIFY_SSL` | `0` | 司法院網站 SSL 驗證（TLS 相容模式關閉） |
 | `NVIDIA_NIM_ENABLE` | `0` | 啟用 NVIDIA NIM 雲端重型後備（Plan A） |
 | `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key（build.nvidia.com 免費層，40 req/min） |
-| `NVIDIA_NIM_MODEL` | `meta/llama-3.1-405b-instruct` | 重型主力（128K context、多語、無審查） |
+| `NVIDIA_NIM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | @heavy 重型主力；405B 歷史設定會自動映射到此模型 |
 | `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | 一般 @heavy 請求的快速模型 |
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | 強制使用者主動 `@heavy` / `@重型` 觸發 |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | 送雲端前強制 PII 遮蔽（永不關閉） |

@@ -1099,12 +1099,12 @@ class InferenceGateway:
                 except Exception:
                     logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1098, exc_info=True)
 
-        # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
+        # ── @heavy fast path：跳過 oMLX，直接走 NVIDIA NIM heavy（Plan A, 2026-04-19 P1-2 修） ──
         # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
         # 讓 NIM 永遠接不到手（P1-2 bug）。修法：heavy_opt_in=True 時跳過 oMLX，直接試 NIM。
         #
         # 2026-04-24：新增 strict 模式 (MAGI_HEAVY_STRICT_NIM=1) — 失敗時以指數退避重試 NIM
-        # 而非立刻退回 oMLX。適合使用者明確要求「所有 chunk 統一用 NIM 405B，慢沒關係」的場景。
+        # 而非立刻退回 oMLX。適合使用者明確要求「所有 chunk 統一用 NIM heavy，慢沒關係」的場景。
         if (
             heavy_opt_in
             and _env_bool("NVIDIA_NIM_ENABLE", False)
@@ -1137,7 +1137,7 @@ class InferenceGateway:
                         task_type=task_type,
                         require_pii_scrub=_env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True),
                         system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
-                        heavy=True,  # 強制走 405B
+                        heavy=True,  # 強制走重型 NIM
                     )
                     if nim_r.get("success") and nim_r.get("response"):
                         break

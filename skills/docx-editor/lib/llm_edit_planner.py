@@ -52,7 +52,7 @@ _EDIT_PLANNER_SYSTEM_PROMPT = """你是法律文書編輯助手。律師會給�
 只回 JSON array，不要任何 markdown 圍欄、解釋文字、prefix。"""
 
 _MAX_DOC_CHARS = 8000  # 超過時截斷並警告
-_HEAVY_THRESHOLD = 4000  # 超過此長度用 heavy mode (NIM 405B)
+_HEAVY_THRESHOLD = 4000  # 超過此長度用 heavy mode (NIM heavy)
 
 
 def plan_edits_with_llm(

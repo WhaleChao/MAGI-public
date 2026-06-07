@@ -15,7 +15,7 @@ Excluded from this review:
 
 - `qwen3:30b`
 - `llama3.1:70b`
-- `llama3.1:405b`
+- legacy `llama3.1:405b` / hosted 405B paths
 - `triumvirate-70b`
 - other explicit distributed / 70B-class paths
 

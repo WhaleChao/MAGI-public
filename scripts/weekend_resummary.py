@@ -2,7 +2,7 @@
 """
 weekend_resummary.py — 週末 NIM 批次重摘要
 
-用 NVIDIA NIM 405B 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
+用 NVIDIA NIM heavy 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
 
 安全機制：
 - PID lock 防止多進程同時跑
@@ -16,7 +16,7 @@ weekend_resummary.py — 週末 NIM 批次重摘要
   MAGI_RESUMMARY_MAX_FAILS         連續失敗中止閾值（預設 15）
   MAGI_RESUMMARY_BACKOFF_THRESHOLD 連續失敗開始 backoff（預設 5）
   MAGI_RESUMMARY_BACKOFF_SEC       backoff 等待秒數（預設 120）
-  MAGI_RESUMMARY_HEAVY=0           切 70B 加速（預設 1=405B）
+  MAGI_RESUMMARY_HEAVY=0           切 70B 加速（預設 1=重型 NIM）
 
 用法：
   python weekend_resummary.py                    # 摘要所有尚未完成的
@@ -56,7 +56,7 @@ LOCK_PATH = Path.home() / ".cache/judgment_collector/resummary.pid"
 # ── 參數 ──────────────────────────────────────────────────────────────
 MIN_TEXT_LEN = 1000         # 全文太短跳過（之前 500 太小，短裁定浪費額度）
 INTER_REQUEST_DELAY = 1.5   # NIM 請求間隔（秒；rate limit 較寬，但仍給點 buffer）
-# 2026-05-03：原 120s 過緊，實測 405B p50≈60-80s p99≈110s+，舊值導致大批次 timeout
+# 2026-05-03：原 120s 過緊，實測重型 NIM p50≈60-80s p99≈110s+，舊值導致大批次 timeout
 # 連續觸發 → 5 連敗即斷（8/300 早夭）。所有閾值改 env 可調，預設值放寬。
 SUMMARY_TIMEOUT_SEC = int(os.environ.get("MAGI_RESUMMARY_TIMEOUT_SEC", "240") or "240")
 RESUMMARY_SESSION_ID = "weekend-resummary-batch"  # 獨立 session，避免跟 gateway 主 session 衝突
@@ -64,7 +64,7 @@ BATCH_NOTIFY_EVERY = 50
 MAX_CONSECUTIVE_FAILS = int(os.environ.get("MAGI_RESUMMARY_MAX_FAILS", "15") or "15")
 BACKOFF_THRESHOLD = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_THRESHOLD", "5") or "5")
 BACKOFF_SECONDS = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_SEC", "120") or "120")
-# 405B 為預設（distillation 純度需求）；MAGI_RESUMMARY_HEAVY=0 可切 70B 加速。
+# 重型 NIM 為預設（distillation 純度需求）；MAGI_RESUMMARY_HEAVY=0 可切 70B 加速。
 RESUMMARY_USE_HEAVY = os.environ.get("MAGI_RESUMMARY_HEAVY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
@@ -213,7 +213,7 @@ def _load_judgments_reasons() -> dict:
 
 # ── NIM 呼叫 ─────────────────────────────────────────────────────────
 def _nim_summarize(prompt: str) -> tuple:
-    """呼叫 NVIDIA NIM 405B 摘要。
+    """呼叫 NVIDIA NIM heavy 摘要。
 
     Returns: (success, response_text, error_msg)
     """
@@ -223,7 +223,7 @@ def _nim_summarize(prompt: str) -> tuple:
         return False, "", f"InferenceGateway import failed: {e}"
     try:
         gw = InferenceGateway()
-        # heavy=True 強制走 NIM 405B（heavy_fast_path）；
+        # heavy=True 強制走 NIM heavy（heavy_fast_path）；
         # require_pii_scrub 預設由 NVIDIA_NIM_REQUIRE_PII_SCRUB 控制（=1）
         r = gw.chat(
             prompt=prompt,
@@ -236,7 +236,7 @@ def _nim_summarize(prompt: str) -> tuple:
             return False, "", f"unexpected return type: {type(r).__name__}"
         if not r.get("success"):
             return False, "", str(r.get("error") or "unknown")
-        # 只接受走 NIM 的結果；走 oMLX fallback 不算數（因為 405B 才能取代 Codex）
+        # 只接受走 NIM 的結果；走 oMLX fallback 不算數（因為重型 NIM 才能取代 Codex）
         provider = str(r.get("provider") or "")
         if provider != "nvidia_nim":
             return False, "", f"wrong provider: {provider} (expected nvidia_nim)"

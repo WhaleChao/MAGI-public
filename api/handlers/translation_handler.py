@@ -280,7 +280,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         "on",
     }
     if heavy and use_gtx_primary and not heavy_allow_gtx_primary:
-        logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NIM 405B")
+        logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NVIDIA NIM heavy")
         use_gtx_primary = False
     # 2026-04-24：strict NIM 模式 — 強制序列 (workers=1)，避免並行觸發 NIM 40 req/min 限制。
     # 使用者明確表示「慢沒關係，模型要統一」時啟用。每 chunk 間會由 inference_gateway 負責退避重試。
@@ -1147,7 +1147,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         )
     except Exception:
         translate_idle_timeout = max(90, min(600, max(remote_timeout, quick_timeout) + 30))
-    # 2026-04-24：strict NIM 模式下 NIM 405B 單次可能跑 10-25 分鐘（NVIDIA 高負載時）+ 退避重試 6 次
+    # 2026-04-24：strict NIM 模式下重型 NIM 單次可能跑 10-25 分鐘（NVIDIA 高負載時）+ 退避重試 6 次
     # 預設 idle_timeout 600 秒會直接斷掉仍在跑的 NIM 請求 → 反而讓 strict 毫無意義。
     # 把上限拉到 2 小時 per chunk（7200s），讓 strict 真正能等到結果。
     if _strict_nim_mode:
@@ -1185,7 +1185,14 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             cached_source = str(cached.get("source_lang") or "")
             cached_target = str(cached.get("target_lang") or "")
             cached_results = cached.get("results") or []
-            if cached_version == checkpoint_version and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
+            legacy_complete_checkpoint = (
+                cached_version in {2, 3, 4, 5}
+                and cached_total == total
+                and isinstance(cached_results, list)
+                and len(cached_results) == total
+            )
+            checkpoint_schema_ok = cached_version == checkpoint_version or legacy_complete_checkpoint
+            if checkpoint_schema_ok and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
                 cached_final = str(cached.get("final_text") or "").strip()
                 cached_translated = str(cached.get("translated_text") or "").strip()
                 if not cached_translated and isinstance(cached_results, list) and cached_results:

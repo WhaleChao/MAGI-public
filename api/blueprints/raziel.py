@@ -173,7 +173,7 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
         "keyword_text_dir_name": config.get("keyword_text_dir_name") or "依關鍵字原文",
         "keyword_pdf_dir_name": config.get("keyword_pdf_dir_name") or "依關鍵字PDF",
         "ai_provider": config.get("ai_provider") or "nvidia",
-        "nvidia_model": config.get("nvidia_model") or "meta/llama-3.1-405b-instruct",
+        "nvidia_model": config.get("nvidia_model") or "nvidia/nemotron-3-super-120b-a12b",
         "nvidia_large_fallback_model": config.get("nvidia_large_fallback_model") or "nvidia/nemotron-3-super-120b-a12b",
         "nvidia_fallback_model": config.get("nvidia_fallback_model") or "meta/llama-3.3-70b-instruct",
         "has_nvidia_api_key": bool(config.get("nvidia_api_key")),
@@ -458,7 +458,7 @@ def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
             "keyword_text_dir_name": str(payload.get("keyword_text_dir_name") or config.get("keyword_text_dir_name") or "依關鍵字原文").strip(),
             "keyword_pdf_dir_name": str(payload.get("keyword_pdf_dir_name") or config.get("keyword_pdf_dir_name") or "依關鍵字PDF").strip(),
             "ai_provider": str(payload.get("ai_provider") or config.get("ai_provider") or "nvidia").strip(),
-            "nvidia_model": str(payload.get("nvidia_model") or config.get("nvidia_model") or "meta/llama-3.1-405b-instruct").strip(),
+            "nvidia_model": str(payload.get("nvidia_model") or config.get("nvidia_model") or "nvidia/nemotron-3-super-120b-a12b").strip(),
             "nvidia_large_fallback_model": str(
                 payload.get("nvidia_large_fallback_model")
                 or config.get("nvidia_large_fallback_model")

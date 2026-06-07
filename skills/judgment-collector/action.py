@@ -3182,7 +3182,7 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
         except Exception as codex_exc:
             skill_err += f" | codex_exc:{codex_exc}"
 
-        # ── NIM fallback：Codex 失敗時走免費 NVIDIA NIM（70B 默認，>20K 字自動 405B）──
+        # ── NIM fallback：Codex 失敗時走免費 NVIDIA NIM（70B 默認，>20K 字自動 heavy）──
         # nim_heavy.run_nim_chat 內建 semaphore (NVIDIA_NIM_MAX_CONCURRENT, 預設 3)、
         # daily budget (NVIDIA_NIM_DAILY_BUDGET, 預設 500)、circuit breaker、PII scrub。
         # 由 NVIDIA_NIM_ENABLE=1 開關；JUDGMENT_NIM_INGEST=1 額外控制 ingestion 是否走 NIM。

@@ -52,7 +52,7 @@ class TestHeavyFastPath:
         nim_ok = {
             "success": True,
             "response": "依民法第 184 條前段…",
-            "model": "meta/llama-3.1-405b-instruct",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
             "pii_scrubbed": False,
             "pii_counts": {},
         }
@@ -139,7 +139,7 @@ class TestHeavyFastPath:
         nim_ok = {
             "success": True,
             "response": "依民法第 184 條…",
-            "model": "meta/llama-3.1-405b-instruct",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
             "pii_scrubbed": False,
             "pii_counts": {},
         }
@@ -170,7 +170,7 @@ class TestHeavyFastPath:
         nim_ok = {
             "success": True,
             "response": "ok",
-            "model": "meta/llama-3.1-405b-instruct",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
             "pii_scrubbed": False,
             "pii_counts": {},
         }

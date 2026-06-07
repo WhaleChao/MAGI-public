@@ -3,7 +3,7 @@
 覆蓋：
 1. 白名單正反測試（Meta/Mistral/Gemma 通過；DeepSeek/Qwen/MiniMax 等中國模型攔截）
 2. Adapter 註冊進 provider registry
-3. 預設模型為使用者指定的 405B 目標，執行時可由 nim_heavy 退大型備援
+3. 預設模型為 live 驗證通過的 Super 120B；歷史 405B 設定仍會被 nim_heavy 映射
 """
 from __future__ import annotations
 
@@ -31,6 +31,10 @@ class TestNvidiaNimAllowList:
 
     def test_nvidia_large_fallback_allowed(self):
         assert NvidiaNimProvider.is_model_allowed("nvidia/nemotron-3-super-120b-a12b") is True
+
+    def test_new_nvidia_candidates_allowed_for_manual_observation(self):
+        assert NvidiaNimProvider.is_model_allowed("nvidia/nemotron-3-ultra-550b-a55b") is True
+        assert NvidiaNimProvider.is_model_allowed("nvidia/llama-3.3-nemotron-super-49b-v1") is True
 
     @pytest.mark.parametrize("banned", [
         "deepseek/deepseek-r1",
@@ -65,9 +69,9 @@ class TestNvidiaNimRegistration:
         assert "nvidia_nim" in registry
         assert isinstance(registry["nvidia_nim"], NvidiaNimProvider)
 
-    def test_default_model_is_llama_31_405b_target(self):
+    def test_default_model_is_super_120b_target(self):
         adapter = NvidiaNimProvider()
-        assert adapter.default_model == "meta/llama-3.1-405b-instruct"
+        assert adapter.default_model == "nvidia/nemotron-3-super-120b-a12b"
 
     def test_base_url_default(self):
         adapter = NvidiaNimProvider()

@@ -1047,11 +1047,11 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
     Layer 1: Statute / noise memory filter per tier
     Layer 2: Semantic coherence check on LLM output
 
-    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM 405B，跳過本地 oMLX
+    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM heavy，跳過本地 oMLX
     """
     logger.info(f"💬 Chatting: {message}")
 
-    # ── Layer 0: @heavy opt-in → 直接走 NIM 405B（P1-2 根修 2026-04-19）──
+    # ── Layer 0: @heavy opt-in → 直接走 NIM heavy（P1-2 根修 2026-04-19）──
     # 此為 chat_casper 主要入口，處理所有 /osc/external/chat → _handle_chat_async 路徑。
     # 必須在這一層接 @heavy，因為 chat_casper 不會走 inference_gateway._chat_inner 的 heavy fast path。
     _msg_stripped = str(message or "").strip()
@@ -1080,7 +1080,7 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
                     _clean_msg = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
                 else:
                     _clean_msg = _msg_stripped
-                logger.info("chat_casper: @heavy opt-in → NIM 405B fast path")
+                logger.info("chat_casper: @heavy opt-in → NIM heavy fast path")
                 _nim_r = run_nim_chat(
                     prompt=_clean_msg,
                     timeout_sec=int(_os.environ.get("NVIDIA_NIM_TIMEOUT_SEC", "120") or "120"),
@@ -1092,7 +1092,7 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
                         "使用台灣慣用的法律術語，例如「被告」而非「被告人」、「起訴書」而非「起诉书」。"
                         "不要使用簡體中文或中國大陸用語。"
                     ),
-                    heavy=True,  # 強制 405B
+                    heavy=True,  # 強制重型 NIM
                 )
                 if _nim_r.get("success") and _nim_r.get("response"):
                     logger.info(

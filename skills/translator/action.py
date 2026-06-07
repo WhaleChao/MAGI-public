@@ -534,7 +534,7 @@ def _translate_chunks_local(
                         f"請把下列內容完整翻譯成{target_lang}（Taiwan 用語），不要摘要，不要補充：\n\n{c}"
                     )
                     _gw = InferenceGateway()
-                    # 2026-04-24：heavy=True → 走 NIM 405B fast path（chat_inner 已支援）
+                    # 2026-04-24：heavy=True → 走 NIM heavy fast path（chat_inner 已支援）
                     qr = _gw.chat(prompt2, task_type="translate", timeout=max(15, timeout_per_chunk), heavy=heavy)
                     piece = _strip_translation_preamble((qr.get("response") or "").strip()) if isinstance(qr, dict) else ""
                     if _is_degraded_response(piece):
@@ -668,7 +668,7 @@ def _translate_inner(payload: dict) -> dict:
     # Legal termbase context (passed through from translate_core)
     _legal_tier1 = str(payload.get("_legal_tier1") or "").strip()
     _legal_tier2 = str(payload.get("_legal_tier2") or "").strip()
-    # 2026-04-24：heavy opt-in 從 payload 讀取，全鏈下達到 InferenceGateway → NIM 405B
+    # 2026-04-24：heavy opt-in 從 payload 讀取，全鏈下達到 InferenceGateway → NIM heavy
     _heavy = bool(payload.get("heavy") or False)
 
     # For long inputs, use chunked local mode first to avoid long blocking calls.
@@ -1214,7 +1214,7 @@ def translate_core(
         "export": "1" if export else "0",
         "timeout_sec": timeout_sec,
         "llm_timeout": llm_timeout,
-        "heavy": bool(heavy),  # 2026-04-24：@HEAVY → NIM 405B 全鏈旗標
+        "heavy": bool(heavy),  # 2026-04-24：@HEAVY → NIM heavy 全鏈旗標
     }
     try:
         from skills.translator.legal_termbase import should_use_legal_mode, build_glossary_for_chunk

@@ -20,7 +20,7 @@ def test_raziel_public_config_never_returns_api_key():
         {
             "keyword_query": "通譯",
             "nvidia_api_key": "secret-value",
-            "nvidia_model": "meta/llama-3.1-405b-instruct",
+            "nvidia_model": "nvidia/nemotron-3-super-120b-a12b",
         }
     )
 
