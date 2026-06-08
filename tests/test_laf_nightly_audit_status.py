@@ -62,7 +62,7 @@ class TestUpdateLafStatusWithApproval:
         assert "`legal_aid_status` = %s" in sql
         assert "manual_status_lock" in sql
         assert "ELSE %s END" in sql
-        assert params == ("已結案，待送出", "結案中", 42)
+        assert params == ("已結案，待送出", "結案中", 42, 0)
         assert case["legal_aid_status"] == "已結案，待送出"
         assert case["status"] == "結案中"
 
@@ -76,9 +76,22 @@ class TestUpdateLafStatusWithApproval:
 
         sql, params = db.execute_write.call_args[0]
         assert "manual_status_lock" in sql
-        assert params == ("進行中", "進行中", 42)
+        assert params == ("進行中", "進行中", 42, 0)
         assert case["legal_aid_status"] == "進行中"
         assert case["status"] == "已結案"
+
+    def test_manual_laf_status_lock_blocks_downgrade_to_not_started(self):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import _update_laf_status
+        db = self._make_mock_db()
+        db.execute = MagicMock(return_value={"manual_laf_status_lock": 1, "legal_aid_status": "進行中"})
+        case = {"id": 42, "case_number": "2025-0001", "client_name": "測試甲",
+                "legal_aid_status": "進行中", "status": "進行中"}
+
+        assert _update_laf_status(db, case, "未開辦") is False
+
+        db.execute.assert_called_once()
+        db.execute_write.assert_not_called()
+        assert case["legal_aid_status"] == "進行中"
 
     def test_scheduled_script_portal_resolve_respects_manual_lock(self):
         import inspect

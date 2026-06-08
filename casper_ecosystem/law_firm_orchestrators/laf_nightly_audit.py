@@ -778,7 +778,26 @@ def _update_laf_status(db, case: dict, new_status: str) -> bool:
         return False
     old_status = case.get("legal_aid_status") or "(空)"
     next_case_status = _case_status_for_laf_status(new_status)
+    downgrade_to_not_started = str(new_status or "").strip() == "未開辦"
     try:
+        if downgrade_to_not_started:
+            try:
+                lock_row = db.execute(
+                    "SELECT `manual_laf_status_lock`, `legal_aid_status` FROM `cases` WHERE `id` = %s",
+                    (case_id,),
+                    fetch="one",
+                )
+                if lock_row and int(lock_row.get("manual_laf_status_lock") or 0) == 1:
+                    logger.info(
+                        "⏭️ DB 法扶狀態人工鎖定，跳過自動降回未開辦: %s %s（目前 %s）",
+                        case.get("case_number"),
+                        case.get("client_name"),
+                        lock_row.get("legal_aid_status") or old_status,
+                    )
+                    return False
+            except Exception as lock_err:
+                if "manual_laf_status_lock" not in str(lock_err) and "Unknown column" not in str(lock_err):
+                    raise
         try:
             db.execute_write(
                 """
@@ -786,11 +805,12 @@ def _update_laf_status(db, case: dict, new_status: str) -> bool:
                 SET `legal_aid_status` = %s,
                     `status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END
                 WHERE `id` = %s
+                  AND NOT (COALESCE(`manual_laf_status_lock`, 0) = 1 AND %s)
                 """,
-                (new_status, next_case_status, case_id),
+                (new_status, next_case_status, case_id, 1 if downgrade_to_not_started else 0),
             )
         except Exception as inner:
-            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+            if "manual_status_lock" not in str(inner) and "manual_laf_status_lock" not in str(inner) and "Unknown column" not in str(inner):
                 raise
             db.execute_write(
                 "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",

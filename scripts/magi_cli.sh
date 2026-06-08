@@ -267,6 +267,27 @@ _magi_zombie_count() {
     "$py" "$root/skills/process-hygiene/action.py" --task scan 2>/dev/null | "$py" -c 'import json,sys; print(json.load(sys.stdin).get("zombies",{}).get("count",0))' 2>/dev/null || echo "?"
 }
 
+_df_usage_with_timeout() {
+    local path="$1"
+    python3 - "$path" <<'PY' 2>/dev/null || echo "容量讀取失敗"
+import subprocess
+import sys
+
+path = sys.argv[1]
+try:
+    proc = subprocess.run(["df", "-h", path], capture_output=True, text=True, timeout=2, check=False)
+except subprocess.TimeoutExpired:
+    print("容量讀取逾時")
+    raise SystemExit(0)
+lines = [line.split() for line in proc.stdout.splitlines() if line.split()]
+if len(lines) >= 2 and len(lines[-1]) >= 5:
+    row = lines[-1]
+    print(f"{row[2]}/{row[1]} ({row[4]})")
+else:
+    print("容量讀取失敗")
+PY
+}
+
 cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
@@ -330,7 +351,11 @@ cmd_status() {
         fi
         if [ -n "$mounted_path" ]; then
             local usage
-            usage=$(df -h "$mounted_path" 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
+            if [ "${MAGI_STATUS_SHOW_CAPACITY:-0}" = "1" ]; then
+                usage=$(_df_usage_with_timeout "$mounted_path")
+            else
+                usage="MOUNTED"
+            fi
             printf "  ${GREEN}●${NC} %-18s %s\n" "$share_name" "$usage"
         elif [ "$share_name" = "lumi" ] && { [ -d "$HOME/SynologyDrive/01_案件" ] || [ -d "$HOME/Library/CloudStorage/SynologyDrive-homes/01_案件" ]; }; then
             printf "  ${YELLOW}◐${NC} %-18s ${YELLOW}FALLBACK: Synology Drive sync; SMB NOT MOUNTED${NC}\n" "$share_name"

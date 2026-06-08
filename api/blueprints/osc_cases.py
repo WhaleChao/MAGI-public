@@ -1739,6 +1739,9 @@ def _osc_ensure_case_manual_status_columns() -> None:
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_source VARCHAR(64) NULL", fetch="none")
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_at DATETIME NULL", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_source VARCHAR(64) NULL", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_at DATETIME NULL", fetch="none")
         _CASE_MANUAL_STATUS_SCHEMA_READY = True
     except Exception:
         _log.debug("silent-catch ensure manual status columns", exc_info=True)
@@ -5877,6 +5880,7 @@ def osc_laf_cases_api():
 @login_required
 def osc_laf_batch_status_api():
     """Mirror OSC standalone's '全部改為進行中' button for not-yet-started LAF cases."""
+    _osc_ensure_case_manual_status_columns()
     payload = request.get_json() or {}
     target = (payload.get("legal_aid_status") or "進行中").strip() or "進行中"
     if target != "進行中":
@@ -5886,6 +5890,9 @@ def osc_laf_batch_status_api():
         UPDATE cases
         SET legal_aid_status=%s,
             status=CASE WHEN COALESCE(manual_status_lock,0)=1 THEN status ELSE %s END,
+            manual_laf_status_lock=1,
+            manual_laf_status_source=%s,
+            manual_laf_status_at=NOW(),
             updated_at=NOW()
         WHERE (
             case_category = '法律扶助案件'
@@ -5894,7 +5901,7 @@ def osc_laf_batch_status_api():
         )
           AND (legal_aid_status IS NULL OR legal_aid_status='' OR legal_aid_status='未開辦')
         """,
-        (target, "進行中"),
+        (target, "進行中", "osc_web_batch"),
         fetch="none",
     )
     return jsonify({"ok": True, "result": result})
@@ -5904,6 +5911,7 @@ def osc_laf_batch_status_api():
 @login_required
 def osc_laf_case_status_api(row_id):
     """Update the LAF workflow status without losing the case/folder distinction."""
+    _osc_ensure_case_manual_status_columns()
     payload = request.get_json() or {}
     row_id = (row_id or "").strip()
     target = _osc_normalize_laf_status(payload.get("legal_aid_status") or payload.get("status") or "")
@@ -5919,7 +5927,12 @@ def osc_laf_case_status_api(row_id):
         sync_case_status = True if sync_case_status is None else bool(sync_case_status)
     note = str(payload.get("note") or "").strip()
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, status, legal_aid_status, manual_status_lock, folder_path FROM cases WHERE id=%s",
+        """
+        SELECT id, case_number, client_name, status, legal_aid_status,
+               manual_status_lock, manual_laf_status_lock, folder_path
+        FROM cases
+        WHERE id=%s
+        """,
         (row_id,),
         fetch="one",
     )
@@ -5929,8 +5942,9 @@ def osc_laf_case_status_api(row_id):
     old_laf_status = str(row.get("legal_aid_status") or "").strip()
     old_case_status = str(row.get("status") or "").strip()
     manual_locked = bool(int(row.get("manual_status_lock") or 0))
+    manual_laf_locked = bool(int(row.get("manual_laf_status_lock") or 0))
     next_case_status = _osc_case_status_for_laf_status(target) if (sync_case_status and not manual_locked) else old_case_status
-    changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status)
+    changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status) or not manual_laf_locked
 
     if not changed:
         folder = _osc_effective_case_folder_for_row(
@@ -5949,6 +5963,12 @@ def osc_laf_case_status_api(row_id):
     if sync_case_status:
         sets.append("status=%s")
         vals.append(next_case_status)
+    sets.extend([
+        "manual_laf_status_lock=1",
+        "manual_laf_status_source=%s",
+        "manual_laf_status_at=NOW()",
+    ])
+    vals.append("osc_web")
     sets.append("updated_at=NOW()")
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")

@@ -2,16 +2,19 @@
 async function loadLaf() {
     const q = encodeURIComponent((document.getElementById("lafQ").value || "").trim());
     const caseNumber = encodeURIComponent((document.getElementById("lafCaseNumber").value || "").trim());
-    const data = await api(`/api/osc/laf?limit=500&q=${q}&case_number=${caseNumber}`);
-    const casesData = await api(`/api/osc/laf/cases?limit=500&q=${q}`);
+    const [data, casesData] = await Promise.all([
+        api(`/api/osc/laf?limit=120&q=${q}&case_number=${caseNumber}`),
+        api(`/api/osc/laf/cases?limit=300&q=${q}`),
+    ]);
     const items = data.items || {};
+    const previousSelection = state.laf?.selectedCaseId || "";
     state.laf = {
         checklist: items.checklist || [],
         lifecycle: items.lifecycle || [],
         emails: items.emails || [],
         cases: casesData.items || [],
-        selectedCaseId: state.laf?.selectedCaseId || "",
-        selectedWorkbench: state.laf?.selectedWorkbench || null,
+        selectedCaseId: "",
+        selectedWorkbench: null,
     };
 
     const setText = (id, value) => {
@@ -24,10 +27,11 @@ async function loadLaf() {
     setText("lafEmailCount", (data.counts || {}).emails || 0);
     renderLafCaseList(state.laf.cases);
 
-    const selectedStillVisible = state.laf.selectedCaseId && state.laf.cases.some(x => String(x.id) === String(state.laf.selectedCaseId));
-    const nextCaseId = selectedStillVisible ? state.laf.selectedCaseId : (state.laf.cases[0]?.id || "");
-    if (nextCaseId) {
-        await openLafCaseDetail(nextCaseId, { silent: true });
+    const selectedStillVisible = previousSelection && state.laf.cases.some(x => String(x.id) === String(previousSelection));
+    if (selectedStillVisible && (document.getElementById("lafQ")?.value || document.getElementById("lafCaseNumber")?.value || "").trim()) {
+        await openLafCaseDetail(previousSelection, { silent: true });
+    } else if (state.laf.cases.length) {
+        renderLafEmptyDetail("法扶清單已載入。請從左側選擇案件查看開辦、報結、文件與活動明細。");
     } else {
         renderLafEmptyDetail("目前沒有符合條件的法扶案件。");
     }
@@ -100,6 +104,12 @@ function lafDisplayStatus(c = {}) {
     return c.status_display || c.effective_status || c.legal_aid_status || c.status || "未開辦";
 }
 
+function lafStatusLabel(status) {
+    const text = String(status || "").trim();
+    if (text === "進行中") return "已開辦（進行中）";
+    return text || "未開辦";
+}
+
 function lafDisplayType(c = {}) {
     if (c.case_type_display) return c.case_type_display;
     if (String(c.case_type || "").trim() === "消費者債務清理") return "消費者債務清理";
@@ -131,6 +141,7 @@ function renderLafCaseList(cases = []) {
     })), sort.col, sort.dir, sort.type);
     body.innerHTML = rows.map(c => {
         const status = lafDisplayStatus(c);
+        const statusLabel = lafStatusLabel(status);
         const type = lafDisplayType(c) || c.case_category || "";
         const pending = Number(c.pending_laf_items || 0);
         const pendingText = pending ? ` · 待補 ${pending}` : "";
@@ -139,7 +150,7 @@ function renderLafCaseList(cases = []) {
                 <td>${esc(c.case_number || "")}</td>
                 <td>${esc(c.client_name || "")}</td>
                 <td>${esc(shortText(type, 24))}</td>
-                <td><span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}${esc(pendingText)}</span></td>
+                <td><span class="laf-status-pill ${lafStatusClass(status)}">${esc(statusLabel)}${esc(pendingText)}</span></td>
             </tr>
         `;
     }).join("");
@@ -389,9 +400,16 @@ function renderLafCaseDetail(data = {}) {
     const c = data.case || {};
     const s = data.stats || {};
     const status = lafDisplayStatus(c);
+    const statusLabel = lafStatusLabel(status);
     const displayType = lafDisplayType(c);
     const displayReason = lafDisplayReason(c);
     const caseStatus = c.status_display || c.effective_status || c.status || "進行中";
+    const lafStatusOptions = [
+        ["未開辦", "未開辦"],
+        ["進行中", "已開辦（進行中）"],
+        ["已結案，待報結", "已結案，待報結"],
+        ["已結案", "已結案"],
+    ];
     const pending = (data.legal_aid_checklist || []).filter(isLafPending);
     const checklistCaseInput = document.getElementById("lafChecklistCaseNumber");
     if (checklistCaseInput && c.case_number) checklistCaseInput.value = c.case_number;
@@ -401,21 +419,21 @@ function renderLafCaseDetail(data = {}) {
                 <h3>${esc(c.case_number || "")} - ${esc(c.client_name || "")}</h3>
                 <div class="muted">案件分類：${esc(displayType || "未標示")}｜案由：${esc(displayReason || "未標示")}｜法扶案號：${esc(c.laf_case_no || "")}</div>
             </div>
-            <span class="laf-status-pill ${lafStatusClass(status)}">${esc(status)}</span>
+            <span class="laf-status-pill ${lafStatusClass(status)}">${esc(statusLabel)}</span>
         </div>
 
         <div class="laf-detail-section">
-            <h4>案件狀態</h4>
+            <h4>法扶開辦 / 報結狀態</h4>
             <div class="laf-status-row">
                 <select id="lafStatusSelect">
-                    ${["未開辦", "進行中", "已結案，待報結", "已結案"].map(x => `<option value="${esc(x)}" ${x === status ? "selected" : ""}>${esc(x)}</option>`).join("")}
+                    ${lafStatusOptions.map(([value, label]) => `<option value="${esc(value)}" ${value === status ? "selected" : ""}>${esc(label)}</option>`).join("")}
                 </select>
-                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase" checked> 同步案件狀態</label>
+                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase"> 同步案件主狀態</label>
                 <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
                 <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
 	                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件處理</button>
             </div>
-            <div class="muted">法扶狀態：${esc(status)}｜案件狀態：${esc(caseStatus)}</div>
+            <div class="muted">法扶開辦/報結：${esc(statusLabel)}｜案件主狀態：${esc(caseStatus)}。未開辦可與案件進行中並存，表示法扶開辦資料尚未齊備或尚未完成開辦。</div>
         </div>
 
         <div class="laf-detail-section">
@@ -485,7 +503,8 @@ async function updateLafCaseStatus(caseId) {
     });
     const changed = result?.changed !== false;
     const folderSource = result?.folder?.source ? `；資料夾：${result.folder.source}` : "";
-    showToast(changed ? `法扶狀態已更新為「${status}」${folderSource}。` : `法扶狀態已是「${status}」。`, "ok", 3200);
+    const statusLabel = lafStatusLabel(status);
+    showToast(changed ? `法扶狀態已更新為「${statusLabel}」${folderSource}。` : `法扶狀態已是「${statusLabel}」。`, "ok", 3200);
     await loadLaf();
     await openLafCaseDetail(id, { silent: true });
 }

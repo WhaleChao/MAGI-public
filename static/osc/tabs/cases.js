@@ -155,9 +155,11 @@ function caseStatusScopeLabel(scope) {
 
 function lafBadgeText(row = {}) {
     const lafStatus = String(row.legal_aid_status || "").trim();
-    const displayStatus = caseDisplayStatus(row);
-    const visible = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中" ? lafStatus : displayStatus;
-    return `法扶 / ${visible || "進行中"}`;
+    const caseStatus = caseDisplayStatus(row) || "進行中";
+    const lafDisplay = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中"
+        ? (lafStatus === "進行中" ? "已開辦（進行中）" : lafStatus)
+        : "未標示";
+    return `法扶｜案件：${caseStatus}｜開辦：${lafDisplay}`;
 }
 
 function caseNotesText(row = {}) {

@@ -177,13 +177,16 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                 """
                 UPDATE cases
                 SET legal_aid_status = %s,
-                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END,
+                    manual_laf_status_lock = 1,
+                    manual_laf_status_source = %s,
+                    manual_laf_status_at = NOW()
                 WHERE id = %s
                 """,
-                (new_status, next_case_status, row["id"]),
+                (new_status, next_case_status, "chat_command", row["id"]),
             )
         except Exception as inner:
-            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+            if "manual_status_lock" not in str(inner) and "manual_laf_status_lock" not in str(inner) and "Unknown column" not in str(inner):
                 raise
             db.execute_write(
                 "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",

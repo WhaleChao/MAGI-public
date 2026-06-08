@@ -832,6 +832,18 @@ def test_build_file_sync_plan_prioritizes_upcoming_todo_cases(monkeypatch):
 
 
 def test_drive_import_aliases_map_to_nas_canonical_folders():
+    assert drive_to_nas_relative_path("開辦資料/1150101-A-001委任狀.pdf") == "02_開辦資料/1150101-A-001委任狀.pdf"
+    assert drive_to_nas_relative_path("開辨資料/開辦通知.pdf") == "02_開辦資料/開辦通知.pdf"
+    assert drive_to_nas_relative_path("委任狀/已簽委任狀.pdf") == "02_開辦資料/已簽委任狀.pdf"
+    assert drive_to_nas_relative_path("委任契約書、委任狀/委任契約書.pdf") == "02_開辦資料/委任契約書.pdf"
+    assert nas_to_drive_relative_path("02_開辦資料/1150101-A-001委任狀.pdf") == "開辦資料/1150101-A-001委任狀.pdf"
+    assert (
+        nas_to_drive_relative_path(
+            "02_開辦資料/1150101-A-001委任狀.pdf",
+            drive_existing_first_segments={"委任狀"},
+        )
+        == "委任狀/1150101-A-001委任狀.pdf"
+    )
     assert drive_to_nas_relative_path("法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
