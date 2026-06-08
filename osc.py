@@ -20,6 +20,7 @@ for candidate in (MAGI_ROOT, OSC_HEADLESS_DIR):
 
 from api.case_path_mapper import translate_case_path_to_local, translate_local_path_to_canonical
 from api.case_display import normalize_person_name
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 from api.osc.client_ids import next_client_id_from_existing
 from osc_headless.db import DBConfig, connect_mysql, ensure_cases_schema
 
@@ -479,6 +480,14 @@ class DatabaseManager:
             data["court_case_number"] = data.get("court_case_no") or ""
         if not data.get("folder_name") and data.get("folder_path"):
             data["folder_name"] = os.path.basename(str(data.get("folder_path")).rstrip("/\\"))
+        data["lawyer"] = normalize_case_lawyer(
+            data.get("lawyer"),
+            allow_default=True,
+            case_type=data.get("case_type", ""),
+            case_reason=data.get("case_reason", ""),
+            case_category=data.get("case_category", ""),
+            settings_getter=db_settings_getter(self),
+        )
 
         for key in ("start_date", "court_date"):
             if data.get(key) == "":

@@ -67,6 +67,7 @@ from api.laf_case_classifier import (
     normalize_laf_case_type,
 )
 from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -88,6 +89,17 @@ def _safe_log_callback(callback, message: str) -> None:
 
 def _safe_logger(callback=None):
     return lambda message: _safe_log_callback(callback or _safe_print, str(message))
+
+
+def _laf_default_case_lawyer(db_manager: Any = None, *, case_type: Any = "", case_reason: Any = "", case_category: Any = "法律扶助案件") -> str:
+    return normalize_case_lawyer(
+        "",
+        allow_default=True,
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=db_settings_getter(db_manager),
+    )
 
 
 # ==============================================================================
@@ -9482,7 +9494,11 @@ class OSCCaseCreator:
                                 "進行中",
                                 datetime.now().strftime('%Y-%m-%d'),
                                 None,
-                                "",
+                                _laf_default_case_lawyer(
+                                    self.db_manager,
+                                    case_type=case_info.case_type,
+                                    case_reason=case_reason,
+                                ),
                                 folder_path_for_db,
                                 case_info.case_stage,
                                 "",
@@ -9729,7 +9745,11 @@ class OSCCaseCreator:
                 '進行中',  # status
                 datetime.now().strftime('%Y-%m-%d'),  # start_date
                 None,  # court_date
-                '',  # lawyer
+                _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_info.case_type,
+                    case_reason=case_reason,
+                ),  # lawyer
                 folder_path_for_db,
                 case_info.case_stage,
                 '',  # court_case_number
@@ -11360,7 +11380,11 @@ class LAFAutomationManager:
                 'status': '進行中',
                 'start_date': datetime.now().strftime('%Y-%m-%d'),
                 'court_date': None,
-                'lawyer': '',
+                'lawyer': _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_type,
+                    case_reason=case_reason,
+                ),
                 'folder_path': db_folder_path,
                 'case_stage': case_stage,
                 'court_case_number': '',
@@ -11595,7 +11619,14 @@ class LAFAutomationManager:
                 case_data.get('status'),
                 case_data.get('start_date'),
                 case_data.get('court_date'),
-                case_data.get('lawyer', ''),
+                normalize_case_lawyer(
+                    case_data.get('lawyer', ''),
+                    allow_default=True,
+                    case_type=case_data.get('case_type', ''),
+                    case_reason=case_data.get('case_reason', ''),
+                    case_category=case_data.get('case_category', ''),
+                    settings_getter=db_settings_getter(self.db_manager),
+                ),
                 case_data.get('folder_path'),
                 case_data.get('case_stage'),
                 case_data.get('court_case_number', ''),

@@ -544,6 +544,39 @@ def test_consumer_debt_case_defaults_to_debt_lawyer(client):
     assert "一般承辦律師" not in insert_params
 
 
+def test_case_list_replaces_existing_demo_lawyer_with_setting_default(client):
+    rows = [
+        {
+            "id": "demo-lawyer-row",
+            "case_number": "2026-9997",
+            "client_name": "測試列表當事人",
+            "case_category": "法律扶助案件",
+            "case_type": "消費者債務清理",
+            "case_stage": "其他",
+            "case_reason": "更生",
+            "lawyer": "範例律師",
+            "status": "進行中",
+            "legal_aid_status": "未開辦",
+            "folder_path": "Z:\\lumi63181107\\01_案件\\法扶案件\\消費者債務清理\\2026-9997-測試列表當事人-消費者債務清理-更生",
+        }
+    ]
+
+    def fake_setting(key, default=""):
+        values = {
+            "default_lawyer": "一般承辦律師",
+            "default_debt_lawyer": "消債承辦律師",
+        }
+        return values.get(key, default)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", side_effect=fake_setting):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["items"][0]["lawyer"] == "消債承辦律師"
+
+
 def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypatch):
     import api.blueprints.osc_cases as mod
 

@@ -186,6 +186,23 @@ def test_laf_report_result_keeps_labor_insurance_as_admin():
         assert info.case_reason == "勞工保險爭議"
 
 
+def test_laf_default_case_lawyer_uses_same_settings_in_legacy_and_casper():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import _laf_default_case_lawyer as casper_default
+    from skills.legal.laf import _laf_default_case_lawyer as legacy_default
+
+    class FakeDB:
+        def fetch_one(self, sql, params, as_dict=True):
+            values = {
+                "default_lawyer": "一般承辦律師",
+                "default_debt_lawyer": "消債承辦律師",
+            }
+            return {"value": values.get(params[0], "")}
+
+    for fn in (casper_default, legacy_default):
+        assert fn(FakeDB(), case_type="消費者債務清理", case_reason="更生") == "消債承辦律師"
+        assert fn(FakeDB(), case_type="民事", case_reason="拆屋還地") == "一般承辦律師"
+
+
 def test_legacy_staff_short_labor_insurance_hint_is_admin():
     from skills.legal.laf import LAFCaseTypeParser
 

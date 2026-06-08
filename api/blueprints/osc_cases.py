@@ -46,6 +46,12 @@ from api.osc.utils import (
     _osc_read_plain_text, _osc_read_docx_text, _osc_read_pdf_text,
     _osc_allowed_local_roots, _osc_replace_path_prefix_references,
 )
+from api.osc.case_defaults import (
+    DEMO_LAWYER_VALUES as _CASE_DEMO_LAWYER_VALUES,
+    case_uses_consumer_debt_lawyer as _case_uses_consumer_debt_lawyer,
+    default_case_lawyer as _default_case_lawyer,
+    normalize_case_lawyer as _normalize_case_lawyer,
+)
 from api.osc.client_ids import generate_next_client_id, is_canonical_client_id
 from api.osc.drafts import (
     _osc_template_data_json_or_wrap, _osc_json_or_wrap,
@@ -123,31 +129,20 @@ def _osc_existing_resource_path(setting_key: str, filename: str, fallback: str =
     return configured or _osc_photo_path(filename) or fallback
 
 
-_OSC_DEMO_LAWYER_VALUES = {
-    "範例律師",
-    "示範律師",
-    "測試律師",
-    "Sample Lawyer",
-    "Demo Lawyer",
-}
+_OSC_DEMO_LAWYER_VALUES = set(_CASE_DEMO_LAWYER_VALUES)
 
 
 def _osc_case_uses_consumer_debt_lawyer(*values: object) -> bool:
-    text = " ".join(str(value or "") for value in values)
-    return any(marker in text for marker in ("消費者債務清理", "消債", "更生", "清算"))
+    return _case_uses_consumer_debt_lawyer(*values)
 
 
 def _osc_default_case_lawyer(*, case_type: object = "", case_reason: object = "", case_category: object = "") -> str:
-    if _osc_case_uses_consumer_debt_lawyer(case_type, case_reason, case_category):
-        keys = ("default_debt_lawyer", "consumer_debt_lawyer", "debt_lawyer", "default_specialist")
-    else:
-        keys = ("default_lawyer", "lawyer_name")
-    for key in keys:
-        value = str(_osc_get_setting_value(key, "") or "").strip()
-        if value and value not in _OSC_DEMO_LAWYER_VALUES:
-            return value
-    value = str(os.environ.get("MAGI_PUBLIC_LAWYER_NAME") or "").strip()
-    return "" if value in _OSC_DEMO_LAWYER_VALUES else value
+    return _default_case_lawyer(
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=_osc_get_setting_value,
+    )
 
 
 def _osc_normalize_case_lawyer(
@@ -158,17 +153,13 @@ def _osc_normalize_case_lawyer(
     case_reason: object = "",
     case_category: object = "",
 ) -> str:
-    text = str(value or "").strip()
-    if text in _OSC_DEMO_LAWYER_VALUES:
-        text = ""
-    if text:
-        return text
-    if not allow_default:
-        return ""
-    return _osc_default_case_lawyer(
+    return _normalize_case_lawyer(
+        value,
+        allow_default=allow_default,
         case_type=case_type,
         case_reason=case_reason,
         case_category=case_category,
+        settings_getter=_osc_get_setting_value,
     )
 
 
@@ -1225,7 +1216,13 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
         return row
     effective = _osc_effective_case_status(row)
     out = dict(row)
-    out["lawyer"] = _osc_normalize_case_lawyer(out.get("lawyer"), allow_default=False)
+    out["lawyer"] = _osc_normalize_case_lawyer(
+        out.get("lawyer"),
+        allow_default=True,
+        case_type=out.get("case_type"),
+        case_reason=out.get("case_reason"),
+        case_category=out.get("case_category"),
+    )
     out["effective_status"] = effective
     out["status_display"] = effective
     if str(out.get("case_type") or "").strip() == "消費者債務清理":

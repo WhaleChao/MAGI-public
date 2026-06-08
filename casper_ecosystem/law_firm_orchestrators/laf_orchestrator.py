@@ -54,6 +54,7 @@ if str(MAGI_DIR) not in sys.path:
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 CODE_DIR = get_orch_dir()
@@ -8022,8 +8023,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if branch:
             notes += f"分會: {branch}\n"
 
-        # 承辦律師：公開版使用設定或範例值，正式環境請在設定檔覆寫。
-        default_lawyer = os.environ.get('MAGI_PUBLIC_LAWYER_NAME', '範例律師')
+        default_lawyer = normalize_case_lawyer(
+            "",
+            allow_default=True,
+            case_type=case_type,
+            case_reason=case_reason,
+            case_category="法律扶助案件",
+            settings_getter=db_settings_getter(getattr(self, "db", None)),
+        )
 
         try:
             self.db.execute_write(
