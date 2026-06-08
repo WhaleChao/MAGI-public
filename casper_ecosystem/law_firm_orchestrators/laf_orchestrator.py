@@ -8223,7 +8223,10 @@ def _acquire_portal_lock(wait_sec: int = 900):
         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7927, exc_info=True)
     _lock_path = os.path.join(_lock_dir, "laf_portal.lock")
     try:
-        fd = open(_lock_path, 'w')
+        # Do not open with "w": that truncates the owner record before the
+        # process actually owns the fcntl lock, making portal hangs impossible
+        # to diagnose after a daemon restart.  We overwrite only after LOCK_EX.
+        fd = open(_lock_path, 'a+')
     except Exception as e:
         logger.warning("Cannot open portal lock file %s: %s", _lock_path, e)
         return None, True
@@ -8244,7 +8247,20 @@ def _acquire_portal_lock(wait_sec: int = 900):
             return fd, True
         except BlockingIOError:
             if not announced:
-                logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
+                owner = ""
+                try:
+                    fd.seek(0)
+                    owner = (fd.read() or "").strip()
+                except Exception:
+                    owner = ""
+                if owner:
+                    logger.info(
+                        "⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds；鎖持有者：%s）",
+                        int(wait_sec),
+                        owner[:120],
+                    )
+                else:
+                    logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
                 announced = True
             time.sleep(2)
     logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），fail-open 繼續執行（可能會與他程序衝突）", wait_sec)

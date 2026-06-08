@@ -137,6 +137,7 @@ REAPER_GRACE_PERIODS = {
     # LAF
     "skills/laf-portal-automation/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_SEC", "2400") or "2400"),
     "skills/laf-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_ORCH_SEC", "2400") or "2400"),
+    "scripts/ops/laf_report_worker.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REPORT_SEC", "3000") or "3000"),
     "skills/laf-withdrawal-report/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_WD_SEC", "1800") or "1800"),
     "skills/laf-refine-case/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REFINE_SEC", "1200") or "1200"),
     # OSC / naming / vdb

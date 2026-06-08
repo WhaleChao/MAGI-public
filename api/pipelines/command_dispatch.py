@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import uuid
 
 from api.command_registry import CommandContext
 from api.case_display import display_case_label
@@ -1732,13 +1734,44 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             except Exception as notify_err:
                 logger.warning(f"LAF report callback failed: {notify_err}")
 
-        # 2026-03-29: removed local import threading (use module-level import)
-        thread = threading.Thread(
-            target=run_laf_report,
-            args=(str(user_id), laf_payload, platform_hint),
-            daemon=True,
-        )
-        thread.start()
+        # Durable portal worker:
+        # The old implementation ran ``run_laf_report`` in a daemon thread
+        # inside the Discord/LINE process.  A coordinated daemon restart kills
+        # that thread, so users receive "已啟動" and then silence.  Portal
+        # automation is long-running; launch it as an independent worker that
+        # owns completion/failure notifications.
+        try:
+            _worker_script = os.path.join(_MAGI_ROOT, "scripts", "ops", "laf_report_worker.py")
+            _job_id = f"laf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+            _payload_for_worker = dict(laf_payload)
+            _payload_for_worker.update({
+                "job_id": _job_id,
+                "requester_user_id": str(user_id),
+                "platform": platform_hint,
+            })
+            _worker_log = os.path.join(_MAGI_ROOT, ".runtime", f"laf_report_worker_launch_{_job_id}.log")
+            os.makedirs(os.path.dirname(_worker_log), exist_ok=True)
+            _env = os.environ.copy()
+            _env.setdefault("MAGI_ROOT_DIR", _MAGI_ROOT)
+            _env.setdefault("MAGI_LAF_REPORT_TIMEOUT_SEC", str(timeout_sec))
+            with open(_worker_log, "ab") as _lf:
+                subprocess.Popen(
+                    [
+                        skill_python,
+                        _worker_script,
+                        "--payload-json",
+                        json.dumps(_payload_for_worker, ensure_ascii=False),
+                    ],
+                    cwd=_MAGI_ROOT,
+                    env=_env,
+                    stdout=_lf,
+                    stderr=_lf,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except Exception as _launch_err:
+            logger.exception("LAF durable worker launch failed: %s", _launch_err)
+            return f"❌ 法扶{laf_payload.get('action_label','回報')}背景任務啟動失敗：{_launch_err}"
 
         target_hint = laf_payload.get("client_name") or laf_payload.get("laf_case_no") or laf_payload.get("case_number") or "（未指定）"
         if str(laf_payload.get("action") or "") == "go_live":
