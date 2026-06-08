@@ -1167,12 +1167,12 @@ def local_descendant_context(
 
 def find_drive_root(service: Any, *, root_id: str = "", root_name: str = DEFAULT_DRIVE_ROOT_NAME) -> dict[str, Any]:
     if root_id:
-        return service.files().get(
+        return _drive_execute_with_timeout(service.files().get(
             fileId=root_id,
             supportsAllDrives=True,
             fields="id,name,mimeType,parents,modifiedTime,webViewLink,driveId",
-        ).execute()
-    resp = service.files().list(
+        ), context=f"get_root:{root_id}")
+    resp = _drive_execute_with_timeout(service.files().list(
         q=f"name = '{root_name}' and mimeType = '{GOOGLE_FOLDER_MIME}' and trashed = false",
         spaces="drive",
         corpora="allDrives",
@@ -1180,7 +1180,7 @@ def find_drive_root(service: Any, *, root_id: str = "", root_name: str = DEFAULT
         supportsAllDrives=True,
         pageSize=10,
         fields="files(id,name,mimeType,parents,modifiedTime,webViewLink,driveId)",
-    ).execute()
+    ), context=f"find_root:{root_name}")
     files = resp.get("files", [])
     if not files:
         raise DriveCaseSyncError(f"找不到 Google Drive 資料夾：{root_name}")
@@ -1271,6 +1271,135 @@ def _index_cases(cases: Iterable[CaseFolder], *, include_name_only: bool = False
 def _case_identity(case: CaseFolder) -> str:
     keys = [k for k in match_keys(case.meta) if not k.startswith("name:")]
     return keys[0] if keys else f"path:{normalize_text(case.relative_path)}"
+
+
+def _primary_duplicate_identity_key(case: CaseFolder) -> str:
+    """Return a high-confidence key for Drive-side duplicate-folder detection.
+
+    Google Drive permits duplicate folder names, and MAGI's Drive layout often
+    omits OSC case numbers.  The duplicate detector must therefore use stable
+    case identity rather than the visible folder path.  Name-only matches are
+    intentionally excluded because the same client can have multiple matters.
+    """
+    if case.meta.case_number:
+        return f"case:{normalize_text(case.meta.case_number)}"
+    if case.meta.laf_case_no:
+        return f"laf:{normalize_text(case.meta.laf_case_no)}"
+    if case.meta.court_case_no:
+        return f"court:{normalize_court_case_no(case.meta.court_case_no)}"
+    name = normalize_text(case.meta.client_hint)
+    reason = normalize_text(case.meta.reason_hint)
+    if name and reason and reason not in GENERIC_CONTEXT_TERMS:
+        scope = normalize_text("|".join([
+            normalize_drive_case_category(case.category),
+            case.case_kind,
+            case.status,
+        ]))
+        return f"name_reason:{scope}:{name}|{reason}"
+    return ""
+
+
+def _duplicate_identity_keys(case: CaseFolder) -> set[str]:
+    keys: set[str] = set()
+    if case.meta.case_number:
+        keys.add(f"case:{normalize_text(case.meta.case_number)}")
+    if case.meta.laf_case_no:
+        keys.add(f"laf:{normalize_text(case.meta.laf_case_no)}")
+    if case.meta.court_case_no:
+        keys.add(f"court:{normalize_court_case_no(case.meta.court_case_no)}")
+    if keys:
+        return keys
+    name = normalize_text(case.meta.client_hint)
+    reason = normalize_text(case.meta.reason_hint)
+    if name and reason and reason not in GENERIC_CONTEXT_TERMS:
+        scope = normalize_text("|".join([
+            normalize_drive_case_category(case.category),
+            case.case_kind,
+            case.status,
+        ]))
+        keys.add(f"name_reason:{scope}:{name}|{reason}")
+    return keys
+
+
+def detect_drive_duplicate_case_groups(drive_cases: Iterable[CaseFolder]) -> list[dict[str, Any]]:
+    """Find Drive folders that represent the same case identity.
+
+    All folders in a duplicate group are blocked from bidirectional file sync.
+    MAGI should first merge or manually resolve the Drive side; otherwise a
+    single NAS case can download/upload against multiple cloud folders and
+    produce the exact duplicate-folder pollution reported by users.
+    """
+    indexed: list[tuple[CaseFolder, set[str]]] = []
+    for case in drive_cases:
+        keys = _duplicate_identity_keys(case)
+        if keys:
+            indexed.append((case, keys))
+
+    parent = list(range(len(indexed)))
+
+    def find(idx: int) -> int:
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    first_seen_key: dict[str, int] = {}
+    for idx, (_case, keys) in enumerate(indexed):
+        for key in keys:
+            if key in first_seen_key:
+                union(idx, first_seen_key[key])
+            else:
+                first_seen_key[key] = idx
+
+    buckets: dict[int, list[tuple[CaseFolder, set[str]]]] = {}
+    for idx, item in enumerate(indexed):
+        buckets.setdefault(find(idx), []).append(item)
+
+    groups: list[dict[str, Any]] = []
+    for _root, items in sorted(
+        buckets.items(),
+        key=lambda item: sorted(item[1][0][1])[0] if item[1] and item[1][0][1] else "",
+    ):
+        unique: dict[str, CaseFolder] = {}
+        key_sets: list[set[str]] = []
+        for case, keys in items:
+            unique[case.drive_id or case.relative_path] = case
+            key_sets.append(keys)
+        if len(unique) <= 1:
+            continue
+        common_keys = set.intersection(*key_sets) if key_sets else set()
+        all_keys = set().union(*key_sets) if key_sets else set()
+        identity_key = sorted(common_keys or all_keys)[0] if (common_keys or all_keys) else ""
+        ordered = sorted(
+            unique.values(),
+            key=lambda c: (
+                0 if c.meta.case_number else 1,
+                0 if c.meta.laf_case_no else 1,
+                c.status != "active",
+                c.relative_path,
+            ),
+        )
+        groups.append({
+            "identity_key": identity_key,
+            "identity_keys": sorted(all_keys),
+            "cases": ordered,
+            "reason": "Google Drive 端同一案件身份有多個資料夾；同步前必須先合併或排除重複資料夾",
+        })
+    return groups
+
+
+def _drive_duplicate_public_group(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "identity_key": group.get("identity_key", ""),
+        "identity_keys": group.get("identity_keys", []),
+        "reason": group.get("reason", ""),
+        "cases": [_case_to_dict(c) for c in group.get("cases", [])],
+    }
 
 
 def is_aaron_drive_bucket(case: CaseFolder) -> bool:
@@ -1824,6 +1953,22 @@ def resolve_drive_only_cases_with_context(
 
 
 def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFolder]) -> dict[str, Any]:
+    drive_duplicate_groups = detect_drive_duplicate_case_groups(drive_cases)
+    duplicate_identity_keys = {
+        str(key or "")
+        for group in drive_duplicate_groups
+        for key in (group.get("identity_keys") or [group.get("identity_key")])
+        if str(key or "")
+    }
+    duplicate_drive_refs: set[str] = {
+        c.drive_id or c.relative_path
+        for group in drive_duplicate_groups
+        for c in group.get("cases", [])
+    }
+    active_drive_cases = [
+        c for c in drive_cases
+        if (c.drive_id or c.relative_path) not in duplicate_drive_refs
+    ]
     strong_local = _index_cases(local_cases)
     weak_local = _index_cases(local_cases, include_name_only=True)
     db_contexts = lookup_db_case_contexts(
@@ -1835,7 +1980,7 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
     ambiguous: list[dict[str, Any]] = []
     matched_local_ids: set[str] = set()
 
-    for d in drive_cases:
+    for d in active_drive_cases:
         scope_reason = sync_scope_exclusion_reason(d)
         if scope_reason:
             out_of_scope.append({"drive": d, "reason": scope_reason})
@@ -1884,10 +2029,20 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
             else:
                 drive_only.append(d)
 
-    drive_strong = _index_cases(drive_cases)
+    drive_strong = _index_cases(active_drive_cases)
     local_only: list[CaseFolder] = []
     for local in local_cases:
         if local.relative_path in matched_local_ids:
+            continue
+        local_identities = _duplicate_identity_keys(local)
+        if local_identities and local_identities.intersection(duplicate_identity_keys):
+            out_of_scope.append({
+                "local": local,
+                "reason": (
+                    "Google Drive 端已有同一案件身份的重複資料夾；"
+                    "本機/NAS 端不得再建立或同步到任一雲端資料夾，需先清理 Drive 重複群組"
+                ),
+            })
             continue
         db_context = db_contexts.get(local.meta.case_number, {})
         if local.status == "active" and _db_context_marks_closed(db_context):
@@ -1910,6 +2065,7 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
         "local_only": local_only,
         "ambiguous": ambiguous,
         "out_of_scope": out_of_scope,
+        "drive_duplicates": drive_duplicate_groups,
     }
 
 
@@ -1974,6 +2130,20 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
             "reason": item.get("reason", ""),
             "status": "skipped",
         })
+    for group in comparison.get("drive_duplicates", []):
+        cases = group.get("cases") or []
+        actions.append({
+            "action": "resolve_drive_duplicate_case_folders",
+            "safety": "blocked_until_google_drive_duplicates_are_merged",
+            "drive_path": "",
+            "drive_id": "",
+            "duplicate_count": len(cases),
+            "duplicate_paths": [c.relative_path for c in cases],
+            "identity_key": group.get("identity_key", ""),
+            "identity_keys": group.get("identity_keys", []),
+            "reason": group.get("reason", ""),
+            "status": "blocked_duplicate_drive_folder",
+        })
     return {
         "mode": "dry_run_plan",
         "write_actions_enabled": False,
@@ -1983,6 +2153,7 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
             "needs_review": sum(1 for a in actions if a["status"] == "needs_review"),
             "manual_disambiguation": sum(1 for a in actions if a["action"] == "manual_disambiguation"),
             "skipped": sum(1 for a in actions if a["status"] == "skipped"),
+            "blocked_duplicate_drive_folders": sum(1 for a in actions if a["status"] == "blocked_duplicate_drive_folder"),
         },
     }
 
@@ -2539,11 +2710,11 @@ def create_drive_folder(
     }
     if clean_props:
         body["appProperties"] = clean_props
-    created = service.files().create(
+    created = _drive_execute_with_timeout(service.files().create(
         body=body,
         supportsAllDrives=True,
         fields="id,name,webViewLink",
-    ).execute()
+    ), context=f"create_folder:{parent_id}:{name}")
     return str(created.get("id") or "")
 
 
@@ -2551,7 +2722,7 @@ def find_drive_child_folder_by_osc_case_number(service: Any, parent_id: str, cas
     case_no = str(case_number or "").strip()
     if not case_no:
         return ""
-    resp = service.files().list(
+    resp = _drive_execute_with_timeout(service.files().list(
         q=(
             f"'{parent_id}' in parents and trashed = false "
             f"and mimeType = '{GOOGLE_FOLDER_MIME}' "
@@ -2563,7 +2734,7 @@ def find_drive_child_folder_by_osc_case_number(service: Any, parent_id: str, cas
         supportsAllDrives=True,
         pageSize=10,
         fields="files(id,name,appProperties)",
-    ).execute()
+    ), context=f"find_child_by_osc:{parent_id}:{case_no}")
     files = resp.get("files", []) if isinstance(resp, dict) else []
     if len(files) == 1:
         return str(files[0].get("id") or "")
@@ -2592,11 +2763,11 @@ def _drive_folder_relative_path_to_root(
         if current in seen:
             return ""
         seen.add(current)
-        item = service.files().get(
+        item = _drive_execute_with_timeout(service.files().get(
             fileId=current,
             supportsAllDrives=True,
             fields="id,name,parents,mimeType,appProperties,modifiedTime,webViewLink,driveId",
-        ).execute()
+        ), context=f"folder_path:{current}")
         item_id = str(item.get("id") or "")
         if item_id == root_id:
             return PurePosixPath(*reversed(names)).as_posix() if names else ""
@@ -2652,7 +2823,7 @@ def _search_drive_folders_by_name_tokens(
         text = str(token or "").strip()
         if not text:
             continue
-        resp = service.files().list(
+        resp = _drive_execute_with_timeout(service.files().list(
             q=(
                 f"mimeType = '{GOOGLE_FOLDER_MIME}' and trashed = false "
                 f"and name contains {_drive_query_literal(text)}"
@@ -2663,7 +2834,7 @@ def _search_drive_folders_by_name_tokens(
             supportsAllDrives=True,
             pageSize=max(1, min(100, page_size)),
             fields="files(id,name,mimeType,parents,modifiedTime,webViewLink,driveId,appProperties)",
-        ).execute()
+        ), context=f"search_folder_token:{text}")
         for item in resp.get("files", []) if isinstance(resp, dict) else []:
             item_id = str(item.get("id") or "")
             if not item_id or item_id in seen_ids:
@@ -2821,6 +2992,75 @@ def find_drive_case_folder_by_broad_search(
     }
 
 
+def find_duplicate_drive_case_folders_for_local_case(
+    service: Any,
+    drive_root_id: str,
+    case: CaseFolder,
+    *,
+    min_score: int = 50,
+) -> list[CaseFolder]:
+    """Search the Drive tree for multiple folders for one local case.
+
+    This is used by the direct DB sync path, where MAGI may not have a full
+    Drive inventory.  It prevents the worker from syncing against one folder
+    while another folder with the same OSC/LAF/court identity remains alive.
+    """
+    identity_key = _primary_duplicate_identity_key(case)
+    if not identity_key:
+        return []
+    found: dict[str, CaseFolder] = {}
+    try:
+        searched_items = _search_drive_folders_by_name_tokens(service, _drive_case_search_tokens(case))
+    except AttributeError:
+        # Unit tests use tiny fake service objects that only implement the exact
+        # child-folder calls under test.  A real Drive service exposes files().
+        return []
+    for item in searched_items:
+        folder_id = str(item.get("id") or "")
+        if not folder_id:
+            continue
+        rel = _drive_folder_relative_path_to_root(service, folder_id, drive_root_id)
+        if not rel:
+            continue
+        drive_case = _drive_case_from_search_candidate(item, rel, local_case=case)
+        score, _matched_terms = _score_drive_search_candidate(drive_case, case)
+        if score < min_score:
+            continue
+        candidate_key = _primary_duplicate_identity_key(drive_case)
+        stable_match = False
+        if candidate_key and candidate_key == identity_key:
+            stable_match = True
+        elif case.meta.laf_case_no and normalize_text(case.meta.laf_case_no) in normalize_text(drive_case.relative_path):
+            stable_match = True
+        elif case.meta.case_number and normalize_text(case.meta.case_number) in normalize_text(drive_case.relative_path):
+            stable_match = True
+        if not stable_match:
+            continue
+        found[drive_case.drive_id or drive_case.relative_path] = drive_case
+    return sorted(found.values(), key=lambda c: c.relative_path)
+
+
+def _duplicate_drive_case_result(case: CaseFolder, duplicates: list[CaseFolder]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "skipped": True,
+        "reason": "duplicate_drive_case_folders",
+        "case_number": case.meta.case_number,
+        "case_name": case.name,
+        "identity_key": _primary_duplicate_identity_key(case),
+        "candidates": [
+            {
+                "relative_path": d.relative_path,
+                "drive_id": d.drive_id,
+                "name": d.name,
+                "web_url": d.web_url,
+            }
+            for d in duplicates
+        ],
+        "message": "Google Drive 端同一案件有多個資料夾；為避免 NAS/Drive 混檔，本案同步已阻斷，請先合併或排除重複資料夾。",
+    }
+
+
 def update_drive_folder_app_properties(
     service: Any,
     folder_id: str,
@@ -2848,12 +3088,12 @@ def update_drive_folder_metadata(
         body["appProperties"] = clean_props
     if not body:
         return
-    service.files().update(
+    _drive_execute_with_timeout(service.files().update(
         fileId=folder_id,
         body=body,
         supportsAllDrives=True,
         fields="id,name,appProperties",
-    ).execute()
+    ), context=f"update_folder:{folder_id}")
 
 
 def ensure_drive_folder_path(service: Any, root_folder_id: str, relative_folder_path: str) -> dict[str, Any]:
@@ -2904,6 +3144,19 @@ def ensure_drive_case_folder_for_local_case(
             "reason": "empty_drive_case_path",
             "case": _case_to_dict(case),
         }
+    try:
+        duplicates = find_duplicate_drive_case_folders_for_local_case(service, drive_root_id, case)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_duplicate_probe_failed",
+            "case_number": case.meta.case_number,
+            "case_name": case.name,
+            "message": f"建立/同步前的 Google Drive 重複資料夾探測失敗：{type(exc).__name__}: {exc}",
+        }
+    if len(duplicates) > 1:
+        return _duplicate_drive_case_result(case, duplicates)
     parent_parts = parts[:-1]
     case_folder_name = parts[-1]
     case_number = (case.meta.case_number or extract_case_meta(case.name).case_number or "").strip()
@@ -3004,6 +3257,19 @@ def find_existing_drive_case_folder_for_local_case(
             "reason": "empty_drive_case_path",
             "case": _case_to_dict(case),
         }
+    try:
+        duplicates = find_duplicate_drive_case_folders_for_local_case(service, drive_root_id, case)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_duplicate_probe_failed",
+            "relative_path": relative_path,
+            "case_number": case.meta.case_number,
+            "message": f"查找前的 Google Drive 重複資料夾探測失敗：{type(exc).__name__}: {exc}",
+        }
+    if len(duplicates) > 1:
+        return _duplicate_drive_case_result(case, duplicates)
     current = drive_root_id
     for part in parts[:-1]:
         found = find_drive_child_folder(service, current, part)
@@ -3137,12 +3403,12 @@ def upload_local_file_to_drive(
             "created_folders": created_folders,
         }
     media = MediaFileUpload(str(local_path), resumable=True)
-    created = service.files().create(
+    created = _drive_execute_with_timeout(service.files().create(
         body={"name": name, "parents": [parent_id]},
         media_body=media,
         supportsAllDrives=True,
         fields="id,name,size,md5Checksum,webViewLink",
-    ).execute()
+    ), context=f"upload_file:{parent_id}:{name}")
     return {
         "status": "uploaded",
         "drive_id": str(created.get("id") or ""),
@@ -3730,9 +3996,9 @@ def run_priority_case_sync(
     comparison = {
         "matched": matched,
         "drive_only": [],
-        "local_only": [],
-        "ambiguous": [],
-        "out_of_scope": [
+            "local_only": [],
+            "ambiguous": [],
+            "out_of_scope": [
             {
                 "local": CaseFolder(
                     source="nas",
@@ -3744,9 +4010,10 @@ def run_priority_case_sync(
                 ),
                 "reason": str(item.get("reason") or ""),
             }
-            for item in skipped_db_cases
-        ],
-    }
+                for item in skipped_db_cases
+            ],
+            "drive_duplicates": [],
+        }
 
     file_sync_plan: dict[str, Any] | None = None
     if file_diff or execute_downloads or execute_uploads:
@@ -3926,6 +4193,11 @@ def build_report(
             "local_only_case_folders": len(comparison["local_only"]),
             "ambiguous_case_folders": len(comparison["ambiguous"]),
             "out_of_scope_case_folders": len(comparison["out_of_scope"]),
+            "drive_duplicate_groups": len(comparison.get("drive_duplicates") or []),
+            "drive_duplicate_case_folders": sum(
+                len(group.get("cases") or [])
+                for group in comparison.get("drive_duplicates") or []
+            ),
         },
         "matched": [
             {
@@ -3955,6 +4227,10 @@ def build_report(
                 "context_resolution": item.get("context_resolution", {}),
             }
             for item in comparison["ambiguous"]
+        ],
+        "drive_duplicates": [
+            _drive_duplicate_public_group(group)
+            for group in comparison.get("drive_duplicates", [])
         ],
         "sync_plan": build_sync_plan(comparison),
         "file_sync_plan": file_sync_plan or {},
@@ -4005,6 +4281,22 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             "suggested_path_confidence": "out_of_scope",
             "note": item.get("reason", ""),
         })
+    for group in report.get("drive_duplicates", []):
+        for case in group.get("cases") or []:
+            rows.append({
+                "status": "drive_duplicate",
+                "source": case.get("source"),
+                "category": case.get("category"),
+                "case_kind": case.get("case_kind"),
+                "case_name": case.get("name"),
+                "relative_path": case.get("relative_path"),
+                "case_number": (case.get("meta") or {}).get("case_number"),
+                "laf_case_no": (case.get("meta") or {}).get("laf_case_no"),
+                "client_hint": (case.get("meta") or {}).get("client_hint"),
+                "suggested_canonical_path": "",
+                "suggested_path_confidence": "blocked_duplicate",
+                "note": f"{group.get('identity_key', '')}：{group.get('reason', '')}",
+            })
     with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=[
             "status", "source", "category", "case_kind", "case_name", "relative_path",
@@ -4085,6 +4377,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- NAS 有、雲端未明確找到：{s['local_only_case_folders']}",
         f"- 需人工確認：{s['ambiguous_case_folders']}",
         f"- 不在同步範圍：{s.get('out_of_scope_case_folders', 0)}",
+        f"- Google Drive 重複案件群組：{s.get('drive_duplicate_groups', 0)}（資料夾 {s.get('drive_duplicate_case_folders', 0)} 個）",
         "",
         "## 雲端有、NAS 未明確找到（前 80 筆）",
         "",
@@ -4119,6 +4412,12 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
                 lines.append(
                     f"  - 候選 `{score.get('relative_path')}`：分數 {score.get('score')}，命中 {matched_terms}"
                 )
+    if report.get("drive_duplicates"):
+        lines.extend(["", "## Google Drive 重複案件資料夾（已阻斷同步）", ""])
+        for group in report.get("drive_duplicates", [])[:80]:
+            lines.append(f"- {group.get('identity_key')}: {group.get('reason')}")
+            for case in (group.get("cases") or [])[:10]:
+                lines.append(f"  - `{case.get('relative_path')}`（{case.get('drive_id') or '-'}）")
     if report.get("out_of_scope"):
         lines.extend(["", "## 不在同步範圍（前 80 筆）", ""])
         for item in report.get("out_of_scope", [])[:80]:
@@ -4133,6 +4432,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- 需人工建立或指定：{plan_summary.get('needs_review', 0)}",
         f"- 同名多案需人工消歧義：{plan_summary.get('manual_disambiguation', 0)}",
         f"- 已排除同步範圍：{plan_summary.get('skipped', 0)}",
+        f"- Google Drive 重複資料夾阻斷：{plan_summary.get('blocked_duplicate_drive_folders', 0)}",
     ])
     file_summary = (report.get("file_sync_plan") or {}).get("summary") or {}
     if file_summary:
@@ -4243,14 +4543,15 @@ def run_inventory(
     create_drive_folder_limit: int = 0,
     create_drive_folder_max_age_hours: int = 0,
     drive_owner_bucket_name: str = "",
+    drive_only: bool = False,
 ) -> dict[str, Any]:
     load_local_env()
     service = build_drive_service(interactive=interactive, write=execute_uploads or ensure_drive_case_folders)
     drive_root = find_drive_root(service, root_id=root_id or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""), root_name=root_name)
     drive_entries, drive_cases = drive_file_entries(service, drive_root["id"], max_depth=max_depth, max_items=max_items)
 
-    active = active_roots if active_roots is not None else default_active_case_roots()
-    closed = closed_roots if closed_roots is not None else default_closed_case_roots()
+    active = [] if drive_only else (active_roots if active_roots is not None else default_active_case_roots())
+    closed = [] if drive_only else (closed_roots if closed_roots is not None else default_closed_case_roots())
     local_entries: list[FileEntry] = []
     local_cases: list[CaseFolder] = []
     local_roots = active + closed
@@ -4361,6 +4662,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--create-drive-folder-limit", type=int, default=0, help="本輪最多確認/建立幾個雲端案件資料夾，0 表示不限制")
     parser.add_argument("--create-drive-folder-max-age-hours", type=int, default=0, help="只為最近幾小時異動的 NAS-only 案件建立雲端資料夾，0 表示不限")
     parser.add_argument("--drive-owner-bucket", default="", help="Google Drive 端 owner bucket，預設讀 MAGI_DRIVE_SYNC_OWNER_BUCKET 或 Lumi")
+    parser.add_argument("--drive-only", action="store_true", help="只掃 Google Drive，不碰 NAS；用於授權、重複資料夾與雲端結構巡檢")
     args = parser.parse_args(argv)
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
@@ -4390,6 +4692,7 @@ def main(argv: list[str] | None = None) -> int:
         create_drive_folder_limit=args.create_drive_folder_limit,
         create_drive_folder_max_age_hours=args.create_drive_folder_max_age_hours,
         drive_owner_bucket_name=args.drive_owner_bucket,
+        drive_only=args.drive_only,
     )
     print(json.dumps({
         "ok": True,

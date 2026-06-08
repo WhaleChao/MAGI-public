@@ -1439,6 +1439,52 @@ def test_find_existing_drive_case_folder_does_not_create(monkeypatch):
     assert created == []
 
 
+def test_compare_case_folders_blocks_drive_duplicate_laf_folders():
+    drive_a = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        relative_path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        name="林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        owner_bucket="Lumi",
+        drive_id="drive-a",
+        meta=CaseMeta(case_number="2025-0130", laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal"),
+    )
+    drive_b = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal",
+        relative_path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal",
+        name="林里 Laung Isbabanal",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        owner_bucket="Lumi",
+        drive_id="drive-b",
+        meta=CaseMeta(laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal"),
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/消費者債務清理/2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        relative_path="法扶案件/消費者債務清理/2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        name="2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        meta=CaseMeta(case_number="2025-0130", laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal"),
+    )
+
+    comparison = compare_case_folders([drive_a, drive_b], [local])
+
+    assert comparison["matched"] == []
+    assert comparison["drive_only"] == []
+    assert comparison["local_only"] == []
+    assert len(comparison["drive_duplicates"]) == 1
+    assert comparison["drive_duplicates"][0]["identity_key"] == "laf:1141216-e-014"
+    assert "重複資料夾" in comparison["out_of_scope"][0]["reason"]
+
+
 def test_find_existing_drive_case_folder_uses_broad_search_when_expected_name_moved(monkeypatch):
     existing = {
         ("root", "一般案件"): "general",
@@ -1480,6 +1526,50 @@ def test_find_existing_drive_case_folder_uses_broad_search_when_expected_name_mo
     assert result["drive_id"] == "case"
     assert result["relative_path"] == "一般案件/Lumi/張國賢(確認決議無效)"
     assert result["matched_terms"] == ["確認決議無效", "張國賢"]
+
+
+def test_find_existing_drive_case_folder_blocks_duplicate_drive_candidates(monkeypatch):
+    existing = {
+        ("root", "法扶案件"): "laf",
+        ("laf", "Lumi"): "lumi",
+        ("lumi", "01.消債"): "debt",
+        ("debt", "林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件"): "drive-a",
+    }
+
+    def fake_find(_service, parent_id, name):
+        return existing.get((parent_id, name), "")
+
+    candidates = [
+        {"id": "drive-a", "name": "林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件", "mimeType": "application/vnd.google-apps.folder"},
+        {"id": "drive-b", "name": "林里 Laung Isbabanal-1141216-E-014", "mimeType": "application/vnd.google-apps.folder"},
+    ]
+    rels = {
+        "drive-a": "法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        "drive-b": "法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014",
+    }
+
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder", fake_find)
+    monkeypatch.setattr("api.osc.drive_case_sync.find_drive_child_folder_by_osc_case_number", lambda *_args: "")
+    monkeypatch.setattr("api.osc.drive_case_sync._search_drive_folders_by_name_tokens", lambda *_args, **_kwargs: candidates)
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_folder_relative_path_to_root", lambda _service, folder_id, _root_id: rels[folder_id])
+
+    case = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/消費者債務清理/2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        relative_path="法扶案件/消費者債務清理/2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        name="2025-0130-林里 Laung Isbabanal-消費者債務清理-更生",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        meta=CaseMeta(case_number="2025-0130", laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal", reason_hint="更生"),
+    )
+
+    result = find_existing_drive_case_folder_for_local_case(object(), "root", case, owner_bucket="Lumi")
+
+    assert result["ok"] is False
+    assert result["reason"] == "duplicate_drive_case_folders"
+    assert len(result["candidates"]) == 2
+    assert "混檔" in result["message"]
 
 
 def test_broad_search_prefers_laf_number_over_same_name_closed_case(monkeypatch):
