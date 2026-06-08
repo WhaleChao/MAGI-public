@@ -40,6 +40,14 @@ from api.case_display import (
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
 from api.laf_case_classifier import extract_laf_staff_case_hint, normalize_laf_case_type
+from api.laf_go_live_rules import (
+    go_live_missing_labels,
+    is_consumer_debt_text,
+    is_go_live_ready,
+    is_go_live_receipt_proof,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
 from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
@@ -2313,18 +2321,21 @@ def scan_laf_reporting_status(db) -> dict:
         # 轉換路徑
         mac_folder = _to_mac_path(folder)
 
-        has_go_live_notice = False
-        has_go_live_poa = False
+        go_live_docs = _empty_go_live_docs()
+        is_consumer_debt = is_consumer_debt_text(
+            case.get("case_type") or "",
+            case.get("case_reason") or "",
+            folder,
+        )
         if laf_status in ("未開辦", "", None) and mac_folder:
-            has_go_live_notice = _folder_has_file(
-                mac_folder,
-                "02_開辦資料",
-                ("開辦通知書", "接案通知書", "准予扶助證明書"),
-            )
-            has_go_live_poa = _folder_has_file(mac_folder, "02_開辦資料", ("委任狀",))
+            go_live_docs = _scan_go_live_prepared_docs(mac_folder)
 
         # A. 未開辦且已逾期
-        if laf_status in ("未開辦", "", None) and laf_no and not (has_go_live_notice and has_go_live_poa):
+        if (
+            laf_status in ("未開辦", "", None)
+            and laf_no
+            and not is_go_live_ready(go_live_docs, is_consumer_debt=is_consumer_debt)
+        ):
             if deadline_raw:
                 try:
                     dl = deadline_raw if isinstance(deadline_raw, date) else datetime.strptime(str(deadline_raw)[:10], "%Y-%m-%d").date()
@@ -2339,11 +2350,19 @@ def scan_laf_reporting_status(db) -> dict:
         # B. 有開辦資料但尚未回報開辦
         if (
             laf_status in ("未開辦", "", None)
-            and has_go_live_notice
-            and has_go_live_poa
+            and is_go_live_ready(go_live_docs, is_consumer_debt=is_consumer_debt)
             and not _is_placeholder_client_name(case.get("client_name") or "")
         ):
-            can_go_live.append(case)
+            can_go_live.append({
+                **case,
+                "go_live_docs": go_live_docs,
+                "go_live_missing": go_live_missing_labels(go_live_docs, is_consumer_debt=is_consumer_debt),
+            })
+            if _env_flag("MAGI_LAF_AUTO_MARK_GO_LIVE_READY", "1") and hasattr(db, "execute_write"):
+                try:
+                    _update_laf_status(db, case, "進行中")
+                except Exception as e:
+                    logger.warning("auto mark LAF go-live ready failed for %s: %s", case.get("case_number"), e)
 
         # C. OSC 已結案但 DB 法扶狀態未標記已結案（需上法扶網站確認是否已報結）
         # deprecated alias：「已報結」/「已報結（待轉入）」保留至 2026-07-26，遷移完成後可移除
@@ -2449,6 +2468,80 @@ def _folder_has_file(mac_folder: str, subfolder: str, keywords: tuple) -> bool:
     except Exception:
         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2387, exc_info=True)
     return False
+
+
+def _empty_go_live_docs() -> dict:
+    return {
+        "opening_notice_files": [],
+        "poa_files": [],
+        "opening_proof_files": [],
+        "stored_pleading_files": [],
+        "receipt_files": [],
+    }
+
+
+def _append_doc(out: dict, key: str, path: str) -> None:
+    if path and path not in out.setdefault(key, []):
+        out[key].append(path)
+
+
+def _scan_go_live_prepared_docs(mac_folder: str) -> dict:
+    """Lightweight prepared go-live scan.
+
+    Only prepared folders are scanned.  01_法扶資料 is intentionally excluded
+    because it stores blank official forms downloaded from the portal.
+    """
+    out = _empty_go_live_docs()
+    root = str(mac_folder or "").strip()
+    if not root or not os.path.isdir(root):
+        return out
+    allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".doc", ".docx"}
+    max_entries = max(1, int(os.environ.get("MAGI_LAF_GO_LIVE_SCAN_MAX_ENTRIES", "300") or "300"))
+
+    def _scan_dir(label: str, path: str, *, one_level: bool = True) -> None:
+        if not os.path.isdir(path):
+            return
+        try:
+            entries = sorted(os.listdir(path))[:max_entries]
+        except OSError:
+            return
+        for fn in entries:
+            if fn.startswith(".") or fn.startswith("~"):
+                continue
+            full = os.path.join(path, fn)
+            if os.path.isdir(full) and one_level:
+                try:
+                    for fn2 in sorted(os.listdir(full))[:max_entries]:
+                        if fn2.startswith(".") or fn2.startswith("~"):
+                            continue
+                        full2 = os.path.join(full, fn2)
+                        if os.path.isfile(full2) and Path(fn2).suffix.lower() in allowed:
+                            _classify_go_live_file(fn2, full2, label)
+                except OSError:
+                    continue
+                continue
+            if os.path.isfile(full) and Path(fn).suffix.lower() in allowed:
+                _classify_go_live_file(fn, full, label)
+
+    def _classify_go_live_file(fn: str, full: str, label: str) -> None:
+        if label == "02_開辦資料" and is_opening_notice_filename(fn, full_path=full, subdir=label):
+            _append_doc(out, "opening_notice_files", full)
+        if "委任狀" in fn and label == "02_開辦資料":
+            _append_doc(out, "poa_files", full)
+            _append_doc(out, "opening_proof_files", full)
+        if label == "04_我方歷次書狀" and is_stored_pleading_proof(fn, full_path=full, subdir=label):
+            _append_doc(out, "stored_pleading_files", full)
+            _append_doc(out, "opening_proof_files", full)
+        if label == "11_回執" and is_go_live_receipt_proof(fn):
+            _append_doc(out, "receipt_files", full)
+            _append_doc(out, "opening_proof_files", full)
+
+    _scan_dir("02_開辦資料", os.path.join(root, "02_開辦資料"))
+    _scan_dir("04_我方歷次書狀", os.path.join(root, "04_我方歷次書狀"))
+    _scan_dir("11_回執", os.path.join(root, "11_回執"))
+    for key in out:
+        out[key] = sorted(out[key])
+    return out
 
 
 def _folder_has_any_file(mac_folder: str, subfolder: str) -> bool:

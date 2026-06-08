@@ -563,6 +563,108 @@ class TestLafGoLiveReadiness:
         assert [c["case_number"] for c in status["can_go_live"]] == ["2025-0133"]
         assert status["not_started"] == []
 
+    def test_consumer_debt_opening_report_form_is_go_live_ready(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        go_live_dir = tmp_path / "case" / "02_開辦資料"
+        go_live_dir.mkdir(parents=True)
+        (go_live_dir / "1150529-E-005 王惠薰 開辦回報單.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2026-0058",
+                        "client_name": "王惠薰",
+                        "case_type": "消費者債務清理",
+                        "case_reason": "更生",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1150529-E-005",
+                        "laf_case_no": "1150529-E-005",
+                        "application_no": "1150529-E-005",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-01-01",
+                        "start_date": "2026-05-29",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert [c["case_number"] for c in status["can_go_live"]] == ["2026-0058"]
+        assert status["not_started"] == []
+
+    def test_general_case_report_form_and_stored_pleading_are_go_live_ready(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        go_live_dir = tmp_path / "case" / "02_開辦資料"
+        pleading_dir = tmp_path / "case" / "04_我方歷次書狀" / "20260608 起訴狀"
+        go_live_dir.mkdir(parents=True)
+        pleading_dir.mkdir(parents=True)
+        (go_live_dir / "1150525-J-015 張家茂 開辦回報單.pdf").write_bytes(b"%PDF-1.4\n")
+        (pleading_dir / "20260608 行政訴訟起訴狀存底.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2026-0056",
+                        "client_name": "張家茂",
+                        "case_type": "行政",
+                        "case_reason": "監獄行刑法",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1150525-J-015",
+                        "laf_case_no": "1150525-J-015",
+                        "application_no": "1150525-J-015",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-01-01",
+                        "start_date": "2026-05-25",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert [c["case_number"] for c in status["can_go_live"]] == ["2026-0056"]
+        assert status["not_started"] == []
+
+    def test_general_case_report_form_without_proof_is_not_go_live_ready(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        go_live_dir = tmp_path / "case" / "02_開辦資料"
+        go_live_dir.mkdir(parents=True)
+        (go_live_dir / "1150525-J-015 張家茂 開辦回報單.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [
+                    {
+                        "id": 1,
+                        "case_number": "2026-0056",
+                        "client_name": "張家茂",
+                        "case_type": "行政",
+                        "case_reason": "監獄行刑法",
+                        "status": "進行中",
+                        "folder_path": str(tmp_path / "case"),
+                        "legal_aid_number": "1150525-J-015",
+                        "laf_case_no": "1150525-J-015",
+                        "application_no": "1150525-J-015",
+                        "legal_aid_status": "未開辦",
+                        "legal_aid_startup_deadline": "2026-01-01",
+                        "start_date": "2026-05-25",
+                        "end_date": None,
+                    }
+                ]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert status["can_go_live"] == []
+        assert [c["case_number"] for c in status["not_started"]] == ["2026-0056"]
+
 
 class TestLafClosingReadiness:
     """夜巡只能列出明確待報結且有終局文件的案件。"""

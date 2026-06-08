@@ -26,6 +26,12 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from api.laf_go_live_rules import (
+    is_go_live_receipt_proof,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
+
 logger = logging.getLogger("laf_orchestrator.docmixins")
 
 # ── Keywords ──────────────────────────────────────────────
@@ -348,6 +354,8 @@ class LAFOrchestratorDocumentMixin:
         return {
             "opening_notice_files": [],
             "poa_files": [],
+            "opening_proof_files": [],
+            "stored_pleading_files": [],
             "mediation_failure_files": [],
             "mediation_success_files": [],
             "pink_receipt_files": [],
@@ -387,7 +395,7 @@ class LAFOrchestratorDocumentMixin:
                 "12_結案資料",
             ]
         if act in {"go_live"}:
-            return ["", "01_法扶資料", "02_開辦資料", "11_回執"]
+            return ["", "01_法扶資料", "02_開辦資料", "04_我方歷次書狀", "11_回執"]
         if act in {"fee"}:
             return ["", "01_法扶資料", "09_酬金及費用", "11_回執"]
         if act in {"condition"}:
@@ -472,20 +480,15 @@ class LAFOrchestratorDocumentMixin:
         if fn.startswith(".") or fn.startswith("~"):
             return
         # ── Opening documents ──
-        # 主要關鍵字：開辦通知書 / 接案通知書 / 准予扶助證明書
-        # 補充：在 02_開辦資料 路徑下檔名含「開辦資料」/「開辦」也視為 opening notice
-        # （案件資料夾結構慣例 — 律師可能用較簡短檔名儲存簽署版開辦文件）
-        is_opening_notice = any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書"))
-        # check 路徑（subdir 或 full_path）是否在 02_開辦資料 下
-        in_open_dir = ("02_開辦資料" in str(subdir or "")) or ("02_開辦資料" in str(full_path or ""))
-        if not is_opening_notice and in_open_dir and any(k in fn for k in ("開辦資料", "開辦")):
-            # 排除「委任狀」「附條件...」等其他類別
-            if not any(k in fn for k in ("委任狀", "附條件", "酬金", "結案", "撤回")):
-                is_opening_notice = True
+        is_opening_notice = is_opening_notice_filename(fn, full_path=full_path, subdir=subdir)
         if is_opening_notice:
             out["opening_notice_files"].append(full_path)
         if "委任狀" in fn:
             out["poa_files"].append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
+        if is_stored_pleading_proof(fn, full_path=full_path, subdir=subdir):
+            out.setdefault("stored_pleading_files", []).append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
 
         # ── Mediation documents ──
         if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
@@ -500,6 +503,8 @@ class LAFOrchestratorDocumentMixin:
             out["pink_receipt_files"].append(full_path)
         if "回執" in fn or "收件回執" in fn:
             out.setdefault("receipt_files", []).append(full_path)
+            if is_go_live_receipt_proof(fn):
+                out.setdefault("opening_proof_files", []).append(full_path)
 
         # ── Closing basis files (判決/裁定/不起訴處分書 etc.) ──
         is_enforcement_basis = LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, full_path, subdir)

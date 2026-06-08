@@ -54,6 +54,14 @@ if str(MAGI_DIR) not in sys.path:
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.laf_go_live_rules import (
+    go_live_missing_labels,
+    go_live_notice_files,
+    go_live_proof_files,
+    is_go_live_ready,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
 from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
@@ -1814,7 +1822,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if go_live_scan_scope:
                     logger.info("  🔎 開辦文件掃描範圍：%s", go_live_scan_scope)
                 open_doc = (go_live_docs.get("opening_notice_files") or [None])[0]
-                poa_doc = (go_live_docs.get("poa_files") or [None])[0]
+                poa_doc = (go_live_proof_files(go_live_docs) or [None])[0]
                 if open_doc:
                     extracted_date = self._extract_best_date_from_doc(open_doc)
                 if poa_doc:
@@ -1822,13 +1830,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if extracted_date:
                     logger.info("  🎯 開辦通知日期：%s", extracted_date)
                 if poa_submit_date:
-                    logger.info("  🎯 委任狀遞出日期：%s", poa_submit_date)
+                    logger.info("  🎯 遞狀證明日期：%s", poa_submit_date)
             except Exception as e:
                 logger.error(f"  ❌ Vision extraction failed: {e}")
 
         _is_consumer_debt = self._is_consumer_debt_case_folder(db_path or "")
         # 消債案件只需開辦通知書；一般案件需要開辦通知書 + 遞狀證明（委任狀/書狀存底/回執）
-        docs_ready_for_go_live = bool(open_doc) if _is_consumer_debt else bool(open_doc and poa_doc)
+        docs_ready_for_go_live = is_go_live_ready(go_live_docs, is_consumer_debt=_is_consumer_debt)
 
         # Step 4.5: 偵測遞狀日期 + 自動填寫開辦表單（預覽，不送出）
         submission_info: dict = {}
@@ -1914,9 +1922,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             else:
                 missing_parts = []
                 if not open_doc:
-                    missing_parts.append("開辦通知/接案通知/准予扶助證明")
-                if not poa_doc:
-                    missing_parts.append("委任狀")
+                    missing_parts.append("開辦通知/接案通知/回報單")
+                if not _is_consumer_debt and not go_live_proof_files(go_live_docs):
+                    missing_parts.append("委任狀或書狀存底/回執")
                 go_live_reminder = (
                     f"⚠️ 尚缺 02_開辦資料 的已簽/已填{'、'.join(missing_parts)}，"
                     "請補齊後手動開辦；01_法扶資料的官網空白表件不視為可開辦文件。"
@@ -1927,6 +1935,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 通知計數以 02_開辦資料 為準
         opening_notice_count = len(go_live_docs.get("opening_notice_files") or [])
         poa_count = len(go_live_docs.get("poa_files") or [])
+        proof_count = len(go_live_proof_files(go_live_docs))
         portal_existing_files = self._existing_laf_portal_attachment_files(db_path)
         folder_label = os.path.basename(str(db_path or "").rstrip("/\\")) if db_path else ""
         _is_existing = existing is not None
@@ -1985,7 +1994,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             confirm_files.append(poa_doc)
         # 路由：尚未真正開辦（缺開辦通知 + 委任狀）→ laf_dispatch（派案頻道）；
         # 已具備可開辦條件 → laf_go_live（開辦頻道）
-        _topic_route = "laf_go_live" if (opening_notice_count > 0 or poa_count > 0) else "laf_dispatch"
+        _topic_route = "laf_go_live" if (opening_notice_count > 0 or proof_count > 0) else "laf_dispatch"
         if confirm_files:
             try:
                 self.notifier.notify_admin_with_files(notify_msg, confirm_files, topic_key=_topic_route)
@@ -3841,7 +3850,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         action = (action or "").strip().lower()
         needs = {
-            "go_live": lambda d: bool(d["opening_notice_files"] and d["poa_files"]),
+            "go_live": lambda d: is_go_live_ready(d, is_consumer_debt=False),
             "condition": lambda d: bool(d["mediation_failure_files"]),
             "fee": lambda d: bool(d["pink_receipt_files"]),
             "withdrawal": lambda d: bool(self._get_withdrawal_pdf_candidates(d)),
@@ -3869,11 +3878,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         first_docs = None
         first_folder = ""
         for p in candidates:
-            docs = self._scan_case_folder_docs(p, action=action)
+            if action == "go_live":
+                docs, _ = self._scan_go_live_docs(p)
+            else:
+                docs = self._scan_case_folder_docs(p, action=action)
             if first_docs is None:
                 first_docs = docs
                 first_folder = p
-            if wanted(docs):
+            if action == "go_live":
+                if is_go_live_ready(docs, is_consumer_debt=self._is_consumer_debt_case_folder(p)):
+                    return p, docs
+            elif wanted(docs):
                 return p, docs
         return first_folder, (first_docs or {
             "opening_notice_files": [],
@@ -4049,24 +4064,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if os.path.isdir(sub_path):
                     # 子資料夾（YYYYMMDD 書狀名稱），找裡面的存底 PDF
                     for fn in sorted(os.listdir(sub_path)):
-                        if fn.lower().endswith(".pdf") and "存底" in fn:
-                            pleading_candidates.append(os.path.join(sub_path, fn))
-                elif sub.lower().endswith(".pdf") and "存底" in sub:
+                        full = os.path.join(sub_path, fn)
+                        if fn.lower().endswith(".pdf") and is_stored_pleading_proof(fn, full_path=full, subdir="04_我方歷次書狀"):
+                            pleading_candidates.append(full)
+                elif sub.lower().endswith(".pdf") and is_stored_pleading_proof(sub, full_path=sub_path, subdir="04_我方歷次書狀"):
                     pleading_candidates.append(sub_path)
-            # 只取第一份（最早的書狀）
-            if not pleading_candidates and os.path.isdir(pleading_dir):
-                # 沒有存底，就找第一份 PDF
-                for sub in sorted(os.listdir(pleading_dir)):
-                    sub_path = os.path.join(pleading_dir, sub)
-                    if os.path.isdir(sub_path):
-                        for fn in sorted(os.listdir(sub_path)):
-                            if fn.lower().endswith(".pdf"):
-                                pleading_candidates.append(os.path.join(sub_path, fn))
-                                break
-                    elif sub.lower().endswith(".pdf"):
-                        pleading_candidates.append(sub_path)
-                    if pleading_candidates:
-                        break
 
         for pl_path in pleading_candidates[:1]:
             date_iso, src = _try_filename_then_vision(pl_path)
@@ -4229,10 +4231,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # ── 開辦通知書（所有案件都需要）──
         notice_candidates = []
-        _notice_kw = ("開辦通知", "接案通知", "准予扶助", "開辦資料")
+        _notice_kw = ("開辦通知", "接案通知", "准予扶助", "開辦資料", "回報單", "開辦回報")
         if os.path.isdir(go_live_dir):
             for fn in os.listdir(go_live_dir):
-                if fn.lower().endswith(".pdf") and any(k in fn for k in _notice_kw):
+                if fn.lower().endswith(".pdf") and (
+                    any(k in fn for k in _notice_kw)
+                    or is_opening_notice_filename(fn, full_path=os.path.join(go_live_dir, fn), subdir="02_開辦資料")
+                ):
                     notice_candidates.append(os.path.join(go_live_dir, fn))
         notice_candidates.sort(reverse=True)
 
@@ -4261,15 +4266,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 sub_path = os.path.join(pleading_dir, sub)
                 if os.path.isdir(sub_path):
                     for fn in sorted(os.listdir(sub_path)):
-                        if fn.lower().endswith(".pdf") and "存底" in fn:
-                            proof_file = os.path.join(sub_path, fn)
+                        full = os.path.join(sub_path, fn)
+                        if fn.lower().endswith(".pdf") and is_stored_pleading_proof(fn, full_path=full, subdir="04_我方歷次書狀"):
+                            proof_file = full
                             break
-                    if not proof_file:
-                        for fn in sorted(os.listdir(sub_path)):
-                            if fn.lower().endswith(".pdf"):
-                                proof_file = os.path.join(sub_path, fn)
-                                break
-                elif sub.lower().endswith(".pdf") and "存底" in sub:
+                elif sub.lower().endswith(".pdf") and is_stored_pleading_proof(sub, full_path=sub_path, subdir="04_我方歷次書狀"):
                     proof_file = sub_path
                 if proof_file:
                     break
@@ -4308,14 +4309,22 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         base = self._to_local_case_folder(case_folder) or case_folder
         docs = self._empty_docs_map()
-        scan_dir = os.path.join(base, "02_開辦資料")
-        if os.path.isdir(scan_dir):
+        scan_dirs = [
+            ("02_開辦資料", os.path.join(base, "02_開辦資料")),
+            ("04_我方歷次書狀", os.path.join(base, "04_我方歷次書狀")),
+            ("11_回執", os.path.join(base, "11_回執")),
+        ]
+        scanned: list[str] = []
+        for label, scan_dir in scan_dirs:
+            if not os.path.isdir(scan_dir):
+                continue
+            scanned.append(label)
             part = self._scan_case_folder_docs(scan_dir, action="go_live")
             for key, value in (part or {}).items():
                 if isinstance(value, list):
                     docs.setdefault(key, [])
                     docs[key].extend(x for x in value if x not in docs[key])
-        return docs, scan_dir
+        return docs, "、".join(scanned) if scanned else os.path.join(base, "02_開辦資料")
 
     def _existing_laf_portal_attachment_files(self, case_folder: str) -> list[str]:
         """Return existing official portal attachments under 01_法扶資料.
@@ -4411,6 +4420,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "missing": list(missing or []),
             "scanner_opening_notice": list(gl_docs.get("opening_notice_files") or []),
             "scanner_poa": list(gl_docs.get("poa_files") or []),
+            "scanner_opening_proof": list(gl_docs.get("opening_proof_files") or []),
+            "scanner_stored_pleading": list(gl_docs.get("stored_pleading_files") or []),
             "raw_listdir": listdir_entries,
         }
         try:
@@ -4429,10 +4440,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     @staticmethod
     def _classify_doc_file(fn: str, full_path: str, out: dict) -> None:
         """Classify a single document file into the appropriate category."""
-        if any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書")):
+        if is_opening_notice_filename(fn, full_path=full_path):
             out["opening_notice_files"].append(full_path)
         if "委任狀" in fn:
             out["poa_files"].append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
         if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
             out["mediation_failure_files"].append(full_path)
         if any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
@@ -4472,7 +4484,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         回傳 (satisfied: bool, reason_str: str)。
 
         觸發類型對應規則：
-          - go_live / opening / backfill → 需要開辦通知書 OR 委任狀（任一即可）
+          - go_live / opening / backfill → 需要已填開辦通知/回報單，或委任狀/書狀存底/回執
           - review_result / 審核結果 / 回報 → 需要酬金/領款單/審查結果類文件
           - closing / 結案 / 酬金 / fee → 需要結案通知書或酬金明細
           - archive_failed / portal_check_failed → 不預檢（強制 portal 重試）
@@ -4498,13 +4510,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return True, "nas_has_closing_docs"
             return False, ""
 
-        # 開辦類：有開辦通知書 OR 委任狀之一即滿足
+        # 開辦類：只看準備資料夾，不以 01_法扶資料的官網空白表件抵掉。
         if any(k in t for k in ("go_live", "opening", "backfill")):
-            docs = self._scan_case_folder_docs(folder, action="go_live")
-            if len(docs.get("opening_notice_files") or []) > 0:
-                return True, "nas_has_opening_notice"
-            if len(docs.get("poa_files") or []) > 0:
-                return True, "nas_has_poa"
+            docs, _scan_scope = self._scan_go_live_docs(folder)
+            is_consumer_debt = self._is_consumer_debt_case_folder(folder)
+            if is_go_live_ready(docs, is_consumer_debt=is_consumer_debt):
+                if len(docs.get("opening_notice_files") or []) > 0:
+                    return True, "nas_has_opening_notice"
+                if len(go_live_proof_files(docs)) > 0:
+                    return True, "nas_has_opening_proof"
             return False, ""
 
         # 結案類：有結案通知書或酬金明細
@@ -5244,15 +5258,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return {"ok": False, "error": "missing_case_folder", "action": act, "identity": identity}
             _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
             _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
-            # 消債案件只需開辦通知書（簽名即可）；一般案件需要開辦通知書 + 委任狀
+            # 消債案件只需開辦通知書/回報單；一般案件需要開辦通知/回報單 + 遞狀證明
             _need_poa = not _is_consumer_debt
-            if not _gl_docs["opening_notice_files"] or (_need_poa and not _gl_docs["poa_files"]):
-                missing = []
-                if not _gl_docs["opening_notice_files"]:
-                    missing.append("開辦通知書/接案通知書")
-                if _need_poa and not _gl_docs["poa_files"]:
-                    missing.append("委任狀")
-                hint = "請將已填/已簽開辦通知書放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知與委任狀放入 02_開辦資料；01_法扶資料的官網空白表件不算"
+            if not is_go_live_ready(_gl_docs, is_consumer_debt=_is_consumer_debt):
+                missing = go_live_missing_labels(_gl_docs, is_consumer_debt=_is_consumer_debt)
+                hint = "請將已填/已簽開辦通知書或回報單放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知或回報單放入 02_開辦資料，並備妥委任狀、我方歷次書狀存底或回執；01_法扶資料的官網空白表件不算"
                 self._dump_missing_docs_diagnostics(
                     mode="portal_draft",
                     case_folder=case_folder,
@@ -5270,8 +5280,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "hint": hint,
                     "docs": _gl_docs,
                 }
-            open_doc = _gl_docs["opening_notice_files"][0]
-            poa_doc = _gl_docs["poa_files"][0] if _gl_docs["poa_files"] else ""
+            open_doc = go_live_notice_files(_gl_docs)[0]
+            poa_doc = go_live_proof_files(_gl_docs)[0] if go_live_proof_files(_gl_docs) else ""
             open_date = self._extract_best_date_from_doc(open_doc)
             poa_date = self._extract_best_date_from_doc(poa_doc) if poa_doc else ""
             if not open_date or (_need_poa and not poa_date):
@@ -5279,7 +5289,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if not open_date:
                     missing_dates.append("開辦通知書日期")
                 if _need_poa and not poa_date:
-                    missing_dates.append("委任狀遞出日期")
+                    missing_dates.append("委任狀或書狀存底/回執日期")
                 return {
                     "ok": False,
                     "error": "missing_required_dates",
@@ -6113,13 +6123,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
         _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
         _need_poa = not _is_consumer_debt
-        if not _gl_docs["opening_notice_files"] or (_need_poa and not _gl_docs["poa_files"]):
-            missing = []
-            if not _gl_docs["opening_notice_files"]:
-                missing.append("開辦通知書/接案通知書")
-            if _need_poa and not _gl_docs["poa_files"]:
-                missing.append("委任狀")
-            hint = "請將已填/已簽開辦通知書放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知與委任狀放入 02_開辦資料；01_法扶資料的官網空白表件不算"
+        if not is_go_live_ready(_gl_docs, is_consumer_debt=_is_consumer_debt):
+            missing = go_live_missing_labels(_gl_docs, is_consumer_debt=_is_consumer_debt)
+            hint = "請將已填/已簽開辦通知書或回報單放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知或回報單放入 02_開辦資料，並備妥委任狀、我方歷次書狀存底或回執；01_法扶資料的官網空白表件不算"
             self._dump_missing_docs_diagnostics(
                 mode="portal_submit",
                 case_folder=case_folder,
@@ -6130,8 +6136,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             )
             return {"ok": False, "error": "missing_required_docs", "action": act, "identity": identity, "missing": missing, "hint": hint}
 
-        open_doc = _gl_docs["opening_notice_files"][0]
-        poa_doc = _gl_docs["poa_files"][0] if _gl_docs["poa_files"] else ""
+        open_doc = go_live_notice_files(_gl_docs)[0]
+        poa_doc = go_live_proof_files(_gl_docs)[0] if go_live_proof_files(_gl_docs) else ""
         open_date = self._extract_best_date_from_doc(open_doc)
         poa_date = self._extract_best_date_from_doc(poa_doc) if poa_doc else ""
         if not open_date or (_need_poa and not poa_date):
@@ -6139,14 +6145,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if not open_date:
                 missing_dates.append("開辦通知書日期")
             if _need_poa and not poa_date:
-                missing_dates.append("委任狀遞出日期")
+                missing_dates.append("委任狀或書狀存底/回執日期")
             return {"ok": False, "error": "missing_required_dates", "action": act, "identity": identity, "missing": missing_dates}
 
         fields = dict(fields or {})
         fields.setdefault("sel_result", "1")
         # 統一用語：消債/訴訟代理一律寫「首次實質討論案情」（= 開辦通知書日）
         _open_roc_sub = self._iso_to_roc(open_date) if open_date else ""
-        _poa_roc_sub = self._iso_to_roc(poa_date) if poa_date else ""
         if _is_consumer_debt:
             fields.setdefault(
                 "remark",
@@ -6154,14 +6159,24 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 else f"已首次實質討論案情（開辦日期 {open_date}）。",
             )
         else:
-            if _open_roc_sub and _poa_roc_sub:
-                _r = f"已於民國{_open_roc_sub}首次實質討論案情。已於民國{_poa_roc_sub}遞送委任狀至法院。"
-            elif _open_roc_sub:
-                _r = f"已於民國{_open_roc_sub}首次實質討論案情。"
-            elif _poa_roc_sub:
-                _r = f"已於民國{_poa_roc_sub}遞送委任狀至法院。"
-            else:
-                _r = f"CASPER 開辦資料判讀：開辦日期 {open_date}；委任狀遞出日期 {poa_date}。"
+            submission_info = self._detect_poa_submission_info(case_folder)
+            if not submission_info.get("date_roc") and poa_date:
+                submission_info = {
+                    "date_roc": self._iso_to_roc(poa_date),
+                    "date_iso": poa_date,
+                    "source": "filename",
+                    "source_file": poa_doc,
+                    "source_doc_type": "書狀" if "04_我方歷次書狀" in str(poa_doc) else "委任狀",
+                    "confidence": "medium",
+                }
+            _r = self._compose_go_live_remark(
+                submission_info,
+                cname,
+                is_consumer_debt=False,
+                open_doc_date=open_date or "",
+            )
+            if not _r:
+                _r = f"已於民國{_open_roc_sub}首次實質討論案情。" if _open_roc_sub else "已首次實質討論案情。"
             fields.setdefault("remark", _r)
         # 找出要上傳的檔案
         go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
