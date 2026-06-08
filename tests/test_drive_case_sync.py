@@ -12,7 +12,9 @@ from api.osc.drive_case_sync import (
     classify_drive_case_folder,
     classify_local_case_folder,
     compare_case_folders,
+    choose_drive_duplicate_canonical_case,
     create_missing_drive_case_folders,
+    detect_drive_duplicate_case_groups,
     db_local_cases_for_numbers,
     drive_to_nas_download_skip_reason,
     drive_relative_path_for_local_case,
@@ -1483,6 +1485,68 @@ def test_compare_case_folders_blocks_drive_duplicate_laf_folders():
     assert len(comparison["drive_duplicates"]) == 1
     assert comparison["drive_duplicates"][0]["identity_key"] == "laf:1141216-e-014"
     assert "重複資料夾" in comparison["out_of_scope"][0]["reason"]
+
+
+def test_drive_duplicate_detector_joins_case_and_laf_identity_keys():
+    drive_with_case = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        relative_path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        name="林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理事件",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        owner_bucket="Lumi",
+        drive_id="drive-a",
+        meta=CaseMeta(case_number="2025-0130", laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal"),
+    )
+    drive_laf_only = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理程序",
+        relative_path="法扶案件/Lumi/01.消債/林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理程序",
+        name="林里 Laung Isbabanal-1141216-E-014-消費者債務清理事件-消費者債務清理程序",
+        category="法扶案件",
+        status="active",
+        case_kind="消費者債務清理",
+        owner_bucket="Lumi",
+        drive_id="drive-b",
+        meta=CaseMeta(laf_case_no="1141216-E-014", client_hint="林里 Laung Isbabanal"),
+    )
+
+    groups = detect_drive_duplicate_case_groups([drive_with_case, drive_laf_only])
+
+    assert len(groups) == 1
+    assert groups[0]["identity_key"] == "laf:1141216-e-014"
+    assert set(groups[0]["identity_keys"]) == {"case:2025-0130", "laf:1141216-e-014"}
+
+
+def test_choose_drive_duplicate_canonical_prefers_closed_lumi_over_active_copy():
+    closed = CaseFolder(
+        source="drive",
+        path="結案案件/法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死",
+        relative_path="結案案件/法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死",
+        name="游秀鈴-1140715-A-024-刑事一審辯護-傷害致死",
+        category="法扶案件",
+        status="closed",
+        owner_bucket="Lumi",
+        drive_id="closed",
+        meta=CaseMeta(laf_case_no="1140715-A-024"),
+    )
+    active = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        relative_path="法扶案件/Lumi/游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        name="游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="active",
+        meta=CaseMeta(laf_case_no="1140715-A-024"),
+    )
+
+    chosen = choose_drive_duplicate_canonical_case({"cases": [active, closed]})
+
+    assert chosen is closed
 
 
 def test_find_existing_drive_case_folder_uses_broad_search_when_expected_name_moved(monkeypatch):

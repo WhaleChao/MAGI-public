@@ -299,34 +299,56 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     credentials_path = drive_sync_credentials_path()
     account_hint = drive_sync_account_hint()
     creds = None
+    deferred_auth_error: Exception | None = None
     if force_auth and interactive:
         token_path.unlink(missing_ok=True)
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), scopes)
         except Exception as exc:
-            if not interactive:
+            if not interactive and write:
                 raise DriveCaseSyncAuthRequired(
                     f"Google Drive 授權檔無法讀取，請重新授權：{token_path}",
                     token_path=token_path,
                     write=write,
                 ) from exc
-            token_path.unlink(missing_ok=True)
+            deferred_auth_error = exc
+            if interactive:
+                token_path.unlink(missing_ok=True)
             creds = None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
         except Exception as exc:
-            if not interactive:
+            if not interactive and write:
                 raise DriveCaseSyncAuthRequired(
                     f"Google Drive 授權已失效，請重新授權：{token_path}",
                     token_path=token_path,
                     write=write,
                 ) from exc
-            token_path.unlink(missing_ok=True)
+            deferred_auth_error = exc
+            if interactive:
+                token_path.unlink(missing_ok=True)
             creds = None
+    if not write and (not creds or not creds.valid or not creds.has_scopes(scopes)):
+        fallback_path = drive_sync_token_path(write=True)
+        if fallback_path.exists():
+            try:
+                fallback = Credentials.from_authorized_user_file(str(fallback_path), WRITE_SCOPES)
+                if fallback.expired and fallback.refresh_token:
+                    fallback.refresh(Request())
+                if fallback and fallback.valid and fallback.has_scopes(WRITE_SCOPES):
+                    return fallback
+            except Exception as exc:
+                deferred_auth_error = deferred_auth_error or exc
     if not creds or not creds.valid or not creds.has_scopes(scopes):
         if not interactive:
+            if deferred_auth_error:
+                raise DriveCaseSyncAuthRequired(
+                    f"Google Drive 授權已失效，請重新授權：{token_path}",
+                    token_path=token_path,
+                    write=write,
+                ) from deferred_auth_error
             scope_text = "Google Drive 寫入" if write else "Google Drive 唯讀"
             raise DriveCaseSyncAuthRequired(
                 f"尚未授權 {scope_text}。請先以 --auth 建立 "
@@ -3096,6 +3118,36 @@ def update_drive_folder_metadata(
     ), context=f"update_folder:{folder_id}")
 
 
+def move_drive_item(
+    service: Any,
+    item_id: str,
+    *,
+    add_parent_id: str,
+    remove_parent_ids: Iterable[str] = (),
+    new_name: str = "",
+) -> dict[str, Any]:
+    """Move or rename one Drive item without downloading it."""
+    body: dict[str, Any] = {}
+    if str(new_name or "").strip():
+        body["name"] = str(new_name).strip()
+    return _drive_execute_with_timeout(service.files().update(
+        fileId=item_id,
+        addParents=add_parent_id,
+        removeParents=",".join(str(x) for x in remove_parent_ids if str(x or "").strip()),
+        body=body,
+        supportsAllDrives=True,
+        fields="id,name,mimeType,parents,modifiedTime,size,md5Checksum,webViewLink,driveId",
+    ), context=f"move_drive_item:{item_id}")
+
+
+def _drive_item_metadata(service: Any, item_id: str) -> dict[str, Any]:
+    return _drive_execute_with_timeout(service.files().get(
+        fileId=item_id,
+        supportsAllDrives=True,
+        fields="id,name,mimeType,parents,modifiedTime,size,md5Checksum,webViewLink,driveId,appProperties",
+    ), context=f"get_item:{item_id}")
+
+
 def ensure_drive_folder_path(service: Any, root_folder_id: str, relative_folder_path: str) -> dict[str, Any]:
     rel = str(relative_folder_path or "").replace("\\", "/").strip("/")
     parts = PurePosixPath(rel).parts
@@ -4084,6 +4136,311 @@ def run_priority_case_sync(
     return report
 
 
+def _drive_duplicate_canonical_score(case: CaseFolder) -> tuple[int, str]:
+    path = normalize_text(case.relative_path)
+    owner = normalize_text(case.owner_bucket)
+    score = 0
+    if case.status == "closed":
+        score += 400
+    if owner.startswith("lumi"):
+        score += 120
+    if owner == "aaron":
+        score -= 200
+    if case.meta.case_number:
+        score += 80
+    if case.meta.laf_case_no:
+        score += 40
+    if "01.消債" in path:
+        score += 10
+    if "結案案件" in path:
+        score += 20
+    if path.endswith("等"):
+        score -= 5
+    return score, case.relative_path
+
+
+def choose_drive_duplicate_canonical_case(group: dict[str, Any]) -> CaseFolder | None:
+    cases = [c for c in (group.get("cases") or []) if isinstance(c, CaseFolder) and c.drive_id]
+    if not cases:
+        return None
+    return sorted(cases, key=lambda c: _drive_duplicate_canonical_score(c), reverse=True)[0]
+
+
+def _drive_item_public(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("id") or ""),
+        "name": str(item.get("name") or ""),
+        "mime_type": str(item.get("mimeType") or ""),
+        "parents": item.get("parents") or [],
+        "size": int(item["size"]) if str(item.get("size") or "").isdigit() else None,
+        "md5": str(item.get("md5Checksum") or ""),
+        "web_url": str(item.get("webViewLink") or ""),
+    }
+
+
+def _drive_items_same_content(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    if a.get("mimeType") == GOOGLE_FOLDER_MIME or b.get("mimeType") == GOOGLE_FOLDER_MIME:
+        return False
+    a_md5 = str(a.get("md5Checksum") or "")
+    b_md5 = str(b.get("md5Checksum") or "")
+    if a_md5 and b_md5:
+        return a_md5 == b_md5
+    a_size = str(a.get("size") or "")
+    b_size = str(b.get("size") or "")
+    return bool(a_size and b_size and a_size == b_size)
+
+
+def _drive_conflict_name(name: str, source_id: str) -> str:
+    text = str(name or "未命名")
+    suffix = f"（Drive重複來源-{str(source_id or '')[:8]}）"
+    if "." in text and not text.startswith("."):
+        stem, ext = text.rsplit(".", 1)
+        return f"{stem}{suffix}.{ext}"
+    return f"{text}{suffix}"
+
+
+def _move_or_plan_drive_item(
+    service: Any,
+    *,
+    item: dict[str, Any],
+    source_parent_id: str,
+    target_parent_id: str,
+    new_name: str = "",
+    execute: bool,
+) -> dict[str, Any]:
+    record = {
+        "item": _drive_item_public(item),
+        "source_parent_id": source_parent_id,
+        "target_parent_id": target_parent_id,
+        "new_name": new_name,
+        "status": "planned",
+    }
+    if not execute:
+        return record
+    moved = move_drive_item(
+        service,
+        str(item.get("id") or ""),
+        add_parent_id=target_parent_id,
+        remove_parent_ids=[source_parent_id],
+        new_name=new_name,
+    )
+    record["status"] = "moved"
+    record["result"] = _drive_item_public(moved)
+    return record
+
+
+def _merge_drive_folder_children(
+    service: Any,
+    *,
+    source_folder_id: str,
+    target_folder_id: str,
+    execute: bool,
+    max_depth: int,
+    max_items: int,
+    depth: int = 0,
+    counter: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    counter = counter if counter is not None else {"items": 0}
+    result = {
+        "moved": [],
+        "renamed_conflicts": [],
+        "merged_folders": [],
+        "skipped_same_content": [],
+        "skipped_limit": False,
+    }
+    if depth >= max_depth:
+        result["skipped_limit"] = True
+        return result
+    source_children = _drive_list_children(service, source_folder_id)
+    target_children = _drive_list_children(service, target_folder_id)
+    target_by_name = {str(item.get("name") or ""): item for item in target_children}
+    for item in source_children:
+        if max_items and counter["items"] >= max_items:
+            result["skipped_limit"] = True
+            break
+        counter["items"] += 1
+        name = str(item.get("name") or "")
+        item_id = str(item.get("id") or "")
+        target_item = target_by_name.get(name)
+        is_folder = item.get("mimeType") == GOOGLE_FOLDER_MIME
+        if target_item and is_folder and target_item.get("mimeType") == GOOGLE_FOLDER_MIME:
+            child_result = _merge_drive_folder_children(
+                service,
+                source_folder_id=item_id,
+                target_folder_id=str(target_item.get("id") or ""),
+                execute=execute,
+                max_depth=max_depth,
+                max_items=max_items,
+                depth=depth + 1,
+                counter=counter,
+            )
+            result["merged_folders"].append({
+                "source": _drive_item_public(item),
+                "target": _drive_item_public(target_item),
+                "result": child_result,
+            })
+            if child_result.get("skipped_limit"):
+                result["skipped_limit"] = True
+                break
+            continue
+        if target_item and _drive_items_same_content(item, target_item):
+            result["skipped_same_content"].append({
+                "source": _drive_item_public(item),
+                "target": _drive_item_public(target_item),
+                "reason": "same_name_same_content_kept_in_quarantine_copy",
+            })
+            continue
+        new_name = ""
+        if target_item:
+            new_name = _drive_conflict_name(name, item_id)
+        record = _move_or_plan_drive_item(
+            service,
+            item=item,
+            source_parent_id=source_folder_id,
+            target_parent_id=target_folder_id,
+            new_name=new_name,
+            execute=execute,
+        )
+        if new_name:
+            record["status"] = "renamed_conflict" if not execute else "moved_renamed_conflict"
+            result["renamed_conflicts"].append(record)
+        else:
+            result["moved"].append(record)
+    return result
+
+
+def repair_drive_duplicate_case_folders(
+    service: Any,
+    drive_root_id: str,
+    comparison: dict[str, Any],
+    *,
+    execute: bool = False,
+    repair_limit: int = 0,
+    quarantine_path: str = "MAGI待整理/Google Drive重複案件資料夾",
+    max_depth: int = 8,
+    max_items_per_group: int = 500,
+) -> dict[str, Any]:
+    """Merge duplicate Drive case folders into one canonical folder.
+
+    This never deletes data.  Non-canonical folders are moved to a MAGI review
+    area after their non-conflicting children are moved into the canonical
+    folder.  Same-name different-content files are renamed before moving.
+    """
+    groups = comparison.get("drive_duplicates") or []
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_id = ""
+    if execute:
+        quarantine_root = ensure_drive_folder_path(service, drive_root_id, quarantine_path)
+        batch = ensure_drive_folder_path(
+            service,
+            str(quarantine_root.get("drive_id") or ""),
+            stamp,
+        )
+        batch_id = str(batch.get("drive_id") or "")
+    summary = {
+        "groups_total": len(groups),
+        "groups_attempted": 0,
+        "groups_repaired": 0,
+        "source_folders_quarantined": 0,
+        "items_moved": 0,
+        "renamed_conflicts": 0,
+        "same_content_kept_in_quarantine": 0,
+        "failed": 0,
+        "stopped_by_limit": False,
+        "execute": bool(execute),
+    }
+    records: list[dict[str, Any]] = []
+    for group in groups:
+        if repair_limit and summary["groups_attempted"] >= repair_limit:
+            summary["stopped_by_limit"] = True
+            break
+        canonical = choose_drive_duplicate_canonical_case(group)
+        cases = [c for c in (group.get("cases") or []) if isinstance(c, CaseFolder) and c.drive_id]
+        sources = [c for c in cases if canonical and c.drive_id != canonical.drive_id]
+        if not canonical or not sources:
+            continue
+        summary["groups_attempted"] += 1
+        identity_key = str(group.get("identity_key") or "")
+        safe_identity = re.sub(r"[^0-9A-Za-z._-]+", "_", identity_key).strip("_") or "unknown"
+        group_bucket_id = ""
+        if execute:
+            group_bucket = ensure_drive_folder_path(
+                service,
+                batch_id,
+                safe_identity,
+            )
+            group_bucket_id = str(group_bucket.get("drive_id") or "")
+        else:
+            group_bucket_id = f"dry-run:{safe_identity}"
+        record = {
+            "identity_key": identity_key,
+            "identity_keys": group.get("identity_keys") or [],
+            "canonical": _case_to_dict(canonical),
+            "sources": [_case_to_dict(s) for s in sources],
+            "execute": bool(execute),
+            "source_results": [],
+            "status": "planned" if not execute else "repaired",
+            "error": "",
+        }
+        try:
+            for source in sources:
+                source_result = {
+                    "source": _case_to_dict(source),
+                    "merge": {},
+                    "quarantine": {},
+                }
+                merge = _merge_drive_folder_children(
+                    service,
+                    source_folder_id=str(source.drive_id),
+                    target_folder_id=str(canonical.drive_id),
+                    execute=execute,
+                    max_depth=max_depth,
+                    max_items=max_items_per_group,
+                    counter={"items": 0},
+                )
+                source_result["merge"] = merge
+                summary["items_moved"] += len(merge.get("moved") or [])
+                summary["renamed_conflicts"] += len(merge.get("renamed_conflicts") or [])
+                summary["same_content_kept_in_quarantine"] += len(merge.get("skipped_same_content") or [])
+                source_meta = _drive_item_metadata(service, str(source.drive_id))
+                source_parents = [str(x) for x in (source_meta.get("parents") or []) if str(x or "").strip()]
+                quarantine_name = f"{PurePosixPath(source.relative_path).name}（重複副本）"
+                quarantine_record = {
+                    "source_folder_id": source.drive_id,
+                    "target_parent_id": group_bucket_id,
+                    "new_name": quarantine_name,
+                    "status": "planned",
+                }
+                if execute:
+                    moved_folder = move_drive_item(
+                        service,
+                        str(source.drive_id),
+                        add_parent_id=group_bucket_id,
+                        remove_parent_ids=source_parents,
+                        new_name=quarantine_name,
+                    )
+                    quarantine_record["status"] = "quarantined"
+                    quarantine_record["result"] = _drive_item_public(moved_folder)
+                    summary["source_folders_quarantined"] += 1
+                source_result["quarantine"] = quarantine_record
+                record["source_results"].append(source_result)
+            summary["groups_repaired"] += 1 if execute else 0
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = f"{type(exc).__name__}: {exc}"
+            summary["failed"] += 1
+        records.append(record)
+    return {
+        "mode": "drive_duplicate_case_folder_repair",
+        "write_actions_enabled": bool(execute),
+        "safety": "merge_missing_children_then_move_duplicate_folders_to_review_area_no_delete_no_overwrite",
+        "quarantine_path": quarantine_path,
+        "quarantine_batch": stamp,
+        "summary": summary,
+        "records": records,
+    }
+
+
 def create_missing_drive_case_folders(
     service: Any,
     drive_root_id: str,
@@ -4171,6 +4528,7 @@ def build_report(
     file_sync_plan: dict[str, Any] | None = None,
     execution_result: dict[str, Any] | None = None,
     drive_folder_result: dict[str, Any] | None = None,
+    duplicate_repair_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     comparison = comparison or compare_case_folders(drive_cases, local_cases)
     return {
@@ -4236,6 +4594,7 @@ def build_report(
         "file_sync_plan": file_sync_plan or {},
         "execution_result": execution_result or {},
         "drive_folder_result": drive_folder_result or {},
+        "duplicate_repair_result": duplicate_repair_result or {},
     }
 
 
@@ -4464,6 +4823,24 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             f"- 略過：{folder_summary.get('skipped', 0)}",
             f"- 失敗：{folder_summary.get('failed', 0)}",
         ])
+    repair_summary = (report.get("duplicate_repair_result") or {}).get("summary") or {}
+    if repair_summary:
+        repair = report.get("duplicate_repair_result") or {}
+        lines.extend([
+            "",
+            "## Google Drive 重複案件資料夾整理",
+            "",
+            f"- 模式：{'正式執行' if repair_summary.get('execute') else 'dry-run'}",
+            f"- 重複群組總數：{repair_summary.get('groups_total', 0)}",
+            f"- 本輪處理群組：{repair_summary.get('groups_attempted', 0)}",
+            f"- 已修復群組：{repair_summary.get('groups_repaired', 0)}",
+            f"- 副本資料夾移入待整理區：{repair_summary.get('source_folders_quarantined', 0)}",
+            f"- 搬入主資料夾項目：{repair_summary.get('items_moved', 0)}",
+            f"- 同名不同內容改名保留：{repair_summary.get('renamed_conflicts', 0)}",
+            f"- 同名同內容留在待整理副本：{repair_summary.get('same_content_kept_in_quarantine', 0)}",
+            f"- 失敗：{repair_summary.get('failed', 0)}",
+            f"- 待整理區：`{repair.get('quarantine_path')}/{repair.get('quarantine_batch')}`",
+        ])
     exec_summary = (report.get("execution_result") or {}).get("summary") or {}
     if exec_summary:
         upload_result = (report.get("execution_result") or {}).get("upload_result") or {}
@@ -4544,9 +4921,17 @@ def run_inventory(
     create_drive_folder_max_age_hours: int = 0,
     drive_owner_bucket_name: str = "",
     drive_only: bool = False,
+    repair_drive_duplicates: bool = False,
+    execute_drive_duplicate_repair: bool = False,
+    repair_drive_duplicate_limit: int = 0,
+    repair_drive_duplicate_max_items: int = 500,
+    repair_drive_duplicate_quarantine_path: str = "MAGI待整理/Google Drive重複案件資料夾",
 ) -> dict[str, Any]:
     load_local_env()
-    service = build_drive_service(interactive=interactive, write=execute_uploads or ensure_drive_case_folders)
+    service = build_drive_service(
+        interactive=interactive,
+        write=execute_uploads or ensure_drive_case_folders or execute_drive_duplicate_repair,
+    )
     drive_root = find_drive_root(service, root_id=root_id or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""), root_name=root_name)
     drive_entries, drive_cases = drive_file_entries(service, drive_root["id"], max_depth=max_depth, max_items=max_items)
 
@@ -4597,6 +4982,17 @@ def run_inventory(
             max_age_hours=create_drive_folder_max_age_hours,
             owner_bucket=drive_owner_bucket_name or drive_owner_bucket(),
         )
+    duplicate_repair_result: dict[str, Any] | None = None
+    if repair_drive_duplicates or execute_drive_duplicate_repair:
+        duplicate_repair_result = repair_drive_duplicate_case_folders(
+            service,
+            str(drive_root.get("id") or ""),
+            comparison,
+            execute=execute_drive_duplicate_repair,
+            repair_limit=repair_drive_duplicate_limit,
+            quarantine_path=repair_drive_duplicate_quarantine_path,
+            max_items_per_group=repair_drive_duplicate_max_items,
+        )
     download_result: dict[str, Any] | None = None
     upload_result: dict[str, Any] | None = None
     if execute_downloads:
@@ -4630,6 +5026,7 @@ def run_inventory(
         file_sync_plan=file_sync_plan,
         execution_result=execution_result,
         drive_folder_result=drive_folder_result,
+        duplicate_repair_result=duplicate_repair_result,
     )
     paths = write_report_files(report, output_dir or runtime_dir())
     report["output_paths"] = paths
@@ -4663,6 +5060,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--create-drive-folder-max-age-hours", type=int, default=0, help="只為最近幾小時異動的 NAS-only 案件建立雲端資料夾，0 表示不限")
     parser.add_argument("--drive-owner-bucket", default="", help="Google Drive 端 owner bucket，預設讀 MAGI_DRIVE_SYNC_OWNER_BUCKET 或 Lumi")
     parser.add_argument("--drive-only", action="store_true", help="只掃 Google Drive，不碰 NAS；用於授權、重複資料夾與雲端結構巡檢")
+    parser.add_argument("--repair-drive-duplicates", action="store_true", help="產生 Google Drive 重複案件資料夾整理計畫；預設 dry-run")
+    parser.add_argument("--execute-drive-duplicate-repair", action="store_true", help="正式整理 Google Drive 重複案件資料夾：合併缺檔後把副本移到待整理區")
+    parser.add_argument("--repair-drive-duplicate-limit", type=int, default=0, help="本輪最多整理幾組重複案件，0 表示不限制")
+    parser.add_argument("--repair-drive-duplicate-max-items", type=int, default=500, help="每組最多搬移/檢查幾個雲端項目")
+    parser.add_argument("--repair-drive-duplicate-quarantine-path", default="MAGI待整理/Google Drive重複案件資料夾", help="重複副本移入的 Google Drive 待整理區")
     args = parser.parse_args(argv)
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
@@ -4693,6 +5095,11 @@ def main(argv: list[str] | None = None) -> int:
         create_drive_folder_max_age_hours=args.create_drive_folder_max_age_hours,
         drive_owner_bucket_name=args.drive_owner_bucket,
         drive_only=args.drive_only,
+        repair_drive_duplicates=args.repair_drive_duplicates,
+        execute_drive_duplicate_repair=args.execute_drive_duplicate_repair,
+        repair_drive_duplicate_limit=args.repair_drive_duplicate_limit,
+        repair_drive_duplicate_max_items=args.repair_drive_duplicate_max_items,
+        repair_drive_duplicate_quarantine_path=args.repair_drive_duplicate_quarantine_path,
     )
     print(json.dumps({
         "ok": True,
@@ -4702,6 +5109,7 @@ def main(argv: list[str] | None = None) -> int:
         "file_sync_summary": (report.get("file_sync_plan") or {}).get("summary", {}),
         "execution_summary": (report.get("execution_result") or {}).get("summary", {}),
         "drive_folder_summary": (report.get("drive_folder_result") or {}).get("summary", {}),
+        "duplicate_repair_summary": (report.get("duplicate_repair_result") or {}).get("summary", {}),
         "output_paths": report["output_paths"],
     }, ensure_ascii=False, indent=2))
     return 0
