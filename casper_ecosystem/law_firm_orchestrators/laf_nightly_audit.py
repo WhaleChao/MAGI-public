@@ -2269,7 +2269,7 @@ def scan_laf_reporting_status(db) -> dict:
             "not_started": [...],     # 未開辦且已逾期
             "can_go_live": [...],     # 有開辦資料，可回報開辦但還沒
             "pending_close": [...],   # 已結案但尚未報結
-            "can_close": [...],       # 有判決書，可報結但還沒
+            "can_close": [...],       # 有終局文件且狀態待報結，需人工確認
             "progress_overdue": [...],# 進行中且派案超過 18 個月，需確認進度回報
             "all_cases": [...],       # 所有法扶案件
         }
@@ -2294,7 +2294,7 @@ def scan_laf_reporting_status(db) -> dict:
     not_started = []      # 未開辦且已逾期
     can_go_live = []      # 有開辦資料可回報
     pending_close = []    # DB 狀態=結案 但法扶未報結
-    can_close = []        # 有判決書可報結
+    can_close = []        # 有終局文件且狀態待報結，需人工確認
     progress_overdue = [] # 進行中且派案超過提醒門檻
     progress_suppressed = [] # 已由使用者確認回報，冷卻中
     progress_cooldowns = _load_progress_cooldowns()
@@ -2355,13 +2355,13 @@ def scan_laf_reporting_status(db) -> dict:
         if osc_status in ("結案", "已結案") and laf_status not in _skip_pending:
             pending_close.append(case)
 
-        # D. 有判決書/處分書，可報結但還沒
-        #    包含「已結案，待報結」狀態（DB 標記已結案但尚未向法扶回報）
-        _closeable_statuses = ("進行中", "已開辦", "待報結", "已結案，待報結")
+        # D. 有明確終局文件，且狀態本身已進入待報結。
+        #    進行中/已開辦不能只因資料夾出現裁定或調解筆錄就觸發報結。
+        _closeable_statuses = ("待報結", "已結案，待報結")
         if laf_status in _closeable_statuses and mac_folder:
-            has_judgment = _folder_has_any_file(mac_folder, "10_判決書")
-            if has_judgment:
-                can_close.append(case)
+            basis_files = _folder_auto_closing_basis_files(mac_folder, case)
+            if basis_files:
+                can_close.append({**case, "closing_basis_files": basis_files[:5]})
 
         # E. 進行中案件：派案/建案超過 18 個月仍未結案，應提醒確認進度回報
         if laf_status in ("進行中", "已開辦") and osc_status not in ("結案", "已結案"):
@@ -2466,6 +2466,51 @@ def _folder_has_any_file(mac_folder: str, subfolder: str) -> bool:
 
 
 # ─── 2a-2. 可報結案件自動暫存 ─────────────────────────────────
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _folder_auto_closing_basis_files(mac_folder: str, case: dict | None = None) -> List[str]:
+    """Return terminal files safe enough for nightly closing *candidate* reporting."""
+    if not mac_folder or not os.path.isdir(mac_folder):
+        return []
+    case = case or {}
+    try:
+        from laf_orchestrator_docmixins import LAFOrchestratorDocumentMixin
+
+        scanner = LAFOrchestratorDocumentMixin()
+        docs = scanner._scan_case_folder_docs(mac_folder, action="closing")
+        case_reason = str(case.get("case_reason") or "")
+        basis = [
+            p for p in list(docs.get("closing_basis_files") or [])
+            if scanner._is_auto_closing_basis_candidate(p, case_reason=case_reason, folder_path=mac_folder)
+        ]
+        return scanner._sort_closing_basis_files(basis)
+    except Exception as e:
+        logger.warning("auto closing basis scan fallback: %s", e)
+
+    # Fallback remains intentionally conservative.
+    target = os.path.join(mac_folder, "10_判決書")
+    if not os.path.isdir(target):
+        return []
+    safe_keywords = (
+        "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
+        "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+        "認可更生方案", "更生方案認可", "終結", "終止",
+    )
+    review_only = ("調解筆錄", "和解筆錄", "調解書", "和解書", "普通裁定")
+    out: List[str] = []
+    try:
+        for fn in sorted(os.listdir(target)):
+            if fn.startswith(".") or fn.startswith("~") or any(k in fn for k in review_only):
+                continue
+            if any(k in fn for k in safe_keywords):
+                out.append(os.path.join(target, fn))
+    except Exception:
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2456, exc_info=True)
+    return out
+
 
 def _run_closing_drafts(max_cases: int = 5) -> dict:
     """呼叫 LAFOrchestrator.run_closing_drafts() 自動暫存報結資料。"""
@@ -3323,10 +3368,10 @@ def format_audit_report(
             lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
-    # 有判決書可報結
+    # 有終局文件且狀態待報結：只提醒人工確認，不自動進入口暫存
     can_close = status.get("can_close", [])
     if can_close:
-        lines.append(f"📄 有判決書可報結：{len(can_close)} 件")
+        lines.append(f"📄 待人工確認報結：{len(can_close)} 件")
         for c in can_close:
             lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
@@ -3640,9 +3685,10 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     else:
         status["portal_new_files"] = []
 
-    # 3d. 可報結案件自動暫存（呼叫既有報結流程）
+    # 3d. 可報結案件自動暫存（預設關閉；人工或明確 env 才允許）
     closing_draft_result = {}
-    if status["can_close"] and not dry_run:
+    _auto_closing_draft = _env_flag("MAGI_LAF_AUTO_CLOSING_DRAFT", "0")
+    if status["can_close"] and not dry_run and _auto_closing_draft:
         closing_draft_result = _run_closing_drafts(max_cases=5)
         status["closing_draft_result"] = closing_draft_result
         logger.info("報結自動暫存結果: processed=%d/%d",
@@ -3660,6 +3706,17 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
                 if (c.get("legal_aid_number") or c.get("case_number", "")) not in _drafted_laf_nos
             ]
             logger.info("已從 can_close 移除 %d 件已暫存案件", len(_drafted_laf_nos))
+    elif status["can_close"] and not dry_run:
+        closing_draft_result = {
+            "ok": True,
+            "skipped": True,
+            "reason": "auto_closing_draft_disabled",
+            "scanned": len(status["can_close"]),
+            "processed": 0,
+            "items": [],
+        }
+        status["closing_draft_result"] = closing_draft_result
+        logger.info("報結自動暫存預設關閉；夜巡僅列入待人工確認清單。")
 
     # 3e. Portal 暫存/待處理全清單掃描（結案、二階段、開辦）。
     # 先掃 portal，再確認 DB 未開辦但 portal 已無未開辦列時是否可自動修正。

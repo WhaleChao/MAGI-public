@@ -46,6 +46,25 @@ def test_auto_closing_skips_misfiled_consumer_debt_transfer_ruling(tmp_path):
     assert orch._get_pending_closing_draft_cases(max_cases=10) == []
 
 
+def test_auto_closing_skips_mediation_transcript_and_generic_ruling(tmp_path):
+    case_dir = tmp_path / "2025-0091-測試甲-一審-損害賠償"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    (judgment_dir / "20260601 調解筆錄.pdf").write_bytes(b"%PDF-1.4\n")
+    (judgment_dir / "20260601 普通裁定.pdf").write_bytes(b"%PDF-1.4\n")
+    orch = _orchestrator_with_rows([
+        {
+            "case_number": "2025-0091",
+            "client_name": "測試甲",
+            "legal_aid_number": "1150101-J-002",
+            "folder_path": str(case_dir),
+            "case_reason": "損害賠償",
+        }
+    ])
+
+    assert orch._get_pending_closing_draft_cases(max_cases=10) == []
+
+
 def test_auto_closing_accepts_terminal_consumer_debt_ruling(tmp_path):
     case_dir = tmp_path / "2025-0088-王小明-消費者債務清理-清算"
     judgment_dir = case_dir / "10_判決書"

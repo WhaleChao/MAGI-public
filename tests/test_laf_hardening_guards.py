@@ -16,6 +16,13 @@ def test_go_live_nightly_does_not_update_db_on_generic_portal_draft_failed():
     assert "go_live_has_no_draft" in src
 
 
+def test_laf_closing_nightly_auto_draft_is_opt_in_only():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
+    assert "MAGI_LAF_AUTO_CLOSING_DRAFT" in src
+    assert "auto_closing_draft_disabled" in src
+    assert "報結自動暫存預設關閉" in src
+
+
 def test_go_live_never_uses_draft_failure_wording():
     src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
     assert "開辦預填失敗" in src
@@ -66,6 +73,21 @@ def test_closing_batch_uses_permanent_dedup_after_draft():
     block = src.split("def _was_closing_drafted_recently", 1)[1].split("def _get_pending_closing_draft_cases", 1)[0]
     assert "permanent dedup signals" in block
     assert "DATE_SUB(NOW()" not in block
+
+
+def test_auto_closing_candidates_do_not_include_in_progress_statuses():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _get_pending_closing_draft_cases", 1)[1].split("def run_closing_drafts", 1)[0]
+    assert "'進行中', '已開辦'" not in block
+    assert "'待報結', '已結案，待報結'" in block
+
+
+def test_auto_closing_status_write_has_current_status_guard():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("if fields.get(\"_auto_closing_draft\")", 1)[1].split("try:", 1)[0]
+    assert "SELECT legal_aid_status FROM cases" in block
+    assert '"待報結", "已結案，待報結"' in block
+    assert "Auto closing draft skipped DB status write" in block
 
 
 def test_condition_batch_uses_permanent_dedup_after_draft():

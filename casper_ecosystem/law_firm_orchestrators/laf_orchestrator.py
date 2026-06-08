@@ -5957,24 +5957,40 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             try:
                 _upd_case = identity.get("case_number") or ""
                 if _upd_case and self.db:
-                    try:
-                        self.db.execute_write(
-                            """
-                            UPDATE cases
-                            SET legal_aid_status = %s,
-                                status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
-                            WHERE case_number = %s
-                            """,
-                            ("已結案，待送出", "結案中", _upd_case)
-                        )
-                    except Exception as inner:
-                        if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
-                            raise
-                        self.db.execute_write(
-                            "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
-                            ("已結案，待送出", "結案中", _upd_case)
-                        )
-                    logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
+                    _skip_status_write = False
+                    if fields.get("_auto_closing_draft"):
+                        _cur = self.db.fetch_one(
+                            "SELECT legal_aid_status FROM cases WHERE case_number = %s LIMIT 1",
+                            (_upd_case,),
+                            as_dict=True,
+                        ) or {}
+                        _cur_status = str(_cur.get("legal_aid_status") or "").strip()
+                        if _cur_status not in {"待報結", "已結案，待報結"}:
+                            logger.warning(
+                                "  🔒 Auto closing draft skipped DB status write: %s current=%s",
+                                _upd_case,
+                                _cur_status,
+                            )
+                            _skip_status_write = True
+                    if not _skip_status_write:
+                        try:
+                            self.db.execute_write(
+                                """
+                                UPDATE cases
+                                SET legal_aid_status = %s,
+                                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                                WHERE case_number = %s
+                                """,
+                                ("已結案，待送出", "結案中", _upd_case)
+                            )
+                        except Exception as inner:
+                            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                                raise
+                            self.db.execute_write(
+                                "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
+                                ("已結案，待送出", "結案中", _upd_case)
+                            )
+                        logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
             except Exception as _db_err:
                 logger.warning("  ⚠️ DB status 更新失敗: %s", _db_err)
         result = {
@@ -6569,7 +6585,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     def _get_pending_closing_draft_cases(self, max_cases: int = 0) -> List[dict]:
         """
         Find LAF cases ready for auto closing draft:
-        - legal_aid_status in (進行中, 已開辦, 待報結, 已結案，待報結)
+        - legal_aid_status is already in a closing-report state
         - unified closing scanner finds terminal closing-basis files
         - Not already drafted recently
         """
@@ -6582,7 +6598,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 FROM `cases`
                 WHERE `case_category` = '法律扶助案件'
                   AND (`legal_aid_number` IS NOT NULL AND TRIM(`legal_aid_number`) <> '')
-                  AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('進行中', '已開辦', '待報結', '已結案，待報結')
+                  AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
                 ORDER BY `id` DESC
                 LIMIT 200
             """
@@ -6607,8 +6623,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if osc_no and self._was_closing_drafted_recently(osc_no, days=30):
                 continue
 
+            case_reason = (r.get("case_reason") or "").strip()
             docs = self._scan_case_folder_docs(folder, action="closing")
-            basis = self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
+            basis = self._sort_closing_basis_files([
+                p for p in list(docs.get("closing_basis_files") or [])
+                if self._is_auto_closing_basis_candidate(p, case_reason=case_reason, folder_path=folder)
+            ])
             if not basis:
                 continue
             out.append({
@@ -6616,7 +6636,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "laf_case_number": laf_no,
                 "client_name": client,
                 "folder_path": folder,
-                "case_reason": (r.get("case_reason") or "").strip(),
+                "case_reason": case_reason,
                 "closing_basis_files": basis,
             })
             if max_cases > 0 and len(out) >= int(max_cases):
@@ -6651,7 +6671,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 case_number=osc_no,
                 client_name=client,
                 reason="",  # 留空：若有 0 次數欄位，會走 need_reason_for_low_counts 通知流程
-                fields={"closing_basis_files": basis},
+                fields={"closing_basis_files": basis, "_auto_closing_draft": True},
             )
             ok = bool(r.get("ok"))
             results.append({

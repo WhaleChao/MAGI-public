@@ -563,6 +563,76 @@ class TestLafGoLiveReadiness:
         assert [c["case_number"] for c in status["can_go_live"]] == ["2025-0133"]
         assert status["not_started"] == []
 
+
+class TestLafClosingReadiness:
+    """夜巡只能列出明確待報結且有終局文件的案件。"""
+
+    @staticmethod
+    def _row(case_dir, *, legal_aid_status="待報結", case_reason="一般案件"):
+        return {
+            "id": 1,
+            "case_number": "2025-0999",
+            "client_name": "測試甲",
+            "case_type": "民事",
+            "case_reason": case_reason,
+            "status": "進行中",
+            "folder_path": str(case_dir),
+            "legal_aid_number": "1150101-J-001",
+            "laf_case_no": "1150101-J-001",
+            "application_no": "1150101-J-001",
+            "legal_aid_status": legal_aid_status,
+            "legal_aid_startup_deadline": None,
+            "start_date": "2026-01-01",
+            "end_date": None,
+        }
+
+    def test_in_progress_case_is_not_closeable_even_with_judgment(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        judgment_dir = tmp_path / "case" / "10_判決書"
+        judgment_dir.mkdir(parents=True)
+        (judgment_dir / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [TestLafClosingReadiness._row(tmp_path / "case", legal_aid_status="進行中")]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert status["can_close"] == []
+
+    def test_mediation_transcript_and_generic_ruling_are_not_closeable(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        judgment_dir = tmp_path / "case" / "10_判決書"
+        judgment_dir.mkdir(parents=True)
+        (judgment_dir / "20260601 調解筆錄.pdf").write_bytes(b"%PDF-1.4\n")
+        (judgment_dir / "20260601 普通裁定.pdf").write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [TestLafClosingReadiness._row(tmp_path / "case")]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert status["can_close"] == []
+
+    def test_waiting_closing_status_accepts_real_judgment(self, tmp_path):
+        from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
+
+        judgment = tmp_path / "case" / "10_判決書" / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf"
+        judgment.parent.mkdir(parents=True)
+        judgment.write_bytes(b"%PDF-1.4\n")
+
+        class FakeDB:
+            def fetch_all(self, *_args, **_kwargs):
+                return [TestLafClosingReadiness._row(tmp_path / "case")]
+
+        status = scan_laf_reporting_status(FakeDB())
+
+        assert [c["case_number"] for c in status["can_close"]] == ["2025-0999"]
+        assert status["can_close"][0]["closing_basis_files"] == [str(judgment)]
+
     def test_portal_empty_go_live_list_marks_db_in_progress(self):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import (
             _resolve_go_live_cases_from_portal,

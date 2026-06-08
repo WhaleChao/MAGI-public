@@ -36,7 +36,7 @@ _CONSUMER_DEBT_KEYWORDS = (
 
 _CLOSING_BASIS_KEYWORDS = (
     "判決", "裁定", "不起訴處分書", "起訴書", "確定證明書",
-    "和解筆錄", "調解筆錄", "調解成立",
+    "調解成立",
     "併辦意旨書", "追加起訴書",
 )
 
@@ -54,6 +54,20 @@ _CONSUMER_DEBT_TERMINAL_KEYWORDS = (
     "終止清算", "駁回更生聲請", "駁回清算聲請",
     "調解成立", "和解成立", "協商成立",
     "撤回聲請", "撤回更生", "撤回清算",
+)
+
+_AUTO_CLOSING_FINAL_KEYWORDS = (
+    "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
+    "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+    "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
+    "更生程序終結", "更生程序終止", "清算程序終結", "清算程序終止",
+    "終結更生", "終止更生", "終結清算", "終止清算",
+    "駁回更生聲請", "駁回清算聲請", "撤回聲請", "撤回更生", "撤回清算",
+)
+
+_AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS = (
+    "調解筆錄", "和解筆錄", "調解書", "和解書",
+    "調解成立筆錄", "和解成立筆錄",
 )
 
 _ENFORCEMENT_CLOSING_KEYWORDS = (
@@ -572,6 +586,39 @@ class LAFOrchestratorDocumentMixin:
         is_enforcement_case = any(k in text for k in ("強制執行", "司執", "執行"))
         has_enforcement_doc = any(k in fn for k in _ENFORCEMENT_CLOSING_KEYWORDS)
         return bool(in_judgment_folder and is_enforcement_case and has_enforcement_doc)
+
+    @staticmethod
+    def _is_auto_closing_basis_candidate(
+        path: str,
+        *,
+        case_reason: str = "",
+        folder_path: str = "",
+    ) -> bool:
+        """
+        Return whether a document is safe for *automatic* closing draft discovery.
+
+        Manual closing may still pass a broader explicit file list.  Batch/nightly
+        discovery must stay conservative: mediation transcripts, generic rulings,
+        and procedural documents are review signals, not enough to open the LAF
+        closing form automatically.
+        """
+        fn = os.path.basename(str(path or ""))
+        if not fn:
+            return False
+        if any(k in fn for k in ("範本", "模板", "草稿", "暫存")):
+            return False
+        if any(k in fn for k in _AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS):
+            return False
+        if LAFOrchestratorDocumentMixin._is_procedural_nonclosing_doc(fn):
+            return False
+        if LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, str(path or ""), folder_path):
+            return True
+        text = f"{fn} {case_reason} {folder_path}"
+        if any(k in fn for k in _AUTO_CLOSING_FINAL_KEYWORDS):
+            return True
+        if "起訴書" in fn and any(k in text for k in ("偵查", "刑事")):
+            return True
+        return False
 
     @staticmethod
     def _closing_basis_sort_key(path: str) -> tuple:
