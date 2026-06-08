@@ -340,6 +340,7 @@ MAGI can read multiple Google calendars, but OSC todo import is intentionally na
 - LAF activity-count events may still be imported when the DB identifies the target as a Legal Aid Foundation case and the event text is a reportable activity: hearing, meeting, detention visit, file review, or phone contact.
 - Same-name cases are resolved through DB fields such as `laf_case_no`, `application_no`, `case_category=法律扶助案件`, `legal_aid_status`, and case-reason hints. MAGI skips only when multiple LAF cases for the same client remain indistinguishable.
 - Imported Google Calendar event ids are deduplicated to avoid repeated todos.
+- Historical todo imports are cutoff-aware. `OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE` defaults to `2026-01-01`; older OSC todos are bulk-marked `已完成` during the six-hour refresh and are not re-imported or pushed back to Google Calendar.
 
 ### Court File Review
 

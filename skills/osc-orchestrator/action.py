@@ -114,6 +114,30 @@ def _extract_case_number_from_path(path: str) -> str:
 
 
 _GCAL_CLOSED_STATUSES = {"已結案", "結案", "closed", "Closed", "CLOSED"}
+_GCAL_HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
+_GCAL_DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"
+
+
+def _gcal_history_cutoff_date(payload: Optional[Dict[str, Any]] = None) -> datetime:
+    raw = ""
+    if isinstance(payload, dict):
+        raw = str(payload.get("history_cutoff_date") or "").strip()
+    raw = raw or os.environ.get(_GCAL_HISTORY_CUTOFF_ENV) or _GCAL_DEFAULT_HISTORY_CUTOFF_DATE
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d")
+    except Exception:
+        return datetime.strptime(_GCAL_DEFAULT_HISTORY_CUTOFF_DATE, "%Y-%m-%d")
+
+
+def _gcal_event_start_date(event: Dict[str, Any]) -> Optional[datetime]:
+    try:
+        start = event.get("start") or {}
+        raw = start.get("date") or str(start.get("dateTime") or "")[:10]
+        if not raw:
+            return None
+        return datetime.strptime(str(raw)[:10], "%Y-%m-%d")
+    except Exception:
+        return None
 
 
 def _gcal_norm_text(value: Any) -> str:
@@ -2667,6 +2691,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     dedup_dry_run = _env_bool("MAGI_GCAL_DEDUP_DRY_RUN", True)
     repair_existing = bool((payload or {}).get("repair_existing")) or _env_bool("MAGI_GCAL_REPAIR_EXISTING", False)
     mirror_imported = bool((payload or {}).get("mirror_imported", False)) or _env_bool("MAGI_GCAL_MIRROR_IMPORTED", False)
+    history_cutoff = _gcal_history_cutoff_date(payload or {})
 
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -2785,6 +2810,15 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                         seen_ids.add(rid)
             finally:
                 cur.close()
+        filtered_todos = []
+        for row in todos or []:
+            try:
+                row_date = datetime.strptime(str(row.get("todo_date") or "")[:10], "%Y-%m-%d")
+            except Exception:
+                continue
+            if row_date >= history_cutoff:
+                filtered_todos.append(row)
+        todos = filtered_todos
     except Exception as e:
         return {"ok": False, "error": f"db_failed:{type(e).__name__}: {str(e)[:220]}"}
     finally:
@@ -3604,6 +3638,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     limit = int(p.get("limit") or 250)
     dedup_enabled = _env_bool("MAGI_GCAL_DEDUP_ENABLED", False)
     incremental = bool(p.get("incremental")) or _env_bool("MAGI_GCAL_INCREMENTAL_IMPORT", False)
+    history_cutoff = _gcal_history_cutoff_date(p)
 
     credentials_path = (p.get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = (p.get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -3625,7 +3660,9 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Build time window
     import datetime as _dt
     now = _dt.datetime.now(_dt.timezone.utc)
-    time_min = (now - _dt.timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    requested_time_min = now - _dt.timedelta(days=lookback_days)
+    cutoff_time_min = history_cutoff.replace(tzinfo=_dt.timezone.utc)
+    time_min = max(requested_time_min, cutoff_time_min).strftime("%Y-%m-%dT%H:%M:%SZ")
     time_max = (now + _dt.timedelta(days=lookahead_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 查所有日曆（除非指定了特定 calendar_id）
@@ -3796,6 +3833,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     dedup_skipped_in_batch = 0
     db_dedup_skipped = 0
     invalid_case_keys = 0
+    historical_skipped = 0
     errors = []
     cur = conn.cursor()
     seen_dedup_keys: set[str] = set()
@@ -3807,6 +3845,11 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         normalize_case_key = None  # type: ignore
 
     for event in events:
+        event_start_dt = _gcal_event_start_date(event)
+        if event_start_dt is not None and event_start_dt < history_cutoff:
+            skipped += 1
+            historical_skipped += 1
+            continue
         gcal_id = event.get("id", "")
         if not gcal_id:
             continue
@@ -3970,11 +4013,13 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     cur.close()
     conn.close()
 
-    _eventlog("osc:gcal_import", ok=True, payload={"imported": imported, "skipped": skipped, "errors": len(errors), "resolved_existing": resolved_existing.get("updated", 0)})
+    _eventlog("osc:gcal_import", ok=True, payload={"imported": imported, "skipped": skipped, "historical_skipped": historical_skipped, "errors": len(errors), "resolved_existing": resolved_existing.get("updated", 0)})
     return {
         "ok": True,
         "imported": imported,
         "skipped": skipped,
+        "historical_skipped": historical_skipped,
+        "history_cutoff_date": history_cutoff.strftime("%Y-%m-%d"),
         "cancelled_marked": cancelled_marked,
         "dedup_enabled": bool(dedup_enabled),
         "dedup_skipped_in_batch": dedup_skipped_in_batch,

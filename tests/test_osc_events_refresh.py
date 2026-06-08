@@ -2,10 +2,27 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
 from types import SimpleNamespace
 from datetime import date, datetime, timedelta, timezone
 
 from scripts.ops import osc_events_refresh
+
+
+@pytest.fixture(autouse=True)
+def _stub_historical_completion(monkeypatch):
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_complete_historical_todos",
+        lambda cutoff, dry_run=False, status="已完成": {
+            "ok": True,
+            "dry_run": bool(dry_run),
+            "cutoff_date": cutoff.isoformat(),
+            "matched": 0,
+            "updated": 0,
+            "status": status,
+        },
+    )
 
 
 def test_active_pdf_todos_filters_past_and_implausible_dates():
@@ -23,6 +40,19 @@ def test_active_pdf_todos_filters_past_and_implausible_dates():
     assert [x["description"] for x in active] == ["today", "edge"]
     assert past_skipped == 1
     assert implausible_skipped == 2
+
+
+def test_history_cutoff_clamps_google_calendar_lookback():
+    assert osc_events_refresh._clamp_lookback_days_to_cutoff(
+        730,
+        date(2026, 1, 1),
+        today=date(2026, 6, 8),
+    ) == 158
+    assert osc_events_refresh._clamp_lookback_days_to_cutoff(
+        30,
+        date(2026, 1, 1),
+        today=date(2026, 6, 8),
+    ) == 30
 
 
 def test_pdf_calendar_scan_writes_only_active_todos(monkeypatch, tmp_path):
@@ -245,6 +275,10 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     assert result["calendar_audit"]["ok"] is True
     assert result["calendar_source_audit"]["calendar_import_only_count"] == 0
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
+    assert result["history_cutoff_date"] == "2026-01-01"
+    assert calls[2][1]["history_cutoff_date"] == "2026-01-01"
+    assert calls[2][1]["lookback_days"] <= 30
+    assert calls[3][1]["history_cutoff_date"] == "2026-01-01"
 
 
 def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatch, tmp_path):

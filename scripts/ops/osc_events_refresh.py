@@ -32,6 +32,18 @@ PDF_SCAN_RULE_VERSION = os.environ.get(
     "OSC_PDF_CALENDAR_RULE_VERSION",
     "2026-06-04-original-osc-indexed-filename-sweep",
 )
+HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
+DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"
+_TODO_DONE_STATUSES = (
+    "已完成",
+    "完成",
+    "done",
+    "completed",
+    "deleted",
+    "cancelled",
+    "canceled",
+    "closed",
+)
 
 
 class _PdfScanTimeout(TimeoutError):
@@ -111,6 +123,91 @@ def _active_pdf_todos(
             continue
         active.append(todo)
     return active, past_skipped, implausible_skipped
+
+
+def _parse_cutoff_date(raw: Any, *, default: str = DEFAULT_HISTORY_CUTOFF_DATE) -> date:
+    value = str(raw or "").strip() or default
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+    except Exception:
+        return datetime.strptime(default, "%Y-%m-%d").date()
+
+
+def _history_cutoff_date(args: argparse.Namespace | None = None) -> date:
+    explicit = getattr(args, "history_cutoff_date", "") if args is not None else ""
+    return _parse_cutoff_date(explicit or os.environ.get(HISTORY_CUTOFF_ENV) or DEFAULT_HISTORY_CUTOFF_DATE)
+
+
+def _clamp_lookback_days_to_cutoff(lookback_days: int, cutoff: date, *, today: date | None = None) -> int:
+    today = today or datetime.now().date()
+    requested = max(0, int(lookback_days or 0))
+    days_since_cutoff = max(0, (today - cutoff).days)
+    return min(requested, days_since_cutoff)
+
+
+def _complete_historical_todos(
+    cutoff: date,
+    *,
+    dry_run: bool = False,
+    status: str = "已完成",
+) -> dict[str, Any]:
+    """Mark pre-cutoff todos completed so old calendar rows are not recreated."""
+    sys.path.insert(0, str(ROOT / "skills" / "osc-orchestrator"))
+    try:
+        from osc_headless.db import connect_mysql, db_config_from_env, ensure_osc_min_schema  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "error": f"missing_db_helpers:{type(exc).__name__}"}
+
+    cfg = db_config_from_env(prefix="OSC_DB_")
+    placeholders = ",".join(["%s"] * len(_TODO_DONE_STATUSES))
+    cutoff_s = cutoff.isoformat()
+    conn = None
+    try:
+        conn = connect_mysql(cfg)
+        ensure_osc_min_schema(conn)
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM case_todos
+                WHERE todo_date IS NOT NULL
+                  AND todo_date < %s
+                  AND (status IS NULL OR status='' OR LOWER(status) NOT IN ({placeholders}))
+                """,
+                (cutoff_s, *_TODO_DONE_STATUSES),
+            )
+            row = cur.fetchone() or {}
+            matched = int((row or {}).get("c") or 0)
+        finally:
+            cur.close()
+        if dry_run:
+            return {"ok": True, "dry_run": True, "cutoff_date": cutoff_s, "matched": matched, "updated": 0, "status": status}
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE case_todos
+                SET status=%s, completed_date=COALESCE(completed_date, NOW())
+                WHERE todo_date IS NOT NULL
+                  AND todo_date < %s
+                  AND (status IS NULL OR status='' OR LOWER(status) NOT IN ({placeholders}))
+                """,
+                (status, cutoff_s, *_TODO_DONE_STATUSES),
+            )
+            updated = int(getattr(cur, "rowcount", 0) or 0)
+            conn.commit()
+        finally:
+            cur.close()
+        return {"ok": True, "dry_run": False, "cutoff_date": cutoff_s, "matched": matched, "updated": updated, "status": status}
+    except Exception as exc:
+        return {"ok": False, "cutoff_date": cutoff_s, "error": f"{type(exc).__name__}: {str(exc)[:220]}"}
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
@@ -897,6 +994,8 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "interval_hours": 6,
         "dry_run": bool(getattr(args, "dry_run", False)),
+        "history_cutoff_date": _history_cutoff_date(args).isoformat(),
+        "historical_todo_completion": {},
         "scan": {},
         "drive_case_sync": {},
         "pdf_calendar_scan": {},
@@ -907,6 +1006,14 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "calendar_source_audit": {},
         "warnings": [],
     }
+    history_cutoff = _parse_cutoff_date(result["history_cutoff_date"])
+    result["historical_todo_completion"] = _complete_historical_todos(
+        history_cutoff,
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    if not result["historical_todo_completion"].get("ok"):
+        result["ok"] = False
+        result["warnings"].append("historical_todo_completion_failed")
 
     def _remaining_scan_budget_sec() -> int | None:
         total = int(getattr(args, "scan_time_budget_sec", 0) or 0)
@@ -1030,10 +1137,11 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         else:
             try:
                 calendar_payload = {
-                    "lookback_days": args.lookback_days,
+                    "lookback_days": _clamp_lookback_days_to_cutoff(args.lookback_days, history_cutoff),
                     "lookahead_days": args.lookahead_days,
                     "limit": args.calendar_limit,
                     "incremental": True,
+                    "history_cutoff_date": history_cutoff.isoformat(),
                 }
                 import_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_IMPORT_TIMEOUT_SEC", "180") or "180"))
                 with _pdf_scan_time_limit(import_timeout):
@@ -1057,6 +1165,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     "repair_existing": True,
                     "repair_limit": args.gcal_push_limit,
                     "retry_max_attempts": 3,
+                    "history_cutoff_date": history_cutoff.isoformat(),
                 }
                 push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
                 with _pdf_scan_time_limit(push_timeout):
@@ -1134,6 +1243,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                             "repair_existing": True,
                             "repair_limit": args.gcal_push_limit,
                             "retry_max_attempts": 3,
+                            "history_cutoff_date": history_cutoff.isoformat(),
                         }
                         push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
                         with _pdf_scan_time_limit(push_timeout):
@@ -1175,6 +1285,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                     "repair_existing": True,
                     "repair_limit": min(max(20, args.gcal_push_limit), 200),
                     "retry_max_attempts": 3,
+                    "history_cutoff_date": history_cutoff.isoformat(),
                 }
                 push_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_TIMEOUT_SEC", "180") or "180"))
                 with _pdf_scan_time_limit(push_timeout):
@@ -1205,6 +1316,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gcal-push-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT", "120")))
     parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKBACK_DAYS", "30")))
     parser.add_argument("--lookahead-days", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_LOOKAHEAD_DAYS", "730")))
+    parser.add_argument("--history-cutoff-date", default=os.environ.get(HISTORY_CUTOFF_ENV, DEFAULT_HISTORY_CUTOFF_DATE))
     parser.add_argument("--transcript-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT", "120")))
     parser.add_argument("--transcript-tail-pages", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_TRANSCRIPT_TAIL_PAGES", "3")))
     parser.add_argument("--pdf-limit", type=int, default=int(os.environ.get("OSC_EVENTS_REFRESH_PDF_LIMIT", "240")))
