@@ -1343,6 +1343,36 @@ def _duplicate_identity_keys(case: CaseFolder) -> set[str]:
     return keys
 
 
+def _has_strong_case_identity(case: CaseFolder) -> bool:
+    return bool(
+        case.meta.case_number
+        or case.meta.laf_case_no
+        or case.meta.court_case_no
+    )
+
+
+def _potential_duplicate_identity_key(case: CaseFolder) -> str:
+    """Return a review-only key for likely stale Drive folders.
+
+    This deliberately stays weaker than `_duplicate_identity_keys`: it catches
+    "same client + same matter + one side has no stable case id" cases, but it
+    must never drive automatic deletion.  Same-name clients often have multiple
+    procedures, so groups where every folder has a different strong id are not
+    treated as duplicates.
+    """
+    name = normalize_text(case.meta.client_hint)
+    reason = normalize_text(case.meta.reason_hint)
+    if not name or not reason or reason in GENERIC_CONTEXT_TERMS:
+        return ""
+    scope = normalize_text("|".join([
+        normalize_drive_case_category(case.category),
+        case.status,
+        case.owner_bucket,
+        case.case_kind,
+    ]))
+    return f"review_name_reason:{scope}:{name}|{reason}"
+
+
 def detect_drive_duplicate_case_groups(drive_cases: Iterable[CaseFolder]) -> list[dict[str, Any]]:
     """Find Drive folders that represent the same case identity.
 
@@ -1415,11 +1445,74 @@ def detect_drive_duplicate_case_groups(drive_cases: Iterable[CaseFolder]) -> lis
     return groups
 
 
+def detect_drive_potential_duplicate_case_groups(
+    drive_cases: Iterable[CaseFolder],
+    *,
+    confirmed_duplicate_groups: Iterable[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Find Drive folders that look duplicated but are unsafe to auto-merge.
+
+    The result is for reports and guards only.  MAGI should not trash or merge
+    these folders until a stable id, alias, or explicit user decision resolves
+    the ambiguity.
+    """
+    confirmed_refs = {
+        c.drive_id or c.relative_path
+        for group in (confirmed_duplicate_groups or [])
+        for c in (group.get("cases") or [])
+    }
+    buckets: dict[str, list[CaseFolder]] = {}
+    for case in drive_cases:
+        if (case.drive_id or case.relative_path) in confirmed_refs:
+            continue
+        key = _potential_duplicate_identity_key(case)
+        if key:
+            buckets.setdefault(key, []).append(case)
+
+    groups: list[dict[str, Any]] = []
+    for key, items in sorted(buckets.items(), key=lambda item: item[0]):
+        unique = {c.drive_id or c.relative_path: c for c in items}
+        if len(unique) <= 1:
+            continue
+        ordered = sorted(
+            unique.values(),
+            key=lambda c: (
+                0 if _has_strong_case_identity(c) else 1,
+                c.status != "active",
+                c.relative_path,
+            ),
+        )
+        strong_ids = {
+            tuple(sorted(_duplicate_identity_keys(c)))
+            for c in ordered
+            if _has_strong_case_identity(c)
+        }
+        weak_cases = [c for c in ordered if not _has_strong_case_identity(c)]
+        if not weak_cases:
+            # Same client/reason with multiple stable ids is usually multiple
+            # procedures, not a duplicate.  Keep it out of cleanup reports.
+            continue
+        groups.append({
+            "identity_key": key,
+            "identity_keys": sorted({k for c in ordered for k in _duplicate_identity_keys(c)}),
+            "strong_identity_count": len(strong_ids),
+            "weak_folder_count": len(weak_cases),
+            "cases": ordered,
+            "reason": (
+                "Google Drive 端疑似有同名同案由的舊殼或未編號資料夾；"
+                "因缺少穩定案號/法扶案號，僅列入待確認，不自動刪除"
+            ),
+        })
+    return groups
+
+
 def _drive_duplicate_public_group(group: dict[str, Any]) -> dict[str, Any]:
     return {
         "identity_key": group.get("identity_key", ""),
         "identity_keys": group.get("identity_keys", []),
         "reason": group.get("reason", ""),
+        "strong_identity_count": group.get("strong_identity_count", 0),
+        "weak_folder_count": group.get("weak_folder_count", 0),
         "cases": [_case_to_dict(c) for c in group.get("cases", [])],
     }
 
@@ -1976,6 +2069,10 @@ def resolve_drive_only_cases_with_context(
 
 def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFolder]) -> dict[str, Any]:
     drive_duplicate_groups = detect_drive_duplicate_case_groups(drive_cases)
+    drive_potential_duplicate_groups = detect_drive_potential_duplicate_case_groups(
+        drive_cases,
+        confirmed_duplicate_groups=drive_duplicate_groups,
+    )
     duplicate_identity_keys = {
         str(key or "")
         for group in drive_duplicate_groups
@@ -2088,6 +2185,7 @@ def compare_case_folders(drive_cases: list[CaseFolder], local_cases: list[CaseFo
         "ambiguous": ambiguous,
         "out_of_scope": out_of_scope,
         "drive_duplicates": drive_duplicate_groups,
+        "drive_potential_duplicates": drive_potential_duplicate_groups,
     }
 
 
@@ -2166,6 +2264,20 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
             "reason": group.get("reason", ""),
             "status": "blocked_duplicate_drive_folder",
         })
+    for group in comparison.get("drive_potential_duplicates", []):
+        cases = group.get("cases") or []
+        actions.append({
+            "action": "review_potential_drive_duplicate_case_folders",
+            "safety": "review_only_no_delete_no_merge",
+            "drive_path": "",
+            "drive_id": "",
+            "duplicate_count": len(cases),
+            "duplicate_paths": [c.relative_path for c in cases],
+            "identity_key": group.get("identity_key", ""),
+            "identity_keys": group.get("identity_keys", []),
+            "reason": group.get("reason", ""),
+            "status": "potential_duplicate_drive_folder",
+        })
     return {
         "mode": "dry_run_plan",
         "write_actions_enabled": False,
@@ -2176,6 +2288,7 @@ def build_sync_plan(comparison: dict[str, Any]) -> dict[str, Any]:
             "manual_disambiguation": sum(1 for a in actions if a["action"] == "manual_disambiguation"),
             "skipped": sum(1 for a in actions if a["status"] == "skipped"),
             "blocked_duplicate_drive_folders": sum(1 for a in actions if a["status"] == "blocked_duplicate_drive_folder"),
+            "potential_duplicate_drive_folders": sum(1 for a in actions if a["status"] == "potential_duplicate_drive_folder"),
         },
     }
 
@@ -3138,6 +3251,16 @@ def move_drive_item(
         supportsAllDrives=True,
         fields="id,name,mimeType,parents,modifiedTime,size,md5Checksum,webViewLink,driveId",
     ), context=f"move_drive_item:{item_id}")
+
+
+def trash_drive_item(service: Any, item_id: str) -> dict[str, Any]:
+    """Move one Drive item to trash after its content was safely merged."""
+    return _drive_execute_with_timeout(service.files().update(
+        fileId=item_id,
+        body={"trashed": True},
+        supportsAllDrives=True,
+        fields="id,name,mimeType,parents,trashed,modifiedTime,size,md5Checksum,webViewLink,driveId",
+    ), context=f"trash_drive_item:{item_id}")
 
 
 def _drive_item_metadata(service: Any, item_id: str) -> dict[str, Any]:
@@ -4319,12 +4442,16 @@ def repair_drive_duplicate_case_folders(
     quarantine_path: str = "MAGI待整理/Google Drive重複案件資料夾",
     max_depth: int = 8,
     max_items_per_group: int = 500,
+    delete_resolved_duplicates: bool = False,
 ) -> dict[str, Any]:
     """Merge duplicate Drive case folders into one canonical folder.
 
-    This never deletes data.  Non-canonical folders are moved to a MAGI review
-    area after their non-conflicting children are moved into the canonical
-    folder.  Same-name different-content files are renamed before moving.
+    Non-canonical folders are resolved only after all non-conflicting children
+    are moved into the canonical folder.  Same-name different-content files are
+    renamed before moving.  By default the resolved source folder is moved to a
+    MAGI review area.  When ``delete_resolved_duplicates`` is enabled, fully
+    resolved source folders are moved to Google Drive trash instead; this is not
+    a permanent delete and is skipped if the merge hit a traversal/item limit.
     """
     groups = comparison.get("drive_duplicates") or []
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4342,12 +4469,14 @@ def repair_drive_duplicate_case_folders(
         "groups_attempted": 0,
         "groups_repaired": 0,
         "source_folders_quarantined": 0,
+        "source_folders_trashed": 0,
         "items_moved": 0,
         "renamed_conflicts": 0,
         "same_content_kept_in_quarantine": 0,
         "failed": 0,
         "stopped_by_limit": False,
         "execute": bool(execute),
+        "delete_resolved_duplicates": bool(delete_resolved_duplicates),
     }
     records: list[dict[str, Any]] = []
     for group in groups:
@@ -4402,27 +4531,43 @@ def repair_drive_duplicate_case_folders(
                 summary["items_moved"] += len(merge.get("moved") or [])
                 summary["renamed_conflicts"] += len(merge.get("renamed_conflicts") or [])
                 summary["same_content_kept_in_quarantine"] += len(merge.get("skipped_same_content") or [])
+                merge_safe_to_delete = not bool(merge.get("skipped_limit"))
                 source_meta = _drive_item_metadata(service, str(source.drive_id))
                 source_parents = [str(x) for x in (source_meta.get("parents") or []) if str(x or "").strip()]
-                quarantine_name = f"{PurePosixPath(source.relative_path).name}（重複副本）"
-                quarantine_record = {
-                    "source_folder_id": source.drive_id,
-                    "target_parent_id": group_bucket_id,
-                    "new_name": quarantine_name,
-                    "status": "planned",
-                }
-                if execute:
-                    moved_folder = move_drive_item(
-                        service,
-                        str(source.drive_id),
-                        add_parent_id=group_bucket_id,
-                        remove_parent_ids=source_parents,
-                        new_name=quarantine_name,
-                    )
-                    quarantine_record["status"] = "quarantined"
-                    quarantine_record["result"] = _drive_item_public(moved_folder)
-                    summary["source_folders_quarantined"] += 1
-                source_result["quarantine"] = quarantine_record
+                if delete_resolved_duplicates and merge_safe_to_delete:
+                    delete_record = {
+                        "source_folder_id": source.drive_id,
+                        "status": "planned_trash",
+                        "reason": "merged_unique_children_and_only_resolved_duplicate_shell_remains",
+                    }
+                    if execute:
+                        trashed_folder = trash_drive_item(service, str(source.drive_id))
+                        delete_record["status"] = "trashed"
+                        delete_record["result"] = _drive_item_public(trashed_folder)
+                        summary["source_folders_trashed"] += 1
+                    source_result["delete"] = delete_record
+                else:
+                    quarantine_name = f"{PurePosixPath(source.relative_path).name}（重複副本）"
+                    quarantine_record = {
+                        "source_folder_id": source.drive_id,
+                        "target_parent_id": group_bucket_id,
+                        "new_name": quarantine_name,
+                        "status": "planned",
+                    }
+                    if delete_resolved_duplicates and not merge_safe_to_delete:
+                        quarantine_record["reason"] = "merge_hit_limit_kept_for_review"
+                    if execute:
+                        moved_folder = move_drive_item(
+                            service,
+                            str(source.drive_id),
+                            add_parent_id=group_bucket_id,
+                            remove_parent_ids=source_parents,
+                            new_name=quarantine_name,
+                        )
+                        quarantine_record["status"] = "quarantined"
+                        quarantine_record["result"] = _drive_item_public(moved_folder)
+                        summary["source_folders_quarantined"] += 1
+                    source_result["quarantine"] = quarantine_record
                 record["source_results"].append(source_result)
             summary["groups_repaired"] += 1 if execute else 0
         except Exception as exc:
@@ -4433,7 +4578,11 @@ def repair_drive_duplicate_case_folders(
     return {
         "mode": "drive_duplicate_case_folder_repair",
         "write_actions_enabled": bool(execute),
-        "safety": "merge_missing_children_then_move_duplicate_folders_to_review_area_no_delete_no_overwrite",
+        "safety": (
+            "merge_missing_children_then_trash_fully_resolved_duplicate_folders_no_permanent_delete_no_overwrite"
+            if delete_resolved_duplicates
+            else "merge_missing_children_then_move_duplicate_folders_to_review_area_no_delete_no_overwrite"
+        ),
         "quarantine_path": quarantine_path,
         "quarantine_batch": stamp,
         "summary": summary,
@@ -4556,6 +4705,11 @@ def build_report(
                 len(group.get("cases") or [])
                 for group in comparison.get("drive_duplicates") or []
             ),
+            "drive_potential_duplicate_groups": len(comparison.get("drive_potential_duplicates") or []),
+            "drive_potential_duplicate_case_folders": sum(
+                len(group.get("cases") or [])
+                for group in comparison.get("drive_potential_duplicates") or []
+            ),
         },
         "matched": [
             {
@@ -4589,6 +4743,10 @@ def build_report(
         "drive_duplicates": [
             _drive_duplicate_public_group(group)
             for group in comparison.get("drive_duplicates", [])
+        ],
+        "drive_potential_duplicates": [
+            _drive_duplicate_public_group(group)
+            for group in comparison.get("drive_potential_duplicates", [])
         ],
         "sync_plan": build_sync_plan(comparison),
         "file_sync_plan": file_sync_plan or {},
@@ -4654,6 +4812,22 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
                 "client_hint": (case.get("meta") or {}).get("client_hint"),
                 "suggested_canonical_path": "",
                 "suggested_path_confidence": "blocked_duplicate",
+                "note": f"{group.get('identity_key', '')}：{group.get('reason', '')}",
+            })
+    for group in report.get("drive_potential_duplicates", []):
+        for case in group.get("cases") or []:
+            rows.append({
+                "status": "drive_potential_duplicate",
+                "source": case.get("source"),
+                "category": case.get("category"),
+                "case_kind": case.get("case_kind"),
+                "case_name": case.get("name"),
+                "relative_path": case.get("relative_path"),
+                "case_number": (case.get("meta") or {}).get("case_number"),
+                "laf_case_no": (case.get("meta") or {}).get("laf_case_no"),
+                "client_hint": (case.get("meta") or {}).get("client_hint"),
+                "suggested_canonical_path": "",
+                "suggested_path_confidence": "review_only",
                 "note": f"{group.get('identity_key', '')}：{group.get('reason', '')}",
             })
     with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
@@ -4737,6 +4911,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- 需人工確認：{s['ambiguous_case_folders']}",
         f"- 不在同步範圍：{s.get('out_of_scope_case_folders', 0)}",
         f"- Google Drive 重複案件群組：{s.get('drive_duplicate_groups', 0)}（資料夾 {s.get('drive_duplicate_case_folders', 0)} 個）",
+        f"- Google Drive 疑似重複案件群組：{s.get('drive_potential_duplicate_groups', 0)}（資料夾 {s.get('drive_potential_duplicate_case_folders', 0)} 個，僅列報不刪除）",
         "",
         "## 雲端有、NAS 未明確找到（前 80 筆）",
         "",
@@ -4777,6 +4952,19 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             lines.append(f"- {group.get('identity_key')}: {group.get('reason')}")
             for case in (group.get("cases") or [])[:10]:
                 lines.append(f"  - `{case.get('relative_path')}`（{case.get('drive_id') or '-'}）")
+    if report.get("drive_potential_duplicates"):
+        lines.extend(["", "## Google Drive 疑似重複案件資料夾（僅列報，不自動刪除）", ""])
+        for group in report.get("drive_potential_duplicates", [])[:80]:
+            lines.append(
+                f"- {group.get('identity_key')}: {group.get('reason')} "
+                f"（缺穩定編號 {group.get('weak_folder_count', 0)} 個）"
+            )
+            for case in (group.get("cases") or [])[:10]:
+                meta = case.get("meta") or {}
+                lines.append(
+                    f"  - `{case.get('relative_path')}`"
+                    f"（OSC：{meta.get('case_number') or '-'}；法扶：{meta.get('laf_case_no') or '-'}）"
+                )
     if report.get("out_of_scope"):
         lines.extend(["", "## 不在同步範圍（前 80 筆）", ""])
         for item in report.get("out_of_scope", [])[:80]:
@@ -4792,6 +4980,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
         f"- 同名多案需人工消歧義：{plan_summary.get('manual_disambiguation', 0)}",
         f"- 已排除同步範圍：{plan_summary.get('skipped', 0)}",
         f"- Google Drive 重複資料夾阻斷：{plan_summary.get('blocked_duplicate_drive_folders', 0)}",
+        f"- Google Drive 疑似重複資料夾待確認：{plan_summary.get('potential_duplicate_drive_folders', 0)}",
     ])
     file_summary = (report.get("file_sync_plan") or {}).get("summary") or {}
     if file_summary:
@@ -4835,6 +5024,7 @@ def write_report_files(report: dict[str, Any], output_dir: Path) -> dict[str, st
             f"- 本輪處理群組：{repair_summary.get('groups_attempted', 0)}",
             f"- 已修復群組：{repair_summary.get('groups_repaired', 0)}",
             f"- 副本資料夾移入待整理區：{repair_summary.get('source_folders_quarantined', 0)}",
+            f"- 副本資料夾移到 Google Drive 垃圾桶：{repair_summary.get('source_folders_trashed', 0)}",
             f"- 搬入主資料夾項目：{repair_summary.get('items_moved', 0)}",
             f"- 同名不同內容改名保留：{repair_summary.get('renamed_conflicts', 0)}",
             f"- 同名同內容留在待整理副本：{repair_summary.get('same_content_kept_in_quarantine', 0)}",
@@ -4926,6 +5116,7 @@ def run_inventory(
     repair_drive_duplicate_limit: int = 0,
     repair_drive_duplicate_max_items: int = 500,
     repair_drive_duplicate_quarantine_path: str = "MAGI待整理/Google Drive重複案件資料夾",
+    delete_resolved_drive_duplicates: bool = False,
 ) -> dict[str, Any]:
     load_local_env()
     service = build_drive_service(
@@ -4992,6 +5183,7 @@ def run_inventory(
             repair_limit=repair_drive_duplicate_limit,
             quarantine_path=repair_drive_duplicate_quarantine_path,
             max_items_per_group=repair_drive_duplicate_max_items,
+            delete_resolved_duplicates=delete_resolved_drive_duplicates,
         )
     download_result: dict[str, Any] | None = None
     upload_result: dict[str, Any] | None = None
@@ -5062,6 +5254,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--drive-only", action="store_true", help="只掃 Google Drive，不碰 NAS；用於授權、重複資料夾與雲端結構巡檢")
     parser.add_argument("--repair-drive-duplicates", action="store_true", help="產生 Google Drive 重複案件資料夾整理計畫；預設 dry-run")
     parser.add_argument("--execute-drive-duplicate-repair", action="store_true", help="正式整理 Google Drive 重複案件資料夾：合併缺檔後把副本移到待整理區")
+    parser.add_argument("--delete-resolved-drive-duplicates", action="store_true", help="重複副本已合併且無待處理獨有檔案時，將副本移到 Google Drive 垃圾桶；需搭配 --execute-drive-duplicate-repair")
     parser.add_argument("--repair-drive-duplicate-limit", type=int, default=0, help="本輪最多整理幾組重複案件，0 表示不限制")
     parser.add_argument("--repair-drive-duplicate-max-items", type=int, default=500, help="每組最多搬移/檢查幾個雲端項目")
     parser.add_argument("--repair-drive-duplicate-quarantine-path", default="MAGI待整理/Google Drive重複案件資料夾", help="重複副本移入的 Google Drive 待整理區")
@@ -5100,6 +5293,7 @@ def main(argv: list[str] | None = None) -> int:
         repair_drive_duplicate_limit=args.repair_drive_duplicate_limit,
         repair_drive_duplicate_max_items=args.repair_drive_duplicate_max_items,
         repair_drive_duplicate_quarantine_path=args.repair_drive_duplicate_quarantine_path,
+        delete_resolved_drive_duplicates=args.delete_resolved_drive_duplicates,
     )
     print(json.dumps({
         "ok": True,

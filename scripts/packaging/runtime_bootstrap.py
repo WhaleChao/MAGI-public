@@ -31,6 +31,7 @@ ENV_AUTOGEN_HEADER = "# ── MAGI 安裝精靈自動偵測設定（可手動�
 
 OMLX_MODEL_SOURCES = {
     "gemma-4-e4b-it-4bit": "mlx-community/gemma-4-e4b-it-4bit",
+    "gemma-4-12B-it-4bit": "mlx-community/gemma-4-12B-it-4bit",
     "gemma-4-26b-a4b-it-4bit": "mlx-community/gemma-4-26b-a4b-it-4bit",
     "modernbert-embed-4bit": "mlx-community/modernbert-embed-4bit",
     "Phi-4-mini-instruct-4bit": "mlx-community/Phi-4-mini-instruct-4bit",
@@ -298,7 +299,8 @@ def select_runtime_plan(profile: HardwareProfile, *, force_provider: str = "", i
         raise ValueError(f"unsupported provider: {provider}")
 
     if provider == "omlx":
-        primary = _env_override("MAGI_INSTALL_OMLX_PRIMARY_MODEL", "gemma-4-e4b-it-4bit")
+        default_primary = "gemma-4-12B-it-4bit" if profile.memory_gb >= 24 else "gemma-4-e4b-it-4bit"
+        primary = _env_override("MAGI_INSTALL_OMLX_PRIMARY_MODEL", default_primary)
         embedding = _env_override("MAGI_INSTALL_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
         heavy = _env_override("MAGI_INSTALL_OMLX_HEAVY_MODEL", "gemma-4-26b-a4b-it-4bit")
         heavy_enabled = include_heavy or profile.memory_gb >= 48

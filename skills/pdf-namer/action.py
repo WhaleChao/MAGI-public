@@ -230,6 +230,14 @@ _BATCH_ANALYSIS_CACHE = {}  # type: dict[str, dict] — Pre-computed by batch_an
 
 _DOC_TYPE_HINTS = [
     ("預付酬金領款單掛號郵件收件回執", "收據"),
+    ("扶助律師接案通知書", "扶助律師接案通知書"),
+    ("法律扶助申請書", "法律扶助申請書"),
+    ("准予扶助證明書", "准予扶助證明書"),
+    ("案件概述單", "案件概述單"),
+    ("資力詢問表", "資力詢問表"),
+    ("審查表", "審查表"),
+    ("委任狀", "委任狀"),
+    ("委任书", "委任狀"),
     ("預付酬金領款單", "收據"),
     ("領款單回執", "收據"),
     ("掛號郵件收件回執", "收據"),
@@ -1681,6 +1689,56 @@ def _maybe_preserve_archived_filename(pdf_path: str) -> Optional[dict]:
     return result
 
 
+def _maybe_path_hint_name_result(
+    pdf_path: str,
+    *,
+    case_name: str | None = None,
+    reason: str = "",
+) -> Optional[dict]:
+    """Last-resort naming from path/file metadata when OCR/vision returns empty."""
+    basename = os.path.basename(pdf_path or "")
+    if not basename.lower().endswith(".pdf"):
+        return None
+    stem = os.path.splitext(basename)[0]
+    found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
+    if not found_date:
+        return None
+    found_party = (
+        case_name
+        or _infer_party_from_case_folder_path(pdf_path)
+        or _extract_name_from_filename(basename)
+        or ""
+    )
+    found_type = _infer_doc_type_from_hints(basename) or _infer_doc_type_from_learning(stem) or ""
+    folder_category = _path_subfolder_category(pdf_path)
+    if not found_type and folder_category not in {"", "法扶表單", "證據", "閱卷"}:
+        found_type = folder_category
+    if not found_type:
+        found_type = "文件"
+    result = _build_name_result(
+        found_date=found_date,
+        found_type=found_type,
+        found_party=found_party,
+        date_method=f"{date_method}:path_hint" if date_method else "path_hint",
+        doc_subtype=found_type,
+    )
+    if reason:
+        result["fallback_reason"] = reason
+    result = _apply_naming_guards(
+        result,
+        source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[basename]),
+    )
+    if result.get("filename"):
+        logger.info(
+            "pdf-namer path-hint fallback used for %s (%s): %s",
+            pdf_path,
+            reason,
+            result["filename"],
+        )
+        return result
+    return None
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1696,6 +1754,12 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
+
+    def _fallback_or_empty(reason: str):
+        fallback = _maybe_path_hint_name_result(pdf_path, case_name=case_name, reason=reason)
+        if fallback:
+            return fallback if return_structured else fallback["filename"]
+        return empty_result if return_structured else None
 
     source_hint_parts = [case_name or ""]
     # ── Check batch cache (pre-computed by batch_ocr_pages + batch_analyze_texts) ──
@@ -1789,13 +1853,17 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
             logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
         if not found_date:
-            return empty_result if return_structured else None
+            return _fallback_or_empty("cached_missing_date")
 
         # Refine with learned rules
         if not found_type or found_type in ("其他", "文件"):
             lt = _infer_doc_type_from_learning(found_doc_subtype or found_type or "")
             if lt:
                 found_type = lt
+        if not found_type or found_type in ("其他", "文件"):
+            path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+            if path_type:
+                found_type = path_type
 
         result = _build_name_result(
             found_date=found_date, found_court=found_court,
@@ -1808,6 +1876,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             result,
             source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=source_hint_parts),
         )
+        if not result.get("filename"):
+            return _fallback_or_empty("cached_empty_filename")
         if return_structured:
             return result
         return result["filename"]
@@ -1938,7 +2008,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         content_text_native = ""
 
     if content_page is None:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_content_page")
 
     # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
@@ -1952,6 +2022,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
                 fast_result,
                 source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[fast_text]),
             )
+            if not fast_result.get("filename"):
+                return _fallback_or_empty("fast_text_empty_filename")
             return fast_result if return_structured else fast_result["filename"]
 
     # ── Step 2: Dual-page Vision OCR ──
@@ -2260,6 +2332,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_party = case_name
     elif not found_party:
         found_party = _infer_party_from_case_folder_path(pdf_path) or ""
+    if not found_type or found_type in ("其他", "文件"):
+        path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+        if path_type:
+            found_type = path_type
 
     if _path_subfolder_category(pdf_path) == "書狀_對造" or "檢察官" in (found_type or found_doc_subtype or ""):
         basename_for_fields = os.path.basename(pdf_path or "")
@@ -2319,7 +2395,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
         logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
     if not found_date:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_date")
 
     # ── Step 5: Refine with learned rules + DB templates ──
     # The nightly training system has 2,075 samples and 226 rules — use them!
@@ -2412,6 +2488,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             snippets=[content_text_native, content_text, vision_info.get("summary", "")],
         ),
     )
+    if not result.get("filename"):
+        return _fallback_or_empty("empty_filename")
 
     if return_structured:
         return result
@@ -3849,6 +3927,19 @@ def _fallback_date_from_filename_or_mtime(pdf_path: str) -> Tuple[Optional[str],
     m = re.match(r"^(20\d{6})", bn)
     if m:
         return m.group(1), "filename_prefix_fallback"
+    compact_roc_dates: list[str] = []
+    for m_roc in re.finditer(r"(?<!\d)(1\d{6})(?!\d)", bn):
+        raw = m_roc.group(1)
+        try:
+            roc_year = int(raw[:3])
+            month = int(raw[3:5])
+            day = int(raw[5:7])
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                compact_roc_dates.append(f"{roc_year + 1911:04d}{month:02d}{day:02d}")
+        except ValueError:
+            continue
+    if compact_roc_dates:
+        return compact_roc_dates[-1], "filename_roc_compact_fallback"
     try:
         return datetime.fromtimestamp(os.path.getmtime(pdf_path)).strftime("%Y%m%d"), "file_mtime_fallback"
     except Exception:

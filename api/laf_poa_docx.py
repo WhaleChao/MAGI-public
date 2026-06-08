@@ -89,7 +89,7 @@ def _default_lawyer_name(case_type: str, case_reason: str) -> str:
 
 
 def _normalize_lawyer_name(value: str, case_type: str, case_reason: str) -> str:
-    # 法扶委任狀受任人固定為喬政翔律師；不得受 DB 承辦律師或案件種類干擾。
+    # 法扶委任狀受任人固定使用法扶委任狀設定；不得受案件承辦律師欄位干擾。
     return DEFAULT_LAWYER_NAME
 
 

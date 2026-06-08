@@ -1400,7 +1400,11 @@ def _iter_all_case_pdf_targets(
         try:
             candidate_path_keys.add(str(pdf.resolve()))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning(
+                "pdf calendar candidate path resolve failed: %s",
+                pdf,
+                exc_info=True,
+            )
 
     def _run_path_probe(fn, *, timeout_sec: float = 3.0, fallback=None):
         import threading

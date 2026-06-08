@@ -15,6 +15,7 @@ from api.osc.drive_case_sync import (
     choose_drive_duplicate_canonical_case,
     create_missing_drive_case_folders,
     detect_drive_duplicate_case_groups,
+    detect_drive_potential_duplicate_case_groups,
     db_local_cases_for_numbers,
     drive_to_nas_download_skip_reason,
     drive_relative_path_for_local_case,
@@ -35,6 +36,7 @@ from api.osc.drive_case_sync import (
     nas_filesystem_relative_path,
     resolve_ambiguous_cases_with_context,
     resolve_drive_only_cases_with_context,
+    repair_drive_duplicate_case_folders,
     nas_to_drive_relative_path,
     safe_child_path,
     score_context_candidates,
@@ -187,6 +189,61 @@ def test_same_name_different_laf_numbers_do_not_match(monkeypatch):
     assert not result["drive_only"]
     assert result["out_of_scope"][0]["drive"].relative_path == drive.relative_path
     assert "法扶案號不同" in result["out_of_scope"][0]["reason"]
+
+
+def test_potential_drive_duplicate_flags_unidentified_stale_shell_only():
+    identified = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試乙-1150101-A-001-刑事一審辯護-詐欺",
+        relative_path="法扶案件/Lumi/測試乙-1150101-A-001-刑事一審辯護-詐欺",
+        name="測試乙-1150101-A-001-刑事一審辯護-詐欺",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=extract_case_meta("測試乙-1150101-A-001-刑事一審辯護-詐欺"),
+        drive_id="identified",
+    )
+    stale_shell = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試乙-刑事一審辯護-詐欺",
+        relative_path="法扶案件/Lumi/測試乙-刑事一審辯護-詐欺",
+        name="測試乙-刑事一審辯護-詐欺",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=CaseMeta(client_hint="測試乙", reason_hint="詐欺"),
+        drive_id="stale-shell",
+    )
+    groups = detect_drive_potential_duplicate_case_groups([identified, stale_shell])
+    assert len(groups) == 1
+    assert groups[0]["weak_folder_count"] == 1
+    assert [c.drive_id for c in groups[0]["cases"]] == ["identified", "stale-shell"]
+
+
+def test_potential_drive_duplicate_ignores_distinct_stable_laf_cases():
+    first = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/游秀鈴-1140226-A-027-刑事偵查中辯護-傷害致死等",
+        relative_path="法扶案件/Lumi/游秀鈴-1140226-A-027-刑事偵查中辯護-傷害致死等",
+        name="游秀鈴-1140226-A-027-刑事偵查中辯護-傷害致死等",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=extract_case_meta("游秀鈴-1140226-A-027-刑事偵查中辯護-傷害致死等"),
+        drive_id="first",
+    )
+    second = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/游秀鈴-1140307-A-056-刑事一審辯護-傷害致死等",
+        relative_path="法扶案件/Lumi/游秀鈴-1140307-A-056-刑事一審辯護-傷害致死等",
+        name="游秀鈴-1140307-A-056-刑事一審辯護-傷害致死等",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        meta=extract_case_meta("游秀鈴-1140307-A-056-刑事一審辯護-傷害致死等"),
+        drive_id="second",
+    )
+    assert detect_drive_potential_duplicate_case_groups([first, second]) == []
 
 
 def test_active_drive_folder_does_not_match_db_closed_active_shell(monkeypatch):
@@ -1547,6 +1604,143 @@ def test_choose_drive_duplicate_canonical_prefers_closed_lumi_over_active_copy()
     chosen = choose_drive_duplicate_canonical_case({"cases": [active, closed]})
 
     assert chosen is closed
+
+
+def test_repair_drive_duplicate_can_trash_resolved_source_after_merge(monkeypatch):
+    canonical = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里-1141216-E-014-更生",
+        relative_path="法扶案件/Lumi/01.消債/林里-1141216-E-014-更生",
+        name="林里-1141216-E-014-更生",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="canonical",
+        meta=CaseMeta(laf_case_no="1141216-E-014"),
+    )
+    source = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/01.消債/林里",
+        relative_path="法扶案件/Lumi/01.消債/林里",
+        name="林里",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="source",
+        meta=CaseMeta(laf_case_no="1141216-E-014"),
+    )
+    comparison = {"drive_duplicates": [{"identity_key": "laf:1141216-e-014", "cases": [canonical, source]}]}
+
+    def fake_children(_service, folder_id):
+        if folder_id == "source":
+            return [{
+                "id": "file-a",
+                "name": "證據.pdf",
+                "mimeType": "application/pdf",
+                "parents": ["source"],
+                "size": "10",
+                "md5Checksum": "a",
+            }]
+        return []
+
+    moved = []
+    trashed = []
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_list_children", fake_children)
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_item_metadata", lambda *_args: {"parents": ["parent"]})
+    monkeypatch.setattr("api.osc.drive_case_sync.ensure_drive_folder_path", lambda *_args, **_kwargs: {"drive_id": "bucket"})
+
+    def fake_move(_service, item_id, *, add_parent_id, remove_parent_ids=(), new_name=""):
+        moved.append((item_id, add_parent_id, tuple(remove_parent_ids), new_name))
+        return {"id": item_id, "name": new_name or "證據.pdf", "mimeType": "application/pdf", "parents": [add_parent_id]}
+
+    def fake_trash(_service, item_id):
+        trashed.append(item_id)
+        return {"id": item_id, "name": "林里", "mimeType": "application/vnd.google-apps.folder", "parents": [], "trashed": True}
+
+    monkeypatch.setattr("api.osc.drive_case_sync.move_drive_item", fake_move)
+    monkeypatch.setattr("api.osc.drive_case_sync.trash_drive_item", fake_trash)
+
+    result = repair_drive_duplicate_case_folders(
+        object(),
+        "root",
+        comparison,
+        execute=True,
+        delete_resolved_duplicates=True,
+    )
+
+    summary = result["summary"]
+    assert summary["items_moved"] == 1
+    assert summary["source_folders_trashed"] == 1
+    assert summary["source_folders_quarantined"] == 0
+    assert trashed == ["source"]
+    assert moved == [("file-a", "canonical", ("source",), "")]
+    assert result["records"][0]["source_results"][0]["delete"]["status"] == "trashed"
+
+
+def test_repair_drive_duplicate_keeps_limited_source_for_review(monkeypatch):
+    canonical = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試-1150101-A-001",
+        relative_path="法扶案件/Lumi/測試-1150101-A-001",
+        name="測試-1150101-A-001",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="canonical",
+        meta=CaseMeta(laf_case_no="1150101-A-001"),
+    )
+    source = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試",
+        relative_path="法扶案件/Lumi/測試",
+        name="測試",
+        category="法扶案件",
+        status="active",
+        owner_bucket="Lumi",
+        drive_id="source",
+        meta=CaseMeta(laf_case_no="1150101-A-001"),
+    )
+    comparison = {"drive_duplicates": [{"identity_key": "laf:1150101-a-001", "cases": [canonical, source]}]}
+
+    def fake_children(_service, folder_id):
+        if folder_id == "source":
+            return [
+                {"id": "file-a", "name": "A.pdf", "mimeType": "application/pdf", "parents": ["source"], "size": "10", "md5Checksum": "a"},
+                {"id": "file-b", "name": "B.pdf", "mimeType": "application/pdf", "parents": ["source"], "size": "11", "md5Checksum": "b"},
+            ]
+        return []
+
+    trashed = []
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_list_children", fake_children)
+    monkeypatch.setattr("api.osc.drive_case_sync._drive_item_metadata", lambda *_args: {"parents": ["parent"]})
+    monkeypatch.setattr("api.osc.drive_case_sync.ensure_drive_folder_path", lambda *_args, **_kwargs: {"drive_id": "bucket"})
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.move_drive_item",
+        lambda _service, item_id, *, add_parent_id, remove_parent_ids=(), new_name="": {
+            "id": item_id,
+            "name": new_name or item_id,
+            "mimeType": "application/vnd.google-apps.folder" if item_id == "source" else "application/pdf",
+            "parents": [add_parent_id],
+        },
+    )
+    monkeypatch.setattr("api.osc.drive_case_sync.trash_drive_item", lambda _service, item_id: trashed.append(item_id))
+
+    result = repair_drive_duplicate_case_folders(
+        object(),
+        "root",
+        comparison,
+        execute=True,
+        delete_resolved_duplicates=True,
+        max_items_per_group=1,
+    )
+
+    summary = result["summary"]
+    assert summary["source_folders_trashed"] == 0
+    assert summary["source_folders_quarantined"] == 1
+    assert trashed == []
+    quarantine = result["records"][0]["source_results"][0]["quarantine"]
+    assert quarantine["status"] == "quarantined"
+    assert quarantine["reason"] == "merge_hit_limit_kept_for_review"
 
 
 def test_find_existing_drive_case_folder_uses_broad_search_when_expected_name_moved(monkeypatch):

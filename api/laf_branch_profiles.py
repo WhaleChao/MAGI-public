@@ -8,17 +8,28 @@ from typing import Any
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "laf_branch_profiles.json"
-DEFAULT_LAWYER_NAME = "喬政翔律師"
+DEFAULT_LAWYER_NAME = os.environ.get("MAGI_LAF_DEFAULT_LAWYER_NAME", "").strip() or "受任律師"
+DEFAULT_OFFICE_NAME = os.environ.get("MAGI_LAW_FIRM_OFFICE_NAME", "").strip() or "事務所名稱"
+DEFAULT_OFFICE_ADDRESS = os.environ.get("MAGI_LAW_FIRM_ADDRESS", "").strip() or "事務所地址"
+DEFAULT_OFFICE_PHONE = os.environ.get("MAGI_LAW_FIRM_PHONE", "").strip() or "事務所電話"
+DEFAULT_OFFICE_FAX = os.environ.get("MAGI_LAW_FIRM_FAX", "").strip() or ""
+DEFAULT_OFFICE_MOBILE = os.environ.get("MAGI_LAW_FIRM_MOBILE", "").strip() or ""
+PUBLIC_PLACEHOLDERS = {
+    "受任律師",
+    "事務所名稱",
+    "事務所地址",
+    "事務所電話",
+}
 
 
 @dataclass(frozen=True)
 class LawFirmProfile:
     lawyer_name: str = DEFAULT_LAWYER_NAME
-    office_name: str = "喬政翔律師事務所"
-    address_line: str = "970花蓮縣花蓮市明禮路18之6號1樓"
-    phone: str = "03-835-7186"
-    fax: str = "03-835-7135"
-    mobile: str = "0937-753-800"
+    office_name: str = DEFAULT_OFFICE_NAME
+    address_line: str = DEFAULT_OFFICE_ADDRESS
+    phone: str = DEFAULT_OFFICE_PHONE
+    fax: str = DEFAULT_OFFICE_FAX
+    mobile: str = DEFAULT_OFFICE_MOBILE
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,13 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _configured_seed_value(value: Any, default: str) -> str:
+    text = _text(value)
+    if not text or text in PUBLIC_PLACEHOLDERS:
+        return default
+    return text
+
+
 def normalize_branch_label(branch: str) -> str:
     value = _text(branch).removeprefix("法扶").strip()
     if not value:
@@ -66,19 +84,19 @@ def _load_config() -> dict[str, Any]:
 def _law_firm_profile_from_seed() -> LawFirmProfile:
     data = _load_config().get("law_firm_profile") or {}
     return LawFirmProfile(
-        lawyer_name=_text(data.get("lawyer_name")) or DEFAULT_LAWYER_NAME,
-        office_name=_text(data.get("office_name")) or "喬政翔律師事務所",
-        address_line=_text(data.get("address_line")) or "970花蓮縣花蓮市明禮路18之6號1樓",
-        phone=_text(data.get("phone")) or "03-835-7186",
-        fax=_text(data.get("fax")) or "03-835-7135",
-        mobile=_text(data.get("mobile")) or "0937-753-800",
+        lawyer_name=_configured_seed_value(data.get("lawyer_name"), DEFAULT_LAWYER_NAME),
+        office_name=_configured_seed_value(data.get("office_name"), DEFAULT_OFFICE_NAME),
+        address_line=_configured_seed_value(data.get("address_line"), DEFAULT_OFFICE_ADDRESS),
+        phone=_configured_seed_value(data.get("phone"), DEFAULT_OFFICE_PHONE),
+        fax=_configured_seed_value(data.get("fax"), DEFAULT_OFFICE_FAX),
+        mobile=_configured_seed_value(data.get("mobile"), DEFAULT_OFFICE_MOBILE),
     )
 
 
 def fetch_law_firm_profile_from_db(conn: Any | None = None) -> LawFirmProfile | None:
     close_conn = False
     if conn is None:
-        if os.environ.get("MAGI_LAF_BRANCH_PROFILE_DB", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        if os.environ.get("MAGI_LAF_BRANCH_PROFILE_DB", "1").strip().lower() not in {"1", "true", "yes", "on"}:
             return None
         try:
             import mysql.connector  # type: ignore
@@ -112,12 +130,12 @@ def fetch_law_firm_profile_from_db(conn: Any | None = None) -> LawFirmProfile | 
     if not row:
         return None
     return LawFirmProfile(
-        lawyer_name=DEFAULT_LAWYER_NAME,
-        office_name=_text(row.get("office_name")) or "喬政翔律師事務所",
-        address_line=_text(row.get("address_line")) or "970花蓮縣花蓮市明禮路18之6號1樓",
-        phone=_text(row.get("phone")) or "03-835-7186",
-        fax=_text(row.get("fax")) or "03-835-7135",
-        mobile=_text(row.get("mobile")) or "0937-753-800",
+        lawyer_name=_text(row.get("lawyer_name")) or DEFAULT_LAWYER_NAME,
+        office_name=_text(row.get("office_name")) or DEFAULT_OFFICE_NAME,
+        address_line=_text(row.get("address_line")) or DEFAULT_OFFICE_ADDRESS,
+        phone=_text(row.get("phone")) or DEFAULT_OFFICE_PHONE,
+        fax=_text(row.get("fax")) or DEFAULT_OFFICE_FAX,
+        mobile=_text(row.get("mobile")) or DEFAULT_OFFICE_MOBILE,
     )
 
 
@@ -136,7 +154,7 @@ def seed_branch_profiles() -> list[LafBranchProfile]:
                 branch_label=branch_label,
                 phone=_text(item.get("phone")),
                 aliases=tuple(_text(x) for x in (item.get("aliases") or []) if _text(x)),
-                default_lawyer_name=_text(item.get("default_lawyer_name")) or DEFAULT_LAWYER_NAME,
+                default_lawyer_name=_configured_seed_value(item.get("default_lawyer_name"), DEFAULT_LAWYER_NAME),
                 poa_footer_template=_text(item.get("poa_footer_template")) or LafBranchProfile(branch_label).poa_footer_template,
                 source=_text(item.get("source")),
             )
@@ -175,7 +193,7 @@ def ensure_laf_branch_profile_schema(conn: Any) -> None:
                 branch_label VARCHAR(100) NOT NULL,
                 aliases_json JSON NULL,
                 phone VARCHAR(50) DEFAULT '',
-                default_lawyer_name VARCHAR(100) NOT NULL DEFAULT '喬政翔律師',
+                default_lawyer_name VARCHAR(100) NOT NULL DEFAULT '受任律師',
                 poa_footer_template TEXT NULL,
                 source VARCHAR(100) DEFAULT '',
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -188,7 +206,7 @@ def ensure_laf_branch_profile_schema(conn: Any) -> None:
             CREATE TABLE IF NOT EXISTS laf_law_firm_profiles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 profile_key VARCHAR(50) NOT NULL,
-                lawyer_name VARCHAR(100) NOT NULL DEFAULT '喬政翔律師',
+                lawyer_name VARCHAR(100) NOT NULL DEFAULT '受任律師',
                 office_name VARCHAR(100) DEFAULT '',
                 address_line VARCHAR(255) DEFAULT '',
                 phone VARCHAR(50) DEFAULT '',
@@ -222,7 +240,7 @@ def seed_laf_branch_profiles_to_db(conn: Any) -> None:
                 mobile = VALUES(mobile)
             """,
             (
-                DEFAULT_LAWYER_NAME,
+                firm.lawyer_name,
                 firm.office_name,
                 firm.address_line,
                 firm.phone,
@@ -247,7 +265,7 @@ def seed_laf_branch_profiles_to_db(conn: Any) -> None:
                     profile.branch_label,
                     json.dumps(list(profile.aliases), ensure_ascii=False),
                     profile.phone,
-                    DEFAULT_LAWYER_NAME,
+                    profile.default_lawyer_name,
                     profile.poa_footer_template,
                     profile.source,
                 ),
@@ -275,7 +293,7 @@ def fetch_laf_branch_profile_from_db(branch: str, conn: Any | None = None) -> La
         return None
     close_conn = False
     if conn is None:
-        if os.environ.get("MAGI_LAF_BRANCH_PROFILE_DB", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        if os.environ.get("MAGI_LAF_BRANCH_PROFILE_DB", "1").strip().lower() not in {"1", "true", "yes", "on"}:
             return None
         try:
             import mysql.connector  # type: ignore
@@ -320,7 +338,7 @@ def fetch_laf_branch_profile_from_db(branch: str, conn: Any | None = None) -> La
         branch_label=normalize_branch_label(row.get("branch_label")),
         aliases=aliases,
         phone=_text(row.get("phone")),
-        default_lawyer_name=DEFAULT_LAWYER_NAME,
+        default_lawyer_name=_text(row.get("default_lawyer_name")) or DEFAULT_LAWYER_NAME,
         poa_footer_template=_text(row.get("poa_footer_template")) or LafBranchProfile(label).poa_footer_template,
         source=_text(row.get("source")) or "db",
     )
