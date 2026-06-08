@@ -115,6 +115,95 @@ def _unique_conflict_target(target: Path, label: str = "Drive匯入差異") -> P
     raise FileExistsError(f"unable_to_allocate_conflict_target:{target}")
 
 
+def _record_file_move(
+    report: dict[str, Any],
+    src: Path,
+    target: Path,
+    target_rel: str,
+    *,
+    apply: bool,
+    delete_duplicate: bool,
+    move_conflicts_with_suffix: bool,
+    move_bucket: str = "planned_moves",
+    conflict_label: str = "Drive匯入差異",
+    reason: str = "",
+) -> None:
+    if target == src:
+        return
+    if target.exists():
+        same_size = target.stat().st_size == src.stat().st_size
+        same_hash = False
+        if same_size:
+            same_hash = file_md5(target) == file_md5(src)
+        if same_hash:
+            item = {
+                "source": str(src),
+                "target": str(target),
+                "target_relative_path": target_rel,
+                "action": "delete_duplicate" if delete_duplicate else "skip_duplicate",
+            }
+            if reason:
+                item["reason"] = reason
+            report["duplicates"].append(item)
+            if apply and delete_duplicate:
+                src.unlink()
+            return
+        if move_conflicts_with_suffix:
+            conflict_target = _unique_conflict_target(target, label=conflict_label)
+            item = {
+                "source": str(src),
+                "target": str(conflict_target),
+                "target_relative_path": conflict_target.relative_to(Path(report["case_folder"])).as_posix(),
+                "reason": reason or "target_exists_different_content",
+            }
+            report["conflict_moves"].append(item)
+            if apply:
+                conflict_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(conflict_target))
+            return
+        report["conflicts"].append({
+            "source": str(src),
+            "target": str(target),
+            "target_relative_path": target_rel,
+            "reason": reason or "target_exists_different_content",
+        })
+        return
+
+    item = {
+        "source": str(src),
+        "target": str(target),
+        "target_relative_path": target_rel,
+    }
+    if reason:
+        item["reason"] = reason
+    report.setdefault(move_bucket, []).append(item)
+    if apply:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(target))
+
+
+def _target_for_misfiled_judgment_file(case_folder: Path, src: Path) -> str:
+    """Return canonical NAS relative target for files misplaced in 10_判決書."""
+    judgment_dir = case_folder / "10_判決書"
+    try:
+        rel = src.relative_to(judgment_dir).as_posix()
+    except ValueError:
+        return ""
+    text = rel.replace("\\", "/")
+    name = PurePosixPath(text).name
+    if not name:
+        return ""
+
+    if "筆錄" in text and "不成立證明" not in text:
+        return PurePosixPath("08_筆錄", *PurePosixPath(rel).parts).as_posix()
+
+    mapped = drive_to_nas_relative_path(PurePosixPath("法院裁判", rel).as_posix())
+    mapped_parts = split_relative_parts(mapped)
+    if mapped_parts and mapped_parts[0] in {"08_筆錄", "09_法院通知或程序裁定"}:
+        return mapped
+    return ""
+
+
 def _iter_case_folders(root: Path, *, max_cases: int, max_seconds: int) -> tuple[list[Path], dict[str, Any]]:
     started = time.time()
     cases: list[Path] = []
@@ -239,6 +328,7 @@ def repair_case_folder(
         "delete_duplicate": bool(delete_duplicate),
         "alias_folders": [],
         "planned_moves": [],
+        "canonical_misfile_moves": [],
         "duplicates": [],
         "conflict_moves": [],
         "conflicts": [],
@@ -263,58 +353,45 @@ def repair_case_folder(
                 inner = src.relative_to(alias_dir).as_posix()
                 target_rel = mapped_file_relative_path(alias_dir.name, inner)
                 target = case_folder / target_rel
-                if target == src:
-                    continue
-                if target.exists():
-                    same_size = target.stat().st_size == src.stat().st_size
-                    same_hash = False
-                    if same_size:
-                        same_hash = file_md5(target) == file_md5(src)
-                    if same_hash:
-                        item = {
-                            "source": str(src),
-                            "target": str(target),
-                            "target_relative_path": target_rel,
-                            "action": "delete_duplicate" if delete_duplicate else "skip_duplicate",
-                        }
-                        report["duplicates"].append(item)
-                        if apply and delete_duplicate:
-                            src.unlink()
-                        continue
-                    if move_conflicts_with_suffix:
-                        conflict_target = _unique_conflict_target(target)
-                        item = {
-                            "source": str(src),
-                            "target": str(conflict_target),
-                            "target_relative_path": conflict_target.relative_to(case_folder).as_posix(),
-                            "reason": "target_exists_different_content",
-                        }
-                        report["conflict_moves"].append(item)
-                        if apply:
-                            conflict_target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.move(str(src), str(conflict_target))
-                        continue
-                    report["conflicts"].append({
-                        "source": str(src),
-                        "target": str(target),
-                        "target_relative_path": target_rel,
-                        "reason": "target_exists_different_content",
-                    })
-                    continue
-                item = {
-                    "source": str(src),
-                    "target": str(target),
-                    "target_relative_path": target_rel,
-                }
-                report["planned_moves"].append(item)
-                if apply:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(target))
+                _record_file_move(
+                    report,
+                    src,
+                    target,
+                    target_rel,
+                    apply=apply,
+                    delete_duplicate=delete_duplicate,
+                    move_conflicts_with_suffix=move_conflicts_with_suffix,
+                )
             except Exception as exc:
                 report["errors"].append({"source": str(src), "error": f"{type(exc).__name__}: {exc}"})
         report.setdefault("alias_folder_details", []).append(alias_item)
         if apply:
             report["removed_empty_dirs"] += _remove_empty_dirs(alias_dir, stop_at=case_folder)
+
+    judgment_dir = case_folder / "10_判決書"
+    if judgment_dir.is_dir():
+        files, meta = _iter_files(judgment_dir, max_files=max_files, max_seconds=max_seconds)
+        report["canonical_misfile_scan"] = {"file_count": len(files), **meta}
+        for src in files:
+            try:
+                target_rel = _target_for_misfiled_judgment_file(case_folder, src)
+                if not target_rel:
+                    continue
+                target = case_folder / target_rel
+                _record_file_move(
+                    report,
+                    src,
+                    target,
+                    target_rel,
+                    apply=apply,
+                    delete_duplicate=delete_duplicate,
+                    move_conflicts_with_suffix=move_conflicts_with_suffix,
+                    move_bucket="canonical_misfile_moves",
+                    conflict_label="歸檔差異",
+                    reason="misfiled_in_10_判決書",
+                )
+            except Exception as exc:
+                report["errors"].append({"source": str(src), "error": f"{type(exc).__name__}: {exc}"})
 
     return report
 
@@ -339,6 +416,7 @@ def repair_case_tree(
         "summary": {
             "alias_folders": 0,
             "planned_moves": 0,
+            "canonical_misfile_moves": 0,
             "duplicates": 0,
             "conflict_moves": 0,
             "conflicts": 0,
@@ -373,6 +451,7 @@ def repair_case_tree(
         if (
             item.get("alias_folders")
             or item.get("planned_moves")
+            or item.get("canonical_misfile_moves")
             or item.get("duplicates")
             or item.get("conflict_moves")
             or item.get("conflicts")
@@ -383,6 +462,7 @@ def repair_case_tree(
             report["cases"].append(item)
         report["summary"]["alias_folders"] += len(item.get("alias_folders") or [])
         report["summary"]["planned_moves"] += len(item.get("planned_moves") or [])
+        report["summary"]["canonical_misfile_moves"] += len(item.get("canonical_misfile_moves") or [])
         report["summary"]["duplicates"] += len(item.get("duplicates") or [])
         report["summary"]["conflict_moves"] += len(item.get("conflict_moves") or [])
         report["summary"]["conflicts"] += len(item.get("conflicts") or [])
@@ -450,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
                 "drive-imported-folder-repair: "
                 f"alias_folders={summary.get('alias_folders', 0)} "
                 f"moves={summary.get('planned_moves', 0)} "
+                f"canonical_misfiles={summary.get('canonical_misfile_moves', 0)} "
                 f"duplicates={summary.get('duplicates', 0)} "
                 f"conflict_moves={summary.get('conflict_moves', 0)} "
                 f"conflicts={summary.get('conflicts', 0)} "

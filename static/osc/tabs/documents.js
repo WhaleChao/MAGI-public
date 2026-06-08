@@ -101,12 +101,11 @@ function lafStatusClass(status) {
 }
 
 function lafDisplayStatus(c = {}) {
-    return c.status_display || c.effective_status || c.legal_aid_status || c.status || "未開辦";
+    return c.legal_aid_status || c.status_display || c.effective_status || c.status || "未開辦";
 }
 
 function lafStatusLabel(status) {
     const text = String(status || "").trim();
-    if (text === "進行中") return "已開辦（進行中）";
     return text || "未開辦";
 }
 
@@ -403,10 +402,9 @@ function renderLafCaseDetail(data = {}) {
     const statusLabel = lafStatusLabel(status);
     const displayType = lafDisplayType(c);
     const displayReason = lafDisplayReason(c);
-    const caseStatus = c.status_display || c.effective_status || c.status || "進行中";
     const lafStatusOptions = [
         ["未開辦", "未開辦"],
-        ["進行中", "已開辦（進行中）"],
+        ["進行中", "進行中"],
         ["已結案，待報結", "已結案，待報結"],
         ["已結案", "已結案"],
     ];
@@ -428,12 +426,12 @@ function renderLafCaseDetail(data = {}) {
                 <select id="lafStatusSelect">
                     ${lafStatusOptions.map(([value, label]) => `<option value="${esc(value)}" ${value === status ? "selected" : ""}>${esc(label)}</option>`).join("")}
                 </select>
-                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase"> 同步案件主狀態</label>
+                <label class="inline-check"><input type="checkbox" id="lafStatusSyncCase" checked> 同步結案/歸檔狀態</label>
                 <button class="btn primary" data-act="laf-status-update" data-id="${esc(c.id)}">更新狀態</button>
                 <button class="btn" data-act="case-open" data-id="${esc(c.id)}">開啟案件資料夾</button>
 	                <button class="btn" data-act="case-workbench" data-id="${esc(c.id)}">完整案件處理</button>
             </div>
-            <div class="muted">法扶開辦/報結：${esc(statusLabel)}｜案件主狀態：${esc(caseStatus)}。未開辦可與案件進行中並存，表示法扶開辦資料尚未齊備或尚未完成開辦。</div>
+            <div class="muted">法扶流程狀態：${esc(statusLabel)}。未開辦代表尚未完成開辦；進行中代表已完成開辦，待報結與已結案則進入報結/歸檔流程。</div>
         </div>
 
         <div class="laf-detail-section">

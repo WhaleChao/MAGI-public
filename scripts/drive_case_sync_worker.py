@@ -263,7 +263,9 @@ def repair_imported_drive_alias_folders(
         "cases_with_aliases": 0,
         "alias_folders": 0,
         "planned_moves": 0,
+        "canonical_misfile_moves": 0,
         "duplicates": 0,
+        "conflict_moves": 0,
         "conflicts": 0,
         "errors": 0,
     }
@@ -282,14 +284,18 @@ def repair_imported_drive_alias_folders(
         )
         alias_count = len(case_report.get("alias_folders") or [])
         move_count = len(case_report.get("planned_moves") or [])
+        canonical_misfile_count = len(case_report.get("canonical_misfile_moves") or [])
         duplicate_count = len(case_report.get("duplicates") or [])
+        conflict_move_count = len(case_report.get("conflict_moves") or [])
         conflict_count = len(case_report.get("conflicts") or [])
         error_count = len(case_report.get("errors") or [])
-        if alias_count or move_count or duplicate_count or conflict_count or error_count:
+        if alias_count or move_count or canonical_misfile_count or duplicate_count or conflict_move_count or conflict_count or error_count:
             summary["cases_with_aliases"] += 1 if alias_count else 0
             summary["alias_folders"] += alias_count
             summary["planned_moves"] += move_count
+            summary["canonical_misfile_moves"] += canonical_misfile_count
             summary["duplicates"] += duplicate_count
+            summary["conflict_moves"] += conflict_move_count
             summary["conflicts"] += conflict_count
             summary["errors"] += error_count
             items.append({
@@ -297,7 +303,9 @@ def repair_imported_drive_alias_folders(
                 "local_path": str(local_path),
                 "alias_folders": case_report.get("alias_folders") or [],
                 "planned_moves": move_count,
+                "canonical_misfile_moves": canonical_misfile_count,
                 "duplicates": duplicate_count,
+                "conflict_moves": conflict_move_count,
                 "conflicts": conflict_count,
                 "errors": case_report.get("errors") or [],
             })

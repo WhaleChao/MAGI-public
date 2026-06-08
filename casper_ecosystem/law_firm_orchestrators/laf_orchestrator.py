@@ -4672,6 +4672,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "pleading_source_files": [],
             "judgment_pdf_files": [],
             "procedural_ruling_pdf_files": [],
+            "mediation_success_pdf_files": [],
             "pdf_files": [],
             "converted": [],
             "failed": [],
@@ -4685,6 +4686,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         plead_root = os.path.join(root, "04_我方歷次書狀")
         judgment_root = os.path.join(root, "10_判決書")
         court_notice_root = os.path.join(root, "09_法院通知或程序裁定")
+        transcript_root = os.path.join(root, "08_筆錄")
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_laf = re.sub(r"[^\w\-]+", "_", (laf_case_no or "").strip()) or "unknown"
         safe_act = re.sub(r"[^\w\-]+", "_", (action or "").strip()) or "workflow"
@@ -4860,6 +4862,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 p for p in self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
                 if str(p or "").lower().endswith(".pdf")
             ]
+            raw_basis_pdfs.extend(
+                p for p in sorted(set(docs.get("mediation_success_files") or []))
+                if str(p or "").lower().endswith(".pdf") and p not in raw_basis_pdfs
+            )
             basis_pdfs = []
             for p in raw_basis_pdfs:
                 uploadable = _make_portal_sized_pdf(p, "closing_basis")
@@ -5005,6 +5011,27 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         procedural_ruling_pdfs.append(full)
         result["procedural_ruling_pdf_files"] = procedural_ruling_pdfs
 
+        mediation_success_pdfs: List[str] = []
+        if (action or "").strip().lower() == "closing" and os.path.isdir(transcript_root):
+            for base in _iter_upload_dirs(transcript_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                for fn in sorted(files)[:max_files_per_dir]:
+                    if fn.startswith(".") or fn.startswith("~"):
+                        continue
+                    if not fn.lower().endswith(".pdf"):
+                        continue
+                    if "不成立" in fn:
+                        continue
+                    if not any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
+                        continue
+                    full = os.path.join(base, fn)
+                    if os.path.isfile(full):
+                        mediation_success_pdfs.append(full)
+        result["mediation_success_pdf_files"] = mediation_success_pdfs
+
         out_pdf: List[str] = []
         converted: List[dict] = []
         failed: List[dict] = []
@@ -5053,7 +5080,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     else:
                         failed.append({"source": src, "error": "convert_failed"})
 
-        for src_pdf in (judgment_pdfs + procedural_ruling_pdfs)[: max(1, max_files)]:
+        for src_pdf in (judgment_pdfs + procedural_ruling_pdfs + mediation_success_pdfs)[: max(1, max_files)]:
             try:
                 if not _fits_portal_upload_limit(src_pdf):
                     compressed_pdf = _make_portal_sized_pdf(src_pdf, "judgment")
@@ -5700,6 +5727,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             override_basis_files = normalized_override_files
 
         basis_files = override_basis_files or list(docs.get("closing_basis_files") or [])
+        if not basis_files and docs.get("mediation_success_files"):
+            basis_files = list(docs.get("mediation_success_files") or [])
         # 結案只檢查結案依據文件；強制執行案件可用執行命令作為結案依據。
         # 收文章/回執是「開辦」才需要的內部驗證。
         missing = []

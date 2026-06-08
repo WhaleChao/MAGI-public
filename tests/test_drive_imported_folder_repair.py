@@ -122,6 +122,57 @@ def test_repair_case_folder_unpacks_downloaded_drive_case_shell(tmp_path: Path):
     assert "游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等" in report["alias_folders"]
 
 
+def test_repair_case_folder_moves_misfiled_transcript_from_judgment_folder(tmp_path: Path):
+    case = tmp_path / "2026-0028-劉信義-一審-殺人"
+    src = case / "10_判決書" / "20260601 花蓮地方法院調解筆錄.pdf"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"mediation transcript")
+
+    report = repair_case_folder(case, apply=True)
+
+    dst = case / "08_筆錄" / "20260601 花蓮地方法院調解筆錄.pdf"
+    assert report["errors"] == []
+    assert len(report["canonical_misfile_moves"]) == 1
+    assert dst.read_bytes() == b"mediation transcript"
+    assert not src.exists()
+
+
+def test_repair_case_folder_moves_procedural_ruling_from_judgment_folder(tmp_path: Path):
+    case = tmp_path / "2026-0028-劉信義-一審-殺人"
+    src = (
+        case
+        / "10_判決書"
+        / "20260602 花蓮地方法院115年度聲字第169號刑事裁定（准許參與本案訴訟）.pdf"
+    )
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"procedural ruling")
+
+    report = repair_case_folder(case, apply=True)
+
+    dst = (
+        case
+        / "09_法院通知或程序裁定"
+        / "20260602 花蓮地方法院115年度聲字第169號刑事裁定（准許參與本案訴訟）.pdf"
+    )
+    assert report["errors"] == []
+    assert len(report["canonical_misfile_moves"]) == 1
+    assert dst.read_bytes() == b"procedural ruling"
+    assert not src.exists()
+
+
+def test_repair_case_folder_keeps_terminal_ruling_in_judgment_folder(tmp_path: Path):
+    case = tmp_path / "2026-0001-測試-更生"
+    src = case / "10_判決書" / "20260602 花蓮地方法院115年度消債更字第1號免責裁定.pdf"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"terminal ruling")
+
+    report = repair_case_folder(case, apply=True)
+
+    assert report["errors"] == []
+    assert report["canonical_misfile_moves"] == []
+    assert src.read_bytes() == b"terminal ruling"
+
+
 def test_cleanup_duplicate_quarantine_deletes_only_when_original_exists(tmp_path: Path):
     case = tmp_path / "2025-0058-李明志-更生"
     original = case / "04_我方歷次書狀" / "更生方案.pdf"

@@ -1185,17 +1185,47 @@ def _osc_synced_laf_number(payload: dict | None) -> str:
     ).strip()
 
 
+def _osc_is_legal_aid_case_row(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    text = " ".join(
+        str(row.get(k) or "")
+        for k in (
+            "case_category",
+            "case_reason",
+            "case_type",
+            "laf_case_no",
+            "legal_aid_number",
+            "application_no",
+            "legal_aid_status",
+        )
+    )
+    return bool(
+        "法律扶助案件" in text
+        or "法律扶助" in text
+        or "法扶" in text
+        or re.search(r"\d{6,8}-[A-Z]-\d{3}", text)
+    )
+
+
 def _osc_effective_case_status(row: dict | None) -> str:
     if not isinstance(row, dict):
         return ""
     laf_status = str(row.get("legal_aid_status") or "").strip()
     status = str(row.get("status") or "").strip()
+    normalized_laf_status = _osc_normalize_laf_status(laf_status)
     if laf_status in _OSC_LAF_CLOSED_STATUSES:
         return "已結案"
     if laf_status in _OSC_LAF_CLOSING_STATUSES:
         return laf_status
     if _osc_is_closed_archive_path(row.get("folder_path") or ""):
         return "已結案"
+    if _osc_is_closed_case_status(status):
+        return "已結案"
+    if _osc_is_legal_aid_case_row(row):
+        if laf_status in _OSC_OPEN_STATUS_ALIASES:
+            return "進行中"
+        return normalized_laf_status or "未開辦"
     if status:
         return "進行中" if status in _OSC_OPEN_STATUS_ALIASES else status
     if laf_status:

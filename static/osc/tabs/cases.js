@@ -66,8 +66,11 @@ async function loadCases() {
 }
 
 function isLegalAidCaseRow(row = {}) {
-    const text = `${row.case_category || ""} ${row.case_reason || ""}`;
-    return text.includes("法律扶助案件") || text.includes("法律扶助") || text.includes("法扶");
+    const text = `${row.case_category || ""} ${row.case_reason || ""} ${row.case_type || ""} ${row.laf_case_no || ""} ${row.legal_aid_status || ""}`;
+    return text.includes("法律扶助案件")
+        || text.includes("法律扶助")
+        || text.includes("法扶")
+        || /\d{6,8}-[A-Z]-\d{3}/.test(text);
 }
 
 function caseDisplayStatus(row = {}) {
@@ -155,11 +158,10 @@ function caseStatusScopeLabel(scope) {
 
 function lafBadgeText(row = {}) {
     const lafStatus = String(row.legal_aid_status || "").trim();
-    const caseStatus = caseDisplayStatus(row) || "進行中";
-    const lafDisplay = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中"
-        ? (lafStatus === "進行中" ? "已開辦（進行中）" : lafStatus)
-        : "未標示";
-    return `法扶｜案件：${caseStatus}｜開辦：${lafDisplay}`;
+    const display = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中"
+        ? lafStatus
+        : (caseDisplayStatus(row) || "未開辦");
+    return `法扶｜${display}`;
 }
 
 function caseNotesText(row = {}) {

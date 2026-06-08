@@ -677,6 +677,23 @@ def test_case_effective_status_treats_archive_path_as_closed():
     assert _osc_should_archive_case_row(row) is True
 
 
+def test_laf_effective_status_uses_laf_workflow_status():
+    from api.blueprints.osc_cases import _osc_effective_case_status, _osc_case_api_row
+
+    row = {
+        "case_category": "法律扶助案件",
+        "case_reason": "消費者債務清理事件",
+        "status": "進行中",
+        "legal_aid_status": "未開辦",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2026-0045-測試-一審-消費者債務清理",
+    }
+    assert _osc_effective_case_status(row) == "未開辦"
+    assert _osc_case_api_row(row)["status_display"] == "未開辦"
+
+    row["legal_aid_status"] = "進行中"
+    assert _osc_effective_case_status(row) == "進行中"
+
+
 @pytest.mark.parametrize(
     ("scope", "included", "excluded"),
     [
@@ -713,7 +730,7 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'data-scope="pending_submit">待送出' in html
     assert 'data-type="消費者債務清理"' in html
     assert 'data-kind="消費者債務清理"' not in html
-    assert "法扶 / " in js
+    assert "法扶｜" in js
     assert "function isFinalClosingStatusText" in js
     assert "function isFinalClosedStatusText" in js
     assert 'text.includes("未結案")' in js
