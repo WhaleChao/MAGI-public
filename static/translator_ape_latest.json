@@ -48,7 +48,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 20196,
+      "elapsed_ms": 16883,
       "text": "Original Prayer for Relief: The defendant shall pay the plaintiff NT$200,000.",
       "term_hit_rate": 1.0
     },
@@ -57,7 +57,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 1588,
+      "elapsed_ms": 4651,
       "text": "The plaintiff's original statement: The defendant shall pay the plaintiff NT$200,000 in full.",
       "term_hit_rate": 0.75
     },
@@ -66,7 +66,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 6177,
+      "elapsed_ms": 8230,
       "text": "Original Prayer for Relief: The defendant shall pay the plaintiff NT$200,000.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -76,7 +76,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5149,
+      "elapsed_ms": 7126,
       "text": "The defendant was convicted of fraud and sentenced to six months of imprisonment.",
       "term_hit_rate": 1.0
     },
@@ -85,7 +85,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 799,
+      "elapsed_ms": 3186,
       "text": "The defendant was convicted of fraud and sentenced to six months in prison.",
       "term_hit_rate": 0.6666666666666666
     },
@@ -94,7 +94,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 4584,
+      "elapsed_ms": 6106,
       "text": "The defendant was convicted of fraud and sentenced to six months of imprisonment.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -104,7 +104,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5225,
+      "elapsed_ms": 7225,
       "text": "The defendant shall be liable for damages resulting from the infringement of the plaintiff's rights.",
       "term_hit_rate": 1.0
     },
@@ -113,7 +113,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 788,
+      "elapsed_ms": 3778,
       "text": "The defendant shall be liable for damages for infringement of property rights caused by the plaintiff.",
       "term_hit_rate": 1.0
     },
@@ -122,7 +122,7 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 5078,
+      "elapsed_ms": 6677,
       "text": "The defendant shall be liable for damages resulting from the infringement of the plaintiff's rights.",
       "validator_reasons": [],
       "term_hit_rate": 1.0
@@ -132,7 +132,7 @@
       "stage": "gtx_primary",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 6820,
+      "elapsed_ms": 9013,
       "text": "Case No. 114-Yuan-Su-000024 is currently pending before this Court. (Case No.: 114年度原訴字第000024號)",
       "term_hit_rate": 1.0
     },
@@ -141,7 +141,7 @@
       "stage": "apple_baseline",
       "provider": "apple_translation",
       "success": true,
-      "elapsed_ms": 1197,
+      "elapsed_ms": 4166,
       "text": "The original lawsuit No. 000024 of the 114th year of our court is currently being heard.",
       "term_hit_rate": 0.5
     },
@@ -150,11 +150,11 @@
       "stage": "apple_ape",
       "provider": "apple_translation_ape",
       "degraded": false,
-      "elapsed_ms": 6935,
+      "elapsed_ms": 8583,
       "text": "Case No. 114-Yuan-Su-000024 is currently pending before this Court. (Case No.: 114年度原訴字第000024號)",
       "validator_reasons": [],
       "term_hit_rate": 1.0
     }
   ],
-  "generated_at": "2026-06-08T18:10:31.655996"
+  "generated_at": "2026-06-09T13:16:43.424728"
 }
