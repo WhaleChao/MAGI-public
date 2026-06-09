@@ -212,6 +212,36 @@ _RE_SUMMARIZ = re.compile(r'\bsummariz')
 _RE_SUMMARY = re.compile(r'\bsummary\b')
 
 
+def _is_laf_pending_scan_command(message: str) -> bool:
+    text = str(message or "").strip()
+    return "法扶" in text and any(k in text for k in ("未開辦掃描", "待開辦掃描", "開辦掃描"))
+
+
+def _format_laf_pending_scan_result(data: dict) -> str:
+    if not isinstance(data, dict) or not data.get("ok"):
+        err = _short_diag_text((data or {}).get("error") if isinstance(data, dict) else data)
+        return f"❌ 法扶未開辦掃描失敗：{err or 'unknown'}"
+    lines = ["📋 法扶未開辦掃描完成"]
+    lines.append(f"待開辦：{int(data.get('pending_open') or 0)} 件")
+    lines.append(f"待報結：{int(data.get('pending_report') or 0)} 件")
+    open_cases = data.get("open_cases") if isinstance(data.get("open_cases"), list) else []
+    report_cases = data.get("report_cases") if isinstance(data.get("report_cases"), list) else []
+    if open_cases:
+        lines.append("待開辦清單：")
+        for case in open_cases[:10]:
+            lines.append(
+                f"  • {case.get('case_number') or '-'} {case.get('client_name') or '-'}"
+                f" — {case.get('deadline_info') or ''}".rstrip()
+            )
+    if report_cases:
+        lines.append("待報結清單：")
+        for case in report_cases[:10]:
+            lines.append(f"  • {case.get('case_number') or '-'} {case.get('client_name') or '-'}")
+    if not open_cases and not report_cases:
+        lines.append("目前沒有符合條件的案件。")
+    return "\n".join(lines)
+
+
 def handle_command(orch, user_id, message, role="user", platform="LINE"):
     """
     Routes commands to Melchior or System Skills.
@@ -234,6 +264,26 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         registry_result = registry.dispatch(ctx)
         if registry_result is not None:
             return registry_result
+
+    if _is_laf_pending_scan_command(message):
+        script = os.path.join(str(get_magi_root_dir()), "skills", "osc-orchestrator", "action.py")
+        task = 'laf_pending_scan {"notify": false, "limit": 100}'
+        try:
+            proc = subprocess.run(
+                [str(get_skill_python()), script, "--task", task],
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("MAGI_LAF_PENDING_SCAN_TIMEOUT_SEC", "300") or "300"),
+            )
+            if proc.returncode != 0:
+                detail = _short_diag_text(proc.stderr or proc.stdout)
+                return f"❌ 法扶未開辦掃描失敗（code={proc.returncode}）：{detail or 'unknown'}"
+            data = _parse_subprocess_json(proc.stdout or "")
+            return _format_laf_pending_scan_result(data or {"ok": False, "error": "result_unparsed"})
+        except subprocess.TimeoutExpired:
+            return "❌ 法扶未開辦掃描逾時，已停止本次掃描。"
+        except Exception as exc:
+            return f"❌ 法扶未開辦掃描失敗：{type(exc).__name__}: {str(exc)[:200]}"
 
     # ── Fuzzy typo correction for Chinese commands ──────────────────────
     # Only attempt if this is NOT already a recursive fuzzy-corrected call.

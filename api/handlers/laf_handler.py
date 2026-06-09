@@ -121,6 +121,13 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     if not text:
         return None
 
+    # Management/reporting phrases are not single-case portal actions.  Without
+    # this guard, "法扶未開辦掃描" can be tokenized as client_name="未 掃描" and
+    # accidentally launch the go-live workflow.
+    if any(k in text for k in ("掃描", "巡檢", "稽核", "清單", "統計", "批次", "待辦提醒")):
+        if not re.search(r"\d{6,8}-[A-Za-z]-\d{3}|\b\d{4}-\d{4}\b", text):
+            return None
+
     # 含法扶案號格式（XXXXXXX-X-XXX）也視為法扶指令
     _has_laf_no = bool(re.search(r"\d{6,8}-[A-Za-z]-\d{3}", text))
     looks_like_laf = _has_laf_no or any(k in text for k in ("法扶", "回報", "報結", "開辦", "疑義", "二階段", "費用支付", "訴訟中費用", "撤回", "結案"))

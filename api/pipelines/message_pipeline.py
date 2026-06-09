@@ -344,10 +344,11 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         message = message.lstrip().split(" ", 1)[1].strip() if " " in message.lstrip() else ""
         logger.info("message_pipeline: @heavy opt-in detected, will try NIM fallback if oMLX fails")
     try:
-        from flask import g as _flask_g
-        _flask_g.heavy_opt_in = _heavy_opt_in
+        from flask import g as _flask_g, has_app_context as _has_app_context
+        if _has_app_context():
+            _flask_g.heavy_opt_in = _heavy_opt_in
     except Exception:
-        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 349, exc_info=True)
+        logging.getLogger(__name__).debug("message_pipeline: skipped Flask heavy flag outside request context", exc_info=True)
 
     quick_reply = orch._quick_fixed_reply(message, role)
     if quick_reply:
@@ -2578,6 +2579,8 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     # Hard override: LAF report commands should always enter CMD path.
     forced_cmd = False
     if any(k in msg_lower for k in ["法扶回報指令", "法扶指令", "回報指令", "開辦回報", "開辦案件"]):
+        forced_cmd = True
+    elif "法扶" in message and any(k in message for k in ("未開辦掃描", "待開辦掃描", "開辦掃描")):
         forced_cmd = True
     elif orch._parse_laf_report_payload(message):
         forced_cmd = True

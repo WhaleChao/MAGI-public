@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 from api.help_text import HELP_ALIASES, build_help_text
+from api.pipelines import command_dispatch
 from api.pipelines.command_dispatch import handle_command
 from api.pipelines.message_router import quick_fixed_reply
 
@@ -81,6 +82,45 @@ class TestHandleCommandHelp:
         assert "技能進化與系統管理" not in result
         assert "`供應鏈掃描`" not in result
         assert "系統管理、技能進化、供應鏈掃描" in result
+
+
+def test_laf_pending_scan_command_runs_direct_skill(monkeypatch):
+    orc = _make_orchestrator()
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps(
+            {
+                "ok": True,
+                "pending_open": 1,
+                "pending_report": 0,
+                "open_cases": [
+                    {
+                        "case_number": "2026-0001",
+                        "client_name": "測試當事人",
+                        "deadline_info": "剩 2 天",
+                    }
+                ],
+                "report_cases": [],
+            },
+            ensure_ascii=False,
+        )
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(command_dispatch.subprocess, "run", fake_run)
+
+    reply = handle_command(orc, "user1", "法扶未開辦掃描", role="admin", platform="TEST")
+
+    assert "法扶未開辦掃描完成" in reply
+    assert "測試當事人" in reply
+    assert calls
+    assert "osc-orchestrator/action.py" in calls[0][1]
+    assert calls[0][2:] == ["--task", 'laf_pending_scan {"notify": false, "limit": 100}']
 
 
 # ── Draw command ─────────────────────────────────────────────

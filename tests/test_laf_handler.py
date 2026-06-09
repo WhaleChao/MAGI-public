@@ -65,6 +65,13 @@ def test_parse_payload_unrelated():
     assert parse_laf_report_payload("今天天氣很好") is None
 
 
+def test_parse_payload_laf_pending_scan_is_not_single_case_go_live():
+    from api.handlers.laf_handler import parse_laf_report_payload
+
+    assert parse_laf_report_payload("法扶未開辦掃描") is None
+    assert parse_laf_report_payload("法扶夜間巡檢") is None
+
+
 def test_help_text():
     from api.handlers.laf_handler import laf_report_command_help
     h = laf_report_command_help()

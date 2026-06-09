@@ -96,7 +96,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_laf_pending_scan",
             "cron": "30 8 * * *",
-            "command": "@MAGI 法扶未開辦掃描",
+            "command": f"{python_bin} {repo_root / 'skills' / 'osc-orchestrator' / 'action.py'} --task laf_pending_scan",
             "desc": "法扶未開辦/待報結案件提醒（08:30）",
             "channel_id": None,
             "last_run": None,
