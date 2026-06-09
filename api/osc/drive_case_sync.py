@@ -1696,6 +1696,8 @@ def db_local_cases_for_numbers(case_numbers: Iterable[str]) -> tuple[list[CaseFo
 
 def _closed_status_text(value: str) -> bool:
     text = normalize_text(value)
+    if "待報結" in text or "結案中" in text:
+        return False
     return any(term in text for term in ("已結案", "已報結", "待送出", "已轉入"))
 
 

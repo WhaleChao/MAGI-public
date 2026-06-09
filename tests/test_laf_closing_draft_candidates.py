@@ -46,6 +46,44 @@ def test_auto_closing_skips_misfiled_consumer_debt_transfer_ruling(tmp_path):
     assert orch._get_pending_closing_draft_cases(max_cases=10) == []
 
 
+def test_auto_closing_skips_consumer_debt_procedure_end_ruling(tmp_path):
+    case_dir = tmp_path / "2025-0045-郭麗卿-消費者債務清理-清算"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    intermediate = judgment_dir / "20260601 臺灣花蓮地方法院113年度消債清字第1號裁定（主文：本件清算程序終結）.pdf"
+    intermediate.write_bytes(b"%PDF-1.4\n")
+    orch = _orchestrator_with_rows([
+        {
+            "case_number": "2025-0045",
+            "client_name": "郭麗卿",
+            "legal_aid_number": "1130402-T-030",
+            "folder_path": str(case_dir),
+            "case_reason": "消費者債務清理",
+        }
+    ])
+
+    assert orch._get_pending_closing_draft_cases(max_cases=10) == []
+
+
+def test_auto_closing_skips_own_pleading_docx_with_ruling_words(tmp_path):
+    case_dir = tmp_path / "2025-0003-蕭仁俊-非常上訴-強盜殺人"
+    pleading_dir = case_dir / "04_我方歷次書狀"
+    pleading_dir.mkdir(parents=True)
+    pleading = pleading_dir / "10蕭仁俊_補充判決暨暫時處分裁定聲請二狀.docx"
+    pleading.write_bytes(b"fake-docx")
+    orch = _orchestrator_with_rows([
+        {
+            "case_number": "2025-0003",
+            "client_name": "蕭仁俊",
+            "legal_aid_number": "1150206-A-042",
+            "folder_path": str(case_dir),
+            "case_reason": "刑事",
+        }
+    ])
+
+    assert orch._get_pending_closing_draft_cases(max_cases=10) == []
+
+
 def test_auto_closing_skips_mediation_transcript_and_generic_ruling(tmp_path):
     case_dir = tmp_path / "2025-0091-測試甲-一審-損害賠償"
     judgment_dir = case_dir / "10_判決書"

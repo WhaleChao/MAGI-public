@@ -141,6 +141,47 @@ class TestUpdateLafStatusWithApproval:
         assert second_db.execute_write.call_count == 2
 
 
+def test_repair_false_laf_closing_status_restores_active_case_without_basis(tmp_path, monkeypatch):
+    import casper_ecosystem.law_firm_orchestrators.laf_nightly_audit as audit
+
+    case_dir = tmp_path / "2025-0047-黃彩庭-一審-測試"
+    case_dir.mkdir(parents=True)
+
+    class FakeDB:
+        def __init__(self):
+            self.writes = []
+
+        def fetch_all(self, *_args, **_kwargs):
+            return [
+                {
+                    "id": 47,
+                    "case_number": "2025-0047",
+                    "client_name": "黃彩庭",
+                    "case_reason": "民事",
+                    "status": "結案中",
+                    "folder_path": "Z:/lumi63181107/01_案件/法扶案件/民事/2025-0047-黃彩庭-一審-測試",
+                    "legal_aid_number": "1130619-T-027",
+                    "laf_case_no": "1130619-T-027",
+                    "application_no": "1130619-T-027",
+                    "legal_aid_status": "已結案，待報結",
+                    "manual_laf_status_lock": 0,
+                }
+            ]
+
+        def execute_write(self, sql, params):
+            self.writes.append((sql, params))
+
+    monkeypatch.setattr(audit, "_to_mac_path", lambda _folder: str(case_dir))
+
+    db = FakeDB()
+    result = audit.repair_false_laf_closing_statuses(db, dry_run=False)
+
+    assert result["repaired"] == 1
+    assert result["items"][0]["case_number"] == "2025-0047"
+    assert db.writes
+    assert db.writes[0][1] == (47,)
+
+
 # ── verify_portal_closing_status 狀態 mapping ────────────────────────────────
 
 class TestVerifyPortalClosingStatusMapping:

@@ -46,6 +46,7 @@ from api.osc.drive_case_sync import (
     load_case_aliases,
     load_case_exclusions,
     run_priority_case_sync,
+    _closed_status_text,
     _download_drive_entry,
     _drive_list_children,
 )
@@ -56,6 +57,13 @@ def test_extract_osc_case_folder_metadata():
     assert meta.case_number == "2026-0001"
     assert meta.client_hint == "測試甲"
     assert meta.reason_hint == "勞工爭議"
+
+
+def test_pending_laf_report_status_is_not_archived_closed():
+    assert _closed_status_text("已結案，待報結") is False
+    assert _closed_status_text("結案中") is False
+    assert _closed_status_text("已結案，待送出") is True
+    assert _closed_status_text("已結案") is True
 
 
 def test_extract_laf_drive_folder_metadata():

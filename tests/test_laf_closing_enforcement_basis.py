@@ -88,6 +88,58 @@ def test_consumer_debt_transfer_ruling_does_not_trigger_closing_basis(tmp_path):
     assert str(transfer) not in docs["closing_basis_files"]
 
 
+def test_consumer_debt_procedure_end_is_not_auto_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0045-郭麗卿-消費者債務清理-清算"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    intermediate = judgment_dir / "20260601 臺灣花蓮地方法院113年度消債清字第1號裁定（主文：本件清算程序終結）.pdf"
+    intermediate.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(intermediate) not in docs["closing_basis_files"]
+    assert not scanner._is_auto_closing_basis_candidate(
+        str(intermediate),
+        case_reason="消費者債務清理",
+        folder_path=str(case_dir),
+    )
+
+
+def test_pleading_docx_with_ruling_words_is_not_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0003-蕭仁俊-非常上訴-強盜殺人"
+    pleading_dir = case_dir / "04_我方歷次書狀"
+    pleading_dir.mkdir(parents=True)
+    pleading = pleading_dir / "10蕭仁俊_補充判決暨暫時處分裁定聲請二狀.docx"
+    pleading.write_bytes(b"fake-docx")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(pleading) not in docs["closing_basis_files"]
+    assert not scanner._is_auto_closing_basis_candidate(
+        str(pleading),
+        case_reason="刑事",
+        folder_path=str(case_dir),
+    )
+
+
+def test_ruling_that_mentions_judgment_request_is_not_auto_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0003-蕭仁俊-非常上訴-強盜殺人"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    ruling = judgment_dir / "20260317 憲法法庭115年審裁字第578號裁定(蕭仁俊；主文：一、補充判決之聲請不受理；二、暫時處分之聲請駁回).pdf"
+    ruling.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+
+    assert not scanner._is_auto_closing_basis_candidate(
+        str(ruling),
+        case_reason="刑事",
+        folder_path=str(case_dir),
+    )
+
+
 def test_consumer_debt_terminal_rulings_are_closing_basis(tmp_path):
     case_dir = tmp_path / "2025-0088-王小明-消費者債務清理-清算"
     judgment_dir = case_dir / "10_判決書"

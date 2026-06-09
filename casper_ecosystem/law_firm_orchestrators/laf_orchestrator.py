@@ -6689,7 +6689,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     def run_closing_drafts(self, max_cases: int = 0) -> dict:
         """
-        自動找「10_判決書已到位」的進行中法扶案件，
+        自動找「已進入待報結狀態」且 10_判決書已有嚴格終局文件的法扶案件，
         呼叫既有 execute_portal_action_draft(action=closing) 暫存。
         僅暫存，不送出。
         """

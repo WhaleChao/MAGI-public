@@ -2590,7 +2590,7 @@ def _folder_auto_closing_basis_files(mac_folder: str, case: dict | None = None) 
     safe_keywords = (
         "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
         "免責裁定", "不免責裁定", "復權裁定", "復權確定",
-        "認可更生方案", "更生方案認可", "終結", "終止",
+        "認可更生方案", "更生方案認可",
     )
     review_only = ("調解筆錄", "和解筆錄", "調解書", "和解書", "普通裁定")
     out: List[str] = []
@@ -2603,6 +2603,93 @@ def _folder_auto_closing_basis_files(mac_folder: str, case: dict | None = None) 
     except Exception:
         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2456, exc_info=True)
     return out
+
+
+def _active_canonical_case_folder(folder_path: str) -> bool:
+    """Return True only for canonical active-case paths, not archived paths."""
+    text = str(folder_path or "").replace("\\", "/").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    if upper.startswith("Y:/") or "/10_結案/" in text:
+        return False
+    return upper.startswith("Z:/") or "/01_案件/" in text
+
+
+def repair_false_laf_closing_statuses(db, dry_run: bool = False) -> dict:
+    """
+    Restore automated false-positive LAF closing statuses.
+
+    Manual LAF status locks are respected.  This only repairs active-folder
+    cases that were moved into 「待報結」 without a strict terminal basis file.
+    """
+    if db is None:
+        return {"checked": 0, "repaired": 0, "items": [], "error": "db_unavailable"}
+    query = """
+        SELECT `id`, `case_number`, `client_name`, `case_reason`, `status`,
+               `folder_path`, `legal_aid_number`, `laf_case_no`, `application_no`,
+               `legal_aid_status`, COALESCE(`manual_laf_status_lock`, 0) AS `manual_laf_status_lock`
+        FROM `cases`
+        WHERE (`case_category` = '法律扶助案件'
+               OR `case_reason` LIKE '%法扶%'
+               OR `case_reason` LIKE '%法律扶助%')
+          AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
+          AND COALESCE(`manual_laf_status_lock`, 0) = 0
+        ORDER BY `updated_at` DESC, `id` DESC
+        LIMIT 500
+    """
+    try:
+        rows = db.fetch_all(query, (), as_dict=True) or []
+    except TypeError:
+        rows = db.fetch_all(query, as_dict=True) or []
+    except Exception as e:
+        logger.warning("法扶待報結誤判修復掃描失敗: %s", e)
+        return {"checked": 0, "repaired": 0, "items": [], "error": str(e)}
+
+    items: List[dict] = []
+    for row in rows:
+        folder = str(row.get("folder_path") or "")
+        if not _active_canonical_case_folder(folder):
+            continue
+        mac_folder = _to_mac_path(folder)
+        if not mac_folder or not _is_dir_ok(mac_folder):
+            continue
+        basis_files = _folder_auto_closing_basis_files(mac_folder, row)
+        if basis_files:
+            continue
+        items.append({
+            "id": row.get("id"),
+            "case_number": row.get("case_number"),
+            "client_name": _display_client_name(row),
+            "legal_aid_number": _case_laf_number(row),
+            "old_legal_aid_status": row.get("legal_aid_status") or "",
+            "old_status": row.get("status") or "",
+            "folder_path": folder,
+            "reason": "active_folder_without_strict_closing_basis",
+        })
+
+    if items and not dry_run and hasattr(db, "execute_write"):
+        for item in items:
+            try:
+                db.execute_write(
+                    """
+                    UPDATE `cases`
+                    SET `legal_aid_status` = '進行中',
+                        `status` = CASE
+                            WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status`
+                            ELSE '進行中'
+                        END
+                    WHERE `id` = %s
+                      AND COALESCE(`manual_laf_status_lock`, 0) = 0
+                      AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
+                    """,
+                    (item["id"],),
+                )
+            except Exception as e:
+                item["error"] = str(e)
+                logger.warning("法扶待報結誤判修復失敗 %s: %s", item.get("case_number"), e)
+    repaired = len([x for x in items if not x.get("error")]) if not dry_run else 0
+    return {"checked": len(rows), "repaired": repaired, "items": items, "dry_run": dry_run}
 
 
 def _run_closing_drafts(max_cases: int = 5) -> dict:
@@ -3733,8 +3820,18 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         except Exception as _rc_e:
             logger.warning("Placeholder reconcile 跳過: %s", _rc_e)
 
+    # 2d. 修復誤入待報結：只修未人工鎖定、仍在進行中資料夾且無嚴格終局文件的案件
+    false_closing_repair = repair_false_laf_closing_statuses(db, dry_run=dry_run)
+    if false_closing_repair.get("items"):
+        logger.warning(
+            "法扶待報結誤判修復: repaired=%d checked=%d",
+            false_closing_repair.get("repaired", 0),
+            false_closing_repair.get("checked", 0),
+        )
+
     # 3. 掃描開辦/結案狀態
     status = scan_laf_reporting_status(db)
+    status["false_closing_repair"] = false_closing_repair
     logger.info(
         "狀態統計 — 逾期未開辦:%d, 可開辦:%d, 待報結:%d, 可報結:%d",
         len(status["not_started"]),
