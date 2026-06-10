@@ -24,6 +24,14 @@ def _make_app():
     def health():
         return "health"
 
+    @app.get("/lottery")
+    def lottery():
+        return "lottery"
+
+    @app.post("/api/lottery/draw")
+    def lottery_draw():
+        return "draw"
+
     @app.post("/line/webhook")
     def line_webhook():
         return "line"
@@ -59,6 +67,18 @@ def test_cloudflare_tunnel_allows_whitelisted_routes():
 
     response = client.get(
         "/health",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/lottery",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.post(
+        "/api/lottery/draw",
         headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
     )
     assert response.status_code == 200

@@ -45,7 +45,14 @@ def install_request_guards(app, logger) -> None:
         if _env_truthy("MAGI_ALLOW_CLOUDFLARE_WEB_UI"):
             return None
 
-        allowed_prefixes = ("/line/webhook", "/telegram/webhook", "/callback", "/health")
+        allowed_prefixes = (
+            "/line/webhook",
+            "/telegram/webhook",
+            "/callback",
+            "/health",
+            "/lottery",
+            "/api/lottery",
+        )
         allowed = any(path == prefix or path.startswith(prefix + "/") for prefix in allowed_prefixes)
         if allowed:
             return None
