@@ -7,6 +7,56 @@
                     </div>
                 </div>
             </div>
+            <div class="grid-2">
+                <div class="card" id="liveValidationSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>Live 驗證</h3>
+                            <div class="section-note">快速檢查核心服務、NAS、Drive、資料庫與模型狀態。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn primary" id="adminLiveValidationRunBtn">立即驗證</button>
+                        </div>
+                    </div>
+                    <div id="adminLiveValidationSummary" class="status-banner" hidden></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>項目</th><th>狀態</th><th>摘要</th></tr></thead>
+                            <tbody id="adminLiveValidationBody"><tr><td colspan="3" class="muted">尚未驗證</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="driveExclusionsSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>Drive / NAS 排除管理</h3>
+                            <div class="section-note">維護不納入 Drive/NAS 案件同步的資料夾相對路徑。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="adminDriveExclusionsRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 3;">
+                            <label for="adminDriveExclusionPath">相對路徑</label>
+                            <input id="adminDriveExclusionPath" placeholder="例如 法扶案件/Lumi/01.消債/測試案件">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn primary" id="adminDriveExclusionAddBtn">新增排除</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="adminDriveExclusionsStatus" class="helper" style="margin-top:8px"></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>相對路徑</th><th>操作</th></tr></thead>
+                            <tbody id="adminDriveExclusionsBody"><tr><td colspan="2" class="muted">載入中...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
             <div class="card" id="gcalSection">
                 <div class="section-head">
                     <div>

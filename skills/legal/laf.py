@@ -2285,6 +2285,28 @@ class LAFGmailMonitor:
         # Optional durable processed check, usually backed by osc.laf_email_records.
         # JSON and dedup_db are fallbacks; a DB-missing record must be recoverable.
         self.processed_exists_func = None
+        self._state_path = Path(
+            os.environ.get(
+                "MAGI_LAF_GMAIL_MONITOR_STATE",
+                str(_MAGI_ROOT / "static" / "laf_gmail_monitor_state.json"),
+            )
+        )
+
+    def _write_monitor_state(self, status: str, **extra: Any) -> None:
+        payload = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "running": bool(self._running),
+            "token_path": str(self.token_path),
+        }
+        payload.update(extra)
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._state_path)
+        except Exception:
+            _logging.getLogger(__name__).debug("silent-catch laf gmail monitor state", exc_info=True)
     
     def _load_processed_ids(self, suffix: str = '') -> set:
         """載入已處理的 Email ID 記錄"""
@@ -3209,6 +3231,7 @@ class LAFGmailMonitor:
             return
         
         if not self.authenticate():
+            self._write_monitor_state("auth_failed", error="authenticate_failed")
             return
         
         self._running = True
@@ -3219,6 +3242,7 @@ class LAFGmailMonitor:
         )
         self._monitor_thread.start()
         self.log(f"✅ Gmail 監控已啟動 (每 {interval_seconds} 秒檢查)")
+        self._write_monitor_state("started", interval_sec=int(interval_seconds))
     
     def stop_monitor(self):
         """停止監控"""
@@ -3280,6 +3304,12 @@ class LAFGmailMonitor:
                         check_exists_func=self.processed_exists_func,
                         mark_processed=False,
                     )
+                    self._write_monitor_state(
+                        "ok",
+                        interval_sec=int(interval),
+                        laf_cases=len(cases or []),
+                        consecutive_errors=_consecutive_errors,
+                    )
                     for case_info in cases:
                         callback_ok = True
                         if self.callback:
@@ -3308,6 +3338,12 @@ class LAFGmailMonitor:
 
                 except Exception as e:
                     _consecutive_errors += 1
+                    self._write_monitor_state(
+                        "error",
+                        interval_sec=int(interval),
+                        consecutive_errors=_consecutive_errors,
+                        error=str(e)[:500],
+                    )
                     self.log(f"❌ 監控迴圈錯誤 (連續第 {_consecutive_errors} 次): {e}")
                     # 連續失敗達閾值 → 發一次 admin 通知（有冷卻）
                     if _consecutive_errors >= _ADMIN_NOTIFY_THRESHOLD:
@@ -3331,6 +3367,7 @@ class LAFGmailMonitor:
                             self.log(f"❌ 重新認證失敗: {_ae}")
                     time.sleep(min(60 * _consecutive_errors, 300))
         finally:
+            self._write_monitor_state("exiting")
             _log.info("LAF Gmail monitor thread exiting")
 
 

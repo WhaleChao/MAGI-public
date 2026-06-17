@@ -94,7 +94,14 @@ except Exception:
 # ---------------------------------------------------------------------------
 CODE_DIR = ORCH_DIR
 CONFIG_PATH = str(get_config_path("config.json"))
-DEFAULT_DOWNLOAD_FOLDER = os.path.expanduser("~/Desktop/MAGI_v2/閱卷下載")
+
+
+def _default_download_folder() -> str:
+    root = os.environ.get("MAGI_ROOT_DIR", _magi_root).strip() or _magi_root
+    return os.path.join(os.path.abspath(os.path.expanduser(root)), "閱卷下載")
+
+
+DEFAULT_DOWNLOAD_FOLDER = _default_download_folder()
 JSON_DIR = str(get_json_dir())
 BG_JOB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bg_jobs")
 RECENT_ACTIVITY_STATE_FILE = ".recent_activity_notified.json"

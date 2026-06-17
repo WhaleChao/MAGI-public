@@ -1280,3 +1280,225 @@ tr.fm-drop-target > td {
     cursor: default;
 }
 .fm-context-menu li.sep:hover { background: rgba(0, 0, 0, 0.08); }
+
+/* === Dark theme completion for the NAS file manager === */
+body.theme-dark #fileManager {
+    --card-bg: #0f172a;
+    --text-primary: #e2e8f0;
+    --text-secondary: #a8b5c8;
+    --apple-border: #334155;
+    --apple-blue: #38bdf8;
+    color: var(--text-primary);
+}
+
+body.theme-dark #fileManager .fm-sidebar,
+body.theme-dark #fileManager .fm-main,
+body.theme-dark #fileManager .fm-grid-item,
+body.theme-dark #fileManager .fm-upload-queue,
+body.theme-dark #fileManager .fm-modal-dialog,
+body.theme-dark #fileManager .fm-context-menu {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-sidebar,
+body.theme-dark #fileManager .fm-main {
+    box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.06);
+}
+
+body.theme-dark #fileManager .fm-breadcrumb {
+    background: linear-gradient(90deg, rgba(56, 189, 248, 0.14), rgba(14, 165, 233, 0.06));
+    border-color: rgba(56, 189, 248, 0.24);
+}
+
+body.theme-dark #fileManager .fm-breadcrumb .crumb {
+    color: #7dd3fc;
+}
+
+body.theme-dark #fileManager .fm-breadcrumb .crumb.current {
+    background: rgba(148, 163, 184, 0.14);
+    color: #f8fafc;
+}
+
+body.theme-dark #fileManager .fm-breadcrumb .sep,
+body.theme-dark #fileManager .fm-toolbar-label,
+body.theme-dark #fileManager .fm-toolbar label.toggle,
+body.theme-dark #fileManager .fm-grid-item .fm-grid-meta,
+body.theme-dark #fileManager .fm-compact-item .fm-compact-meta,
+body.theme-dark #fileManager .fm-section-title,
+body.theme-dark #fileManager .fm-meta,
+body.theme-dark #fileManager .fm-empty,
+body.theme-dark #fileManager .fm-loading-inline,
+body.theme-dark #fileManager .fm-tree-node .tw,
+body.theme-dark #fileManager .fm-case-sub,
+body.theme-dark #fileManager .fm-case-empty,
+body.theme-dark #fileManager .fm-preview-loading,
+body.theme-dark #fileManager .fm-queue-item .fm-queue-status,
+body.theme-dark #fileManager .fm-preview-section .label {
+    color: #a8b5c8;
+}
+
+body.theme-dark #fileManager .fm-mini-select,
+body.theme-dark #fileManager .fm-move-pending .btn-mini,
+body.theme-dark #fileManager .fm-modal-head .btn-mini,
+body.theme-dark #fileManager .fm-modal-foot .btn-mini {
+    background: #111827;
+    border-color: #475569;
+    color: #f8fafc;
+}
+
+body.theme-dark #fileManager .fm-view-status {
+    background: rgba(56, 189, 248, 0.16);
+    color: #7dd3fc;
+}
+
+body.theme-dark #fileManager .fm-section-title,
+body.theme-dark #fileManager .fm-table th,
+body.theme-dark #fileManager .fm-table td,
+body.theme-dark #fileManager .fm-advanced-path {
+    border-color: #334155;
+}
+
+body.theme-dark #fileManager .fm-table th {
+    background: #1e293b;
+    color: #cbd5e1;
+}
+
+body.theme-dark #fileManager .fm-table tbody tr td {
+    background: #0f172a;
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-table tbody tr:nth-child(even) td {
+    background: #111827;
+}
+
+body.theme-dark #fileManager .fm-table tbody tr:hover td,
+body.theme-dark #fileManager .fm-table tbody tr:nth-child(even):hover td {
+    background: #18314f;
+    color: #f8fafc;
+}
+
+body.theme-dark #fileManager .fm-table tbody tr.fm-row.selected td {
+    background: #0f3a5a !important;
+    color: #f8fafc;
+}
+
+body.theme-dark #fileManager .fm-grid-item:hover,
+body.theme-dark #fileManager .fm-compact-item:hover,
+body.theme-dark #fileManager .fm-tree-node:hover,
+body.theme-dark #fileManager .fm-case-item:hover,
+body.theme-dark #fileManager .fm-case-item.active {
+    background: rgba(56, 189, 248, 0.12);
+    border-color: rgba(125, 211, 252, 0.4);
+}
+
+body.theme-dark #fileManager .fm-grid-item.selected,
+body.theme-dark #fileManager .fm-compact-item.selected,
+body.theme-dark #fileManager .fm-tree-node.active {
+    background: rgba(14, 165, 233, 0.24);
+    color: #7dd3fc;
+}
+
+body.theme-dark #fileManager .fm-tree-node {
+    color: #dbeafe;
+}
+
+body.theme-dark #fileManager .fm-tree-children {
+    border-left-color: rgba(148, 163, 184, 0.22);
+}
+
+body.theme-dark #fileManager .fm-name,
+body.theme-dark #fileManager .fm-grid-name,
+body.theme-dark #fileManager .fm-compact-name,
+body.theme-dark #fileManager .fm-case-title,
+body.theme-dark #fileManager .fm-queue-item .fm-queue-name,
+body.theme-dark #fileManager .fm-preview-section .val,
+body.theme-dark #fileManager .fm-preview-attachments li,
+body.theme-dark #fileManager .fm-modal-title,
+body.theme-dark #fileManager .fm-context-menu li {
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-case-item {
+    background: #111827;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-case-status {
+    background: rgba(56, 189, 248, 0.14);
+    border-color: rgba(125, 211, 252, 0.32);
+    color: #7dd3fc;
+}
+
+body.theme-dark #fileManager .fm-case-folder {
+    background: rgba(74, 222, 128, 0.12);
+    border-color: rgba(134, 239, 172, 0.32);
+    color: #86efac;
+}
+
+body.theme-dark #fileManager .fm-status {
+    background: rgba(251, 191, 36, 0.12);
+    border-left-color: #fbbf24;
+    color: #fde68a;
+}
+
+body.theme-dark #fileManager .fm-status.error {
+    background: rgba(248, 113, 113, 0.12);
+    border-left-color: #f87171;
+    color: #fecaca;
+}
+
+body.theme-dark #fileManager .fm-modal-head,
+body.theme-dark #fileManager .fm-modal-foot,
+body.theme-dark #fileManager .fm-queue-head,
+body.theme-dark #fileManager .fm-preview-section {
+    background: #111827;
+    border-color: #334155;
+}
+
+body.theme-dark #fileManager .fm-modal-body,
+body.theme-dark #fileManager .fm-preview-text,
+body.theme-dark #fileManager .fm-preview-table,
+body.theme-dark #fileManager .fm-preview-section {
+    background: #0b1120;
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-preview-table th,
+body.theme-dark #fileManager .fm-preview-table td {
+    border-color: #334155;
+    color: #e2e8f0;
+}
+
+body.theme-dark #fileManager .fm-preview-table th {
+    background: #1e293b;
+}
+
+body.theme-dark #fileManager .fm-queue-item .fm-queue-bar {
+    background: rgba(148, 163, 184, 0.18);
+}
+
+body.theme-dark #fileManager .fm-modal-close,
+body.theme-dark #fileManager .fm-queue-close {
+    color: #cbd5e1;
+}
+
+body.theme-dark #fileManager .fm-modal-close:hover,
+body.theme-dark #fileManager .fm-queue-close:hover,
+body.theme-dark #fileManager .fm-context-menu li:hover {
+    background: rgba(56, 189, 248, 0.12);
+    color: #7dd3fc;
+}
+
+body.theme-dark #fileManager .fm-context-menu li.sep,
+body.theme-dark #fileManager .fm-context-menu li.sep:hover {
+    background: #334155;
+}
+
+body.theme-dark #fileManager .fm-context-menu li.danger:hover {
+    background: rgba(248, 113, 113, 0.14);
+    color: #fecaca;
+}

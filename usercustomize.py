@@ -1,7 +1,10 @@
 """
-Global runtime guards for MAGI Python processes.
+User-level runtime guards for MAGI Python processes.
 
-Auto-loaded by Python's site initialization when this directory is on sys.path.
+Homebrew Python ships a stdlib sitecustomize.py that can be found before the
+project root.  Python still imports usercustomize after site initialization, so
+this file is the reliable hook for launchd/venv processes once MAGI_ROOT is on
+sys.path.
 """
 
 from __future__ import annotations
@@ -10,17 +13,11 @@ import importlib.abc
 import importlib.util
 import os
 import sys
-from pathlib import Path
 
 
-# Stability-first defaults (can still be overridden by explicit env vars).
 os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
 os.environ.setdefault("MYSQL_USE_PURE", "1")
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
-
-_ROOT = Path(__file__).resolve().parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
 
 
 def _env_on(name: str, default: bool = False) -> bool:

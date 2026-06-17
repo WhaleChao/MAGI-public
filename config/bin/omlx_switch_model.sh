@@ -5,6 +5,8 @@
 set -euo pipefail
 
 MODE="${1:-day}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAGI_ROOT_DIR="${MAGI_ROOT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 probe_model_id_at_port() {
     local port="$1"
@@ -100,7 +102,7 @@ DAY_PRIMARY_MAX_TOKENS="${MAGI_DAY_MODEL_MAX_TOKENS:-8192}"
 DAY_PRIMARY_MAX_CONTEXT_WINDOW="${MAGI_DAY_MODEL_MAX_CONTEXT_WINDOW:-8192}"
 DAY_PRIMARY_MIN_FREE_GB="${MAGI_DAY_MODEL_MIN_FREE_GB:-8}"
 GEMMA4_UNIFIED_WRAPPER="${MAGI_OMLX_GEMMA4_WRAPPER:-/Users/ai/.omlx/bin/omlx-gemma4-unified-serve}"
-GEMMA4_UNIFIED_PYTHON="${MAGI_OMLX_GEMMA4_PYTHON:-/Users/ai/Desktop/MAGI_v2/venv/bin/python3}"
+GEMMA4_UNIFIED_PYTHON="${MAGI_OMLX_GEMMA4_PYTHON:-$MAGI_ROOT_DIR/venv/bin/python3}"
 B26_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-4bit"
 B26_LEGACY_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-UD-4bit"
 UID_NUM=$(id -u)
@@ -108,6 +110,8 @@ LOG="/opt/homebrew/var/log/omlx_switch.log"
 LOCKDIR="/tmp/omlx_switch.lock.d"
 LOCK_STALE_SEC=600   # 超過 10 分鐘視為 stale（night 切換含 sleep 120+heartbeat 60，正常 3-5 分鐘內完成）
 ADMIN_NOTIFY_FILE="/tmp/omlx_switch_alert.txt"
+OMLX_SSD_CACHE_ROOT="${MAGI_OMLX_PAGED_CACHE_ROOT:-$HOME/.omlx/paged-cache}"
+OMLX_CACHE_ON_SSD="${MAGI_OMLX_CACHE_ON_SSD:-1}"
 
 log() { printf '%s [switch] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
 
@@ -117,6 +121,49 @@ plist_set_env() {
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
     /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:${key} ${value}" "$plist" 2>/dev/null || \
         /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:${key} string ${value}" "$plist" 2>/dev/null || true
+}
+
+plist_set_program_arg() {
+    local plist="$1"
+    local index="$2"
+    local value="$3"
+    /usr/libexec/PlistBuddy -c "Set :ProgramArguments:${index} ${value}" "$plist" 2>/dev/null || true
+}
+
+omlx_cache_dir() {
+    local cache_name="$1"
+    local fallback="$2"
+    local root="$OMLX_SSD_CACHE_ROOT"
+    if [ "$OMLX_CACHE_ON_SSD" != "0" ] && [ -n "$root" ]; then
+        local candidate="$root/$cache_name"
+        local probe="/tmp/magi_omlx_cache_probe.$$.$cache_name"
+        (
+            mkdir -p "$candidate" &&
+            : > "$candidate/.magi_cache_probe" &&
+            rm -f "$candidate/.magi_cache_probe" &&
+            printf 'ok' > "$probe"
+        ) >/dev/null 2>&1 &
+        local pid=$!
+        local waited=0
+        while [ "$waited" -lt 3 ]; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid" 2>/dev/null || true
+                break
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        elif [ -f "$probe" ]; then
+            rm -f "$probe"
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        rm -f "$probe" 2>/dev/null || true
+    fi
+    mkdir -p "$fallback" 2>/dev/null || true
+    printf '%s\n' "$fallback"
 }
 
 # ---- A1: mkdir 原子互斥鎖（macOS 無 flock CLI）----
@@ -169,8 +216,8 @@ fi
 
 # ---- Layer 3: 檢查 pause 狀態（人工介入或反覆 abort 已觸發 TTL pause）----
 # status / auto 模式不受 pause 影響（前者為唯讀，後者有冪等檢查）
-GATEKEEPER="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_switch_gatekeeper.py"
-GATEKEEPER_PY="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+GATEKEEPER="$MAGI_ROOT_DIR/scripts/ops/omlx_switch_gatekeeper.py"
+GATEKEEPER_PY="$MAGI_ROOT_DIR/venv/bin/python3"
 if [ "$MODE" != "status" ] && [ -x "$GATEKEEPER" ] && [ -x "$GATEKEEPER_PY" ]; then
     if ! MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-paused 2>&1 | while read ln; do log "$ln"; done; then
         :  # while read wraps around pipeline; real exit code fetched below
@@ -253,7 +300,7 @@ preflight_memory_check() {
     avail=$(available_memory_gb)
     log "preflight: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
     if [ "$avail" -lt "$required_gb" ]; then
-        local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+        local governor="$MAGI_ROOT_DIR/scripts/ops/resource_governor.py"
         if [ -x "$GATEKEEPER_PY" ] && [ -f "$governor" ]; then
             log "preflight: 記憶體不足，先執行 resource_governor safe cleanup 後重試"
             MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" --json prepare-switch \
@@ -280,6 +327,8 @@ preflight_memory_check() {
 }
 
 configure_e4b_runtime_env() {
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-e4b /Users/ai/.omlx/cache-e4b)
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
@@ -290,10 +339,13 @@ configure_e4b_runtime_env() {
     plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 0
     plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
     plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (E4B): $paged_cache_dir"
 }
 
 configure_day_primary_runtime_env() {
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-gemma4-12b /Users/ai/.omlx/cache-gemma4-12b)
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY "$DAY_PRIMARY_MAX_MODEL_MEMORY"
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY "$DAY_PRIMARY_MAX_PROCESS_MEMORY"
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS "$DAY_PRIMARY_INITIAL_CACHE_BLOCKS"
@@ -304,10 +356,13 @@ configure_day_primary_runtime_env() {
     plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 1
     plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
     plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-gemma4-12b
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (day primary): $paged_cache_dir"
 }
 
 configure_night_runtime_env() {
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-26b /Users/ai/.omlx/cache-26b)
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2
@@ -318,7 +373,8 @@ configure_night_runtime_env() {
     plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 0
     plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
     plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-26b
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (night): $paged_cache_dir"
 }
 
 start_night_e4b_fallback() {
@@ -371,7 +427,7 @@ start_day_e4b_fallback() {
 }
 
 resource_guard_allows_night_26b() {
-    local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+    local governor="$MAGI_ROOT_DIR/scripts/ops/resource_governor.py"
     [ -x "$GATEKEEPER_PY" ] || return 0
     [ -f "$governor" ] || return 0
     local payload level disk_free
@@ -429,8 +485,8 @@ heartbeat_check() {
     if [ "$count" -gt "$upper_limit" ]; then
         notify_admin "${mode_name} 切換後偵測到 ${count} 個 MLX process（上限 ${upper_limit}），疑似重複實例，啟動 Layer 1 reaper"
     fi
-    local reaper="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_heartbeat_reaper.py"
-    local py="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+    local reaper="$MAGI_ROOT_DIR/scripts/ops/omlx_heartbeat_reaper.py"
+    local py="$MAGI_ROOT_DIR/venv/bin/python3"
     if [ -x "$reaper" ] && [ -x "$py" ]; then
         "$py" "$reaper" --expected-ports "$expected_ports" --mode-name "$mode_name" 2>&1 | while read ln; do log "$ln"; done || true
     else
@@ -623,7 +679,9 @@ case "$MODE" in
 
     # 啟動 Phi-4 和 SmolLM3（若模型已下載）
     if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ]; then
-        mkdir -p /Users/ai/.omlx/cache-phi4
+        PHI4_CACHE_DIR=$(omlx_cache_dir cache-phi4 /Users/ai/.omlx/cache-phi4)
+        plist_set_program_arg "$HOME/Library/LaunchAgents/com.magi.omlx-phi4.plist" 15 "$PHI4_CACHE_DIR"
+        log "oMLX paged cache (Phi-4): $PHI4_CACHE_DIR"
         rm -f /Users/ai/.omlx/models-text-phi4/*
         ln -sf "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" \
                "/Users/ai/.omlx/models-text-phi4/Phi-4-mini-instruct-4bit"
@@ -639,7 +697,9 @@ case "$MODE" in
 
     if ls /Users/ai/.omlx/models/ | grep -q "SmolLM3"; then
         SMOL_MODEL=$(ls /Users/ai/.omlx/models/ | grep SmolLM3 | head -1)
-        mkdir -p /Users/ai/.omlx/cache-smol
+        SMOL_CACHE_DIR=$(omlx_cache_dir cache-smol /Users/ai/.omlx/cache-smol)
+        plist_set_program_arg "$HOME/Library/LaunchAgents/com.magi.omlx-smol.plist" 15 "$SMOL_CACHE_DIR"
+        log "oMLX paged cache (SmolLM3): $SMOL_CACHE_DIR"
         rm -f /Users/ai/.omlx/models-text-smol/*
         ln -sf "/Users/ai/.omlx/models/$SMOL_MODEL" \
                "/Users/ai/.omlx/models-text-smol/$SMOL_MODEL"

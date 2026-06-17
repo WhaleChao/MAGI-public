@@ -35,7 +35,6 @@ function bindTabs() {
             };
 
             if (tabId === "dashboard") _withLoading("載入業務概覽...", loadDashboard);
-            if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
             if (tabId === "clients") _withLoading("載入當事人...", loadClients);
@@ -129,8 +128,8 @@ async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
     if (act === "case-edit") return await editCase(id);
     if (act === "case-del") return await delCase(id);
-    if (act === "case-open") return await openCaseFolder(id);
-    if (act === "case-open-fm") return await openCaseFolder(id);
+    if (act === "case-open") return await openCaseInFileManager(id);
+    if (act === "case-open-fm") return await openCaseInFileManager(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
     if (act === "case-close") return await closeCase(id);
     if (act === "case-doc-finalize") return await openCaseDocumentFinalizer(id);
@@ -264,13 +263,14 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "admin-opponent-del") return await delAdminOpponent(Number(id));
     if (act === "admin-pdf-log-del") return await delAdminPdfLog(Number(id));
     if (act === "admin-activity-del") return await delAdminActivityLog(Number(id));
+    if (act === "admin-drive-exclusion-del") return await removeAdminDriveExclusion(t.dataset.path || "");
 
     // P3: Backup / Restore
     if (act === "osc-backup-dry-run") return await restoreOscBackup(t.dataset.filename || "", true);
     if (act === "osc-backup-restore") return await restoreOscBackup(t.dataset.filename || "", false);
     if (act === "osc-backup-del") return await delOscBackup(t.dataset.filename || "");
 
-    if (act === "wb-case-open") return await openCaseFolder(id);
+    if (act === "wb-case-open") return await openCaseInFileManager(id);
     if (act === "wb-case-open-host") return await openCaseFolderHost(id);
     if (act === "wb-case-workbench") return await openCaseWorkbench(id);
     if (act === "wb-case-save") return await saveWorkbenchCase();
@@ -324,7 +324,7 @@ function bindGlobalDelegates() {
             const caseId = caseRow.dataset.caseId;
             if (caseId) {
                 try {
-                    await openCaseFolder(caseId);
+                    await openCaseInFileManager(caseId);
                     showToast("已送出案件資料夾開啟動作。", "ok");
                 } catch (err) {
                     showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
@@ -488,6 +488,9 @@ function bindEvents() {
         ["gcalSyncDryRunBtn", () => syncGcal(true), "Google 日曆同步預覽"],
         ["gcalSyncBtn", () => syncGcal(false), "GCal 立即同步"],
         ["gcalDisconnectBtn", disconnectGcal, "GCal 解除授權"],
+        ["adminLiveValidationRunBtn", loadAdminLiveValidation, "Live 驗證"],
+        ["adminDriveExclusionsRefreshBtn", loadAdminDriveExclusions, "排除清單重新整理"],
+        ["adminDriveExclusionAddBtn", addAdminDriveExclusion, "新增 Drive/NAS 排除"],
         ["oscBackupCreateBtn", createOscBackup, "立即備份"],
         ["oscBackupRefreshBtn", loadOscBackups, "備份列表重新整理"],
         ["adminReasonSearchBtn", loadAdminCaseReasons, "案由模板搜尋"],

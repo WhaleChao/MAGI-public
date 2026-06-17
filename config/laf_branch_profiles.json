@@ -1,13 +1,13 @@
 {
   "schema": 1,
-  "default_lawyer_name": "受任律師",
+  "default_lawyer_name": "喬政翔律師",
   "law_firm_profile": {
-    "lawyer_name": "受任律師",
-    "office_name": "事務所名稱",
-    "address_line": "事務所地址",
-    "phone": "事務所電話",
-    "fax": "",
-    "mobile": ""
+    "lawyer_name": "喬政翔律師",
+    "office_name": "喬政翔律師事務所",
+    "address_line": "970花蓮縣花蓮市明禮路18之6號1樓",
+    "phone": "03-835-7186",
+    "fax": "03-835-7135",
+    "mobile": "0937-753-800"
   },
   "profiles": [
     {
@@ -17,7 +17,7 @@
         "法扶花蓮分會"
       ],
       "phone": "03-8222128",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -28,7 +28,7 @@
         "法扶新北分會"
       ],
       "phone": "02-29737778",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -39,7 +39,7 @@
         "法扶宜蘭分會"
       ],
       "phone": "03-9653531",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -52,7 +52,7 @@
         "臺東分會"
       ],
       "phone": "089-361363",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -65,7 +65,7 @@
         "臺北分會"
       ],
       "phone": "02-23225151",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -76,7 +76,7 @@
         "法扶基隆分會"
       ],
       "phone": "02-24231631",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -87,7 +87,7 @@
         "法扶士林分會"
       ],
       "phone": "02-28825266",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     },
@@ -101,7 +101,7 @@
         "法扶原住民族法律服務中心"
       ],
       "phone": "03-8509917",
-      "default_lawyer_name": "受任律師",
+      "default_lawyer_name": "喬政翔律師",
       "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
       "source": "local_poa_pdf_scan_20260607"
     }

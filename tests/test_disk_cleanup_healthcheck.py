@@ -150,6 +150,21 @@ def test_omlx_cache_dry_run_no_delete(sandbox, monkeypatch):
     assert stale.exists()
 
 
+def test_omlx_cache_removes_stale_external_ssd_cache(sandbox, monkeypatch):
+    external_root = sandbox["tmp"] / "MAGI" / "omlx_paged_cache"
+    cache = external_root / "cache-e4b"
+    stale = cache / "old"
+    _touch_with_atime(stale, 10 * 86400)
+    monkeypatch.setattr(dc, "OMLX_EXTERNAL_CACHE_ROOT", external_root, raising=True)
+    monkeypatch.setattr(dc, "OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE", True, raising=True)
+
+    actions = dc.cleanup_omlx_cache(dry_run=False)
+
+    assert not stale.exists()
+    info = next(a for a in actions if Path(a["cache"]) == cache)
+    assert info["deleted_files"] == 1
+
+
 def test_omlx_cache_apply_respects_safety_cap(sandbox, monkeypatch):
     cache = sandbox["home"] / ".omlx" / "cache-e4b"
     stale = cache / "old"

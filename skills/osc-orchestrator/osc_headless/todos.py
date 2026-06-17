@@ -19,6 +19,65 @@ from typing import Dict, List, Optional
 import holidays
 
 
+def _portable_basename(value: str) -> str:
+    return re.split(r"[\\/]+", str(value or "").strip())[-1]
+
+
+def _parse_roc_year_to_ad(raw: str) -> int | None:
+    try:
+        year = int(raw)
+    except Exception:
+        return None
+    if year >= 1911:
+        return year
+    if 100 <= year <= 130:
+        return year + 1911
+    return None
+
+
+def _collect_source_year_candidates(value: str) -> list[int]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    normalized = text.replace("\\", "/")
+    candidates: list[int] = []
+
+    def _add_candidate(raw: int) -> None:
+        if not raw:
+            return
+        if raw < 2010 or raw > datetime.now().year + 3:
+            return
+        if raw not in candidates:
+            candidates.append(raw)
+
+    # Case-folder prefix: /2025-0049-xxx/ or similar
+    for m in re.finditer(r"(?:^|/)(20\d{2})-(\d{3,8})(?:[\\/._-]|$)", normalized):
+        _add_candidate(int(m.group(1)))
+
+    # ROC year marker: 114年度
+    for m in re.finditer(r"(\d{2,3})年度", normalized):
+        year = _parse_roc_year_to_ad(m.group(1))
+        _add_candidate(year or 0)
+
+    # Explicit year mentions that can appear in OCR/source text (e.g., 115年、2025年、2025/06)
+    for m in re.finditer(r"(?:20\d{2}|\d{2,3})(?=[年/.])", normalized):
+        year_raw = _parse_roc_year_to_ad(m.group(0))
+        _add_candidate(year_raw or 0)
+
+    # ROC/AD tokens in compact document dates like 2025/06/17, 115/06/17
+    for m in re.finditer(r"((?:20\d{2}|\d{3})[/.]\d{1,2}[/.]\d{1,2})", normalized):
+        parts = re.split(r"[/.]", m.group(1))
+        year_raw = _parse_roc_year_to_ad(parts[0] or "")
+        _add_candidate(year_raw or 0)
+
+    # Fallback scan for ROC/AD year-month tokens from text (e.g., 文到115年5月)
+    for m in re.finditer(r"(?:民國)?(\d{2,4})年(\d{1,2})月", normalized):
+        year_raw = _parse_roc_year_to_ad(m.group(1))
+        _add_candidate(year_raw or 0)
+
+    return candidates
+
+
 def extract_document_date_from_filename(filename: str, file_path: str = "") -> Optional[datetime]:
     """
     Extract "document received date" from filename.
@@ -27,7 +86,7 @@ def extract_document_date_from_filename(filename: str, file_path: str = "") -> O
     - Prefix YYYY-MM-DD / YYYY.MM.DD
     - Prefix ROC YYYMMDD / YYY-MM-DD / YYY/MM/DD
     """
-    name = os.path.basename(filename or "")
+    name = _portable_basename(filename or file_path)
     m = re.match(r"^(\d{4})(\d{2})(\d{2})", name)
     if m:
         try:
@@ -65,10 +124,12 @@ def extract_document_date_from_filename(filename: str, file_path: str = "") -> O
 def extract_base_year_from_filename(filename: str, file_path: str = "", document_date: Optional[datetime] = None) -> int:
     """Return the OSC base year for yearless hearing dates.
 
-    This mirrors the original OSC order: AD prefix first, ROC case year in
-    "YYY年度" second, then the received date / mtime fallback.
+    This keeps the original preference order but adds conservative additional
+    in-path hints for legacy cases:
+      - folder path case number: 2025-xxxx
+      - ROC annual marker: 114年度
     """
-    name = os.path.basename(filename or "")
+    name = _portable_basename(filename or file_path)
     m = re.match(r"^(20\d{2})(\d{2})(\d{2})", name)
     if m:
         try:
@@ -76,6 +137,12 @@ def extract_base_year_from_filename(filename: str, file_path: str = "", document
             return int(m.group(1))
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 70, exc_info=True)
+
+    candidates = _collect_source_year_candidates(f"{filename}\n{file_path}")
+    if candidates:
+        for candidate in candidates:
+            if 2010 <= candidate <= datetime.now().year + 3:
+                return candidate
 
     m = re.search(r"(\d{3})年度", name)
     if m:
@@ -260,7 +327,7 @@ def next_workday(dt: datetime, tw: holidays.Taiwan) -> datetime:
 
 
 def _filename_segments(filename: str) -> List[str]:
-    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    stem = os.path.splitext(_portable_basename(filename or ""))[0]
     return [seg.strip() for seg in re.split(r"[；;]", stem) if seg.strip()] or [stem]
 
 
@@ -388,7 +455,7 @@ def get_default_patterns() -> Dict[str, List[Dict]]:
                 "days": None,
             },
             {
-                "pattern": rf"(?:定|訂)?於?(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|協商程序|言詞辯論|調解|審理|宣判|訊問|調查|辯論|閱卷)?",
+                "pattern": rf"(?:定|訂)?於?(?<!年)(\d{{1,2}})月(\d{{1,2}})日{_TIME_PERIOD_RE}{_TIME_NUMBER_RE}時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|協商程序|言詞辯論|調解|審理|宣判|訊問|調查|辯論|閱卷)?",
                 "pattern_type": "absolute_time",
                 "days": None,
             },
@@ -579,7 +646,10 @@ def _hearing_datetime(
         hour, minute, period_label = parsed_time
         dt = datetime(year, month, day, hour, minute)
         if not explicit_year and dt.date() < document_date.date() - timedelta(days=30):
-            dt = dt.replace(year=year + 1)
+            # Conservative: when fallback year is already from an older source hint,
+            # keep that year to avoid rolling legacy cases into the future.
+            if year >= document_date.year:
+                dt = dt.replace(year=year + 1)
         original_hour = _parse_number_token(hour_token) or hour
         return dt, period_label, original_hour, minute
     except Exception:
@@ -765,7 +835,10 @@ def _extract_hearing_sequence_todos(filename: str, document_date: datetime, base
         try:
             dt = datetime(year_for_yearless, int(m.group(1)), int(m.group(2)))
             if dt.date() < document_date.date() - timedelta(days=30):
-                dt = dt.replace(year=dt.year + 1)
+                if year_for_yearless < document_date.year:
+                    pass
+                else:
+                    dt = dt.replace(year=dt.year + 1)
         except Exception:
             continue
         label = "審理" if m.group(3) in {"審理程序", "審判程序"} else (m.group(3) or kind or "開庭")
@@ -910,7 +983,7 @@ def extract_todos_from_filename(
                         period_group = 3
 
                     dt = datetime(year_to_use, month, day, 9, 0)
-                    if pattern_type == "absolute_time" and dt.date() < document_date.date() - timedelta(days=30):
+                    if pattern_type == "absolute_time" and dt.date() < document_date.date() - timedelta(days=30) and year_to_use >= document_date.year:
                         dt = dt.replace(year=year_to_use + 1)
 
                     if pattern_type in ("absolute_time", "absolute_time_roc") and len(m.groups()) >= period_group + 1:

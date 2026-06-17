@@ -6,11 +6,16 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "osc-orchestrator"))
 
-from osc_headless.todos import extract_todos_from_filename, _extract_todo_from_filename, extract_document_date_from_filename
+from osc_headless.todos import (
+    extract_todos_from_filename,
+    extract_base_year_from_filename,
+    _extract_todo_from_filename,
+    extract_document_date_from_filename,
+)
 
 
-def _extract(filename):
-    todos = extract_todos_from_filename(filename)
+def _extract(filename, file_path=""):
+    todos = extract_todos_from_filename(filename, file_path)
     return todos
 
 
@@ -76,6 +81,18 @@ def test_原版osc民國收文日前綴作為文到基準日():
     assert todos[0]["type"] == "補正"
     assert todos[0]["date"] == "2026-06-08"
     assert "05/28文到" in todos[0]["description"]
+
+
+def test_windows_style_path_uses_pdf_basename_for_received_date():
+    path = r"K:\SynologyDrive\01_案件\一般案件\2025-0030\20250515 花蓮地方法院114年度司補字第228號民事庭通知（謝廷延；主旨：請於本通知送達翌日起7日內補正後列事項）.pdf"
+
+    assert extract_document_date_from_filename(path, path) == datetime(2025, 5, 15)
+    todos = extract_todos_from_filename(path, path)
+
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2025-05-22"
+    assert "05/15文到" in todos[0]["description"]
 
 
 def test_週內期限轉為全天待辦():
@@ -211,6 +228,24 @@ def test_開庭無收文日前綴時使用案號年度判斷年份():
     assert todos[0]["time"] == "15:50"
 
 
+def test_extract_base_year_uses_case_folder_hint_without收文日期():
+    path = "/tmp/01_案件/法扶案件/消費者債務清理/2025-0049-林洋宇-消費者債務清理-更生/09_法院通知與程序裁定/法院通知書（林洋宇；訂6月17日下午2時調解）.pdf"
+
+    assert (
+        extract_base_year_from_filename(
+            "法院通知書（林洋宇；訂6月17日下午2時調解）.pdf",
+            path,
+        )
+        == 2025
+    )
+
+    todos = _extract("法院通知書（林洋宇；訂6月17日下午2時調解）.pdf", path)
+    assert len(todos) == 1
+    assert todos[0]["type"] == "調解"
+    assert todos[0]["date"] == "2025-06-17"
+    assert todos[0]["time"] == "14:00"
+
+
 def test_開庭無年份期日可跨隔年():
     todos = _extract("20251220 花蓮地院114年度原易字第179號刑事庭通知書（余秋菊；訂1月8日上午10時審理）.pdf")
     assert len(todos) == 1
@@ -232,6 +267,12 @@ def test_同日上下午庭期都要建立():
         ("審理", "2025-11-11", "09:50"),
         ("審理", "2025-11-11", "14:50"),
     ]
+
+
+def test_explicit_roc_hearing_date_is_not_reparsed_as_yearless_next_year():
+    todos = _extract("20250814 臺北地方法院114年度消債清字第84號民事裁定(王台銘；主文：債務人王台銘自民國114年8月12日下午4時起開始清算程序。命司法事務官進行本件清算程序）.pdf")
+
+    assert [(t["type"], t["date"], t["time"]) for t in todos] == [("開庭", "2025-08-12", "16:00")]
 
 
 def test_多日共用同一時間都要建立():

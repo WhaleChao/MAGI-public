@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import api.osc.drive_case_sync as drive_case_sync_mod
 
 from api.osc.drive_case_sync import (
     CaseFolder,
@@ -50,6 +54,109 @@ from api.osc.drive_case_sync import (
     _download_drive_entry,
     _drive_list_children,
 )
+
+
+class _FakeCredentials:
+    def __init__(
+        self,
+        token: str,
+        *,
+        scopes: list[str],
+        expired: bool,
+        refresh_token: str = "",
+    ):
+        self._token = token
+        self._scopes = set(scopes)
+        self.expired = expired
+        self.refresh_token = refresh_token
+
+    @property
+    def valid(self) -> bool:
+        return not self.expired
+
+    def has_scopes(self, scopes: list[str]) -> bool:
+        return set(scopes).issubset(self._scopes)
+
+    def refresh(self, _request) -> None:
+        self._token = f"{self._token}-refreshed"
+        self.expired = False
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "token": self._token,
+                "scopes": sorted(self._scopes),
+                "expired": self.expired,
+                "refresh_token": self.refresh_token,
+            },
+            ensure_ascii=False,
+        )
+
+
+def _install_fake_google_modules(
+    monkeypatch,
+    *,
+    credentials_by_path: dict[str, _FakeCredentials],
+    interactive_credential: _FakeCredentials | None = None,
+    flow_paths: list[str] | None = None,
+):
+    google_pkg = types.ModuleType("google")
+    google_pkg.__path__ = []  # type: ignore[attr-defined]
+
+    google_auth_pkg = types.ModuleType("google.auth")
+    google_auth_pkg.__path__ = []
+
+    google_auth_transport_pkg = types.ModuleType("google.auth.transport")
+    google_auth_transport_pkg.__path__ = []
+
+    google_auth_transport_requests_mod = types.ModuleType("google.auth.transport.requests")
+
+    class _Request:
+        pass
+
+    google_auth_transport_requests_mod.Request = _Request
+
+    google_oauth_pkg = types.ModuleType("google.oauth2")
+    google_oauth_pkg.__path__ = []
+
+    google_credentials_mod = types.ModuleType("google.oauth2.credentials")
+
+    class _Credentials:
+        from_authorized_user_file = classmethod(
+            lambda cls, file_path, scopes: credentials_by_path[str(file_path)]
+        )
+
+    google_credentials_mod.Credentials = _Credentials
+
+    google_auth_lib_pkg = types.ModuleType("google_auth_oauthlib")
+    google_auth_lib_pkg.__path__ = []
+
+    google_auth_flow_mod = types.ModuleType("google_auth_oauthlib.flow")
+
+    class _Flow:
+        @classmethod
+        def from_client_secrets_file(cls, path, scopes):
+            if interactive_credential is None:
+                raise RuntimeError("interactive flow should not be used")
+            if flow_paths is not None:
+                flow_paths.append(str(path))
+            return cls()
+
+        def run_local_server(self, *args, **kwargs):
+            if interactive_credential is None:
+                raise RuntimeError("interactive flow should not be used")
+            return interactive_credential
+
+    google_auth_flow_mod.InstalledAppFlow = _Flow
+
+    monkeypatch.setitem(sys.modules, "google", google_pkg)
+    monkeypatch.setitem(sys.modules, "google.auth", google_auth_pkg)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", google_auth_transport_pkg)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", google_auth_transport_requests_mod)
+    monkeypatch.setitem(sys.modules, "google.oauth2", google_oauth_pkg)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", google_credentials_mod)
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib", google_auth_lib_pkg)
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", google_auth_flow_mod)
 
 
 def test_extract_osc_case_folder_metadata():
@@ -2141,9 +2248,155 @@ def test_drive_list_children_timeout_is_not_treated_as_empty(monkeypatch):
             return Files()
 
     monkeypatch.setenv("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC", "0.01")
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_LEGACY_THREAD_TIMEOUT", "1")
     try:
         _drive_list_children(Service(), "folder")
     except Exception as exc:
         assert "drive_api_timeout:list_children:folder" in str(exc)
     else:
         raise AssertionError("Drive API timeout should raise instead of returning an empty listing")
+
+
+def test_drive_credentials_refresh_writes_primary_write_token_path(monkeypatch, tmp_path):
+    token_path = tmp_path / "drive_sync_write_token.json"
+    credentials_path = tmp_path / "credentials.json"
+    token_path.write_text("{}", encoding="utf-8")
+    credentials_path.write_text("{}", encoding="utf-8")
+
+    expired = _FakeCredentials(
+        "write-expired",
+        scopes=["https://www.googleapis.com/auth/drive"],
+        expired=True,
+        refresh_token="r1",
+    )
+
+    _install_fake_google_modules(
+        monkeypatch,
+        credentials_by_path={str(token_path): expired},
+    )
+
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_WRITE_TOKEN", str(token_path))
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_CREDENTIALS_PATH", str(credentials_path))
+
+    creds = drive_case_sync_mod._load_google_credentials(interactive=False, write=True)
+    loaded = json.loads(token_path.read_text(encoding="utf-8"))
+    assert creds is expired
+    assert loaded["token"] == "write-expired-refreshed"
+    assert (token_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_drive_credentials_refresh_writes_fallback_token_path(monkeypatch, tmp_path):
+    primary_token_path = tmp_path / "drive_sync_token.json"
+    write_token_path = tmp_path / "drive_sync_write_token.json"
+    credentials_path = tmp_path / "credentials.json"
+    primary_token_path.write_text("{}", encoding="utf-8")
+    write_token_path.write_text("{}", encoding="utf-8")
+    credentials_path.write_text("{}", encoding="utf-8")
+
+    primary_incomplete = _FakeCredentials(
+        "primary-without-sheets-scope",
+        scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        expired=False,
+    )
+    fallback = _FakeCredentials(
+        "fallback-expired",
+        scopes=["https://www.googleapis.com/auth/drive"],
+        expired=True,
+        refresh_token="r1",
+    )
+
+    _install_fake_google_modules(
+        monkeypatch,
+        credentials_by_path={
+            str(primary_token_path): primary_incomplete,
+            str(write_token_path): fallback,
+        },
+    )
+
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_TOKEN", str(primary_token_path))
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_WRITE_TOKEN", str(write_token_path))
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_CREDENTIALS_PATH", str(credentials_path))
+
+    creds = drive_case_sync_mod._load_google_credentials(interactive=False, write=False)
+    loaded = json.loads(write_token_path.read_text(encoding="utf-8"))
+    assert creds is fallback
+    assert loaded["token"] == "fallback-expired-refreshed"
+    assert (write_token_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_drive_credentials_interactive_auth_uses_secure_writer(monkeypatch, tmp_path):
+    token_path = tmp_path / "drive_sync_token.json"
+    credentials_path = tmp_path / "credentials.json"
+    token_path.write_text("{}", encoding="utf-8")
+    credentials_path.write_text("{}", encoding="utf-8")
+    interactive = _FakeCredentials(
+        "interactive-token",
+        scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"],
+        expired=False,
+    )
+
+    _install_fake_google_modules(
+        monkeypatch,
+        credentials_by_path={},
+        interactive_credential=interactive,
+    )
+
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_TOKEN", str(token_path))
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_CREDENTIALS_PATH", str(credentials_path))
+
+    write_calls: list[Path] = []
+    original_writer = drive_case_sync_mod._write_google_credentials
+
+    def _record_writer(creds, *, token_path: Path):
+        write_calls.append(token_path)
+        return original_writer(creds, token_path=token_path)
+
+    monkeypatch.setattr(drive_case_sync_mod, "_write_google_credentials", _record_writer)
+
+    result = drive_case_sync_mod._load_google_credentials(interactive=True, write=False)
+
+    assert result is interactive
+    assert write_calls == [token_path]
+    loaded = json.loads(token_path.read_text(encoding="utf-8"))
+    assert loaded["token"] == "interactive-token"
+    assert (token_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_drive_auth_only_loads_env_credentials_before_auth(monkeypatch, tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env_credentials_path = tmp_path / "zldata_accounting_credentials.json"
+    env_token_path = tmp_path / "drive_sync_write_token.json"
+    env_credentials_path.write_text("{}", encoding="utf-8")
+    (repo / ".env").write_text(
+        "\n".join(
+            [
+                f"MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH={env_credentials_path}",
+                f"MAGI_DRIVE_SYNC_WRITE_TOKEN={env_token_path}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    interactive = _FakeCredentials(
+        "interactive-write-token",
+        scopes=["https://www.googleapis.com/auth/drive"],
+        expired=False,
+    )
+    flow_paths: list[str] = []
+
+    _install_fake_google_modules(
+        monkeypatch,
+        credentials_by_path={},
+        interactive_credential=interactive,
+        flow_paths=flow_paths,
+    )
+    monkeypatch.setattr(drive_case_sync_mod, "repo_root", lambda: repo)
+    monkeypatch.delenv("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("MAGI_DRIVE_SYNC_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("MAGI_DRIVE_SYNC_WRITE_TOKEN", raising=False)
+
+    assert drive_case_sync_mod.main(["--auth-only", "--write-auth"]) == 0
+
+    assert flow_paths == [str(env_credentials_path)]
+    assert json.loads(env_token_path.read_text(encoding="utf-8"))["token"] == "interactive-write-token"
+    assert json.loads(capsys.readouterr().out)["write_scope"] is True

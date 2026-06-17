@@ -146,8 +146,11 @@ except Exception:
     _normalize_output_text = None
 
 # Auth Modules
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+install_mysql_cext_blocker()
+patch_mysql_connector_for_stability()
 import mysql.connector
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 from flask_login import UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 

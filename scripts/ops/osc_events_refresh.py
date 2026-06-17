@@ -15,6 +15,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -30,7 +31,7 @@ PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
 PDF_SCAN_RULE_VERSION = os.environ.get(
     "OSC_PDF_CALENDAR_RULE_VERSION",
-    "2026-06-04-original-osc-indexed-filename-sweep",
+    "2026-06-14-portable-source-date-guard",
 )
 HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
 DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"
@@ -48,6 +49,267 @@ _TODO_DONE_STATUSES = (
 
 class _PdfScanTimeout(TimeoutError):
     pass
+
+
+def _portable_source_basename(value: Any) -> str:
+    return str(re.split(r"[\\/]+", str(value or "").strip())[-1] if value else "")
+
+
+def _parse_roc_year_to_ad(raw: str) -> int | None:
+    try:
+        year = int(raw)
+    except Exception:
+        return None
+    if year >= 1911:
+        return year
+    if 100 <= year <= 130:
+        return year + 1911
+    return None
+
+
+def _collect_source_year_candidates(value: Any) -> list[int]:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return []
+    candidates: list[int] = []
+
+    def _add_candidate(raw_year: int | None) -> None:
+        if raw_year is None:
+            return
+        current_year = datetime.now().year
+        if raw_year < 2010 or raw_year > current_year + 3:
+            return
+        if raw_year not in candidates:
+            candidates.append(raw_year)
+
+    # Case folder prefix, e.g., 2025-0049-林洋宇
+    for m in re.finditer(r"(?:^|/)(20\d{2})-(?:\d{3,8})(?:[\\/._-]|$)", text):
+        _add_candidate(int(m.group(1)))
+
+    # ROC annual marker, e.g., 114年度
+    for m in re.finditer(r"(\d{3})年度", text):
+        _add_candidate(_parse_roc_year_to_ad(m.group(1)))
+
+    # Explicit ROC/AD year mentions in source metadata (e.g. 115年/2025年)
+    for m in re.finditer(r"(?:民國)?(\d{2,4})年", text):
+        _add_candidate(_parse_roc_year_to_ad(m.group(1)))
+
+    return candidates
+
+
+def _source_context_for_year_inference(todo: dict[str, Any]) -> list[Any]:
+    return [
+        todo.get("source_file"),
+        todo.get("file"),
+        todo.get("description"),
+        todo.get("case_number"),
+        todo.get("client_name"),
+    ]
+
+
+def _iter_source_context_values(todo: dict[str, Any]) -> list[str]:
+    return [str(value or "") for value in _source_context_for_year_inference(todo) if str(value or "").strip()]
+
+
+def _infer_source_base_year_from_todo(todo: dict[str, Any]) -> int | None:
+    for source in _source_context_for_year_inference(todo):
+        source_date = _source_document_date(source)
+        if source_date:
+            return source_date.year
+    for source in _source_context_for_year_inference(todo):
+        for year in _collect_source_year_candidates(source):
+            if year:
+                return year
+    return None
+
+
+def _source_document_date(value: Any) -> date | None:
+    name = _portable_source_basename(value)
+    patterns = (
+        r"^(20\d{2})(\d{2})(\d{2})",
+        r"^(20\d{2})[-.](\d{1,2})[-.](\d{1,2})",
+        r"^(\d{3})[-/]?(\d{2})[-/]?(\d{2})(?:\s|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, name)
+        if not match:
+            continue
+        try:
+            year = int(match.group(1))
+            if year < 1911:
+                year += 1911
+            return date(year, int(match.group(2)), int(match.group(3)))
+        except Exception:
+            continue
+    return None
+
+
+def _description_base_month_day(value: Any) -> str:
+    text = str(value or "")
+    match = re.search(r"\((\d{2}/\d{2})文到\)|基準日\s*(\d{2}/\d{2})", text)
+    if not match:
+        return ""
+    return str(match.group(1) or match.group(2) or "")
+
+
+def _has_explicit_older_source_date_for_todo(todo: dict[str, Any], todo_date: date) -> bool:
+    text = "\n".join(
+        str(value or "")
+        for value in (
+            todo.get("source_file"),
+            todo.get("file"),
+            todo.get("description"),
+            todo.get("case_number"),
+            todo.get("client_name"),
+        )
+        if str(value or "").strip()
+    )
+    for match in re.finditer(r"(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日", text):
+        try:
+            year = int(match.group(1))
+            if year < 1911:
+                year += 1911
+            if year < todo_date.year and int(match.group(2)) == todo_date.month and int(match.group(3)) == todo_date.day:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_HEARING_TODO_TYPES = {"開庭", "準備程序", "言詞辯論", "調解", "審理", "審理程序", "審判程序", "宣判", "訊問", "調查"}
+_POSSIBLE_HEARING_AND_DEADLINE_TYPES = _HEARING_TODO_TYPES | {"補正", "上訴", "異議", "再議", "再抗告", "抗告", "繳費", "聲明", "陳報"}
+_PDF_CALENDAR_QUARANTINE_REASON = "suspected_false_future_event"
+
+
+def _source_context_has_explicit_same_todo_date(todo: dict[str, Any], todo_date: date) -> bool:
+    text = "\n".join(_iter_source_context_values(todo))
+    for match in re.finditer(r"(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日", text):
+        try:
+            year = int(match.group(1))
+            if year < 1911:
+                year += 1911
+            if year == todo_date.year and int(match.group(2)) == todo_date.month and int(match.group(3)) == todo_date.day:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _has_explicit_todo_year_context(todo: dict[str, Any], todo_date: date) -> bool:
+    """
+    Return True when the source context has a clear signal for this todo year.
+    """
+    if _source_context_has_explicit_same_todo_date(todo, todo_date):
+        return True
+
+    for source in _iter_source_context_values(todo):
+        source_date = _source_document_date(source)
+        if source_date and source_date.year == todo_date.year:
+            return True
+
+    # Court-style year marks: 114年度 / 2026年度
+    for source in _iter_source_context_values(todo):
+        for match in re.finditer(r"(\d{2,3})年度", source):
+            year = _parse_roc_year_to_ad(match.group(1))
+            if year == todo_date.year:
+                return True
+        if source.startswith(str(todo_date.year)):
+            return True
+
+    for source in _iter_source_context_values(todo):
+        for year in _collect_source_year_candidates(source):
+            if year == todo_date.year:
+                return True
+    return False
+
+
+def _source_has_low_confidence_old_year_signal(todo: dict[str, Any], todo_date: date) -> bool:
+    source_context = "\n".join(_iter_source_context_values(todo))
+    if not _source_mentions_todo_month_day(source_context, todo_date):
+        return False
+    years = [year for year in _collect_source_year_candidates(source_context) if year]
+    return bool(years) and all(year < todo_date.year for year in years)
+
+
+def _source_mentions_todo_month_day(source: Any, todo_date: date) -> bool:
+    compact = re.sub(r"\s+", "", str(source or ""))
+    tokens = {
+        f"{todo_date.month}月{todo_date.day}日",
+        f"{todo_date.month:02d}月{todo_date.day:02d}日",
+        f"{todo_date.month}月{todo_date.day}號",
+        f"{todo_date.month:02d}月{todo_date.day:02d}號",
+    }
+    return any(token in compact for token in tokens)
+
+
+def _has_future_year_shift_from_old_source(
+    todo: dict[str, Any],
+    todo_date: date,
+    *,
+    today: date | None = None,
+) -> bool:
+    source = todo.get("source_file") or todo.get("file") or ""
+    source_date = _source_document_date(source)
+    source_year = _infer_source_base_year_from_todo(todo)
+    today = today or datetime.now().date()
+    if source_year is not None and todo_date.year <= source_year:
+        return False
+    if source_date is None:
+        source_date = date(source_year, 1, 1) if source_year else None
+    if not source_date:
+        return False
+    if source_date >= today - timedelta(days=30):
+        return False
+    todo_type = str(todo.get("type") or todo.get("todo_type") or "").strip()
+    if todo_type not in _POSSIBLE_HEARING_AND_DEADLINE_TYPES:
+        return False
+    source_context = "\n".join(
+        str(value or "")
+        for value in (
+            todo.get("source_file"),
+            todo.get("file"),
+            todo.get("description"),
+            todo.get("case_number"),
+            todo.get("client_name"),
+        )
+        if str(value or "").strip()
+    )
+    if _source_context_has_explicit_same_todo_date(todo, todo_date):
+        return False
+    return _source_mentions_todo_month_day(source_context, todo_date)
+
+
+def _classify_pdf_todo_quarantine_reason(
+    todo: dict[str, Any],
+    todo_date: date,
+    *,
+    today: date | None = None,
+) -> str | None:
+    if not _has_explicit_todo_year_context(todo, todo_date):
+        if _pdf_todo_uses_mismatched_source_date(todo, todo_date, today=today):
+            return _PDF_CALENDAR_QUARANTINE_REASON
+        if _source_has_low_confidence_old_year_signal(todo, todo_date):
+            return _PDF_CALENDAR_QUARANTINE_REASON
+    return None
+
+
+def _pdf_todo_uses_mismatched_source_date(
+    todo: dict[str, Any],
+    todo_date: date,
+    *,
+    today: date | None = None,
+) -> bool:
+    source = todo.get("source_file") or todo.get("file") or ""
+    today = today or datetime.now().date()
+    source_date = _source_document_date(source)
+    base_md = _description_base_month_day(todo.get("description"))
+    if source_date and base_md and base_md != source_date.strftime("%m/%d"):
+        return True
+    if not source_date and base_md == today.strftime("%m/%d"):
+        return True
+    if _has_explicit_older_source_date_for_todo(todo, todo_date):
+        return True
+    return _has_future_year_shift_from_old_source(todo, todo_date, today=today)
 
 
 @contextlib.contextmanager
@@ -101,13 +363,15 @@ def _active_pdf_todos(
     *,
     today: date | None = None,
     max_future_days: int = 730,
-) -> tuple[list[dict[str, Any]], int, int]:
+    include_diagnostics: bool = False,
+) -> tuple[list[dict[str, Any]], int, int] | tuple[list[dict[str, Any]], int, int, list[dict[str, Any]]]:
     """Keep only actionable PDF todos before writing them into OSC/Google."""
     today = today or datetime.now().date()
     latest = today + timedelta(days=max_future_days)
     active: list[dict[str, Any]] = []
     past_skipped = 0
     implausible_skipped = 0
+    quarantined_todos: list[dict[str, Any]] = []
     for todo in todos or []:
         raw = str(todo.get("date") or "").strip()
         try:
@@ -121,7 +385,23 @@ def _active_pdf_todos(
         if todo_date > latest:
             implausible_skipped += 1
             continue
+        quarantine_reason = _classify_pdf_todo_quarantine_reason(todo, todo_date, today=today)
+        if quarantine_reason:
+            implausible_skipped += 1
+            if include_diagnostics:
+                quarantined_todos.append(
+                    {
+                        "quarantine_reason": quarantine_reason,
+                        "type": todo.get("type") or todo.get("todo_type") or "",
+                        "date": raw,
+                        "description": (todo.get("description") or "").strip(),
+                        "source_file": todo.get("source_file") or todo.get("file") or "",
+                    }
+                )
+            continue
         active.append(todo)
+    if include_diagnostics:
+        return active, past_skipped, implausible_skipped, quarantined_todos
     return active, past_skipped, implausible_skipped
 
 
@@ -241,6 +521,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     text_targets_count = 0
     past_todo_count = 0
     implausible_todo_count = 0
+    quarantined_todo_count = 0
+    quarantined_todos: list[dict[str, Any]] = []
     timeout_count = 0
     error_count = 0
     cache_skipped = 0
@@ -453,9 +735,27 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 filename_sweep_scanned += 1
             raw_todos = item.get("todos") or []
-            todos, past_skipped, implausible_skipped = _active_pdf_todos(raw_todos)
+            for row in raw_todos:
+                if not isinstance(row, dict):
+                    continue
+                if not row.get("source_file"):
+                    row["source_file"] = str(path)
+                row.setdefault("case_number", case_number)
+                row.setdefault("client_name", client_name)
+            todos, past_skipped, implausible_skipped, source_quarantine_records = _active_pdf_todos(
+                raw_todos,
+                include_diagnostics=True,
+            )
             past_todo_count += past_skipped
             implausible_todo_count += implausible_skipped
+            quarantined_todo_count += len(source_quarantine_records)
+            for record in source_quarantine_records:
+                record["source_case_number"] = str(case_number or item.get("case_number") or "")
+                record["source_client_name"] = str(client_name or item.get("client_name") or "")
+                record["scan_file"] = str(path)
+                record["scan_mode"] = scan_mode
+                record["pdf_path"] = str(path)
+                quarantined_todos.append(record)
             todo_count += len(todos)
             event_count += len(todos)
             if signature and isinstance(cache_files, dict):
@@ -572,8 +872,10 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "event_count": event_count,
         "past_todo_count": past_todo_count,
         "implausible_todo_count": implausible_todo_count,
+        "quarantine_todo_count": quarantined_todo_count,
         "timeout_count": timeout_count,
         "error_count": error_count,
+        "quarantined_todos": quarantined_todos[:20],
         "write_result": {
             "inserted": inserted,
             "updated": updated,
@@ -663,6 +965,7 @@ def _run_drive_case_sync_before_pdf(args: argparse.Namespace) -> dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC", "5")
     env.setdefault("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC", "15")
+    env.setdefault("MAGI_DRIVE_SYNC_HTTP_TIMEOUT", env.get("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC", "15"))
     try:
         completed = subprocess.run(
             cmd,

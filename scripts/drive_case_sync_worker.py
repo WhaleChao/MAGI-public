@@ -20,6 +20,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+
+try:
+    from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+    install_mysql_cext_blocker()
+    patch_mysql_connector_for_stability()
+except Exception:
+    pass
+
 from api.osc.drive_case_sync import (
     DEFAULT_DRIVE_ROOT_NAME,
     DriveCaseSyncAuthRequired,
@@ -458,7 +469,14 @@ def main(argv: list[str] | None = None) -> int:
             "finished_at": iso_now(),
             "message": "Drive/NAS 同步已在執行中，本次排程已略過，避免同時上傳/下載造成重複或錯放。",
         }
-        save_worker_status(status)
+        skip_path = runtime_dir() / "drive_case_sync_worker_skip_latest.json"
+        try:
+            skip_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = skip_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(skip_path)
+        except Exception:
+            pass
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
 

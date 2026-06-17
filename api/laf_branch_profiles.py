@@ -129,13 +129,14 @@ def fetch_law_firm_profile_from_db(conn: Any | None = None) -> LawFirmProfile | 
                 pass
     if not row:
         return None
+    seed = _law_firm_profile_from_seed()
     return LawFirmProfile(
-        lawyer_name=_text(row.get("lawyer_name")) or DEFAULT_LAWYER_NAME,
-        office_name=_text(row.get("office_name")) or DEFAULT_OFFICE_NAME,
-        address_line=_text(row.get("address_line")) or DEFAULT_OFFICE_ADDRESS,
-        phone=_text(row.get("phone")) or DEFAULT_OFFICE_PHONE,
-        fax=_text(row.get("fax")) or DEFAULT_OFFICE_FAX,
-        mobile=_text(row.get("mobile")) or DEFAULT_OFFICE_MOBILE,
+        lawyer_name=_configured_seed_value(row.get("lawyer_name"), seed.lawyer_name),
+        office_name=_configured_seed_value(row.get("office_name"), seed.office_name),
+        address_line=_configured_seed_value(row.get("address_line"), seed.address_line),
+        phone=_configured_seed_value(row.get("phone"), seed.phone),
+        fax=_text(row.get("fax")) or seed.fax,
+        mobile=_text(row.get("mobile")) or seed.mobile,
     )
 
 
@@ -193,7 +194,7 @@ def ensure_laf_branch_profile_schema(conn: Any) -> None:
                 branch_label VARCHAR(100) NOT NULL,
                 aliases_json JSON NULL,
                 phone VARCHAR(50) DEFAULT '',
-                default_lawyer_name VARCHAR(100) NOT NULL DEFAULT '受任律師',
+                default_lawyer_name VARCHAR(100) NOT NULL DEFAULT '喬政翔律師',
                 poa_footer_template TEXT NULL,
                 source VARCHAR(100) DEFAULT '',
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -206,7 +207,7 @@ def ensure_laf_branch_profile_schema(conn: Any) -> None:
             CREATE TABLE IF NOT EXISTS laf_law_firm_profiles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 profile_key VARCHAR(50) NOT NULL,
-                lawyer_name VARCHAR(100) NOT NULL DEFAULT '受任律師',
+                lawyer_name VARCHAR(100) NOT NULL DEFAULT '喬政翔律師',
                 office_name VARCHAR(100) DEFAULT '',
                 address_line VARCHAR(255) DEFAULT '',
                 phone VARCHAR(50) DEFAULT '',

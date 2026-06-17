@@ -24,14 +24,58 @@ from api.osc.tw_legal_rag import (
 
 raziel_bp = Blueprint("raziel", __name__)
 
-DEFAULT_RAZIEL_ROOT = Path.home() / "Desktop" / "interpreter-judgment-classifier"
+DEFAULT_RAZIEL_ROOT = Path.home() / "Desktop" / "判決捕捉與分類器"
 LEGACY_RAZIEL_ROOT = Path.home() / "Desktop" / "最高法院_通譯_TXT"
 RAZIEL_LOCK = threading.Lock()
 DELIVERY_ROOT_NAME = "判決捕捉與分類_交付資料"
+RAZIEL_SCRIPT_RELATIVE = Path("scripts") / "complete_interpreter_dataset.py"
+RAZIEL_KNOWN_ROOT_NAMES = (
+    "judgment-capture-classifier",
+    "judgment-capture-classifier-main",
+    "magi-judgment-classifier",
+    "判決捕捉與分類器",
+    "判決抓取與分類器",
+    "判決分類器",
+    "interpreter-judgment-classifier",
+    "interpreter-judgment-classifier-main",
+    "interpreter-judgment-classifier-fresh",
+    "interpreter-judgment-classifier-work",
+    "最高法院_通譯_TXT",
+)
+RAZIEL_SCRIPT_MODE_FALLBACKS = {
+    "search": ("search", "nightly"),
+    "preview": ("preview", "status"),
+}
 
 
 def _has_classifier_script(path: Path) -> bool:
-    return (path / "scripts" / "complete_interpreter_dataset.py").exists()
+    return (path / RAZIEL_SCRIPT_RELATIVE).exists()
+
+
+def _has_raziel_outputs(path: Path) -> bool:
+    return any(
+        (path / marker).exists()
+        for marker in (
+            "config/app_config.json",
+            "判決抓取與分類結果",
+            "完整812",
+            "最高法院_通譯_812清單.json",
+        )
+    )
+
+
+def _safe_glob(path: Path, pattern: str) -> list[Path]:
+    try:
+        return sorted(path.expanduser().glob(pattern))
+    except OSError:
+        return []
+
+
+def _safe_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
 
 
 def _candidate_roots() -> list[Path]:
@@ -48,18 +92,22 @@ def _candidate_roots() -> list[Path]:
     add(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR"))
     add(DEFAULT_RAZIEL_ROOT)
     for base in (Path.home() / "Desktop", Path.home() / "Downloads"):
-        for name in (
-            "interpreter-judgment-classifier",
-            "interpreter-judgment-classifier-main",
-            "interpreter-judgment-classifier-fresh",
-            "interpreter-judgment-classifier-work",
-        ):
+        for name in RAZIEL_KNOWN_ROOT_NAMES:
             add(base / name)
             add(base / name / name)
-        for candidate in sorted(base.glob("interpreter-judgment-classifier*")):
-            add(candidate)
-            if candidate.is_dir():
-                for nested in sorted(candidate.glob("interpreter-judgment-classifier*")):
+        for pattern in ("judgment-capture-classifier*", "magi-judgment-classifier*", "判決*分類器*", "interpreter-judgment-classifier*", "最高法院_通譯_TXT*"):
+            for candidate in _safe_glob(base, pattern):
+                add(candidate)
+                if _safe_is_dir(candidate):
+                    for nested in _safe_glob(candidate, pattern):
+                        add(nested)
+        for container in _safe_glob(base, "*"):
+            if not _safe_is_dir(container):
+                continue
+            for name in RAZIEL_KNOWN_ROOT_NAMES:
+                add(container / name)
+            for pattern in ("judgment-capture-classifier*", "magi-judgment-classifier*", "判決*分類器*", "interpreter-judgment-classifier*", "最高法院_通譯_TXT*"):
+                for nested in _safe_glob(container, pattern):
                     add(nested)
     add(LEGACY_RAZIEL_ROOT)
     return candidates
@@ -69,7 +117,9 @@ def _raziel_root() -> Path:
     configured = os.environ.get("MAGI_RAZIEL_ROOT")
     if configured:
         configured_path = Path(configured).expanduser()
-        if configured_path.exists() or _has_classifier_script(configured_path):
+        if _has_classifier_script(configured_path):
+            return configured_path.resolve()
+        if configured_path.exists() and _has_raziel_outputs(configured_path):
             return configured_path.resolve()
     for candidate in _candidate_roots():
         if _has_classifier_script(candidate):
@@ -84,7 +134,36 @@ def _config_path() -> Path:
 
 
 def _script_path() -> Path:
-    return _raziel_root() / "scripts" / "complete_interpreter_dataset.py"
+    return _raziel_root() / RAZIEL_SCRIPT_RELATIVE
+
+
+def _script_supported_modes(script: Path) -> set[str]:
+    try:
+        text = script.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {"status", "search", "preview", "nightly", "table"}
+    matches = re.findall(r"choices\s*=\s*\[([^\]]+)\]", text)
+    modes: set[str] = set()
+    for match in matches:
+        modes.update(re.findall(r"['\"]([A-Za-z0-9_-]+)['\"]", match))
+    return modes or {"status", "search", "preview", "nightly", "table"}
+
+
+def _script_mode_for_request(mode: str, supported_modes: set[str]) -> str:
+    if mode in supported_modes:
+        return mode
+    for fallback in RAZIEL_SCRIPT_MODE_FALLBACKS.get(mode, ()):
+        if fallback in supported_modes:
+            return fallback
+    return mode
+
+
+def _script_uses_runtime_root(script: Path) -> bool:
+    try:
+        text = script.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "INTERPRETER_JUDGMENT_BASE_DIR" in text
 
 
 def _load_config() -> dict[str, Any]:
@@ -161,6 +240,16 @@ def _effective_rule_query(config: dict[str, Any]) -> str:
     return rule_query or keyword_query
 
 
+def _env_nvidia_api_key() -> str:
+    return (
+        os.environ.get("NVIDIA_NIM_API_KEY")
+        or os.environ.get("MAGI_NVIDIA_NIM_API_KEY")
+        or os.environ.get("NVIDIA_API_KEY")
+        or os.environ.get("NVIDIA_NIM_KEY")
+        or ""
+    ).strip()
+
+
 def _public_config(config: dict[str, Any]) -> dict[str, Any]:
     keyword_query = _keyword_query_from_config(config)
     effective_rule = _effective_rule_query({**config, "keyword_query": keyword_query})
@@ -176,7 +265,7 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
         "nvidia_model": config.get("nvidia_model") or "nvidia/nemotron-3-super-120b-a12b",
         "nvidia_large_fallback_model": config.get("nvidia_large_fallback_model") or "nvidia/nemotron-3-super-120b-a12b",
         "nvidia_fallback_model": config.get("nvidia_fallback_model") or "meta/llama-3.3-70b-instruct",
-        "has_nvidia_api_key": bool(config.get("nvidia_api_key")),
+        "has_nvidia_api_key": bool(str(config.get("nvidia_api_key") or "").strip() or _env_nvidia_api_key()),
         "tlr_enabled": tw_legal_rag_enabled(),
         "tlr_base_url": tw_legal_rag_base_url(),
     }
@@ -472,6 +561,8 @@ def _apply_payload_to_config(payload: dict[str, Any]) -> dict[str, Any]:
     nvidia_api_key = str(payload.get("nvidia_api_key") or "").strip()
     if nvidia_api_key:
         config["nvidia_api_key"] = nvidia_api_key
+    elif _env_nvidia_api_key() and not str(config.get("nvidia_api_key") or "").strip():
+        config["nvidia_api_key"] = _env_nvidia_api_key()
     _save_config(config)
     return config
 
@@ -481,11 +572,23 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
     script = _script_path()
     if not script.exists():
         return {"ok": False, "error": f"找不到判決分類核心腳本：{script}"}
-    cmd = [sys.executable, str(script), "--mode", mode, "--no-zip"]
+    supported_modes = _script_supported_modes(script)
+    script_mode = _script_mode_for_request(mode, supported_modes)
+    if script_mode not in supported_modes:
+        return {
+            "ok": False,
+            "error": f"目前分類器不支援 {mode} 模式；可用模式：{', '.join(sorted(supported_modes)) or '未知'}",
+            "supported_modes": sorted(supported_modes),
+        }
+    cmd = [sys.executable, str(script), "--mode", script_mode, "--no-zip"]
     if max_api:
         cmd.extend(["--max-api", str(max_api)])
     env = os.environ.copy()
     env["INTERPRETER_JUDGMENT_BASE_DIR"] = str(root)
+    nvidia_api_key = str(config.get("nvidia_api_key") or "").strip() or _env_nvidia_api_key()
+    if nvidia_api_key:
+        env["NVIDIA_NIM_API_KEY"] = nvidia_api_key
+        env["NVIDIA_API_KEY"] = nvidia_api_key
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     try:
@@ -497,7 +600,7 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
             errors="replace",
             capture_output=True,
             env=env,
-            timeout=900 if mode in {"search", "nightly", "table"} else 240,
+            timeout=900 if script_mode in {"search", "nightly", "table"} else 240,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "判決分類器執行逾時，建議改用夜間補抓或降低筆數。"}
@@ -522,7 +625,15 @@ def _run_raziel(mode: str, config: dict[str, Any], max_api: int | None = None) -
         tlr_path = _write_tlr_preview_file(tlr_preview)
         if tlr_path:
             parsed["tlr_semantic_preview_path"] = tlr_path
-    return {"ok": True, "mode": mode, "config": _public_config(config), "paths": _result_paths(), "result": parsed}
+    return {
+        "ok": True,
+        "mode": mode,
+        "script_mode": script_mode,
+        "supported_modes": sorted(supported_modes),
+        "config": _public_config(config),
+        "paths": _result_paths(),
+        "result": parsed,
+    }
 
 
 @raziel_bp.route("/api/osc/raziel/status", methods=["GET"])
@@ -534,18 +645,24 @@ def raziel_status_api():
     files = {key: {"path": value, "exists": Path(value).exists()} for key, value in paths.items()}
     script_path = _script_path()
     script_exists = script_path.exists()
+    supported_modes = sorted(_script_supported_modes(script_path)) if script_exists else []
+    uses_runtime_root = _script_uses_runtime_root(script_path) if script_exists else False
+    if not script_exists:
+        status_message = "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"
+    elif not uses_runtime_root:
+        status_message = "判決捕捉與分類器已找到，但核心腳本仍使用固定資料夾名稱；請更新為通用路徑版本。"
+    else:
+        status_message = "判決捕捉與分類器已連線。"
     return jsonify(
         {
             "ok": True,
             "root": str(root),
             "script_path": str(script_path),
             "script_exists": script_exists,
+            "supported_modes": supported_modes,
+            "uses_runtime_root": uses_runtime_root,
             "configured_root": os.environ.get("MAGI_RAZIEL_ROOT") or "",
-            "status_message": (
-                "判決捕捉與分類器已連線。"
-                if script_exists
-                else "找不到判決捕捉與分類器的程式資料夾，請把下載的分類器資料夾放在桌面或下載資料夾。"
-            ),
+            "status_message": status_message,
             "config": _public_config(config),
             "tlr": tlr_health(),
             "files": files,

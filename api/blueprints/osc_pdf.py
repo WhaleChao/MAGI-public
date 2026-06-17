@@ -63,16 +63,32 @@ def _osc_exec(sql: str, params=(), fetch: str = "none"):
 
 def _load_headless_todo_helpers():
     skill_dir = _repo_root() / "skills" / "osc-orchestrator"
-    if str(skill_dir) not in sys.path:
-        sys.path.insert(0, str(skill_dir))
+    if str(skill_dir) in sys.path:
+        sys.path.remove(str(skill_dir))
+    sys.path.insert(0, str(skill_dir))
+    package = sys.modules.get("osc_headless")
+    current = sys.modules.get("osc_headless.todos")
+    package_file = str(getattr(package, "__file__", "")) if package is not None else ""
+    current_file = str(getattr(current, "__file__", "")) if current is not None else ""
+    if (package is not None and not package_file.startswith(str(skill_dir))) or (current is not None and not current_file.startswith(str(skill_dir))):
+        sys.modules.pop("osc_headless.todos", None)
+        sys.modules.pop("osc_headless", None)
     from osc_headless.todos import extract_todos_from_filename, get_default_patterns  # type: ignore
     return extract_todos_from_filename, get_default_patterns
 
 
 def _load_headless_date_helpers():
     skill_dir = _repo_root() / "skills" / "osc-orchestrator"
-    if str(skill_dir) not in sys.path:
-        sys.path.insert(0, str(skill_dir))
+    if str(skill_dir) in sys.path:
+        sys.path.remove(str(skill_dir))
+    sys.path.insert(0, str(skill_dir))
+    package = sys.modules.get("osc_headless")
+    current = sys.modules.get("osc_headless.todos")
+    package_file = str(getattr(package, "__file__", "")) if package is not None else ""
+    current_file = str(getattr(current, "__file__", "")) if current is not None else ""
+    if (package is not None and not package_file.startswith(str(skill_dir))) or (current is not None and not current_file.startswith(str(skill_dir))):
+        sys.modules.pop("osc_headless.todos", None)
+        sys.modules.pop("osc_headless", None)
     from osc_headless.todos import extract_base_year_from_filename, extract_document_date_from_filename  # type: ignore
     return extract_document_date_from_filename, extract_base_year_from_filename
 
@@ -475,7 +491,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
 
     hearing_patterns = [
         r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
-        r"(?:定|訂)於?(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
+        r"(?:定|訂)於?(?<!年)(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
     ]
     for pattern in hearing_patterns:
         for m in re.finditer(pattern, body):
@@ -486,7 +502,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 # Yearless hearing: mirror original OSC base-year logic.
                 base = filename_doc_date
                 dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
-                if dt.date() < base.date() - timedelta(days=30):
+                if dt.date() < base.date() - timedelta(days=30) and filename_base_year == base.year:
                     dt = dt.replace(year=dt.year + 1)
                 period, hour, minute, proc = m.group(3), m.group(4), m.group(5), m.group(6)
             else:
@@ -509,7 +525,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
 
     date_only_patterns = [
         r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
-        r"(?:定|訂)於?(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
+        r"(?:定|訂)於?(?<!年)(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
     ]
     for pattern in date_only_patterns:
         for m in re.finditer(pattern, body):
@@ -520,7 +536,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 base = filename_doc_date
                 try:
                     dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
-                    if dt.date() < base.date() - timedelta(days=30):
+                    if dt.date() < base.date() - timedelta(days=30) and filename_base_year == base.year:
                         dt = dt.replace(year=dt.year + 1)
                 except Exception:
                     dt = None

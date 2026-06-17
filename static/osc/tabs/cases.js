@@ -665,9 +665,12 @@ async function openCaseFolderHost(id, quiet = false) {
 // 不依賴本機檔案管理 / smb 協定。把 NAS 案件路徑塞進 #fileManager tab。
 async function openCaseInFileManager(id) {
     try {
-        // 先呼 /open-folder：後端已含 DB → _osc_guess_case_folder（含 NAS 掃描）
-        // 三層 fallback，能找到就找到。前端不再自己判 folder 為空。
-        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/open-folder`, "POST", {});
+        // 網頁檔案管理只需要案件根路徑，不需要先觸發本機 Finder/Explorer 開啟流程。
+        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/folder-path`);
+        if (data && data.ok === false) {
+            handleOpenFolderError(data);
+            return;
+        }
         let folder = (data && data.folder_path || "").trim();
         if (!folder) {
             // 後端三層都找不到 → 顯示 friendly 警告，提供「建立資料夾」按鈕
@@ -683,7 +686,11 @@ async function openCaseInFileManager(id) {
         // 1. 先切到 fileManager view。若側欄為精簡版沒有獨立按鈕，直接啟用 view。
         const fmTabBtn = document.querySelector('.tab-btn[data-tab="fileManager"]');
         if (fmTabBtn) {
-            fmTabBtn.click();
+            if (typeof jumpToPaperclipTab === "function") {
+                jumpToPaperclipTab("fileManager");
+            } else {
+                fmTabBtn.click();
+            }
         } else {
             document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
             document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
@@ -848,6 +855,8 @@ function renderCaseFolderBrowser(data) {
     const rel = data.current_relative_path || "";
     const folderPath = data.folder_path || "";
     const folderExists = !!data.folder_exists;
+    const folderListOk = data.folder_list_ok !== false;
+    const folderListError = String(data.message || data.error || "").trim();
     const normalizedFolderPath = folderPath.replace(/\\/g, "/").replace(/\/$/, "");
     const parentButton = rel
         ? `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(data.parent_relative_path || "")}" data-wb-drop-target="folder">↩ 上一層</button>`
@@ -857,7 +866,9 @@ function renderCaseFolderBrowser(data) {
         parentButton,
         ...dirs.map(item => `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-wb-drop-target="folder">📁 ${esc(item.name || "")}</button>`),
     ].filter(Boolean).join("");
-    const rows = entries.length ? entries.map(item => {
+    const rows = !folderListOk
+        ? `<tr><td colspan="5" class="muted">資料夾暫時無法列出內容：${esc(folderListError || "NAS 或同步資料夾目前回應逾時")}</td></tr>`
+        : entries.length ? entries.map(item => {
         const isDir = item.type === "dir";
         const targetPath = item.relative_path ? `${normalizedFolderPath}/${item.relative_path}` : folderPath;
         const openBtn = isDir
@@ -904,9 +915,17 @@ function renderCaseFolderBrowser(data) {
         </div>
         <div class="wb-folder-meta">
             <div class="wb-folder-kv"><div class="k">案件</div><div class="v">${esc(c.case_number || "")}｜${esc(c.client_name || "")}</div></div>
-            <div class="wb-folder-kv"><div class="k">同步狀態</div><div class="v">${folderExists ? "已同步，可直接瀏覽" : "尚未同步到伺服器本機"}</div></div>
+            <div class="wb-folder-kv"><div class="k">同步狀態</div><div class="v">${
+                folderExists
+                    ? (folderListOk ? "已同步，可直接瀏覽" : "資料夾存在，可在本機開啟")
+                    : "尚未同步到伺服器本機"
+            }</div></div>
         </div>
         <div class="wb-breadcrumb">${esc(rel ? `${folderPath} / ${rel}` : folderPath)}</div>
+        ${folderExists && !folderListOk ? `
+        <div class="status-banner warn" style="margin-top:10px;">
+            ${esc(folderListError || "資料夾已定位，但 NAS 或同步資料夾目前無法由背景服務穩定列出內容。你可以先複製路徑、在本機開啟，或稍後重新整理。")}
+        </div>` : ""}
         ${folderExists ? `
         <div class="wb-drop-zone" aria-label="拖拉檔案上傳或移動" data-wb-drop-target="folder" data-path="${esc(rel || "")}">
             <strong>可將多個檔案拖拉到這裡上傳，也可拖拉既有檔案移到目前位置</strong>
@@ -938,9 +957,11 @@ async function openCaseFolder(id, relativePath = "") {
     bindWorkbenchFolderMoveDrag();
     wbSetStatus(
         data.folder_exists
-            ? `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`
+            ? (data.folder_list_ok === false
+                ? `資料夾已定位：${data.message || data.error || "請使用本機 Finder 開啟。"}`
+                : `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`)
             : "案件資料夾尚未同步到伺服器本機，已提供 NAS 路徑與本機開啟選項。",
-        data.folder_exists ? "ok" : "warn"
+        data.folder_exists && data.folder_list_ok !== false ? "ok" : "warn"
     );
 }
 
@@ -1947,7 +1968,7 @@ function initCardDrag(container) {
         });
         card.addEventListener('dblclick', () => {
             const id = card.dataset.caseId;
-            if (id) openCaseFolder(id);
+            if (id) openCaseInFileManager(id);
         });
     });
 }
@@ -1961,7 +1982,7 @@ async function openCaseFolderWithFeedback(caseId, trigger) {
         button.textContent = "開啟中...";
     }
     try {
-        await openCaseFolder(caseId);
+        await openCaseInFileManager(caseId);
     } catch (err) {
         showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
     } finally {

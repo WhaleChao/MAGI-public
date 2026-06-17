@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import logging
 import copy
+import importlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import shlex
 import socket
 import subprocess
+import sys
+import threading
 import time
 import urllib.request
 from html import escape
@@ -30,6 +34,117 @@ from flask_login import current_user, login_required
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_BROWSER_CORE_HEALTH_CACHE: dict[str, Any] = {"ts": 0.0, "result": None}
+_BROWSER_CORE_HEALTH_LOCK = threading.Lock()
+_PYTHON_STARTUP_HEALTH_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _browser_core_health_hard_timeout(
+    timeout_seconds: int = 15,
+    cache_ttl_seconds: int = 30,
+) -> dict[str, Any]:
+    """Run Playwright health in a child process so /health itself never hangs."""
+    now = time.time()
+    cached = _BROWSER_CORE_HEALTH_CACHE.get("result")
+    if (
+        isinstance(cached, dict)
+        and cache_ttl_seconds > 0
+        and now - float(_BROWSER_CORE_HEALTH_CACHE.get("ts") or 0.0) < cache_ttl_seconds
+    ):
+        result = dict(cached)
+        result["cached"] = True
+        return result
+
+    sync_probe = str(os.environ.get("MAGI_BROWSER_HEALTH_SYNC_PROBE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not sync_probe:
+        return {
+            "ok": True,
+            "engine": "playwright-chromium",
+            "status": "deferred",
+            "detail": "瀏覽器核心由獨立 live 測試驗證；健康頁不同步冷啟動以避免阻塞",
+            "cached": False,
+        }
+
+    acquired = _BROWSER_CORE_HEALTH_LOCK.acquire(blocking=False)
+    if not acquired:
+        if isinstance(cached, dict):
+            result = dict(cached)
+            result["cached"] = True
+            result["stale_while_revalidate"] = True
+            result["detail"] = "瀏覽器核心檢查正在更新，先回傳上一筆結果以避免健康頁阻塞"
+            return result
+        return {
+            "ok": True,
+            "engine": "playwright-chromium",
+            "status": "probe_in_progress",
+            "detail": "瀏覽器核心檢查正在進行，本次健康頁先不阻塞",
+            "cached": False,
+        }
+
+    code = (
+        "import json;"
+        "from skills.engine.playwright_wrapper import playwright_chromium_health;"
+        f"print(json.dumps(playwright_chromium_health(timeout_seconds={int(timeout_seconds)}, cache_ttl_seconds=0), ensure_ascii=False))"
+    )
+    env = os.environ.copy()
+    env.setdefault("MAGI_ROOT", str(ROOT))
+    env.setdefault("MAGI_ROOT_DIR", str(ROOT))
+    try:
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=max(int(timeout_seconds) + 2, 3),
+            )
+        except subprocess.TimeoutExpired:
+            result = {
+                "ok": True,
+                "engine": "playwright-chromium",
+                "reason": "browser_probe_deferred",
+                "detail": f"瀏覽器核心冷啟動超過 {int(timeout_seconds) + 2} 秒，已延後檢查且不阻塞 MAGI",
+            }
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "engine": "playwright-chromium",
+                "reason": "browser_probe_failed",
+                "detail": str(exc)[:160],
+            }
+        else:
+            stdout_lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+            payload = stdout_lines[-1] if stdout_lines else "{}"
+            try:
+                result = json.loads(payload)
+            except Exception:
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_bad_output",
+                    "detail": (completed.stderr or completed.stdout or "")[-240:],
+                }
+            if completed.returncode != 0:
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_failed",
+                    "detail": (completed.stderr or completed.stdout or "")[-240:],
+                }
+            elif not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_bad_output",
+                    "detail": repr(result)[:160],
+                }
+    finally:
+        _BROWSER_CORE_HEALTH_LOCK.release()
+
+    _BROWSER_CORE_HEALTH_CACHE["ts"] = now
+    _BROWSER_CORE_HEALTH_CACHE["result"] = dict(result)
+    return result
 
 
 def _wants_json_response() -> bool:
@@ -255,6 +370,54 @@ def _is_pdf_smoke_progress_callback_recovered(row: dict[str, Any], root: Path) -
     return False
 
 
+def _python_startup_recovered_after_interrupted_getpath(row: dict[str, Any]) -> bool:
+    err = str(row.get("error") or "")
+    if "Fatal Python error: error evaluating path" not in err:
+        return False
+    if "InterruptedError: [Errno 4] Interrupted system call" not in err:
+        return False
+
+    context = str(row.get("context") or "")
+    match = re.search(r"command=(.+?)(?:\s+[A-Z0-9_]+=|\s+--\s+|$)", context)
+    command = match.group(1).strip() if match else ""
+    try:
+        parts = shlex.split(command)
+    except Exception:
+        parts = []
+
+    python_exe = ""
+    for part in parts[:4]:
+        name = Path(part).name
+        if name.startswith("python"):
+            python_exe = part
+            break
+    if not python_exe:
+        fallback = ROOT / "venv" / "bin" / "python3"
+        if fallback.exists():
+            python_exe = str(fallback)
+    if not python_exe:
+        return False
+
+    now = time.time()
+    cached = _PYTHON_STARTUP_HEALTH_CACHE.get(python_exe)
+    if cached and now - cached[0] < 60:
+        return cached[1]
+
+    try:
+        proc = subprocess.run(
+            [python_exe, "-I", "-c", "print('ok')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        ok = proc.returncode == 0 and "ok" in proc.stdout
+    except Exception:
+        ok = False
+    _PYTHON_STARTUP_HEALTH_CACHE[python_exe] = (now, ok)
+    return ok
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
@@ -264,6 +427,8 @@ def _classify_cron_issue(
 ) -> str:
     if _is_false_positive_cron_issue(row):
         return "false_positive"
+    if _python_startup_recovered_after_interrupted_getpath(row):
+        return "recovered"
 
     ts = float(row.get("_ts") or 0.0)
     job_id = _cron_job_from_issue_command(row.get("command"))
@@ -501,7 +666,7 @@ def create_admin_runtime_blueprint(
     status_file = static_dir / "magi_status.json"
     server_log_path = agent_dir / "server.log"
     health_cache: dict[str, Any] = {"ts": 0.0, "checks": None}
-    health_cache_ttl_sec = 10.0
+    health_cache_ttl_sec = max(5.0, float(os.environ.get("MAGI_HEALTH_CACHE_TTL_SEC", "60") or "60"))
 
     def _is_current_user_admin() -> bool:
         try:
@@ -1267,6 +1432,231 @@ def create_admin_runtime_blueprint(
             logger.error("Codex distributed toggle failed: %s", exc, exc_info=True)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+    def _collect_drive_sync_status() -> dict[str, Any]:
+        drive_dir = root / ".runtime" / "drive_sync"
+        auth_required_path = drive_dir / "drive_case_sync_auth_required_latest.json"
+        worker_state_path = drive_dir / "worker_state.json"
+        try:
+            drive_case_sync = importlib.import_module("api.osc.drive_case_sync")
+            DriveCaseSyncAuthRequired = drive_case_sync.DriveCaseSyncAuthRequired
+            build_drive_service = drive_case_sync.build_drive_service
+        except Exception as exc:
+            return {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+
+        def _probe_drive_sync_auth(write_scope: bool) -> tuple[str, str]:
+            try:
+                probe_service = build_drive_service(interactive=False, write=write_scope)
+                probe_service.files().get(fileId="root", fields="id").execute()
+            except DriveCaseSyncAuthRequired as exc:
+                return "auth_required", str(exc)
+            except Exception as exc:
+                return "health_probe_failed", str(exc)
+            return "ok", ""
+
+        def _mark_drive_sync_auth_recovered(
+            source: dict[str, Any],
+            *,
+            write_scope: bool,
+        ) -> dict[str, Any]:
+            recovered_status = {
+                "ok": True,
+                "status": "ok",
+                "action_required": False,
+                "message": "Google Drive 授權已恢復；已清除舊授權警示",
+                "finished_at": datetime.now().isoformat(),
+                "token_path": str(source.get("token_path") or ""),
+                "write_scope": write_scope,
+            }
+            try:
+                auth_required_path.unlink(missing_ok=True)
+                if worker_state_path.exists():
+                    worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+                    if isinstance(worker_state, dict):
+                        last_summary = worker_state.get("last_summary")
+                        if not isinstance(last_summary, dict):
+                            last_summary = {}
+                        worker_state["last_status"] = recovered_status
+                        worker_state["last_summary"] = {
+                            **last_summary,
+                            "auth_required": False,
+                            "auth_recovered": True,
+                        }
+                        tmp = worker_state_path.with_suffix(".tmp")
+                        tmp.write_text(
+                            json.dumps(worker_state, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        tmp.replace(worker_state_path)
+            except Exception:
+                logger.debug("silent-catch updating drive worker auth state", exc_info=True)
+            return {
+                "ok": True,
+                "status": "ok",
+                "detail": "Google Drive 授權已恢復；已清除過期授權警示",
+                "token_path": recovered_status["token_path"],
+                "write_scope": write_scope,
+            }
+
+        if not auth_required_path.exists() and not worker_state_path.exists():
+            return {"ok": None, "status": "unknown", "detail": "尚未執行同步檢查"}
+
+        try:
+            if auth_required_path.exists():
+                auth_required = json.loads(auth_required_path.read_text(encoding="utf-8"))
+                write_scope = bool(auth_required.get("write_scope"))
+                probe_status, probe_detail = _probe_drive_sync_auth(write_scope)
+                if probe_status == "ok":
+                    return _mark_drive_sync_auth_recovered(auth_required, write_scope=write_scope)
+                if probe_status == "auth_required":
+                    return {
+                        "ok": False,
+                        "status": "auth_required",
+                        "message": str(probe_detail or auth_required.get("message") or "Google Drive 授權需重新建立")[:160],
+                        "token_path": str(auth_required.get("token_path") or ""),
+                        "write_scope": write_scope,
+                    }
+                return {
+                    "ok": False,
+                    "status": "health_probe_failed",
+                    "detail": probe_detail[:160],
+                    "token_path": str(auth_required.get("token_path") or ""),
+                    "write_scope": write_scope,
+                }
+
+            worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+            last_status = worker_state.get("last_status") if isinstance(worker_state.get("last_status"), dict) else {}
+            last_summary = worker_state.get("last_summary") if isinstance(worker_state.get("last_summary"), dict) else {}
+            if last_status.get("action_required"):
+                if str(last_status.get("status") or "") == "auth_required":
+                    write_scope = bool(last_status.get("write_scope"))
+                    probe_status, probe_detail = _probe_drive_sync_auth(write_scope)
+                    if probe_status == "ok":
+                        return _mark_drive_sync_auth_recovered(last_status, write_scope=write_scope)
+                    if probe_status == "auth_required":
+                        return {
+                            "ok": False,
+                            "status": "auth_required",
+                            "message": str(probe_detail or last_status.get("message") or "Google Drive 授權需重新建立")[:160],
+                            "token_path": str(last_status.get("token_path") or ""),
+                            "write_scope": write_scope,
+                        }
+                    return {
+                        "ok": False,
+                        "status": "health_probe_failed",
+                        "detail": probe_detail[:160],
+                        "token_path": str(last_status.get("token_path") or ""),
+                        "write_scope": write_scope,
+                    }
+                return {
+                    "ok": False,
+                    "status": str(last_status.get("status") or "action_required"),
+                    "message": str(last_status.get("message") or "Google Drive 同步需要處理")[:160],
+                }
+            return {
+                "ok": True,
+                "status": str(last_status.get("status") or "ok"),
+                "detail": "最近同步檢查正常",
+                "matched_case_folders": int(last_summary.get("matched_case_folders") or 0),
+            }
+        except Exception as exc:
+            return {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+
+    def _collect_process_markers() -> dict[str, Any]:
+        markers = {
+            "daemon_markers": ("daemon.py", "api/discord_bot.py", "rpc-server"),
+            "server_markers": ("api/server.py", "api/server", "api_server.py"),
+        }
+        process_lines: list[str] = []
+        try:
+            completed = subprocess.run(
+                ["ps", "-axo", "command="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            process_lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "unknown",
+                "error": str(exc)[:120],
+                "daemon": {"ok": False, "markers": []},
+                "server": {"ok": False, "markers": []},
+            }
+        daemon_matches = [m for m in markers["daemon_markers"] if any(m in line for line in process_lines)]
+        server_matches = [m for m in markers["server_markers"] if any(m in line for line in process_lines)]
+        return {
+            "ok": bool(daemon_matches and server_matches),
+            "status": "online" if (daemon_matches and server_matches) else "partial",
+            "daemon": {"ok": bool(daemon_matches), "markers": daemon_matches},
+            "server": {"ok": bool(server_matches), "markers": server_matches, "pid": os.getpid()},
+            "raw_count": len(process_lines),
+        }
+
+    def _collect_db_status() -> dict[str, Any]:
+        conn = None
+        try:
+            conn = mysql_connector.connect(**db_config, connection_timeout=3, use_pure=True)
+            return {"ok": conn.is_connected()}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)[:120]}
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _collect_model_status() -> dict[str, Any]:
+        try:
+            from urllib.parse import urlparse as _urlparse
+            from skills.bridge.http_pool import get_session as _get_session
+
+            url = os.environ.get("MAGI_OMLX_CHAT_URL", os.environ.get("MAGI_OMLX_BASE", "http://127.0.0.1:8080"))
+            parsed = _urlparse(str(url or ""))
+            port = parsed.port or 8080
+            response = _get_session().get(f"{url.rstrip('/')}/v1/models", timeout=2)
+            ok = response.status_code == 200
+            return {"ok": ok, "status": "ok" if ok else "unreachable", "port": port}
+        except Exception as exc:
+            return {"ok": False, "status": "probe_failed", "detail": str(exc)[:120]}
+
+    def _collect_tools_api_status() -> dict[str, Any]:
+        try:
+            docs = list_skill_docs()
+            if not isinstance(docs, list):
+                raise TypeError("list_skill_docs must return list")
+            return {"ok": True, "status": "ok", "count": len(docs)}
+        except Exception as exc:
+            return {"ok": False, "status": "error", "detail": str(exc)[:120], "count": 0}
+
+    def _collect_nas_mount_status() -> dict[str, Any]:
+        shares: dict[str, Any] = {}
+        try:
+            _nas_guard = importlib.import_module("api.nas_mount_guard")
+
+            for share, vol in _nas_guard.get_configured_shares(refresh=True):
+                try:
+                    status = _nas_guard.get_share_status(share, vol)
+                    shares[share] = bool(status.get("mounted"))
+                except Exception:
+                    shares[share] = False
+            return {"ok": all(shares.values()) if shares else True, "mounts": shares}
+        except Exception as exc:
+            return {"ok": False, "mounts": {}, "detail": str(exc)[:120]}
+
+    def _attach_runtime_diagnostics(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from api.runtime_diagnostics import classify_model_health, classify_runtime_error
+        except Exception:
+            return payload
+        out = dict(payload)
+        if name == "model":
+            out["classification"] = classify_model_health(out)
+        if out.get("ok") is False:
+            out["diagnosis"] = classify_runtime_error(out)
+        return out
+
     @bp.route("/api/status")
     def api_status():
         try:
@@ -1290,6 +1680,102 @@ def create_admin_runtime_blueprint(
         except Exception as exc:
             lines = [f"[LOG READ ERROR] {exc}"]
         return jsonify({"lines": lines})
+
+    @bp.route("/api/live-validation", methods=["GET"])
+    def api_live_validation():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        process_markers = _collect_process_markers()
+        checks = {
+            "daemon": process_markers.get("daemon", {"ok": False}),
+            "server": process_markers.get("server", {"ok": False}),
+            "tools_api": _collect_tools_api_status(),
+            "nas": _collect_nas_mount_status(),
+            "drive": _collect_drive_sync_status(),
+            "db": _collect_db_status(),
+            "model": _collect_model_status(),
+        }
+        for check_name in ("daemon", "server", "tools_api", "nas", "drive", "db", "model"):
+            checks[check_name] = _attach_runtime_diagnostics(check_name, checks[check_name])
+        checks["timestamp"] = datetime.now().isoformat()
+        issues = []
+        for name, payload in checks.items():
+            if name == "timestamp":
+                continue
+            if not payload.get("ok"):
+                issues.append(name)
+        checks["summary"] = {
+            "ok": not issues,
+            "status": "operational" if not issues else "degraded",
+            "issues": issues,
+        }
+        checks["status"] = checks["summary"]["status"]
+        return jsonify(checks), 200
+
+    def _request_case_exclusion_paths(payload: dict[str, Any]) -> list[str]:
+        raw = payload.get("relative_paths")
+        if raw is None:
+            raw = payload.get("relative_path")
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw]
+        if isinstance(raw, list):
+            return [str(item) for item in raw]
+        return []
+
+    def _case_exclusion_file_for_runtime() -> Path:
+        return root / ".runtime" / "drive_sync" / "case_exclusions.json"
+
+    @bp.route("/api/drive-case-exclusions", methods=["GET"])
+    @login_required
+    def api_drive_case_exclusions_list():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        payload = _dcs.load_case_exclusion_payload(include_env=False, exclusion_path=_case_exclusion_file_for_runtime())
+        return jsonify({"ok": True, "count": len(payload.get("relative_paths") or []), **payload}), 200
+
+    @bp.route("/api/drive-case-exclusions", methods=["POST"])
+    @login_required
+    def api_drive_case_exclusions_add():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        data = request.get_json(silent=True) or {}
+        paths = _request_case_exclusion_paths(data)
+        if not paths:
+            return jsonify({"ok": False, "error": "missing_relative_paths"}), 400
+
+        exclusion_path = _case_exclusion_file_for_runtime()
+        before = set(_dcs.load_case_exclusion_payload(include_env=False, exclusion_path=exclusion_path).get("relative_paths") or [])
+        updated = _dcs.sync_case_exclusions(
+            paths,
+            reason=str(data.get("reason") or ""),
+            exclusion_path=exclusion_path,
+        )
+        after = set(updated.get("relative_paths") or [])
+        return jsonify({"ok": True, "changed": after != before, **updated}), 200
+
+    @bp.route("/api/drive-case-exclusions", methods=["DELETE"])
+    @login_required
+    def api_drive_case_exclusions_remove():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        data = request.get_json(silent=True) or {}
+        paths = _request_case_exclusion_paths(data)
+        if not paths:
+            return jsonify({"ok": False, "error": "missing_relative_paths"}), 400
+        updated, removed = _dcs.unsync_case_exclusions(paths, exclusion_path=_case_exclusion_file_for_runtime())
+        return jsonify({"ok": True, "changed": removed > 0, "removed": removed, **updated}), 200
 
     @bp.route("/health", methods=["GET"])
     def health():
@@ -1465,17 +1951,10 @@ def create_admin_runtime_blueprint(
         except Exception:
             checks["ocr"] = {"ok": False, "engine": "macOS Vision", "note": "import failed"}
 
-        try:
-            from skills.engine.playwright_wrapper import playwright_chromium_health
-
-            checks["browser_core"] = playwright_chromium_health(timeout_seconds=5, cache_ttl_seconds=300)
-        except Exception as exc:
-            checks["browser_core"] = {
-                "ok": False,
-                "engine": "playwright-chromium",
-                "reason": "health_probe_failed",
-                "detail": str(exc)[:120],
-            }
+        checks["browser_core"] = _browser_core_health_hard_timeout(
+            timeout_seconds=max(1, int(os.environ.get("MAGI_BROWSER_HEALTH_TIMEOUT_SEC", "3") or "3")),
+            cache_ttl_seconds=max(30, int(os.environ.get("MAGI_BROWSER_HEALTH_CACHE_TTL_SEC", "300") or "300")),
+        )
 
         conn = None
         try:
@@ -1527,40 +2006,7 @@ def create_admin_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
-        try:
-            drive_dir = root / ".runtime" / "drive_sync"
-            auth_required_path = drive_dir / "drive_case_sync_auth_required_latest.json"
-            worker_state_path = drive_dir / "worker_state.json"
-            if auth_required_path.exists():
-                auth_required = json.loads(auth_required_path.read_text(encoding="utf-8"))
-                checks["drive_sync"] = {
-                    "ok": False,
-                    "status": "auth_required",
-                    "message": str(auth_required.get("message") or "Google Drive 授權需重新建立")[:160],
-                    "token_path": str(auth_required.get("token_path") or ""),
-                    "write_scope": bool(auth_required.get("write_scope")),
-                }
-            elif worker_state_path.exists():
-                worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
-                last_status = worker_state.get("last_status") if isinstance(worker_state.get("last_status"), dict) else {}
-                last_summary = worker_state.get("last_summary") if isinstance(worker_state.get("last_summary"), dict) else {}
-                if last_status.get("action_required"):
-                    checks["drive_sync"] = {
-                        "ok": False,
-                        "status": str(last_status.get("status") or "action_required"),
-                        "message": str(last_status.get("message") or "Google Drive 同步需要處理")[:160],
-                    }
-                else:
-                    checks["drive_sync"] = {
-                        "ok": True,
-                        "status": str(last_status.get("status") or "ok"),
-                        "detail": "最近同步檢查正常",
-                        "matched_case_folders": int(last_summary.get("matched_case_folders") or 0),
-                    }
-            else:
-                checks["drive_sync"] = {"ok": None, "status": "unknown", "detail": "尚未執行同步檢查"}
-        except Exception as exc:
-            checks["drive_sync"] = {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+        checks["drive_sync"] = _collect_drive_sync_status()
 
         try:
             audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
@@ -1672,7 +2118,8 @@ def create_admin_runtime_blueprint(
 
             shares = _nas_guard.get_configured_shares(refresh=True)
             nas_detail = {vol.split("/")[-1]: _nas_guard.get_share_status(name, vol) for name, vol in shares}
-            if any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+            allow_request_remount = str(request.args.get("remount") or "").strip().lower() in {"1", "true", "yes", "on"}
+            if allow_request_remount and any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
                 checks["nas_auto_remount_attempted"] = True
                 try:
                     _nas_guard.ensure_nas_mounts()
@@ -1683,6 +2130,9 @@ def create_admin_runtime_blueprint(
                     }
                 except Exception as exc:
                     checks["nas_auto_remount_error"] = str(exc)[:120]
+            elif any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+                checks["nas_auto_remount_attempted"] = False
+                checks["nas_auto_remount_skipped"] = "background_guard_handles_remount"
             checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
             checks["nas_detail"] = nas_detail
         except Exception:

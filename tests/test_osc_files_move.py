@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 from unittest.mock import patch
 import builtins
 import errno
+import time
 
 from flask import Flask
 from flask_login import LoginManager, UserMixin
@@ -592,6 +593,25 @@ def test_share_download_uses_system_cp_when_python_read_keeps_deadlocking(tmp_pa
     assert attempts["n"] >= 1
 
 
+def test_share_download_streams_when_system_copy_fails(tmp_path: Path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    src = tmp_path / "卷證.csv"
+    payload = "name\n王小明\n".encode("utf-8")
+    src.write_bytes(payload)
+    copy_attempts = {"n": 0}
+
+    def fake_run(_argv, **_kwargs):
+        copy_attempts["n"] += 1
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "copy failed"})()
+
+    monkeypatch.setattr(mod, "_should_prefer_system_copy", lambda _path: True)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod._read_file_with_retry(str(src)) == payload
+    assert copy_attempts["n"] >= 1
+
+
 def test_share_download_stages_even_when_source_stat_deadlocks(tmp_path: Path, monkeypatch):
     from api.blueprints import osc_files as mod
 
@@ -644,6 +664,70 @@ def test_share_gateway_only_accepts_opaque_share_paths():
     assert not TOKEN_RE.fullmatch("/login")
     assert not TOKEN_RE.fullmatch("/api/osc/files/content")
     assert not TOKEN_RE.fullmatch("/s/too-short")
+
+
+def test_folder_browse_lists_with_scandir_by_default(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件資料夾"
+    case_dir.mkdir()
+    (case_dir / "01_法扶資料").mkdir()
+    (case_dir / "卷證.pdf").write_bytes(b"%PDF")
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True):
+        r = client.get("/api/osc/folders/browse", query_string={"base_path": str(case_dir)})
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert [item["name"] for item in data["folders"]] == ["01_法扶資料"]
+    assert [item["name"] for item in data["files"]] == ["卷證.pdf"]
+
+
+def test_folder_browse_uses_helper_when_in_process_listing_fails(tmp_path: Path):
+    client = _client()
+    case_dir = tmp_path / "案件資料夾"
+    case_dir.mkdir()
+
+    with patch("api.blueprints.osc_files._resolve_target_dir", return_value=str(case_dir)), \
+         patch("api.blueprints.osc_files._osc_is_safe_local_path", return_value=True), \
+         patch("api.blueprints.osc_files._browse_entries_with_scandir", side_effect=OSError("smb list failed")), \
+         patch(
+             "api.blueprints.osc_files._browse_entries_with_helper",
+             return_value=(
+                 [{"name": "01_法扶資料", "relative_path": "01_法扶資料", "type": "dir"}],
+                 [{"name": "卷證.pdf", "relative_path": "卷證.pdf", "type": "file"}],
+                 0,
+             ),
+         ):
+        r = client.get("/api/osc/folders/browse", query_string={"base_path": str(case_dir)})
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["source"] == "folder_helper"
+    assert [item["name"] for item in data["folders"]] == ["01_法扶資料"]
+    assert [item["name"] for item in data["files"]] == ["卷證.pdf"]
+
+
+def test_osc_listdir_quick_uses_subprocess_fallback_after_timeout(tmp_path: Path, monkeypatch):
+    import api.osc.utils as utils
+
+    (tmp_path / "子資料夾").mkdir()
+    (tmp_path / "卷證.pdf").write_bytes(b"%PDF")
+    real_listdir = utils.os.listdir
+
+    def slow_listdir(path):
+        time.sleep(0.5)
+        return real_listdir(path)
+
+    monkeypatch.setattr(utils, "_osc_path_needs_fs_timeout", lambda _path: True)
+    monkeypatch.setattr(utils, "_osc_finder_list_folder", lambda _path: None)
+    monkeypatch.setattr(utils.os, "listdir", slow_listdir)
+
+    names = utils._osc_listdir_quick(str(tmp_path), timeout=0.01)
+
+    assert set(names) == {"子資料夾", "卷證.pdf"}
 
 
 def test_share_gateway_forwards_mobile_range_without_session_headers():

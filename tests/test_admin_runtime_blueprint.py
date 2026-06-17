@@ -351,6 +351,106 @@ def test_health_route_caches_heavy_probes(tmp_path, monkeypatch):
     assert len(calls) > first_calls
 
 
+def test_health_drive_sync_auth_marker_self_heal(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    class _DriveService:
+        def __init__(self, *, succeed: bool):
+            self.succeed = succeed
+
+        def files(self):
+            succeed = self.succeed
+
+            class _Files:
+                def get(self, **_kwargs):
+                    if not succeed:
+                        raise _AuthReq("token-expired")
+
+                    class _Request:
+                        def execute(self):
+                            return {"id": "root"}
+
+                    return _Request()
+
+            return _Files()
+
+    def _probe_service_factory(*, write: bool):
+        return _DriveService(succeed=True)
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+    drive_mod.build_drive_service = lambda interactive=False, force_auth=False, write=False: _probe_service_factory(write=write)
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    marker_path = tmp_path / ".runtime" / "drive_sync" / "drive_case_sync_auth_required_latest.json"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(json.dumps({"message": "old marker", "token_path": "/tmp/token", "write_scope": False}), encoding="utf-8")
+    worker_state_path = marker_path.with_name("worker_state.json")
+    worker_state_path.write_text(
+        json.dumps(
+            {
+                "last_status": {
+                    "ok": False,
+                    "status": "auth_required",
+                    "action_required": True,
+                    "message": "old marker",
+                    "token_path": "/tmp/token",
+                    "write_scope": False,
+                },
+                "last_summary": {"auth_required": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is True
+    assert health["drive_sync"]["status"] == "ok"
+    assert not marker_path.exists()
+    worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+    assert worker_state["last_status"]["ok"] is True
+    assert worker_state["last_status"]["action_required"] is False
+    assert worker_state["last_summary"]["auth_required"] is False
+    assert worker_state["last_summary"]["auth_recovered"] is True
+
+
+def test_health_drive_sync_auth_marker_stays_when_still_required(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+
+    def _raise_auth(interactive=False, force_auth=False, write=False):
+        raise _AuthReq("still required")
+
+    drive_mod.build_drive_service = _raise_auth
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    marker_path = tmp_path / ".runtime" / "drive_sync" / "drive_case_sync_auth_required_latest.json"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps({"message": "old marker", "token_path": "/tmp/token", "write_scope": True}),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is False
+    assert health["drive_sync"]["status"] == "auth_required"
+    assert marker_path.exists()
+
+
 def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     app, _, _ = _make_app(tmp_path, monkeypatch)
     client = app.test_client()
@@ -664,3 +764,148 @@ def test_operational_issue_health_treats_live_recovered_guards_as_inactive(tmp_p
     assert summary["active_cron_failures_24h"] == 0
     assert summary["recovered_cron_failures_24h"] == 2
     assert summary["inactive_or_noise_cron_failures_24h"] == 2
+
+
+def test_live_validation_endpoint_payload_and_fast_checks(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    class _DriveService:
+        def files(self):
+            class _Files:
+                def get(self, **_kwargs):
+                    class _Request:
+                        def execute(self):
+                            return {"id": "root"}
+
+                    return _Request()
+
+            return _Files()
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+    drive_mod.build_drive_service = lambda interactive=False, force_auth=False, write=False: _DriveService()
+    drive_mod.load_case_exclusion_payload = lambda include_env=False: {"updated_at": "2026-06-16T00:00:00", "relative_paths": [], "reason": ""}
+    drive_mod.sync_case_exclusions = lambda relative_paths, reason="": {"updated_at": "", "relative_paths": [], "reason": reason}
+    drive_mod.unsync_case_exclusions = lambda paths: ({}, 0)
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    status_file = tmp_path / ".runtime" / "drive_sync" / "worker_state.json"
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    status_file.write_text(
+        json.dumps(
+            {
+                "last_status": {"ok": True, "status": "ok", "action_required": False},
+                "last_summary": {"auth_required": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        _subprocess,
+        "run",
+        lambda args, **kwargs: types.SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    "/usr/bin/python daemon.py",
+                    "/usr/bin/python api/server.py",
+                ]
+            ),
+            stderr="",
+        ),
+    )
+
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: [("homes", "/Volumes/homes")]
+    nas_mod.get_share_status = lambda share, vol: {"mounted": share == "homes"}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200))
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+
+    response = client.get("/api/live-validation", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] in {"operational", "degraded"}
+    assert set(payload.keys()) >= {"daemon", "server", "tools_api", "nas", "drive", "db", "model", "summary", "timestamp"}
+    assert payload["daemon"]["ok"] is True
+    assert payload["server"]["ok"] is True
+    assert payload["summary"]["ok"] is True
+    assert payload["summary"]["status"] == payload["status"]
+
+
+def test_drive_case_exclusions_endpoints_add_list_remove(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    store_path = tmp_path / ".runtime" / "drive_sync" / "case_exclusions.json"
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-06-01T00:00:00",
+                "reason": "initial",
+                "relative_paths": ["一般案件/Lumi/測試保留", "一般案件/Lumi/測試移除"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    list_resp = client.get("/api/drive-case-exclusions", headers={"X-User-ID": "u1"})
+    assert list_resp.status_code == 200
+    list_data = list_resp.get_json()
+    assert list_data["ok"] is True
+    assert list_data["count"] == 2
+    assert "一般案件/Lumi/測試保留" in list_data["relative_paths"]
+
+    add_resp = client.post(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={
+            "relative_paths": ["一般案件/Lumi/測試新增", " 一般案件/Lumi/測試新增  ", "一般案件/Lumi/測試保留"],
+            "reason": "ui-add",
+        },
+    )
+    assert add_resp.status_code == 200
+    add_data = add_resp.get_json()
+    assert add_data["ok"] is True
+    assert add_data["changed"] is True
+    assert len(add_data["relative_paths"]) == 3
+    assert "一般案件/Lumi/測試新增" in add_data["relative_paths"]
+
+    remove_resp = client.delete(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={"relative_path": " 一般案件/Lumi/測試保留 "},
+    )
+    assert remove_resp.status_code == 200
+    remove_data = remove_resp.get_json()
+    assert remove_data["ok"] is True
+    assert remove_data["changed"] is True
+    assert remove_data["removed"] == 1
+    assert "一般案件/Lumi/測試保留" not in remove_data["relative_paths"]
+    assert "一般案件/Lumi/測試移除" in remove_data["relative_paths"]
+
+    noop_remove = client.delete(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={"relative_path": "一般案件/Lumi/沒有這筆"},
+    )
+    assert noop_remove.status_code == 200
+    noop_data = noop_remove.get_json()
+    assert noop_data["ok"] is True
+    assert noop_data["changed"] is False
+    assert noop_data["removed"] == 0
+    assert len(noop_data["relative_paths"]) == 2

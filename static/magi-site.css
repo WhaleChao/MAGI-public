@@ -1,0 +1,434 @@
+:root {
+  --magi-bg: #eef1f3;
+  --magi-panel: #ffffff;
+  --magi-panel-2: #f6f8fa;
+  --magi-ink: #17202a;
+  --magi-muted: #637083;
+  --magi-line: rgba(23, 32, 42, 0.12);
+  --magi-accent: #0f766e;
+  --magi-accent-2: #2563eb;
+  --magi-warn: #b45309;
+  --magi-danger: #dc2626;
+  --magi-ok: #15803d;
+  --magi-sidebar: #111827;
+  --magi-sidebar-2: #1f2937;
+  --magi-shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
+  --magi-radius: 8px;
+  --magi-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Noto Sans TC", "PingFang TC", "Helvetica Neue", Arial, sans-serif;
+  --magi-mono: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.site-auth *,
+.site-console *,
+.site-debt *,
+.site-intel *,
+.site-nerv *,
+.site-ops *,
+.site-lottery *,
+.site-mobile *,
+.site-website *,
+.site-wizard * {
+  letter-spacing: 0;
+}
+
+.site-auth,
+.site-console,
+.site-debt,
+.site-intel,
+.site-ops,
+.site-lottery,
+.site-mobile,
+.site-wizard {
+  font-family: var(--magi-font);
+  color: var(--magi-ink);
+  background: var(--magi-bg);
+}
+
+.site-auth {
+  min-height: 100vh;
+  background: var(--magi-bg);
+}
+
+.site-auth .login-clock,
+.site-auth .container {
+  box-shadow: var(--magi-shadow);
+}
+
+.site-auth .container {
+  background: var(--magi-panel);
+  border: 1px solid var(--magi-line);
+  border-radius: var(--magi-radius);
+  color: var(--magi-ink);
+}
+
+.site-auth h2 {
+  color: var(--magi-ink);
+  font-size: 1.25rem;
+}
+
+.site-auth p,
+.site-auth .flash {
+  color: var(--magi-muted);
+}
+
+.site-auth input,
+.site-auth select,
+.site-auth textarea {
+  min-height: 42px;
+  background: var(--magi-panel-2);
+  border: 1px solid var(--magi-line);
+  border-radius: 6px;
+  color: var(--magi-ink);
+  font-family: var(--magi-font);
+}
+
+.site-auth input:focus,
+.site-auth select:focus,
+.site-auth textarea:focus {
+  outline: none;
+  border-color: rgba(15, 118, 110, 0.6);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.site-auth button,
+.site-auth a {
+  border-radius: 6px;
+  font-family: var(--magi-font);
+}
+
+.site-auth button {
+  min-height: 42px;
+  background: var(--magi-accent);
+  font-weight: 700;
+}
+
+.site-auth a {
+  color: var(--magi-accent-2);
+  font-size: 0.86rem;
+}
+
+.site-auth .login-clock {
+  background: var(--magi-panel);
+  border-color: var(--magi-line);
+  color: var(--magi-accent);
+}
+
+.site-console,
+.site-console body {
+  background: var(--magi-bg);
+}
+
+.site-console .topbar,
+.site-intel .nav,
+.site-ops .top,
+.site-website .topbar {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--magi-line);
+  color: var(--magi-ink);
+}
+
+.site-console .topnav a,
+.site-console .topnav button,
+.site-console .primary-link,
+.site-console .external-grid a,
+.site-intel .nav a,
+.site-intel .refresh-btn,
+.site-ops .btn,
+.site-ops .links a,
+.site-website .topbar a {
+  border-radius: 6px;
+}
+
+.site-console .intel-panel,
+.site-console .status-card,
+.site-console .research-card,
+.site-console .collapsible-panel,
+.site-console .magi-center,
+.site-console .magi-node,
+.site-intel .report-card,
+.site-ops .card,
+.site-ops .panel,
+.site-lottery .panel,
+.site-lottery .metric,
+.site-lottery .table-wrap {
+  background: var(--magi-panel);
+  border: 1px solid var(--magi-line);
+  border-radius: var(--magi-radius);
+  box-shadow: var(--magi-shadow);
+}
+
+.site-console .primary-link,
+.site-intel .refresh-btn,
+.site-ops .btn,
+.site-lottery button {
+  background: var(--magi-accent);
+  color: #fff;
+  border: 1px solid var(--magi-accent);
+}
+
+.site-console .primary-link:hover,
+.site-intel .refresh-btn:hover,
+.site-ops .btn:hover,
+.site-lottery button:hover {
+  background: #0b5f59;
+}
+
+.site-debt {
+  --bg: var(--magi-bg);
+  --panel: var(--magi-panel);
+  --panel-2: var(--magi-panel-2);
+  --line: var(--magi-line);
+  --text: var(--magi-ink);
+  --muted: var(--magi-muted);
+  --accent: var(--magi-accent);
+  --sidebar-bg: var(--magi-sidebar);
+  --sidebar-text: #d7dde7;
+  --sidebar-accent: #5eead4;
+}
+
+.site-debt .sidebar,
+.site-debt .topbar,
+.site-debt .card,
+.site-debt .modal-card,
+.site-debt .file-drop,
+.site-debt .generated-item {
+  border-radius: var(--magi-radius);
+}
+
+.site-debt .sidebar {
+  margin: 12px 0 12px 12px;
+  max-height: calc(100vh - 24px);
+  box-shadow: var(--magi-shadow);
+}
+
+.site-debt .main {
+  height: auto;
+  min-height: 100vh;
+}
+
+.site-debt .topbar {
+  margin: 12px 12px 0;
+  box-shadow: var(--magi-shadow);
+}
+
+.site-debt .content {
+  padding: 18px 24px 28px;
+}
+
+.site-debt .card {
+  box-shadow: var(--magi-shadow);
+}
+
+.site-nerv {
+  --bg: #111418;
+  --surface: #171c22;
+  --surface2: #20262d;
+  --border: rgba(255, 255, 255, 0.12);
+  --accent: #f59e0b;
+  --accent2: #5eead4;
+  --text: #f1f5f9;
+  --muted: #9aa7b8;
+  background: #111418;
+  color: var(--text);
+}
+
+.site-nerv::after {
+  opacity: 0.08;
+}
+
+.site-nerv .nerv-header,
+.site-nerv .warning-bar,
+.site-nerv .side-panel,
+.site-nerv .center-panel,
+.site-nerv .command-chip,
+.site-nerv .status-block,
+.site-nerv .control-section,
+.site-nerv .log-panel {
+  border-color: var(--border);
+}
+
+.site-nerv .nerv-header,
+.site-nerv .side-panel,
+.site-nerv .center-panel,
+.site-nerv .command-chip,
+.site-nerv .status-block,
+.site-nerv .control-section,
+.site-nerv .log-panel {
+  background: var(--surface);
+}
+
+.site-nerv .nerv-header h1,
+.site-nerv .panel-title,
+.site-nerv .command-chip-value {
+  color: var(--accent);
+  text-shadow: none;
+}
+
+.site-nerv .warning-bar {
+  background: #1f2937;
+  color: #fbbf24;
+}
+
+.site-intel {
+  background: var(--magi-bg);
+}
+
+.site-intel .nav {
+  height: 58px;
+}
+
+.site-intel .page-wrap {
+  max-width: 1040px;
+}
+
+.site-intel .page-header h1 {
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+}
+
+.site-intel .report-body {
+  color: var(--magi-ink);
+}
+
+.site-ops {
+  --bg: #101418;
+  --panel: #171c22;
+  --line: rgba(255, 255, 255, 0.12);
+  --txt: #f1f5f9;
+  --muted: #9aa7b8;
+  background: var(--bg);
+  color: var(--txt);
+}
+
+.site-ops .wrap {
+  max-width: 1480px;
+}
+
+.site-ops .links a {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  color: #cde7ff;
+}
+
+.site-ops th,
+.site-ops td {
+  border-top-color: var(--line);
+}
+
+.site-lottery {
+  --bg: var(--magi-bg);
+  --panel: var(--magi-panel);
+  --line: var(--magi-line);
+  --text: var(--magi-ink);
+  --muted: var(--magi-muted);
+  --accent: var(--magi-accent);
+  --accent-dark: #0b5f59;
+  --soft: #eefbf8;
+}
+
+.site-lottery main {
+  width: min(1180px, calc(100vw - 36px));
+}
+
+.site-lottery .drop {
+  background: var(--magi-panel);
+}
+
+.site-lottery .controls,
+.site-lottery th,
+.site-lottery .hint {
+  background: var(--magi-panel-2);
+}
+
+.site-mobile {
+  background: var(--magi-bg);
+}
+
+.site-mobile .mobile-hero,
+.site-mobile .connection-card,
+.site-mobile .action-card,
+.site-mobile .install-card,
+.site-mobile .admin-panel {
+  border-radius: var(--magi-radius);
+  box-shadow: var(--magi-shadow);
+}
+
+.site-mobile .action-card.primary {
+  border-color: rgba(15, 118, 110, 0.35);
+}
+
+.site-website {
+  background: #101418;
+  color: #f1f5f9;
+}
+
+.site-website .topbar {
+  background: #171c22;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.site-website .topbar h1 {
+  color: #5eead4;
+}
+
+.site-website .topbar .btn-back {
+  color: #5eead4;
+  border-color: rgba(94, 234, 212, 0.4);
+}
+
+.site-website .topbar .btn-site {
+  color: #93c5fd;
+  border-color: rgba(147, 197, 253, 0.35);
+}
+
+.site-wizard {
+  --bg: #101418;
+  --surface: #171c22;
+  --surface2: #20262d;
+  --border: rgba(255, 255, 255, 0.12);
+  --accent: #5eead4;
+  --accent2: #93c5fd;
+  --text: #f1f5f9;
+  --muted: #a7b0bf;
+}
+
+.site-wizard .wizard-header,
+.site-wizard .card,
+.site-wizard .spec-item,
+.site-wizard .model-card {
+  border-radius: var(--magi-radius);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.site-wizard .wizard-header {
+  background: var(--surface);
+}
+
+.site-wizard .wizard-header h1 {
+  color: var(--accent);
+  -webkit-text-fill-color: currentColor;
+}
+
+@media (max-width: 760px) {
+  .site-debt .sidebar {
+    margin: 0;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .site-debt .topbar {
+    margin: 8px;
+  }
+
+  .site-console .topbar,
+  .site-intel .nav,
+  .site-ops .top,
+  .site-website .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    height: auto;
+  }
+}

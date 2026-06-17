@@ -87,10 +87,10 @@ _load_local_env_keys({"MAGI_NAS_SHARES", "MAGI_NAS_HOST", "MAGI_NAS_TAILSCALE_HO
 CHECK_INTERVAL = 5  # 秒
 
 SERVICES = [
-    ("守護程序", "daemon.py"),
-    ("主伺服器", "api/server.py"),
-    ("通訊機器", "api/discord_bot.py"),
-    ("工具接口", "api/tools_api.py"),
+    ("守護程序", ("daemon.py", "run_daemon_no_site.py")),
+    ("主伺服器", ("api/server.py",)),
+    ("通訊機器", ("api/discord_bot.py",)),
+    ("工具接口", ("api/tools_api.py",)),
 ]
 
 OMLX_ENGINES = [
@@ -172,6 +172,16 @@ def _pgrep(pattern: str) -> str:
         return pids[0] if pids[0] else ""
     except Exception:
         return ""
+
+
+def _pgrep_any(patterns) -> str:
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    for pattern in patterns:
+        pid = _pgrep(str(pattern))
+        if pid:
+            return pid
+    return ""
 
 
 def _check_omlx(port: int) -> str:
@@ -434,6 +444,10 @@ def _get_node_ip(name: str) -> str:
 def _get_disk_usage(path: str) -> tuple:
     """Return (used_gb, total_gb, percent) for a mount point, or None."""
     try:
+        if str(path or "").startswith(_USER_MOUNT_ROOT) and os.environ.get(
+            "MAGI_MENUBAR_NAS_DISK_USAGE", ""
+        ).strip().lower() not in {"1", "true", "yes", "on"}:
+            return None
         if not (os.path.ismount(path) or os.path.isdir(path)):
             return None
         st = os.statvfs(path)
@@ -497,6 +511,25 @@ def _parse_last_run(iso_str: str) -> str:
         return f"{int(secs // 86400)}天前"
     except Exception:
         return iso_str[:16] if iso_str else "從未"
+
+
+def _load_json_file(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _epoch_from_iso(raw: str) -> float:
+    raw = str(raw or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
 
 
 def _mem_bar(pct: float, width: int = 8) -> str:
@@ -661,7 +694,7 @@ class MAGIMenuBar(rumps.App):
         # ── 核心服務 ──
         svcs = {}
         for name, pattern in SERVICES:
-            svcs[name] = bool(_pgrep(pattern))
+            svcs[name] = bool(_pgrep_any(pattern))
         cache["services"] = svcs
 
         # ── 推理引擎 ──
@@ -758,14 +791,21 @@ class MAGIMenuBar(rumps.App):
                     return "alive", f"{live_text} {hhmmss}"
                 return "stale", f"{stale_text} {hhmmss}"
 
-            # 法扶 Gmail monitor：以 [Gmail] 活動為準；若已看到啟動訊息但尚未有活動，顯示黃燈。
-            _gmail_epoch, _ = _find_latest_log_match(_log_tail, ("[Gmail]",))
+            # 法扶 Gmail monitor：優先看狀態檔；舊 log 只作為 fallback。
+            _laf_state = _load_json_file(os.path.join(MAGI_ROOT, "static", "laf_gmail_monitor_state.json"))
+            _gmail_epoch = _epoch_from_iso(_laf_state.get("updated_at", ""))
+            _gmail_status = str(_laf_state.get("status") or "").lower()
+            if not _gmail_epoch:
+                _gmail_epoch, _ = _find_latest_log_match(_log_tail, ("[Gmail]",))
             _gmail_state, _gmail_detail = _fmt_recent(
                 _gmail_epoch,
                 max_age_sec=900,
                 live_text="最近",
                 stale_text="最後活動",
             )
+            if _gmail_status in {"error", "auth_failed", "exiting"}:
+                _gmail_state = "down"
+                _gmail_detail = f"{_laf_state.get('status')} {(_laf_state.get('error') or '')}".strip()[:60]
             if _gmail_state == "down" and _server_up and "LAF Gmail Monitor background thread started" in _log_tail:
                 _gmail_state = "starting"
                 _gmail_detail = "已啟動，待首輪活動"
@@ -795,21 +835,28 @@ class MAGIMenuBar(rumps.App):
                 "detail": _retry_detail if _server_up else "",
             }
 
-            # 閱卷 email 已整合進法扶 Gmail monitor cycle，需對齊目前實際 log 格式。
-            _review_epoch, _ = _find_latest_log_match(
-                _log_tail,
-                (
-                    "[閱卷]",
-                    "Checking Gmail for file review notifications...",
-                    "Checking Gmail for non-LAF/Judicial auto-drafts...",
-                ),
-            )
+            # 閱卷 email 現在由 FileReviewAuto worker 管理；優先看 worker 狀態檔。
+            _fr_state = _load_json_file(os.path.join(MAGI_ROOT, "static", "file_review_auto_state.json"))
+            _review_epoch = _epoch_from_iso(_fr_state.get("updated_at", ""))
+            _fr_interval = int(_fr_state.get("interval_sec") or 3600)
+            if not _review_epoch:
+                _review_epoch, _ = _find_latest_log_match(
+                    _log_tail,
+                    (
+                        "[閱卷]",
+                        "Checking Gmail for file review notifications...",
+                        "Checking Gmail for non-LAF/Judicial auto-drafts...",
+                    ),
+                )
             _review_state, _review_detail = _fmt_recent(
                 _review_epoch,
-                max_age_sec=900,
+                max_age_sec=max(900, _fr_interval + 900),
                 live_text="最近",
                 stale_text="最後活動",
             )
+            if _fr_state and not bool((_fr_state.get("result") or {}).get("ok", True)):
+                _review_state = "down"
+                _review_detail = "worker 上輪失敗"
             if _review_state == "down" and _server_up and "File Review Email Monitor: integrated into LAF Gmail Monitor cycle" in _log_tail:
                 _review_state = "alive"
                 _review_detail = "已整合至法扶監控"

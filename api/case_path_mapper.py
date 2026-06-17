@@ -94,6 +94,11 @@ def _is_dir_accessible(path: str) -> bool:
     return _result[0]
 
 
+def _is_stale_mount_path(path: str) -> bool:
+    """判斷是否為歷史殘留 mount 名稱（可用於 roots 排序/回退）。"""
+    return ".local-stale-" in str(path).lower()
+
+
 def _discover_volume(base: str, subdir: str = "") -> str:
     """動態偵測 SMB 掛載路徑（macOS 可能掛成 -1, -2 等後綴）。
 
@@ -107,6 +112,8 @@ def _discover_volume(base: str, subdir: str = "") -> str:
     if _is_dir_accessible(canonical):
         return canonical
     for candidate in sorted(_glob.glob(f"/Volumes/{base}-*/{subdir}" if subdir else f"/Volumes/{base}-*")):
+        if _is_stale_mount_path(candidate):
+            continue
         if _is_dir_accessible(candidate):
             _logger.debug("SMB 掛載使用替代路徑: %s（原 %s）", candidate, canonical)
             return candidate
@@ -216,21 +223,30 @@ def _probe_external_closed_roots() -> list[str]:
     """
     candidates: list[str] = []
 
-    # 1. 環境變數
+    # 1. User-level mount 候選（優先）
+    for share_name in _closed_share_aliases():
+        user_mount = str(_HOME / f".magi_mounts/{share_name}/{share_name}")
+        user_probe = os.path.join(user_mount, "03_工作資料", "10_結案")
+        if _is_dir_accessible(user_probe):
+            candidates.append(user_mount)
+
+    # 2. 環境變數（過濾 stale 掛載）
     env_root = os.environ.get("MAGI_CLOSED_CASE_ROOT", "").strip()
-    if env_root:
+    if env_root and not _is_stale_mount_path(env_root):
         candidates.append(env_root)
     env_vol = os.environ.get("MAGI_CLOSED_VOLUME", "").strip()
     if env_vol:
-        candidates.append(os.path.join(
+        env_volume_root = os.path.join(
             env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}",
             _NAS_CLOSED_SHARE_NAME,
-        ))
+        )
+        if not _is_stale_mount_path(env_volume_root):
+            candidates.append(env_volume_root)
 
-    # 2. 自動掃 /Volumes/ — 跳過系統 volume 和 homes share（防止誤判）
+    # 3. 自動掃 /Volumes/ — 跳過系統 volume、homes 與 stale 掛載（防止誤判）
     try:
         for entry in sorted(os.listdir("/Volumes")):
-            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2"):
+            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2") or ".local-stale-" in entry.lower():
                 continue
             for share_name in _closed_share_aliases():
                 root = os.path.join("/Volumes", entry, share_name)
@@ -240,7 +256,7 @@ def _probe_external_closed_roots() -> list[str]:
     except OSError:
         pass
 
-    # 3. SynologyDrive 雲同步變體
+    # 4. SynologyDrive 雲同步變體
     for share_name in _closed_share_aliases():
         synology_variants = [
             str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / share_name),
@@ -252,7 +268,7 @@ def _probe_external_closed_roots() -> list[str]:
             if _is_dir_accessible(probe):
                 candidates.append(v)
 
-    # 4. NAS archive share fallback（macOS automount 可能加 -1/-2 後綴）
+    # 5. NAS archive share fallback（macOS automount 可能加 -1/-2 後綴）
     for share_name in _closed_share_aliases():
         nas_discovered = _discover_volume(share_name, share_name)
         nas_probe = os.path.join(nas_discovered, "03_工作資料", "10_結案")
@@ -266,6 +282,10 @@ def _probe_external_closed_roots() -> list[str]:
         if p and p not in seen:
             seen.add(p)
             out.append(p)
+    # 不要優先挑 stale 掛載；把 non-stale 移到前面
+    non_stale = [p for p in out if not _is_stale_mount_path(p)]
+    stale = [p for p in out if _is_stale_mount_path(p)]
+    out = non_stale + stale
     return out
 
 
@@ -298,9 +318,15 @@ def _get_default_closed_share_roots() -> list[str]:
     # 若仍空 → 保底回傳 canonical 路徑
     if not roots:
         roots = [
+            str(_HOME / ".magi_mounts" / _NAS_CLOSED_SHARE_NAME / _NAS_CLOSED_SHARE_NAME),
             str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
-            _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME),
         ]
+        # 使用備援 user mount 時仍以真實可存取路徑為主；NAS fallback 只做最後手段
+        nas_discovered = _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME)
+        if nas_discovered and not _is_stale_mount_path(nas_discovered):
+            roots.append(nas_discovered)
+        elif nas_discovered and nas_discovered not in roots:
+            roots.append(nas_discovered)
         # 全空 → 5 秒後就可以 re-probe（不等 60s）
         _CLOSED_ROOT_CACHE["retry_after"] = now + 5
     else:

@@ -22,6 +22,7 @@ import os
 import re
 import hashlib
 import json
+import sys
 import secrets
 import shutil
 import subprocess
@@ -29,8 +30,10 @@ import tempfile
 import threading
 import time
 from datetime import datetime
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 from pathlib import Path
-from urllib.parse import quote
 
 from flask import Blueprint, request, jsonify, send_file, Response
 from flask_login import current_user, login_required
@@ -80,6 +83,90 @@ _SHARE_PUBLIC_BASE_FILE = Path(os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_F
 ))
 _DEFAULT_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_TTL_SEC", str(7 * 24 * 3600)) or str(7 * 24 * 3600))
 _MAX_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_MAX_TTL_SEC", str(30 * 24 * 3600)) or str(30 * 24 * 3600))
+
+
+_OSC_HELPER_HOST = os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+_OSC_HELPER_PORT = int(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_PORT", "5016") or "5016")
+_OSC_HELPER_LISTDIR_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_LISTDIR_TIMEOUT_SEC", "7.0") or "7.0")
+_OSC_HELPER_STAGE_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_STAGE_TIMEOUT_SEC", "90") or "90")
+
+
+def _osc_shell_nas_helper_url() -> str:
+    return f"http://{_OSC_HELPER_HOST}:{_OSC_HELPER_PORT}"
+
+
+def _osc_shell_nas_helper_request(path: str, timeout: float | None = None) -> list[dict]:
+    if timeout is None:
+        timeout = _OSC_HELPER_LISTDIR_TIMEOUT
+    url = _osc_shell_nas_helper_url() + "/listdir?" + urlencode({"path": os.path.realpath(path)})
+    req = Request(url, method="GET")
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper request failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper request failed: {exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper response parse failed: {exc}") from exc
+
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise OSError(f"helper rejected path: {payload.get('error') if isinstance(payload, dict) else 'invalid response'}")
+
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        raise OSError("helper returned malformed entries")
+    normalized: list[dict] = []
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        if "mtime" not in row and "mtime_ts" in row:
+            row["mtime"] = row.get("mtime_ts")
+        if "is_dir" in row and isinstance(row["is_dir"], str):
+            if str(row["is_dir"]).strip().lower() == "true":
+                row["is_dir"] = True
+            elif str(row["is_dir"]).strip().lower() == "false":
+                row["is_dir"] = False
+        normalized.append(row)
+    return normalized
+
+
+def _osc_shell_nas_stage_request(local_file: str, timeout: float | None = None) -> str:
+    if timeout is None:
+        timeout = _OSC_HELPER_STAGE_TIMEOUT
+    url = _osc_shell_nas_helper_url() + "/stage"
+    payload = json.dumps({"path": os.path.realpath(local_file)}).encode("utf-8")
+    req = Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper stage failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper stage failed: {exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper stage response parse failed: {exc}") from exc
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise OSError(
+            f"helper stage rejected: {data.get('error') if isinstance(data, dict) else 'invalid response'}"
+        )
+
+    staged = str(data.get("staged_path") or "").strip()
+    if not staged or not os.path.isfile(staged):
+        raise OSError("helper stage returned missing file")
+    return staged
 
 
 def _share_cache_dir() -> Path:
@@ -378,13 +465,30 @@ def _ensure_share_cached_copy(token_hash: str, row: dict, local_file: str) -> st
     cached = _share_cached_file_for_row(row)
     if cached:
         return cached
-    staged = _stage_file_with_retry(local_file)
+    staged = ""
+    if _is_network_nas_path(local_file):
+        try:
+            staged = _osc_shell_nas_stage_request(local_file)
+        except OSError as exc:
+            _log.warning(
+                "share helper stage failed; fallback to local stage: file=%s err=%s",
+                local_file,
+                exc,
+            )
+
+    if not staged:
+        staged = _stage_file_with_retry(local_file)
+
     final_path = _share_cache_path(token_hash, str(row.get("name") or os.path.basename(local_file)))
     try:
         os.replace(staged, final_path)
     except Exception:
-        _cleanup_file_once(staged)
-        raise
+        try:
+            shutil.copy2(staged, final_path)
+            _cleanup_file_once(staged)
+        except Exception:
+            _cleanup_file_once(staged)
+            raise
     row["staged_path"] = final_path
     row["staged_size"] = os.path.getsize(final_path)
     row["staged_at"] = int(time.time())
@@ -508,6 +612,246 @@ def _is_hidden_name(name: str) -> bool:
     return any(p.match(name) for p in _HIDDEN_PATTERNS)
 
 
+def _is_network_nas_path(path: str) -> bool:
+    norm = (str(path or "").replace("\\", "/")).strip()
+    return (
+        norm.startswith("/Volumes/")
+        or "/.magi_mounts/" in norm
+        or norm.startswith("/Library/CloudStorage/SynologyDrive")
+        or norm.startswith("/Users/") and "/.magi_mounts/" in norm
+        or "/SynologyDrive" in norm
+    )
+
+
+def _listdir_via_subprocess(path: str, *, timeout: float = 7.0) -> list[str]:
+    code = "import os,sys,json\nprint(json.dumps(os.listdir(sys.argv[1]), ensure_ascii=False))"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir timed out: {timeout}s") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        message = stderr.splitlines()[-1] if stderr else "listdir failed"
+        errno = 0
+        m = re.search(r"Errno\s+(\d+)", message)
+        if m:
+            try:
+                errno = int(m.group(1))
+            except Exception:
+                errno = 0
+        if errno:
+            raise OSError(errno, message)
+        raise OSError(message)
+
+    output = (result.stdout or "").strip()
+    if not output:
+        return []
+    try:
+        raw = json.loads(output)
+    except Exception as exc:
+        raise OSError(f"listdir parse failed: {exc}") from exc
+    if not isinstance(raw, list):
+        raise OSError("listdir helper returned non-list")
+    return [str(item) for item in raw]
+
+
+def _listdir_with_retry(path: str, *, max_attempts: int = 5, base_delay: float = 0.12) -> list[str]:
+    """Retry transient SMB listdir failures before bubbling up."""
+    attempts = max(1, int(max_attempts))
+    last_err: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            if _is_network_nas_path(path):
+                return _listdir_via_subprocess(path, timeout=7.0)
+            return os.listdir(path)
+        except OSError as e:
+            last_err = e
+            if getattr(e, "errno", 0) in (4, 11, 35) and attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise
+        except TimeoutError as e:
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise OSError(str(e))
+    if last_err:
+        raise last_err
+    raise OSError("listdir_with_retry_failed")
+
+
+def _listdir_with_metadata_via_subprocess(path: str, *, timeout: float = 7.0) -> list[dict]:
+    """List entries and metadata in one timeout-bound subprocess call."""
+    code = (
+        "import os,sys,json,stat\n"
+        "path = sys.argv[1]\n"
+        "out = []\n"
+        "for name in os.listdir(path):\n"
+        "    full = os.path.join(path, name)\n"
+        "    item = {\n"
+        "        \"name\": name,\n"
+        "        \"is_dir\": None,\n"
+        "        \"size\": None,\n"
+        "        \"mtime\": None,\n"
+        "        \"errno\": 0,\n"
+        "    }\n"
+        "    try:\n"
+        "        st = os.stat(full)\n"
+        "        item[\"is_dir\"] = bool(st.st_mode and stat.S_ISDIR(st.st_mode))\n"
+        "        item[\"size\"] = int(st.st_size)\n"
+        "        item[\"mtime\"] = int(st.st_mtime)\n"
+        "    except Exception as e:\n"
+        "        item[\"errno\"] = int(getattr(e, \"errno\", 0) or 0)\n"
+        "        item[\"error\"] = str(e)\n"
+        "    out.append(item)\n"
+        "print(json.dumps(out, ensure_ascii=False))\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir metadata timed out: {timeout}s") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        message = stderr.splitlines()[-1] if stderr else "listdir metadata failed"
+        errno = 0
+        m = re.search(r"Errno\s+(\d+)", message)
+        if m:
+            try:
+                errno = int(m.group(1))
+            except Exception:
+                errno = 0
+        if errno:
+            raise OSError(errno, message)
+        raise OSError(message)
+
+    output = (result.stdout or "").strip()
+    if not output:
+        return []
+    try:
+        raw = json.loads(output)
+    except Exception as exc:
+        raise OSError(f"listdir metadata parse failed: {exc}") from exc
+    if not isinstance(raw, list):
+        raise OSError("listdir metadata helper returned non-list")
+    return raw
+
+
+def _listdir_with_metadata_with_retry(
+    path: str,
+    *,
+    max_attempts: int = 2,
+    base_delay: float = 0.12,
+    timeout: float = 2.5,
+) -> list[dict]:
+    """Retry metadata helper for transient NAS errors and timeout."""
+    attempts = max(1, int(max_attempts))
+    last_err: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            if _is_network_nas_path(path):
+                return _osc_shell_nas_helper_request(path, timeout=timeout)
+        except OSError as exc:
+            last_err = exc
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            break
+
+        try:
+            return _listdir_with_metadata_via_subprocess(path, timeout=timeout)
+        except TimeoutError as exc:
+            last_err = OSError(str(exc))
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            break
+        except OSError as exc:
+            last_err = exc
+            if getattr(exc, "errno", 0) in (4, 11, 35) and attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            break
+    if last_err:
+        raise last_err
+    raise OSError("listdir metadata failed")
+
+
+def _dir_metadata_map(
+    path: str,
+    *,
+    use_subprocess_for_network: bool = True,
+    max_attempts: int = 2,
+    timeout: float = 2.5,
+) -> dict[str, dict]:
+    if _is_network_nas_path(path) and use_subprocess_for_network:
+        rows = _listdir_with_metadata_with_retry(path, max_attempts=max_attempts, timeout=timeout)
+        return {
+            str(r.get("name")): {
+                "name": str(r.get("name")),
+                "is_dir": bool(r.get("is_dir"))
+                if str(r.get("is_dir")).lower() not in {"", "none"}
+                else r.get("is_dir"),
+                "size": None if r.get("size") is None else int(r["size"]),
+                "mtime": (
+                    None
+                    if (r.get("mtime") is None and r.get("mtime_ts") is None)
+                    else int(r.get("mtime") if r.get("mtime") is not None else r.get("mtime_ts"))
+                ),
+                "errno": int(r.get("errno") or 0),
+                "error": r.get("error"),
+            }
+            for r in rows
+            if r.get("name") is not None
+        }
+    names = _listdir_with_retry(path)
+    out = {}
+    for n in names:
+        full = os.path.join(path, n)
+        try:
+            st = os.stat(full)
+            out[n] = {
+                "name": n,
+                "is_dir": os.path.isdir(full),
+                "size": int(st.st_size),
+                "mtime": int(st.st_mtime),
+                "errno": 0,
+                "error": None,
+            }
+        except OSError as e:
+            out[n] = {
+                "name": n,
+                "is_dir": None,
+                "size": None,
+                "mtime": None,
+                "errno": int(getattr(e, "errno", 0) or 0),
+                "error": str(e),
+            }
+    return out
+
+
+def _has_network_subdir(full_path: str) -> bool:
+    """Return True when directory has at least one child directory (network-safe helper)."""
+    metadata = _dir_metadata_map(full_path)
+    for item in metadata.values():
+        if item.get("error"):
+            continue
+        if item.get("is_dir"):
+            return True
+    return False
+
+
 def _resolve_target_dir(path_str: str) -> str:
     """Resolve a possibly-Windows path to a local existing directory under allowed roots.
 
@@ -556,36 +900,71 @@ def _safe_join_under(base_real: str, relative_path: str) -> str | None:
     return target
 
 
-def _summarize_dir(dir_path: str, *, max_scan: int = 200) -> dict:
+def _summarize_dir(dir_path: str, *, max_scan: int = 200, use_network_metadata: bool | None = None) -> dict:
     """Quick summary: child file count + total size (capped to avoid hammering NAS)."""
     files = 0
     folders = 0
     total = 0
     try:
-        for i, name in enumerate(os.listdir(dir_path)):
+        use_subprocess = _is_network_nas_path(dir_path) if use_network_metadata is None else bool(use_network_metadata)
+        metadata = _dir_metadata_map(
+            dir_path,
+            use_subprocess_for_network=use_subprocess,
+            max_attempts=1,
+            timeout=1.75,
+        )
+        names = [name for name in metadata.keys()]
+        for i, name in enumerate(names):
             if i >= max_scan:
                 break
             if _is_hidden_name(name):
                 continue
-            full = os.path.join(dir_path, name)
-            try:
-                if os.path.isdir(full):
-                    folders += 1
-                else:
-                    st = os.stat(full)
-                    files += 1
-                    total += int(st.st_size)
-            except OSError:
+            info = metadata.get(name) or {}
+            if info.get("is_dir"):
+                folders += 1
                 continue
+            if info.get("is_dir") is False and not info.get("error"):
+                if isinstance(info.get("size"), int):
+                    files += 1
+                    total += int(info["size"])
+            elif use_subprocess:
+                continue
+            else:
+                full = os.path.join(dir_path, name)
+                try:
+                    if os.path.isdir(full):
+                        folders += 1
+                    else:
+                        st = os.stat(full)
+                        files += 1
+                        total += int(st.st_size)
+                except OSError:
+                    continue
     except OSError:
         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 580, exc_info=True)
     return {"file_count": files, "folder_count": folders, "total_size": total}
 
 
-def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -> dict | None:
+def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool, entry_meta: dict | None = None) -> dict | None:
     try:
-        is_dir = os.path.isdir(full_path)
-        st = os.stat(full_path)
+        if entry_meta is not None:
+            if entry_meta.get("error"):
+                return None
+            is_dir = bool(entry_meta.get("is_dir"))
+            st_size = entry_meta.get("size")
+            st_mtime = entry_meta.get("mtime")
+            if st_mtime is None:
+                return None
+            st_mtime_int = int(st_mtime)
+            if st_size is None and not is_dir:
+                return None
+            st_size_int = int(st_size) if st_size is not None else 0
+            is_dir = bool(is_dir)
+        else:
+            is_dir = os.path.isdir(full_path)
+            st = os.stat(full_path)
+            st_size_int = int(st.st_size)
+            st_mtime_int = int(st.st_mtime)
     except OSError:
         return None
     rel = _osc_relpath_under(base_real, full_path)
@@ -595,14 +974,14 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
         "relative_path": rel,
         "type": "dir" if is_dir else "file",
         "ext": ext,
-        "size": None if is_dir else int(st.st_size),
-        "size_label": "" if is_dir else _osc_human_size(int(st.st_size)),
-        "modified_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        "mtime_ts": int(st.st_mtime),
+        "size": None if is_dir else st_size_int,
+        "size_label": "" if is_dir else _osc_human_size(st_size_int),
+        "modified_at": datetime.fromtimestamp(st_mtime_int).strftime("%Y-%m-%d %H:%M:%S"),
+        "mtime_ts": st_mtime_int,
         "hidden": _is_hidden_name(name),
     }
     if is_dir and summarize:
-        s = _summarize_dir(full_path)
+        s = _summarize_dir(full_path, use_network_metadata=entry_meta is not None)
         entry["child_files"] = s["file_count"]
         entry["child_folders"] = s["folder_count"]
         entry["child_total_size"] = s["total_size"]
@@ -618,23 +997,28 @@ def _root_child_dirs(path_str: str, *, limit: int = 240) -> list[dict]:
     if not base_real:
         return []
     children: list[dict] = []
+    base_is_network = _is_network_nas_path(base_real)
     try:
-        for name in sorted(os.listdir(base_real), key=str.lower):
+        metadata = _dir_metadata_map(base_real)
+        base_items = sorted(metadata.keys())
+        for name in base_items:
             if _is_hidden_name(name):
                 continue
-            full = os.path.join(base_real, name)
-            if not os.path.isdir(full):
+            info = metadata.get(name) or {}
+            if not info.get("is_dir"):
                 continue
-            has_subdirs = False
-            try:
-                for sub in os.listdir(full):
-                    if _is_hidden_name(sub):
-                        continue
-                    if os.path.isdir(os.path.join(full, sub)):
-                        has_subdirs = True
-                        break
-            except OSError:
-                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 636, exc_info=True)
+            full = os.path.join(base_real, name)
+            has_subdirs = True if base_is_network else False
+            if not base_is_network:
+                try:
+                    for sub in _listdir_with_retry(full):
+                        if _is_hidden_name(sub):
+                            continue
+                        if os.path.isdir(os.path.join(full, sub)):
+                            has_subdirs = True
+                            break
+                except OSError:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 636, exc_info=True)
             children.append({
                 "name": name,
                 "relative_path": _osc_relpath_under(base_real, full),
@@ -1182,24 +1566,33 @@ def osc_folders_tree_api():
 
     children = []
     try:
-        for name in sorted(os.listdir(target), key=str.lower):
+        metadata = _dir_metadata_map(target)
+        target_items = sorted(metadata.keys())
+        for name in target_items:
             if _is_hidden_name(name) and not show_hidden:
                 continue
             full = os.path.join(target, name)
-            try:
-                if not os.path.isdir(full):
+            if _is_network_nas_path(target):
+                if not (metadata.get(name) or {}).get("is_dir"):
                     continue
-            except OSError:
-                continue
+            else:
+                try:
+                    if not os.path.isdir(full):
+                        continue
+                except OSError:
+                    continue
             # detect grandchild dirs to know if expandable
             has_subdirs = False
             try:
-                for sub in os.listdir(full):
-                    if _is_hidden_name(sub) and not show_hidden:
-                        continue
-                    if os.path.isdir(os.path.join(full, sub)):
-                        has_subdirs = True
-                        break
+                if _is_network_nas_path(full):
+                    has_subdirs = _has_network_subdir(full)
+                else:
+                    for sub in _listdir_with_retry(full):
+                        if _is_hidden_name(sub) and not show_hidden:
+                            continue
+                        if os.path.isdir(os.path.join(full, sub)):
+                            has_subdirs = True
+                            break
             except OSError:
                 logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1136, exc_info=True)
             children.append({
@@ -1474,8 +1867,13 @@ def osc_folders_browse_api():
     if not os.path.isdir(target):
         return jsonify({"ok": False, "error": "folder_not_found"}), 404
 
+    use_nas_meta = _is_network_nas_path(target)
     try:
-        names = os.listdir(target)
+        if use_nas_meta:
+            metadata = _dir_metadata_map(target)
+            names = sorted(metadata.keys())
+        else:
+            names = _listdir_with_retry(target)
     except OSError as e:
         return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
 
@@ -1487,7 +1885,13 @@ def osc_folders_browse_api():
             if not show_hidden:
                 continue
         full = os.path.join(target, name)
-        entry = _entry_dict(name, full, base_real, summarize=summarize)
+        entry = _entry_dict(
+            name,
+            full,
+            base_real,
+            summarize=summarize,
+            entry_meta=metadata.get(name) if use_nas_meta else None,
+        )
         if entry is None:
             continue
         if entry["type"] == "dir":

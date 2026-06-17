@@ -27,7 +27,7 @@ import fitz  # PyMuPDF
 
 
 MAGI_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TEXT_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")
+DEFAULT_TEXT_DIR = Path(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR") or "~/Desktop/判決捕捉與分類器").expanduser()
 DEFAULT_PDF_DIR = DEFAULT_TEXT_DIR / "PDF"
 DEFAULT_API_BACKFILL_DIR = DEFAULT_TEXT_DIR / "_api_pdf_backfill"
 DEFAULT_LIST_PATH = DEFAULT_TEXT_DIR / "最高法院_通譯_812清單.json"

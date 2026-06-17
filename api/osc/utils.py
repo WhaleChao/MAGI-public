@@ -453,11 +453,73 @@ def _osc_norm_path(path_str: str) -> str:
     return s2
 
 
+def _osc_live_mount_path_candidates(path_str: str) -> list[str]:
+    norm = _osc_norm_path(path_str).replace("\\", "/").rstrip("/")
+    if not norm:
+        return []
+    candidates: list[str] = []
+
+    active_prefixes = [
+        _osc_canonical_active_share_posix().rstrip("/") + "/01_案件/",
+        f"Z:/{_OSC_NAS_HOME_USER}/01_案件/",
+        "Z:/home/01_案件/",
+    ]
+    for prefix in active_prefixes:
+        if norm.lower().startswith(prefix.lower()):
+            rel = norm[len(prefix):].lstrip("/")
+            candidates.extend([
+                str(Path.home() / ".magi_mounts" / "homes" / _OSC_NAS_HOME_USER / "01_案件" / rel),
+                f"/Volumes/homes/{_OSC_NAS_HOME_USER}/01_案件/{rel}",
+            ])
+
+    for alias in _osc_closed_share_aliases():
+        for prefix in [
+            f"Y:/{alias}/03_工作資料/10_結案/",
+            f"/Volumes/{alias}/{alias}/03_工作資料/10_結案/",
+        ]:
+            if not norm.lower().startswith(prefix.lower()):
+                continue
+            rel = norm[len(prefix):].lstrip("/")
+            candidates.append(str(Path.home() / ".magi_mounts" / alias / alias / "03_工作資料" / "10_結案" / rel))
+            for closed_alias in _osc_closed_share_aliases():
+                candidates.append(f"/Volumes/{closed_alias}/{closed_alias}/03_工作資料/10_結案/{rel}")
+    return [p for p in candidates if p]
+
+
+def _osc_prioritize_nas_path_candidates(candidates: list[str]) -> list[str]:
+    def priority(path: str) -> tuple[int, str]:
+        norm = str(path or "").replace("\\", "/")
+        if "/.magi_mounts/" in norm:
+            return (0, norm)
+        if norm.startswith("/Volumes/"):
+            return (1, norm)
+        if "/Library/CloudStorage/SynologyDrive" in norm or "/SynologyDrive/" in norm:
+            return (3, norm)
+        if norm.startswith("/Users/"):
+            return (2, norm)
+        return (4, norm)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in candidates:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            unique.append(text)
+    return sorted(unique, key=priority)
+
+
 def _osc_local_path_candidates(path_str: str) -> list[str]:
     """
-    Convert legacy Windows/NAS paths into local synced Synology paths on macOS.
+    Convert legacy Windows/NAS paths into local paths.
+
+    OSC web browsing should prefer live NAS mounts over Synology Drive
+    CloudStorage placeholders, because File Provider paths can block for tens
+    of seconds before falling back.
     """
-    return local_synology_path_candidates(_osc_norm_path(path_str))
+    norm = _osc_norm_path(path_str)
+    candidates = _osc_live_mount_path_candidates(norm) + local_synology_path_candidates(norm)
+    return _osc_prioritize_nas_path_candidates(candidates)
 
 
 def _osc_allowed_local_roots() -> list[str]:
@@ -480,11 +542,18 @@ def _osc_allowed_local_roots() -> list[str]:
             f"/Volumes/{share_name}-1/{share_name}",
             f"/Volumes/{share_name}-2/{share_name}",
         ])
+    magi_mount_roots = []
+    magi_mount_home_roots = [
+        Path.home() / ".magi_mounts" / "homes" / _OSC_NAS_HOME_USER,
+    ]
+    for share_name in _osc_closed_share_aliases():
+        magi_mount_home_roots.append(Path.home() / ".magi_mounts" / share_name / share_name)
+    magi_mount_roots.extend(str(p) for p in magi_mount_home_roots)
     roots = default_synology_share_roots(include_closed=False) + [
         str(magi_root / "exports"),
         str(magi_root / "static" / "exports"),
         f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
-    ] + closed_alias_roots + [
+    ] + closed_alias_roots + magi_mount_roots + [
         p for p in (template_roots + file_manager_test_roots) if str(p or "").strip()
     ]
     out = []

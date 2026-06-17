@@ -87,7 +87,7 @@ function razielTlrSummary(preview = {}) {
 function renderRazielStatus(data = {}) {
     const config = data.config || {};
     fillRazielConfig(config);
-    const ready = Boolean(data.script_exists);
+    const ready = Boolean(data.script_exists) && data.uses_runtime_root !== false;
     const keyText = config.has_nvidia_api_key ? "雲端 AI 金鑰已設定" : "尚未設定雲端 AI 金鑰";
     const tlr = data.tlr || {};
     const tlrText = tlr.enabled === false ? "全判決語義檢索未啟用" : (tlr.ok ? "全判決語義檢索正常" : `全判決語義檢索需檢查：${tlr.error || "無回應"}`);

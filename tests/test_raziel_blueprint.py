@@ -30,6 +30,18 @@ def test_raziel_public_config_never_returns_api_key():
     assert "twlegalrag_api_key" not in public
 
 
+def test_raziel_public_config_uses_env_nvidia_key_without_exposing_it(monkeypatch):
+    from api.blueprints import raziel as mod
+
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "env-secret-value")
+
+    public = mod._public_config({"keyword_query": "通譯"})
+
+    assert public["has_nvidia_api_key"] is True
+    assert "env-secret-value" not in str(public)
+    assert "nvidia_api_key" not in public
+
+
 def test_raziel_payload_clears_stale_interpreter_rule(tmp_path, monkeypatch):
     from api.blueprints import raziel as mod
 
@@ -151,6 +163,22 @@ def test_raziel_root_falls_back_when_configured_path_is_stale(tmp_path, monkeypa
     assert mod._raziel_root() == fresh.resolve()
 
 
+def test_raziel_root_falls_back_when_configured_path_exists_without_script(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    stale = tmp_path / "old" / "最高法院_通譯_TXT"
+    stale.mkdir(parents=True)
+    fresh = tmp_path / "Desktop" / "AGENT TEST DATA" / "最高法院_通譯_TXT"
+    (fresh / "scripts").mkdir(parents=True)
+    (fresh / "scripts" / "complete_interpreter_dataset.py").write_text("print('ok')", encoding="utf-8")
+    monkeypatch.setenv("MAGI_RAZIEL_ROOT", str(stale))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(mod, "DEFAULT_RAZIEL_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(mod, "LEGACY_RAZIEL_ROOT", tmp_path / "Desktop" / "最高法院_通譯_TXT")
+
+    assert mod._raziel_root() == fresh.resolve()
+
+
 def test_raziel_root_finds_downloaded_nested_source_folder(tmp_path, monkeypatch):
     from api.blueprints import raziel as mod
 
@@ -163,6 +191,45 @@ def test_raziel_root_finds_downloaded_nested_source_folder(tmp_path, monkeypatch
     monkeypatch.setattr(mod, "LEGACY_RAZIEL_ROOT", tmp_path / "legacy")
 
     assert mod._raziel_root() == nested.resolve()
+
+
+def test_raziel_root_finds_legacy_classifier_inside_desktop_subfolder(tmp_path, monkeypatch):
+    from api.blueprints import raziel as mod
+
+    nested = tmp_path / "Desktop" / "AGENT TEST DATA" / "最高法院_通譯_TXT"
+    (nested / "scripts").mkdir(parents=True)
+    (nested / "scripts" / "complete_interpreter_dataset.py").write_text("print('ok')", encoding="utf-8")
+    monkeypatch.delenv("MAGI_RAZIEL_ROOT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(mod, "DEFAULT_RAZIEL_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(mod, "LEGACY_RAZIEL_ROOT", tmp_path / "Desktop" / "最高法院_通譯_TXT")
+
+    assert mod._raziel_root() == nested.resolve()
+
+
+def test_raziel_script_mode_falls_back_for_legacy_classifier(tmp_path):
+    from api.blueprints import raziel as mod
+
+    script = tmp_path / "complete_interpreter_dataset.py"
+    script.write_text('parser.add_argument("--mode", choices=["status", "nightly", "table"])', encoding="utf-8")
+
+    supported = mod._script_supported_modes(script)
+
+    assert supported == {"status", "nightly", "table"}
+    assert mod._script_mode_for_request("preview", supported) == "status"
+    assert mod._script_mode_for_request("search", supported) == "nightly"
+
+
+def test_raziel_script_runtime_root_detection(tmp_path):
+    from api.blueprints import raziel as mod
+
+    old_script = tmp_path / "old.py"
+    old_script.write_text('BASE_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")', encoding="utf-8")
+    generic_script = tmp_path / "generic.py"
+    generic_script.write_text('BASE_DIR = Path(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR"))', encoding="utf-8")
+
+    assert mod._script_uses_runtime_root(old_script) is False
+    assert mod._script_uses_runtime_root(generic_script) is True
 
 
 def test_raziel_delivery_zip_splits_when_limit_is_small(tmp_path, monkeypatch):

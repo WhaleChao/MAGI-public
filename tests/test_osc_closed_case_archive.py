@@ -53,6 +53,36 @@ def test_auto_archive_closed_case_moves_folder(tmp_path, monkeypatch):
     assert updates and updates[-1][1][0] == str(target)
 
 
+def test_closed_case_user_level_mount_is_allowed_for_browser(tmp_path, monkeypatch):
+    from api.osc import utils as mod
+
+    active_share = tmp_path / "homes" / "lumi63181107"
+    closed_share = tmp_path / ".magi_mounts" / "lumi" / "lumi"
+    case_dir = closed_share / "03_工作資料" / "10_結案" / "法扶案件" / "刑事" / "2025-0002-游秀鈴-一審-傷害致死"
+    active_share.mkdir(parents=True)
+    case_dir.mkdir(parents=True)
+
+    def fake_roots(*, include_closed=False):
+        roots = [str(active_share)]
+        if include_closed:
+            roots.append(str(closed_share))
+        return roots
+
+    monkeypatch.setattr(mod, "default_synology_share_roots", fake_roots)
+    monkeypatch.setattr(mod, "_osc_preferred_smb_local_candidates", lambda _path: [str(case_dir)])
+    monkeypatch.setattr(mod, "local_synology_path_candidates", lambda _path: [])
+
+    assert mod._osc_is_safe_local_path(str(case_dir))
+    assert mod._osc_resolve_existing_local_path("Y:/lumi/03_工作資料/10_結案/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死", prefer_dir=True) == str(case_dir)
+
+
+def test_user_level_magi_mount_paths_use_timeout_guard():
+    from api.osc import utils as mod
+
+    assert mod._osc_path_needs_fs_timeout("/Users/ai/.magi_mounts/homes/lumi63181107/01_案件")
+    assert mod._osc_path_needs_fs_timeout("/Users/ai/.magi_mounts/lumi/lumi/03_工作資料/10_結案")
+
+
 def test_auto_archive_closed_case_ignores_legacy_delete_guard(tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
     import os
@@ -502,6 +532,130 @@ def test_folder_browser_lists_closed_archive_when_active_path_is_stale(tmp_path,
     assert data["local_folder"] == str(archived)
     assert any(entry["name"] == "note.txt" for entry in data["entries"])
     assert updates and updates[-1][1][0] == str(archived)
+
+
+def test_folder_path_endpoint_skips_auto_create_when_folder_path_exists(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+    from api.blueprints import osc_cases as mod
+    from api.blueprints.osc_cases import osc_bp
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    app.secret_key = "test"
+    lm = LoginManager()
+    lm.init_app(app)
+
+    class _User(UserMixin):
+        id = "test-user"
+
+    @lm.user_loader
+    def _load_user(_user_id):
+        return _User()
+
+    app.register_blueprint(osc_bp)
+
+    row = {
+        "id": "case-1",
+        "case_number": "2025-0099",
+        "client_name": "測試當事人",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2025-0099-測試當事人",
+    }
+
+    monkeypatch.setattr(mod, "_osc_exec", lambda sql, params=(), fetch="none": (row, None) if fetch == "one" else ({"rowcount": 1}, None))
+    monkeypatch.setattr(mod, "_osc_ensure_active_case_folder", lambda _row: pytest.fail("folder-path must not auto-create when folder_path exists"))
+    monkeypatch.setattr(
+        mod,
+        "_osc_effective_case_folder_for_row",
+        lambda _row, update_db=True: {
+            "folder_path": row["folder_path"],
+            "local_folder": "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人",
+            "source": "db_or_guess",
+            "updated": False,
+        },
+    )
+    monkeypatch.setattr(mod, "_osc_smb_candidates", lambda _path: ["smb://192.168.1.3/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda _path: ["/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_windows_unc_candidates", lambda _path: [r"\\192.168.1.3\homes\lumi63181107\01_案件\法扶案件\民事\2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_windows_synology_candidates", lambda _path: [])
+
+    resp = app.test_client().get("/api/osc/cases/case-1/folder-path")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert data["folder_path"] == row["folder_path"]
+    assert data["folder_exists"] is True
+    assert data["folder_source"] == "db_or_guess"
+
+
+def test_folder_browser_skips_auto_create_when_folder_path_exists(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+    from api.blueprints import osc_cases as mod
+    from api.blueprints.osc_cases import osc_bp
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    app.secret_key = "test"
+    lm = LoginManager()
+    lm.init_app(app)
+
+    class _User(UserMixin):
+        id = "test-user"
+
+    @lm.user_loader
+    def _load_user(_user_id):
+        return _User()
+
+    app.register_blueprint(osc_bp)
+
+    row = {
+        "id": "case-1",
+        "case_number": "2025-0100",
+        "client_name": "測試當事人",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2025-0100-測試當事人",
+    }
+    local_folder = "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0100-測試當事人"
+
+    monkeypatch.setattr(mod, "_osc_exec", lambda sql, params=(), fetch="none": (row, None) if fetch == "one" else ({"rowcount": 1}, None))
+    monkeypatch.setattr(mod, "_osc_ensure_active_case_folder", lambda _row: pytest.fail("folder-browser must not auto-create when folder_path exists"))
+    monkeypatch.setattr(
+        mod,
+        "_osc_effective_case_folder_for_row",
+        lambda _row, update_db=True: {
+            "folder_path": row["folder_path"],
+            "local_folder": local_folder,
+            "source": "db_or_guess",
+            "updated": False,
+        },
+    )
+    monkeypatch.setattr(mod, "_osc_smb_candidates", lambda _path: [])
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda _path: [local_folder])
+    monkeypatch.setattr(
+        mod,
+        "_osc_folder_entries",
+        lambda base_path, relative_path="", limit=240: {
+            "ok": True,
+            "base_path": str(base_path),
+            "current_path": str(base_path),
+            "current_relative_path": "",
+            "parent_relative_path": "",
+            "entries": [{"name": "note.txt", "relative_path": "note.txt", "type": "file"}],
+        },
+    )
+
+    resp = app.test_client().get("/api/osc/cases/case-1/folder-browser")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert data["folder_exists"] is True
+    assert any(entry["name"] == "note.txt" for entry in data["entries"])
 
 
 def test_case_identity_rejects_ambiguous_client_name(monkeypatch):

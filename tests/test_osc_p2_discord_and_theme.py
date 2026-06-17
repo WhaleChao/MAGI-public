@@ -144,6 +144,18 @@ def test_theme_dark_css_present():
         "Dark theme should override --bg"
 
 
+def test_file_manager_dark_css_overrides_white_panels():
+    """The file manager must not fall back to white panels in dark theme."""
+    css = (ROOT / "static/osc/file-manager.css").read_text(encoding="utf-8")
+    assert "body.theme-dark #fileManager" in css
+    dark_block = css.split("body.theme-dark #fileManager", 1)[1]
+    assert "--card-bg: #0f172a" in dark_block
+    assert "body.theme-dark #fileManager .fm-main" in css
+    assert "body.theme-dark #fileManager .fm-table tbody tr td" in css
+    assert "background: #0f172a" in css
+    assert "color: #e2e8f0" in css
+
+
 def test_theme_toggle_button_in_osc_html():
     """osc.html must contain themeToggleBtn in header."""
     html = (ROOT / "templates/osc.html").read_text(encoding="utf-8")

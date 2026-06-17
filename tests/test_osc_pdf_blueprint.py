@@ -246,6 +246,39 @@ def test_pdf_calendar_scan_text_uses_roc_case_year_when_filename_has_no_received
     assert todo["time"] == "15:50"
 
 
+def test_pdf_calendar_scan_text_uses_legacy_case_folder_year_when_text_has_no_year(client, tmp_path, monkeypatch):
+    case_dir = (
+        tmp_path
+        / "01_案件"
+        / "法扶案件"
+        / "消費者債務清理"
+        / "2025-0049-林洋宇-消費者債務清理-更生"
+        / "09_法院通知與程序裁定"
+    )
+    case_dir.mkdir(parents=True, exist_ok=True)
+    path = case_dir / "法院通知書.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(path)
+    doc.close()
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    monkeypatch.setattr("api.blueprints.osc_pdf._pdf_text", lambda *a, **k: "本院定於6月17日下午2時調解。")
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2025-0049", "client_name": "林洋宇", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["todo_count"] == 1
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "調解"
+    assert todo["date"] == "2025-06-17"
+    assert todo["time"] == "14:00"
+
+
 def test_pdf_calendar_scan_preview_detects_all_day_filename_deadline(client, tmp_path, monkeypatch):
     path = tmp_path / "20260326 花蓮地方法院函（宣愛華；請於文到十日內提出資料）.pdf"
     doc = fitz.open()

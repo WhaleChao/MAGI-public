@@ -50,6 +50,17 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _STARTUP_TS = time.time()
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+try:
+    from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+    install_mysql_cext_blocker()
+    patch_mysql_connector_for_stability()
+except Exception:
+    logging.getLogger("tools_api").debug("mysql connector early guard failed", exc_info=True)
+    install_mysql_cext_blocker = None
+    patch_mysql_connector_for_stability = None
 from api.model_config import TEXT_PRIMARY_MODEL
 
 # Auto-reap zombie children (skill subprocesses, etc.)
@@ -136,12 +147,10 @@ else:
 
 # Stability-first default: avoid distributed inference unless explicitly enabled.
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 
 # DB connector stability guard:
 # default to pure-python mysql-connector path to avoid C-extension segfaults under threaded load.
-os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
-if patch_mysql_connector_for_stability():
+if callable(patch_mysql_connector_for_stability) and patch_mysql_connector_for_stability():
     logging.getLogger("tools_api").info("mysql connector guard enabled (MAGI_MYSQL_USE_PURE=%s)", os.environ.get("MAGI_MYSQL_USE_PURE", "1"))
 
 from skills.research.web_research import search_web, research_topic, fetch_url_content

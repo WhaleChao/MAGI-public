@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unicodedata
@@ -286,6 +287,57 @@ def drive_sync_account_hint() -> str:
     ).strip() or "primary"
 
 
+def _write_google_credentials(creds: Any, *, token_path: Path) -> None:
+    token_path = token_path.expanduser()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(token_path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                pass
+            tmp.write(creds.to_json())
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), token_path)
+        try:
+            token_path.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _backup_google_token(token_path: Path) -> Path | None:
+    token_path = token_path.expanduser()
+    if not token_path.exists():
+        return None
+    backup_path = token_path.with_name(
+        f"{token_path.name}.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    )
+    shutil.copy2(token_path, backup_path)
+    try:
+        backup_path.chmod(0o600)
+    except Exception:
+        pass
+    return backup_path
+
+
+def _google_auth_required_message(exc: Exception, *, token_path: Path, write: bool) -> str:
+    text = str(exc)
+    scope_text = "寫入" if write else "唯讀"
+    if "invalid_grant" in text or "expired or revoked" in text.lower():
+        return f"Google Drive {scope_text} refresh token 已被 Google 判定過期或撤銷，必須重新授權：{token_path}"
+    return f"Google Drive 授權已失效，請重新授權：{token_path}"
+
+
 def _load_google_credentials(*, interactive: bool = False, force_auth: bool = False, write: bool = False):
     try:
         from google.auth.transport.requests import Request
@@ -301,6 +353,7 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     creds = None
     deferred_auth_error: Exception | None = None
     if force_auth and interactive:
+        _backup_google_token(token_path)
         token_path.unlink(missing_ok=True)
     if token_path.exists():
         try:
@@ -319,10 +372,11 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
+            _write_google_credentials(creds, token_path=token_path)
         except Exception as exc:
             if not interactive and write:
                 raise DriveCaseSyncAuthRequired(
-                    f"Google Drive 授權已失效，請重新授權：{token_path}",
+                    _google_auth_required_message(exc, token_path=token_path, write=write),
                     token_path=token_path,
                     write=write,
                 ) from exc
@@ -337,6 +391,7 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
                 fallback = Credentials.from_authorized_user_file(str(fallback_path), WRITE_SCOPES)
                 if fallback.expired and fallback.refresh_token:
                     fallback.refresh(Request())
+                    _write_google_credentials(fallback, token_path=fallback_path)
                 if fallback and fallback.valid and fallback.has_scopes(WRITE_SCOPES):
                     return fallback
             except Exception as exc:
@@ -345,7 +400,7 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
         if not interactive:
             if deferred_auth_error:
                 raise DriveCaseSyncAuthRequired(
-                    f"Google Drive 授權已失效，請重新授權：{token_path}",
+                    _google_auth_required_message(deferred_auth_error, token_path=token_path, write=write),
                     token_path=token_path,
                     write=write,
                 ) from deferred_auth_error
@@ -359,20 +414,23 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
         if not credentials_path.exists():
             raise DriveCaseSyncError(f"找不到 Google OAuth credentials：{credentials_path}")
         flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), scopes)
+        open_browser = str(os.environ.get("MAGI_DRIVE_SYNC_OAUTH_OPEN_BROWSER", "1") or "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "y",
+        }
         creds = flow.run_local_server(
             port=0,
+            open_browser=open_browser,
             prompt="consent",
             login_hint=account_hint,
             authorization_prompt_message=(
                 f"請用 {account_hint} 授權 MAGI {'上傳缺檔到' if write else '唯讀盤點'}雲端案件資料夾：{{url}}"
             ),
         )
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        try:
-            token_path.chmod(0o600)
-        except Exception:
-            pass
+        _write_google_credentials(creds, token_path=token_path)
     return creds
 
 
@@ -383,7 +441,12 @@ def build_drive_service(*, interactive: bool = False, force_auth: bool = False, 
         import httplib2
     except Exception as exc:  # pragma: no cover - import depends on runtime extras
         raise DriveCaseSyncError(f"Google Drive API 套件未安裝：{exc}") from exc
-    timeout = int(os.environ.get("MAGI_DRIVE_SYNC_HTTP_TIMEOUT") or "30")
+    timeout = int(
+        os.environ.get("MAGI_DRIVE_SYNC_HTTP_TIMEOUT")
+        or os.environ.get("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC")
+        or "30"
+    )
+    timeout = max(5, min(timeout, 120))
     creds = _load_google_credentials(interactive=interactive, force_auth=force_auth, write=write)
     http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
     return build("drive", "v3", http=http, cache_discovery=False)
@@ -394,6 +457,14 @@ def normalize_text(value: Any) -> str:
     text = text.replace("臺", "台")
     text = re.sub(r"\s+", "", text)
     return text.lower()
+
+
+def _clean_exclusion_path(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    text = text.replace("\\", "/")
+    text = re.sub(r"\s*/\s*", "/", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip("/")
 
 
 def normalize_court_case_no(value: str) -> str:
@@ -467,32 +538,152 @@ def expand_alias_values(values: Iterable[Any]) -> list[str]:
 @lru_cache(maxsize=1)
 def load_case_exclusions() -> set[str]:
     """Load local-only Drive case paths excluded from sync scope."""
-    exclusions: set[str] = set()
+    return {normalize_text(path) for path in load_case_exclusion_payload().get("relative_paths", [])}
+
+
+def load_case_exclusion_payload(*, include_env: bool = True, exclusion_path: Path | None = None) -> dict[str, Any]:
+    """Load case exclusion metadata payload from configured runtime file."""
     raw_sources: list[Any] = []
-    env_raw = os.environ.get("MAGI_DRIVE_SYNC_CASE_EXCLUSIONS_JSON", "").strip()
-    if env_raw:
+    if include_env:
+        env_raw = os.environ.get("MAGI_DRIVE_SYNC_CASE_EXCLUSIONS_JSON", "").strip()
+        if env_raw:
+            try:
+                raw_sources.append(json.loads(env_raw))
+            except Exception:
+                pass
+    target = exclusion_path or case_exclusion_file_path()
+    if target.exists():
         try:
-            raw_sources.append(json.loads(env_raw))
+            raw_sources.append(json.loads(target.read_text(encoding="utf-8")))
         except Exception:
             pass
-    exclusion_path = case_exclusion_file_path()
-    if exclusion_path.exists():
-        try:
-            raw_sources.append(json.loads(exclusion_path.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+
+    path_values: list[str] = []
+    seen: set[str] = set()
+    reason = ""
+    updated_at = ""
+
     for raw in raw_sources:
-        if isinstance(raw, list):
-            values = raw
-        elif isinstance(raw, dict):
+        if isinstance(raw, dict):
+            if not reason:
+                reason = str(raw.get("reason") or "").strip()
+            if not updated_at:
+                updated_at = str(raw.get("updated_at") or "").strip()
             values = raw.get("relative_paths") or raw.get("paths") or raw.get("drive_paths") or []
+        elif isinstance(raw, list):
+            values = raw
         else:
             continue
+        if not isinstance(values, list):
+            continue
         for value in values:
-            normalized = normalize_text(value)
-            if normalized:
-                exclusions.add(normalized)
-    return exclusions
+            cleaned = _clean_exclusion_path(value)
+            normalized_key = normalize_text(cleaned)
+            if cleaned and normalized_key and normalized_key not in seen:
+                seen.add(normalized_key)
+                path_values.append(cleaned)
+
+    return {
+        "updated_at": updated_at,
+        "reason": reason,
+        "relative_paths": path_values,
+    }
+
+
+def _write_case_exclusion_payload(payload: dict[str, Any], *, exclusion_path: Path | None = None) -> Path:
+    """Atomically write Drive case exclusion payload and keep permissions stable."""
+    target = exclusion_path or case_exclusion_file_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_suffix(".tmp")
+    data = {
+        "updated_at": str(payload.get("updated_at") or datetime.now().astimezone().isoformat()),
+        "reason": str(payload.get("reason") or ""),
+        "relative_paths": list(dict.fromkeys([_clean_exclusion_path(value) for value in payload.get("relative_paths", []) if _clean_exclusion_path(value)])),
+    }
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(target.parent), delete=False) as tmp:
+            tmp.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, target)
+        try:
+            target.chmod(0o600)
+        except Exception:
+            pass
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+    load_case_exclusions.cache_clear()
+    return target
+
+
+def sync_case_exclusions(
+    relative_paths: Iterable[Any],
+    *,
+    reason: str = "",
+    exclusion_path: Path | None = None,
+) -> dict[str, Any]:
+    """Merge and persist exclusion paths with normalization and deduplication."""
+    payload = load_case_exclusion_payload(include_env=False, exclusion_path=exclusion_path)
+    keep: list[str] = list(payload.get("relative_paths") or [])
+    seen = {normalize_text(path) for path in keep}
+    changed = False
+    for path in relative_paths or []:
+        cleaned = _clean_exclusion_path(path)
+        normalized = normalize_text(cleaned)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            keep.append(cleaned)
+            changed = True
+
+    if not changed:
+        return {
+            "updated_at": payload.get("updated_at", ""),
+            "reason": payload.get("reason") or "manual update",
+            "relative_paths": keep,
+        }
+
+    out = {
+        "updated_at": datetime.now().astimezone().isoformat(),
+        "reason": str(reason).strip() or payload.get("reason") or "manual update",
+        "relative_paths": keep,
+    }
+    _write_case_exclusion_payload(out, exclusion_path=exclusion_path)
+    return out
+
+
+def unsync_case_exclusions(
+    relative_paths: Iterable[Any],
+    *,
+    exclusion_path: Path | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Remove exclusion paths and persist normalized remainder."""
+    payload = load_case_exclusion_payload(include_env=False, exclusion_path=exclusion_path)
+    before = list(payload.get("relative_paths") or [])
+    remove_targets = {normalize_text(path) for path in relative_paths or [] if normalize_text(path)}
+    kept = [path for path in before if normalize_text(path) not in remove_targets]
+    removed_count = len(before) - len(kept)
+    if removed_count == 0:
+        return (
+            {
+                "updated_at": payload.get("updated_at", ""),
+                "reason": payload.get("reason", ""),
+                "relative_paths": before,
+            },
+            0,
+        )
+
+    out = {
+        "updated_at": datetime.now().astimezone().isoformat(),
+        "reason": payload.get("reason") or "manual update",
+        "relative_paths": kept,
+    }
+    _write_case_exclusion_payload(out, exclusion_path=exclusion_path)
+    return out, removed_count
 
 
 def is_drive_case_excluded(case: CaseFolder) -> bool:
@@ -1014,17 +1205,44 @@ def _drive_list_children(service: Any, folder_id: str) -> list[dict[str, Any]]:
 
 
 def _drive_execute_with_timeout(request: Any, *, context: str) -> dict[str, Any]:
+    """Execute a Drive request without creating unkillable SSL worker threads.
+
+    Previous builds wrapped every Google API call in a daemon thread and joined
+    with a timeout.  When the join timed out, Python could not actually cancel
+    the native SSL read, so orphaned threads accumulated inside OpenSSL and
+    eventually crashed the whole process with libmalloc heap corruption.  The
+    Drive service already has an httplib2 socket timeout; the sync worker also
+    has a process-level SIGALRM/subprocess timeout.  Keep the old thread wrapper
+    only as an explicit diagnostic opt-in.
+    """
     timeout = float(os.environ.get("MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC") or "20")
+    retries = max(0, int(os.environ.get("MAGI_DRIVE_SYNC_API_RETRIES", "1") or "1"))
+    legacy_thread_timeout = str(
+        os.environ.get("MAGI_DRIVE_SYNC_LEGACY_THREAD_TIMEOUT") or ""
+    ).strip().lower() in {"1", "true", "yes", "on", "y"}
+    if not legacy_thread_timeout:
+        try:
+            try:
+                value = request.execute(num_retries=retries)
+            except TypeError:
+                value = request.execute()
+        except Exception:
+            raise
+        return value if isinstance(value, dict) else {}
+
     result: dict[str, Any] = {"done": False, "value": None, "error": None}
 
     def _execute() -> None:
         try:
-            result["value"] = request.execute()
+            try:
+                result["value"] = request.execute(num_retries=retries)
+            except TypeError:
+                result["value"] = request.execute()
         except Exception as exc:
             result["error"] = exc
         result["done"] = True
 
-    worker = threading.Thread(target=_execute, daemon=True)
+    worker = threading.Thread(target=_execute, daemon=True, name="drive-api-legacy-execute")
     worker.start()
     worker.join(timeout=max(0.5, timeout))
     if not result["done"]:
@@ -5228,6 +5446,7 @@ def run_inventory(
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
     parser = argparse.ArgumentParser(description="MAGI Google Drive/NAS case inventory and conservative sync")
     parser.add_argument("--root-id", default="", help="Google Drive 案件辦理資料夾 ID；未指定則用名稱查找")
     parser.add_argument("--root-name", default=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME))
@@ -5237,6 +5456,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-items", type=int, default=20000)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--auth", action="store_true", help="必要時啟動 OAuth 授權")
+    parser.add_argument("--auth-only", action="store_true", help="只建立/驗證 Google Drive OAuth token，不執行盤點或同步")
+    parser.add_argument("--write-auth", action="store_true", help="搭配 --auth-only 建立寫入 scope token")
+    parser.add_argument("--force-auth", action="store_true", help="搭配 --auth-only 強制重新建立 token")
     parser.add_argument("--no-context-resolve", action="store_true", help="不讀同名多案資料夾內容做深度消歧義")
     parser.add_argument("--file-diff", action="store_true", help="對唯一匹配案件做逐檔差異盤點")
     parser.add_argument("--execute-downloads", action="store_true", help="只把雲端有、NAS 缺少的檔案下載到 NAS；不覆蓋、不刪除")
@@ -5261,6 +5483,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repair-drive-duplicate-max-items", type=int, default=500, help="每組最多搬移/檢查幾個雲端項目")
     parser.add_argument("--repair-drive-duplicate-quarantine-path", default="MAGI待整理/Google Drive重複案件資料夾", help="重複副本移入的 Google Drive 待整理區")
     args = parser.parse_args(argv)
+
+    if args.auth_only:
+        write_scope = bool(args.write_auth or args.execute_uploads or args.ensure_drive_case_folders or args.execute_drive_duplicate_repair)
+        creds = _load_google_credentials(
+            interactive=True,
+            force_auth=bool(args.force_auth),
+            write=write_scope,
+        )
+        token_path = drive_sync_token_path(write=write_scope)
+        print(json.dumps({
+            "ok": True,
+            "mode": "google_drive_auth_only",
+            "token_path": str(token_path),
+            "write_scope": write_scope,
+            "expiry": getattr(creds, "expiry", None).isoformat() if getattr(creds, "expiry", None) else "",
+            "scopes": sorted(getattr(creds, "scopes", []) or []),
+        }, ensure_ascii=False, indent=2))
+        return 0
 
     active = [Path(p).expanduser() for p in args.active_root] if args.active_root else None
     closed = [Path(p).expanduser() for p in args.closed_root] if args.closed_root else None

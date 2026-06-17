@@ -22,11 +22,15 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-import mysql.connector
-
 _MAGI_ROOT = Path(__file__).resolve().parents[3]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
+
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+install_mysql_cext_blocker()
+patch_mysql_connector_for_stability()
+import mysql.connector
 
 from api.runtime_paths import config_candidates
 

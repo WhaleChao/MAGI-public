@@ -8,7 +8,8 @@
     <link rel="stylesheet" href="/static/osc/osc-theme.css">
     <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260524-folder-upload-v1">
     <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260518-case-sort-v1">
-    <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260530-fileops-v1">
+    <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260615-dark-fm-v1">
+    <link rel="stylesheet" href="/static/osc/osc-polish.css?v=20260616-workbench-polish-v1">
 </head>
 
 <body>
@@ -31,11 +32,7 @@
                 <span class="group-icon">📊</span><span>業務概覽</span>
             </button>
 
-            <button class="tab-btn group-single" data-tab="magiModules">
-                <span class="group-icon">🧩</span><span>MAGI 三模組</span>
-            </button>
-
-            <!-- 案件（5 sub-tab）-->
+            <!-- 案件（6 sub-tab）-->
             <div class="sidebar-group" data-group="case">
                 <button class="group-btn" data-group-toggle="case">
                     <span class="group-icon">📁</span>
@@ -44,6 +41,7 @@
                 </button>
                 <div class="group-children" data-group-children="case" hidden>
                     <button class="tab-btn sub-tab" data-tab="cases"><span class="sub-icon">📋</span> 案件列表</button>
+                    <button class="tab-btn sub-tab" data-tab="fileManager"><span class="sub-icon">🗄</span> 檔案管理</button>
                     <button class="tab-btn sub-tab" data-tab="clients"><span class="sub-icon">👥</span> 當事人</button>
                     <button class="tab-btn sub-tab" data-tab="meetings"><span class="sub-icon">📅</span> 會議紀錄</button>
                     <button class="tab-btn sub-tab" data-tab="calendar"><span class="sub-icon">📆</span> 行事曆</button>
@@ -127,7 +125,6 @@
         </header>
 
         {% include "partials/osc/dashboard.html" %}
-        {% include "partials/osc/magiModules.html" %}
         {% include "partials/osc/cases.html" %}
         {% include "partials/osc/laf.html" %}
         {% include "partials/osc/documents.html" %}
@@ -175,17 +172,17 @@
     <script src="/static/osc/osc-mobile.js?v=20260505-paperclip-mobile-v1"></script>
     <script src="/static/osc/tabs/dashboard.js?v=20260513-todo-source-split-v1"></script>
     <script src="/static/osc/tabs/saas.js?v=20260512-management-links-v1"></script>
-    <script src="/static/osc/tabs/cases.js?v=20260530-fileops-v1"></script>
+    <script src="/static/osc/tabs/cases.js?v=20260615-folder-open-fast-v1"></script>
     <script src="/static/osc/tabs/calendar.js?v=20260504-calendar-todo-contrast-v3"></script>
     <script src="/static/osc/tabs/todos.js?v=20260513-todo-source-split-v1"></script>
-    <script src="/static/osc/tabs/admin.js"></script>
+            <script src="/static/osc/tabs/admin.js?v=20260616-live-validation-v1"></script>
     <script src="/static/osc/tabs/drafts.js?v=20260504-insight-filter-v1"></script>
     <script src="/static/osc/tabs/documents.js?v=20260513-laf-activity-stats-v1-template-folder-v3"></script>
     <script src="/static/osc/tabs/accounting.js?v=20260508-quotation-form-v1"></script>
     <script src="/static/osc/tabs/insights.js?v=20260506-web-reply-v1"></script>
     <script src="/static/osc/tabs/checklists.js"></script>
     <script src="/static/osc/tabs/file_manager.js?v=20260530-fileops-v1"></script>
-    <script src="/static/osc/osc-events.js?v=20260530-fileops-v1"></script>
+            <script src="/static/osc/osc-events.js?v=20260616-live-validation-v1"></script>
 </body>
 
 </html>

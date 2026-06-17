@@ -29,6 +29,19 @@ _check() {
     fi
 }
 
+_check_daemon() {
+    local pid
+    pid=$(_find_process_by_pattern "run_daemon_no_site.py")
+    if [ -z "$pid" ]; then
+        pid=$(_find_process_by_pattern "/daemon.py")
+    fi
+    if [ -n "$pid" ]; then
+        printf "  ${GREEN}●${NC} %-18s PID %-6s\n" "Daemon" "$pid"
+    else
+        printf "  ${RED}○${NC} %-18s ${RED}DOWN${NC}\n" "Daemon"
+    fi
+}
+
 _find_process_by_pattern() {
     local pattern="$1"
     { ps -axo pid=,command= | awk -v pat="$pattern" '
@@ -260,6 +273,149 @@ _process_hygiene_python() {
     echo "$py"
 }
 
+_osc_shell_nas_helper_port() {
+    echo "${MAGI_OSC_SHELL_NAS_HELPER_PORT:-5016}"
+}
+
+_osc_shell_nas_helper_health() {
+    local port
+    port=$(_osc_shell_nas_helper_port)
+    curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
+}
+
+_osc_shell_nas_helper_pids() {
+    ps -axo pid=,command= | awk '
+        /[Pp]ython|Python\.app/ &&
+        /scripts\/ops\/osc_shell_nas_helper\.py/ &&
+        !/awk / {
+            print $1
+        }
+    ' 2>/dev/null || true
+}
+
+_check_osc_shell_nas_helper() {
+    local port pid
+    port=$(_osc_shell_nas_helper_port)
+    pid=$(lsof -ti:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [ -n "$pid" ] && _osc_shell_nas_helper_health; then
+        printf "  ${GREEN}●${NC} %-18s port %-5s PID %-6s\n" "OSC NAS Helper" "$port" "$pid"
+    elif [ -n "$pid" ]; then
+        printf "  ${YELLOW}▲${NC} %-18s port %-5s PID %-6s ${YELLOW}UNHEALTHY${NC}\n" "OSC NAS Helper" "$port" "$pid"
+    else
+        printf "  ${RED}○${NC} %-18s port %-5s ${RED}DOWN${NC}\n" "OSC NAS Helper" "$port"
+    fi
+}
+
+cmd_stop_osc_shell_nas_helper() {
+    local port pids port_pid cmd pid
+    port=$(_osc_shell_nas_helper_port)
+    pids=$(_osc_shell_nas_helper_pids)
+    port_pid=$(lsof -ti:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [ -n "$port_pid" ]; then
+        cmd=$(ps -p "$port_pid" -o command= 2>/dev/null || true)
+        if [[ "$cmd" == *"osc_shell_nas_helper.py"* ]]; then
+            pids=$(printf "%s\n%s\n" "$pids" "$port_pid" | awk 'NF && !seen[$1]++')
+        fi
+    fi
+    if [ -z "${pids//[[:space:]]/}" ]; then
+        return 0
+    fi
+    for pid in $pids; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for _ in $(seq 1 20); do
+        local alive=""
+        for pid in $pids; do
+            if kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                break
+            fi
+        done
+        [ -z "$alive" ] && break
+        sleep 0.2
+    done
+    for pid in $pids; do
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+cmd_start_osc_shell_nas_helper() {
+    local root py script runtime_dir log_file pid_file port port_pid port_cmd
+    root=$(_magi_root)
+    py=$(_process_hygiene_python)
+    script="$root/scripts/ops/osc_shell_nas_helper.py"
+    runtime_dir="$root/.runtime"
+    log_file="$runtime_dir/osc_shell_nas_helper.log"
+    pid_file="$runtime_dir/osc_shell_nas_helper.shell.pid"
+    port=$(_osc_shell_nas_helper_port)
+
+    if _osc_shell_nas_helper_health; then
+        return 0
+    fi
+    port_pid=$(lsof -ti:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [ -n "$port_pid" ]; then
+        port_cmd=$(ps -p "$port_pid" -o command= 2>/dev/null || true)
+        if [[ "$port_cmd" == *"osc_shell_nas_helper.py"* ]]; then
+            cmd_stop_osc_shell_nas_helper
+        else
+            echo "  OSC NAS helper port $port is occupied by PID $port_pid; not starting helper."
+            return 1
+        fi
+    fi
+    if [ ! -f "$script" ]; then
+        echo "  OSC NAS helper script not found: $script"
+        return 1
+    fi
+    mkdir -p "$runtime_dir"
+    MAGI_OSC_HELPER_ROOT="$root" \
+    MAGI_OSC_HELPER_PY="$py" \
+    MAGI_OSC_HELPER_SCRIPT="$script" \
+    MAGI_OSC_HELPER_LOG="$log_file" \
+    MAGI_OSC_HELPER_PIDFILE="$pid_file" \
+    "$py" - <<'PY'
+import os
+from pathlib import Path
+
+root = Path(os.environ["MAGI_OSC_HELPER_ROOT"])
+py = os.environ["MAGI_OSC_HELPER_PY"]
+script = os.environ["MAGI_OSC_HELPER_SCRIPT"]
+log_file = os.environ["MAGI_OSC_HELPER_LOG"]
+pid_file = os.environ["MAGI_OSC_HELPER_PIDFILE"]
+env = os.environ.copy()
+env["MAGI_ROOT"] = str(root)
+env["MAGI_ROOT_DIR"] = str(root)
+
+pid = os.fork()
+if pid:
+    os.waitpid(pid, 0)
+    raise SystemExit(0)
+os.setsid()
+pid2 = os.fork()
+if pid2:
+    Path(pid_file).write_text(str(pid2) + "\n", encoding="utf-8")
+    os._exit(0)
+
+os.chdir(str(root))
+fd = os.open("/dev/null", os.O_RDONLY)
+os.dup2(fd, 0)
+os.close(fd)
+Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+lfd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+os.dup2(lfd, 1)
+os.dup2(lfd, 2)
+os.close(lfd)
+os.execvpe(py, [py, script], env)
+PY
+    _wait_for_port "$port" 10 || return 1
+    _osc_shell_nas_helper_health
+}
+
+cmd_restart_osc_shell_nas_helper() {
+    cmd_stop_osc_shell_nas_helper
+    sleep 1
+    cmd_start_osc_shell_nas_helper
+}
+
 _magi_zombie_count() {
     local root py
     root=$(_magi_root)
@@ -292,7 +448,7 @@ cmd_status() {
     echo "═══ MAGI System Status ═══"
     echo ""
     echo "Core Services:"
-    _check "Daemon"       "/daemon.py"
+    _check_daemon
     _check "Server"       "api/server.py"
     _check "Discord Bot"  "api/discord_bot.py"
     _check "Tools API"    "api/tools_api.py"
@@ -302,6 +458,7 @@ cmd_status() {
     _check "Status Bar"   "gui/magi_menubar.py"
     echo ""
     echo "Sidecars:"
+    _check_osc_shell_nas_helper
     _check_port "Website Admin"     8088
     echo ""
     echo "oMLX Inference:"
@@ -456,6 +613,8 @@ cmd_start() {
         _wait_for_port 5003 30 || true
     fi
     _wait_for_pattern "api/discord_bot.py" 20 || true
+    echo "  Starting OSC NAS helper..."
+    cmd_start_osc_shell_nas_helper || true
     sleep 1
     cmd_status
 }
@@ -484,6 +643,8 @@ cmd_stop() {
     pkill -f "skills/ops/file_review_auto_worker.py" 2>/dev/null || true
     pkill -f "skills/ops/heartbeat.py" 2>/dev/null || true
     pkill -f "whalechao.github.io/admin/admin_server.py" 2>/dev/null || true
+    echo "  Stopping OSC NAS helper..."
+    cmd_stop_osc_shell_nas_helper
     pkill -f "gui/magi_menubar.py" 2>/dev/null || true
     pkill -f "rpc-server" 2>/dev/null || true
     sleep 2
@@ -523,8 +684,12 @@ case "${1:-status}" in
     restart|r)   cmd_restart ;;
     menubar|bar) cmd_menubar ;;
     zombie|z)    cmd_zombie ;;
+    helper-start)   cmd_start_osc_shell_nas_helper ;;
+    helper-stop)    cmd_stop_osc_shell_nas_helper ;;
+    helper-restart) cmd_restart_osc_shell_nas_helper ;;
+    helper-status)  _check_osc_shell_nas_helper ;;
     *)
-        echo "Usage: magi [status|start|stop|restart|menubar|zombie]"
+        echo "Usage: magi [status|start|stop|restart|menubar|zombie|helper-start|helper-stop|helper-restart|helper-status]"
         echo ""
         echo "  status   Show all MAGI service status (default)"
         echo "  start    Start MAGI daemon + status bar"
@@ -532,5 +697,6 @@ case "${1:-status}" in
         echo "  restart  Stop then start (includes status bar)"
         echo "  menubar  Restart only the status bar"
         echo "  zombie   Check and clean zombie processes"
+        echo "  helper-* Manage OSC NAS helper on port 5016"
         ;;
 esac

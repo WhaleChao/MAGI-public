@@ -22,7 +22,9 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import csv
 import html as html_lib
@@ -114,6 +116,16 @@ _OSC_ARCHIVE_JOBS: dict[str, dict] = {}
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _OSC_RESOURCE_PHOTO_DIR = os.path.join(_MAGI_ROOT, "resources", "osc", "photo")
+
+_OSC_HELPER_HOST = os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+_OSC_HELPER_PORT = int(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_PORT", "5016") or "5016")
+_OSC_HELPER_STAGE_TIMEOUT = float(
+    os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_STAGE_TIMEOUT_SEC", "90") or "90"
+)
+
+
+def _osc_shell_nas_helper_url() -> str:
+    return f"http://{_OSC_HELPER_HOST}:{_OSC_HELPER_PORT}"
 
 
 def _osc_photo_path(filename: str) -> str:
@@ -1014,6 +1026,15 @@ def _osc_ensure_active_case_folder(row: dict) -> dict:
         "legal_aid_status": row.get("legal_aid_status") or "",
     }
     return _osc_auto_create_folder_for_case(str(row.get("id") or ""), payload, row.get("case_category") or "一般案件")
+
+
+def _osc_should_ensure_case_folder_for_open(row: dict) -> bool:
+    """Only auto-create while opening when the case truly has no folder path."""
+    if not isinstance(row, dict):
+        return False
+    if _osc_should_archive_case_row(row):
+        return False
+    return not bool(str(row.get("folder_path") or "").strip())
 
 
 def _osc_legal_insight_normalized_expr() -> str:
@@ -2269,6 +2290,17 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
                 }
             return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
 
+    if local and is_closed and "10_結案" not in norm.replace("\\", "/"):
+        if _osc_dir_listable_quick(local, timeout=0.75):
+            return {
+                "folder_path": norm,
+                "local_folder": local,
+                "source": "archive_pending_active_fallback",
+                "updated": False,
+                "pending_archive": True,
+            }
+        local = ""
+
     if is_closed:
         folder_name = os.path.basename(norm.replace("\\", "/").rstrip("/")) if norm else ""
         closed_local = _osc_find_closed_case_folder(row.get("case_number") or "", folder_name=folder_name)
@@ -3013,7 +3045,9 @@ def osc_case_open_folder_api(row_id):
     )
     if not row:
         return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
-    ensure = _osc_ensure_active_case_folder(row)
+    ensure = {"ok": True, "skipped": True, "reason": "folder_path_present"}
+    if _osc_should_ensure_case_folder_for_open(row):
+        ensure = _osc_ensure_active_case_folder(row)
     if ensure.get("ok") and not ensure.get("skipped"):
         row, _ = _osc_exec(
             """
@@ -3060,6 +3094,75 @@ def osc_case_open_folder_api(row_id):
         "smb_candidates": smb_candidates,
         "local_candidates": mac_synology,
         "browser_supported": True,
+        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
+    })
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/folder-path", methods=["GET"])
+@login_required
+def osc_case_folder_path_api(row_id):
+    """Resolve a case folder for web browsing without listing or opening it."""
+    row_id = (row_id or "").strip()
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
+
+    ensure = {"ok": True, "skipped": True, "reason": "folder_path_present"}
+    if _osc_should_ensure_case_folder_for_open(row):
+        ensure = _osc_ensure_active_case_folder(row)
+    if ensure.get("ok") and not ensure.get("skipped"):
+        row, _ = _osc_exec(
+            """
+            SELECT id, case_number, client_name, case_category, case_type, case_stage,
+                   case_reason, status, legal_aid_status, folder_path
+            FROM cases WHERE id=%s
+            """,
+            (row_id,),
+            fetch="one",
+        )
+
+    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    folder_path = resolved.get("folder_path") or ""
+    if not folder_path:
+        return jsonify({
+            "ok": False,
+            "error_kind": "folder_path_empty",
+            "message": "案件未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。",
+            "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
+        }), 200
+
+    norm = _osc_norm_path(folder_path)
+    local_folder = resolved.get("local_folder") or ""
+    smb_candidates = _osc_smb_candidates(norm)
+    local_candidates = _osc_local_path_candidates(norm)
+    win_unc = _osc_windows_unc_candidates(norm)
+    win_synology = _osc_windows_synology_candidates(norm)
+    return jsonify({
+        "ok": True,
+        "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
+        "folder_path": norm,
+        "local_folder": local_folder,
+        "folder_exists": bool(local_folder),
+        "folder_source": resolved.get("source") or "",
+        "folder_path_updated": bool(resolved.get("updated")),
+        "pending_archive": bool(resolved.get("pending_archive")),
+        "candidates": {
+            "smb_url": smb_candidates,
+            "mac_synology": local_candidates,
+            "win_unc": win_unc,
+            "win_synology": win_synology,
+        },
+        "smb_url": smb_candidates[0] if smb_candidates else "",
+        "smb_candidates": smb_candidates,
+        "local_candidates": local_candidates,
         "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
     })
 
@@ -3236,7 +3339,9 @@ def osc_case_folder_browser_api(row_id):
     )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
-    ensure = _osc_ensure_active_case_folder(row)
+    ensure = {"ok": True, "skipped": True, "reason": "folder_path_present"}
+    if _osc_should_ensure_case_folder_for_open(row):
+        ensure = _osc_ensure_active_case_folder(row)
     if ensure.get("ok") and not ensure.get("skipped"):
         row, _ = _osc_exec(
             """
@@ -5039,22 +5144,24 @@ def _osc_download_error_response(message: str, status: int = 400):
     return Response(body, status=status, content_type="text/html; charset=utf-8")
 
 
-def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
+def _osc_copy_with_system_cp(local_file: str, tmp_path: str, expected_size: int | None = None) -> bool:
     """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
     cp_bin = shutil.which("cp") or "/bin/cp"
     commands: list[list[str]] = [[cp_bin, "-p", local_file, tmp_path]]
     ditto_bin = shutil.which("ditto")
     if ditto_bin:
         commands.append([ditto_bin, "--norsrc", "--noextattr", local_file, tmp_path])
-    try:
+    if expected_size is None:
         expected_size = _osc_safe_source_size_for_stage(local_file)
+    timeout = int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "90") or "90")
+    try:
         for command in commands:
             result = subprocess.run(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+                timeout=timeout,
             )
             if result.returncode != 0 or not os.path.isfile(tmp_path):
                 continue
@@ -5066,6 +5173,48 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     except Exception:
         _log.debug("silent-catch system cp fallback failed", exc_info=True)
         return False
+
+
+def _osc_is_network_nas_path(path: str) -> bool:
+    norm = (str(path or "").replace("\\", "/")).strip()
+    return (
+        norm.startswith("/Volumes/")
+        or "/.magi_mounts/" in norm
+        or norm.startswith("/Users/") and "/.magi_mounts/" in norm
+        or norm.startswith("/Library/CloudStorage/SynologyDrive")
+        or "/SynologyDrive" in norm
+    )
+
+
+def _osc_stage_file_with_helper(local_file: str) -> str:
+    url = f"{_osc_shell_nas_helper_url()}/stage"
+    payload = json.dumps({"path": local_file}).encode("utf-8")
+    req = Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=_OSC_HELPER_STAGE_TIMEOUT) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper stage failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper stage failed: {exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper stage response parse failed: {exc}") from exc
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise OSError(f"helper stage rejected: {data.get('error') if isinstance(data, dict) else 'invalid response'}")
+
+    staged = str(data.get("staged_path") or "").strip()
+    if not staged or not os.path.isfile(staged):
+        raise OSError("helper stage returned missing file")
+    return staged
 
 
 def _osc_is_transient_smb_error(exc: OSError) -> bool:
@@ -5114,8 +5263,7 @@ def _osc_env_truthy(name: str) -> bool:
 def _osc_should_prefer_system_copy(local_file: str) -> bool:
     if _osc_env_truthy("PAPERCLIP_FILE_STAGE_CP_FIRST"):
         return True
-    norm = str(local_file or "").replace("\\", "/")
-    return norm.startswith("/Volumes/") or "/Library/CloudStorage/SynologyDrive" in norm
+    return _osc_is_network_nas_path(local_file)
 
 
 def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
@@ -5127,7 +5275,8 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
-    expected_size = _osc_safe_source_size_for_stage(local_file)
+    is_network_path = _osc_is_network_nas_path(local_file)
+    expected_size = _osc_safe_source_size_for_stage(local_file) if not is_network_path else None
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -5136,9 +5285,38 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
         tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(prefix="osc-download-", suffix=suffix, dir=tmp_dir)
+            if is_network_path:
+                os.close(fd)
+                try:
+                    staged = _osc_stage_file_with_helper(local_file)
+                except OSError as helper_err:
+                    last_exc = helper_err
+                    if attempt < max_attempts - 1:
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5218, exc_info=True)
+                        time.sleep(0.25 * (2 ** attempt))
+                        continue
+                    raise
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5225, exc_info=True)
+                return staged
+
+            if is_network_path and prefer_system_copy:
+                os.close(fd)
+                if _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
+                    if expected_size is not None:
+                        if os.path.getsize(tmp_path) == expected_size:
+                            return tmp_path
+                    else:
+                        return tmp_path
+                raise OSError("system copy staging failed")
             if prefer_system_copy:
                 os.close(fd)
-                if _osc_copy_with_system_cp(local_file, tmp_path):
+                if _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
                     return tmp_path
                 raise OSError("system copy staging failed")
             try:
@@ -5156,7 +5334,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                     os.close(fd)
                 except OSError:
                     logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4653, exc_info=True)
-                if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
+                if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
                     return tmp_path
                 raise
             if expected_size is not None and os.path.getsize(tmp_path) != expected_size:

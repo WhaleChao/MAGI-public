@@ -279,6 +279,7 @@ def _run_cycle() -> Dict[str, Any]:
     env = os.environ.copy()
     env.setdefault("MAGI_CODE_DIR", CODE_DIR)
     env.setdefault("MAGI_ROOT_DIR", _MAGI_ROOT)
+    env.setdefault("MAGI_EEFILE_DOWNLOAD_FOLDER", os.path.join(MAGI_ROOT, "閱卷下載"))
     env.setdefault("MAGI_NO_DELETE", "1")
     env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     env.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")

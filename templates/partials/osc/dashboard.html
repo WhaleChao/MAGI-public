@@ -2,10 +2,15 @@
             <div class="card">
                 <div class="toolbar">
                     <div>
-                        <h3>業務概覽</h3>
-                        <div class="muted">案件管理系統的業務概覽。</div>
+                        <h3>今日工作台</h3>
+                        <div class="muted">今日重點、近期案件與同步狀態。</div>
                     </div>
-                    <button class="btn" id="dashboardRefreshBtn">重新整理</button>
+                    <div class="inline-actions">
+                        <button class="btn" data-tab-jump="cases" type="button">案件列表</button>
+                        <button class="btn" data-tab-jump="fileManager" type="button">檔案管理</button>
+                        <button class="btn" data-tab-jump="calendar" type="button">行事曆</button>
+                        <button class="btn" id="dashboardRefreshBtn">重新整理</button>
+                    </div>
                 </div>
                 <div class="muted" id="dashboardWindow">帳務區間載入中...</div>
                 <div class="stat-grid" style="margin-top:12px;">

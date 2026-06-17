@@ -42,6 +42,122 @@ def test_active_pdf_todos_filters_past_and_implausible_dates():
     assert implausible_skipped == 2
 
 
+def test_active_pdf_todos_rejects_windows_path_scan_day_fallback():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "上訴",
+                "date": "2026-07-06",
+                "description": "📝 20日內上訴 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\一般案件\2025-0027-林黃阿姐\20250821台北地方法院判決（林黃阿姐等）.pdf",
+            },
+            {
+                "type": "補正",
+                "date": "2026-06-22",
+                "description": "📝 7日內補正 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\2026-0001\20260614 花蓮地方法院通知（請於7日內補正）.pdf",
+            },
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert [x["type"] for x in active] == ["補正"]
+    assert past_skipped == 0
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_undated_pdf_scan_day_fallback():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "上訴",
+                "date": "2026-07-06",
+                "description": "📝 20日內上訴 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\一般案件\2025-0108\高檢署處分書.pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert past_skipped == 0
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_explicit_old_roc_date_shifted_to_future():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "開庭",
+                "date": "2026-08-12",
+                "time": "16:00",
+                "description": "⚖️ 8月12日 下午4時00分 開庭",
+                "source_file": "20250814 臺北地方法院114年度消債清字第84號民事裁定（王台銘；主文：債務人王台銘自民國114年8月12日下午4時起開始清算程序）.pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_old_hearing_shifted_to_next_year():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "調解",
+                "date": "2027-03-09",
+                "time": "16:00",
+                "description": "⚖️ 3月9日 下午4時00分 調解",
+                "source_file": r"K:\SynologyDrive\01_案件\2025-0130\20260304 花蓮地方法院115年度司消債調字第24號民事庭通知書(林里；訂3月9日下午4時整調解).pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_old_year_case_and_description_hint():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "調解",
+                "date": "2026-06-17",
+                "time": "14:00",
+                "description": "⚖️ 6月17日下午2時 整調解",
+                "source_file": r"K:\SynologyDrive\01_案件\法扶案件\消費者債務清理\2025-0049-林洋宇-消費者債務清理-更生\09_法院通知或程序裁定\20250407 新北地方法院114年度司消債調字第389號民事執行處函(林洋宇；訂6月17日下午2時調解).pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_false_shift_from_case_number_or_client_hint():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "開庭",
+                "date": "2026-07-09",
+                "time": "16:00",
+                "description": "⚖️ 7月9日下午4時50分 審理",
+                "source_file": r"C:\\Users\\Public\\法院文件\\notice.pdf",
+                "case_number": "2025-0130",
+                "client_name": "林洋宇",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
 def test_history_cutoff_clamps_google_calendar_lookback():
     assert osc_events_refresh._clamp_lookback_days_to_cutoff(
         730,

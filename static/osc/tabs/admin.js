@@ -1,6 +1,8 @@
 /* tabs/admin.js – Admin panel CRUD functions */
 async function loadAdminData() {
     await Promise.all([
+        loadAdminLiveValidation(),
+        loadAdminDriveExclusions(),
         loadAdminSettings(),
         loadAdminCaseReasons(),
         loadAdminCourts(),
@@ -13,6 +15,97 @@ async function loadAdminData() {
         loadOscBackups(),
         loadGcalStatus(),
     ]);
+}
+
+function _adminOkLabel(payload) {
+    if (!payload || payload.ok === undefined || payload.ok === null) return "未確認";
+    return payload.ok ? "正常" : "需處理";
+}
+
+function _adminValidationDetail(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    const tag = payload.diagnosis || payload.classification || "";
+    const detail = payload.detail || payload.message || payload.status || "";
+    if (tag && detail) return `${tag}｜${detail}`;
+    if (tag) return tag;
+    if (detail) return detail;
+    if (payload.mounts) {
+        return Object.entries(payload.mounts).map(([k, v]) => `${k}:${v ? "mounted" : "missing"}`).join(" ");
+    }
+    if (payload.markers) return payload.markers.join(", ");
+    if (payload.count !== undefined) return `count=${payload.count}`;
+    return "";
+}
+
+async function loadAdminLiveValidation() {
+    const body = document.getElementById("adminLiveValidationBody");
+    const summary = document.getElementById("adminLiveValidationSummary");
+    if (!body || !summary) return;
+    try {
+        const data = await api("/api/live-validation");
+        const checks = ["daemon", "server", "tools_api", "nas", "drive", "db", "model"];
+        const issueNames = new Set(data.summary?.issues || []);
+        summary.hidden = false;
+        summary.className = `status-banner ${data.summary?.ok ? "success" : "warn"}`;
+        summary.textContent = data.summary?.ok
+            ? `狀態正常；最後驗證 ${data.timestamp || ""}`
+            : `需處理：${[...issueNames].join(", ") || data.status || "degraded"}；最後驗證 ${data.timestamp || ""}`;
+        body.innerHTML = checks.map(name => {
+            const payload = data[name] || {};
+            const state = _adminOkLabel(payload);
+            const cls = payload.ok ? "ok" : "warn";
+            return `<tr><td>${esc(name)}</td><td><span class="badge ${cls}">${esc(state)}</span></td><td>${esc(_adminValidationDetail(payload))}</td></tr>`;
+        }).join("");
+    } catch (err) {
+        summary.hidden = false;
+        summary.className = "status-banner warn";
+        summary.textContent = `Live 驗證失敗：${err.message}`;
+        body.innerHTML = `<tr><td colspan="3" class="muted">無法取得驗證結果</td></tr>`;
+    }
+}
+
+async function loadAdminDriveExclusions() {
+    const body = document.getElementById("adminDriveExclusionsBody");
+    const status = document.getElementById("adminDriveExclusionsStatus");
+    if (!body) return;
+    try {
+        const data = await api("/api/drive-case-exclusions");
+        const items = data.relative_paths || [];
+        if (status) status.textContent = `目前 ${items.length} 筆；更新 ${data.updated_at || "-"}`;
+        if (!items.length) {
+            body.innerHTML = `<tr><td colspan="2" class="muted">沒有排除項目</td></tr>`;
+            return;
+        }
+        body.innerHTML = items.map(path => `<tr>
+            <td>${esc(path)}</td>
+            <td class="actions"><button class="btn danger" data-act="admin-drive-exclusion-del" data-path="${esc(path)}">移除</button></td>
+        </tr>`).join("");
+    } catch (err) {
+        if (status) status.textContent = `排除清單載入失敗：${err.message}`;
+        body.innerHTML = `<tr><td colspan="2" class="muted">載入失敗</td></tr>`;
+    }
+}
+
+async function addAdminDriveExclusion() {
+    const input = document.getElementById("adminDriveExclusionPath");
+    const status = document.getElementById("adminDriveExclusionsStatus");
+    const path = (input?.value || "").trim();
+    if (!path) return showAlert("MAGI說", "請輸入要排除的相對路徑");
+    await api("/api/drive-case-exclusions", "POST", {
+        relative_path: path,
+        reason: "Paperclip 系統設定頁新增",
+    });
+    if (input) input.value = "";
+    if (status) status.textContent = "排除項目已新增";
+    await loadAdminDriveExclusions();
+}
+
+async function removeAdminDriveExclusion(path) {
+    const clean = String(path || "").trim();
+    if (!clean) return;
+    if (!await showConfirm("MAGI說", `確定移除此排除項目？\n${clean}`)) return;
+    await api("/api/drive-case-exclusions", "DELETE", { relative_path: clean });
+    await loadAdminDriveExclusions();
 }
 
 async function loadAdminSettings() {

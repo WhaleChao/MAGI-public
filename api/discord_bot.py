@@ -58,6 +58,15 @@ INTERNAL_CRON_ENABLED = (
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+try:
+    from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+    install_mysql_cext_blocker()
+    patch_mysql_connector_for_stability()
+except Exception:
+    logging.getLogger("discord_bot").debug("mysql connector early guard failed", exc_info=True)
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 
 from api.orchestrator import Orchestrator

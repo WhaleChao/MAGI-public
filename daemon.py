@@ -110,6 +110,7 @@ REAPER_NEVER_KILL = (
     "api/discord_bot.py",
     "api/line_bot.py",
     "api/telegram_bot.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "skills/ops/cron_scheduler.py",
     "skills/ops/heartbeat.py",
     "rpc-server",
@@ -181,6 +182,7 @@ REAPER_SAFE_UTILITIES = (
     "omlx serve", "omlx-magi-start",       # oMLX inference servers (port 8080/8081)
     "magi_menubar.py",                       # Status Bar (macOS menu bar)
     "admin_server.py",                       # Website Admin (port 8088)
+    "osc_shell_nas_helper.py",               # OSC NAS helper (port 5016)
     "benchmark_",                            # benchmark scripts (may run >30min)
     "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
@@ -560,8 +562,11 @@ def _load_dotenv(dotenv_path: str, *, override: bool = True) -> None:
     except Exception as e:
         logger.warning(f"⚠️ Failed to load .env: {e}")
 
-def _script_target_from_command(command: str) -> str:
-    c = (command or "").strip()
+def _script_target_from_command(command) -> str:
+    if isinstance(command, (list, tuple)):
+        c = " ".join(str(item) for item in command)
+    else:
+        c = (command or "").strip()
     targets = [
         "api/server.py",
         "api/discord_bot.py",
@@ -640,7 +645,10 @@ def start_process(name, command):
             logger.debug(f"Process Guardian pre-clean skipped for {name}: {e}")
 
         # Avoid shell wrapper process; track the real child process for stable monitoring.
-        argv = shlex.split(command) if isinstance(command, str) else command
+        if isinstance(command, (list, tuple)):
+            argv = [str(item) for item in command]
+        else:
+            argv = shlex.split(command)
         proc = subprocess.Popen(
             argv,
             shell=False,
@@ -1726,13 +1734,13 @@ if __name__ == "__main__":
         logger.warning(f"⚠️ DB Failover Monitor not started: {e}")
 
     # 1. Start Server (LINE API)
-    start_process("Server", f"{_PYTHON} api/server.py")
+    start_process("Server", [_PYTHON, "api/server.py"])
 
     # 2. Start Discord Bot
-    start_process("Discord", f"{_PYTHON} api/discord_bot.py")
+    start_process("Discord", [_PYTHON, "api/discord_bot.py"])
 
     # 2.5 Start Tools API (external routes / connections checks)
-    start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
+    start_process("ToolsAPI", [_PYTHON, "api/tools_api.py"])
 
     # 2.53 oMLX profile self-heal: reboot after the day switch should not leave
     # 8080 serving the previous night's 26B model.
@@ -1787,10 +1795,10 @@ if __name__ == "__main__":
     # OpenClawCron removed (Phase 0)
 
     # 2.7 File review background worker (auto scan -> download -> archive)
-    start_process("FileReviewAuto", f"{_PYTHON} skills/ops/file_review_auto_worker.py")
+    start_process("FileReviewAuto", [_PYTHON, "skills/ops/file_review_auto_worker.py"])
 
     # 2.8 Heartbeat monitor (node health + Tailscale serve guard)
-    start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
+    start_process("Heartbeat", [_PYTHON, "skills/ops/heartbeat.py"])
 
     # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
     _website_admin = os.path.join(_MAGI_ROOT, "whalechao.github.io/admin/admin_server.py")
@@ -1808,7 +1816,7 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port}")
+            start_process("WebsiteAdmin", [_PYTHON, _website_admin, "--port", str(_wa_port)])
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)

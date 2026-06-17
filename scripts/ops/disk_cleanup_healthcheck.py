@@ -31,6 +31,7 @@ import time
 import argparse
 import gzip
 import tempfile
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import contextmanager
@@ -61,6 +62,15 @@ OMLX_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WA
 OMLX_CACHE_CORE_ONLY_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CORE_ONLY_FREE_GB", "30"))
 OMLX_CACHE_CRITICAL_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_FREE_GB", "15"))
 OMLX_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_OMLX_CACHE_RECENT_GRACE_MINUTES", "60"))
+OMLX_EXTERNAL_CACHE_ROOT = Path(
+    os.environ.get("MAGI_OMLX_PAGED_CACHE_ROOT", str(Path.home() / ".omlx" / "paged-cache"))
+)
+OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_OMLX_EXTERNAL_CACHE_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC = float(
+    os.environ.get("MAGI_DISK_OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC", "3")
+)
 APP_CACHE_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_APP_CACHE_ENABLE", "1"
 ).strip().lower() in {"1", "true", "on", "yes"}
@@ -250,10 +260,41 @@ def _walk_cache_files(cache_root: Path) -> List[Path]:
 def _omlx_cache_roots(home: Path) -> List[Path]:
     roots: List[Path] = []
     base = home / ".omlx"
-    for root in [base / "cache", *sorted(base.glob("cache-*"))]:
+    candidates = [base / "cache", *sorted(base.glob("cache-*"))]
+    candidates.extend(_external_omlx_cache_roots())
+    for root in candidates:
         if root.is_dir() and root not in roots:
             roots.append(root)
     return roots
+
+
+def _external_omlx_cache_roots() -> List[Path]:
+    if not OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE:
+        return []
+    code = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+items = [root / "cache", *sorted(root.glob("cache-*"))]
+for item in items:
+    if item.is_dir():
+        print(item)
+"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code, str(OMLX_EXTERNAL_CACHE_ROOT)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=max(0.5, OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"skip external oMLX cache cleanup: probe timeout ({OMLX_EXTERNAL_CACHE_ROOT})")
+        return []
+    except Exception:
+        return []
+    return [Path(line.strip()) for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _cache_last_used(st: os.stat_result) -> float:
