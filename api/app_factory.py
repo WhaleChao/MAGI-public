@@ -9,6 +9,7 @@ from flask_login import LoginManager
 
 from api.blueprints.dashboard_pages import dashboard_pages_bp
 from api.blueprints.golem_console import golem_console_bp
+from api.blueprints.lottery import lottery_bp
 from api.blueprints.osc_accounting import osc_accounting_bp
 from api.blueprints.osc_debt import osc_debt_bp
 from api.blueprints.osc_pdf import osc_pdf_bp
@@ -114,5 +115,6 @@ def register_core_blueprints(app: Flask) -> Flask:
     app.register_blueprint(osc_debt_bp)
     app.register_blueprint(osc_pdf_bp)
     app.register_blueprint(golem_console_bp)
+    app.register_blueprint(lottery_bp)
     app.register_blueprint(dashboard_pages_bp)
     return app

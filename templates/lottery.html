@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>抽獎</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --line: #d8e0ec;
+      --text: #152238;
+      --muted: #5d6c82;
+      --accent: #0ea5e9;
+      --accent-dark: #0369a1;
+      --soft: #eef8fd;
+      --warn: #a15c00;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 32px auto 56px;
+    }
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: clamp(28px, 5vw, 44px);
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 14px 34px rgba(15, 23, 42, .07);
+      overflow: hidden;
+    }
+    .upload {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 240px;
+      gap: 0;
+    }
+    .drop {
+      min-height: 230px;
+      padding: 28px;
+      border-right: 1px solid var(--line);
+      display: grid;
+      place-content: center;
+      text-align: center;
+      background:
+        linear-gradient(135deg, rgba(14,165,233,.10), rgba(255,255,255,0) 42%),
+        #fff;
+    }
+    .drop.dragover {
+      outline: 3px solid rgba(14, 165, 233, .35);
+      outline-offset: -10px;
+      background: var(--soft);
+    }
+    .drop strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 20px;
+    }
+    .drop input {
+      width: 100%;
+      max-width: 460px;
+      margin: 22px auto 0;
+      padding: 12px;
+      border: 1px dashed #a9b7ca;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .controls {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      background: #fbfdff;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      color: #304258;
+      font-weight: 700;
+    }
+    input[type="number"] {
+      width: 100%;
+      margin-top: 8px;
+      padding: 11px 12px;
+      border: 1px solid #b9c6d8;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      background: var(--accent);
+      color: white;
+      font-weight: 800;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-dark); }
+    button:disabled {
+      background: #a8b5c4;
+      cursor: wait;
+    }
+    .hint {
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: #fffaf0;
+      color: var(--warn);
+      font-size: 14px;
+    }
+    .status {
+      min-height: 26px;
+      margin: 18px 0;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .results {
+      display: none;
+      margin-top: 18px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .metric {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px 14px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .metric b {
+      font-size: 17px;
+      overflow-wrap: anywhere;
+    }
+    .table-wrap {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+    th, td {
+      padding: 12px 13px;
+      border-bottom: 1px solid #e5ebf3;
+      text-align: left;
+      vertical-align: top;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    th {
+      background: #f7f9fc;
+      color: #33455f;
+      font-size: 13px;
+    }
+    .section-title {
+      margin: 24px 0 10px;
+      font-size: 18px;
+    }
+    @media (max-width: 760px) {
+      main { width: min(100vw - 20px, 1120px); margin-top: 18px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .upload { grid-template-columns: 1fr; }
+      .drop { border-right: 0; border-bottom: 1px solid var(--line); min-height: 210px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .controls { padding: 18px; }
+    }
+    @media (max-width: 480px) {
+      .summary { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260616-site-polish-v1">
+</head>
+<body class="site-lottery">
+  <main>
+    <header>
+      <div>
+        <h1>抽獎</h1>
+        <p>上傳 Excel 或 CSV，指定抽獎人數後由伺服器隨機抽出。結果只顯示遮蔽後的姓名、電話與地址。</p>
+      </div>
+    </header>
+
+    <section class="panel">
+      <form id="lottery-form" class="upload">
+        <div id="drop-zone" class="drop">
+          <div>
+            <strong>拖放名單檔案，或點選檔案上傳</strong>
+            <p>支援 CSV、XLSX、XLSM。系統會自動辨識姓名、電話、地址欄位。</p>
+            <input id="file-input" name="file" type="file" accept=".csv,.xlsx,.xlsm,.xlmx" required>
+          </div>
+        </div>
+        <div class="controls">
+          <label>
+            一次抽出幾個人
+            <input id="winner-count" name="winner_count" type="number" min="1" step="1" value="1" required>
+          </label>
+          <button id="draw-button" type="submit">開始抽獎</button>
+          <p id="file-name">尚未選擇檔案</p>
+        </div>
+      </form>
+      <div class="hint">隱私保護：上傳名單僅用於本次抽獎，不會保存到 伺服器；公開結果會遮蔽姓名第二字、電話中段與地址細節。</div>
+    </section>
+
+    <div id="status" class="status"></div>
+
+    <section id="results" class="results">
+      <div class="summary">
+        <div class="metric"><span>有效資料</span><b id="total-rows">-</b></div>
+        <div class="metric"><span>抽出人數</span><b id="winner-total">-</b></div>
+        <div class="metric"><span>完成時間</span><b id="generated-at">-</b></div>
+        <div class="metric"><span>檔案指紋</span><b id="source-hash">-</b></div>
+      </div>
+      <h2 class="section-title">中選名單</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>序號</th>
+              <th>資料列</th>
+              <th>姓名</th>
+              <th>電話</th>
+              <th>地址</th>
+            </tr>
+          </thead>
+          <tbody id="winner-body"></tbody>
+        </table>
+      </div>
+      <h2 class="section-title">備取預覽</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>備取序</th>
+              <th>資料列</th>
+              <th>姓名</th>
+              <th>電話</th>
+              <th>地址</th>
+            </tr>
+          </thead>
+          <tbody id="alternate-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('lottery-form');
+    const fileInput = document.getElementById('file-input');
+    const fileName = document.getElementById('file-name');
+    const dropZone = document.getElementById('drop-zone');
+    const button = document.getElementById('draw-button');
+    const statusBox = document.getElementById('status');
+    const results = document.getElementById('results');
+
+    function csrfToken() {
+      const part = document.cookie.split('; ').find((row) => row.startsWith('X-CSRF-Token='));
+      return part ? decodeURIComponent(part.split('=').slice(1).join('=')) : '';
+    }
+
+    function setFileLabel() {
+      fileName.textContent = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : '尚未選擇檔案';
+    }
+
+    function renderRows(target, rows) {
+      target.innerHTML = '';
+      if (!rows || !rows.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="5">無</td>';
+        target.appendChild(tr);
+        return;
+      }
+      rows.forEach((row) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${row.rank || ''}</td>
+          <td>${row.row_number || ''}</td>
+          <td>${row.name || ''}</td>
+          <td>${row.phone || ''}</td>
+          <td>${row.address || ''}</td>
+        `;
+        target.appendChild(tr);
+      });
+    }
+
+    fileInput.addEventListener('change', setFileLabel);
+    ['dragenter', 'dragover'].forEach((name) => {
+      dropZone.addEventListener(name, (event) => {
+        event.preventDefault();
+        dropZone.classList.add('dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach((name) => {
+      dropZone.addEventListener(name, (event) => {
+        event.preventDefault();
+        dropZone.classList.remove('dragover');
+      });
+    });
+    dropZone.addEventListener('drop', (event) => {
+      const files = event.dataTransfer && event.dataTransfer.files;
+      if (files && files.length) {
+        fileInput.files = files;
+        setFileLabel();
+      }
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!fileInput.files || !fileInput.files[0]) {
+        statusBox.textContent = '請先選擇檔案。';
+        return;
+      }
+      const data = new FormData(form);
+      button.disabled = true;
+      statusBox.textContent = '抽獎中...';
+      results.style.display = 'none';
+      try {
+        const response = await fetch('/api/lottery/draw', {
+          method: 'POST',
+          body: data,
+          headers: { 'X-CSRF-Token': csrfToken() },
+        });
+        const body = await response.json();
+        if (!response.ok || !body.ok) {
+          throw new Error(body.message || '抽獎失敗');
+        }
+        document.getElementById('total-rows').textContent = body.total_rows;
+        document.getElementById('winner-total').textContent = body.winner_count;
+        document.getElementById('generated-at').textContent = body.generated_at;
+        document.getElementById('source-hash').textContent = String(body.source_sha256 || '').slice(0, 12);
+        renderRows(document.getElementById('winner-body'), body.winners);
+        renderRows(document.getElementById('alternate-body'), body.alternates);
+        results.style.display = 'block';
+        statusBox.textContent = `完成：已從 ${body.total_rows} 筆資料抽出 ${body.winner_count} 人。`;
+      } catch (error) {
+        statusBox.textContent = error.message || String(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    setFileLabel();
+  </script>
+</body>
+</html>
