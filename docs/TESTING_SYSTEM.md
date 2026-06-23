@@ -7,6 +7,11 @@ The source of truth for which checks belong to each gate is:
 config/test_matrix.json
 ```
 
+As of 2026-06-23 the matrix has four canonical suites plus one legacy alias:
+`ci`, `smoke62`, `production-live`, `commercial-release`, and `smoke50`.
+Treat direct pytest commands as focused diagnostics; they are not release
+acceptance by themselves.
+
 Run suites through:
 
 ```bash
@@ -22,10 +27,10 @@ Run suites through:
 `smoke62` proves that the production checkout has the main runtime organs
 online: Python, venv, config, DB, local services, inference, skills, channels,
 notifications, LAF/file-review modules, cron, security, release hygiene, model
-sidecars, NAS mount, judicial API pipeline, public-release isolation,
-cleanroom customer install dry-run, health-page unresolved issue state,
-knowledge quality, translation quality, tool hallucination gates, share
-gateway, admin server, and commercial readiness.
+sidecars, NAS mount, judicial API pipeline, token health, share gateway, and
+admin server. Public/commercial release guards are intentionally opt-in so a
+private production checkout is not marked broken merely because it contains
+private integrations.
 
 It is not a complete proof that every workflow path has been exercised. It is a
 fast live gate that should run often.
@@ -37,10 +42,11 @@ fast live gate that should run often.
 credentials, NAS mounts, or live portals.
 
 `smoke62`
-: Local full smoke with commercial-release guards. Run after code changes and after restarts.
+: Local full smoke for the private production machine. Run after code changes and after restarts.
 
 `smoke50`
-: Backward-compatible alias for the same full smoke gate.
+: Backward-compatible alias for the same full smoke gate. Do not cite it in new
+release notes unless you are preserving old automation output.
 
 `production-live`
 : Real production-machine live validation. It runs doctor, judicial pipeline,
@@ -48,7 +54,13 @@ self-repair dry-run, smoke62, business modules, and commercial readiness.
 
 `commercial-release`
 : Release gate before sharing a build or selling service. It adds strict public
-audit, channel smoke, heavy route checks, and skill real-world smoke.
+audit, cleanroom install checks, channel smoke, heavy route checks, and skill
+real-world smoke. `scripts/ops/smoke_test_full.py --commercial` runs the same
+public/commercial guard family from the smoke entry point.
+
+Cleanroom installability validates the current worktree candidate, not merely
+the last committed `HEAD`; this prevents false failures or false passes when a
+release branch still has staged or uncommitted public-safe fixes.
 
 ## Acceptance Rule
 
@@ -59,6 +71,8 @@ A MAGI build can be called "live verified" only when:
 - `production-live` passes on the target machine.
 - For public/commercial releases, `commercial-release` also passes.
 - The JSON output is saved in `.runtime/` or attached to the release note.
+- Public release notes use a sanitized summary, not raw portal or business
+  module stdout.
 
 ## Adding Coverage
 

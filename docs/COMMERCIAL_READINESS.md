@@ -45,10 +45,11 @@ python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
 
 `commercial_readiness_live.py` also performs a cleanroom public installability
-check: it clones the committed checkout to a temporary directory, runs strict
-public isolation there, and runs the public customer install wizard in dry-run
-mode. This catches release-only problems that a configured developer machine
-could otherwise hide.
+check: it copies the current git worktree candidate, including non-ignored
+uncommitted files, to a temporary directory, runs strict public isolation there,
+and runs the public customer install wizard in dry-run mode. This catches
+release-only problems that a configured developer machine could otherwise hide,
+without accidentally validating an older committed `HEAD`.
 
 For external customer onboarding, `scripts/customer_install_wizard.py` is the
 preferred entrypoint. It handles the repeatable chores automatically: local
@@ -67,7 +68,7 @@ Private production checkout:
 ./venv/bin/python scripts/ops/smoke_three_channels.py --strict-warn
 ./venv/bin/python scripts/ops/smoke_core_routes.py --with-network --with-heavy
 ./venv/bin/python scripts/ops/skill_realworld_smoke.py
-./venv/bin/python scripts/ops/smoke_test_full.py
+./venv/bin/python scripts/ops/smoke_test_full.py --commercial
 ```
 
 Acceptance target:
@@ -161,6 +162,23 @@ Before launch, publish or provide:
 - `docs/OPERATOR_RUNBOOK.md`
 - Latest live-gate summary generated from the production machine
 
+Use a sanitized live-gate summary in public release notes. Do not paste raw
+business-module stdout because it can contain case numbers, court names, or
+other customer-owned details.
+
+Example:
+
+```text
+Release verification: 2026-06-23
+Private production suite: production-live passed, 9/9 checks
+Business modules: LAF draft-safe portal scan passed; file-review probe passed;
+transcript DB probe passed
+Public safety: public-isolation strict audit passed, 0 errors / 0 warnings
+Commercial readiness: passed, 9/9 checks
+Cleanroom source: current-worktree snapshot
+Artifacts: .runtime/production_live_latest.json, .runtime/commercial_release_latest.json
+```
+
 ## Go / No-Go Checklist
 
 - [ ] Public repo audit passes strict mode.
@@ -169,7 +187,7 @@ Before launch, publish or provide:
 - [ ] Commercial readiness live gate passes on the target machine.
 - [ ] Channel smoke passes with no strict warnings.
 - [ ] Core route smoke passes, including tool-confusion guards.
-- [ ] Skill matrix passes.
+- [ ] `commercial-release` passes, including `skill_realworld_smoke`.
 - [ ] DB backup exists, is readable, and restore requires confirmation.
 - [ ] NAS/file storage is mounted at the expected path.
 - [ ] Portal automation is draft-only or explicitly confirmed.
