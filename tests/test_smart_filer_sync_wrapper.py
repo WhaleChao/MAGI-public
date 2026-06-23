@@ -3,6 +3,7 @@
 import os
 import sys
 import importlib.util
+import json
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -84,3 +85,30 @@ def test_find_subfolder_accepts_legacy_judgment_folder_when_canonical_missing():
 
     with patch.dict(sys.modules, {"training_loader": SimpleNamespace(get_template_for_doc_type=lambda _: None)}):
         assert _mod._find_subfolder(case, "判決") == "10_判決書"
+
+
+def test_build_case_index_normalizes_cached_legacy_judgment_folders(tmp_path, monkeypatch):
+    cache = tmp_path / "_case_index.json"
+    cache.write_text(
+        json.dumps(
+            [
+                {
+                    "folder_name": "2026-0001-測試",
+                    "path": str(tmp_path / "case"),
+                    "parties": ["測試"],
+                    "subfolders": ["09_法院通知或程序裁定", "07_判決書", "10_判決書"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INDEX_PATH", str(cache))
+
+    index = _mod.build_case_index()
+
+    assert index[0]["subfolders"] == [
+        "09_法院通知或程序裁定",
+        "07_判決書或終局裁定及處分",
+        "10_判決書或終局裁定及處分",
+    ]

@@ -35,6 +35,7 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from skills.bridge.shared_utils.judgment_folder_names import (
     JUDGMENT_FOLDER_LABEL,
+    LEGACY_JUDGMENT_FOLDER_LABEL,
     judgment_folder_matches,
     is_judgment_folder_segment,
     sort_judgment_folders_first,
@@ -189,6 +190,28 @@ DOC_TYPE_TO_SUBFOLDER = {
 #  CASE INDEX
 # ════════════════════════════════════════════════════════════════════════════
 
+def _canonicalize_case_index_subfolders(entry: Dict) -> Dict:
+    """Normalize cached legacy judgment folder names without mutating callers."""
+    out = dict(entry or {})
+    normalized = []
+    seen = set()
+    for raw in list(out.get("subfolders") or []):
+        name = str(raw or "")
+        clean = strip_number_prefix(name)
+        if clean == LEGACY_JUDGMENT_FOLDER_LABEL:
+            m = re.match(r"^(\d+)_", name)
+            name = f"{int(m.group(1)):02d}_{JUDGMENT_FOLDER_LABEL}" if m else JUDGMENT_FOLDER_LABEL
+        if name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    out["subfolders"] = normalized
+    return out
+
+
+def _canonicalize_case_index(index: List[Dict]) -> List[Dict]:
+    return [_canonicalize_case_index_subfolders(entry) for entry in (index or [])]
+
+
 def build_case_index(force_rebuild: bool = False) -> List[Dict]:
     """
     Scan 01_案件/ and build a searchable index of all cases.
@@ -198,7 +221,7 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
         age = time.time() - os.path.getmtime(INDEX_PATH)
         if age < 3600:  # Cache valid for 1 hour
             with open(INDEX_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return _canonicalize_case_index(json.load(f))
 
     index = []
     if not os.path.isdir(CASE_ROOT):
@@ -240,7 +263,7 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
                     "seq": parsed["seq"],
                     "stage": parsed["stage"],
                     "reason": parsed["reason"],
-                    "subfolders": subfolders,
+                    "subfolders": _canonicalize_case_index_subfolders({"subfolders": subfolders})["subfolders"],
                 }
                 index.append(entry)
 

@@ -33,7 +33,7 @@ from skills.bridge.shared_utils.judgment_folder_names import (
 )
 
 DEFAULT_REPORT = ROOT / ".runtime" / "judgment_folder_rename_latest.json"
-LEGACY_PREFIXES = (3, 4, 8, 9, 10)
+LEGACY_PREFIXES = (3, 4, 7, 8, 9, 10)
 
 
 def _md5(path: Path, chunk_size: int = 1024 * 1024) -> str:

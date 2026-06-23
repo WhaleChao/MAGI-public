@@ -20,6 +20,21 @@ def test_rename_legacy_judgment_folder(tmp_path: Path):
     assert (new / "判決.pdf").read_bytes() == b"pdf"
 
 
+def test_rename_legacy_judgment_folder_with_07_prefix(tmp_path: Path):
+    case = tmp_path / "2026-0001-舊無償案件"
+    old = case / "07_判決書"
+    old.mkdir(parents=True)
+    (old / "判決.pdf").write_bytes(b"pdf")
+
+    report = run([tmp_path], apply=True)
+
+    new = case / "07_判決書或終局裁定及處分"
+    assert report["ok"] is True
+    assert report["legacy_folder_count"] == 1
+    assert not old.exists()
+    assert (new / "判決.pdf").read_bytes() == b"pdf"
+
+
 def test_merge_existing_canonical_folder_without_overwrite(tmp_path: Path):
     case = tmp_path / "2026-0002-測試"
     old = case / "10_判決書"
