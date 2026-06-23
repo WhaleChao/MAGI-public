@@ -269,6 +269,40 @@ def test_calendar_gap_drive_remediation_respects_skip_drive_sync():
     assert out == {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
 
 
+def test_refresh_skips_when_canonical_lock_is_held(monkeypatch, tmp_path):
+    from scripts.ops import background_task_locks
+
+    class HeldLock:
+        acquired = False
+        active_owner = {"owner": "daily_governance", "pid": 123}
+
+        def as_dict(self):
+            return {"acquired": False, "active_owner": self.active_owner}
+
+    monkeypatch.setattr(background_task_locks, "acquire_lock", lambda *_args, **_kwargs: HeldLock())
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_load_osc_action_module",
+        lambda: (_ for _ in ()).throw(AssertionError("refresh body should not run")),
+    )
+    out = tmp_path / "latest.json"
+    args = SimpleNamespace(
+        force_rebuild=False,
+        dry_run=False,
+        calendar_only=False,
+        scan_only=False,
+        json_out=str(out),
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "already_running"
+    assert result["active_owner"] == "daily_governance"
+    assert json.loads(out.read_text(encoding="utf-8"))["skipped"] is True
+
+
 def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     out = tmp_path / "osc_events_refresh_latest.json"
     calls = []

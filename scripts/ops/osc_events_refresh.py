@@ -1322,7 +1322,7 @@ def _run_pdf_todo_share_link_repair(args: argparse.Namespace) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
 
-def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
+def _run_refresh_locked(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
     os.environ.setdefault("MAGI_GCAL_INCREMENTAL_IMPORT", "1")
@@ -1671,6 +1671,37 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     result["elapsed_sec"] = round(time.monotonic() - started, 3)
     _write_latest(result, Path(args.json_out) if args.json_out else LATEST_PATH)
     return result
+
+
+def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
+    from scripts.ops.background_task_locks import OSC_REFRESH_LOCK_NAME, acquire_lock, already_running_status
+
+    lock_kind = "governance" if bool(getattr(args, "force_rebuild", False)) else "bounded"
+    refresh_lock = acquire_lock(
+        OSC_REFRESH_LOCK_NAME,
+        owner="osc_events_refresh",
+        kind=lock_kind,
+        blocking=False,
+    )
+    if not refresh_lock.acquired:
+        result = {
+            **already_running_status(refresh_lock),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "calendar_only": bool(getattr(args, "calendar_only", False)),
+            "scan_only": bool(getattr(args, "scan_only", False)),
+            "warnings": ["osc_refresh_already_running"],
+            "message": "OSC/GCal/todo refresh is already running; this invocation was skipped to keep the canonical state path single-writer.",
+        }
+        _write_latest(result, Path(args.json_out) if getattr(args, "json_out", "") else LATEST_PATH)
+        return result
+    try:
+        result = _run_refresh_locked(args)
+        result["refresh_lock"] = refresh_lock.as_dict()
+        _write_latest(result, Path(args.json_out) if getattr(args, "json_out", "") else LATEST_PATH)
+        return result
+    finally:
+        refresh_lock.release()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

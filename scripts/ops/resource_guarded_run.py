@@ -58,16 +58,32 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int) -> None:
     if not job_id.startswith("job_drive_case_sync"):
         return
+    kind = "all_files" if "all_files" in job_id else ("priority" if "bidirectional" in job_id else "inventory")
     status = {
         "ok": False,
         "status": "timeout",
         "action_required": False,
+        "worker_kind": kind,
         "message": f"outer_guard_timeout:{timeout_sec}s",
         "finished_at": _iso_now(),
         "next_step": "外層 watchdog 已中止卡住的 Drive/NAS 同步；下次排程會重試近期待辦案件。",
     }
     drive_dir = runtime_dir.root() / "drive_sync"
-    _write_json_atomic(drive_dir / "drive_case_sync_worker_status_latest.json", status)
+    status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
+    try:
+        previous = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+        if not isinstance(previous, dict):
+            previous = {}
+    except Exception:
+        previous = {}
+    status_by_kind = previous.get("status_by_kind")
+    if not isinstance(status_by_kind, dict):
+        status_by_kind = {}
+    status_by_kind = {str(k): dict(v) for k, v in status_by_kind.items() if isinstance(v, dict)}
+    status_by_kind[kind] = status
+    merged_status = {**previous, **status, "status_by_kind": status_by_kind}
+    _write_json_atomic(status_path, merged_status)
+    _write_json_atomic(drive_dir / f"drive_case_sync_worker_status_{kind}_latest.json", status)
     state_path = drive_dir / "worker_state.json"
     try:
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
@@ -75,7 +91,13 @@ def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int) -> None:
             state = {}
         state["last_status"] = status
         state["last_summary"] = {"timeout": True, "outer_guard_timeout": True}
+        state_status_by_kind = state.get("status_by_kind")
+        if not isinstance(state_status_by_kind, dict):
+            state_status_by_kind = {}
+        state_status_by_kind[kind] = status
+        state["status_by_kind"] = state_status_by_kind
         _write_json_atomic(state_path, state)
+        _write_json_atomic(drive_dir / f"worker_state_{kind}.json", state)
     except Exception:
         pass
 

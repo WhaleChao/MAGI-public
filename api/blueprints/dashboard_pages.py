@@ -512,19 +512,24 @@ def intel_refresh():
 @dashboard_pages_bp.route("/api/skills/run", methods=["POST"])
 @login_required
 def api_skills_run_compat():
-    """Compatibility for the old Global News button; generic skill runs stay on Tools API."""
+    """Main-site compatibility shim for canonical Tools API skill execution."""
     data = request.get_json(silent=True) if request.is_json else None
-    data = data if isinstance(data, dict) else request.form
-    skill = str(data.get("skill") or "").strip()
-    task = str(data.get("task") or "").strip()
-    if skill == "worldmonitor-intel" and task == "collect":
-        ok, message = _run_worldmonitor_collect()
-        return _intel_refresh_response(ok, message)
+    data = data if isinstance(data, dict) else request.form.to_dict(flat=True)
+    try:
+        from api.tools_api import _run_skill_from_payload
+
+        return _run_skill_from_payload(
+            data,
+            user_id=str(getattr(current_user, "id", "") or "main-site"),
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("main-site skills/run compat failed: %s", exc)
     return jsonify({
         "ok": False,
         "error": "unsupported_main_site_skill_route",
-        "message": "主網站只保留全球新聞網舊按鈕相容；其他技能請使用 Tools API /skills/run。",
-    }), 400
+        "canonical_endpoint": "/skills/run",
+        "message": "主網站相容路由無法委派技能執行；請改用 canonical Tools API endpoint /skills/run。",
+    }), 503
 
 
 def _read_json_file(path: Path, default):

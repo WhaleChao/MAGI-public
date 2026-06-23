@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 from flask import Flask
@@ -296,24 +298,23 @@ def test_intel_refresh_returns_json_for_ajax(tmp_path, monkeypatch):
     assert response.get_json() == {"ok": True, "message": "updated"}
 
 
-def test_intel_legacy_skills_run_form_routes_to_worldmonitor_refresh(tmp_path, monkeypatch):
-    from api.blueprints import dashboard_pages as mod
-
+def test_legacy_api_skills_run_delegates_to_canonical_helper(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
     for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
         (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
 
-    root = tmp_path / "magi"
-    action_path = root / "skills" / "worldmonitor-intel" / "action.py"
-    action_path.parent.mkdir(parents=True)
-    action_path.write_text("print('ok')\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "updated", "stderr": ""})(),
-    )
+    calls = []
+    fake_tools_api = types.ModuleType("api.tools_api")
+
+    def _fake_run_skill_from_payload(data, *, user_id="api"):
+        from flask import jsonify
+
+        calls.append({"data": dict(data), "user_id": user_id})
+        return jsonify({"success": True, "skill": data.get("skill"), "task": data.get("task")}), 200
+
+    fake_tools_api._run_skill_from_payload = _fake_run_skill_from_payload
+    monkeypatch.setitem(sys.modules, "api.tools_api", fake_tools_api)
 
     app = _make_app(template_dir)
     client = app.test_client()
@@ -324,8 +325,35 @@ def test_intel_legacy_skills_run_form_routes_to_worldmonitor_refresh(tmp_path, m
         follow_redirects=False,
     )
 
-    assert response.status_code == 302
-    assert response.location.endswith("/intel?refresh=ok")
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert calls == [{"data": {"skill": "worldmonitor-intel", "task": "collect"}, "user_id": "u1"}]
+
+
+def test_legacy_api_skills_run_error_names_canonical_endpoint(tmp_path, monkeypatch):
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    fake_tools_api = types.ModuleType("api.tools_api")
+
+    def _boom(data, *, user_id="api"):
+        raise RuntimeError("canonical unavailable")
+
+    fake_tools_api._run_skill_from_payload = _boom
+    monkeypatch.setitem(sys.modules, "api.tools_api", fake_tools_api)
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+    response = client.post(
+        "/api/skills/run",
+        json={"skill": "translator", "task": "help"},
+        headers={"X-User-ID": "u1"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["canonical_endpoint"] == "/skills/run"
 
 
 def test_intel_reports_are_sorted_by_filename_time_and_skip_placeholder(tmp_path, monkeypatch):

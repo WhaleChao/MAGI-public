@@ -1949,8 +1949,18 @@ def list_skills() -> list[dict]:
     
     if not os.path.exists(SKILLS_DIR):
         return skills
-    
-    for item in os.listdir(SKILLS_DIR):
+
+    try:
+        from skills.catalog import iter_top_level_skill_dirs
+
+        entries = [entry.name for entry in iter_top_level_skill_dirs(SKILLS_DIR)]
+    except Exception:
+        entries = [
+            item for item in os.listdir(SKILLS_DIR)
+            if not item.startswith(".") and item != "__pycache__"
+        ]
+
+    for item in entries:
         skill_path = os.path.join(SKILLS_DIR, item, "SKILL.md")
         if os.path.exists(skill_path):
             try:

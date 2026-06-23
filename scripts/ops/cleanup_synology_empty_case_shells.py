@@ -35,6 +35,8 @@ except Exception:  # pragma: no cover
     default_case_roots = None
     local_synology_path_candidates = None
 
+from api.domains.case_file_operation_lock import acquire_case_file_operation_lock, release_case_file_operation_lock
+
 IGNORED_FILENAMES = {".DS_Store", ".gitkeep", "Thumbs.db", "desktop.ini"}
 CASE_FOLDER_RE = re.compile(r"^(\d{4}-\d{4})(?:-|$)")
 
@@ -298,84 +300,101 @@ def _candidate_shells(case_number: str, archived_folder_path: str) -> list[str]:
 
 def run(*, apply: bool, limit: int, max_seconds: float = 0.0) -> dict:
     _load_env()
-    started = time.monotonic()
-    removed: list[dict] = []
-    conflicts: list[dict] = []
-    errors: list[dict] = []
-    checked = 0
-    timed_out = False
-    rows_by_case: dict[str, dict] = {}
-    for row in _closed_cases(limit):
-        case_number = str(row.get("case_number") or "").strip()
-        if case_number:
-            rows_by_case.setdefault(case_number, row)
-    for case_number, folder in _iter_active_case_shells():
-        if max_seconds > 0 and time.monotonic() - started >= max_seconds:
-            timed_out = True
-            break
-        row = rows_by_case.get(case_number)
-        if not row:
-            continue
-        checked += 1
-        real_files, dirs = _real_file_count(folder)
-        item = {
-            "case_number": case_number,
-            "client_name": row.get("client_name") or "",
-            "folder": folder,
-            "real_files": real_files,
-            "dirs": dirs,
-        }
-        if real_files == 0:
-            peer_paths = [p for p in _same_active_shell_paths(folder) if _path_exists(p)]
-            blocked = False
-            for peer in peer_paths:
-                peer_real_files, peer_dirs = _real_file_count(peer)
-                if peer_real_files > 0:
-                    conflicts.append(
-                        {
-                            **item,
-                            "folder": peer,
-                            "real_files": peer_real_files,
-                            "dirs": peer_dirs,
-                            "reason": "same_shell_view_has_real_files",
-                        }
-                    )
-                    blocked = True
-            if blocked:
+    case_file_lock = None
+    if apply:
+        case_file_lock = acquire_case_file_operation_lock(owner="cleanup_synology_empty_case_shells")
+        if not case_file_lock.get("acquired"):
+            return {
+                "ok": True,
+                "apply": apply,
+                "skipped": True,
+                "reason": "case_file_operation_already_running",
+                "active_pid": case_file_lock.get("active_pid"),
+                "lock_path": case_file_lock.get("lock_path") or "",
+            }
+    try:
+        started = time.monotonic()
+        removed: list[dict] = []
+        conflicts: list[dict] = []
+        errors: list[dict] = []
+        checked = 0
+        timed_out = False
+        rows_by_case: dict[str, dict] = {}
+        for row in _closed_cases(limit):
+            case_number = str(row.get("case_number") or "").strip()
+            if case_number:
+                rows_by_case.setdefault(case_number, row)
+        for case_number, folder in _iter_active_case_shells():
+            if max_seconds > 0 and time.monotonic() - started >= max_seconds:
+                timed_out = True
+                break
+            row = rows_by_case.get(case_number)
+            if not row:
                 continue
-            item["paths"] = peer_paths or [folder]
-            if apply:
-                removed_paths: list[str] = []
-                for peer in peer_paths or [folder]:
-                    try:
-                        _remove_tree(peer)
-                        removed_paths.append(peer)
-                    except FileNotFoundError:
-                        removed_paths.append(peer)
-                    except Exception as exc:
-                        errors.append({"path": peer, "error": str(exc)})
-                item["removed"] = bool(removed_paths) and not any(e.get("path") in (peer_paths or [folder]) for e in errors)
-                item["removed_paths"] = removed_paths
+            checked += 1
+            real_files, dirs = _real_file_count(folder)
+            item = {
+                "case_number": case_number,
+                "client_name": row.get("client_name") or "",
+                "folder": folder,
+                "real_files": real_files,
+                "dirs": dirs,
+            }
+            if real_files == 0:
+                peer_paths = [p for p in _same_active_shell_paths(folder) if _path_exists(p)]
+                blocked = False
+                for peer in peer_paths:
+                    peer_real_files, peer_dirs = _real_file_count(peer)
+                    if peer_real_files > 0:
+                        conflicts.append(
+                            {
+                                **item,
+                                "folder": peer,
+                                "real_files": peer_real_files,
+                                "dirs": peer_dirs,
+                                "reason": "same_shell_view_has_real_files",
+                            }
+                        )
+                        blocked = True
+                if blocked:
+                    continue
+                item["paths"] = peer_paths or [folder]
+                if apply:
+                    removed_paths: list[str] = []
+                    for peer in peer_paths or [folder]:
+                        try:
+                            _remove_tree(peer)
+                            removed_paths.append(peer)
+                        except FileNotFoundError:
+                            removed_paths.append(peer)
+                        except Exception as exc:
+                            errors.append({"path": peer, "error": str(exc)})
+                    item["removed"] = bool(removed_paths) and not any(e.get("path") in (peer_paths or [folder]) for e in errors)
+                    item["removed_paths"] = removed_paths
+                else:
+                    item["removed"] = False
+                removed.append(item)
             else:
-                item["removed"] = False
-            removed.append(item)
-        else:
-            conflicts.append(item)
-    return {
-        "ok": True,
-        "apply": apply,
-        "include_local_synology_roots": _include_local_synology_roots(),
-        "active_roots": _active_roots(),
-        "timed_out": timed_out,
-        "elapsed_sec": round(time.monotonic() - started, 3),
-        "checked": checked,
-        "removed": len(removed),
-        "conflicts": len(conflicts),
-        "errors": len(errors),
-        "removed_items": removed[:50],
-        "conflict_items": conflicts[:50],
-        "error_items": errors[:50],
-    }
+                conflicts.append(item)
+        return {
+            "ok": True,
+            "apply": apply,
+            "case_file_operation_lock": case_file_lock or {"acquired": False, "disabled": True},
+            "include_local_synology_roots": _include_local_synology_roots(),
+            "active_roots": _active_roots(),
+            "timed_out": timed_out,
+            "elapsed_sec": round(time.monotonic() - started, 3),
+            "checked": checked,
+            "removed": len(removed),
+            "conflicts": len(conflicts),
+            "errors": len(errors),
+            "removed_items": removed[:50],
+            "conflict_items": conflicts[:50],
+            "error_items": errors[:50],
+        }
+    finally:
+        if apply:
+            release_case_file_operation_lock()
 
 
 def main() -> int:

@@ -907,6 +907,24 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
         return
     if not os.path.exists(OSC_ORCH_PATH):
         return
+    try:
+        from scripts.ops.background_task_locks import OSC_REFRESH_LOCK_NAME, acquire_lock
+    except Exception:
+        osc_sync_lock = None
+    else:
+        osc_sync_lock = acquire_lock(
+            OSC_REFRESH_LOCK_NAME,
+            owner="pdf_namer_best_effort_osc_sync",
+            kind="best_effort",
+            blocking=False,
+        )
+        if not osc_sync_lock.acquired:
+            logger.info(
+                "OSC todo/GCal best-effort sync skipped; refresh lock held by %s pid=%s",
+                (osc_sync_lock.active_owner or {}).get("owner") or "?",
+                (osc_sync_lock.active_owner or {}).get("pid") or "?",
+            )
+            return
 
     case_folder_name = ((match or {}).get("case_info") or {}).get("folder_name") or ""
     m = re.search(r"(\d{4}-\d{4})", case_folder_name)
@@ -974,6 +992,9 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
 
     except Exception as e:
         logger.warning(f"OSC 待辦/日曆同步呼叫失敗: {e}")
+    finally:
+        if osc_sync_lock is not None:
+            osc_sync_lock.release()
 
 
 def _push_discord_pdf_filing(case_folder_name: str, file_name: str) -> None:

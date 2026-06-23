@@ -638,6 +638,7 @@ def test_discord_cron_scheduler_dispatches_without_blocking_loop():
     assert "asyncio.create_task" in source
     assert "_CRON_RUNNING_TASKS" in source
     assert "skip overlapping launch" in source
+    assert "SCHEDULER_LOCK_NAME" in source
 
 
 def test_discord_cron_scheduler_parses_quoted_commands_before_blocking_prefixes():
@@ -654,6 +655,16 @@ def test_daemon_cron_fallback_dispatches_without_blocking_loop():
     assert "magi-cron-fallback" in source
     assert "executor.submit(_run_fallback_job, job)" in source
     assert "skip overlapping launch" in source
+    assert "SCHEDULER_LOCK_NAME" in source
+
+
+def test_background_task_lock_audit_contracts_are_green():
+    import scripts.ops.audit_operational_hardening as audit
+
+    report = audit.audit_background_task_locks()
+
+    assert report["ok"] is True
+    assert report["failure_count"] == 0
 
 
 def test_seed_cron_jobs_parse_runtime_paths_with_spaces(tmp_path):

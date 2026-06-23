@@ -107,7 +107,16 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
             with open(definitions_path, "r", encoding="utf-8") as f:
                 payload = json.load(f) or {}
             for tool in payload.get("tools") or []:
-                if not isinstance(tool, dict) or str(tool.get("name") or "").strip() != str(skill or "").strip():
+                if not isinstance(tool, dict):
+                    continue
+                try:
+                    from skills.catalog import is_public_definition_tool
+
+                    if not is_public_definition_tool(tool, include_deprecated=False):
+                        continue
+                except Exception:
+                    pass
+                if str(tool.get("name") or "").strip() != str(skill or "").strip():
                     continue
                 skill_prop = (((tool.get("parameters") or {}).get("properties") or {}).get("skill") or {})
                 default_folder = str(skill_prop.get("default") or "").strip()
@@ -286,7 +295,7 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         "image_generate": "command", "judgment_search": "command",
         "run_judgment_collector": "command", "rss_subscribe": "command",
         "memory_search": "command", "transcript_query": "command",
-        "pdf_annotate": "command", "stock_briefing": "command",
+        "stock_briefing": "command",
         "court_hearing": "command", "judgment_trend": "command",
         "labor_law_calc": "command", "tri_sage_translate": "command",
         "summarize_text": "command", "tri_sage_transcribe": "command",
@@ -297,9 +306,13 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
     min_conf = {"phrase": 0.30, "semantic": 0.36, "llm": 0.46}
 
     try:
-        from skills.bridge.semantic_router import route as _semantic_route, suggest_trigger
+        from skills.bridge.semantic_router import deprecated_route_hint, route as _semantic_route, suggest_trigger
     except Exception:
         return False, ""
+
+    hint = deprecated_route_hint(text)
+    if hint:
+        return True, hint
 
     try:
         sr = _semantic_route(text)

@@ -396,6 +396,54 @@ def check_model_live_gate(py: str) -> Check:
     return Check("model_live_gate", passed, status, detail, elapsed, artifact=str(MAGI_ROOT / ".runtime" / "model_live_gate_latest.json"))
 
 
+def check_live_conflict_audit(py: str) -> Check:
+    started = time.time()
+    try:
+        from scripts.ops.business_module_live_check import audit_live_conflicts
+    except Exception as exc:
+        return Check("live_conflict_audit", False, "fail", f"import failed: {type(exc).__name__}: {exc}")
+    payload = audit_live_conflicts(MAGI_ROOT)
+    elapsed = round(time.time() - started, 3)
+    errors = int(payload.get("error_count") or 0)
+    warnings = int(payload.get("warning_count") or 0)
+    detail = f"errors={errors} warnings={warnings}"
+    passed = bool(payload.get("ok"))
+    return Check("live_conflict_audit", passed, "pass" if passed else "fail", detail, elapsed)
+
+
+def live_validation_commands(py: str | None = None) -> dict[str, list[str]]:
+    py = py or _python()
+    return {
+        "production_live": [
+            py,
+            "scripts/ops/run_test_suite.py",
+            "--suite",
+            "production-live",
+            "--json-out",
+            ".runtime/production_live_latest.json",
+        ],
+        "business_modules": [
+            py,
+            "scripts/ops/business_module_live_check.py",
+            "--json",
+            "--json-out",
+            ".runtime/business_module_live_latest.json",
+        ],
+        "conflict_audit": [
+            py,
+            "scripts/ops/business_module_live_check.py",
+            "--conflict-audit",
+            "--json-out",
+            ".runtime/live_conflict_audit_latest.json",
+        ],
+        "manual_probe": [
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:${MAGI_SERVER_PORT:-5002}/health",
+        ],
+    }
+
+
 def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db: bool) -> dict[str, Any]:
     py = _python()
     checks = [
@@ -403,6 +451,7 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         check_installer_dry_run(py),
         check_public_release_audit(py, strict=strict_public),
         check_public_cleanroom_install(py),
+        check_live_conflict_audit(py),
         check_process_hygiene(py),
         check_resource_governor(py),
         check_model_live_gate(py),
@@ -419,6 +468,7 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         "python": py,
         "summary": {"pass": passed, "fail": failed, "total": len(checks)},
         "checks": [asdict(c) for c in checks],
+        "live_validation_commands": live_validation_commands(py),
     }
     json_out.parent.mkdir(parents=True, exist_ok=True)
     json_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

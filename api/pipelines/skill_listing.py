@@ -26,7 +26,8 @@ def build_skill_list_response(magi_root: str, logger: Any = None) -> str:
             if not os.path.isdir(skills_dir):
                 continue
             for entry in iter_top_level_skill_dirs(skills_dir):
-                skill_path = os.path.join(entry.path, "SKILL.md")
+                entry_path = os.fspath(entry)
+                skill_path = os.path.join(entry_path, "SKILL.md")
                 try:
                     with open(skill_path, "r", encoding="utf-8") as f:
                         content = f.read()

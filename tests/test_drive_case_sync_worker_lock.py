@@ -38,7 +38,9 @@ def test_worker_lock_replaces_stale_pid_and_releases(tmp_path, monkeypatch):
     assert result["acquired"] is True
     assert result["pid"] == os.getpid()
     assert result["stale_lock"]["previous_status"] == "stale_lock_cleared"
+    assert result["lock"]["metadata"]["owner"] == "drive_case_sync_worker"
     assert (tmp_path / "drive_case_sync_worker.pid").read_text(encoding="utf-8") == f"{os.getpid()}\n"
+    assert (tmp_path / "drive_case_sync_worker.pid.json").exists()
 
     worker._release_worker_lock()
     assert not (tmp_path / "drive_case_sync_worker.pid").exists()
@@ -103,3 +105,17 @@ def test_clear_stale_running_status_keeps_other_kinds(tmp_path, monkeypatch):
     assert payload.get("status_by_kind", {}).get("all_files", {}).get("status_code") == "all_files_ok"
     assert payload.get("status_by_kind", {}).get("priority", {}).get("status") == "stale_running_cleared"
     assert payload.get("worker_kind") == "priority"
+
+
+def test_worker_state_keeps_status_by_kind_and_kind_specific_file(tmp_path, monkeypatch):
+    worker = load_worker_module()
+    monkeypatch.setattr(worker, "runtime_dir", lambda: tmp_path)
+
+    worker.save_state({"matched_case_offset": 7, "last_status": {"status": "ok", "status_code": "priority_ok"}}, kind="priority")
+    worker.save_state({"all_case_offset": 9, "last_status": {"status": "ok", "status_code": "all_files_ok"}}, kind="all_files")
+
+    general = json.loads((tmp_path / "worker_state.json").read_text(encoding="utf-8"))
+    assert general["status_by_kind"]["priority"]["status_code"] == "priority_ok"
+    assert general["status_by_kind"]["all_files"]["status_code"] == "all_files_ok"
+    assert (tmp_path / "worker_state_priority.json").exists()
+    assert (tmp_path / "worker_state_all_files.json").exists()

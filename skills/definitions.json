@@ -1273,44 +1273,6 @@
             }
         },
         {
-            "name": "pdf_annotate",
-            "description": "Automatically annotate case volume PDFs (閱卷資料) based on learned annotation patterns from 游秀鈴 case. Highlights important facts, contradictions, dates, names, and key testimony. Runs nightly.",
-            "endpoint": "/skills/run",
-            "method": "POST",
-            "keywords": [
-                "自動標籤",
-                "PDF標記",
-                "卷宗標籤",
-                "highlight",
-                "annotate"
-            ],
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "learn|annotate|test|status (default: annotate)"
-                    },
-                    "case": {
-                        "type": "string",
-                        "description": "Case name filter (optional)"
-                    },
-                    "skill": {
-                        "type": "string",
-                        "description": "Skill folder name (default: pdf-annotator)",
-                        "default": "pdf-annotator",
-                        "enum": [
-                            "pdf-annotator"
-                        ]
-                    }
-                },
-                "required": [
-                    "task",
-                    "skill"
-                ]
-            }
-        },
-        {
             "name": "labor_law_calc",
             "description": "台灣勞動基準法計算器：加班費（平日/休息日/例假日/國定假日/停班停課，含各修法版本）、特休假天數、資遣費（舊制/新制/混合制）。支援自然語言輸入、本地 xlsx/pdf 批次計算、Google Sheets URL 代算。OSC 端點：/api/osc/labor-law/calc（支援檔案上傳）。範例：月薪 50000，休息日加班 3 小時 / 到職 2020-03-01，計算特休 / 月薪 45000，到職 2018-01-01，資遣費",
             "endpoint": "/skills/run",
@@ -2024,34 +1986,6 @@
                             "market-briefing"
                         ],
                         "description": "Skill folder name (default: market-briefing)"
-                    }
-                },
-                "required": [
-                    "task",
-                    "skill"
-                ]
-            }
-        },
-        {
-            "name": "run_pdf_annotator",
-            "description": "依據參考案件 PDF 書籤樣式，使用視覺模組對案件卷宗 PDF 自動建立導覽書籤（目錄）。支援從現有書籤學習命名慣例，或以視覺模型推斷。",
-            "endpoint": "/skills/run",
-            "method": "POST",
-            "parameters": {
-                "skill": "pdf-annotator",
-                "task": {
-                    "type": "string",
-                    "description": "Task payload (JSON or plain text)"
-                },
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "default": "pdf-annotator",
-                        "enum": [
-                            "pdf-annotator"
-                        ],
-                        "description": "Skill folder name (default: pdf-annotator)"
                     }
                 },
                 "required": [

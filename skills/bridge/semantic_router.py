@@ -61,6 +61,12 @@ _BLACKLISTED_SKILLS = {
     "iron_dome_scan",   # safety-critical
     "drop_table",       # should never be routed
 }
+_PDF_DEPRECATED_ROUTE_HINT = "舊的 PDF 自動標籤路由已退役；若要替 PDF 加書籤請改用 pdf-bookmarker，若要命名或歸檔請改用 pdf-namer。"
+_DEPRECATED_ROUTE_PATTERNS = [
+    r"pdf\s*(?:標籤|標記|annotate|annotation)",
+    r"(?:卷宗|閱卷).*?(?:標籤|標記|highlight|annotate)",
+    r"(?:自動標籤|自動標記)",
+]
 
 # Generated clarification/fallback skills are useful for recovery flows, but they
 # should not participate in normal semantic routing. They add noise and can steal
@@ -121,10 +127,6 @@ _PHRASE_HINTS: List[Tuple[str, str, float]] = [
     ("在法庭上說",     "transcript_query",        0.46),
     ("被告說",         "transcript_query",        0.44),
     ("證人說",         "transcript_query",        0.44),
-    # PDF annotation
-    ("PDF標籤",        "pdf_annotate",            0.52),
-    ("卷宗標記",       "pdf_annotate",            0.50),
-    ("自動標籤",       "pdf_annotate",            0.48),
     # Stock briefing — watchlist management
     ("追蹤以下股票",   "stock_briefing",          0.56),
     ("追蹤股票",       "stock_briefing",          0.54),
@@ -211,6 +213,13 @@ def _load_skills() -> List[Dict]:
         tools = data.get("tools") or []
         skills = []
         for t in tools:
+            try:
+                from skills.catalog import is_public_definition_tool
+
+                if not is_public_definition_tool(t, include_deprecated=False):
+                    continue
+            except Exception:
+                pass
             name = str(t.get("name") or "").strip()
             if not name or name in _BLACKLISTED_SKILLS:
                 continue
@@ -365,6 +374,7 @@ def route(message: str) -> Optional[Dict]:
     skills = _get_skills()
     if not skills:
         return None
+    skill_names = {str(s.get("name") or "") for s in skills}
 
     raw_message = str(message or "")
     try:
@@ -406,6 +416,8 @@ def route(message: str) -> Optional[Dict]:
     matched_hard_phrase: Dict[str, str] = {}
     for phrase, skill_name, bonus in _PHRASE_HINTS:
         if skill_name in _BLACKLISTED_SKILLS:
+            continue
+        if skill_name not in skill_names:
             continue
         if phrase in msg_text:
             # Only record the best (longest/highest) bonus per skill
@@ -473,6 +485,17 @@ def route(message: str) -> Optional[Dict]:
     return None
 
 
+def deprecated_route_hint(message: str) -> str:
+    """Return a user-facing hint for deprecated semantic routes."""
+    text = str(message or "").strip().lower()
+    if not text:
+        return ""
+    for pattern in _DEPRECATED_ROUTE_PATTERNS:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return _PDF_DEPRECATED_ROUTE_HINT
+    return ""
+
+
 def _llm_route(message: str, skill_names: List[str]) -> Optional[Dict]:
     """Use Casper LLM to pick the best skill from a short list."""
     try:
@@ -535,7 +558,6 @@ _SKILL_TO_TRIGGER: Dict[str, str] = {
     "memory_search":        "@MAGI 記憶搜尋 {msg}",
     "transcript_query":     "@MAGI 筆錄查詢 {msg}",
     "transcript_index":     "@MAGI 索引筆錄",
-    "pdf_annotate":         "@MAGI 自動標籤 {msg}",
     "stock_briefing":       "@MAGI 股市晨報 --mode technical {msg}",
     "labor_law_calc":       "@MAGI 加班費計算 {msg}",
 }

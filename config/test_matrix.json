@@ -65,6 +65,18 @@
           "timeout_sec": 30
         },
         {
+          "id": "live_conflict_audit",
+          "name": "Fast live conflict audit",
+          "command": [
+            "{python}",
+            "scripts/ops/business_module_live_check.py",
+            "--conflict-audit",
+            "--json-out",
+            ".runtime/live_conflict_audit_ci_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+        {
           "id": "pytest_fast_gate",
           "name": "Fast pytest gate",
           "command": [
@@ -84,6 +96,7 @@
             "tests/test_customer_install_wizard.py",
             "tests/test_commercial_readiness_live.py",
             "tests/test_business_module_live_check.py",
+            "tests/test_live_conflict_audit.py",
             "tests/test_release_bundle.py",
             "tests/test_osc_debt_supplement_checklist.py",
             "tests/test_public_push_guard.py",

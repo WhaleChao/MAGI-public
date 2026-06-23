@@ -41,6 +41,11 @@ def test_ci_suite_includes_static_safety_guards():
 
     assert checks["hardcoded_runtime_guard"]["command"] == ["{python}", "scripts/ci/check_hardcodes.py"]
     assert checks["shell_true_guard"]["command"] == ["{python}", "scripts/ci/check_shell_true.py"]
+    assert checks["live_conflict_audit"]["command"][:3] == [
+        "{python}",
+        "scripts/ops/business_module_live_check.py",
+        "--conflict-audit",
+    ]
 
 
 def test_dry_run_suite_writes_all_checks(tmp_path: Path):

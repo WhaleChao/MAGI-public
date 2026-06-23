@@ -43,6 +43,7 @@ from api.osc.utils import (  # noqa: E402
     _osc_norm_path,
     _osc_replace_path_prefix_references,
 )
+from api.domains.case_file_operation_lock import acquire_case_file_operation_lock, release_case_file_operation_lock  # noqa: E402
 
 DEFAULT_ARCHIVE_ROOTS = (
     Path("/Volumes/lumi/lumi/03_工作資料/10_結案"),
@@ -621,25 +622,44 @@ def main() -> int:
         if args.print_json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
+    if args.apply:
+        case_file_lock = acquire_case_file_operation_lock(owner="slow_archive_closed_cases")
+        report["case_file_operation_lock"] = case_file_lock
+        if not case_file_lock.get("acquired"):
+            report.update({
+                "ok": True,
+                "skipped": True,
+                "reason": "case_file_operation_already_running",
+                "active_pid": case_file_lock.get("active_pid"),
+                "lock_path": case_file_lock.get("lock_path") or "",
+            })
+            _write_report(report, args.json_out)
+            if args.print_json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
 
-    archive_root = _archive_root(allow_cloud_target=bool(args.allow_cloud_target))
-    if archive_root is None:
-        report.update({"ok": False, "reason": "archive_root_not_mounted", "items": []})
+    try:
+        archive_root = _archive_root(allow_cloud_target=bool(args.allow_cloud_target))
+        if archive_root is None:
+            report.update({"ok": False, "reason": "archive_root_not_mounted", "items": []})
+            _write_report(report, args.json_out)
+            if args.print_json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 2 if args.apply else 0
+
+        report["archive_root"] = str(archive_root)
+        rows = _closed_rows(case_number=args.case_number, limit=max(1, args.limit))
+        for row in rows:
+            report["items"].append(_process(row, archive_root, args))
+        report["completed_at"] = datetime.now().isoformat(timespec="seconds")
         _write_report(report, args.json_out)
         if args.print_json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 2 if args.apply else 0
-
-    report["archive_root"] = str(archive_root)
-    rows = _closed_rows(case_number=args.case_number, limit=max(1, args.limit))
-    for row in rows:
-        report["items"].append(_process(row, archive_root, args))
-    report["completed_at"] = datetime.now().isoformat(timespec="seconds")
-    _write_report(report, args.json_out)
-    if args.print_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-    failed = [item for item in report["items"] if not item.get("ok")]
-    return 1 if failed else 0
+        failed = [item for item in report["items"] if not item.get("ok")]
+        return 1 if failed else 0
+    finally:
+        if args.apply:
+            release_case_file_operation_lock()
 
 
 if __name__ == "__main__":

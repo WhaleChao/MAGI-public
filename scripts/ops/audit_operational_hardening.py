@@ -434,6 +434,52 @@ def audit_domain_interference() -> dict[str, Any]:
     }
 
 
+def audit_background_task_locks() -> dict[str, Any]:
+    """Verify canonical background task mutex contracts are wired in source."""
+    checks = []
+
+    def _contains(rel: str, *needles: str) -> bool:
+        text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        return all(needle in text for needle in needles)
+
+    checks.append({
+        "name": "discord_daemon_scheduler_owner_lock",
+        "ok": _contains("api/discord_bot.py", "SCHEDULER_LOCK_NAME", "discord_internal_cron")
+        and _contains("daemon.py", "SCHEDULER_LOCK_NAME", "daemon_cron_fallback"),
+        "requirement": "Discord internal cron and daemon fallback must compete for one scheduler owner lock.",
+    })
+    checks.append({
+        "name": "osc_refresh_single_writer_lock",
+        "ok": _contains("scripts/ops/osc_events_refresh.py", "OSC_REFRESH_LOCK_NAME", "osc_refresh_already_running")
+        and _contains("skills/pdf-namer/smart_filer.py", "OSC_REFRESH_LOCK_NAME", "pdf_namer_best_effort_osc_sync"),
+        "requirement": "OSC/GCal/todo refresh and pdf-namer best-effort sync must share one nonblocking mutex.",
+    })
+    checks.append({
+        "name": "drive_worker_kind_state",
+        "ok": _contains(
+            "scripts/drive_case_sync_worker.py",
+            "status_by_kind",
+            "worker_state_",
+            "worker_status_path(kind)",
+        ),
+        "requirement": "Drive bounded/all-files runs must preserve per-kind status/state instead of overwriting each other.",
+    })
+    checks.append({
+        "name": "case_folder_domain_guard",
+        "ok": _contains("api/domains/case_file_operation_lock.py", "acquire_lock", "write_pid_file=True")
+        and _contains("scripts/drive_case_sync_worker.py", "acquire_case_file_operation_lock")
+        and _contains("scripts/ops/slow_archive_closed_cases.py", "acquire_case_file_operation_lock")
+        and _contains("scripts/ops/cleanup_synology_empty_case_shells.py", "acquire_case_file_operation_lock"),
+        "requirement": "Drive sync, slow archive, and empty-shell cleanup must share one case-folder mutation guard.",
+    })
+    failures = [check for check in checks if not check.get("ok")]
+    return {
+        "ok": not failures,
+        "failure_count": len(failures),
+        "checks": checks,
+    }
+
+
 def audit_git() -> dict[str, Any]:
     proc = subprocess.run(
         ["git", "status", "--short"],
@@ -727,6 +773,7 @@ def main() -> int:
     report = {
         "cron": audit_cron(),
         "domain_interference": audit_domain_interference(),
+        "background_task_locks": audit_background_task_locks(),
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
         "gmail_monitor": audit_gmail_monitor_mode(),
@@ -743,6 +790,7 @@ def main() -> int:
         "cron_parse_failures": report["cron"]["parse_failure_count"],
         "cron_collisions": report["cron"]["collision_count"],
         "domain_interference_count": report["domain_interference"]["issue_count"],
+        "background_task_locks_ok": report["background_task_locks"]["ok"],
         "dirty_count": report["git"]["dirty_count"],
         "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
@@ -759,6 +807,7 @@ def main() -> int:
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
         or report["domain_interference"]["issue_count"] > 0
+        or not report["background_task_locks"]["ok"]
         or not report["gmail_monitor"]["ok"]
         or not report["omlx_profile"]["ok"]
         or not report["retired_feature_residue"]["ok"]

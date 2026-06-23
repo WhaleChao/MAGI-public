@@ -790,15 +790,37 @@ def _start_cron_fallback() -> None:
         _cron_fallback_running = True
 
     def _cron_loop():
+        global _cron_fallback_running
         logger.info("⏰ CronScheduler fallback starting (Discord Bot unavailable)...")
+        cron_owner_lock = None
         try:
             sys.path.insert(0, os.path.join(_MAGI_ROOT))
+            from scripts.ops.background_task_locks import SCHEDULER_LOCK_NAME, acquire_lock
+            cron_owner_lock = acquire_lock(
+                SCHEDULER_LOCK_NAME,
+                owner="daemon_cron_fallback",
+                kind="scheduler",
+                blocking=False,
+            )
+            if not cron_owner_lock.acquired:
+                logger.info(
+                    "⏸️ CronScheduler fallback skipped; scheduler owner lock is held by %s pid=%s",
+                    (cron_owner_lock.active_owner or {}).get("owner") or "?",
+                    (cron_owner_lock.active_owner or {}).get("pid") or "?",
+                )
+                with _cron_fallback_lock:
+                    _cron_fallback_running = False
+                return
             from skills.ops.cron_scheduler import CronScheduler
             from api.orchestrator import Orchestrator
             scheduler = CronScheduler()
             orchestrator = Orchestrator()
-            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s")
+            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s (lock=%s)", cron_owner_lock.path)
         except Exception as e:
+            if cron_owner_lock is not None:
+                cron_owner_lock.release()
+            with _cron_fallback_lock:
+                _cron_fallback_running = False
             logger.error("❌ CronScheduler fallback init failed: %s", e)
             return
 

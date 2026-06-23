@@ -38,6 +38,13 @@ from api.osc.drive_case_sync import (
     run_priority_case_sync,
     runtime_dir,
 )
+from scripts.ops.background_task_locks import (
+    acquire_lock,
+    write_json_atomic,
+)
+
+_WORKER_LOCK_HANDLE = None
+from api.domains.case_file_operation_lock import acquire_case_file_operation_lock, release_case_file_operation_lock
 
 
 def state_path() -> Path:
@@ -108,10 +115,7 @@ def save_worker_status(status: dict, *, kind: str = "") -> None:
     if kind:
         targets.append(worker_status_path(kind))
     for path in targets:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(merged_payload if path == worker_status_path() else payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        write_json_atomic(path, merged_payload if path == worker_status_path() else payload)
 
 
 def load_worker_status() -> dict:
@@ -148,6 +152,7 @@ def _read_worker_lock_pid(path: Path | None = None) -> int:
 
 
 def _release_worker_lock(path: Path | None = None, pid: int | None = None) -> None:
+    global _WORKER_LOCK_HANDLE
     path = path or worker_lock_path()
     pid = int(pid or os.getpid())
     try:
@@ -157,6 +162,11 @@ def _release_worker_lock(path: Path | None = None, pid: int | None = None) -> No
         pass
     except Exception:
         pass
+    if _WORKER_LOCK_HANDLE is not None:
+        try:
+            _WORKER_LOCK_HANDLE.release()
+        finally:
+            _WORKER_LOCK_HANDLE = None
 
 
 def acquire_worker_lock() -> dict:
@@ -165,6 +175,7 @@ def acquire_worker_lock() -> dict:
     The status JSON is intentionally not used as a lock because short scheduled
     jobs can overwrite it while a longer manual/full sync is still running.
     """
+    global _WORKER_LOCK_HANDLE
     path = worker_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     current_pid = os.getpid()
@@ -176,20 +187,36 @@ def acquire_worker_lock() -> dict:
             "status": "already_running",
             "active_pid": previous_pid,
             "lock_path": str(path),
+            "legacy_pid_file": True,
+        }
+    lock = acquire_lock(
+        "drive_case_sync_worker",
+        owner="drive_case_sync_worker",
+        kind="singleton",
+        path=path,
+        blocking=False,
+        write_pid_file=True,
+    )
+    if not lock.acquired:
+        return {
+            "acquired": False,
+            "status": "already_running",
+            "active_pid": int((lock.active_owner or {}).get("pid") or previous_pid or 0),
+            "lock_path": str(path),
+            "lock": lock.as_dict(),
         }
     if previous_pid and previous_pid != current_pid:
         stale = {
             "previous_pid": previous_pid,
             "previous_status": "stale_lock_cleared",
         }
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(f"{current_pid}\n", encoding="utf-8")
-    tmp.replace(path)
+    _WORKER_LOCK_HANDLE = lock
     atexit.register(_release_worker_lock, path, current_pid)
     return {
         "acquired": True,
         "pid": current_pid,
         "lock_path": str(path),
+        "lock": lock.as_dict(),
         "stale_lock": stale,
     }
 
@@ -244,12 +271,24 @@ def load_state() -> dict:
     return data
 
 
-def save_state(state: dict) -> None:
+def save_state(state: dict, *, kind: str = "") -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    payload = dict(state or {})
+    if kind:
+        previous = load_state()
+        payload = {**previous, **payload}
+        status_by_kind = previous.get("status_by_kind")
+        if not isinstance(status_by_kind, dict):
+            status_by_kind = {}
+        status_by_kind = {str(k): dict(v) for k, v in status_by_kind.items() if isinstance(v, dict)}
+        last_status = payload.get("last_status")
+        if isinstance(last_status, dict):
+            status_by_kind[str(kind)] = dict(last_status)
+        payload["status_by_kind"] = status_by_kind
+        kind_path = runtime_dir() / f"worker_state_{str(kind).strip().lower().replace('-', '_')}.json"
+        write_json_atomic(kind_path, payload)
+    write_json_atomic(path, payload)
 
 
 def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool, kind: str = "") -> dict:
@@ -535,6 +574,24 @@ def main(argv: list[str] | None = None) -> int:
         save_worker_status(status, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
+    case_file_lock = acquire_case_file_operation_lock(owner=f"drive_case_sync_worker:{worker_kind}")
+    if not case_file_lock.get("acquired"):
+        status = {
+            "ok": True,
+            "status": "case_file_operation_already_running",
+            "action_required": False,
+            "pid": os.getpid(),
+            "active_worker_pid": case_file_lock.get("active_pid"),
+            "lock_path": case_file_lock.get("lock_path") or "",
+            "started_at": iso_now(),
+            "finished_at": iso_now(),
+            "message": "已有案件資料夾寫入任務在執行，本次 Drive/NAS 同步略過，避免與封存/清理同時改動。",
+            "worker_kind": worker_kind,
+        }
+        save_worker_status(status, kind=worker_kind)
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        _release_worker_lock()
+        return 0
 
     state = load_state()
     offset = max(0, int(state.get("matched_case_offset") or 0))
@@ -566,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
         "started_at": started_at,
         "previous_stale_status": stale_status,
         "worker_lock": worker_lock,
+        "case_file_operation_lock": case_file_lock,
         "matched_case_offset": offset,
         "all_case_offset": all_case_offset,
         "all_case_total": all_case_total,
@@ -632,8 +690,10 @@ def main(argv: list[str] | None = None) -> int:
         status = save_auth_required(exc, write=needs_write_scope, kind=worker_kind)
         state["last_status"] = status
         state["last_summary"] = {"auth_required": True}
-        save_state(state)
+        save_state(state, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
+        release_case_file_operation_lock()
+        _release_worker_lock()
         return 0
     except DriveCaseSyncTimeout as exc:
         status = {
@@ -655,9 +715,11 @@ def main(argv: list[str] | None = None) -> int:
         state["last_status"] = status
         state["last_summary"] = {"timeout": True}
         state["last_priority_case_numbers"] = priority_case_numbers[:30]
-        save_state(state)
+        save_state(state, kind=worker_kind)
         save_worker_status(status, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
+        release_case_file_operation_lock()
+        _release_worker_lock()
         return 2
 
     direct_mode = report.get("mode") == "direct_db_case_sync"
@@ -699,6 +761,8 @@ def main(argv: list[str] | None = None) -> int:
         "action_required": False,
         "pid": os.getpid(),
         "worker_kind": worker_kind,
+        "worker_lock": worker_lock,
+        "case_file_operation_lock": case_file_lock,
         "started_at": started_at,
         "finished_at": iso_now(),
         "matched_case_offset_before": offset,
@@ -710,7 +774,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     state["last_status"] = success_status
     clear_auth_required()
-    save_state(state)
+    save_state(state, kind=worker_kind)
     save_worker_status({
         **success_status,
         "summary": state["last_summary"],
@@ -740,6 +804,8 @@ def main(argv: list[str] | None = None) -> int:
         "drive_imported_folder_repair": state["last_drive_imported_folder_repair"],
         "output_paths": report.get("output_paths") or {},
     }, ensure_ascii=False, indent=2))
+    release_case_file_operation_lock()
+    _release_worker_lock()
     return 0
 
 

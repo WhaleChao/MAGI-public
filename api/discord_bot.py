@@ -643,9 +643,23 @@ async def bg_scheduler_loop():
     await client.wait_until_ready()
     
     # Simple Cron Scheduler
+    from scripts.ops.background_task_locks import SCHEDULER_LOCK_NAME, acquire_lock
     from skills.ops.cron_scheduler import CronScheduler
+    scheduler_owner_lock = acquire_lock(
+        SCHEDULER_LOCK_NAME,
+        owner="discord_internal_cron",
+        kind="scheduler",
+        blocking=False,
+    )
+    if not scheduler_owner_lock.acquired:
+        logger.info(
+            "⏸️ Cron Scheduler skipped; scheduler owner lock is held by %s pid=%s",
+            (scheduler_owner_lock.active_owner or {}).get("owner") or "?",
+            (scheduler_owner_lock.active_owner or {}).get("pid") or "?",
+        )
+        return
     scheduler = CronScheduler()
-    logger.info("⏰ Cron Scheduler Started")
+    logger.info("⏰ Cron Scheduler Started (owner lock=%s)", scheduler_owner_lock.path)
     loop_counter = 0
     _startup_catchup_done = False  # Fires once on 2nd iteration (~60s after start)
     _catchup_hours = int(os.environ.get("MAGI_CRON_CATCHUP_HOURS", "8"))

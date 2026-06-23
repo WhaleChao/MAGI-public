@@ -328,11 +328,13 @@ def _add_security_headers(response):
 def _discover_runnable_skill_dirs() -> set[str]:
     dirs: set[str] = set()
     try:
+        from skills.catalog import is_public_skill_dir_name
+
         for entry in os.scandir(_SKILLS_ROOT):
             if not entry.is_dir():
                 continue
             name = entry.name
-            if name.startswith(".") or name == "__pycache__":
+            if not is_public_skill_dir_name(name):
                 continue
             if os.path.exists(os.path.join(entry.path, "action.py")):
                 dirs.add(name)
@@ -386,10 +388,19 @@ def _sanitize_definitions_payload(payload: dict) -> dict:
     available_dirs = _discover_runnable_skill_dirs()
     filtered_tools = []
     dropped_run_tools = 0
+    dropped_hidden_tools = 0
 
     for tool in tools:
         if not isinstance(tool, dict):
             continue
+        try:
+            from skills.catalog import is_public_definition_tool
+
+            if not is_public_definition_tool(tool):
+                dropped_hidden_tools += 1
+                continue
+        except Exception:
+            pass
         endpoint = str(tool.get("endpoint") or "").strip()
         name = str(tool.get("name") or "").strip()
 
@@ -448,6 +459,7 @@ def _sanitize_definitions_payload(payload: dict) -> dict:
         "tools_total": len(tools),
         "tools_exposed": len(filtered_tools),
         "dropped_unrunnable_run_tools": dropped_run_tools,
+        "dropped_hidden_tools": dropped_hidden_tools,
     }
     out["_meta"] = meta
     return out
@@ -2562,8 +2574,16 @@ def api_run_skill():
     Pass ``"async": true`` to enqueue the job and return 202 immediately.
     Poll ``GET /jobs/<job_id>`` for the result.
     """
+    return _run_skill_from_payload(
+        request.get_json() or {},
+        user_id=request.headers.get("X-Api-Key-Id", "api"),
+    )
+
+
+def _run_skill_from_payload(data: dict, *, user_id: str = "api"):
+    """Canonical implementation for skill execution routes."""
     from skills.evolution.skill_genesis import run_skill_action
-    data = request.get_json() or {}
+    data = data if isinstance(data, dict) else {}
     skill = data.get('skill', '')
     task = data.get('task', '')
     timeout_sec = min(180, max(5, int(data.get('timeout_sec', 30))))  # cap 5-180s
@@ -2613,7 +2633,7 @@ def api_run_skill():
         job_id = _jq_enqueue(
             job_type="skill_run",
             platform="api",
-            user_id=request.headers.get("X-Api-Key-Id", "api"),
+            user_id=user_id or "api",
             role="operator",
             user_text=f"{skill}:{task_for_run}",
             chat_id="",
