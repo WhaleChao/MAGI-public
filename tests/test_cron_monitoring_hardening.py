@@ -665,6 +665,9 @@ def test_background_task_lock_audit_contracts_are_green():
 
     assert report["ok"] is True
     assert report["failure_count"] == 0
+    names = {check["name"] for check in report["checks"]}
+    assert "pdf_in_place_mutation_guard" in names
+    assert "nas_ocr_queue_worker_lock" in names
 
 
 def test_seed_cron_jobs_parse_runtime_paths_with_spaces(tmp_path):

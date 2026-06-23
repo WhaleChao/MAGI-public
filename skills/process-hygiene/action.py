@@ -84,9 +84,11 @@ EXPECTED_DETACHED_JOB_MARKERS = [
 def _ps_all() -> List[Dict[str, Any]]:
     """取得所有程序列表（使用 ps，不依賴 psutil）。"""
     try:
+        env = os.environ.copy()
+        env.setdefault("COLUMNS", "4096")
         out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,stat=,etime=,command="],
-            capture_output=True, text=True, timeout=10,
+            ["ps", "axww", "-o", "pid=,ppid=,stat=,etime=,command="],
+            capture_output=True, text=True, timeout=10, env=env,
         )
         lines = (out.stdout or "").strip().splitlines()
     except Exception as e:

@@ -37,6 +37,40 @@ if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
 
+def _is_git_worktree(root: Path) -> bool:
+    return (root / ".git").exists()
+
+
+def public_source_root() -> Path:
+    """Return the git checkout used for public release/installability checks.
+
+    Installed runtime trees intentionally contain private caches and usually do
+    not include .git. Public release checks must inspect the candidate source
+    checkout, while live health checks continue to run against MAGI_ROOT.
+    """
+
+    for env_name in ("MAGI_PUBLIC_SOURCE_ROOT_DIR", "MAGI_SOURCE_ROOT_DIR"):
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser().resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    if _is_git_worktree(MAGI_ROOT):
+        return MAGI_ROOT
+
+    for candidate in (
+        Path.home() / "Desktop" / "MAGI_v2",
+        Path.home() / "Library" / "Application Support" / "MAGI" / "source" / "MAGI_v2",
+    ):
+        candidate = candidate.resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    return MAGI_ROOT
+
+
 @dataclass
 class Check:
     name: str
@@ -124,10 +158,18 @@ def check_installer_dry_run(py: str) -> Check:
 
 
 def check_public_release_audit(py: str, *, strict: bool) -> Check:
+    source_root = public_source_root()
+    if not _is_git_worktree(source_root):
+        return Check(
+            "public_release_audit",
+            False,
+            "fail",
+            f"source checkout is not a git worktree: {source_root}",
+        )
     cmd = [py, "scripts/public_release_audit.py", "--json"]
     if strict:
         cmd.extend(["--public-isolation", "--strict"])
-    ok, payload, raw, elapsed = _run_json(cmd, timeout=60)
+    ok, payload, raw, elapsed = _run_json(cmd, timeout=60, cwd=source_root)
     if not ok:
         return Check("public_release_audit", False, "fail", raw, elapsed)
     passed = bool(payload.get("ok"))
@@ -135,8 +177,9 @@ def check_public_release_audit(py: str, *, strict: bool) -> Check:
     return Check("public_release_audit", passed, "pass" if passed else "fail", detail, elapsed)
 
 
-def _snapshot_current_worktree(dest: Path) -> dict[str, Any]:
+def _snapshot_current_worktree(dest: Path, *, source_root: Path | None = None) -> dict[str, Any]:
     """Copy the current candidate tree, including uncommitted non-ignored files."""
+    source_root = (source_root or public_source_root()).resolve()
     proc = subprocess.run(
         [
             "git",
@@ -147,7 +190,7 @@ def _snapshot_current_worktree(dest: Path) -> dict[str, Any]:
             "--others",
             "--exclude-standard",
         ],
-        cwd=MAGI_ROOT,
+        cwd=source_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -170,7 +213,7 @@ def _snapshot_current_worktree(dest: Path) -> dict[str, Any]:
         if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.parts[:1] == (".git",):
             skipped += 1
             continue
-        src = MAGI_ROOT / rel_path
+        src = source_root / rel_path
         target = dest / rel_path
         if not src.exists() or src.is_dir():
             skipped += 1
@@ -188,9 +231,18 @@ def _snapshot_current_worktree(dest: Path) -> dict[str, Any]:
 
 def check_public_cleanroom_install(py: str) -> Check:
     started = time.time()
+    source_root = public_source_root()
+    if not _is_git_worktree(source_root):
+        return Check(
+            "public_cleanroom_install",
+            False,
+            "fail",
+            f"source checkout is not a git worktree: {source_root}",
+            round(time.time() - started, 3),
+        )
     head_proc = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=MAGI_ROOT,
+        cwd=source_root,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -202,7 +254,7 @@ def check_public_cleanroom_install(py: str) -> Check:
     worktree = tmp_root / "MAGI-public-cleanroom"
     try:
         try:
-            snapshot = _snapshot_current_worktree(worktree)
+            snapshot = _snapshot_current_worktree(worktree, source_root=source_root)
         except Exception as exc:
             return Check(
                 "public_cleanroom_install",
@@ -252,7 +304,7 @@ def check_public_cleanroom_install(py: str) -> Check:
         summary = wizard.get("summary") if isinstance(wizard.get("summary"), dict) else {}
         passed = ok and bool(wizard.get("ok")) and int(summary.get("fail") or 0) == 0
         detail = (
-            f"source=current-worktree head={head} files={snapshot.get('copied_files')} "
+            f"source={source_root} head={head} files={snapshot.get('copied_files')} "
             f"audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
             f"wizard_status={wizard.get('status')} pass={summary.get('pass')} skipped={summary.get('skipped')}"
         )
@@ -465,6 +517,7 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         "ok": failed == 0,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "root": str(MAGI_ROOT),
+        "public_source_root": str(public_source_root()),
         "python": py,
         "summary": {"pass": passed, "fail": failed, "total": len(checks)},
         "checks": [asdict(c) for c in checks],

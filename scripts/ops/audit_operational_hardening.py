@@ -472,6 +472,20 @@ def audit_background_task_locks() -> dict[str, Any]:
         and _contains("scripts/ops/cleanup_synology_empty_case_shells.py", "acquire_case_file_operation_lock"),
         "requirement": "Drive sync, slow archive, and empty-shell cleanup must share one case-folder mutation guard.",
     })
+    checks.append({
+        "name": "pdf_in_place_mutation_guard",
+        "ok": _contains("scripts/ops/pdf_mutation_lock.py", "PDF_IN_PLACE_MUTATION_LOCK_NAME", "pdf_in_place_mutation")
+        and _contains("skills/pdf-bookmarker/action.py", "pdf_in_place_mutation_lock")
+        and _contains("scripts/weekend_bookmark_batch.py", "pdf_in_place_mutation_lock")
+        and _contains("scripts/ops/repair_pdf_bookmark_labels.py", "scan_and_bookmark(str(pdf_path), dry_run=False"),
+        "requirement": "PDF bookmark writers and repair jobs must share one in-place PDF mutation guard through pdf-bookmarker.",
+    })
+    checks.append({
+        "name": "nas_ocr_queue_worker_lock",
+        "ok": _contains("skills/documents/nas_pdf_ocr_worker.py", "NAS_OCR_QUEUE_LOCK_NAME", "already_running_status")
+        and _contains("tests/test_nas_pdf_ocr_worker_lock.py", "worker body should not run"),
+        "requirement": "NAS OCR queue worker must skip before touching SQLite/PDFs when another OCR worker is active.",
+    })
     failures = [check for check in checks if not check.get("ok")]
     return {
         "ok": not failures,

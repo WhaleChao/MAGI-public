@@ -654,6 +654,7 @@ def audit_pdf(pdf_path: Path, bookmarker, *, verify_rebuild: bool = False) -> di
 
 def repair_pdf(pdf_path: Path, bookmarker) -> dict[str, Any]:
     started = time.time()
+    # scan_and_bookmark() owns the shared pdf_in_place_mutation_lock for writes.
     result = bookmarker.scan_and_bookmark(str(pdf_path), dry_run=False, rebuild_existing=True)
     return {
         "pdf": str(pdf_path),

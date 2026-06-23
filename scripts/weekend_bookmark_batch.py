@@ -102,6 +102,8 @@ except ImportError:
     logger.error("Cannot import case_path_mapper — aborting")
     sys.exit(1)
 
+from scripts.ops.pdf_mutation_lock import pdf_in_place_mutation_lock
+
 
 def _load_bookmarker():
     """Import pdf-bookmarker's scan_and_bookmark function."""
@@ -241,23 +243,28 @@ def _write_single_doc_bookmark(pdf: Path, title: str | None = None) -> int:
     """Write a page-1 bookmark for a confirmed single-document PDF."""
     import fitz
 
-    doc = fitz.open(str(pdf))
-    try:
-        existing = doc.get_toc() or []
-        if existing:
-            return len(existing)
-        toc = [[1, title or _single_doc_bookmark_title(pdf), 1]]
-        doc.set_toc(toc)
-        temp = str(pdf) + ".tmp.pdf"
-        doc.save(temp, garbage=4, deflate=True)
-        doc.close()
-        os.replace(temp, pdf)
-        return 1
-    finally:
+    with pdf_in_place_mutation_lock(
+        owner="weekend_bookmark_batch.single_doc",
+        pdf_path=pdf,
+        blocking=True,
+    ):
+        doc = fitz.open(str(pdf))
         try:
+            existing = doc.get_toc() or []
+            if existing:
+                return len(existing)
+            toc = [[1, title or _single_doc_bookmark_title(pdf), 1]]
+            doc.set_toc(toc)
+            temp = str(pdf) + ".tmp.pdf"
+            doc.save(temp, garbage=4, deflate=True)
             doc.close()
-        except Exception:
-            pass
+            os.replace(temp, pdf)
+            return 1
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
 def _meaningful_boundary_chars(text: str) -> int:
@@ -978,15 +985,30 @@ def stage2_vision(pdfs: list[Path], state: dict, gw) -> dict:
 
             # Write new bookmarks to PDF
             if new_bookmarks:
-                merged_toc = list(existing_toc) + new_bookmarks
-                # Sort by page number
-                merged_toc.sort(key=lambda x: (x[2], x[0]))
-                doc.set_toc(merged_toc)
-                doc.saveIncr()
+                doc.close()
+                doc = None
+                with pdf_in_place_mutation_lock(
+                    owner="weekend_bookmark_batch.vision",
+                    pdf_path=pdf,
+                    blocking=True,
+                ):
+                    write_doc = fitz.open(str(pdf))
+                    try:
+                        current_toc = write_doc.get_toc() or []
+                        current_pages = {pg for _, _, pg in current_toc}
+                        merged_toc = list(current_toc) + [
+                            item for item in new_bookmarks if item[2] not in current_pages
+                        ]
+                        merged_toc.sort(key=lambda x: (x[2], x[0]))
+                        write_doc.set_toc(merged_toc)
+                        write_doc.saveIncr()
+                    finally:
+                        write_doc.close()
                 stats["files_refined"] += 1
                 logger.info(f"  📑 Vision: +{len(new_bookmarks)} bookmarks → {pdf.name}")
 
-            doc.close()
+            if doc is not None:
+                doc.close()
             mtime = str(pdf.stat().st_mtime)
             vision_done[key] = {"mtime": mtime, "added": len(new_bookmarks)}
 

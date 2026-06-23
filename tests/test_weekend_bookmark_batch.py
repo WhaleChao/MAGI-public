@@ -1,7 +1,10 @@
 import importlib.util
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
+
+import fitz
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -122,6 +125,39 @@ def test_stage1_regex_success_stores_post_write_mtime(tmp_path, monkeypatch):
     assert second["processed"] == 0
     assert second["skipped"] == 1
     assert state["completed"][str(pdf)]["mtime"] == str(pdf.stat().st_mtime)
+
+
+def test_single_doc_bookmark_writer_uses_pdf_mutation_lock(tmp_path, monkeypatch):
+    api_pkg = types.ModuleType("api")
+    mapper_mod = types.ModuleType("api.case_path_mapper")
+    mapper_mod.preferred_case_roots = lambda include_closed=False: []
+    monkeypatch.setitem(sys.modules, "api", api_pkg)
+    monkeypatch.setitem(sys.modules, "api.case_path_mapper", mapper_mod)
+
+    mod = _load_weekend_module()
+    calls = []
+
+    @contextmanager
+    def fake_lock(**kwargs):
+        calls.append(kwargs)
+        yield object()
+
+    monkeypatch.setattr(mod, "pdf_in_place_mutation_lock", fake_lock)
+
+    pdf = tmp_path / "單一文件.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf)
+    doc.close()
+
+    assert mod._write_single_doc_bookmark(pdf) == 1
+    assert calls == [
+        {
+            "owner": "weekend_bookmark_batch.single_doc",
+            "pdf_path": pdf,
+            "blocking": True,
+        }
+    ]
 
 
 def test_build_backfill_plan_reports_no_boundary_and_mtime_backlog(tmp_path, monkeypatch):

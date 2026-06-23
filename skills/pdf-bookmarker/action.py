@@ -47,6 +47,8 @@ try:
 except Exception:
     validate_bookmark = None
 
+from scripts.ops.pdf_mutation_lock import pdf_in_place_mutation_lock
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 文件類型定義 — 依辨識優先順序排列
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -774,7 +776,52 @@ def _ocr_page(page) -> str:
 # 核心：掃描 + 建立書籤
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _is_in_place_output(pdf_path: str, output_path: Optional[str] = None) -> bool:
+    if not output_path:
+        return True
+    try:
+        return Path(output_path).expanduser().resolve() == Path(pdf_path).expanduser().resolve()
+    except Exception:
+        return os.path.abspath(output_path) == os.path.abspath(pdf_path)
+
+
 def scan_and_bookmark(
+    pdf_path: str,
+    output_path: Optional[str] = None,
+    dry_run: bool = False,
+    default_name: str = "",
+    min_text_len: int = 30,
+    rebuild_existing: bool = False,
+) -> dict:
+    if (
+        os.path.exists(pdf_path)
+        and not dry_run
+        and _is_in_place_output(pdf_path, output_path)
+    ):
+        with pdf_in_place_mutation_lock(
+            owner="pdf-bookmarker.scan_and_bookmark",
+            pdf_path=pdf_path,
+            blocking=True,
+        ):
+            return _scan_and_bookmark_impl(
+                pdf_path,
+                output_path=output_path,
+                dry_run=dry_run,
+                default_name=default_name,
+                min_text_len=min_text_len,
+                rebuild_existing=rebuild_existing,
+            )
+    return _scan_and_bookmark_impl(
+        pdf_path,
+        output_path=output_path,
+        dry_run=dry_run,
+        default_name=default_name,
+        min_text_len=min_text_len,
+        rebuild_existing=rebuild_existing,
+    )
+
+
+def _scan_and_bookmark_impl(
     pdf_path: str,
     output_path: Optional[str] = None,
     dry_run: bool = False,

@@ -66,7 +66,7 @@ def test_strict_public_release_audit_uses_public_isolation(monkeypatch):
     calls = []
 
     def fake_run_json(cmd, **kwargs):
-        calls.append(cmd)
+        calls.append((cmd, kwargs.get("cwd")))
         return True, {"ok": True, "errors": 0, "warnings": 0}, "{}", 0.01
 
     monkeypatch.setattr(gate, "_run_json", fake_run_json)
@@ -75,13 +75,16 @@ def test_strict_public_release_audit_uses_public_isolation(monkeypatch):
 
     assert result.ok is True
     assert calls == [
-        [
-            "python3",
-            "scripts/public_release_audit.py",
-            "--json",
-            "--public-isolation",
-            "--strict",
-        ]
+        (
+            [
+                "python3",
+                "scripts/public_release_audit.py",
+                "--json",
+                "--public-isolation",
+                "--strict",
+            ],
+            gate.public_source_root(),
+        )
     ]
 
 
@@ -106,6 +109,42 @@ def test_public_cleanroom_snapshot_uses_current_worktree(monkeypatch, tmp_path):
     assert (dest / "tracked.txt").read_text(encoding="utf-8") == "current worktree\n"
     assert (dest / "new_public.txt").read_text(encoding="utf-8") == "new file\n"
     assert not (dest / ".runtime" / "private.json").exists()
+
+
+def test_public_source_root_can_target_git_checkout_from_runtime(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime" / "MAGI_v2"
+    runtime.mkdir(parents=True)
+    source = tmp_path / "source" / "MAGI_v2"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=source, check=True, stdout=subprocess.PIPE)
+
+    monkeypatch.setattr(gate, "MAGI_ROOT", runtime)
+    monkeypatch.setenv("MAGI_PUBLIC_SOURCE_ROOT_DIR", str(source))
+
+    assert gate.public_source_root() == source.resolve()
+
+
+def test_public_release_audit_uses_source_checkout_when_runtime_is_not_git(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime" / "MAGI_v2"
+    runtime.mkdir(parents=True)
+    source = tmp_path / "source" / "MAGI_v2"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=source, check=True, stdout=subprocess.PIPE)
+
+    calls = []
+
+    def fake_run_json(cmd, **kwargs):
+        calls.append(kwargs.get("cwd"))
+        return True, {"ok": True, "errors": 0, "warnings": 0}, "{}", 0.01
+
+    monkeypatch.setattr(gate, "MAGI_ROOT", runtime)
+    monkeypatch.setenv("MAGI_PUBLIC_SOURCE_ROOT_DIR", str(source))
+    monkeypatch.setattr(gate, "_run_json", fake_run_json)
+
+    result = gate.check_public_release_audit("python3", strict=False)
+
+    assert result.ok is True
+    assert calls == [source.resolve()]
 
 
 def test_live_conflict_audit_check_uses_business_module_audit(monkeypatch):
