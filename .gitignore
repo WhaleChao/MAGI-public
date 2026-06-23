@@ -189,6 +189,7 @@ build/
 magi.egg-info/
 bin/*
 !bin/__init__.py
+!bin/_runtime.py
 !bin/cli.py
 dist/
 *.pickle*
