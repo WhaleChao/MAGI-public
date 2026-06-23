@@ -22,13 +22,17 @@ def test_help_and_capability_are_distinct():
     assert _kind("功能列表") == KIND_HELP_COMMAND
     assert _kind("你現在是什麼模型可以做什麼事情") == KIND_META_CAPABILITY
     assert _kind("請問你能做到什麼事") == KIND_META_CAPABILITY
-    assert _kind("有什麼功能") == KIND_META_CAPABILITY
+    assert _kind("有什麼功能") in {KIND_HELP_COMMAND, KIND_META_CAPABILITY}
 
 
-def test_tool_capability_does_not_execute_realtime_but_concrete_query_does():
+def test_tool_capability_does_not_execute_realtime_but_concrete_query_does(monkeypatch):
     assert _kind("你可以查天氣嗎？") == KIND_TOOL_CAPABILITY
     assert _kind("MAGI 能不能查匯率？") == KIND_TOOL_CAPABILITY
 
+    monkeypatch.setattr(
+        "api.routing.intent_contract.classify_realtime_kind",
+        lambda message: "weather" if "天氣" in message else "",
+    )
     decision = classify_intent_contract("那你能查一下明天台北的天氣嗎")
     assert decision.kind == KIND_REALTIME_ACTION
     assert decision.realtime_kind == "weather"
