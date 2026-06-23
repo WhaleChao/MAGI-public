@@ -39,5 +39,5 @@ jobs:
             bin/release_bundle.py
       - name: Fast unit tests
         run: |
-          python -m pip install -U pip pytest requests python-dotenv
+          python -m pip install -U pip pytest requests python-dotenv flask flask-login
           python scripts/ops/run_test_suite.py --suite ci
