@@ -16,6 +16,7 @@
             "api/blueprints/admin_runtime.py",
             "api/pipelines/message_pipeline.py",
             "api/pipelines/message_router.py",
+            "api/orchestrator.py",
             "api/domains/judgment_flow.py",
             "skills/bridge/melchior_client.py",
             "skills/bridge/inference_gateway.py",

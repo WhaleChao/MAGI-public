@@ -15,6 +15,7 @@ from api.thread_pools import io_pool, inference_pool
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 import threading as _threading
 
 from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
