@@ -86,6 +86,13 @@ def test_shared_health_probe_extract_model_labels_normalizes_payloads(payload, e
     assert health_probes.extract_model_labels(payload) == expected
 
 
+def test_shared_health_probe_strips_openai_v1_suffix():
+    from skills.ops import health_probes
+
+    assert health_probes._build_omlx_base_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080"
+    assert health_probes._build_omlx_base_url("http://127.0.0.1:8080/v1/") == "http://127.0.0.1:8080"
+
+
 def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
     from skills.ops import health_probes
 

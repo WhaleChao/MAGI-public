@@ -191,6 +191,10 @@ _CONTINUATION_HEADER_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_OCR_CONTINUATION_HEADER_RE = re.compile(
+    r"^[\s:：,，.。;；\\(（【\\[]*.{0,4}上\s*頁[\)）】\\]]?",
+    re.IGNORECASE,
+)
 _EVIDENCE_TABLE_HEADER_RE = re.compile(
     r"(?:檢證|辯證|證物|證據)\s*編號.{0,30}證據\s*名稱|"
     r"證據\s*名稱.{0,30}待證\s*事實|"
@@ -260,16 +264,76 @@ RE_ROC_DATE = re.compile(
 RE_AD_DATE = re.compile(
     r"(20[12]\d)\s*[年\.\-/]\s*([01]?\d)\s*[月\.\-/]\s*([0-3]?\d)\s*[日]?"
 )
+RE_ROC_DATE_CANDIDATE = re.compile(
+    r"((?:中華\s*民\s*[國囯]|民\s*[國囯])?\s*)"
+    r"((?:1[01]\d|[89]\d|[12]\d))\s*"
+    r"(?:[0０〇O○o]?\s*\d{1,2}\s*)?"
+    r"[年\.\-/]\s*([01]?\d)\s*[月\.\-/]\s*([0-3]?\d)\s*[日]?",
+    re.IGNORECASE,
+)
+_DATE_NOISE_CONTEXT_RE = re.compile(
+    r"出生|出生年月|生\)|生）|男\s*\d|女\s*\d|歲|國民身分證|身分證|統一編號|"
+    r"申請編號|本會申請編號|收文章|司法院線上閱卷|閱卷系統|日起|不再蓋委任狀章|律師辦理狀況"
+)
+_DATE_AUTHORITY_CONTEXT_RE = re.compile(
+    r"中華\s*民\s*[國囯]|民\s*[國囯]|發文日期|裁判日期|宣判日期|作成日期|"
+    r"訊問程序|準備程序|審判程序|言詞辯論|調查程序|調解程序"
+)
 
 
 def _extract_roc_date(text: str) -> Optional[str]:
-    """Extract first ROC date, return 'RRR.MM.DD' or None."""
-    m = RE_ROC_DATE.search(text)
+    """Extract the most likely document date, return 'RRR.MM.DD' or None."""
+    raw = str(text or "")
+    candidates: list[tuple[int, int, str]] = []
+    for m in RE_ROC_DATE_CANDIDATE.finditer(raw):
+        prefix, y_raw, mo, d = m.group(1), m.group(2), m.group(3), m.group(4)
+        try:
+            y = int(y_raw)
+            month = int(mo)
+            day = int(d)
+        except Exception:
+            continue
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        context = raw[max(0, m.start() - 80): min(len(raw), m.end() + 80)]
+        noise_context = raw[max(0, m.start() - 60): min(len(raw), m.end() + 30)]
+        compact_context = re.sub(r"\s+", "", context)
+        compact_noise_context = re.sub(r"\s+", "", noise_context)
+        if y < 80:
+            if not (10 <= y <= 30 and re.search(r"民\s*[國囯]|中華\s*民", prefix + context)):
+                continue
+            y += 100
+        if not (80 <= y <= 130):
+            continue
+        score = 20
+        if _DATE_AUTHORITY_CONTEXT_RE.search(compact_context):
+            score += 70
+        if _DATE_NOISE_CONTEXT_RE.search(compact_noise_context):
+            score -= 160
+        if m.start() < 1200:
+            score += 25
+        if m.start() < 400:
+            score += 20
+        # In court transcript OCR, line numbers sometimes appear between the
+        # year and "年"; an authority context keeps this candidate reliable.
+        if int(y_raw) < 80 and y >= 110:
+            score += 20
+        candidates.append((score, m.start(), f"{y}.{str(month).zfill(2)}.{str(day).zfill(2)}"))
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        if candidates[0][0] > -20:
+            return candidates[0][2]
+
+    # Legacy fallback for short strings such as unit tests.
+    m = RE_ROC_DATE.search(raw)
     if m:
         y, mo, d = m.group(1), m.group(2), m.group(3)
-        return f"{y}.{mo.zfill(2)}.{d.zfill(2)}"
+        context = raw[max(0, m.start() - 50): min(len(raw), m.end() + 50)]
+        if not _DATE_NOISE_CONTEXT_RE.search(re.sub(r"\s+", "", context)):
+            return f"{y}.{mo.zfill(2)}.{d.zfill(2)}"
     # Try AD date → convert to ROC
-    m2 = RE_AD_DATE.search(text)
+    m2 = RE_AD_DATE.search(raw)
     if m2:
         y = int(m2.group(1)) - 1911
         if 80 <= y <= 200:
@@ -449,7 +513,7 @@ def _boundary_region(text: str, *, limit: int | None = None) -> str:
 def _is_reference_only_page(text: str) -> bool:
     """Detect pages where document names are evidence references, not titles."""
     region = _boundary_region(text, limit=900)
-    if _CONTINUATION_HEADER_RE.search(region):
+    if _looks_like_continuation_header(region):
         return True
     first_line = next((line.strip() for line in region.splitlines() if line.strip()), region[:90])
     first_title_proven = bool(_TITLE_BEFORE_TABLE_RE.search(first_line[:140]))
@@ -465,6 +529,22 @@ def _is_reference_only_page(text: str) -> bool:
         before_table = region[:idx]
         if _TITLE_BEFORE_TABLE_RE.search(before_table[:260]):
             return False
+        return True
+    return False
+
+
+def _looks_like_continuation_header(region: str) -> bool:
+    """Handle normal and OCR-distorted continuation headers."""
+    text = str(region or "")
+    if _CONTINUATION_HEADER_RE.search(text):
+        return True
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    compact = re.sub(r"\s+", "", first_line)
+    if not compact:
+        return False
+    if _OCR_CONTINUATION_HEADER_RE.search(first_line) and "上頁" in compact[:10]:
+        return True
+    if "上頁" in compact[:8] and len(compact) <= 12 and not _TITLE_BEFORE_TABLE_RE.search(compact):
         return True
     return False
 
@@ -594,6 +674,27 @@ def _normalize_toc_hierarchy(toc: list[list]) -> list[list]:
     return normalized
 
 
+def _existing_toc_needs_rebuild(toc: list[list]) -> bool:
+    """Detect stale TOCs generated with old noisy date rules."""
+    if not toc:
+        return False
+    date_counts: dict[str, int] = {}
+    dated = 0
+    for entry in toc:
+        if len(entry) < 2:
+            continue
+        title = str(entry[1] or "").strip()
+        m = re.match(r"^(\d{2,3}\.\d{2}\.\d{2})\s+", title)
+        if not m:
+            continue
+        dated += 1
+        date_counts[m.group(1)] = date_counts.get(m.group(1), 0) + 1
+    if not date_counts:
+        return False
+    most_common = max(date_counts.values())
+    return most_common >= max(8, int(max(1, dated) * 0.35))
+
+
 def _detect_doc_type(
     text: str,
     in_prior_record: bool = False,
@@ -695,6 +796,7 @@ def scan_and_bookmark(
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 304, exc_info=True)
 
     existing_toc = doc.get_toc() or []
+    effective_rebuild_existing = rebuild_existing or _existing_toc_needs_rebuild(existing_toc)
     toc: list[list] = []
     page_count = doc.page_count
 
@@ -711,6 +813,8 @@ def scan_and_bookmark(
     _GROUPABLE_TYPES = {"送達證書", "傳票", "提票", "報到單", "收發文"}
 
     logger.info(f"掃描 {Path(pdf_path).name}（{page_count} 頁，現有書籤 {len(existing_toc)} 個）...")
+    if effective_rebuild_existing and existing_toc and not rebuild_existing:
+        logger.info("  既有書籤疑似含重複噪音日期，將自動重建。")
 
     page_texts = []
     meaningful_counts = []
@@ -938,7 +1042,7 @@ def scan_and_bookmark(
         }
 
     # Merge with existing TOC if any (keep existing, append new non-overlapping)
-    if existing_toc and not rebuild_existing:
+    if existing_toc and not effective_rebuild_existing:
         existing_pages = {entry[2] for entry in existing_toc}
         new_entries = [e for e in toc if e[2] not in existing_pages]
         merged = existing_toc + new_entries
@@ -1003,11 +1107,12 @@ def batch_process(folder: str, recursive: bool = True, dry_run: bool = False, re
             page_count = doc.page_count
             doc.close()
 
-            if (not rebuild_existing) and len(existing) >= max(3, page_count // 15):
+            stale_existing = _existing_toc_needs_rebuild(existing)
+            if (not rebuild_existing) and (not stale_existing) and len(existing) >= max(3, page_count // 15):
                 skipped += 1
                 continue
 
-            result = scan_and_bookmark(str(pdf), dry_run=dry_run, rebuild_existing=rebuild_existing)
+            result = scan_and_bookmark(str(pdf), dry_run=dry_run, rebuild_existing=(rebuild_existing or stale_existing))
             if result["success"]:
                 total += 1
                 total_bookmarks += result["bookmarks"]
@@ -1179,7 +1284,12 @@ def main():
     elif args.task == "test":
         # Run on a sample file
         if args.path:
-            result = scan_and_bookmark(args.path, dry_run=True)
+            result = scan_and_bookmark(
+                args.path,
+                dry_run=True,
+                default_name=args.case_name,
+                rebuild_existing=args.rebuild_existing,
+            )
             print(result["message"])
             if result["toc"]:
                 for level, title, pg in result["toc"]:

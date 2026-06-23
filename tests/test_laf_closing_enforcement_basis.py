@@ -151,3 +151,34 @@ def test_consumer_debt_terminal_rulings_are_closing_basis(tmp_path):
     docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
 
     assert str(terminal) in docs["closing_basis_files"]
+
+
+def test_consumer_debt_rejected_rehabilitation_ruling_in_notice_folder_counts_as_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0068-劉亞箖-消費者債務清理-更生"
+    notice_dir = case_dir / "09_法院通知或程序裁定"
+    notice_dir.mkdir(parents=True)
+    terminal = notice_dir / "20260617 宜蘭地方法院114年度消債更字第83號民事裁定（劉亞箖；主文：更生之聲請駁回、聲請程序費用由聲請人負擔）.pdf"
+    terminal.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(terminal) in docs["closing_basis_files"]
+    assert scanner._is_auto_closing_basis_candidate(
+        str(terminal),
+        case_reason="消費者債務清理",
+        folder_path=str(case_dir),
+    )
+
+
+def test_consumer_debt_nonterminal_ruling_in_notice_folder_stays_out_of_closing_basis(tmp_path):
+    case_dir = tmp_path / "2025-0068-劉亞箖-消費者債務清理-更生"
+    notice_dir = case_dir / "09_法院通知或程序裁定"
+    notice_dir.mkdir(parents=True)
+    intermediate = notice_dir / "20260109 臺灣宜蘭地方法院民事裁定(劉亞箖；應補正更生程序委任狀及資料).pdf"
+    intermediate.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(intermediate) not in docs["closing_basis_files"]

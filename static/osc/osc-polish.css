@@ -507,6 +507,14 @@ body.theme-dark .case-card .card-badge.laf {
     border-color: rgba(37, 99, 235, 0.28);
 }
 
+@media (max-width: 760px) {
+    #fileManager .fm-action-btn {
+        min-height: 40px;
+        padding: 8px 9px;
+        font-size: 13px;
+    }
+}
+
 body.theme-dark #fileManager,
 body.theme-dark #fileManager .fm-sidebar,
 body.theme-dark #fileManager .fm-main,

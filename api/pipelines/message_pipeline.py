@@ -16,6 +16,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from api.help_text import HELP_ALIASES
 from api.model_config import TEXT_PRIMARY_MODEL
+from api.routing.intent_contract import (
+    KIND_AGENT_TASK,
+    KIND_BUSY_STATUS,
+    KIND_CASUAL_CHAT,
+    KIND_EXPLICIT_COMMAND,
+    KIND_HELP_COMMAND,
+    KIND_META_CAPABILITY,
+    KIND_REALTIME_ACTION,
+    KIND_TOOL_CAPABILITY,
+    classify_intent_contract,
+    compact_message as _contract_compact_message,
+    looks_like_casual_chat_boundary as _contract_looks_like_casual_chat_boundary,
+    looks_like_agentic_request as _contract_looks_like_agentic_request,
+    looks_like_model_capability_query as _contract_looks_like_model_capability_query,
+    looks_like_new_task_boundary as _contract_looks_like_new_task_boundary,
+    looks_like_tool_capability_query as _contract_looks_like_tool_capability_query,
+)
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
 from skills.ops.red_phone import alert_iron_dome_violation
 
@@ -54,6 +71,41 @@ _DOCX_MIME = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "docx",
 }
+
+_SYSTEM_CASE_NO_RE = re.compile(r"20\d{2}-\d{4}")
+_CASE_LOOKUP_HINT_RE = re.compile(r"(?:查詢|查一下|查|看|搜尋|找|案件|案號|資料|資訊|狀態)")
+_CASE_MUTATION_HINT_RE = re.compile(r"(?:更新|修改|修正|改成|改為|建立|新增|刪除|移動|搬移|同步|重產|產製|回報|結案|報結)")
+
+
+def _maybe_direct_case_lookup(orch, message: str, user_id="", platform="") -> str:
+    """Route explicit MAGI system case-number lookups without LLM rewriting."""
+    compact = re.sub(r"\s+", "", str(message or ""))
+    if not _SYSTEM_CASE_NO_RE.search(compact):
+        return ""
+    if compact.startswith(("查案件", "案件查詢")):
+        return ""
+    if _CASE_MUTATION_HINT_RE.search(compact):
+        return ""
+    if not _CASE_LOOKUP_HINT_RE.search(compact):
+        return ""
+    try:
+        from skills.engine.tool_registry import _query_cases
+        reply = _query_cases(compact)
+        if reply:
+            try:
+                orch._append_route_trace(
+                    str(user_id or ""),
+                    str(platform or ""),
+                    "top_level",
+                    "direct_case_lookup",
+                    {"case_number": _SYSTEM_CASE_NO_RE.search(compact).group(0)},
+                )
+            except Exception:
+                logger.debug("direct case lookup route trace skipped", exc_info=True)
+            return str(reply)
+    except Exception as exc:
+        logger.warning("Direct case lookup skipped: %s", exc)
+    return ""
 
 
 def _handle_docx_chat_edit_if_any(orch, user_id, platform, message, attachment, correlation_id=None):
@@ -138,6 +190,494 @@ _ARITHMETIC_INTENT_RE = re.compile(
 _ARITHMETIC_EXPR_RE = re.compile(
     r"(?<![\w])([0-9][0-9\s+\-＋－*/().,%×xX＊÷／]*[+\-＋－*/%×xX＊÷／][0-9\s+\-＋－*/().,%×xX＊÷／]*[0-9)])"
 )
+
+
+def _is_poa_guarded_capability_query(
+    orch, message: str, in_poa_flow: bool, poa_trigger: bool, contract_trigger: bool, receipt_trigger: bool,
+    user_id="", role="", platform=""
+) -> bool:
+    """判斷是否應該中止 POA 狀態機，改走一般能力導覽/對話路由。"""
+    if not in_poa_flow:
+        return False
+    if not (poa_trigger or contract_trigger or receipt_trigger):
+        return _looks_like_general_chat_boundary(orch, message, user_id=user_id, role=role, platform=platform)
+    return False
+
+
+_GENERAL_CHAT_BOUNDARY_RE = re.compile(
+    r"(?:"
+    r"^(?:/help|help|指令|功能|能力|你是誰|magi是誰)$|"
+    r"(?:請問)?(?:你|magi|這個系統|這套系統|這裡).{0,10}"
+    r"(?:可以|能|會|能做|能做到|做得到|可以做).{0,10}"
+    r"(?:什麼|甚麼|哪些|何事|事情|事|功能|能力)|"
+    r"(?:有什麼|有哪些)(?:功能|能力|技能|指令)|"
+    r"(?:功能|能力|技能|指令)(?:列表|清單|一覽)|"
+    r"(?:怎麼|如何|要怎麼|該怎麼).{0,10}(?:使用|用)(?:你|magi|這個系統|這套系統)|"
+    r"(?:一般聊天|閒聊|聊天模式|只是聊天|先聊聊|我只是問|不是任務|不要執行|先不要執行)|"
+    r"(?:你|magi).{0,10}(?:在問什麼|現在在做什麼|在忙什麼|忙什麼|為什麼問|聽得懂|可以聊天|陪我聊)"
+    r")",
+    re.IGNORECASE,
+)
+
+_NEW_TASK_BOUNDARY_RE = re.compile(
+    r"(?:"
+    r"建案|新案件|案件清單|列出案件|查案件|案件狀態|業務概況|"
+    r"今天(?:的)?行程|明天(?:的)?行程|本週(?:的)?行程|這週(?:的)?行程|行事曆|排庭|排開會|排會議|"
+    r"開資料夾|開啟資料夾|資料夾樹|預覽|下載|分享|上傳|搜尋檔案|列出檔案|"
+    r"翻譯|摘要|總結|整理|查判決|找判決|查裁判|查法規|查法條|"
+    r"記收入|記支出|帳務查詢|報價單|草擬|起草|畫圖|生成圖|系統狀態|健康檢查"
+    r")",
+    re.IGNORECASE,
+)
+_NEW_TASK_PREFIX_RE = re.compile(
+    r"^(?:@magi|/|幫我|請幫我|請你|請|麻煩|我要|我想|我需要|可以幫我|幫忙|幫)",
+    re.IGNORECASE,
+)
+_NEW_TASK_COMMAND_START_RE = re.compile(
+    r"^(?:"
+    r"建案|新案件|案件清單|列出案件|查案件|案件狀態|業務概況|"
+    r"開資料夾|開啟資料夾|資料夾樹|預覽|下載|分享|上傳|搜尋檔案|列出檔案|"
+    r"翻譯|摘要|總結|重點整理|查判決|找判決|查裁判|查法規|查法條|"
+    r"記收入|記支出|帳務查詢|報價單|排庭|排開會|排會議|草擬|起草|畫圖|生成圖|"
+    r"系統狀態|健康檢查"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _compact_message(message: str) -> str:
+    return _contract_compact_message(message)
+
+
+def _looks_like_model_capability_query(message: str) -> bool:
+    """Catch mixed meta prompts before they drift into task state or heavy LLM fallback."""
+    return _contract_looks_like_model_capability_query(message)
+
+
+_TOOL_CAPABILITY_RE = re.compile(
+    r"(?:你|magi|系統|這套系統).{0,10}"
+    r"(?:會|可以|能不能|能否|可否|能|支援).{0,24}"
+    r"(?:查天氣|天氣|氣象|查股票|股票|股價|匯率|查判決|判決|法規|法條|案件|檔案|行程|日曆|摘要|翻譯|ocr)",
+    re.IGNORECASE,
+)
+_BUSY_META_RE = re.compile(
+    r"(?:"
+    r"(?:你|magi|系統).{0,12}(?:在忙什麼|忙什麼|現在在做什麼|正在做什麼|為什麼忙|為何忙|卡住嗎|是不是忙)|"
+    r"(?:模型|工具|系統).{0,8}(?:忙|卡住|離線|逾時)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_tool_capability_query(message: str) -> bool:
+    return _contract_looks_like_tool_capability_query(message)
+
+
+def _tool_capability_reply(message: str) -> str:
+    text = str(message or "")
+    examples = []
+    if re.search(r"天氣|氣象", text, re.IGNORECASE):
+        examples.append("例如：`查明天台北天氣`")
+    if re.search(r"股票|股價", text, re.IGNORECASE):
+        examples.append("例如：`查台積電股價`")
+    if re.search(r"判決|法規|法條", text, re.IGNORECASE):
+        examples.append("例如：`查判決 民法184 損害賠償`")
+    if re.search(r"案件|檔案|行程|日曆", text, re.IGNORECASE):
+        examples.append("例如：`查凡江案件資料夾`、`明天行程`")
+    hint = "；".join(examples[:3]) if examples else "給我具體條件後，我會判斷要走哪個工具。"
+    return (
+        "可以。這句我會判斷成「能力詢問」，所以不會直接亂呼叫工具。\n"
+        "如果你給出具體條件，我會改走對應工具查詢，不讓模型憑空猜。\n"
+        f"{hint}\n"
+        "需要完整指令表時輸入 `/help`。"
+    )
+
+
+def _model_capability_reply() -> str:
+    parts = []
+    try:
+        parts.append(get_brain_status())
+    except Exception as e:
+        logger.warning(f"Brain status unavailable for model capability reply: {e}")
+    try:
+        from api.pipelines.message_router import magi_capability_overview
+        parts.append(magi_capability_overview())
+    except Exception:
+        parts.append("我可以協助案件、檔案、行程、法律研究、文件處理、系統檢查，也可以一般聊天。")
+    return "\n\n".join(part for part in parts if part)
+
+
+def _busy_meta_reply(orch, user_id="", platform="") -> str:
+    tasks = []
+    try:
+        tasks = list(orch.get_active_heavy_tasks() or [])
+    except Exception:
+        tasks = []
+    if tasks:
+        labels = "、".join(str(t.get("label") or "長任務") for t in tasks[:3])
+        return (
+            f"我現在主要在處理：{labels}。\n"
+            "這類長任務會占用推理資源，但一般查案件、查檔案、查天氣等工具型需求仍會優先走工具路由。"
+        )
+    try:
+        banner = orch._brain_runtime_banner()
+    except Exception:
+        banner = ""
+    prefix = f"{banner}\n" if banner else ""
+    return (
+        prefix +
+        "我目前沒有在替這個對話執行中的長任務。\n"
+        "如果剛才看到「忙碌」或「請稍後」，那代表模型推理端逾時或工具入口降級；"
+        "我會先用語意分流判斷是聊天、能力詢問，還是需要工具查詢，避免把一般聊天誤當任務表單。"
+    )
+
+
+_DEGRADED_CHAT_REPLY_RE = re.compile(
+    r"(?:系統降級回覆|本機模型逾時|請稍後(?:再試|重試)?|目前模型忙|模型忙碌|系統暫時忙碌|有點忙碌|我目前有點忙)",
+    re.IGNORECASE,
+)
+_AGENTIC_UNUSABLE_REPLY_RE = re.compile(
+    r"(?:MAGI 系統故障|無法生成回應|ReAct 無答案|LLM ERROR|工具未回傳足夠資訊|系統暫時忙碌|有點忙碌|請稍後|<\|channel\>|<channel\|>|回覆超出了原始問題|法條引用未有依據)",
+    re.IGNORECASE,
+)
+
+
+def _reply_looks_degraded(text: str) -> bool:
+    return bool(_DEGRADED_CHAT_REPLY_RE.search(str(text or "")))
+
+
+def _reply_looks_unusable_for_agent(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return True
+    if _reply_looks_degraded(stripped):
+        return True
+    if stripped.count("<|channel>thought") >= 2 or stripped.count("<channel|>") >= 2:
+        return True
+    if stripped.startswith("✅ 已完成處理") and ("三哲人意見分歧" in stripped or len(stripped) < 120):
+        return True
+    return bool(_AGENTIC_UNUSABLE_REPLY_RE.search(stripped))
+
+
+def _agentic_observation_fallback(message: str, individual: dict) -> str:
+    """Build a clean answer from ReAct tool observations when final LLM output is unusable."""
+    if not isinstance(individual, dict):
+        return ""
+    tools_used = list(individual.get("tools_used") or [])
+    react_trace = individual.get("react_trace") or {}
+    trace = react_trace.get("trace") or []
+    observations = [
+        str(item.get("content") or "").strip()
+        for item in trace
+        if isinstance(item, dict) and item.get("type") == "observation" and str(item.get("content") or "").strip()
+    ]
+    if not observations:
+        return ""
+
+    text = str(message or "")
+    statute_obs = next((o for o in observations if "法規搜尋完成" in o or "第 184 條" in o), "")
+    judgment_obs = next((o for o in observations if "判決搜尋完成" in o or "引用連結" in o or "fullview" in o), "")
+
+    if ("search_statutes" in tools_used or statute_obs) and ("判決" in text or "見解" in text or "比較" in text):
+        article_line = "民法第184條是侵權行為損害賠償的一般條款：故意或過失不法侵害他人權利，原則上負損害賠償責任；違反保護他人法律致生損害時，除能證明無過失外亦負責。"
+        if statute_obs and "侵害他人之權利" not in statute_obs:
+            article_line = "已查得指定法條，但工具 observation 未完整保留條文全文；正式引用前請再開啟法規結果確認。"
+
+        judgment_line = (
+            "判決工具已取得相關候選判決；在模型綜整不穩時，我不會假裝逐件完成實質萃取。"
+            "保守使用方式是把判決見解先拆成三個審查點：權利或保護法規是否存在、行為是否具不法性與故意/過失、損害與因果關係是否可證明。"
+        )
+        if judgment_obs:
+            judgment_line = (
+                "判決檢索已取得候選裁判；目前可先用民法第184條的要件框架比對判決理由："
+                "法院通常會先確認被侵害權利或保護規範，再看行為不法性與故意/過失，最後審查損害及相當因果關係。"
+            )
+
+        return (
+            "我已把這句判定為需要工具的分析任務，並呼叫法規/判決工具。模型最後綜整輸出不穩，所以改用工具結果做保守整理：\n\n"
+            f"1. 條文基礎：{article_line}\n"
+            f"2. 判決比較框架：{judgment_line}\n"
+            "3. 實務使用建議：若要寫成書狀或法律意見，先把個案事實對應到「權利/保護法規、過失或故意、不法性、損害、因果關係」五欄；缺一欄時，判決通常會往責任不成立或賠償範圍縮小處理。\n\n"
+            f"（參考資料來源：{'、'.join(dict.fromkeys(tools_used)) or 'ReAct 工具'}）"
+        )
+
+    if tools_used:
+        preview = "\n".join(f"- {o[:500]}" for o in observations[:3])
+        return (
+            "我已把這句判定為需要工具的代理任務，並完成工具查詢；但模型最後綜整輸出不穩。"
+            "以下先提供工具觀察摘要，避免回到舊式固定路由：\n"
+            f"{preview}\n\n"
+            f"（參考資料來源：{'、'.join(dict.fromkeys(tools_used))}）"
+        )
+    return ""
+
+
+def _casual_chat_reply(orch, message: str, user_id="", role="", platform="") -> str:
+    """Answer explicit casual-chat boundary messages without entering task forms."""
+    try:
+        reply = orch._try_conversational_intent(message, (message or "").lower().strip(), user_id, role, platform)
+        if reply and not _reply_looks_degraded(reply):
+            return reply
+    except Exception:
+        pass
+    try:
+        reply = orch._handle_chat_async(user_id, message, platform_hint=platform)
+        if reply and not _reply_looks_degraded(reply):
+            return reply
+    except Exception as exc:
+        logger.warning("Casual chat model route skipped: %s", exc)
+    return (
+        "可以，我會把這句當一般聊天，不會拿去填寫正在進行的任務表單。\n"
+        "你可以直接跟我聊天；如果要我做事，再給我案件、檔案、行程或查詢條件就好。"
+    )
+
+
+def _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, message: str, decision_kind: str) -> None:
+    """Clear stale wizards when an early semantic boundary deliberately bypasses state."""
+    if decision_kind not in {
+        KIND_META_CAPABILITY,
+        KIND_TOOL_CAPABILITY,
+        KIND_BUSY_STATUS,
+        KIND_REALTIME_ACTION,
+        KIND_CASUAL_CHAT,
+        KIND_AGENT_TASK,
+    }:
+        return
+    try:
+        if _clear_skill_interview_state_for_user(orch, user_id, platform):
+            _trace_state_boundary(orch, user_id, platform, "skill_interview", f"{decision_kind}_preflight_clear", message)
+    except Exception:
+        pass
+    try:
+        legal_attest_state_file = f"{_MAGI_ROOT}/.agent/legal_attest_state.json"
+        if _clear_json_state_for_user(legal_attest_state_file, user_id):
+            _trace_state_boundary(orch, user_id, platform, "legal_attest", f"{decision_kind}_preflight_clear", message)
+    except Exception:
+        pass
+    try:
+        poa_state_file = f"{_MAGI_ROOT}/.agent/poa_chat_state.json"
+        if _clear_json_state_for_user(poa_state_file, user_id):
+            _trace_state_boundary(orch, user_id, platform, "poa", f"{decision_kind}_preflight_clear", message)
+    except Exception:
+        pass
+
+
+def _try_semantic_preflight(orch, message: str, user_id="", role="", platform="") -> str:
+    """Early semantic guard before stale task wizards and generic LLM fallback.
+
+    Keep this deterministic: it only intercepts clear meta/capability prompts and
+    authoritative real-time data requests. Ambiguous business messages continue
+    to the normal command/state pipeline.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    decision = classify_intent_contract(text)
+    try:
+        if decision.kind not in ("unknown", "empty"):
+            orch._append_route_trace(
+                str(user_id or ""),
+                str(platform or ""),
+                "semantic_preflight",
+                decision.kind,
+                {
+                    "confidence": float(decision.confidence),
+                    "reason": decision.reason,
+                    "realtime_kind": decision.realtime_kind,
+                    "preview": text[:80],
+                },
+            )
+    except Exception:
+        pass
+    if decision.kind in {KIND_HELP_COMMAND, KIND_EXPLICIT_COMMAND}:
+        return ""
+    if decision.kind == KIND_AGENT_TASK:
+        _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+        return ""
+    if decision.kind == KIND_META_CAPABILITY:
+        _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+        return _model_capability_reply()
+    if decision.kind == KIND_TOOL_CAPABILITY:
+        _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+        return _tool_capability_reply(text)
+    if decision.kind == KIND_BUSY_STATUS:
+        _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+        return _busy_meta_reply(orch, user_id=user_id, platform=platform)
+    if decision.kind == KIND_CASUAL_CHAT:
+        _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+        return _casual_chat_reply(orch, text, user_id=user_id, role=role, platform=platform)
+    if decision.kind != KIND_REALTIME_ACTION:
+        return ""
+    _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
+    try:
+        from skills.engine.realtime_data_gateway import handle_realtime_query
+        realtime = handle_realtime_query(text)
+        if isinstance(realtime, dict):
+            reply = realtime.get("reply") or realtime.get("refusal")
+            if reply:
+                return str(reply)
+    except Exception as e:
+        logger.warning(f"Semantic preflight realtime route skipped: {e}")
+    return ""
+
+
+def _try_agentic_route(orch, message: str, user_id="", role="", platform="", decision=None, heavy: bool = False) -> str:
+    """Run broad tool-capable natural-language tasks through MAGI's ReAct agent."""
+    if os.environ.get("MAGI_AGENTIC_ROUTER", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return ""
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    decision = decision or classify_intent_contract(text)
+    if getattr(decision, "kind", "") != KIND_AGENT_TASK and not _contract_looks_like_agentic_request(text):
+        return ""
+
+    _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, KIND_AGENT_TASK)
+    system = (
+        "你是 MAGI 的完整 AI Agent 路由層。請先理解使用者真正需求，"
+        "需要查案件、法規、判決、行程、即時資料、計算、摘要、翻譯或檔案資訊時使用工具。"
+        "如果資訊不足，請提出最少必要追問。"
+        "不要執行刪除、送出、同步、上傳、搬移、建立案件或外部系統提交；"
+        "這些寫入動作必須交給 MAGI 專用指令流程。"
+    )
+    try:
+        from skills.bridge.ensemble_inference import (
+            _ENSEMBLE_TOOLS_ENABLED,
+            ensemble_chat_with_tools,
+            format_magi_response,
+        )
+        if not _ENSEMBLE_TOOLS_ENABLED:
+            return ""
+        timeout_sec = int(os.environ.get("MAGI_AGENTIC_TIMEOUT_SEC", "60") or "60")
+        result = ensemble_chat_with_tools(
+            prompt=text,
+            system=system,
+            timeout_sec=timeout_sec,
+            task_type="agentic",
+            heavy=heavy,
+        )
+        if not result or not getattr(result, "result", None):
+            return ""
+        reply = format_magi_response(result)
+        individual = getattr(result, "individual_results", {}) or {}
+        if _reply_looks_unusable_for_agent(reply):
+            fallback = _agentic_observation_fallback(text, individual)
+            if fallback:
+                reply = fallback
+            else:
+                return ""
+        try:
+            orch._append_route_trace(
+                str(user_id or ""),
+                str(platform or ""),
+                "agentic_router",
+                str(getattr(decision, "kind", "agent_task") or "agent_task"),
+                {
+                    "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
+                    "reason": str(getattr(decision, "reason", "")),
+                    "tools": individual.get("tools_used", []),
+                    "react_trace": individual.get("react_trace", {}),
+                    "heavy": bool(heavy or individual.get("heavy")),
+                    "primary_route": str(individual.get("primary_route") or ""),
+                },
+            )
+        except Exception:
+            pass
+        return reply
+    except Exception as exc:
+        logger.warning("Agentic router skipped: %s", exc)
+        return ""
+
+
+def _looks_like_general_chat_boundary(orch, message: str, user_id="", role="", platform="") -> bool:
+    """True when a pending state machine should yield to general chat/meta help.
+
+    The matcher is deliberately about MAGI/meta/chat usage, not arbitrary
+    questions, so form answers like "臺灣新北地方法院" or "50000" keep flowing
+    through the active task.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return False
+    try:
+        if orch._looks_like_capability_question(text):
+            return True
+    except Exception:
+        pass
+    compact = _compact_message(text)
+    if len(compact) > 120:
+        return False
+    return _contract_looks_like_casual_chat_boundary(compact)
+
+
+def _general_chat_boundary_reply(orch, message: str, user_id="", role="", platform="") -> str:
+    if not _looks_like_general_chat_boundary(orch, message, user_id=user_id, role=role, platform=platform):
+        return ""
+    msg_lower = (message or "").lower().strip()
+    try:
+        reply = orch._try_conversational_intent(message, msg_lower, user_id, role, platform)
+        if reply:
+            return reply
+    except Exception:
+        pass
+    try:
+        from api.pipelines.message_router import magi_capability_overview
+        return magi_capability_overview()
+    except Exception:
+        return "可以，我會先把這句當一般聊天處理，不會拿它去填正在進行的任務表單。你可以直接問我能力、案件、檔案、行程或分析需求。"
+
+
+def _looks_like_new_task_boundary(message: str) -> bool:
+    """True when a pending state should yield to a clearly new top-level task."""
+    return _contract_looks_like_new_task_boundary(message)
+
+
+def _clear_json_state_for_user(path: str, user_id) -> bool:
+    key = str(user_id or "")
+    if not key or not path:
+        return False
+    try:
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict) or key not in payload:
+            return False
+        del payload[key]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return True
+    except Exception as exc:
+        logger.warning("state boundary clear failed for %s: %s", path, exc)
+        return False
+
+
+def _clear_skill_interview_state_for_user(orch, user_id, platform) -> bool:
+    try:
+        pending = orch._load_skill_interview_pending()
+        key = orch._pending_key(str(user_id or ""), str(platform or ""))
+        if not isinstance(pending, dict) or key not in pending:
+            return False
+        pending.pop(key, None)
+        orch._save_skill_interview_pending(pending)
+        return True
+    except Exception as exc:
+        logger.warning("skill interview boundary clear failed: %s", exc)
+        return False
+
+
+def _trace_state_boundary(orch, user_id, platform, state_name: str, boundary: str, message: str) -> None:
+    try:
+        orch._append_route_trace(
+            str(user_id or ""),
+            str(platform or ""),
+            "stateful_boundary",
+            f"{state_name}_{boundary}",
+            {"preview": str(message or "")[:80]},
+        )
+    except Exception:
+        pass
 
 
 def _normalize_arithmetic_expression(expr: str) -> str:
@@ -350,6 +890,18 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception:
         logging.getLogger(__name__).debug("message_pipeline: skipped Flask heavy flag outside request context", exc_info=True)
 
+    direct_case_reply = _maybe_direct_case_lookup(orch, message, user_id=user_id, platform=platform)
+    if direct_case_reply:
+        orch._append_history(user_id, "user", message)
+        orch._append_history(user_id, "assistant", direct_case_reply)
+        return direct_case_reply
+
+    preflight_reply = _try_semantic_preflight(orch, message, user_id=user_id, role=role, platform=platform)
+    if preflight_reply:
+        orch._append_history(user_id, "user", message)
+        orch._append_history(user_id, "assistant", preflight_reply)
+        return preflight_reply
+
     quick_reply = orch._quick_fixed_reply(message, role)
     if quick_reply:
         orch._append_history(user_id, "user", message)
@@ -472,10 +1024,29 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4018, exc_info=True)
 
     try:
-        handled, reply = orch._handle_skill_interview_if_any(str(user_id or ""), str(platform or ""), role, message)
-        if handled:
-            orch._append_history(user_id, "assistant", reply)
-            return reply
+        _skip_skill_interview = False
+        try:
+            _skill_pending = orch._load_skill_interview_pending()
+            _skill_key = orch._pending_key(str(user_id or ""), str(platform or ""))
+            _skill_pending_active = isinstance(_skill_pending, dict) and isinstance(_skill_pending.get(_skill_key), dict)
+        except Exception:
+            _skill_pending_active = False
+        if _skill_pending_active:
+            _boundary_reply = _general_chat_boundary_reply(orch, message, user_id=user_id, role=role, platform=platform)
+            if _boundary_reply:
+                _clear_skill_interview_state_for_user(orch, user_id, platform)
+                _trace_state_boundary(orch, user_id, platform, "skill_interview", "general_chat_bypass", message)
+                orch._append_history(user_id, "assistant", _boundary_reply)
+                return _boundary_reply
+            if _looks_like_new_task_boundary(message):
+                _clear_skill_interview_state_for_user(orch, user_id, platform)
+                _trace_state_boundary(orch, user_id, platform, "skill_interview", "new_task_bypass", message)
+                _skip_skill_interview = True
+        if not _skip_skill_interview:
+            handled, reply = orch._handle_skill_interview_if_any(str(user_id or ""), str(platform or ""), role, message)
+            if handled:
+                orch._append_history(user_id, "assistant", reply)
+                return reply
     except Exception as skill_interview_err:
         logger.debug(f"Skill interview intercept skipped: {skill_interview_err}")
 
@@ -489,6 +1060,29 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         )
         orch._append_history(user_id, "assistant", reply)
         return reply
+
+    # Broad AI-agent route before read-only domain fast paths.
+    # Legal/file/search shortcuts are useful for direct lookup, but analytical
+    # prompts such as "compare and summarize" need ReAct to choose tools and
+    # synthesize the result instead of dumping raw search hits.
+    if not attachment:
+        try:
+            _early_agent_decision = classify_intent_contract(message)
+            if _early_agent_decision.kind == KIND_AGENT_TASK:
+                _early_agent_reply = _try_agentic_route(
+                    orch,
+                    message,
+                    user_id=user_id,
+                    role=role,
+                    platform=platform,
+                    decision=_early_agent_decision,
+                    heavy=_heavy_opt_in,
+                )
+                if _early_agent_reply:
+                    orch._append_history(user_id, "assistant", _early_agent_reply)
+                    return _early_agent_reply
+        except Exception as _early_agent_err:
+            logger.warning("Early agentic route check skipped: %s", _early_agent_err)
 
     # --- Legal Attest Generator Intercept ---
     try:
@@ -509,6 +1103,18 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         if trigger_start and re.search(r"[嗎嘛呢？\?]$", message.strip()):
             trigger_start = False
 
+        if in_legal_flow:
+            _boundary_reply = _general_chat_boundary_reply(orch, message, user_id=user_id, role=role, platform=platform)
+            if _boundary_reply:
+                _clear_json_state_for_user(legal_attest_state_file, user_id)
+                _trace_state_boundary(orch, user_id, platform, "legal_attest", "general_chat_bypass", message)
+                orch._append_history(user_id, "assistant", _boundary_reply)
+                return _boundary_reply
+            if not trigger_start and _looks_like_new_task_boundary(message):
+                _clear_json_state_for_user(legal_attest_state_file, user_id)
+                _trace_state_boundary(orch, user_id, platform, "legal_attest", "new_task_bypass", message)
+                in_legal_flow = False
+
         if in_legal_flow or trigger_start:
             if in_legal_flow and any(kw in msg_l for kw in ["取消", "算了", "不要寫", "不寫了", "退出"]):
                 with open(legal_attest_state_file, 'r', encoding='utf-8') as f:
@@ -524,6 +1130,18 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
             return handle_chat(str(user_id), cmd)
     except Exception as e:
         logger.error(f"Legal attest flow check failed: {e}")
+
+    # If a stale POA/receipt wizard exists but the user clearly starts a new
+    # top-level task, clear the stale state before earlier task dispatchers
+    # (case search, calendar, file actions) return.
+    try:
+        poa_state_file_early = f"{_MAGI_ROOT}/.agent/poa_chat_state.json"
+        if _looks_like_new_task_boundary(message):
+            _cleared_poa_early = _clear_json_state_for_user(poa_state_file_early, user_id)
+            if _cleared_poa_early:
+                _trace_state_boundary(orch, user_id, platform, "poa", "new_task_pre_dispatch_clear", message)
+    except Exception as poa_pre_clear_err:
+        logger.debug(f"POA pre-dispatch stale-state clear skipped: {poa_pre_clear_err}")
 
     # --- 書狀製作 Intercept (DOCX→PDF, 正本/副本/繕本) ---
     try:
@@ -657,6 +1275,22 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         # 不攔截詢問式
         if (poa_trigger or contract_trigger or receipt_trigger) and re.search(r"[嗎嘛呢？\?]$", message.strip()):
             poa_trigger = contract_trigger = receipt_trigger = False
+
+        if _is_poa_guarded_capability_query(
+            orch, message, in_poa_flow, poa_trigger, contract_trigger, receipt_trigger,
+            user_id=user_id, role=role, platform=platform
+        ):
+            conv_reply = _general_chat_boundary_reply(orch, message, user_id=user_id, role=role, platform=platform)
+            if conv_reply:
+                _clear_json_state_for_user(poa_state_file, user_id)
+                _trace_state_boundary(orch, user_id, platform, "poa", "general_chat_bypass", message)
+                orch._append_history(user_id, "assistant", conv_reply)
+                return conv_reply
+
+        if in_poa_flow and not (poa_trigger or contract_trigger or receipt_trigger) and _looks_like_new_task_boundary(message):
+            _clear_json_state_for_user(poa_state_file, user_id)
+            _trace_state_boundary(orch, user_id, platform, "poa", "new_task_bypass", message)
+            in_poa_flow = False
 
         if in_poa_flow or poa_trigger or contract_trigger or receipt_trigger:
             if in_poa_flow and any(kw in msg_l_poa for kw in ["取消", "算了", "不要", "不做了", "退出"]):
@@ -916,6 +1550,9 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         brain_status = get_brain_status()
         collab_status = orch._get_collaboration_status()
         return f"{node_status}\n\n{brain_status}\n\n{collab_status}"
+
+    if _looks_like_model_capability_query(message):
+        return _model_capability_reply()
 
     # 2.6.5. Authoritative realtime data (weather/stock/fx) before generic
     # semantic routing. This prevents weather questions from drifting into
@@ -2574,6 +3211,29 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         reply = f"⚠️ Melchior 無回應，轉由本地 Casper 回答：\n{fallback}"
         orch._append_history(user_id, "assistant", reply)
         return reply
+
+    # 4.5. Broad AI-agent route
+    # Specialized handlers above keep priority. If no workflow caught the
+    # message but it is clearly a search/analysis/planning/tool request, let
+    # the ReAct agent decide tools instead of falling into generic chat.
+    if not attachment:
+        try:
+            _agent_decision = classify_intent_contract(message)
+            if _agent_decision.kind == KIND_AGENT_TASK:
+                _agent_reply = _try_agentic_route(
+                    orch,
+                    message,
+                    user_id=user_id,
+                    role=role,
+                    platform=platform,
+                    decision=_agent_decision,
+                    heavy=_heavy_opt_in,
+                )
+                if _agent_reply:
+                    orch._append_history(user_id, "assistant", _agent_reply)
+                    return _agent_reply
+        except Exception as _agent_err:
+            logger.warning("Agentic route check skipped: %s", _agent_err)
 
     # 5. Intent Classification
     # Hard override: LAF report commands should always enter CMD path.

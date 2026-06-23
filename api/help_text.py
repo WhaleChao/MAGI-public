@@ -12,17 +12,10 @@ HELP_ALIASES = {
     "helps",
     "/start",
     "幫助",
-    "做什麼",
     "功能列表",
     "技能清單",
     "指令清單",
     "指令列表",
-    "有什麼功能",
-    "有哪些功能",
-    "可以做什麼",
-    "你可以做什麼",
-    "你能做什麼",
-    "你會什麼",
     "有什麼skill",
     "有哪些skill",
 }
@@ -180,6 +173,6 @@ def build_help_text(role: str = "user") -> str:
         lines.append("")
     if not is_admin:
         lines.append("🔒 系統管理、技能進化、供應鏈掃描等高風險功能需管理員權限。")
-    lines.append("同義詞：`/help`、`指令清單`、`你可以做什麼` 都會顯示這份總表。")
-    lines.append("📌 `/help` 內容由共用 help builder 產生，會同步套用到 LINE / Discord / Telegram / Web。")
+    lines.append("同義詞：`/help`、`指令清單`、`功能列表` 都會顯示這份總表。")
+    lines.append("📌 問「你可以做什麼」會走語意導覽；輸入 `/help` 才會顯示完整指令表。")
     return "\n".join(lines).rstrip()

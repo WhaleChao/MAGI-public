@@ -48,8 +48,10 @@ LOG_STATE_PATH = Path(os.environ.get("MAGI_FILE_REVIEW_AUTO_STATE", os.path.join
 INTERVAL_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_INTERVAL_SEC", "3600") or "3600")
 CHECK_TIMEOUT_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_CHECK_TIMEOUT_SEC", "600") or "600")
 DOWNLOAD_TIMEOUT_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD_TIMEOUT_SEC", "600") or "600")
+PAYMENT_TIMEOUT_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_PAYMENT_TIMEOUT_SEC", "300") or "300")
 RUN_ON_START = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_RUN_ON_START", "1")).strip().lower() in {"1", "true", "yes", "on"}
-AUTO_DOWNLOAD = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+AUTO_DOWNLOAD = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_DOWNLOAD", "0")).strip().lower() in {"1", "true", "yes", "on"}
+AUTO_PAYMENT_SLIPS = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_PAYMENT_SLIPS", "1")).strip().lower() in {"1", "true", "yes", "on"}
 START_DELAY_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_START_DELAY_SEC", "20") or "20")
 STALE_DOWNLOAD_SEC = int(os.environ.get("MAGI_FILE_REVIEW_AUTO_STALE_DOWNLOAD_SEC", "1200") or "1200")
 
@@ -62,11 +64,28 @@ def _write_state(data: Dict[str, Any]) -> None:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 60, exc_info=True)
 
 
-def _tail(text: str, n: int = 1200) -> str:
+def _tail(text: str | bytes | None, n: int = 1200) -> str:
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     s = (text or "").strip()
     if len(s) <= n:
         return s
     return s[-n:]
+
+
+def _mark_payment_scan_nonfatal(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Payment slip portal scan is supplemental; Gmail PDF delivery is the critical path."""
+    if bool(result.get("ok")):
+        return result
+    normalized = dict(result)
+    normalized["nonfatal"] = True
+    normalized["degraded"] = True
+    normalized.setdefault("degraded_reason", "supplemental_payment_slip_scan_failed")
+    return normalized
+
+
+def _task_ok_or_nonfatal(result: Dict[str, Any]) -> bool:
+    return bool(result.get("ok")) or bool(result.get("nonfatal"))
 
 
 def _parse_last_json(stdout: str) -> Dict[str, Any]:
@@ -284,6 +303,7 @@ def _run_cycle() -> Dict[str, Any]:
     env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     env.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")
     env.setdefault("MAGI_CAPTCHA_DOUBLE_CHECK", "1")
+    env.setdefault("MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK", "1")
     env.setdefault("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "1")
     env.setdefault("MAGI_FILE_REVIEW_DOWNLOAD_MAX_RUNTIME_SEC", os.environ.get("MAGI_FILE_REVIEW_AUTO_MAX_RUNTIME_SEC", "600"))
     env.setdefault("MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC", os.environ.get("MAGI_FILE_REVIEW_AUTO_PAGELOAD_TIMEOUT_SEC", "35"))
@@ -297,12 +317,31 @@ def _run_cycle() -> Dict[str, Any]:
         }
     )
     check_res = _run_task('check_emails {"notify_empty": false}', CHECK_TIMEOUT_SEC, env)
+    payment_res: Dict[str, Any] = {
+        "ok": True,
+        "skipped": True,
+        "reason": "auto_payment_slips_disabled",
+    }
+    if AUTO_PAYMENT_SLIPS:
+        _write_state(
+            {
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "phase": "running_payment_slips",
+                "interval_sec": max(120, INTERVAL_SEC),
+                "check_result_ok": bool(check_res.get("ok")),
+            }
+        )
+        payment_res = _mark_payment_scan_nonfatal(
+            _run_task('download_payment_slips {"max_days": 14}', PAYMENT_TIMEOUT_SEC, env)
+        )
     if not AUTO_DOWNLOAD:
         return {
-            "ok": bool(check_res.get("ok")),
+            "ok": bool(check_res.get("ok")) and _task_ok_or_nonfatal(payment_res),
+            "degraded": bool(payment_res.get("degraded")),
             "skipped": True,
             "reason": "auto_download_disabled",
             "check": check_res,
+            "payment_slips": payment_res,
             "stale_killed": [int(p.get("pid") or 0) for p in stale_killed],
             "downloaded_count": 0,
         }
@@ -324,8 +363,10 @@ def _run_cycle() -> Dict[str, Any]:
         downloaded_count = 0
 
     return {
-        "ok": bool(check_res.get("ok")) and bool(dl_res.get("ok")),
+        "ok": bool(check_res.get("ok")) and _task_ok_or_nonfatal(payment_res) and bool(dl_res.get("ok")),
+        "degraded": bool(payment_res.get("degraded")),
         "check": check_res,
+        "payment_slips": payment_res,
         "download": dl_res,
         "stale_killed": [int(p.get("pid") or 0) for p in stale_killed],
         "downloaded_count": downloaded_count,

@@ -124,3 +124,26 @@ def test_auto_closing_accepts_terminal_consumer_debt_ruling(tmp_path):
     assert len(candidates) == 1
     assert candidates[0]["laf_case_number"] == "1140101-W-001"
     assert candidates[0]["closing_basis_files"] == [str(terminal)]
+
+
+def test_auto_closing_accepts_terminal_consumer_debt_ruling_from_notice_folder(tmp_path):
+    case_dir = tmp_path / "2025-0068-劉亞箖-消費者債務清理-更生"
+    notice_dir = case_dir / "09_法院通知或程序裁定"
+    notice_dir.mkdir(parents=True)
+    terminal = notice_dir / "20260617 宜蘭地方法院114年度消債更字第83號民事裁定（劉亞箖；主文：更生之聲請駁回、聲請程序費用由聲請人負擔）.pdf"
+    terminal.write_bytes(b"%PDF-1.4\n")
+    orch = _orchestrator_with_rows([
+        {
+            "case_number": "2025-0068",
+            "client_name": "劉亞箖",
+            "legal_aid_number": "1140723-I-005",
+            "folder_path": str(case_dir),
+            "case_reason": "消費者債務清理",
+        }
+    ])
+
+    candidates = orch._get_pending_closing_draft_cases(max_cases=10)
+
+    assert len(candidates) == 1
+    assert candidates[0]["laf_case_number"] == "1140723-I-005"
+    assert candidates[0]["closing_basis_files"] == [str(terminal)]

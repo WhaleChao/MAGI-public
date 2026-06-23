@@ -35,6 +35,14 @@ def test_commercial_release_runs_public_isolation_audit():
     ]
 
 
+def test_ci_suite_includes_static_safety_guards():
+    matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
+    checks = {check["id"]: check for check in matrix["suites"]["ci"]["checks"]}
+
+    assert checks["hardcoded_runtime_guard"]["command"] == ["{python}", "scripts/ci/check_hardcodes.py"]
+    assert checks["shell_true_guard"]["command"] == ["{python}", "scripts/ci/check_shell_true.py"]
+
+
 def test_dry_run_suite_writes_all_checks(tmp_path: Path):
     matrix = {
         "suites": {

@@ -338,6 +338,11 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         "_run_calendar_source_audit",
         lambda args: {"ok": True, "calendar_import_only_count": 0, "sample_items": []},
     )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda args: calls.append(("share_repair", {})) or {"ok": True, "updated": 1, "items": [{"id": 2025, "status": "updated"}]},
+    )
     monkeypatch.delenv("MAGI_GCAL_DEDUP_DRY_RUN", raising=False)
 
     args = SimpleNamespace(
@@ -370,6 +375,7 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         "drive_sync",
         "pdf_scan",
         "import",
+        "share_repair",
         "push",
         "audit",
         "transcript_targets",
@@ -383,7 +389,9 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
     }
     assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
-    assert calls[3][1]["limit"] == 7
+    assert calls[4][1]["limit"] == 7
+    assert calls[4][1]["repair_todo_ids"] == [2025]
+    assert calls[4][1]["repair_limit"] == 8
     assert calls[-1][1]["limit"] == 20
     assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1
@@ -394,7 +402,7 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     assert result["history_cutoff_date"] == "2026-01-01"
     assert calls[2][1]["history_cutoff_date"] == "2026-01-01"
     assert calls[2][1]["lookback_days"] <= 30
-    assert calls[3][1]["history_cutoff_date"] == "2026-01-01"
+    assert calls[4][1]["history_cutoff_date"] == "2026-01-01"
 
 
 def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatch, tmp_path):
@@ -448,6 +456,11 @@ def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatc
         or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}},
     )
     monkeypatch.setattr(osc_events_refresh, "_run_calendar_source_audit", fake_calendar_source_audit)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda args: calls.append(("share_repair", {})) or {"ok": True, "updated": 0, "items": []},
+    )
 
     args = SimpleNamespace(
         calendar_only=False,
@@ -480,6 +493,7 @@ def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatc
         "drive_sync",
         "pdf_scan",
         "import",
+        "share_repair",
         "push",
         "audit",
         "source_audit",
@@ -697,8 +711,44 @@ def test_pdf_calendar_scan_uses_filename_first_in_bulk(monkeypatch):
 
     assert result["ok"] is True
     assert calls[0]["scan_text"] is True
-    assert calls[0]["text_when_filename"] is False
+    assert calls[0]["text_when_filename"] is True
     assert calls[0]["include_share_link"] is True
+
+
+def test_pdf_calendar_scan_upgrades_filename_sweep_duplicate_to_text(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    calls = []
+
+    def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
+        return [(pdf, "2026-0001", "測試")]
+
+    monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 1)
+    monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append({"path": str(path), **kwargs})
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "開庭", "date": "2026-07-01", "time": "10:00", "description": "測試"}],
+            "events": [{}],
+        },
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=True, force_rebuild=True, scan_time_budget_sec=0)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert result["text_targets"] == 1
+    assert result["text_scanned"] == 1
+    assert result["filename_sweep_scanned"] == 0
+    assert calls[0]["scan_text"] is True
+    assert calls[0]["text_when_filename"] is True
+    assert result["sample_items"][0]["scan_mode"] == "filename_then_text"
 
 
 def test_pdf_calendar_scan_rescans_when_rule_version_changes(monkeypatch, tmp_path):
@@ -807,11 +857,13 @@ def test_pdf_calendar_scan_rescans_cached_no_todo_when_text_error_exists(monkeyp
     assert calls == [str(pdf)]
 
 
-def test_pdf_calendar_scan_full_filename_sweep_uses_all_cases_before_bounded_text(monkeypatch, tmp_path):
+def test_pdf_calendar_scan_full_filename_sweep_keeps_text_bounded(monkeypatch, tmp_path):
     from api.blueprints import osc_pdf
 
     pdf = tmp_path / "notice.pdf"
+    text_pdf = tmp_path / "text_notice.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
+    text_pdf.write_bytes(b"%PDF-1.4\n")
     target_calls = []
     scan_calls = []
 
@@ -819,12 +871,15 @@ def test_pdf_calendar_scan_full_filename_sweep_uses_all_cases_before_bounded_tex
     monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", tmp_path / "cursor.json")
     monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 123)
     monkeypatch.setenv("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "50")
+    monkeypatch.delenv("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", raising=False)
 
     def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
         target_calls.append({"limit": limit, "case_offset": case_offset, "case_batch": case_batch, "filename_only": filename_only})
         if filename_only and case_offset == 0 and case_batch == 123:
             return [(pdf, "2026-0001", "測試")]
-        return []
+        if not filename_only and case_offset == 0 and case_batch == 40:
+            return [(text_pdf, "2026-0002", "測試二")]
+        raise AssertionError(f"unexpected target call: {target_calls[-1]}")
 
     monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
     monkeypatch.setattr(
@@ -847,7 +902,19 @@ def test_pdf_calendar_scan_full_filename_sweep_uses_all_cases_before_bounded_tex
     args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
     result = osc_events_refresh._run_pdf_calendar_scan(args)
 
-    assert target_calls[0] == {"limit": 50, "case_offset": 0, "case_batch": 123, "filename_only": True}
+    assert target_calls == [
+        {"limit": 50, "case_offset": 0, "case_batch": 123, "filename_only": True},
+        {"limit": 1, "case_offset": 0, "case_batch": 40, "filename_only": False},
+    ]
+    assert result["full_text_scan"] is False
+    assert result["limit"] == 1
+    assert result["requested_limit"] == 1
+    assert result["case_offset"] == 0
+    assert result["case_batch"] == 40
+    assert result["next_case_offset"] == 40
     assert result["filename_sweep_targets"] == 1
+    assert result["text_targets"] == 1
     assert result["filename_sweep_scanned"] == 1
+    assert result["text_scanned"] == 1
     assert scan_calls[0]["scan_text"] is False
+    assert scan_calls[1]["scan_text"] is True

@@ -962,6 +962,7 @@ def test_drive_import_aliases_map_to_nas_canonical_folders():
     assert drive_to_nas_relative_path("法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁判/20260610 更生聲請駁回裁定.pdf") == "10_判決書/20260610 更生聲請駁回裁定.pdf"
     assert drive_to_nas_relative_path("法院裁判/偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
     assert drive_to_nas_relative_path("法院裁定/20260101 普通裁定.pdf") == "09_法院通知或程序裁定/20260101 普通裁定.pdf"
     assert drive_to_nas_relative_path("法院裁定/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
@@ -969,6 +970,7 @@ def test_drive_import_aliases_map_to_nas_canonical_folders():
     assert drive_to_nas_relative_path("法院資料/法院裁判/20260101 開庭通知.pdf") == "09_法院通知或程序裁定/20260101 開庭通知.pdf"
     assert drive_to_nas_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
     assert drive_to_nas_relative_path("起訴書/20250306_起訴書.pdf") == "10_判決書/20250306_起訴書.pdf"
+    assert drive_to_nas_relative_path("20260610 更生聲請駁回裁定.pdf") == "10_判決書/20260610 更生聲請駁回裁定.pdf"
     assert drive_to_nas_relative_path("法院資料/起訴書/a.pdf") == "10_判決書/a.pdf"
     assert drive_to_nas_relative_path("開庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
@@ -996,6 +998,66 @@ def test_semantic_paths_treat_legacy_drive_folders_as_same_category():
     assert semantic_relative_path("08_筆錄/b.pdf") == "筆錄/b.pdf"
     assert semantic_relative_path("信件/c.pdf") == "信件往返/c.pdf"
     assert semantic_relative_path("12_信件往返/c.pdf") == "信件往返/c.pdf"
+
+
+def test_accounting_spreadsheets_are_import_only_not_case_files():
+    assert (
+        drive_to_nas_download_skip_reason(
+            "收支紀錄/六月收支明細.xlsx",
+            drive_to_nas_relative_path("收支紀錄/六月收支明細.xlsx"),
+        )
+        == "accounting_import_only"
+    )
+    assert (
+        drive_to_nas_download_skip_reason(
+            "2026年6月收支明細表.xlsx",
+            drive_to_nas_relative_path("2026年6月收支明細表.xlsx"),
+        )
+        == "accounting_import_only"
+    )
+def test_accounting_files_in_nested_local_path_are_not_uploaded_to_case_folder(monkeypatch):
+    drive = CaseFolder(
+        source="drive",
+        path="法扶案件/Lumi/測試",
+        relative_path="法扶案件/Lumi/測試",
+        name="測試",
+        meta=CaseMeta(case_number="2026-0001"),
+        drive_id="drive-case",
+    )
+    local = CaseFolder(
+        source="nas",
+        path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        local_path="/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        relative_path="法扶案件/刑事/2026-0001-測試-一審-詐欺",
+        name="2026-0001-測試-一審-詐欺",
+        meta=CaseMeta(case_number="2026-0001"),
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.drive_descendant_context",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "api.osc.drive_case_sync.local_descendant_context",
+        lambda *_args, **_kwargs: [
+            FileEntry(
+                "nas",
+                "/cases/法扶案件/刑事/2026-0001-測試-一審-詐欺/收支紀錄/6月收支明細表.xlsx",
+                "法扶案件/刑事/2026-0001-測試-一審-詐欺/收支紀錄/6月收支明細表.xlsx",
+                "6月收支明細表.xlsx",
+                False,
+                size=12,
+            )
+        ],
+    )
+
+    plan = build_file_sync_plan(
+        {"matched": [{"drive": drive, "local": local}]},
+        drive_service=object(),
+        matched_case_limit=1,
+    )
+
+    assert plan["cases"][0]["nas_only"] == []
+    assert plan["cases"][0]["download_missing"] == []
 
 
 def test_file_sync_plan_does_not_hash_existing_nas_files_by_default(monkeypatch):

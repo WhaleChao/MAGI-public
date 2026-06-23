@@ -101,6 +101,33 @@ class TestReActForOmlx(unittest.TestCase):
         prompt = engine._build_system_prompt(soul_text="我是 Casper")
         self.assertTrue(prompt.startswith("我是 Casper"))
 
+    def test_heavy_uses_nim_but_keeps_react_prompt(self):
+        from skills.engine.react_engine import ReActEngine
+
+        captured = []
+
+        def fake_nim(**kwargs):
+            captured.append(kwargs)
+            return {
+                "success": True,
+                "response": "FINAL: heavy answer",
+                "model": "nvidia/nemotron-3-super-120b-a12b",
+                "pii_scrubbed": False,
+                "pii_counts": {},
+            }
+
+        with patch("skills.bridge.nim_heavy.run_nim_chat", side_effect=fake_nim):
+            engine = ReActEngine.for_omlx(tools={}, user_query="請分析", heavy=True)
+            result = engine.run("請分析")
+
+        self.assertEqual(engine._llm_route, "nvidia_nim")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["answer"], "heavy answer")
+        self.assertTrue(captured[0]["heavy"])
+        self.assertEqual(captured[0]["task_type"], "agentic")
+        self.assertIn("ACTION:", captured[0]["system_prompt"])
+        self.assertIn("FINAL:", captured[0]["system_prompt"])
+
     def test_react_action_parsing(self):
         from skills.engine.react_engine import ReActEngine
         engine = ReActEngine.for_omlx()
@@ -180,6 +207,29 @@ class TestEnsembleChatWithTools(unittest.TestCase):
             mock_ecv.assert_called_once()
             self.assertEqual(result.result, "fallback")
 
+    @patch("skills.bridge.ensemble_inference._ENSEMBLE_TOOLS_ENABLED", True)
+    def test_heavy_flag_reaches_react_engine(self):
+        """ensemble_chat_with_tools(heavy=True) must use the NIM-backed ReAct route."""
+        class FakeEngine:
+            def run(self, prompt, context=""):
+                return {
+                    "success": True,
+                    "answer": "heavy agent answer",
+                    "trace": [{"type": "final", "content": "heavy agent answer"}],
+                    "steps": 1,
+                    "tools_used": [],
+                    "elapsed_sec": 0,
+                }
+
+        with patch("skills.engine.react_engine.ReActEngine.for_omlx", return_value=FakeEngine()) as mock_for, \
+             patch("skills.bridge.ensemble_inference._ensemble_review", return_value={}):
+            from skills.bridge.ensemble_inference import ensemble_chat_with_tools
+            result = ensemble_chat_with_tools(prompt="test", heavy=True)
+
+        self.assertTrue(mock_for.call_args.kwargs["heavy"])
+        self.assertEqual(result.individual_results["primary_route"], "nvidia_nim")
+        self.assertTrue(result.individual_results["heavy"])
+
 
 class TestFormatMagiResponseToolSource(unittest.TestCase):
     """Phase 6: format_magi_response 工具來源標註。"""
@@ -244,6 +294,22 @@ class TestSearchJudgmentsAndStatutes(unittest.TestCase):
         result = fn(query="")
         self.assertIn("關鍵字", result)
 
+    def test_search_statutes_exact_article_uses_local_vdb(self):
+        from pathlib import Path
+        import skills.engine.tool_registry as tool_registry
+
+        original_root = tool_registry.MAGI_ROOT
+        tool_registry.MAGI_ROOT = Path(MAGI_ROOT)
+        try:
+            fn = self.tools["search_statutes"]["fn"]
+            result = fn(query="民法184條")
+            self.assertIn("民法", result)
+            self.assertIn("第 184 條", result)
+            self.assertIn("侵害他人之權利", result)
+            self.assertNotIn("第 1225 條", result)
+        finally:
+            tool_registry.MAGI_ROOT = original_root
+
     def test_run_skill_wrong_name_blocked(self):
         from skills.engine.tool_registry import _run_skill
         result = _run_skill(skill_name="hacker_tool")
@@ -258,7 +324,8 @@ class TestSearchJudgmentsAndStatutes(unittest.TestCase):
     def test_run_skill_valid_name_calls_tools_api(self):
         """run_skill 白名單技能向正確 endpoint 發 POST（mock 回 404）。"""
         from skills.engine.tool_registry import _run_skill
-        with patch("skills.bridge.http_pool.get_session") as mock_session_fn:
+        with patch.dict(os.environ, {"MAGI_EXTERNAL_API_KEY": "unit-test-key", "MAGI_API_KEY": "unit-test-key"}, clear=False), \
+             patch("skills.bridge.http_pool.get_session") as mock_session_fn:
             mock_resp = MagicMock()
             mock_resp.status_code = 404
             mock_resp.text = "not found"
@@ -275,6 +342,7 @@ class TestSearchJudgmentsAndStatutes(unittest.TestCase):
             self.assertEqual(body["skill"], "judicial-web-search")
             self.assertEqual(body["task"], "search")
             self.assertEqual(body["keywords"], "侵權行為")
+            self.assertEqual(kwargs["headers"]["X-API-Key"], "unit-test-key")
 
     def test_allowed_skills_are_all_real_directories(self):
         """白名單中的 skill 名稱必須對應 skills/ 下真實目錄。"""
@@ -287,6 +355,42 @@ class TestSearchJudgmentsAndStatutes(unittest.TestCase):
         missing = [s for s in _ALLOWED_SKILLS if not os.path.isdir(os.path.join(skills_root, s))]
         self.assertEqual(missing, [],
                          f"白名單中這些 skill 目錄不存在: {missing}")
+
+    def test_judicial_web_search_falls_back_to_http_when_venv_missing(self):
+        """Missing .venv_judicial should not make the judgment tool unusable."""
+        import importlib.util
+        import os
+        from pathlib import Path
+
+        action_path = Path(MAGI_ROOT) / "skills" / "judicial-web-search" / "action.py"
+        spec = importlib.util.spec_from_file_location("judicial_web_search_action_test", str(action_path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        original_http = module._search_http_impl
+        original_exists = module.os.path.exists
+        calls = []
+
+        def fake_http(**kwargs):
+            calls.append(kwargs)
+            return {"success": True, "engine": "http_form", "results": []}
+
+        def fake_exists(path):
+            if str(path) == str(module.VENV_PY):
+                return False
+            return original_exists(path)
+
+        try:
+            module._search_http_impl = fake_http
+            module.os.path.exists = fake_exists
+            result = module._search_impl("民法184 損害賠償", max_results=1, timeout_sec=5)
+        finally:
+            module._search_http_impl = original_http
+            module.os.path.exists = original_exists
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["engine"], "http_form")
+        self.assertEqual(calls[0]["keywords"], "民法184 損害賠償")
 
 
 if __name__ == "__main__":

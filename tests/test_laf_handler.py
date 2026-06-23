@@ -72,6 +72,21 @@ def test_parse_payload_laf_pending_scan_is_not_single_case_go_live():
     assert parse_laf_report_payload("法扶夜間巡檢") is None
 
 
+def test_parse_closing_basis_followup_extracts_client_from_filename_parentheses():
+    from api.handlers.laf_handler import parse_laf_report_payload
+
+    p = parse_laf_report_payload("「20260617 宜蘭地方法院114年度消債更字第83號民事裁定（劉亞箖；主文：更生之聲請駁回、聲請程序費用由聲請人負擔）」即為結案文件。")
+    assert p is not None
+    assert p["action"] == "closing"
+    assert p["client_name"] == "劉亞箖"
+
+
+def test_parse_closing_basis_followup_without_target_is_not_fake_client():
+    from api.handlers.laf_handler import parse_laf_report_payload
+
+    assert parse_laf_report_payload("併辦意旨書就是結案文件") is None
+
+
 def test_help_text():
     from api.handlers.laf_handler import laf_report_command_help
     h = laf_report_command_help()

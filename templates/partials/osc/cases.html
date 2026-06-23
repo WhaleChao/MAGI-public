@@ -62,6 +62,7 @@
                             <button class="chip active" data-type="全部">全部分類</button>
                             <button class="chip" data-type="刑事">刑事</button>
                             <button class="chip" data-type="民事">民事</button>
+                            <button class="chip" data-type="法律顧問">法律顧問</button>
                             <button class="chip" data-type="消費者債務清理">消費者債務清理</button>
                             <button class="chip" data-type="行政">行政</button>
                             <button class="chip" data-type="非訟">非訟</button>
@@ -92,7 +93,7 @@
                         <div class="sort-bar" id="caseSortBar">
                             <label>排序</label>
                             <select id="caseSortCol">
-                                <option value="case_number">案件號碼（預設）</option>
+                                <option value="case_number">案件號碼（新到舊）</option>
                                 <option value="client_name">當事人</option>
                                 <option value="court_name">法院 / 地檢署</option>
                                 <option value="case_type">案件分類</option>
@@ -102,7 +103,7 @@
 	                                <option value="court_division">股別</option>
 	                                <option value="status">狀態</option>
                             </select>
-                            <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
+                            <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▼</button>
                         </div>
                         <div class="inline-actions">
                             <button class="btn" id="casesImportCsvBtn">匯入 CSV</button>
@@ -161,6 +162,7 @@
                             <datalist id="caseTypeOptions">
                                 <option value="刑事"></option>
                                 <option value="民事"></option>
+                                <option value="法律顧問"></option>
                                 <option value="消費者債務清理"></option>
                                 <option value="行政"></option>
                                 <option value="非訟"></option>

@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 def _build_omlx_base_url(base_url: Optional[str] = None, port_env: str = "MAGI_OMLX_PORT") -> str:
     if base_url:
-        return str(base_url).rstrip("/")
+        normalized = str(base_url).strip().rstrip("/")
+        if normalized.endswith("/v1"):
+            normalized = normalized[:-3].rstrip("/")
+        return normalized
     port = int(os.environ.get(port_env, "8080"))
     return f"http://127.0.0.1:{port}"
 

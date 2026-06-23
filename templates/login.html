@@ -7,119 +7,136 @@
     <title>MAGI 登入</title>
     <style>
         body {
-            background-color: #0d0d0d;
-            color: #e0e0e0;
-            font-family: monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
             margin: 0;
-            padding: 20px 14px;
-        }
-
-        .login-clock {
-            position: fixed;
-            top: 18px;
-            right: 22px;
-            min-height: 34px;
-            display: inline-flex;
+            background: #eef1f3;
+            min-height: 100vh;
+            min-height: 100dvh;
+            display: flex;
             align-items: center;
-            padding: 0 12px;
-            border: 1px solid rgba(85, 239, 196, 0.28);
-            border-radius: 6px;
-            background: rgba(30, 39, 46, 0.86);
-            color: #55efc4;
-            font: 700 0.86rem/1 monospace;
-            white-space: nowrap;
-        }
-
-        .container {
-            background: #1e272e;
-            padding: 40px;
-            border-radius: 8px;
-            border: 1px solid #2d3436;
-            width: min(360px, 100%);
-        }
-
-        input {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            background: #000;
-            border: 1px solid #555;
-            color: white;
+            justify-content: center;
+            padding: 20px 14px;
+            overflow-x: hidden;
             box-sizing: border-box;
+            color: #17202a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
         }
 
-        button {
+        .auth-shell {
+            width: min(420px, calc(100vw - 28px));
+            margin: 0 auto;
+        }
+
+        .auth-card {
+            box-sizing: border-box;
+            background: #ffffff;
+            border: 1px solid rgba(23, 32, 42, 0.12);
+            border-radius: 14px;
+            padding: 30px;
+        }
+
+        .auth-brand {
+            margin: 0;
+            text-align: center;
+            font-size: 1.4rem;
+            letter-spacing: 0;
+            font-weight: 700;
+        }
+
+        .auth-subtitle {
+            margin: 8px 0 16px;
+            color: #637083;
+            text-align: center;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .auth-form {
+            margin-top: 8px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .auth-field {
+            display: grid;
+            gap: 6px;
+        }
+
+        .auth-label {
+            font-size: 0.8rem;
+            color: #637083;
+        }
+
+        .auth-input {
             width: 100%;
-            padding: 10px;
-            background: #0984e3;
-            color: white;
-            border: none;
+            min-height: 44px;
+            padding: 10px 12px;
+            border: 1px solid rgba(23, 32, 42, 0.12);
+            border-radius: 10px;
+            background: #f6f8fa;
+            box-sizing: border-box;
+            font-size: 1rem;
+            color: #17202a;
+        }
+
+        .auth-submit {
+            min-height: 44px;
+            width: 100%;
+            border: 0;
+            border-radius: 10px;
+            background: #0f766e;
+            color: #fff;
+            font-weight: 700;
+            font-size: 0.98rem;
             cursor: pointer;
-            margin-top: 10px;
         }
 
-        h2 {
+        .auth-link {
+            color: #2563eb;
             text-align: center;
-            color: #74b9ff;
-        }
-
-        .flash {
-            color: #feca57;
-            text-align: center;
-            font-size: 0.9em;
-            margin-bottom: 15px;
-        }
-
-        a {
-            color: #55efc4;
-            text-decoration: none;
-            font-size: 0.8em;
             display: block;
-            text-align: center;
-            margin-top: 15px;
+            margin-top: 14px;
+            text-decoration: none;
+            font-size: 0.86rem;
         }
-        @media (max-width: 480px) {
-            .login-clock {
-                position: static;
-                margin: 0 auto 14px;
-            }
-            body {
-                align-items: flex-start;
-                flex-direction: column;
-                padding: 14px;
-            }
-            .container {
-                padding: 24px 18px;
-                border-radius: 12px;
-            }
-            h2 {
-                font-size: 1.2rem;
-            }
+
+        .auth-clock {
+            position: fixed;
+            inset: 12px 12px auto auto;
+            color: #637083;
+            font-size: 0.78rem;
+            font-variant-numeric: tabular-nums;
         }
     </style>
-    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260616-site-polish-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-auth-mobile-v3">
 </head>
 
-<body class="site-auth">
-    <time class="login-clock" id="login-clock" datetime="">--:--:--</time>
-    <div class="container">
-        <h2>MAGI GATEWAY</h2>
-        {% with messages = get_flashed_messages() %}
-        {% if messages %}
-        <div class="flash">{{ messages[0] }}</div>
-        {% endif %}
-        {% endwith %}
-        <form method="post">
-            <input type="text" name="username" placeholder="帳號" required>
-            <input type="password" name="password" placeholder="密碼" required>
-            <button type="submit">登入</button>
-        </form>
-        <a href="{{ url_for('register') }}">建立新使用者</a>
-    </div>
+<body class="site-auth auth-page">
+    <time class="auth-clock" id="login-clock" datetime="">--:--:--</time>
+    <main class="auth-shell">
+        <section class="auth-card" aria-label="MAGI 登入">
+            <p class="auth-brand">MAGI Gateway</p>
+            <p class="auth-subtitle">內部作業入口登入</p>
+            {% with messages = get_flashed_messages() %}
+            {% if messages %}
+            <p class="auth-flash" role="status">{{ messages[0] }}</p>
+            {% endif %}
+            {% endwith %}
+            <form method="post" class="auth-form" novalidate>
+                <label class="auth-field">
+                    <span class="auth-label">帳號</span>
+                    <input class="auth-input" type="text" name="username" autocomplete="username" placeholder="輸入帳號" required>
+                </label>
+                <label class="auth-field">
+                    <span class="auth-label">密碼</span>
+                    <input class="auth-input" type="password" name="password" autocomplete="current-password" placeholder="輸入密碼" required>
+                </label>
+                <input type="hidden" name="next" value="{{ next_target or '' }}">
+                {% if mobile_app_login %}<input type="hidden" name="mobile_app" value="1">{% endif %}
+                <button class="auth-submit" type="submit">登入</button>
+            </form>
+            <a class="auth-link" href="{{ url_for('register', next=next_target or '') }}">建立新使用者</a>
+        </section>
+    </main>
     <script>
         (function () {
             const clock = document.getElementById("login-clock");

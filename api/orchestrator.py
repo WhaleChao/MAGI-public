@@ -276,19 +276,30 @@ class Orchestrator:
         self._ensure_runtime_foundations()
         # Non-blocking oMLX health check at startup
         try:
-            import urllib.request
             try:
                 from api.routing.service_registry import get_service_url as _gsurl
                 _omlx_base = _gsurl("omlx_inference")
             except Exception:
                 _omlx_base = "http://localhost:8080"
-            _omlx_url = os.environ.get("OMLX_BASE_URL", _omlx_base) + "/v1/models"
-            req = urllib.request.Request(_omlx_url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    logger.info("✅ oMLX reachable at startup")
-                else:
-                    logger.warning(f"⚠️ oMLX returned status {resp.status} at startup — inference may fail")
+            from skills.ops.health_probes import probe_omlx_models
+
+            _probe_base = (
+                os.environ.get("MAGI_OMLX_CHAT_URL")
+                or os.environ.get("OMLX_BASE_URL")
+                or _omlx_base
+            )
+            _probe = probe_omlx_models(timeout_sec=3, base_url=_probe_base)
+            if _probe.get("pass"):
+                _models = ", ".join(str(x) for x in (_probe.get("models") or [])[:3])
+                logger.info("✅ oMLX reachable at startup (%s)", _models or "models available")
+            else:
+                _status = _probe.get("status_code") or "no-status"
+                _error = _probe.get("error") or "empty model list"
+                logger.warning(
+                    "⚠️ oMLX startup probe failed (status=%s, %s) — inference may fail until oMLX is running",
+                    _status,
+                    _error,
+                )
         except Exception as _e:
             logger.warning(f"⚠️ oMLX unreachable at startup ({_e}) — inference may fail until oMLX is running")
         # ── Skill Plugin Registry ─────────────────────────────────────

@@ -282,6 +282,29 @@ class TestBoundary:
         assert mod._is_standalone_transcript_pdf("/case/08_筆錄/20260513 準備程序筆錄.pdf")
         assert not mod._is_standalone_transcript_pdf("/case/06_閱卷資料/20260513 準備程序筆錄.pdf")
 
+    def test_extract_roc_date_prefers_transcript_date_over_birthdate(self):
+        mod = _load_module()
+        text = (
+            "準 備 程 序 筆 錄\n"
+            "上列被告因115年度原侵重訴字第1號殺人等一案於中華民國115\n"
+            "〇4\n"
+            "年3 月27日上午10時30分在臺灣花蓮地方法院刑事第四法庭行準備程序\n"
+            "被告劉信義 男民國88年4月8日生 身分證統一編號：U122010848號"
+        )
+        assert mod._extract_roc_date(text) == "115.03.27"
+
+    def test_ocr_distorted_continuation_page_is_reference_only(self):
+        mod = _load_module()
+        text = (
+            "(颅上頁）\n"
+            "反應被被告騷擾之事，大家建議被害人封鎖被告的Line。\n"
+            "證人丙於114年5月17日警詢筆錄，並檢附解剖報告書暨鑑定報告書。"
+        )
+        assert mod._is_reference_only_page(text)
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
     def test_detect_doc_type_accepts_actual_report_cover(self):
         mod = _load_module()
         text = (
@@ -325,6 +348,13 @@ class TestBoundary:
             [2, "傳票", 3],
             [3, "裁定", 5],
         ]
+
+    def test_existing_toc_rebuilds_repeated_noisy_dates(self):
+        mod = _load_module()
+        toc = [[1, "115.05.07 判決", i] for i in range(1, 12)]
+        toc.extend([[1, "114.09.16 聲請狀", 20], [1, "送達證書", 30]])
+        assert mod._existing_toc_needs_rebuild(toc)
+        assert not mod._existing_toc_needs_rebuild([[1, "114.09.16 聲請狀", 1], [1, "裁定", 3]])
 
     def test_classify_no_boundary_single_doc_hint(self):
         mod = _load_module()

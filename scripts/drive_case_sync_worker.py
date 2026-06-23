@@ -44,7 +44,10 @@ def state_path() -> Path:
     return runtime_dir() / "worker_state.json"
 
 
-def worker_status_path() -> Path:
+def worker_status_path(kind: str = "") -> Path:
+    suffix = str(kind or "").strip().lower().replace("-", "_")
+    if suffix:
+        return runtime_dir() / f"drive_case_sync_worker_status_{suffix}_latest.json"
     return runtime_dir() / "drive_case_sync_worker_status_latest.json"
 
 
@@ -82,12 +85,33 @@ def inventory_time_limit(seconds: int):
             signal.alarm(previous_alarm)
 
 
-def save_worker_status(status: dict) -> None:
-    path = worker_status_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+def save_worker_status(status: dict, *, kind: str = "") -> None:
+    payload = dict(status or {})
+    if kind:
+        payload["worker_kind"] = kind
+
+    previous = load_worker_status()
+    previous_by_kind = previous.get("status_by_kind")
+    if not isinstance(previous_by_kind, dict):
+        previous_by_kind = {}
+    status_by_kind: dict[str, dict] = {str(k): dict(v) for k, v in previous_by_kind.items() if isinstance(v, dict)}
+    if kind:
+        status_by_kind[str(kind)] = payload
+
+    merged_payload = dict(previous)
+    merged_payload.update(payload)
+    if status_by_kind:
+        merged_payload["status_by_kind"] = status_by_kind
+    merged_payload.setdefault("worker_kind", kind or str(merged_payload.get("worker_kind") or ""))
+
+    targets = [worker_status_path()]
+    if kind:
+        targets.append(worker_status_path(kind))
+    for path in targets:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(merged_payload if path == worker_status_path() else payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(path)
 
 
 def load_worker_status() -> dict:
@@ -189,7 +213,21 @@ def clear_stale_running_status() -> dict:
         "finished_at": iso_now(),
         "message": "上一輪 Drive/NAS 同步狀態停在 running，但找不到對應程序；已清除殘留狀態。",
     }
-    save_worker_status(stale)
+    stale_kind = str(previous.get("worker_kind") or "").strip().lower()
+    if stale_kind:
+        previous_by_kind = previous.get("status_by_kind")
+        if isinstance(previous_by_kind, dict):
+            previous_by_kind = {str(k): dict(v) for k, v in previous_by_kind.items() if isinstance(v, dict)}
+        else:
+            previous_by_kind = {}
+        previous_by_kind[stale_kind] = stale
+        stale_with_map = dict(previous)
+        stale_with_map.update(stale)
+        stale_with_map["worker_kind"] = stale_kind
+        stale_with_map["status_by_kind"] = previous_by_kind
+        save_worker_status(stale_with_map, kind=stale_kind)
+    else:
+        save_worker_status(stale)
     return stale
 
 
@@ -214,7 +252,7 @@ def save_state(state: dict) -> None:
     tmp.replace(path)
 
 
-def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool) -> dict:
+def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool, kind: str = "") -> dict:
     report = {
         "ok": False,
         "status": "auth_required",
@@ -232,7 +270,7 @@ def save_auth_required(exc: DriveCaseSyncAuthRequired, *, write: bool) -> dict:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
-    save_worker_status({**report, "finished_at": iso_now()})
+    save_worker_status({**report, "finished_at": iso_now()}, kind=kind)
     return report
 
 
@@ -286,13 +324,28 @@ def repair_imported_drive_alias_folders(
         if not local_path.is_dir():
             continue
         summary["cases_checked"] += 1
-        case_report = repair_case_folder(
-            local_path,
-            apply=apply,
-            delete_duplicate=delete_duplicate,
-            max_files=max_files_per_case,
-            max_seconds=max_seconds_per_case,
-        )
+        try:
+            case_report = repair_case_folder(
+                local_path,
+                apply=apply,
+                delete_duplicate=delete_duplicate,
+                max_files=max_files_per_case,
+                max_seconds=max_seconds_per_case,
+            )
+        except Exception as exc:
+            summary["errors"] += 1
+            items.append({
+                "case_number": case.get("case_number") or "",
+                "local_path": str(local_path),
+                "alias_folders": [],
+                "planned_moves": 0,
+                "canonical_misfile_moves": 0,
+                "duplicates": 0,
+                "conflict_moves": 0,
+                "conflicts": 0,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            })
+            continue
         alias_count = len(case_report.get("alias_folders") or [])
         move_count = len(case_report.get("planned_moves") or [])
         canonical_misfile_count = len(case_report.get("canonical_misfile_moves") or [])
@@ -455,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repair-max-files-per-case", type=int, default=300)
     parser.add_argument("--repair-max-seconds-per-case", type=int, default=60)
     args = parser.parse_args(argv)
+    worker_kind = "all_files" if args.direct_all_cases else ("priority" if not args.no_direct_priority_sync else "inventory")
 
     worker_lock = acquire_worker_lock()
     if not worker_lock.get("acquired"):
@@ -468,8 +522,9 @@ def main(argv: list[str] | None = None) -> int:
             "started_at": iso_now(),
             "finished_at": iso_now(),
             "message": "Drive/NAS 同步已在執行中，本次排程已略過，避免同時上傳/下載造成重複或錯放。",
+            "worker_kind": worker_kind,
         }
-        skip_path = runtime_dir() / "drive_case_sync_worker_skip_latest.json"
+        skip_path = runtime_dir() / f"drive_case_sync_worker_skip_{worker_kind}_latest.json"
         try:
             skip_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = skip_path.with_suffix(".tmp")
@@ -477,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             tmp.replace(skip_path)
         except Exception:
             pass
+        save_worker_status(status, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
 
@@ -506,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": direct_mode_label if direct_mode_requested else "inventory_running",
         "action_required": False,
         "pid": os.getpid(),
+        "worker_kind": worker_kind,
         "started_at": started_at,
         "previous_stale_status": stale_status,
         "worker_lock": worker_lock,
@@ -526,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_case_items": args.max_case_items,
             "inventory_timeout_sec": args.inventory_timeout_sec,
         },
-    })
+    }, kind=worker_kind)
     try:
         with inventory_time_limit(max(0, int(args.inventory_timeout_sec or 0))):
             root_name = args.root_name or os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME)
@@ -572,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
                     drive_owner_bucket_name=args.drive_owner_bucket,
                 )
     except DriveCaseSyncAuthRequired as exc:
-        status = save_auth_required(exc, write=needs_write_scope)
+        status = save_auth_required(exc, write=needs_write_scope, kind=worker_kind)
         state["last_status"] = status
         state["last_summary"] = {"auth_required": True}
         save_state(state)
@@ -584,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": "timeout",
             "action_required": False,
             "message": str(exc),
+            "worker_kind": worker_kind,
             "started_at": started_at,
             "finished_at": iso_now(),
             "matched_case_offset": offset,
@@ -598,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
         state["last_summary"] = {"timeout": True}
         state["last_priority_case_numbers"] = priority_case_numbers[:30]
         save_state(state)
-        save_worker_status(status)
+        save_worker_status(status, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 2
 
@@ -640,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "ok",
         "action_required": False,
         "pid": os.getpid(),
+        "worker_kind": worker_kind,
         "started_at": started_at,
         "finished_at": iso_now(),
         "matched_case_offset_before": offset,
@@ -662,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
         "priority_case_numbers": priority_case_numbers[:30],
         "all_case_numbers": all_case_numbers[:30],
         "mode": report.get("mode") or "",
-    })
+    }, kind=worker_kind)
 
     print(json.dumps({
         "ok": True,

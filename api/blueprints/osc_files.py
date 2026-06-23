@@ -370,9 +370,14 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 os.close(fd)
                 if _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
-                raise OSError("system copy staging failed")
+                # keep behaviour deterministic: if cp fails (or is flaky), fallback to
+                # direct Python copy so endpoint still works under transient copy issues.
+                logging.getLogger(__name__).warning(
+                    "system copy staging fallback triggered for: %s",
+                    local_file,
+                )
             try:
-                with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
+                with open(tmp_path, "wb") as out, open(local_file, "rb") as src:
                     while True:
                         try:
                             chunk = src.read(4 * 1024 * 1024)
@@ -382,10 +387,6 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                             break
                         out.write(chunk)
             except OSError as e:
-                try:
-                    os.close(fd)
-                except OSError:
-                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 300, exc_info=True)
                 if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
@@ -987,6 +988,84 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool, e
         entry["child_total_size"] = s["total_size"]
         entry["child_size_label"] = _osc_human_size(s["total_size"])
     return entry
+
+
+def _browse_entries_with_scandir(
+    base_real: str,
+    target: str,
+    *,
+    summarize: bool = True,
+    show_hidden: bool = False,
+) -> tuple[list[dict], list[dict], int]:
+    """Legacy-compatible scanner used by browser list route.
+
+    Returns (folders, files, hidden_count).
+    """
+    names = _listdir_with_retry(target)
+    folders: list[dict] = []
+    files: list[dict] = []
+    hidden_count = 0
+
+    for name in names:
+        if _is_hidden_name(name):
+            hidden_count += 1
+            if not show_hidden:
+                continue
+
+        full = os.path.join(target, name)
+        entry = _entry_dict(name, full, base_real, summarize=summarize)
+        if entry is None:
+            continue
+        if entry["type"] == "dir":
+            folders.append(entry)
+        else:
+            files.append(entry)
+
+    folders.sort(key=lambda e: e["name"].lower())
+    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    return folders, files, hidden_count
+
+
+def _browse_entries_with_helper(
+    base_real: str,
+    target: str,
+    *,
+    summarize: bool = True,
+    show_hidden: bool = False,
+) -> tuple[list[dict], list[dict], int]:
+    """Path helper fallback when direct scandir metadata is unreliable."""
+    metadata = _dir_metadata_map(target)
+    names = sorted(metadata.keys())
+    folders: list[dict] = []
+    files: list[dict] = []
+    hidden_count = 0
+
+    for name in names:
+        if _is_hidden_name(name):
+            hidden_count += 1
+            if not show_hidden:
+                continue
+        full = os.path.join(target, name)
+        entry_meta = metadata.get(name)
+        if entry_meta and entry_meta.get("error"):
+            continue
+        entry = _entry_dict(
+            name,
+            full,
+            base_real,
+            summarize=summarize,
+            entry_meta=entry_meta if isinstance(entry_meta, dict) else None,
+        )
+        if entry is None:
+            continue
+        if entry["type"] == "dir":
+            folders.append(entry)
+        else:
+            files.append(entry)
+
+    folders.sort(key=lambda e: e["name"].lower())
+    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    return folders, files, hidden_count
 
 
 # ── routes ──────────────────────────────────────────────────────────────
@@ -1870,37 +1949,45 @@ def osc_folders_browse_api():
     use_nas_meta = _is_network_nas_path(target)
     try:
         if use_nas_meta:
-            metadata = _dir_metadata_map(target)
-            names = sorted(metadata.keys())
+            source = "folder_helper"
+            try:
+                folders, files, hidden_count = _browse_entries_with_scandir(
+                    base_real,
+                    target,
+                    summarize=summarize,
+                    show_hidden=show_hidden,
+                )
+            except OSError:
+                source = "folder_helper"
+                folders, files, hidden_count = _browse_entries_with_helper(
+                    base_real,
+                    target,
+                    summarize=summarize,
+                    show_hidden=show_hidden,
+                )
         else:
-            names = _listdir_with_retry(target)
+            folders, files, hidden_count = _browse_entries_with_scandir(
+                base_real,
+                target,
+                summarize=summarize,
+                show_hidden=show_hidden,
+            )
+            source = "scandir"
     except OSError as e:
-        return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
+        # NAS folders can intermittently fail scandir; try helper once as final fallback.
+        try:
+            folders, files, hidden_count = _browse_entries_with_helper(
+                base_real,
+                target,
+                summarize=summarize,
+                show_hidden=show_hidden,
+            )
+            source = "folder_helper"
+        except OSError as e2:
+            return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
 
-    folders, files = [], []
-    hidden_count = 0
-    for name in names:
-        if _is_hidden_name(name):
-            hidden_count += 1
-            if not show_hidden:
-                continue
-        full = os.path.join(target, name)
-        entry = _entry_dict(
-            name,
-            full,
-            base_real,
-            summarize=summarize,
-            entry_meta=metadata.get(name) if use_nas_meta else None,
-        )
-        if entry is None:
-            continue
-        if entry["type"] == "dir":
-            folders.append(entry)
-        else:
-            files.append(entry)
-
-    folders.sort(key=lambda e: e["name"].lower())
-    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    if source == "scandir" and not folders and not files:
+        source = "fallback_empty"
 
     parent_relative = ""
     if target != base_real:
@@ -1914,6 +2001,7 @@ def osc_folders_browse_api():
         "parent_relative_path": parent_relative,
         "folders": folders,
         "files": files,
+        "source": source,
         "hidden_count": hidden_count,
         "show_hidden": show_hidden,
     })

@@ -558,11 +558,6 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> Non
                 logger.info("⏰ Cron job [%s] result (%d chars): %.200s", job_id, len(response), response)
             return
 
-        _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "bash ", "MAGI_", "JUDICIAL_")
-        if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-            logger.warning("⚠️ Blocked suspicious cron command: %s", command[:100])
-            return
-
         _timeout = _cron_job_timeout(job)
         _shell_env = {"MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
         try:
@@ -570,6 +565,27 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> Non
             from skills.ops.cron_result_policy import should_log_cron_issue
 
             _argv = parse_cron_command(command)
+        except Exception as parse_exc:
+            logger.warning(
+                "⚠️ Blocked suspicious cron command for %s: %s (%s)",
+                job_id,
+                command[:160],
+                parse_exc,
+            )
+            try:
+                from skills.management.issue_tracker import log_issue
+
+                log_issue(
+                    command=f"cron:{job.get('name') or job_id}",
+                    error_msg=f"parse_error={type(parse_exc).__name__}: {parse_exc}",
+                    context=f"schedule={job.get('schedule') or job.get('cron') or ''} command={command[:240]}",
+                    severity="High",
+                    source="discord_bot.cron_scheduler",
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 576, exc_info=True)
+            return
+        try:
             _sr = await loop.run_in_executor(
                 _CRON_EXECUTOR,
                 lambda: _safe_run(

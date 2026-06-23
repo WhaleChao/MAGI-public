@@ -222,6 +222,153 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     assert response.get_json(silent=True) is None
 
 
+def test_dashboard_nerv_health_telemetry_payload(tmp_path, monkeypatch):
+    import requests
+    import urllib.request as _urllib_request
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    (tmp_path / ".runtime").mkdir(exist_ok=True)
+    (tmp_path / ".runtime" / "cron_state.json").write_text(
+        json.dumps({
+            "job_tesla": {"last_run": "2026-06-18T10:00:00", "status": "ok", "detail": "手動切換"},
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "casper.log").write_text("cron: job_tesla switch model to gemma-4-12B\n", encoding="utf-8")
+    monkeypatch.setenv("MAGI_LINE_WEBHOOK_ENDPOINT", "https://example.test/line/webhook")
+
+    def _fake_get(url, timeout=0):
+        if url.endswith("/v1/models"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]})
+        if url.endswith("/health"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {})
+        if url.endswith("/api/tags"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {"models": [{"name": "phi-4-mini-instruct-4bit"}]})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(requests, "get", _fake_get)
+
+    def _fake_urlopen(url, timeout=0):
+        payload = json.dumps({"data": [{"id": "gemma-4-12b-it-4bit"}, {"id": "phi4-mini"}, {"id": "smolllm"}]})
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return payload.encode("utf-8")
+
+        return _Resp()
+
+    monkeypatch.setattr(_urllib_request, "urlopen", _fake_urlopen)
+
+    import scripts.ops.omlx_profile_policy as policy
+    monkeypatch.setattr(policy, "expected_profile_now", lambda: ("day", "e4b"))
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(
+        total=16 * 1024**3,
+        available=8 * 1024**3,
+        percent=50,
+    )
+    psutil_mod.swap_memory = lambda: types.SimpleNamespace(percent=10)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=18.0, free=220 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 15.0
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode=1))
+
+    client = app.test_client()
+    response = client.get("/dashboard/nerv/api/health", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert "telemetry" in data
+
+    telemetry = data["telemetry"]
+    assert "system" in telemetry and "inference" in telemetry and "activity" in telemetry and "pressure" in telemetry
+    assert telemetry["system"]["loadavg"]
+    assert telemetry["system"]["uptime_seconds"] > 0
+    assert telemetry["system"]["memory"]["pressure"] in {"ok", "warn", "critical"}
+    assert telemetry["system"]["swap"]["percent"] == 10
+
+    inference = telemetry["inference"]
+    assert inference["active_profile"] in {"day", "day-e4b-degraded"}
+    assert inference["active_profile_expected"] == "e4b"
+    assert isinstance(inference["available_models"], list)
+    assert inference["sidecars"]["phi4"]["status"] in {"online", "offline"}
+    assert inference["sidecars"]["smol"]["status"] in {"online", "offline"}
+    assert inference["summary"]["status"] in {"ok", "warn", "critical", "unknown"}
+
+    activity = telemetry["activity"]
+    assert isinstance(activity["events"], list)
+    assert activity["count"] == len(activity["events"])
+    assert any(event.get("source") == "cron_state" for event in activity["events"])
+
+    pressure = telemetry["pressure"]
+    assert pressure["level"] in {"ok", "warn", "critical"}
+    assert isinstance(pressure["reasons"], list)
+
+
+def test_dashboard_nerv_ignores_historical_swap_when_macos_memory_pressure_is_ok(tmp_path, monkeypatch):
+    import urllib.request as _urllib_request
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+
+    def _fake_urlopen(url, timeout=0):
+        payload = json.dumps({"data": [{"id": "gemma-4-12b-it-4bit"}]})
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return payload.encode("utf-8")
+
+        return _Resp()
+
+    monkeypatch.setattr(_urllib_request, "urlopen", _fake_urlopen)
+
+    import scripts.ops.omlx_profile_policy as policy
+    monkeypatch.setattr(policy, "expected_profile_now", lambda: ("night", "12b"))
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(
+        total=24 * 1024**3,
+        available=18 * 1024**3,
+        percent=25,
+    )
+    psutil_mod.swap_memory = lambda: types.SimpleNamespace(percent=93.6)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=18.0, free=220 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 12.0
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        _subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0,
+            stdout="System-wide memory free percentage: 81%\n",
+            stderr="",
+        ),
+    )
+
+    response = app.test_client().get("/dashboard/nerv/api/health", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    telemetry = response.get_json()["telemetry"]
+    assert telemetry["system"]["macos_memory_pressure"]["status"] == "ok"
+    assert telemetry["system"]["swap"]["status"] == "historical"
+    assert telemetry["pressure"]["level"] == "ok"
+    assert any("macOS memory pressure is healthy" in item for item in telemetry["pressure"]["reasons"])
+
+
 def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     import subprocess as _subprocess
 

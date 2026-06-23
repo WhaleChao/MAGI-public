@@ -8276,7 +8276,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
     """取得 LAF portal 全域檔案鎖；同時間只允許一個 portal-draft/submit 跑。
 
     等待上限 wait_sec 秒（預設 900s 與 portal-draft subprocess timeout 對齊）；
-    超時則回傳 (None, False) 由 caller 決定要不要 fail-open。
+    超時則回傳 (None, False)，由 caller 中止本次 portal 操作。
     """
     global _PORTAL_LOCK_FD
     try:
@@ -8334,7 +8334,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
                     logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
                 announced = True
             time.sleep(2)
-    logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），fail-open 繼續執行（可能會與他程序衝突）", wait_sec)
+    logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），中止本次 portal 操作，避免並發衝突", wait_sec)
     try:
         fd.close()
     except Exception:
@@ -8480,7 +8480,14 @@ def main():
                 _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
         # 取互斥鎖，避免與另一個 portal-draft/submit 並發搶 LAF session
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        _, lock_ok = _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        if not lock_ok:
+            _print_result_with_sentinel({
+                "ok": False,
+                "error": "laf_portal_lock_timeout",
+                "message": "法扶官網目前仍有其他操作佔用，已中止本次草稿建立以避免並發衝突。請稍後重試。",
+            })
+            return
         try:
             result = orchestrator.execute_portal_action_draft(
                 action=args.action,
@@ -8511,7 +8518,14 @@ def main():
             except Exception as e:
                 _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        _, lock_ok = _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        if not lock_ok:
+            _print_result_with_sentinel({
+                "ok": False,
+                "error": "laf_portal_lock_timeout",
+                "message": "法扶官網目前仍有其他操作佔用，已中止本次送出以避免並發衝突。請稍後重試。",
+            })
+            return
         try:
             result = orchestrator.execute_portal_action_submit(
                 action=args.action,

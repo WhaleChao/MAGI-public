@@ -519,6 +519,32 @@ def test_pdf_calendar_scan_write_can_embed_magi_share_link(client, tmp_path, mon
     assert "MAGI分享連結：https://share.example/s/token" in writer_calls[0]["todos"][0]["description"]
 
 
+def test_calendar_share_link_replaces_stale_metadata():
+    from api.blueprints.osc_pdf import _append_calendar_source_reference
+
+    desc = "\n".join(
+        [
+            "⚖️ 6月17日 下午2時00分 調解",
+            "MAGI分享連結：https://old.example/s/old",
+            "連結有效至：2026-06-01T00:00:00",
+            "來源PDF：/old/path.pdf",
+            "MAGI分享狀態：分享連結暫不可用（old_error）",
+        ]
+    )
+    updated = _append_calendar_source_reference(
+        desc,
+        source_path=Path("/tmp/new.pdf"),
+        share={"ok": True, "url": "https://new.example/s/new", "expires_at": "2026-07-01T00:00:00"},
+    )
+
+    assert "⚖️ 6月17日 下午2時00分 調解" in updated
+    assert "https://new.example/s/new" in updated
+    assert "2026-07-01T00:00:00" in updated
+    assert "old.example" not in updated
+    assert "來源PDF：" not in updated
+    assert "MAGI分享狀態：" not in updated
+
+
 def test_all_case_pdf_targets_translate_windows_case_path(tmp_path, monkeypatch):
     from api.blueprints import osc_pdf
 
@@ -789,6 +815,54 @@ def test_all_case_pdf_targets_prioritizes_todo_like_pdf_names(tmp_path, monkeypa
     targets = osc_pdf._iter_all_case_pdf_targets(limit=1)
 
     assert targets == [(todo_like.resolve(), "2026-0001", "測試")]
+
+
+def test_pdf_text_extracts_shared_time_multiple_dates(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260601 花蓮地方法院通知.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    todos = osc_pdf._extract_todos_from_pdf_text(path, "本院定於6月12日、6月19日下午2時調解。")
+
+    hearings = [row for row in todos if row["type"] == "調解"]
+    assert [(row["date"], row["time"]) for row in hearings] == [
+        ("2026-06-12", "14:00"),
+        ("2026-06-19", "14:00"),
+    ]
+
+
+def test_pdf_text_extracts_compact_roc_datetime(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260701 花蓮地方法院通知.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    todos = osc_pdf._extract_todos_from_pdf_text(path, "本院定於1150731下午1530開庭。")
+
+    assert any(row["type"] == "開庭" and row["date"] == "2026-07-31" and row["time"] == "15:30" for row in todos)
+
+
+def test_pdf_text_accepts_zhonghua_minguo_absolute_deadline(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260601 花蓮地方法院通知.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    todos = osc_pdf._extract_todos_from_pdf_text(path, "請於中華民國115年6月30日前補正。")
+
+    assert any(row["type"] == "補正" and row["date"] == "2026-06-30" for row in todos)
+
+
+def test_pdf_text_extracts_challenge_deadlines(tmp_path):
+    from api.blueprints import osc_pdf
+
+    path = tmp_path / "20260601 花蓮地方法院裁定.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    todos = osc_pdf._extract_todos_from_pdf_text(path, "如不服本裁定，應於送達後10日內提出異議。")
+
+    assert any(row["type"] == "異議" and row["date"] == "2026-06-11" for row in todos)
 
 
 def test_pdf_calendar_scan_skips_text_for_large_pdf_when_filename_has_todo(tmp_path, monkeypatch):

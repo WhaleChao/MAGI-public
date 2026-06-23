@@ -31,8 +31,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask import Blueprint, Response, jsonify, redirect, render_template, request, session, url_for
+from flask_login import current_user, login_required, logout_user
 
 import requests as _requests
 
@@ -40,6 +40,40 @@ dashboard_pages_bp = Blueprint("dashboard_pages", __name__)
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
+
+
+def _is_mobile_app_request() -> bool:
+    requested_with = (request.headers.get("X-Requested-With") or "").strip().lower()
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if requested_with == "tw.local.magi.mobile":
+        return True
+    if "capacitor" in user_agent:
+        return True
+    if "; wv" in user_agent or " version/4.0 chrome/" in user_agent:
+        return True
+    return "mobile" in user_agent and ("safari" in user_agent or "chrome" in user_agent)
+
+
+def _maybe_force_mobile_app_login():
+    if not _is_mobile_app_request():
+        return None
+    if session.get("magi_mobile_app_auth_at"):
+        return None
+    try:
+        logout_user()
+    except Exception:
+        logging.getLogger(__name__).debug("mobile app reauth logout cleanup failed", exc_info=True)
+    session.clear()
+    return redirect(url_for("login", next="/mobile", mobile_app="1"))
+
+
+@dashboard_pages_bp.before_request
+def _force_mobile_app_reauth_before_dashboard_page():
+    if request.endpoint == "dashboard_pages.mobile_manifest":
+        return None
+    if current_user.is_authenticated:
+        return _maybe_force_mobile_app_login()
+    return None
 
 
 def _strip_trailing_dot(value: str) -> str:
@@ -650,6 +684,9 @@ def golem_console():
 @dashboard_pages_bp.route("/app")
 @login_required
 def mobile_home():
+    forced = _maybe_force_mobile_app_login()
+    if forced is not None:
+        return forced
     return render_template("mobile_home.html", user=current_user, mobile=_build_mobile_app_config())
 
 
@@ -657,6 +694,9 @@ def mobile_home():
 @dashboard_pages_bp.route("/app-admin")
 @login_required
 def mobile_admin():
+    forced = _maybe_force_mobile_app_login()
+    if forced is not None:
+        return forced
     return render_template("mobile_admin.html", user=current_user, mobile=_build_mobile_app_config())
 
 
@@ -711,6 +751,7 @@ _PROXY_PREFIX = "/wa"
 
 @dashboard_pages_bp.route(f"{_PROXY_PREFIX}/", defaults={"path": ""})
 @dashboard_pages_bp.route(f"{_PROXY_PREFIX}/<path:path>", methods=["GET", "POST"])
+@login_required
 def website_admin_proxy(path):
     """Reverse-proxy website admin server so it works over Tailscale funnel."""
     url = f"{_ADMIN_BASE}/{path}"

@@ -3,7 +3,7 @@
   "appName": "MAGI Mobile",
   "webDir": "www",
   "server": {
-    "url": "https://aimac-mini.tail6738b7.ts.net",
+    "url": "https://aimac-mini.tail6738b7.ts.net/mobile-app",
     "cleartext": false
   },
   "plugins": {

@@ -30,6 +30,18 @@ def read_openclaw_primary_model() -> str:
     return "OpenClaw 已退役，請以 MAGI 推論服務狀態為準"
 
 
+def magi_capability_overview() -> str:
+    return (
+        "✅ **我可以協助您處理 MAGI 裡的主要工作：**\n\n"
+        "• **案件與檔案**：查案件、開資料夾樹、預覽/下載/分享檔案、整理卷證與 PDF。\n"
+        "• **行程與待辦**：查今日/本週行程、開庭與補正提醒、同步 Google Calendar。\n"
+        "• **法律研究**：查判決、查法規/法條、整理實務見解、做判決趨勢分析。\n"
+        "• **文件處理**：摘要、翻譯、OCR、書狀/委任狀/收據等法務文件輔助。\n"
+        "• **系統工具**：檢查 MAGI 狀態、同步 Google Drive、排查服務與 NAS/DB 問題。\n\n"
+        "大型翻譯、長文摘要或複雜法律分析，可以在開頭加 `@heavy` 或 `@重型`，我會優先使用 NVIDIA API。"
+    )
+
+
 _LAF_PROGRESS_REPORTED_KEYWORDS = (
     "已回報",
     "已經回報",
@@ -1168,6 +1180,7 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          r"你是誰|你是什麼|自我介紹|介紹.*自己|"
          r"all\s*skills|所有功能|全部功能|功能清單|"
          r"能力清單|能力表|技能表|技能列表|你做得到什麼|"
+         r"你能做到什麼|你能做什麼事|能做到什麼事|能做哪些事|"
          r"capabilities|features|what\s*(?:are|is)\s*(?:you|your)|"
          r"你做了什麼|你可以做什麼|有哪些功能|有哪些技能|"
          r"命令列表|指令列表|指令清單)", "skill_list", None, True),
@@ -1298,7 +1311,7 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
             return orch._get_schedule()
 
         if direct and action == "skill_list":
-            return orch._list_skills()
+            return magi_capability_overview()
 
         if direct and action == "sys_monitor":
             try:

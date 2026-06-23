@@ -37,7 +37,7 @@ class TestHandleCommandHelp:
 
     def test_help_aliases(self):
         orc = _make_orchestrator()
-        for alias in ["help", "指令", "說明", "功能", "menu", "指令清單", "你可以做什麼"]:
+        for alias in ["help", "指令", "說明", "功能", "menu", "指令清單", "功能列表"]:
             result = orc._handle_command("user1", alias)
             assert "功能總覽" in result, f"alias '{alias}' did not return help text"
 
@@ -57,7 +57,8 @@ class TestHandleCommandHelp:
 
     def test_help_aliases_are_shared(self):
         assert "指令清單" in HELP_ALIASES
-        assert "你可以做什麼" in HELP_ALIASES
+        assert "功能列表" in HELP_ALIASES
+        assert "你可以做什麼" not in HELP_ALIASES
 
     def test_help_contains_current_command_surface(self):
         result = build_help_text("admin")

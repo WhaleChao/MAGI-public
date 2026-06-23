@@ -2692,6 +2692,22 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     repair_existing = bool((payload or {}).get("repair_existing")) or _env_bool("MAGI_GCAL_REPAIR_EXISTING", False)
     mirror_imported = bool((payload or {}).get("mirror_imported", False)) or _env_bool("MAGI_GCAL_MIRROR_IMPORTED", False)
     history_cutoff = _gcal_history_cutoff_date(payload or {})
+    try:
+        repair_lookback_days = int((payload or {}).get("repair_lookback_days") or os.environ.get("MAGI_GCAL_REPAIR_LOOKBACK_DAYS") or 30)
+    except Exception:
+        repair_lookback_days = 30
+    repair_lookback_days = max(0, min(repair_lookback_days, 365))
+    repair_cutoff = max(history_cutoff, datetime.now() - timedelta(days=repair_lookback_days))
+    repair_todo_ids: list[int] = []
+    for raw_id in (payload or {}).get("repair_todo_ids") or []:
+        try:
+            todo_id = int(raw_id)
+        except Exception:
+            continue
+        if todo_id > 0 and todo_id not in repair_todo_ids:
+            repair_todo_ids.append(todo_id)
+        if len(repair_todo_ids) >= 400:
+            break
 
     credentials_path = ((payload or {}).get("credentials_path") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH") or "").strip()
     token_path = ((payload or {}).get("token_path") or os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH") or "").strip()
@@ -2793,14 +2809,14 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                     WHERE ct.google_calendar_id IS NOT NULL
                       AND ct.google_calendar_id <> ''
                       AND ct.todo_date IS NOT NULL
-                      AND ct.todo_date >= CURDATE()
+                      AND ct.todo_date >= %s
                       AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
                       AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
                       AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
                     ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                     LIMIT %s
                     """,
-                    (repair_limit,),
+                    (repair_cutoff.strftime("%Y-%m-%d"), repair_limit),
                 )
                 seen_ids = {int(row.get("id") or 0) for row in todos if isinstance(row, dict)}
                 for row in cur.fetchall() or []:
@@ -2808,6 +2824,42 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                     if rid and rid not in seen_ids:
                         todos.append(dict(row))
                         seen_ids.add(rid)
+                if repair_todo_ids:
+                    wanted_ids = [x for x in repair_todo_ids if x not in seen_ids]
+                    if wanted_ids:
+                        placeholders = ",".join(["%s"] * len(wanted_ids))
+                        cur.execute(
+                            f"""
+                            SELECT
+                                ct.id,
+                                ct.case_number,
+                                ct.client_name,
+                                ct.todo_type,
+                                ct.todo_date,
+                                ct.todo_time,
+                                ct.description,
+                                ct.source_file,
+                                ct.google_calendar_id,
+                                COALESCE(c.court_name, '') AS court_name,
+                                COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
+                            FROM case_todos ct
+                            LEFT JOIN cases c
+                              ON c.case_number COLLATE utf8mb4_unicode_ci
+                               = ct.case_number COLLATE utf8mb4_unicode_ci
+                            WHERE ct.id IN ({placeholders})
+                              AND ct.google_calendar_id IS NOT NULL
+                              AND ct.google_calendar_id <> ''
+                              AND ct.todo_date IS NOT NULL
+                              AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
+                            ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
+                            """,
+                            tuple(wanted_ids),
+                        )
+                        for row in cur.fetchall() or []:
+                            rid = int((row or {}).get("id") or 0)
+                            if rid and rid not in seen_ids:
+                                todos.append(dict(row))
+                                seen_ids.add(rid)
             finally:
                 cur.close()
         filtered_todos = []
@@ -2838,7 +2890,8 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         for td in todos or []:
             try:
                 parsed_todo_date = datetime.strptime(str(td.get("todo_date") or ""), "%Y-%m-%d").date()
-                if parsed_todo_date < today or parsed_todo_date > today + timedelta(days=730):
+                min_date = repair_cutoff.date() if str(td.get("google_calendar_id") or "").strip() else history_cutoff.date()
+                if parsed_todo_date < min_date or parsed_todo_date > today + timedelta(days=730):
                     skipped_implausible += 1
                     continue
             except Exception:
@@ -2941,7 +2994,8 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             parsed_todo_date = datetime.strptime(str(td.get("todo_date") or ""), "%Y-%m-%d").date()
             today = datetime.now().date()
-            if parsed_todo_date < today or parsed_todo_date > today + timedelta(days=730):
+            min_date = repair_cutoff.date() if str(td.get("google_calendar_id") or "").strip() else history_cutoff.date()
+            if parsed_todo_date < min_date or parsed_todo_date > today + timedelta(days=730):
                 skipped_implausible += 1
                 continue
         except Exception:

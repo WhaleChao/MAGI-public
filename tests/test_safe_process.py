@@ -158,6 +158,37 @@ def test_parse_cron_simple():
     ]
 
 
+def test_parse_cron_repairs_unquoted_application_support_runtime_path():
+    command = (
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3 "
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/token_health_check.py "
+        "--refresh"
+    )
+
+    assert sp.parse_cron_command(command) == [
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3",
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/token_health_check.py",
+        "--refresh",
+    ]
+
+
+def test_parse_cron_accepts_quoted_application_support_runtime_path():
+    command = (
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3' "
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/resource_guarded_run.py' "
+        "--job-id job_drive_case_sync_all_files -- python3 scripts/drive_case_sync_worker.py"
+    )
+
+    argv = sp.parse_cron_command(command)
+
+    assert argv[:4] == [
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3",
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/resource_guarded_run.py",
+        "--job-id",
+        "job_drive_case_sync_all_files",
+    ]
+
+
 def test_parse_cron_rejects_pipe():
     with pytest.raises(PermissionError):
         sp.parse_cron_command("python3 a.py | cat")

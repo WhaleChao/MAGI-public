@@ -312,17 +312,37 @@ def _parse_ampm_time(period: str, hour: str, minute: str = "") -> tuple[int, int
     m = _parse_chinese_number_token(minute) if str(minute or "").strip() else 0
     if h is None or m is None:
         raise ValueError("invalid time token")
+    return _apply_ampm_period(label, h), m
+
+
+def _apply_ampm_period(period: str, hour: int) -> int:
+    label = str(period or "").strip()
     if label == "上":
         label = "上午"
     if label == "下":
         label = "下午"
+    h = int(hour)
     if label in {"下午", "晚上", "晚間", "傍晚", "夜間"} and h != 12:
         h += 12
     if label == "中午" and h < 11:
         h += 12
     if label in {"上午", "早上"} and h == 12:
         h = 0
-    return h, m
+    return h
+
+
+def _parse_compact_ampm_time(period: str, hour: str, minute: str = "") -> tuple[int, int]:
+    token = str(hour or "").strip()
+    minute_token = str(minute or "").strip()
+    if token.isdigit() and not minute_token and len(token) in {3, 4}:
+        h = int(token[:-2])
+        m = int(token[-2:])
+        if not (0 <= m <= 59 and 0 <= h <= 23):
+            raise ValueError("invalid compact time token")
+        if h <= 12:
+            h = _apply_ampm_period(period, h)
+        return h, m
+    return _parse_ampm_time(period, token, minute_token)
 
 
 def _next_tw_workday(dt: datetime) -> datetime:
@@ -488,10 +508,41 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
     if not body:
         return items
     filename_doc_date, filename_base_year = _pdf_text_date_context(path)
+    year_prefix = r"(?:中華)?(?:民國)?"
+    time_period = r"(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)"
+    procedure = r"(開庭|準備程序|協商程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?"
+
+    def _yearless_dt(month: str, day: str) -> datetime | None:
+        base = filename_doc_date
+        try:
+            dt = datetime(filename_base_year, int(month), int(day))
+            if dt.date() < base.date() - timedelta(days=30) and filename_base_year == base.year:
+                dt = dt.replace(year=dt.year + 1)
+            return dt
+        except Exception:
+            return None
+
+    def _append_hearing(dt: datetime, period: str, hour: str, minute: str, proc: str | None, *, compact_time: bool = False) -> None:
+        try:
+            h, mi = _parse_compact_ampm_time(period, hour, minute) if compact_time else _parse_ampm_time(period, hour, minute)
+        except Exception:
+            return
+        dt = dt.replace(hour=h, minute=mi)
+        kind = "審理" if proc in {"審理程序", "審判程序"} else (proc or "開庭")
+        items.append(
+            {
+                "type": kind,
+                "date": dt.strftime("%Y-%m-%d"),
+                "time": dt.strftime("%H:%M"),
+                "description": f"⚖️ PDF 擷取：{dt.strftime('%m/%d %H:%M')} {kind}",
+                "source": "pdf_text",
+                "source_file": str(path),
+            }
+        )
 
     hearing_patterns = [
-        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
-        r"(?:定|訂)於?(?<!年)(\d{1,2})月(\d{1,2})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{1,2}|[零一二三四五六七八九十]{1,3})時([零一二三四五六七八九十\d]{0,3})(?:分|整)?.{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)?",
+        rf"(?:定|訂)於?{year_prefix}(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日{time_period}(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.{{0,40}}?{procedure}",
+        rf"(?:定|訂)於?(?<!年)(\d{{1,2}})月(\d{{1,2}})日{time_period}(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.{{0,40}}?{procedure}",
     ]
     for pattern in hearing_patterns:
         for m in re.finditer(pattern, body):
@@ -500,32 +551,40 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 period, hour, minute, proc = m.group(4), m.group(5), m.group(6), m.group(7)
             elif len(m.groups()) == 6:
                 # Yearless hearing: mirror original OSC base-year logic.
-                base = filename_doc_date
-                dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
-                if dt.date() < base.date() - timedelta(days=30) and filename_base_year == base.year:
-                    dt = dt.replace(year=dt.year + 1)
+                dt = _yearless_dt(m.group(1), m.group(2))
                 period, hour, minute, proc = m.group(3), m.group(4), m.group(5), m.group(6)
             else:
                 continue
             if not dt:
                 continue
-            h, mi = _parse_ampm_time(period, hour, minute)
-            dt = dt.replace(hour=h, minute=mi)
-            kind = "審理" if proc in {"審理程序", "審判程序"} else (proc or "開庭")
-            items.append(
-                {
-                    "type": kind,
-                    "date": dt.strftime("%Y-%m-%d"),
-                    "time": dt.strftime("%H:%M"),
-                    "description": f"⚖️ PDF 擷取：{dt.strftime('%m/%d %H:%M')} {kind}",
-                    "source": "pdf_text",
-                    "source_file": str(path),
-                }
-            )
+            _append_hearing(dt, period, hour, minute, proc)
+
+    compact_hearing_pat = re.compile(
+        rf"(?:定|訂)於?(\d{{7,8}}){time_period}(\d{{1,4}})(?:時([零一二三四五六七八九十\d]{{0,3}}))?(?:分|整)?.{{0,40}}?{procedure}"
+    )
+    for m in compact_hearing_pat.finditer(body):
+        dt = _parse_compact_roc_or_ad_date(m.group(1))
+        if not dt:
+            continue
+        _append_hearing(dt, m.group(2), m.group(3), m.group(4) or "", m.group(5), compact_time=True)
+
+    shared_time_pat = re.compile(
+        rf"(?P<dates>(?:(?:{year_prefix}\d{{2,4}}年)?\d{{1,2}}月\d{{1,2}}日[、，,及和]*){{2,}}){time_period}(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.{{0,40}}?{procedure}"
+    )
+    shared_date_pat = re.compile(rf"(?:{year_prefix}(\d{{2,4}})年)?(\d{{1,2}})月(\d{{1,2}})日")
+    for m in shared_time_pat.finditer(body):
+        for dm in shared_date_pat.finditer(m.group("dates") or ""):
+            if dm.group(1):
+                dt = _parse_roc_or_ad_date(dm.group(1), dm.group(2), dm.group(3))
+            else:
+                dt = _yearless_dt(dm.group(2), dm.group(3))
+            if not dt:
+                continue
+            _append_hearing(dt, m.group(2), m.group(3), m.group(4), m.group(5))
 
     date_only_patterns = [
-        r"(?:定|訂)於?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
-        r"(?:定|訂)於?(?<!年)(\d{1,2})月(\d{1,2})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{0,40}?(開庭|準備程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
+        rf"(?:定|訂)於?{year_prefix}(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{{0,40}}?(開庭|準備程序|協商程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
+        rf"(?:定|訂)於?(?<!年)(\d{{1,2}})月(\d{{1,2}})日(?!上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下).{{0,40}}?(開庭|準備程序|協商程序|言詞辯論|調解|審理程序|審判程序|審理|宣判|訊問|調查)",
     ]
     for pattern in date_only_patterns:
         for m in re.finditer(pattern, body):
@@ -533,17 +592,17 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
                 dt = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
                 proc = m.group(4)
             elif len(m.groups()) == 3:
-                base = filename_doc_date
-                try:
-                    dt = datetime(filename_base_year, int(m.group(1)), int(m.group(2)))
-                    if dt.date() < base.date() - timedelta(days=30) and filename_base_year == base.year:
-                        dt = dt.replace(year=dt.year + 1)
-                except Exception:
-                    dt = None
+                dt = _yearless_dt(m.group(1), m.group(2))
                 proc = m.group(3)
             else:
                 continue
             if not dt:
+                continue
+            matched_text = m.group(0) or ""
+            if re.search(rf"\d{{1,2}}月\d{{1,2}}日[、，,及和]+(?:{year_prefix}\d{{2,4}}年)?\d{{1,2}}月\d{{1,2}}日{time_period}", matched_text):
+                continue
+            after_date = body[m.end() : m.end() + 32]
+            if re.search(rf"[、，,及和](?:{year_prefix}\d{{2,4}}年)?\d{{1,2}}月\d{{1,2}}日{time_period}", after_date):
                 continue
             kind = "審理" if proc in {"審理程序", "審判程序"} else (proc or "開庭")
             items.append(
@@ -558,7 +617,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
             )
 
     doc_date = None
-    for m in re.finditer(r"(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日", body):
+    for m in re.finditer(rf"{year_prefix}(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日", body):
         doc_date = _parse_roc_or_ad_date(m.group(1), m.group(2), m.group(3))
         if doc_date:
             break
@@ -566,7 +625,7 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
         doc_date = filename_doc_date
 
     absolute_deadline_pat = re.compile(
-        r"(?:請惠予|應|請|命|限|惠予)?(?:於)?(?:民國)?(\d{2,4})年(\d{1,2})月(\d{1,2})日(?:以前|前)[，,、\s]*([^）)]{0,90})"
+        rf"(?:請惠予|應|請|命|限|惠予)?(?:於)?{year_prefix}(\d{{2,4}})年(\d{{1,2}})月(\d{{1,2}})日(?:以前|前)[，,、\s]*([^）)]{{0,90}})"
     )
     for m in absolute_deadline_pat.finditer(body):
         before = body[max(0, m.start() - 24) : m.start()]
@@ -645,6 +704,9 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
         ("陳報", rf"{day_token}內.{{0,35}}(?:陳報|回覆|表示意見|確答|陳明)"),
         ("提出資料", rf"{day_token}內.{{0,35}}(?:提出|檢送|補提).{{0,20}}(?:資料|文件|清冊|報告書|截圖|證據)"),
         ("繳費", rf"{day_token}內.{{0,25}}(?:繳納|繳費)"),
+        ("再抗告", rf"{day_token}內.{{0,25}}再抗告"),
+        ("再議", rf"{day_token}內.{{0,25}}(?:聲請|提出)?再議"),
+        ("異議", rf"{day_token}內.{{0,25}}(?:提出|聲明)?異議"),
         ("上訴", rf"{day_token}內.{{0,25}}上訴"),
         ("抗告", rf"{day_token}內.{{0,25}}抗告"),
     ]
@@ -946,8 +1008,27 @@ def _create_calendar_share_link(path: Path) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
 
 
+_CALENDAR_SHARE_METADATA_PREFIXES = (
+    "MAGI分享連結：",
+    "連結有效至：",
+    "MAGI分享狀態：",
+    "來源PDF：",
+)
+
+
+def _strip_calendar_share_metadata(description: str) -> str:
+    """Remove stale calendar share/source metadata before writing a fresh link."""
+    lines: list[str] = []
+    for line in str(description or "").splitlines():
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in _CALENDAR_SHARE_METADATA_PREFIXES):
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
+
+
 def _append_calendar_share_link(description: str, share: dict[str, Any]) -> str:
-    desc = str(description or "").strip()
+    desc = _strip_calendar_share_metadata(description)
     if not share.get("ok") or not share.get("url"):
         return desc
     lines = [desc] if desc else []
@@ -959,7 +1040,7 @@ def _append_calendar_share_link(description: str, share: dict[str, Any]) -> str:
 
 def _append_calendar_source_reference(description: str, *, source_path: Path, share: dict[str, Any]) -> str:
     """Keep PDF-created todos traceable even when the public share tunnel is unavailable."""
-    desc = str(description or "").strip()
+    desc = _strip_calendar_share_metadata(description)
     if share.get("ok") and share.get("url"):
         return _append_calendar_share_link(desc, share)
     lines = [desc] if desc else []
@@ -1220,7 +1301,7 @@ def _iter_indexed_case_pdf_candidates(
     empty document_index.case_number, so we infer the case from the folder name
     and keep only open cases.
     """
-    max_items = max(1, min(limit, 5000))
+    max_items = max(1, min(limit, 50000))
     case_rows, _ = _osc_exec(
         """
         SELECT case_number, client_name, folder_path, status
@@ -1240,7 +1321,7 @@ def _iter_indexed_case_pdf_candidates(
         return []
 
     indexed_limit = max(max_items * 6, int(os.environ.get("OSC_PDF_CALENDAR_INDEX_TARGET_LIMIT", "2500") or "2500"))
-    indexed_limit = max(100, min(indexed_limit, 10000))
+    indexed_limit = max(100, min(indexed_limit, 50000))
     try:
         rows, _ = _osc_exec(
             """
@@ -1338,8 +1419,8 @@ def _iter_all_case_pdf_targets(
         target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_TARGET_BUDGET_SEC", "180") or "180"))
     else:
         target_budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_TARGET_BUDGET_SEC", "45") or "45"))
-    max_items = max(1, min(limit, 5000))
-    row_limit = max(1, min(2000, int(case_batch or 0) or max(20, max_items * 2)))
+    max_items = max(1, min(limit, 50000))
+    row_limit = max(1, min(10000, int(case_batch or 0) or max(20, max_items * 2)))
     row_offset = max(0, int(case_offset or 0))
     rows, _ = _osc_exec(
         """

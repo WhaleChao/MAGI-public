@@ -270,6 +270,7 @@ def build_report() -> dict:
     backlog = backlog_status(cache_root, process_state_path, raw_root)
     normalized = normalized_summary(normalized_root)
     scheduled_capacity = scheduled_day_process_capacity(MAGI_ROOT / "cron_jobs.json")
+    now_hour = datetime.now().hour
 
     reasons: list[str] = []
     status = "PIPELINE_HEALTHY"
@@ -292,9 +293,18 @@ def build_report() -> dict:
             reasons.append("尚未找到夜間拉取狀態檔，但已有裁判資料檔；將由晨間整理狀態判斷風險。")
         else:
             if status == "PIPELINE_HEALTHY":
-                status = "PULL_NEVER_RUN"
-                exit_code = RISK_EXIT
-            reasons.append("尚未找到夜間拉取狀態檔或成功紀錄。")
+                has_schedule = int(scheduled_capacity.get("runs_per_day") or 0) > 0
+                if credentials["present"] and has_schedule and not (0 <= now_hour < 6):
+                    status = "PULL_WAITING_WINDOW"
+                    exit_code = WARNING_EXIT
+                    reasons.append(
+                        "尚未找到夜間拉取狀態檔；目前不在 00:00-06:00 司法院介接服務時段，"
+                        "且待整理序列為空，等待下一次夜間排程建立拉取紀錄。"
+                    )
+                else:
+                    status = "PULL_NEVER_RUN"
+                    exit_code = RISK_EXIT
+                    reasons.append("尚未找到夜間拉取狀態檔或成功紀錄。")
     elif (pull["latest_age_hours"] or 0.0) > pull_stale_hours:
         pull_age = float(pull["latest_age_hours"] or 0.0)
         if raw_total > 0 and normalized_count > 0 and raw_total == int(backlog.get("processed_entries") or 0):

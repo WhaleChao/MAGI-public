@@ -8,9 +8,10 @@ from datetime import datetime
 
 DAY_START_MINUTE = 6 * 60 + 35
 DAY_END_MINUTE = 21 * 60 + 50
-DAY_MODEL_KEYWORD = "12b"
+DAY_MODEL_KEYWORD = "e4b"
 DAY_FALLBACK_MODEL_KEYWORD = "e4b"
 NIGHT_MODEL_KEYWORD = "26b"
+NIGHT_FALLBACK_MODEL_KEYWORD = "12b"
 
 
 def expected_profile_for_minutes(minutes: int) -> tuple[str, str]:

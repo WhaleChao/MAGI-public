@@ -126,6 +126,15 @@ async function jumpToPaperclipTabAndRun(tabId, fn) {
 
 async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
+    if (act === "case-card-modal-close") {
+        if (typeof closeCaseCardModal === "function") {
+            closeCaseCardModal();
+        } else {
+            document.getElementById("caseCardModal")?.remove();
+            document.body.classList.remove("case-card-modal-open");
+        }
+        return;
+    }
     if (act === "case-edit") return await editCase(id);
     if (act === "case-del") return await delCase(id);
     if (act === "case-open") return await openCaseInFileManager(id);
@@ -339,7 +348,7 @@ function bindGlobalDelegates() {
             const col = th.dataset.sort;
             const type = th.dataset.type || "string";
             const viewId = th.closest(".view")?.id || th.closest(".modal")?.id || "";
-            const activeSort = viewId === "cases" ? (state.caseSort || { col: "case_number", dir: 1, type: "string" }) : state.sort;
+            const activeSort = viewId === "cases" ? (state.caseSort || { col: "case_number", dir: -1, type: "string" }) : state.sort;
             if (activeSort.col === col) {
                 activeSort.dir = activeSort.dir === 1 ? -1 : 1;
             } else {
@@ -808,12 +817,12 @@ function initSortBars() {
         const btn = document.getElementById(dirBtnId);
         if (!sel || !btn) return;
         sel.value = state.caseSort?.col || 'case_number';
-        btn.textContent = (state.caseSort?.dir || 1) === 1 ? '▲' : '▼';
+        btn.textContent = (state.caseSort?.dir || -1) === 1 ? '▲' : '▼';
         sel.addEventListener('change', () => {
             const opt = sel.selectedOptions[0];
             state.caseSort = {
                 col: sel.value || 'case_number',
-                dir: state.caseSort?.dir || 1,
+                dir: state.caseSort?.dir || -1,
                 type: opt?.dataset?.type || 'string',
             };
             renderCases();
@@ -821,7 +830,7 @@ function initSortBars() {
         btn.addEventListener('click', () => {
             state.caseSort = {
                 col: state.caseSort?.col || 'case_number',
-                dir: (state.caseSort?.dir || 1) === 1 ? -1 : 1,
+                dir: (state.caseSort?.dir || -1) === 1 ? -1 : 1,
                 type: state.caseSort?.type || 'string',
             };
             btn.textContent = state.caseSort.dir === 1 ? '▲' : '▼';
@@ -837,6 +846,26 @@ function initSortBars() {
 }
 
 // ── Global search ──
+function runGlobalCaseSearch(rawQuery) {
+    const q = (rawQuery || '').trim();
+    if (!q) return;
+
+    const casesQ = document.getElementById('casesQ');
+    if (casesQ) {
+        casesQ.value = q;
+        casesQ.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
+    if (casesTab) casesTab.click();
+
+    window.setTimeout(() => {
+        if (typeof loadCases === 'function') {
+            Promise.resolve(loadCases()).catch(e => console.warn('global case search failed:', e));
+        }
+    }, 80);
+}
+
 function initGlobalSearch() {
     const input = document.getElementById('globalSearchInput');
     if (!input) return;
@@ -846,12 +875,7 @@ function initGlobalSearch() {
         timer = setTimeout(async () => {
             const q = (input.value || '').trim();
             if (!q) return;
-            // Switch to cases tab and search
-            const casesQ = document.getElementById('casesQ');
-            if (casesQ) casesQ.value = q;
-            // Click cases tab
-            const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
-            if (casesTab) casesTab.click();
+            runGlobalCaseSearch(q);
         }, 400);
     });
     input.addEventListener('keydown', e => {
@@ -859,10 +883,7 @@ function initGlobalSearch() {
             e.preventDefault();
             const q = (input.value || '').trim();
             if (!q) return;
-            const casesQ = document.getElementById('casesQ');
-            if (casesQ) casesQ.value = q;
-            const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
-            if (casesTab) casesTab.click();
+            runGlobalCaseSearch(q);
         }
     });
 }

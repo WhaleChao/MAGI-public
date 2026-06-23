@@ -478,8 +478,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if row_id:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE id=%s
             LIMIT 1
@@ -490,8 +489,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and case_number:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE case_number=%s
             LIMIT 1
@@ -502,8 +500,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and laf_case_no:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE laf_case_no=%s
             LIMIT 1
@@ -514,8 +511,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and client_name:
         rows, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE client_name=%s
             ORDER BY updated_at DESC, created_date DESC
@@ -558,19 +554,39 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
     c = case_row or {}
     f = fields or {}
     today = datetime.now().strftime("%Y-%m-%d")
+    client_name = f.get("client_name") or c.get("client_name") or ""
+    case_number = f.get("case_number") or c.get("case_number") or ""
+    court_case_no = (
+        f.get("court_case_no")
+        or c.get("court_case_no")
+        or c.get("court_case_number")
+        or ""
+    )
+    court_name = f.get("court_name") or c.get("court_name") or ""
+    laf_case_no = f.get("laf_case_no") or c.get("laf_case_no") or ""
+    case_reason = f.get("case_reason") or c.get("case_reason") or ""
+    lawyer_name = f.get("lawyer_name") or c.get("lawyer_name") or "＿＿＿＿"
+    address = f.get("address") or c.get("address") or c.get("client_address") or ""
+    phone = f.get("phone") or c.get("phone") or c.get("client_phone") or ""
+    tax_id = f.get("tax_id") or c.get("tax_id") or c.get("client_id_number") or ""
+    email = f.get("email") or c.get("email") or c.get("client_email") or ""
 
     if ftype == "contract":
         title = "契約書草稿"
         doc = (
             f"{title}\n\n"
             f"日期：{f.get('date') or today}\n"
-            f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-            f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-            f"法院案號：{f.get('court_case_no') or c.get('court_case_no') or ''}\n"
-            f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
-            f"受任律師：{f.get('lawyer_name') or '＿＿＿＿'}\n"
+            f"當事人：{client_name}\n"
+            f"案件編號：{case_number}\n"
+            f"法院案號：{court_case_no}\n"
+            f"法扶案號：{laf_case_no}\n"
+            f"案由：{case_reason}\n"
+            f"受任律師：{lawyer_name}\n"
             f"費用項目：{f.get('item') or ''}\n"
             f"金額：{f.get('amount') or ''}\n"
+            f"通訊地址：{address}\n"
+            f"聯絡電話：{phone}\n"
+            f"電子信箱：{email}\n"
             f"備註：{f.get('notes') or ''}\n"
             f"\n\n（以下為契約條文草稿，請自行替換正文）"
         )
@@ -582,12 +598,16 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
         doc = (
             f"{title}\n\n"
             f"日期：{f.get('date') or today}\n"
-            f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-            f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-            f"法院案號：{f.get('court_case_no') or c.get('court_case_no') or ''}\n"
-            f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
-            f"案由：{f.get('case_reason') or c.get('case_reason') or ''}\n"
-            f"受任律師：{f.get('lawyer_name') or '＿＿＿＿'}\n"
+            f"當事人：{client_name}\n"
+            f"案件編號：{case_number}\n"
+            f"法院名稱：{court_name}\n"
+            f"法院案號：{court_case_no}\n"
+            f"法扶案號：{laf_case_no}\n"
+            f"案由：{case_reason}\n"
+            f"受任律師：{lawyer_name}\n"
+            f"通訊地址：{address}\n"
+            f"聯絡電話：{phone}\n"
+            f"身分證字號：{tax_id}\n"
             f"備註：{f.get('notes') or ''}\n"
         )
         filename = f"委任狀草稿_{c.get('case_number') or '未指定位案件'}"
@@ -604,12 +624,13 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
         f"{title}\n\n"
         f"日期：{f.get('date') or today}\n"
         f"收據編號：{f.get('receipt_no') or ''}\n"
-        f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-        f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-        f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
+        f"當事人：{client_name}\n"
+        f"案件編號：{case_number}\n"
+        f"法扶案號：{laf_case_no}\n"
         f"費用項目：{f.get('item') or '法律服務費'}\n"
         f"金額：{amount}\n"
         f"付款方式：{f.get('payment_method') or ''}\n"
+        f"收款律師：{lawyer_name}\n"
         f"備註：{f.get('notes') or ''}\n"
     )
     filename = f"收據草稿_{c.get('case_number') or '未指定位案件'}"

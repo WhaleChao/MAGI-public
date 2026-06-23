@@ -15,6 +15,8 @@ LABEL="com.magi.daemon"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 MENUBAR_LABEL="com.magi.menubar"
 MENUBAR_PLIST="$HOME/Library/LaunchAgents/$MENUBAR_LABEL.plist"
+MENUBAR_WRAPPER_PATTERN="run_menubar_no_site.py"
+MENUBAR_GUI_PATTERN="gui/magi_menubar.py"
 RPC_LABEL="com.magi.rpc"
 RPC_PLIST="$HOME/Library/LaunchAgents/$RPC_LABEL.plist"
 
@@ -40,6 +42,30 @@ _check_daemon() {
     else
         printf "  ${RED}○${NC} %-18s ${RED}DOWN${NC}\n" "Daemon"
     fi
+}
+
+_find_menubar_process() {
+    local pid
+    pid=$(_find_process_by_pattern "$MENUBAR_WRAPPER_PATTERN")
+    if [ -z "$pid" ]; then
+        pid=$(_find_process_by_pattern "$MENUBAR_GUI_PATTERN")
+    fi
+    echo "$pid"
+}
+
+_check_menubar() {
+    local pid
+    pid=$(_find_menubar_process)
+    if [ -n "$pid" ]; then
+        printf "  ${GREEN}●${NC} %-18s PID %-6s\n" "Status Bar" "$pid"
+    else
+        printf "  ${RED}○${NC} %-18s ${RED}DOWN${NC}\n" "Status Bar"
+    fi
+}
+
+_kill_menubar_processes() {
+    pkill -f "$MENUBAR_WRAPPER_PATTERN" 2>/dev/null || true
+    pkill -f "$MENUBAR_GUI_PATTERN" 2>/dev/null || true
 }
 
 _find_process_by_pattern() {
@@ -455,7 +481,7 @@ cmd_status() {
     _check_port "RPC Worker"        50052
     echo ""
     echo "UI:"
-    _check "Status Bar"   "gui/magi_menubar.py"
+    _check_menubar
     echo ""
     echo "Sidecars:"
     _check_osc_shell_nas_helper
@@ -585,10 +611,10 @@ cmd_start() {
         echo "  Starting status bar..."
         launchctl bootstrap gui/$(id -u) "$MENUBAR_PLIST" 2>/dev/null || launchctl load "$MENUBAR_PLIST" 2>/dev/null || true
         sleep 3
-        if [ -z "$(_find_process_by_pattern "gui/magi_menubar.py")" ]; then
+        if [ -z "$(_find_menubar_process)" ]; then
             echo "  LaunchAgent did not bring status bar up; starting status bar directly..."
             launchctl bootout gui/$(id -u)/$MENUBAR_LABEL 2>/dev/null || launchctl unload "$MENUBAR_PLIST" 2>/dev/null || true
-            pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+            _kill_menubar_processes
             _start_menubar_direct >/dev/null
         fi
     fi
@@ -645,7 +671,7 @@ cmd_stop() {
     pkill -f "whalechao.github.io/admin/admin_server.py" 2>/dev/null || true
     echo "  Stopping OSC NAS helper..."
     cmd_stop_osc_shell_nas_helper
-    pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+    _kill_menubar_processes
     pkill -f "rpc-server" 2>/dev/null || true
     sleep 2
     echo "MAGI stopped."
@@ -663,11 +689,11 @@ cmd_menubar() {
     # Keep launchd from respawning the bash wrapper, then start the GUI process
     # directly in the current GUI user session.
     launchctl bootout gui/$(id -u)/$MENUBAR_LABEL 2>/dev/null || launchctl unload "$MENUBAR_PLIST" 2>/dev/null || true
-    pkill -f "gui/magi_menubar.py" 2>/dev/null || true
+    _kill_menubar_processes
     sleep 1
     _start_menubar_direct >/dev/null
     sleep 4
-    _check "Status Bar" "gui/magi_menubar.py"
+    _check_menubar
 }
 
 cmd_zombie() {

@@ -3382,8 +3382,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     tr_retry_detail: Optional[Dict[str, Any]] = None
                     tr_retry_enabled = os.environ.get("MAGI_TICK_TRANSCRIPT_RETRY_ON_TIMEOUT", "1").strip().lower() in {"1", "true", "yes", "on"}
                     if tr_retry_enabled and (not tr_sync_first.ok) and _cmd_timed_out(tr_sync_first):
-                        # 低負載重試：改用 download_all（略過前置掃描/更名），避免第二次又卡死。
-                        tr_retry_cmd = [VENV_PY, _skill_action("transcript-downloader"), "--task", "download_all"]
+                        # 低負載重試：沿用可續跑分批同步，略過前置 MD5 掃描，避免回到舊的全量一次掃到底。
+                        tr_retry_cmd = [VENV_PY, _skill_action("transcript-downloader"), "--task", "sync_quick"]
                         tr_retry_env = dict(tr_sync_env)
                         tr_retry_env["MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC"] = str(
                             os.environ.get("MAGI_TICK_TRANSCRIPT_RETRY_PAGELOAD_TIMEOUT_SEC", "30") or "30"
@@ -3397,7 +3397,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                         tr_retry_detail = {
                             "attempted": True,
                             "reason": "timeout",
-                            "mode": "low_load_download_all",
+                            "mode": "low_load_incremental_sync",
                             "ok": tr_retry.ok,
                             "returncode": tr_retry.returncode,
                             "parsed": tr_retry.parsed if isinstance(tr_retry.parsed, dict) else {},

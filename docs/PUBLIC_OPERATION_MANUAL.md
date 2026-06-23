@@ -423,6 +423,7 @@ MAGI 支援兩類待辦：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 若只是測試公開安裝性，且沒有私有 DB：
@@ -439,6 +440,8 @@ python3 scripts/public_release_audit.py --public-isolation --strict --skip-db
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ```
 
@@ -507,6 +510,8 @@ http://127.0.0.1:5002/health
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/magi_doctor.py --json
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ```
 

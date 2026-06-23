@@ -27,6 +27,8 @@ verify_*.py
 *.aiff
 test_*.jpg
 test_*.png
+/*.pdf
+tmp/
 
 .cache/
 archive/

@@ -523,7 +523,7 @@ def _search_impl(
     case_word: str = "",
     case_no: str = "",
 ) -> dict:
-    if _prefer_http_fetch():
+    if _prefer_http_fetch() or not os.path.exists(VENV_PY):
         http_result = _search_http_impl(
             keywords=keywords,
             max_results=max_results,
@@ -1144,7 +1144,7 @@ def main() -> int:
 
     # If we're running inside the dedicated venv, or if HTTP-form fetching is enabled,
     # execute logic directly in the current interpreter.
-    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1" or _prefer_http_fetch():
+    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1" or _prefer_http_fetch() or not os.path.exists(VENV_PY):
         if task == "self_test":
             return _ok(_self_test_impl())
         if task.startswith("search"):

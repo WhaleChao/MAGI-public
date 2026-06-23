@@ -13,6 +13,7 @@ Usage (CLI):
 """
 import argparse
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 import subprocess
 import uuid
 
@@ -973,24 +974,29 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
                  topic_key: str = "filereview"):
     """Send a file (image/PDF/etc.) to admin via TG and DC."""
     if not flag:
-        return
+        return False
     if _notifications_suppressed():
         logger.info("File notification suppressed by MAGI_FILE_REVIEW_SUPPRESS_NOTIFY: %s", os.path.basename(file_path or ""))
-        return
+        return False
     if not file_path or not os.path.isfile(file_path):
         logger.warning("_notify_file: file not found: %s", file_path)
-        return
+        return False
+    sent_any = False
     # 1) Telegram via LAFNotifier
     try:
         import sys
         if CODE_DIR not in sys.path:
             sys.path.insert(0, CODE_DIR)
         from line_notifier import LAFNotifier
-        LAFNotifier().notify_admin_with_files(
+        result = LAFNotifier().notify_admin_with_files(
             caption or os.path.basename(file_path), [file_path],
             topic_key=topic_key, source="file_review_orchestrator",
         )
-        logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
+        if result is not False:
+            sent_any = True
+            logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
+        else:
+            logger.warning("LAFNotifier returned False for: %s", os.path.basename(file_path))
     except Exception as e:
         logger.warning("LAFNotifier send failed: %s", e)
         # TG fallback via red_phone
@@ -998,26 +1004,160 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
             from skills.ops.red_phone import send_file_admin  # type: ignore
             result = send_file_admin(file_path, caption=caption, topic_key=topic_key)
             if result.get("ok"):
+                sent_any = True
                 logger.info("File sent via red_phone (TG fallback): %s", os.path.basename(file_path))
             else:
                 logger.warning("red_phone send_file_admin returned: %s", result)
         except Exception as e2:
             logger.warning("red_phone TG fallback also failed: %s", e2)
-    # 2) Discord — always attempt regardless of TG result
+    # LAFNotifier already sends files to TG and DC. Use direct DC only as fallback.
+    if not sent_any:
+        try:
+            from skills.ops.red_phone import send_discord_bot_file  # type: ignore
+            ok = send_discord_bot_file(
+                file_path,
+                caption=caption or os.path.basename(file_path),
+                topic_key=topic_key,
+                source="file_review_orchestrator",
+            )
+            if ok:
+                sent_any = True
+                logger.info("File sent via Discord bot fallback: %s", os.path.basename(file_path))
+            else:
+                logger.warning("send_discord_bot_file returned False for: %s", os.path.basename(file_path))
+        except Exception as e3:
+            logger.warning("Discord file send failed: %s", e3)
+    return sent_any
+
+
+def _is_valid_payment_pdf_file(path: str) -> bool:
+    """Return True only for real PDF payment files, not OLA JSON/HTML error payloads."""
+    if not path or not os.path.isfile(path):
+        return False
+    lowered_path = str(path or "").lower()
+    filename = os.path.basename(lowered_path)
+    if "_ignored_downloads" in lowered_path or ".invalid_artifact" in filename:
+        return False
+    if not str(path).lower().endswith(".pdf"):
+        return False
     try:
-        from skills.ops.red_phone import send_discord_bot_file  # type: ignore
-        ok = send_discord_bot_file(
-            file_path,
-            caption=caption or os.path.basename(file_path),
-            topic_key=topic_key,
-            source="file_review_orchestrator",
-        )
-        if ok:
-            logger.info("File sent via Discord bot: %s", os.path.basename(file_path))
-        else:
-            logger.warning("send_discord_bot_file returned False for: %s", os.path.basename(file_path))
-    except Exception as e3:
-        logger.warning("Discord file send failed: %s", e3)
+        with open(path, "rb") as f:
+            chunk = f.read(4096)
+    except Exception:
+        return False
+    if not chunk.lstrip().startswith(b"%PDF"):
+        return False
+    lowered = chunk.decode("utf-8", errors="ignore").lower()
+    return not any(marker in lowered for marker in ("<html", "<!doctype html", "messagetext", "\"status\"", "\"controller\""))
+
+
+def _payment_delivery_state_path(download_folder: str) -> str:
+    return os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, ".payment_pdf_delivery_state.json")
+
+
+def _load_payment_delivery_state(download_folder: str) -> dict:
+    path = _payment_delivery_state_path(download_folder)
+    if not os.path.exists(path):
+        return {"version": 1, "sent_files": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("state_not_dict")
+    except Exception:
+        return {"version": 1, "sent_files": {}}
+    data.setdefault("version", 1)
+    data.setdefault("sent_files", {})
+    if not isinstance(data.get("sent_files"), dict):
+        data["sent_files"] = {}
+    return data
+
+
+def _save_payment_delivery_state(download_folder: str, state: dict) -> None:
+    path = _payment_delivery_state_path(download_folder)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save payment PDF delivery state: %s", e)
+
+
+def _payment_file_delivery_key(path: str) -> str:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return "sha256:" + h.hexdigest()
+    except Exception:
+        try:
+            st = os.stat(path)
+            return f"path:{os.path.realpath(path)}:{int(st.st_size)}:{int(st.st_mtime)}"
+        except Exception:
+            return f"path:{os.path.realpath(path or '')}"
+
+
+def _payment_file_already_delivered(path: str, download_folder: str) -> bool:
+    key = _payment_file_delivery_key(path)
+    state = _load_payment_delivery_state(download_folder)
+    return bool(key and key in (state.get("sent_files") or {}))
+
+
+def _mark_payment_file_delivered(path: str, download_folder: str, caption: str = "") -> None:
+    key = _payment_file_delivery_key(path)
+    if not key:
+        return
+    state = _load_payment_delivery_state(download_folder)
+    sent_files = state.setdefault("sent_files", {})
+    sent_files[key] = {
+        "path": os.path.realpath(path),
+        "name": os.path.basename(path),
+        "caption": caption,
+        "sent_at": datetime.now().isoformat(),
+        "size": os.path.getsize(path) if os.path.exists(path) else 0,
+    }
+    state["updated_at"] = datetime.now().isoformat()
+    _save_payment_delivery_state(download_folder, state)
+
+
+def _send_payment_pdf_files(
+    file_paths: List[str],
+    *,
+    download_folder: str,
+    caption_prefix: str,
+    notify: bool = True,
+) -> dict:
+    """Send valid, not-yet-delivered payment PDFs and persist delivery state."""
+    unique: List[str] = []
+    seen: Set[str] = set()
+    invalid = 0
+    already_sent = 0
+    for raw in file_paths or []:
+        path = str(raw or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if not _is_valid_payment_pdf_file(path):
+            invalid += 1
+            continue
+        if _payment_file_already_delivered(path, download_folder):
+            already_sent += 1
+            continue
+        unique.append(path)
+
+    sent = 0
+    for idx, path in enumerate(unique, 1):
+        caption = f"{caption_prefix} ({idx}/{len(unique)}): {os.path.basename(path)}"
+        if _notify_file(path, caption=caption, flag=notify, topic_key="filereview_payment"):
+            sent += 1
+            _mark_payment_file_delivered(path, download_folder, caption=caption)
+    return {
+        "eligible": len(unique),
+        "sent": sent,
+        "invalid": invalid,
+        "already_sent": already_sent,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2107,24 +2247,29 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
 
             results = mgr.download_all_payment_slips(max_days=max_days)
 
-            # Collect PDF paths — only newly downloaded (skip already_existed)
+            # Collect PDF paths.  Existing files still need delivery if the
+            # previous run downloaded them but failed to send the PDF.
             pdf_paths = []
             case_labels = []
             for r in results:
-                if r.get("already_existed"):
-                    continue
                 # 使用 all_paths 取得全部檔案，fallback 到 pdf_path
                 paths = r.get("all_paths") or []
                 if not paths:
                     p = r.get("pdf_path", "")
                     if p:
                         paths = [p]
+                valid_paths = [path for path in paths if _is_valid_payment_pdf_file(path)]
+                if r.get("already_existed"):
+                    valid_paths = [
+                        path for path in valid_paths
+                        if not _payment_file_already_delivered(path, creds["download_folder"])
+                    ]
                 for path in paths:
-                    if path and os.path.exists(path):
+                    if path in valid_paths:
                         pdf_paths.append(path)
                 party = r.get("party") or ""
                 case_no = r.get("case_number") or ""
-                if paths:
+                if valid_paths:
                     case_labels.append(f"{party}｜{case_no}")
 
             if pdf_paths:
@@ -2138,10 +2283,12 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
                 # Send notification text first
                 _notify(msg, notify)
 
-                # Send PDFs via TG
+                # Send PDFs via TG/DC and record actual file delivery.
                 for i, pdf_path in enumerate(pdf_paths):
                     label = case_labels[i] if i < len(case_labels) else os.path.basename(pdf_path)
-                    _notify_file(pdf_path, caption=f"📄 繳費單 ({i+1}/{len(pdf_paths)}): {label}", flag=notify)
+                    caption = f"📄 繳費單 ({i+1}/{len(pdf_paths)}): {label}"
+                    if _notify_file(pdf_path, caption=caption, flag=notify, topic_key="filereview_payment"):
+                        _mark_payment_file_delivered(pdf_path, creds["download_folder"], caption=caption)
 
                 return {
                     "success": True,
@@ -2579,6 +2726,11 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
         return out
 
 
+def cmd_download_sync(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
+    """Alias for explicit sync mode: always force blocking download flow."""
+    return cmd_download(case_number=case_number, notify=notify, flow_id=flow_id)
+
+
 def cmd_download_background(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
     """
     Queue download job in background and return immediately.
@@ -2866,6 +3018,23 @@ def _normalize_case_token(val: str) -> str:
         if cleaned:
             out.append(cleaned.lower())
     return "".join(out)
+
+
+def _expand_payment_notice_key(key: object) -> Set[str]:
+    """Expand legacy web_payment raw-case keys into normalized case keys."""
+    raw_key = str(key or "").strip()
+    if not raw_key.startswith("web_payment:"):
+        return set()
+    out: Set[str] = {raw_key}
+    if raw_key.startswith("web_payment:case:") or raw_key.startswith("web_payment:payid:") or raw_key.startswith("web_payment:rowid:"):
+        return out
+    raw_case = raw_key[len("web_payment:"):].strip()
+    if not raw_case:
+        return out
+    norm = _normalize_case_token(raw_case)
+    if norm:
+        out.add(f"web_payment:case:{norm}")
+    return out
 
 
 def _case_display_cache_key(item: dict) -> str:
@@ -3247,11 +3416,17 @@ def _load_payment_notified_keys(download_folder: str) -> Set[str]:
             data = json.load(f) or {}
     except Exception:
         return set()
+    raw_keys: Iterable[object]
     if isinstance(data, list):
-        return {str(x) for x in data if str(x).startswith("web_payment:")}
-    if isinstance(data, dict):
-        return {str(k) for k in data.keys() if str(k).startswith("web_payment:")}
-    return set()
+        raw_keys = data
+    elif isinstance(data, dict):
+        raw_keys = data.keys()
+    else:
+        return set()
+    out: Set[str] = set()
+    for key in raw_keys:
+        out.update(_expand_payment_notice_key(key))
+    return out
 
 
 def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
@@ -3269,7 +3444,7 @@ def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
         if not isinstance(entry, dict):
             continue
         files = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
-        has_existing_file = any(os.path.isfile(fp) for fp in files)
+        has_existing_file = any(_is_valid_payment_pdf_file(fp) for fp in files)
         if not has_existing_file:
             names = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
             has_existing_file = bool(names)
@@ -3817,6 +3992,31 @@ def _recent_activity_fingerprint(item: dict) -> str:
     return "|".join(parts)
 
 
+def _recent_payment_activity_file_paths(item: dict) -> List[str]:
+    if not isinstance(item, dict):
+        return []
+    paths = item.get("file_paths")
+    if not isinstance(paths, list):
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw in paths:
+        path = str(raw or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if _is_valid_payment_pdf_file(path):
+            out.append(path)
+    return out
+
+
+def _recent_payment_activity_has_undelivered_pdf(item: dict, download_folder: str) -> bool:
+    for path in _recent_payment_activity_file_paths(item):
+        if not _payment_file_already_delivered(path, download_folder):
+            return True
+    return False
+
+
 def _prune_recent_activity_bucket(bucket: dict, keep_days: int = 30) -> dict:
     if not isinstance(bucket, dict):
         return {}
@@ -3876,7 +4076,10 @@ def _filter_unnotified_recent_activity(records: List[dict], download_folder: str
         # JSON fallback
         if not _already:
             _already = fp in bucket
-        if _already:
+        if _already and not (
+            bucket_name == "recent_payment_activity"
+            and _recent_payment_activity_has_undelivered_pdf(item, download_folder)
+        ):
             continue
         fresh.append(item)
     return fresh
@@ -3925,10 +4128,12 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[d
         dt = _parse_iso_datetime(entry.get("processed_at") or "")
         if dt is None or dt.timestamp() < cutoff:
             continue
-        files = entry.get("file_paths") if isinstance(entry.get("file_paths"), list) else []
+        file_paths = [str(fp).strip() for fp in (entry.get("file_paths") or []) if str(fp).strip()]
+        valid_file_paths = [fp for fp in file_paths if _is_valid_payment_pdf_file(fp)]
+        files = file_paths
         if not files and isinstance(entry.get("files"), list):
             files = entry.get("files") or []
-        file_count = len([fp for fp in files if str(fp or "").strip()])
+        file_count = len(valid_file_paths) if valid_file_paths else len([fp for fp in files if str(fp or "").strip()])
         case_number = str(entry.get("case_number") or entry.get("yyidno") or "").strip()
         party = str(entry.get("party") or "").strip()
         # Fallback: 從檔名解析當事人姓名（繳費單_[當事人H]_115.原金訴.000044.pdf）
@@ -3948,6 +4153,7 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[d
             "count": file_count,
             "source": "payment_registry",
             "key": str(key or ""),
+            "file_paths": valid_file_paths,
         }
         rec_key = _portal_item_case_key({"case_number": case_number, "party": party, "payid": str(entry.get("p_payid") or "")}) or f"payment:{key}"
         prev = chosen.get(rec_key)
@@ -4024,6 +4230,86 @@ def _format_recent_activity_block(title: str, records: List[dict], limit: int = 
     return lines
 
 
+def _payment_pdf_text(path: str, max_chars: int = 2500) -> str:
+    if not _is_valid_payment_pdf_file(path):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["pdftotext", path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return (proc.stdout or "")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _load_recent_unregistered_payment_pdfs(download_folder: str, days: int = 2) -> List[dict]:
+    """Find valid payment-slip PDFs that landed outside payment_registry."""
+    base = download_folder or DEFAULT_DOWNLOAD_FOLDER
+    if not os.path.isdir(base):
+        return []
+    cutoff = datetime.now().timestamp() - (max(1, int(days or 2)) * 86400)
+    candidates: List[str] = []
+    for root in [base, os.path.join(base, datetime.now().strftime("%Y%m%d"))]:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for name in os.listdir(root):
+                path = os.path.join(root, name)
+                if not os.path.isfile(path) or not name.lower().endswith(".pdf"):
+                    continue
+                if os.path.getmtime(path) < cutoff:
+                    continue
+                if _is_valid_payment_pdf_file(path):
+                    candidates.append(path)
+        except Exception:
+            continue
+
+    chosen: Dict[str, dict] = {}
+    for path in candidates:
+        text = _payment_pdf_text(path)
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if "規費繳款單" not in compact and "待補費案件繳費資訊" not in compact:
+            continue
+        case_number = ""
+        m = re.search(r"案\s*號\s*[:：]\s*([0-9]{2,3})\s*年\s*([^\d\s]{1,12})\s*字\s*第?\s*0*([0-9]+)\s*號?", text)
+        if m:
+            case_number = f"{m.group(1)}年度{m.group(2)}字第{int(m.group(3)):06d}號"
+        if not case_number:
+            m = re.search(r"([0-9]{2,3})\s*年\s*([^\d\s]{1,12})\s*字\s*0*([0-9]+)\s*號", compact)
+            if m:
+                case_number = f"{m.group(1)}年度{m.group(2)}字第{int(m.group(3)):06d}號"
+        party = ""
+        m = re.search(r"應繳款人\s*[:：]?\s*([^\n\r]{1,20})", text)
+        if m:
+            party = re.sub(r"\s+", "", m.group(1)).strip()
+        if not party:
+            m = re.search(r"應繳款人\s*[:：]?\s*\n+\s*([^\n\r]{1,20})", text)
+            if m:
+                party = re.sub(r"\s+", "", m.group(1)).strip()
+        record_key = _portal_item_case_key({"case_number": case_number, "party": party}) or _payment_file_delivery_key(path)
+        dt = datetime.fromtimestamp(os.path.getmtime(path))
+        record = {
+            "processed_at": dt,
+            "party": party or "(未知)",
+            "case_number": case_number or os.path.basename(path),
+            "detail": "已下載繳費單（1 份）",
+            "count": 1,
+            "artifact_type": "payment_slip",
+            "source": "payment_pdf_scan",
+            "key": record_key,
+            "file_paths": [path],
+        }
+        prev = chosen.get(record_key)
+        if prev is None or dt > prev["processed_at"]:
+            chosen[record_key] = record
+    return list(chosen.values())
+
+
 def _load_recent_download_activity(days: int = 7) -> List[dict]:
     if not os.path.isdir(BG_JOB_DIR):
         return []
@@ -4077,9 +4363,14 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                     "count": 0,
                     "artifact_type": artifact_type,
                     "detail": detail,
+                    "file_paths": [],
                 },
             )
             grouped[rec_key]["count"] += 1
+            for path_hint in (item.get("dst"), item.get("file"), item.get("path")):
+                path_text = str(path_hint or "").strip()
+                if path_text and os.path.isfile(path_text):
+                    grouped[rec_key].setdefault("file_paths", []).append(path_text)
         for rec_key, payload in grouped.items():
             artifact_type = str(payload.get("artifact_type") or "review_download").strip()
             record = {
@@ -4092,6 +4383,10 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                 "artifact_type": artifact_type,
                 "source": "download_job",
                 "key": os.path.basename(path),
+                "file_paths": [
+                    fp for fp in (payload.get("file_paths") or [])
+                    if _is_valid_payment_pdf_file(fp) or artifact_type != "payment_slip"
+                ],
             }
             prev = chosen.get(rec_key)
             if prev is None or dt > prev["processed_at"]:
@@ -4100,7 +4395,11 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
 
 
 def _load_recent_processed_activity(download_folder: str, days: int = 7, limit: int = 8) -> List[dict]:
-    merged = _load_recent_payment_activity(download_folder, days=days) + _load_recent_download_activity(days=days)
+    merged = (
+        _load_recent_payment_activity(download_folder, days=days)
+        + _load_recent_unregistered_payment_pdfs(download_folder, days=min(days, 2))
+        + _load_recent_download_activity(days=days)
+    )
     merged.sort(key=lambda it: it.get("processed_at") or datetime.min, reverse=True)
     out = []
     seen = set()
@@ -4573,7 +4872,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 portal_pending=portal_payment_due_count,
                 portal_pending_changed=_portal_pending_changed,
                 portal_probe_ok=_portal_probe_ok,
-            )
+            ) or bool(recent_payment_activity)
             review_signal = _should_emit_review_check_notice(
                 download_email_hits=dl_hits,
                 pickup_email_hits=pickup_hits,
@@ -4634,21 +4933,43 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             should_notify_now = notify and has_something_to_notify
             if should_notify_now or (warn and notify_empty):
                 if section_messages:
+                    sent_payment_section = False
+                    sent_review_section = False
                     for section_msg, section_topic in section_messages:
                         # 無新可處理資訊 → quiet_cron → TG only；有新資訊 → 原 topic → TG + DC
                         effective_topic = section_topic if _has_new_actionable_info else "quiet_cron"
                         _notify(section_msg, True, topic_key=effective_topic)
+                        if section_topic == "filereview_payment":
+                            sent_payment_section = True
+                        elif section_topic == "filereview_download":
+                            sent_review_section = True
                     if should_notify_now:
-                        _mark_recent_activity_notified(
-                            recent_payment_activity,
-                            creds["download_folder"],
-                            "recent_payment_activity",
-                        )
-                        _mark_recent_activity_notified(
-                            recent_review_download_activity,
-                            creds["download_folder"],
-                            "recent_review_download_activity",
-                        )
+                        if sent_payment_section:
+                            _payment_file_stats = _send_payment_pdf_files(
+                                [
+                                    path
+                                    for item in recent_payment_activity
+                                    for path in _recent_payment_activity_file_paths(item)
+                                ],
+                                download_folder=creds["download_folder"],
+                                caption_prefix="📄 近期繳費單 PDF",
+                                notify=True,
+                            )
+                            if (
+                                _payment_file_stats.get("sent", 0) > 0
+                                or _payment_file_stats.get("eligible", 0) == 0
+                            ):
+                                _mark_recent_activity_notified(
+                                    recent_payment_activity,
+                                    creds["download_folder"],
+                                    "recent_payment_activity",
+                                )
+                        if sent_review_section:
+                            _mark_recent_activity_notified(
+                                recent_review_download_activity,
+                                creds["download_folder"],
+                                "recent_review_download_activity",
+                            )
                     if warn_message:
                         _notify(warn_message, True)
                 else:
@@ -5816,8 +6137,8 @@ def main() -> int:
         payload = _load_jsonish(task[len("download_sync"):].strip())
         cn = payload.get("case_number", "")
         r = _run_with_flow(
-            "download",
-            lambda flow_id: cmd_download(case_number=cn, notify=_boolish(payload.get("notify"), True), flow_id=flow_id),
+            "download_sync",
+            lambda flow_id: cmd_download_sync(case_number=cn, notify=_boolish(payload.get("notify"), True), flow_id=flow_id),
             metadata={"case_number": cn},
         )
         return _ok(r)

@@ -73,6 +73,11 @@ function isLegalAidCaseRow(row = {}) {
         || /\d{6,8}-[A-Z]-\d{3}/.test(text);
 }
 
+function isLegalConsultantCaseRow(row = {}) {
+    const text = `${row.case_type || ""} ${row.case_reason || ""} ${row.case_stage || ""} ${row.notes || ""} ${row.folder_path || ""}`;
+    return text.includes("法律顧問") || text.includes("顧問");
+}
+
 function caseDisplayStatus(row = {}) {
     const lafStatus = String(row.legal_aid_status || "").trim();
     if (lafStatus.includes("待送出") || lafStatus.includes("暫存")) return "待送出";
@@ -136,7 +141,10 @@ function caseCloseButton(row = {}, extraClass = "") {
 }
 
 function caseDisplayType(row = {}) {
-    return row.case_type_display || row.case_type || "";
+    const display = row.case_type_display || row.case_type || "";
+    if (display === "民事" && isLegalConsultantCaseRow(row)) return "民事｜法律顧問";
+    if (!display && isLegalConsultantCaseRow(row)) return "法律顧問";
+    return display;
 }
 
 function caseDisplayReason(row = {}) {
@@ -204,7 +212,7 @@ function renderCases() {
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
-    const caseSort = state.caseSort || { col: "case_number", dir: 1, type: "string" };
+    const caseSort = state.caseSort || { col: "case_number", dir: -1, type: "string" };
     const sorted = pushFinalClosedCasesLast(applySort([...state.cases], caseSort.col, caseSort.dir, caseSort.type));
 
     // Card view
@@ -220,40 +228,7 @@ function renderCases() {
             return ia - ib;
         }) : sorted);
 
-        cardGrid.innerHTML = orderedCases.map(r => {
-            const displayStatus = caseDisplayStatus(r);
-            const isLaf = isLegalAidCaseRow(r);
-            const badgeClass = isClosingOrClosedCase(r) ? 'closed' : isLaf ? 'laf' : 'active';
-            const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
-            return `
-            <div class="case-card" draggable="true" data-case-id="${esc(r.id)}">
-                <div class="card-header">
-                    <div class="card-title">${esc(r.client_name || '未命名')}</div>
-                    <span class="card-badge ${badgeClass}">${esc(badgeText)}</span>
-                </div>
-                <div class="card-meta">
-                    <div><span class="label">案號</span> <span class="value">${esc(r.case_number || '-')}</span></div>
-                    <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || '-')}</span></div>
-                    <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
-                    <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
-                    <div><span class="label">股別</span> <span class="value">${esc(r.court_division || '-')}</span></div>
-                    <div><span class="label">承辦</span> <span class="value">${esc(r.lawyer || '-')}</span></div>
-                    <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
-                    <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
-                    ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
-                </div>
-                ${caseNotesBlock(r)}
-                <div class="card-actions">
-                    <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-                    ${caseCloseButton(r)}
-                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
-                    <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
-                    <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
-                    <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
-                    <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
-                </div>
-            </div>`;
-        }).join("");
+        cardGrid.innerHTML = orderedCases.map(r => renderCaseCard(r)).join("");
         initCardDrag(cardGrid);
         bindCaseCardOpen(cardGrid);
     }
@@ -300,6 +275,101 @@ function updateCaseSummary() {
     };
     set("caseVisibleCount", cases.length);
     set("caseClosingVisibleCount", closing);
+}
+
+function renderCaseCard(r = {}, opts = {}) {
+    const displayStatus = caseDisplayStatus(r);
+    const isLaf = isLegalAidCaseRow(r);
+    const badgeClass = isClosingOrClosedCase(r) ? "closed" : isLaf ? "laf" : "active";
+    const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
+    const cardClass = `case-card${opts.modal ? " case-card-expanded" : ""}`;
+    const draggable = opts.modal ? "" : ` draggable="true"`;
+    const closeButton = opts.modal
+        ? `<button class="case-card-modal-close" type="button" aria-label="關閉案件卡片" data-act="case-card-modal-close">×</button>`
+        : "";
+    return `
+        <div class="${cardClass}"${draggable} data-case-id="${esc(r.id || "")}">
+            ${closeButton}
+            <div class="card-header">
+                <div>
+                    <div class="card-title">${esc(r.client_name || "未命名")}</div>
+                    ${opts.modal ? `<div class="card-subtitle">${esc(r.case_number || "-")}</div>` : ""}
+                </div>
+                <span class="card-badge ${badgeClass}">${esc(badgeText)}</span>
+            </div>
+            <div class="card-meta">
+                <div><span class="label">案號</span> <span class="value">${esc(r.case_number || "-")}</span></div>
+                <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || "-")}</span></div>
+                <div><span class="label">法院</span> <span class="value">${esc(r.court_name || "-")}</span></div>
+                <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || "-")}</span></div>
+                <div><span class="label">股別</span> <span class="value">${esc(r.court_division || "-")}</span></div>
+                <div><span class="label">承辦</span> <span class="value">${esc(r.lawyer || "-")}</span></div>
+                <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || "-")}</span></div>
+                <div><span class="label">種類</span> <span class="value">${esc(r.case_category || "-")}</span></div>
+                ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ""}
+            </div>
+            ${caseNotesBlock(r)}
+            <div class="card-actions">
+                <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+                ${caseCloseButton(r)}
+                <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
+                <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
+                <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+                <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
+                <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
+            </div>
+        </div>`;
+}
+
+function closeCaseCardModal() {
+    const modal = document.getElementById("caseCardModal");
+    if (modal) modal.remove();
+    document.body.classList.remove("case-card-modal-open");
+    document.removeEventListener("keydown", handleCaseCardModalKeydown);
+}
+
+function handleCaseCardModalKeydown(e) {
+    if (e.key === "Escape") closeCaseCardModal();
+}
+
+function openCaseCardModal(caseId) {
+    const row = (state.cases || []).find(item => String(item.id) === String(caseId));
+    if (!row) return;
+    closeCaseCardModal();
+    const modal = document.createElement("div");
+    modal.id = "caseCardModal";
+    modal.className = "case-card-modal";
+    modal.innerHTML = `
+        <div class="case-card-modal-backdrop" data-act="case-card-modal-close"></div>
+        <div class="case-card-modal-dialog" role="dialog" aria-modal="true" aria-label="案件資料">
+            ${renderCaseCard(row, { modal: true })}
+        </div>`;
+    document.body.appendChild(modal);
+    document.body.classList.add("case-card-modal-open");
+    bindCaseOpenButtons(modal);
+    modal.querySelectorAll('.card-actions [data-act]:not([data-act="case-open"])').forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const act = btn.dataset.act || "";
+            closeCaseCardModal();
+            if (typeof dispatchDelegatedAction === "function" && act) {
+                try {
+                    await dispatchDelegatedAction(act, btn);
+                } catch (err) {
+                    showToast(`${btn.textContent || "操作"}失敗：${err.message || err}`, "warn", 2800);
+                }
+            }
+        });
+    });
+    modal.querySelectorAll('[data-act="case-card-modal-close"]').forEach(el => {
+        el.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeCaseCardModal();
+        });
+    });
+    document.addEventListener("keydown", handleCaseCardModalKeydown);
 }
 
 const CASE_MAGI_MODULES = {
@@ -700,10 +770,15 @@ async function openCaseInFileManager(id) {
             const titleEl = document.getElementById("pageTitle");
             if (titleEl) titleEl.textContent = "檔案管理";
         }
+        const caseMeta = data.case || {};
+        const currentCaseLabel = document.getElementById("fmCurrentCaseLabel");
+        if (currentCaseLabel) {
+            currentCaseLabel.textContent = [caseMeta.case_number, caseMeta.client_name].filter(Boolean).join(" ");
+            currentCaseLabel.title = folder;
+        }
         // 2. setRoot 到該案件資料夾（FileManager init 完成後）
         const tryOpen = () => {
             if (window.FileManager && typeof window.FileManager.openWithBasePath === "function") {
-                const caseMeta = data.case || {};
                 const opened = window.FileManager.openWithBasePath(folder, {
                     caseNumber: caseMeta.case_number,
                     clientName: caseMeta.client_name,
@@ -1966,10 +2041,6 @@ function initCardDrag(container) {
             if (e.clientY < mid) container.insertBefore(dragEl, card);
             else container.insertBefore(dragEl, card.nextSibling);
         });
-        card.addEventListener('dblclick', () => {
-            const id = card.dataset.caseId;
-            if (id) openCaseInFileManager(id);
-        });
     });
 }
 
@@ -1983,6 +2054,9 @@ async function openCaseFolderWithFeedback(caseId, trigger) {
     }
     try {
         await openCaseInFileManager(caseId);
+        if (trigger && trigger.closest && trigger.closest("#caseCardModal")) {
+            closeCaseCardModal();
+        }
     } catch (err) {
         showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
     } finally {
@@ -1993,7 +2067,7 @@ async function openCaseFolderWithFeedback(caseId, trigger) {
     }
 }
 
-function bindCaseCardOpen(container) {
+function bindCaseOpenButtons(container) {
     container.querySelectorAll('[data-act="case-open"]').forEach(btn => {
         if (btn._caseOpenDirectBound) return;
         btn._caseOpenDirectBound = true;
@@ -2004,13 +2078,18 @@ function bindCaseCardOpen(container) {
             await openCaseFolderWithFeedback(caseId, btn);
         });
     });
+}
+
+function bindCaseCardOpen(container) {
+    bindCaseOpenButtons(container);
     container.querySelectorAll('.case-card').forEach(card => {
         if (card._caseOpenBound) return;
         card._caseOpenBound = true;
-        card.addEventListener('click', async (e) => {
+        card.addEventListener('click', (e) => {
+            if (card.classList.contains("case-card-expanded")) return;
             if (e.target.closest('button,a,input,select,textarea,[data-act]')) return;
             const caseId = card.dataset.caseId;
-            await openCaseFolderWithFeedback(caseId, card);
+            openCaseCardModal(caseId);
         });
     });
 }

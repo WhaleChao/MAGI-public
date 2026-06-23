@@ -2291,6 +2291,12 @@ class LAFGmailMonitor:
                 str(_MAGI_ROOT / "static" / "laf_gmail_monitor_state.json"),
             )
         )
+        self._file_review_state_path = Path(
+            os.environ.get(
+                "MAGI_FILE_REVIEW_EMAIL_MONITOR_STATE",
+                str(_MAGI_ROOT / "static" / "file_review_email_monitor_state.json"),
+            )
+        )
 
     def _write_monitor_state(self, status: str, **extra: Any) -> None:
         payload = {
@@ -2307,6 +2313,22 @@ class LAFGmailMonitor:
             tmp.replace(self._state_path)
         except Exception:
             _logging.getLogger(__name__).debug("silent-catch laf gmail monitor state", exc_info=True)
+
+    def _write_file_review_monitor_state(self, status: str, **extra: Any) -> None:
+        payload = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "running": bool(self._running),
+            "source": "laf_gmail_monitor_cycle",
+        }
+        payload.update(extra)
+        try:
+            self._file_review_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._file_review_state_path.with_suffix(self._file_review_state_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._file_review_state_path)
+        except Exception:
+            _logging.getLogger(__name__).debug("silent-catch file review gmail monitor state", exc_info=True)
     
     def _load_processed_ids(self, suffix: str = '') -> set:
         """載入已處理的 Email ID 記錄"""
@@ -3210,8 +3232,10 @@ class LAFGmailMonitor:
         }
         if not enabled:
             _log.info("[閱卷] background file review email scan disabled (set MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK=1 to enable)")
+            self._write_file_review_monitor_state("disabled")
             return
         _log.info("[閱卷] file review email scan integrated in LAF monitor cycle — starting")
+        self._write_file_review_monitor_state("running")
         try:
             import sys as _sys
             _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -3220,9 +3244,19 @@ class LAFGmailMonitor:
                 _sys.path.insert(0, _skill_path)
             from action import cmd_check_emails as _fr_check
             result = _fr_check(notify=True, notify_empty=False)
+            success = bool(result.get("success")) if isinstance(result, dict) else False
+            self._write_file_review_monitor_state(
+                "ok" if success else "error",
+                success=success,
+                payment_hits=int(result.get("payment_hits") or 0) if isinstance(result, dict) else 0,
+                payment_notified=int(result.get("payment_notified") or 0) if isinstance(result, dict) else 0,
+                download_hits=int(result.get("download_hits") or 0) if isinstance(result, dict) else 0,
+                ready_to_download_count=int(result.get("ready_to_download_count") or 0) if isinstance(result, dict) else 0,
+            )
             _log.info("[閱卷] file review email scan done: success=%s",
                       result.get("success") if isinstance(result, dict) else "?")
         except Exception as e:
+            self._write_file_review_monitor_state("error", error=str(e)[:500])
             _log.warning("[閱卷] file review email scan failed: %s", e)
 
     def start_monitor(self, interval_seconds: int = 300, check_immediately: bool = True, general_rules: List[Dict] = None):

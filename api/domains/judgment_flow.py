@@ -48,7 +48,7 @@ def _get_local_db_manager() -> Optional[Any]:
                     return osc_db_manager(
                         {
                             "host": os.environ.get("OSC_DB_HOST", "127.0.0.1"),
-                            "port": int(os.environ.get("OSC_DB_PORT", "3307") or "3307"),
+                            "port": int(os.environ.get("OSC_DB_PORT", "3306") or "3306"),
                             "user": os.environ.get("OSC_DB_USER", "python_user"),
                             "password": os.environ.get("OSC_DB_PASSWORD", ""),
                             "database": os.environ.get("OSC_DB_NAME", "law_firm_data"),
@@ -65,7 +65,7 @@ def _get_local_db_manager() -> Optional[Any]:
         return OscDatabaseManager(
             {
                 "host": os.environ.get("OSC_DB_HOST", "127.0.0.1"),
-                "port": int(os.environ.get("OSC_DB_PORT", "3307") or "3307"),
+                "port": int(os.environ.get("OSC_DB_PORT", "3306") or "3306"),
                 "user": os.environ.get("OSC_DB_USER", "python_user"),
                 "password": os.environ.get("OSC_DB_PASSWORD", ""),
                 "database": os.environ.get("OSC_DB_NAME", "law_firm_data"),
@@ -193,7 +193,14 @@ def format_judgment_collect_result(payload: dict) -> str:
 def _judgment_item_quality_issue(item: Dict[str, Any]) -> str:
     if not isinstance(item, dict):
         return "empty_summary"
-    summary = str(item.get("summary_full") or item.get("summary_preview") or item.get("summary") or "").strip()
+    summary = str(
+        item.get("summary_full")
+        or item.get("summary_preview")
+        or item.get("summary")
+        or item.get("insight_text")
+        or item.get("full_text_excerpt")
+        or ""
+    ).strip()
     title = str(item.get("title") or item.get("citation_text") or "").strip()
     url = str(item.get("url") or item.get("source_url") or "").strip().lower()
     if item.get("is_degraded") or "系統降級回覆" in summary:
@@ -576,6 +583,230 @@ def _format_statute_items(items: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+_INSIGHT_STOPWORDS = {
+    "實務見解",
+    "法律見解",
+    "法院見解",
+    "判決",
+    "裁判",
+    "最高法院",
+    "高等法院",
+    "地方法院",
+    "查詢",
+    "整理",
+    "關於",
+}
+
+_LEGAL_REASONING_MARKERS = (
+    "本院認為",
+    "本院判斷",
+    "法院認為",
+    "最高法院",
+    "按",
+    "惟",
+    "查",
+    "經查",
+    "又查",
+    "又",
+    "次按",
+    "準此",
+    "是以",
+    "足認",
+    "應認",
+    "堪認",
+    "尚難",
+    "不得",
+    "應依",
+    "有理由",
+    "無理由",
+)
+
+_LOW_VALUE_INSIGHT_MARKERS = (
+    "主文",
+    "事實及理由",
+    "程序事項",
+    "案由",
+    "當事人",
+    "上列",
+    "本件",
+    "目錄",
+    "全文",
+)
+
+
+def _insight_query_terms(query: str) -> List[str]:
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(query or ""))
+    terms: List[str] = []
+    for raw in text.split():
+        token = raw.strip()
+        if len(token) < 2 or token in _INSIGHT_STOPWORDS:
+            continue
+        terms.append(token)
+    # Add overlapping Chinese chunks for short legal phrases so matching works
+    # when the DB text has no spaces.
+    expanded: List[str] = []
+    for token in terms:
+        expanded.append(token)
+        if re.search(r"[\u4e00-\u9fff]", token) and len(token) >= 4:
+            expanded.extend(token[i : i + 2] for i in range(len(token) - 1))
+    deduped: List[str] = []
+    for token in expanded:
+        if token not in deduped and token not in _INSIGHT_STOPWORDS:
+            deduped.append(token)
+    return deduped[:12]
+
+
+def _insight_primary_terms(query: str) -> List[str]:
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(query or ""))
+    terms: List[str] = []
+    for raw in text.split():
+        token = raw.strip()
+        if len(token) < 2 or token in _INSIGHT_STOPWORDS:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:8]
+
+
+def _insight_unit_matches_query(unit: str, primary_terms: List[str]) -> bool:
+    """Reject readable but unrelated passages from broad judgment matches."""
+    if not primary_terms:
+        return True
+    compact = re.sub(r"\s+", "", unit)
+    for term in primary_terms:
+        if term in compact:
+            return True
+        if re.search(r"[\u4e00-\u9fff]", term) and len(term) >= 4:
+            chunks = [term[i : i + 2] for i in range(len(term) - 1)]
+            hits = {chunk for chunk in chunks if chunk and chunk in compact}
+            if len(hits) >= 2:
+                return True
+    return False
+
+
+def _clean_insight_text(text: object) -> str:
+    value = str(text or "")
+    value = re.sub(r"```.*?```", " ", value, flags=re.S)
+    value = re.sub(r"^\s{0,3}#{1,6}\s*", "", value, flags=re.M)
+    value = re.sub(r"\*\*(.*?)\*\*", r"\1", value)
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _split_insight_units(text: str) -> List[str]:
+    cleaned = _clean_insight_text(text)
+    if not cleaned:
+        return []
+    rough_parts = re.split(r"\n{2,}|(?<=。)\s*(?=(?:按|惟|查|經查|又|次按|本院|法院|準此|是以))", cleaned)
+    units: List[str] = []
+    for part in rough_parts:
+        part = re.sub(r"\s+", " ", part).strip(" ，,。；;\n\t")
+        if len(part) < 28:
+            continue
+        if is_extractive_fast_judgment_digest(part):
+            continue
+        units.append(part)
+    return units
+
+
+def _score_insight_unit(unit: str, terms: List[str]) -> int:
+    compact = re.sub(r"\s+", "", unit)
+    if not compact:
+        return -999
+    score = 0
+    for term in terms:
+        if term and term in compact:
+            score += 18 if len(term) >= 3 else 8
+    for marker in _LEGAL_REASONING_MARKERS:
+        if marker in compact:
+            score += 16
+    if re.search(r"第\s*\d+\s*條|民法|刑法|消費者債務清理條例|公司法|民事訴訟法|刑事訴訟法", compact):
+        score += 18
+    if re.search(r"\d{2,3}\s*年度.{0,8}字第?\s*\d+\s*號|最高法院.{0,20}判決", compact):
+        score += 10
+    if len(compact) > 120:
+        score += 8
+    if len(compact) > 520:
+        score -= 10
+    if any(marker in compact[:80] for marker in _LOW_VALUE_INSIGHT_MARKERS):
+        score -= 8
+    if "無可擷取" in compact or "請提供" in compact:
+        score -= 80
+    return score
+
+
+def _find_focus_offset(text: str, focus_terms: List[str]) -> int:
+    for term in focus_terms:
+        if not term:
+            continue
+        idx = text.find(term)
+        if idx >= 0:
+            return idx
+        if re.search(r"[\u4e00-\u9fff]", term):
+            pattern = r"\s*".join(re.escape(ch) for ch in term)
+            match = re.search(pattern, text)
+            if match:
+                return match.start()
+    return -1
+
+
+def _trim_insight_unit(unit: str, max_chars: int = 360, focus_terms: Optional[List[str]] = None) -> str:
+    text = re.sub(r"\s+", " ", unit).strip(" ，,。；;")
+    if len(text) <= max_chars:
+        return text
+    focus_terms = focus_terms or []
+    focus_at = _find_focus_offset(text, focus_terms)
+    if focus_at > max_chars:
+        start = max(0, focus_at - max_chars // 3)
+        boundary = max(text.rfind("。", 0, start), text.rfind("；", 0, start), text.rfind("，", 0, start))
+        if boundary >= max(0, start - 80):
+            start = boundary + 1
+        window = text[start : start + max_chars]
+        end_boundary = max(window.rfind("。"), window.rfind("；"), window.rfind(";"))
+        if end_boundary >= 120:
+            window = window[: end_boundary + 1]
+        return ("…" if start > 0 else "") + window.strip(" ，,。；;") + ("…" if start + len(window) < len(text) else "")
+    cut = text[:max_chars]
+    last_stop = max(cut.rfind("。"), cut.rfind("；"), cut.rfind(";"))
+    if last_stop >= 120:
+        return cut[: last_stop + 1]
+    return cut.rstrip(" ，,。；;") + "…"
+
+
+def _extract_practical_insight_excerpt(item: Dict[str, Any], query: str, max_chars: int = 360) -> str:
+    """Return the most readable, query-relevant legal reasoning passage."""
+    terms = _insight_query_terms(query)
+    primary_terms = _insight_primary_terms(query)
+    sources = [
+        item.get("summary_full"),
+        item.get("summary_preview"),
+        item.get("summary"),
+        item.get("insight_text"),
+        item.get("full_text_excerpt"),
+        item.get("full_text"),
+        item.get("raw_text"),
+    ]
+    candidates: List[Tuple[int, str]] = []
+    for source in sources:
+        for unit in _split_insight_units(str(source or "")):
+            if not _insight_unit_matches_query(unit, primary_terms):
+                continue
+            candidates.append((_score_insight_unit(unit, terms), unit))
+    candidates = [(score, unit) for score, unit in candidates if score > -20]
+    if not candidates:
+        if not primary_terms:
+            fallback = _clean_insight_text(next((str(s or "") for s in sources if str(s or "").strip()), ""))
+            return _trim_insight_unit(fallback, max_chars=max_chars) if fallback else ""
+        return ""
+    candidates.sort(key=lambda pair: (pair[0], len(pair[1])), reverse=True)
+    return _trim_insight_unit(candidates[0][1], max_chars=max_chars, focus_terms=primary_terms)
+
+
+def _query_relevant_judgment_items(items: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    return [item for item in items if _extract_practical_insight_excerpt(item, query, max_chars=120)]
+
+
 def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]:
     """本地實務見解庫 fallback（判決-搜尋）。
 
@@ -603,18 +834,32 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
                 case_type,
                 judgment_date,
                 LEFT(COALESCE(summary, ''), 1200) AS summary_text,
+                CASE
+                    WHEN LOCATE(%s, COALESCE(full_text, '')) > 0
+                    THEN SUBSTRING(COALESCE(full_text, ''), GREATEST(LOCATE(%s, COALESCE(full_text, '')) - 700, 1), 2400)
+                    ELSE LEFT(COALESCE(full_text, ''), 2400)
+                END AS full_text_excerpt,
                 source_url,
                 crawled_at
             FROM court_judgments
             WHERE
                 case_number LIKE %s
+                OR case_type LIKE %s
                 OR summary LIKE %s
                 OR full_text LIKE %s
                 OR court_name LIKE %s
-            ORDER BY crawled_at DESC
+            ORDER BY
+                CASE
+                    WHEN case_number LIKE %s THEN 0
+                    WHEN case_type LIKE %s THEN 1
+                    WHEN summary LIKE %s THEN 2
+                    WHEN full_text LIKE %s THEN 3
+                    ELSE 4
+                END,
+                crawled_at DESC
             LIMIT %s
             """,
-            (like, like, like, like, limit_int),
+            (text, text, like, like, like, like, like, like, like, like, like, limit_int),
             fetch="all",
         ) or []
     except Exception as exc:
@@ -636,6 +881,11 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
             {
                 "title": title,
                 "summary_preview": summary,
+                "full_text_excerpt": str(row.get("full_text_excerpt") or "").strip(),
+                "court_name": court_name,
+                "case_number": case_number,
+                "case_type": str(row.get("case_type") or "").strip(),
+                "judgment_date": str(row.get("judgment_date") or "").strip(),
                 "url": str(row.get("source_url") or "").strip(),
                 "is_degraded": is_degraded,
                 "is_fast_digest": is_fast_digest,
@@ -704,6 +954,16 @@ def _search_local_judgment_archive(query: str, limit: int = 3) -> Dict[str, Any]
                 "rejected_empty_summary_count": rejection_counts.get("empty_summary", 0),
             }
         return {"success": False, "error": "no_local_archive_matches"}
+    quality_items = _query_relevant_judgment_items(quality_items, text)
+    if not quality_items:
+        return {
+            "success": False,
+            "error": "no_query_relevant_local_archive_matches",
+            "source_label": "本地實務見解庫",
+            "rejected_fast_digest_count": rejection_counts.get("fast_extractive", 0),
+            "rejected_degraded_count": rejection_counts.get("degraded", 0),
+            "rejected_empty_summary_count": rejection_counts.get("empty_summary", 0),
+        }
     return {
         "success": True,
         "source_label": "本地實務見解庫",
@@ -732,6 +992,7 @@ def format_practical_insight_result(query: str, judgments: Dict[str, Any], statu
             lines.append("\n【相關判決／法院見解】")
         raw_items = judgments.get("items") if isinstance(judgments.get("items"), list) else []
         items = _high_quality_judgment_items(raw_items)
+        relevant_items = _query_relevant_judgment_items(items, query)
         reject_counts = _judgment_quality_rejection_counts(raw_items)
         rejected_total = sum(reject_counts.values())
         if rejected_total:
@@ -741,27 +1002,29 @@ def format_practical_insight_result(query: str, judgments: Dict[str, Any], statu
                 f"降級摘要 {reject_counts.get('degraded', 0)}、"
                 f"缺摘要 {reject_counts.get('empty_summary', 0)}。"
             )
-        if raw_items and not items:
-            lines.append("- 已找到候選裁判，但只有抽取式快篩或品質未通過內容；MAGI 已阻擋其作為正式實務見解。")
+        if raw_items and not relevant_items:
+            lines.append("- 已找到候選裁判，但目前沒有可讀且命中查詢重點的法院見解；MAGI 已阻擋其作為正式實務見解。")
             lines.append("- 請改用全文/TLR 精查，或稍後讓夜間重摘要補齊後再引用。")
             return "\n".join(lines)
-        for row in items[:3]:
+        for row in relevant_items[:3]:
             title = str(row.get("title") or "").strip()
-            summary = str(row.get("summary_full") or row.get("summary_preview") or "").strip()
-            if len(summary) > 180:
-                summary = summary[:180] + "…"
+            summary = _extract_practical_insight_excerpt(row, query, max_chars=420)
             if title:
                 lines.append(f"- {title}")
             if summary:
-                lines.append(f"  {summary}")
+                lines.append(f"  核心見解：{summary}")
             url = str(row.get("url") or "").strip()
             if url:
                 lines.append(f"  {url}")
     else:
         error = str(judgments.get("error") or "unknown")
-        if error in {"no_high_quality_judgment_matches", "no_high_quality_local_archive_matches"}:
+        if error in {
+            "no_high_quality_judgment_matches",
+            "no_high_quality_local_archive_matches",
+            "no_query_relevant_local_archive_matches",
+        }:
             lines.append("\n【相關判決／法院見解】")
-            lines.append("- 已找到候選裁判，但目前只有抽取式快篩或品質未通過內容；MAGI 已阻擋其作為正式實務見解。")
+            lines.append("- 已找到候選裁判，但目前沒有可讀且命中查詢重點的法院見解；MAGI 已阻擋其作為正式實務見解。")
             lines.append("- 請改用全文/TLR 精查，或稍後讓夜間重摘要補齊後再引用。")
         else:
             lines.append(f"\n【相關判決／法院見解】\n- 查詢失敗：{judgments.get('error') or 'unknown'}")

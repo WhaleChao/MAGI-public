@@ -251,6 +251,53 @@ _LAF_REVIEW_PAYMENT_KEYWORDS = ("繳費單", "規費繳款", "規費", "繳款�
 _LAF_REVIEW_FILE_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".zip", ".txt"}
 
 
+# Upload hardening shared with NAS file manager upload handlers.
+_OSC_CASE_FILE_BLOCKED_EXTS = {".exe", ".bat", ".cmd", ".sh", ".ps1", ".scr", ".msi", ".app", ".pkg", ".dmg", ".com", ".vbs"}
+_OSC_CASE_INVALID_NAME_RE = re.compile(r'[\\/:*?"<>|]')
+# Signatures for executable formats: block even when renamed.
+_OSC_CASE_EXEC_MAGIC_SIGS = (
+    b"MZ",                # Windows PE / DOS
+    b"\x7fELF",           # Linux ELF
+    b"\xca\xfe\xba\xbe",  # Mach-O fat binary / Java class
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64-bit LE
+    b"\xfe\xed\xfa\xce",  # Mach-O 32-bit BE
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64-bit BE
+    b"#!",                # shell script shebang
+)
+
+
+def _osc_case_upload_ext_ok(filename: str) -> tuple[bool, str]:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in _OSC_CASE_FILE_BLOCKED_EXTS:
+        return False, f"blocked_extension:{ext}"
+    return True, ""
+
+
+def _osc_case_validate_filename(name: str) -> tuple[bool, str]:
+    n = (name or "").strip()
+    if not n:
+        return False, "name_empty"
+    if n in {".", ".."}:
+        return False, "name_invalid"
+    if _OSC_CASE_INVALID_NAME_RE.search(n):
+        return False, "name_has_invalid_chars"
+    if len(n) > 200:
+        return False, "name_too_long"
+    return True, ""
+
+
+def _osc_case_sniff_executable(path: str) -> str | None:
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return None
+    for sig in _OSC_CASE_EXEC_MAGIC_SIGS:
+        if head.startswith(sig):
+            return "executable_signature:" + sig.hex()
+    return None
+
+
 def _laf_parse_date_token(value: str) -> date | None:
     text = str(value or "")
     for token in re.findall(r"(?:20\d{2}|1[01]\d)[-_.年/]?\d{1,2}[-_.月/]?\d{1,2}", text):
@@ -1280,10 +1327,24 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
         reason = str(out.get("case_reason") or "").strip()
         out["case_type_display"] = "消費者債務清理"
         out["case_reason_display"] = reason or ""
+    elif _osc_is_legal_consultant_case_row(out):
+        raw_type = str(out.get("case_type") or "").strip()
+        out["case_type_display"] = "民事｜法律顧問" if raw_type == "民事" else "法律顧問"
+        out["case_reason_display"] = out.get("case_reason") or ""
     else:
         out["case_type_display"] = out.get("case_type") or ""
         out["case_reason_display"] = out.get("case_reason") or ""
     return out
+
+
+def _osc_is_legal_consultant_case_row(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("case_type", "case_reason", "case_stage", "notes", "folder_path")
+    )
+    return "法律顧問" in text or "顧問" in text
 
 
 def _osc_final_closed_sql() -> str:
@@ -1342,7 +1403,7 @@ def osc_cases_api():
         case_kind = (request.args.get("case_kind") or "").strip()
         status_scope = (request.args.get("status_scope") or "all").strip().lower()
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
-        case_type_values = {"刑事", "民事", "消費者債務清理", "行政", "非訟"}
+        case_type_values = {"刑事", "民事", "法律顧問", "消費者債務清理", "行政", "非訟"}
         case_kind_values = {"一般", "一般案件", "法扶", "法律扶助案件", "指定辯護", "指定辯護案件", "無償", "無償案件"}
         if category and category not in {"全部", "all", "ALL"} and not case_type and not case_kind:
             if category in case_type_values:
@@ -1372,6 +1433,24 @@ def osc_cases_api():
             if case_type == "消費者債務清理":
                 where.append("(case_reason LIKE %s OR case_type = %s)")
                 params.extend(["%消費者債務清理%", case_type])
+            elif case_type == "法律顧問":
+                where.append(
+                    """
+                    (
+                        case_type = %s
+                        OR (
+                            case_type = %s
+                            AND (
+                                case_reason LIKE %s
+                                OR case_stage LIKE %s
+                                OR notes LIKE %s
+                                OR folder_path LIKE %s
+                            )
+                        )
+                    )
+                    """
+                )
+                params.extend([case_type, "民事", "%顧問%", "%顧問%", "%顧問%", "%顧問%"])
             else:
                 where.append("case_type = %s")
                 params.append(case_type)
@@ -5667,23 +5746,49 @@ def osc_file_upload_api():
     saved = []
     total_saved = 0
     for uploaded in uploads:
-        name = os.path.basename(str(uploaded.filename or "").strip())
+        raw_name = os.path.basename(str(uploaded.filename or "").strip())
+        ok, name_err = _osc_case_validate_filename(raw_name)
+        if not ok:
+            return jsonify({"ok": False, "error": name_err, "file_name": raw_name}), 400
+        name = raw_name
+        ok, ext_err = _osc_case_upload_ext_ok(name)
+        if not ok:
+            return jsonify({"ok": False, "error": ext_err, "file_name": name}), 400
         if not name:
             continue
         dest = os.path.join(target_dir, name)
+        tmp_path = ""
+        fd = None
         if os.path.exists(dest) and not overwrite:
             return jsonify({"ok": False, "error": "file_exists", "file_name": name, "target_path": dest}), 409
-        uploaded.save(dest)
-        fsize = os.path.getsize(dest)
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=target_dir)
+            os.close(fd)
+            uploaded.save(tmp_path)
+            fsize = os.path.getsize(tmp_path)
+        except OSError as e:
+            if tmp_path:
+                os.remove(tmp_path)
+            return jsonify({"ok": False, "error": f"save_failed: {e}", "file_name": name}), 500
+        sig = _osc_case_sniff_executable(tmp_path)
+        if sig:
+            os.remove(tmp_path)
+            return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sig, "file_name": name}), 415
         if fsize > _MAX_PER_FILE:
-            os.remove(dest)
+            os.remove(tmp_path)
             return jsonify({"ok": False, "error": "檔案過大", "code": "file_too_large", "file_name": name,
                             "size_mb": round(fsize / 1024 / 1024, 1), "limit_mb": max_per_file_mb}), 413
         total_saved += fsize
         if total_saved > _MAX_TOTAL:
-            os.remove(dest)
+            os.remove(tmp_path)
             return jsonify({"ok": False, "error": "上傳總量過大", "code": "total_upload_too_large",
                             "total_mb": round(total_saved / 1024 / 1024, 1), "limit_mb": max_total_mb}), 413
+        try:
+            os.replace(tmp_path, dest)
+        except OSError as e:
+            if tmp_path:
+                os.remove(tmp_path)
+            return jsonify({"ok": False, "error": f"save_failed: {e}", "file_name": name}), 500
         saved.append(
             {
                 "file_name": name,
@@ -7291,24 +7396,31 @@ def osc_forms_export_api():
         data['通訊地址'] = data.get('address') or data.get('client_address') or ''
         data['聯絡電話'] = data.get('phone') or data.get('client_phone') or ''
         data['身分證字號'] = data.get('tax_id') or data.get('client_id_number') or ''
+        data['電子信箱'] = data.get('email') or data.get('client_email') or ''
         data['委任範圍'] = data.get('item', '')
         data['金額'] = data.get('amount', '')
         data['委任費用(數字)'] = data.get('amount', '')
-        data['法院/檢察署'] = data.get('court_name', '')
+        data['法院/檢察署'] = data.get('court_name') or data.get('court') or ''
         data['取代日期'] = data.get('date', '')
 
         try:
             if actual_form_type == "receipt":
                 doc = generate_receipt(data, data.get('item') or '法律服務費', config)
             elif actual_form_type == "power_of_attorney":
-                case_type = '民事'
-                role = '代理人'
+                case_type = str(data.get('case_type_label') or data.get('case_type') or '').strip()
+                role = str(data.get('agent_role') or '').strip()
                 cat = str(data.get('case_category', ''))
-                if '刑' in cat:
+                if not case_type:
+                    case_type = '民事'
+                if not role:
+                    role = '代理人'
+                if case_type not in {'民事', '刑事', '行政'} and '刑' in cat:
                     case_type = '刑事'
                     role = '辯護人' if '被告' in str(data.get('client_role', '')) else '告訴代理人'
-                elif '行' in cat:
+                elif case_type not in {'民事', '刑事', '行政'} and '行' in cat:
                     case_type = '行政'
+                elif case_type not in {'民事', '刑事', '行政'}:
+                    case_type = '民事'
                 doc = generate_poa(data, case_type, role, config)
             elif actual_form_type == "contract":
                 doc = generate_engagement_agreement(data, config)

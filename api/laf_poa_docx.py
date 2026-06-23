@@ -159,22 +159,24 @@ def validate_laf_poa_docx_quality(
             "message": "缺少可接受的 East Asia 字型（建議標楷體）",
         })
 
-    for token in set(LAF_POA_QUALITY_PLACEHOLDERS) | set(PUBLIC_PLACEHOLDERS):
+    public_placeholder_tokens = set(PUBLIC_PLACEHOLDERS) - {"事務所地址"}
+    for token in set(LAF_POA_QUALITY_PLACEHOLDERS) | public_placeholder_tokens:
         if token in plain:
             issues.append({"code": "placeholder_leftover", "field": "template_placeholders", "message": f"發現未填欄位留白：{token}"})
 
-    checks: list[tuple[str, str, str]] = [
-        ("client_name", "CLIENT_NAME", "當事人"),
-        ("case_reason", "CASE_REASON", "案由"),
-        ("lawyer_name", "LAWYER_NAME", "律師姓名"),
-        ("lawyer_address", "LAW_FIRM_ADDRESS_LINE", "律師地址"),
-        ("lawyer_phone", "LAW_FIRM_PHONE", "律師電話"),
-        ("court", "COURT_NAME", "法院"),
+    checks: list[tuple[str, str, str, bool]] = [
+        ("client_name", "CLIENT_NAME", "當事人", True),
+        ("case_reason", "CASE_REASON", "案由", True),
+        ("lawyer_name", "LAWYER_NAME", "律師姓名", True),
+        ("lawyer_address", "LAW_FIRM_ADDRESS_LINE", "律師地址", True),
+        ("lawyer_phone", "LAW_FIRM_PHONE", "律師電話", True),
+        ("court", "COURT_NAME", "法院", False),
     ]
-    for key, payload_key, field_label in checks:
+    for key, payload_key, field_label, required in checks:
         value = _normalize_quality_value(expected.get(key, "") or expected.get(payload_key, ""))
         if not value:
-            issues.append({"code": f"missing_field", "field": key, "message": f"缺少{field_label}資料"})
+            if required:
+                issues.append({"code": f"missing_field", "field": key, "message": f"缺少{field_label}資料"})
             continue
         if value not in plain:
             issues.append({"code": "value_mismatch", "field": key, "message": f"{field_label}與文件內容不符", "expected": value})
@@ -521,12 +523,20 @@ def select_laf_poa_template(
 
 def _template_values(metadata: dict[str, str]) -> dict[str, str]:
     firm = get_law_firm_profile()
+    court_case_year, court_case_kind, court_case_number, court_case_stock = (
+        _court_case_number_parts(metadata["court_case_number"]) or ("", "", "", "")
+    )
     return {
         "LAF_CASE_NUMBER": metadata["laf_case_number"],
         "COURT_CASE_NUMBER": metadata["court_case_number"],
+        "COURT_CASE_YEAR": court_case_year,
+        "COURT_CASE_KIND": court_case_kind,
+        "COURT_CASE_NUMBER_ONLY": court_case_number,
+        "COURT_CASE_STOCK": court_case_stock,
         "CLIENT_NAME": metadata["client_name"],
         "CLIENT_BIRTHDAY": metadata["client_birthday"],
         "CLIENT_ID": metadata["client_id"],
+        "CLIENT_ADDRESS_PHONE": metadata["client_address_phone"],
         "LAWYER_NAME": metadata["lawyer_name"] or firm.lawyer_name,
         "LAW_FIRM_OFFICE_NAME": firm.office_name,
         "LAW_FIRM_ADDRESS_LINE": firm.address_line,
@@ -590,7 +600,10 @@ def _insert_text_after_first_wt(xml: str, label: str, text: str) -> str:
 
 def _court_case_number_parts(court_case_number: str) -> tuple[str, str, str, str] | None:
     value = _text(court_case_number)
-    match = re.match(r"^(?P<year>\d{2,3})\s*年度\s*(?P<kind>.+?)\s*字\s*第\s*(?P<number>.+?)\s*號(?:\s*(?P<stock>.*?)\s*股)?$", value)
+    match = re.match(
+        r"^(?P<year>\d{2,3})\s*年度\s*(?P<kind>.+?)\s*字\s*第\s*(?P<number>.+?)\s*號(?:\s*(?P<stock>.*?)\s*股)?$",
+        value,
+    )
     if not match:
         return None
     return (
@@ -634,6 +647,34 @@ def _fill_court_case_number(xml: str, court_case_number: str) -> str:
     paragraph_end += len("</w:p>")
     paragraph = xml[paragraph_start:paragraph_end]
     replacements = iter((year, kind, number, stock))
+
+    def _run_text(text: str) -> str:
+        if not text:
+            return ""
+        return (
+            '<w:r><w:rPr><w:rFonts w:ascii="標楷體" w:eastAsia="標楷體" '
+            'w:hAnsi="標楷體" w:cs="標楷體"/><w:sz w:val="20"/></w:rPr>'
+            f"<w:t>{text}</w:t></w:r>"
+        )
+
+    if "<w:t>年度</w:t>" in paragraph and "<w:t>字第</w:t>" in paragraph and "<w:t>號</w:t>" in paragraph:
+        filled = paragraph
+        for marker, replacement in (
+            ("案號：", year),
+            ("年度", kind),
+            ("字第", number),
+            ("號", stock),
+        ):
+            if not replacement:
+                continue
+            filled = re.sub(
+                fr"(<w:t>{re.escape(marker)}</w:t></w:r>)(<w:r><w:tab/></w:r>)",
+                lambda match, text=replacement: f"{match.group(1)}{_run_text(text)}{match.group(2)}",
+                filled,
+                count=1,
+            )
+        if filled != paragraph:
+            return f"{xml[:paragraph_start]}{filled}{xml[paragraph_end:]}"
 
     def _replace_blank(match: re.Match[str]) -> str:
         try:
@@ -692,6 +733,7 @@ def _fill_static_word_form_gaps(xml: str, values: dict[str, str]) -> str:
 
     xml = _fill_court_case_number(xml, court_case_number)
     if court_target not in xml:
+        xml = _replace_last_underlined_blank_before(xml, "<w:t>法</w:t>", court_target)
         xml = _replace_last_underlined_blank_before(xml, "<w:t>法</w:t><w:tab/><w:t>院</w:t>", court_target)
         xml = _replace_last_underlined_blank_before(xml, "<w:t>法  院</w:t>", court_target)
     return xml
@@ -885,8 +927,9 @@ def ensure_laf_poa_docx_companion(
 
     selected_template = select_laf_poa_template(normalized_metadata)
     exact_pdf_layout = laf_poa_exact_pdf_layout_enabled()
+    fallback_allowed = selected_template is None and laf_poa_pdf_render_fallback_enabled()
 
-    if selected_template is not None and not exact_pdf_layout:
+    if selected_template is not None:
         template_key, template_path = selected_template
         try:
             filled_fields = _create_from_laf_poa_template(
@@ -912,8 +955,10 @@ def ensure_laf_poa_docx_companion(
             return result
         except Exception as exc:
             result["warnings"].append(f"template_failed:{exc}")
+            result.update(status="template_failed", error=str(exc))
+            return result
 
-    if not exact_pdf_layout and not laf_poa_pdf_render_fallback_enabled():
+    if selected_template is None and not fallback_allowed:
         result.update(
             status="template_unavailable",
             error="laf_poa_docx_template_required",

@@ -205,9 +205,14 @@ def collect_resource_view() -> ResourceView:
 
 def get_runtime_state(*, active_models: Iterable[str] | None = None, resource: ResourceView | dict[str, Any] | None = None) -> tuple[tuple[str, ...], ResourceView]:
     global _RUNTIME_CACHE
-    if active_models is not None and resource is not None:
-        rv = resource if isinstance(resource, ResourceView) else ResourceView.from_decision(resource)
+    if active_models is not None:
+        rv = resource if isinstance(resource, ResourceView) else (
+            ResourceView.from_decision(resource) if resource is not None else collect_resource_view()
+        )
         return tuple(str(x) for x in active_models if str(x).strip() and not is_disallowed_model(str(x))), rv
+    if resource is not None:
+        rv = resource if isinstance(resource, ResourceView) else ResourceView.from_decision(resource)
+        return tuple(str(x) for x in probe_active_models() if str(x).strip() and not is_disallowed_model(str(x))), rv
 
     ttl = _env_float("MAGI_MODEL_ROUTER_RUNTIME_CACHE_SEC", 10.0)
     now = time.monotonic()
@@ -228,6 +233,24 @@ def get_runtime_state(*, active_models: Iterable[str] | None = None, resource: R
 def _active_has(active_models: Iterable[str], needle: str) -> bool:
     low = str(needle or "").lower()
     return any(low in str(model).lower() for model in active_models)
+
+
+def _resolve_stable_model(stable_model: str, active: tuple[str, ...], registry: dict[str, ModelSpec]) -> str:
+    """Resolve a stable model without letting a live heavy model hijack routine routing."""
+    candidate = str(stable_model or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
+    if active and candidate in active:
+        return candidate
+    resolved = resolve_text_model(candidate, available=active or None)
+    resolved_spec = registry.get(resolved)
+    if resolved_spec and resolved_spec.tier == "stable_local":
+        return resolved
+    fallback = registry.get(candidate)
+    if fallback and fallback.tier == "stable_local":
+        return candidate
+    for spec in registry.values():
+        if spec.tier == "stable_local" and (not active or spec.id in active):
+            return spec.id
+    return candidate
 
 
 def _spec_for_task(task_type: str, tier: str, registry: dict[str, ModelSpec]) -> ModelSpec | None:
@@ -341,8 +364,8 @@ def choose_model_for_request(
     quality_needed = force_quality or task in QUALITY_TASKS or prompt_len >= int(os.environ.get("MAGI_ROUTER_QUALITY_PROMPT_CHARS", "6000") or "6000")
     stable_spec = _spec_for_task(task, "stable_local", reg) or reg.get(TEXT_PRIMARY_MODEL) or reg.get(DEFAULT_TEXT_MODEL)
     stable_model = stable_spec.id if stable_spec else TEXT_PRIMARY_MODEL
-    if active:
-        stable_model = resolve_text_model(stable_model, available=active)
+    stable_model = _resolve_stable_model(stable_model, active, reg)
+    stable_spec = reg.get(stable_model) or stable_spec
 
     if not quality_needed or task in LIGHTWEIGHT_TASKS:
         return ModelRouteDecision(

@@ -557,12 +557,14 @@ NERV 是私有版狀態頁。每日應看：
 ```bash
 git status --short
 python3 scripts/public_release_audit.py --strict
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
 ```
 
 公開版推送前：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 公開版必須移除：
@@ -665,6 +667,8 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/ops/tailscale_funnel_healthcheck.py --apply
 python3 scripts/public_release_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ```
 

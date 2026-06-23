@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
 import json
 import os
@@ -28,9 +28,26 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
 
-install_mysql_cext_blocker()
-patch_mysql_connector_for_stability()
-import mysql.connector
+if TYPE_CHECKING:
+    import mysql.connector  # pragma: no cover
+
+
+_mysql_connector = None
+
+
+def _load_mysql():
+    """Lazy-load mysql.connector only when the DB helper is actually used."""
+    global _mysql_connector
+    if _mysql_connector is not None:
+        return _mysql_connector
+    try:
+        import mysql.connector as mysql_connector
+        install_mysql_cext_blocker()
+        patch_mysql_connector_for_stability()
+        _mysql_connector = mysql_connector
+        return _mysql_connector
+    except Exception as exc:
+        raise RuntimeError("OSC headless DB features require mysql package") from exc
 
 from api.runtime_paths import config_candidates
 
@@ -256,7 +273,8 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
 
 def connect_mysql(cfg: DBConfig) -> mysql.connector.MySQLConnection:
     def _connect(one: DBConfig) -> mysql.connector.MySQLConnection:
-        conn = mysql.connector.connect(
+        mysql_connector = _load_mysql()
+        conn = mysql_connector.connect(
             host=one.host,
             port=one.port,
             user=one.user,

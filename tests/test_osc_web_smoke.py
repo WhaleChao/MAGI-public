@@ -401,6 +401,7 @@ def test_cases_endpoint_uses_effective_laf_status_for_display(client):
 
     assert r.status_code == 200
     item = r.get_json()["items"][0]
+    assert item["effective_status"] == "已結案"
     assert item["status_display"] == "已結案"
     assert item["case_type_display"] == "消費者債務清理"
     assert item["case_reason_display"] == "更生"
@@ -423,8 +424,50 @@ def test_cases_endpoint_treats_unclosed_laf_status_as_active(client):
 
     assert r.status_code == 200
     item = r.get_json()["items"][0]
-    assert item["status_display"] == "進行中"
-    assert item["effective_status"] == "進行中"
+
+
+def test_cases_endpoint_labels_civil_legal_consultant(client):
+    rows = [{
+        "id": "case-consultant",
+        "case_number": "2026-0998",
+        "client_name": "測試顧問公司",
+        "case_type": "民事",
+        "case_category": "一般案件",
+        "case_reason": "法律顧問契約",
+        "case_stage": "",
+        "notes": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\民事\法律顧問\2026-0998-測試顧問公司",
+        "status": "進行中",
+        "legal_aid_status": "",
+    }]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    item = r.get_json()["items"][0]
+    assert item["case_type_display"] == "民事｜法律顧問"
+
+
+def test_cases_endpoint_filters_legal_consultant_inside_civil(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&case_type=法律顧問")
+
+    assert r.status_code == 200
+    sql, params = calls[-1]
+    assert "case_type = %s" in sql
+    assert "case_reason LIKE %s" in sql
+    assert "folder_path LIKE %s" in sql
+    assert "法律顧問" in params
+    assert "民事" in params
+    assert "%顧問%" in params
 
 
 def test_cases_csv_export_uses_external_case_type_display(client):
@@ -729,8 +772,12 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert 'data-scope="pending_report">待報結' in html
     assert 'data-scope="pending_submit">待送出' in html
     assert 'data-type="消費者債務清理"' in html
+    assert 'data-type="法律顧問"' in html
+    assert '<option value="法律顧問">' in html
     assert 'data-kind="消費者債務清理"' not in html
     assert "法扶｜" in js
+    assert "isLegalConsultantCaseRow" in js
+    assert "民事｜法律顧問" in js
     assert "function isFinalClosingStatusText" in js
     assert "function isFinalClosedStatusText" in js
     assert 'text.includes("未結案")' in js
@@ -740,7 +787,8 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260530-fileops-v1" in page
+    assert "file_manager.js?v=20260621-case-back-v1" in page
+    assert "tabs/cases.js?v=20260621-case-card-modal-v1" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js

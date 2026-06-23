@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import argparse
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,55 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = os.environ.get("MAGI_SKILL_PYTHON") or str(REPO_ROOT / "venv" / "bin" / "python3")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
+
+
+_REDACT_KEYS = {
+    "applicant",
+    "case_number",
+    "client_name",
+    "court_case_number",
+    "email",
+    "folder_path",
+    "local_path",
+    "name",
+    "path",
+    "phone",
+    "recipient",
+    "sample",
+    "token",
+}
+_REDACT_PATTERNS = (
+    (re.compile(r"\b20\d{2}-\d{4,}\b"), "<CASE_ID>"),
+    (re.compile(r"\b1\d{2}年度[^\\s,，。；;\"']{1,28}?字第\d{1,8}號"), "<COURT_CASE_NO>"),
+    (re.compile(r"\b09\d{2}[- ]?\d{3}[- ]?\d{3}\b"), "<PHONE>"),
+    (re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"), "<EMAIL>"),
+    (re.compile(r"(?i)(token|password|secret|api[_-]?key)[\"':= ]+[^\\s,，。；;\"']+"), r"\1=<REDACTED>"),
+    (re.compile(r"(/Users/[^\\s,，。；;\"']+|/Volumes/[^\\s,，。；;\"']+)"), "<PATH>"),
+)
+
+
+def _redact_text(text: Any) -> str:
+    out = str(text or "")
+    for pattern, replacement in _REDACT_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
+def _redact_obj(value: Any, *, key: str = "") -> Any:
+    key_lower = str(key or "").lower()
+    if any(marker in key_lower for marker in _REDACT_KEYS):
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if key_lower == "sample" and isinstance(value, list):
+            return f"<REDACTED:{len(value)} item(s)>"
+        return "<REDACTED>"
+    if isinstance(value, dict):
+        return {k: _redact_obj(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_obj(item, key=key) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
+    return value
 
 
 def _run(name: str, argv: list[str], timeout: int = 600) -> dict[str, Any]:
@@ -39,11 +89,11 @@ def _run(name: str, argv: list[str], timeout: int = 600) -> dict[str, Any]:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
-        return {"name": name, "ok": False, "error": f"timeout_{timeout}s", "stdout_tail": (e.stdout or "")[-1200:]}
+        return {"name": name, "ok": False, "error": f"timeout_{timeout}s", "stdout_tail": _redact_text(e.stdout or "")[-1200:]}
     except Exception as e:
         return {"name": name, "ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    parsed = _parse_last_json(proc.stdout or "")
+    parsed = _redact_obj(_parse_last_json(proc.stdout or ""))
     ok = proc.returncode == 0
     if isinstance(parsed, dict):
         ok = ok and bool(parsed.get("success", parsed.get("ok", True)))
@@ -52,8 +102,8 @@ def _run(name: str, argv: list[str], timeout: int = 600) -> dict[str, Any]:
         "ok": bool(ok),
         "returncode": proc.returncode,
         "parsed": parsed,
-        "stdout_tail": (proc.stdout or "")[-1600:],
-        "stderr_tail": (proc.stderr or "")[-1600:],
+        "stdout_tail": _redact_text(proc.stdout or "")[-1600:],
+        "stderr_tail": _redact_text(proc.stderr or "")[-1600:],
     }
 
 
@@ -77,11 +127,12 @@ def _laf_portal_live() -> dict[str, Any]:
         import scripts.laf_nightly_audit as audit
 
         result = audit.scan_portal_pending_drafts(db=None)
+        error = _redact_text(result.get("error") or "")
         return {
             "name": "laf_portal_live",
-            "ok": not bool(result.get("error")),
+            "ok": not bool(error),
             "parsed": {
-                "error": result.get("error"),
+                "error": error or None,
                 "closing_drafts": len(result.get("closing_drafts") or []),
                 "case_status_drafts": len(result.get("case_status_drafts") or []),
                 "condition_pending": len(result.get("condition_pending") or []),
@@ -90,7 +141,7 @@ def _laf_portal_live() -> dict[str, Any]:
             },
         }
     except Exception as e:
-        return {"name": "laf_portal_live", "ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"name": "laf_portal_live", "ok": False, "error": _redact_text(f"{type(e).__name__}: {e}")}
 
 
 def _summarize(results: list[dict[str, Any]]) -> str:

@@ -12,6 +12,7 @@ from osc_headless.todos import (
     _extract_todo_from_filename,
     extract_document_date_from_filename,
 )
+import osc_headless.todos as todos_mod
 
 
 def _extract(filename, file_path=""):
@@ -72,6 +73,32 @@ def test_原版osc文到十日沒有內字也建立待辦():
     assert todos[0]["type"] == "補正"
     assert todos[0]["date"] == "2026-05-11"
     assert todos[0]["time"] == ""
+
+
+def test_原版osc文到數字缺日字仍用檔名前綴與假日順延():
+    todos = _extract("20260618 花蓮地方法院115年度消債更字第71號函(高弘軒；主旨：請聲請人於文到30內補正，逾期未補正即駁回本件聲請).pdf")
+    assert len(todos) == 1
+    assert todos[0]["type"] == "補正"
+    assert todos[0]["date"] == "2026-07-20"
+    assert todos[0]["time"] == ""
+    assert "06/18文到" in todos[0]["description"]
+
+
+def test_原版osc自訂假日也會順延(monkeypatch, tmp_path):
+    holiday_file = tmp_path / "holidays_config.json"
+    holiday_file.write_text(
+        '{"2026": {"連假": {"2026-07-20": "臨時假日"}, "臨時假日": {}}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OSC_HOLIDAYS_CONFIG", str(holiday_file))
+    todos_mod._load_custom_holidays.cache_clear()
+    try:
+        todos = _extract("20260618 花蓮地方法院115年度消債更字第71號函(高弘軒；主旨：請聲請人於文到30內補正，逾期未補正即駁回本件聲請).pdf")
+        assert len(todos) == 1
+        assert todos[0]["type"] == "補正"
+        assert todos[0]["date"] == "2026-07-21"
+    finally:
+        todos_mod._load_custom_holidays.cache_clear()
 
 
 def test_原版osc民國收文日前綴作為文到基準日():

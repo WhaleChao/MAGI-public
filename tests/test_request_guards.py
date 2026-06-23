@@ -24,6 +24,18 @@ def _make_app():
     def health():
         return "health"
 
+    @app.get("/login")
+    def login():
+        return "login"
+
+    @app.get("/register")
+    def register():
+        return "register"
+
+    @app.get("/static/magi-site.css")
+    def magi_site_css():
+        return "css"
+
     @app.get("/lottery")
     def lottery():
         return "lottery"
@@ -67,6 +79,24 @@ def test_cloudflare_tunnel_allows_whitelisted_routes():
 
     response = client.get(
         "/health",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/login",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/register",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/static/magi-site.css",
         headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
     )
     assert response.status_code == 200

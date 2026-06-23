@@ -26,6 +26,12 @@
             "scripts/packaging/magi_install_launcher.py",
             "scripts/packaging/runtime_bootstrap.py",
             "scripts/packaging/build_installers.py",
+            "scripts/packaging/validate_installer_payload.py",
+            "scripts/ci/check_hardcodes.py",
+            "scripts/ci/check_shell_true.py",
+            "scripts/ops/business_module_live_check.py",
+            "scripts/ops/public_push_guard.py",
+            "scripts/ops/token_health_check.py",
             "bin/check.py",
             "bin/cli.py",
             "bin/release_bundle.py",
@@ -35,6 +41,24 @@
             "scripts/ops/commercial_readiness_live.py",
             "skills/process-hygiene/action.py",
             "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "hardcoded_runtime_guard",
+          "name": "No new hardcoded runtime endpoints",
+          "command": [
+            "{python}",
+            "scripts/ci/check_hardcodes.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "shell_true_guard",
+          "name": "No new unsafe shell execution",
+          "command": [
+            "{python}",
+            "scripts/ci/check_shell_true.py"
           ],
           "timeout_sec": 30
         },
@@ -57,6 +81,17 @@
             "tests/test_entrypoints.py",
             "tests/test_customer_install_wizard.py",
             "tests/test_commercial_readiness_live.py",
+            "tests/test_business_module_live_check.py",
+            "tests/test_release_bundle.py",
+            "tests/test_osc_debt_supplement_checklist.py",
+            "tests/test_public_push_guard.py",
+            "tests/test_auth_mobile_layout.py",
+            "tests/test_file_review_dispatch.py",
+            "tests/test_message_pipeline_poa_flow_guard.py",
+            "tests/test_mobile_auth_routes.py",
+            "tests/test_osc_cases_upload_security.py",
+            "tests/test_token_health_check.py",
+            "tests/test_tool_registry_case_query.py",
             "tests/test_process_hygiene_managed_services.py",
             "tests/test_installer_bootstrap.py",
             "tests/test_resource_governor.py",

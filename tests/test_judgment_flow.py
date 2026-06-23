@@ -17,7 +17,7 @@ def test_practical_insight_result_combines_statutes_and_judgments():
             "items": [
                 {
                     "title": "最高法院 114 台上 3753",
-                    "summary_preview": "法院指出，交屋遲延仍應依契約與損害證明審酌。",
+                    "summary_preview": "法院指出，預售屋遲延交屋仍應依契約期限、可歸責事由與損害證明審酌。",
                     "url": "https://judgment.example/1",
                 }
             ],
@@ -35,6 +35,54 @@ def test_practical_insight_result_combines_statutes_and_judgments():
     assert "適用法規" in text
     assert "民法 第184條" in text
     assert "最高法院 114 台上 3753" in text
+
+
+def test_practical_insight_extracts_query_relevant_reasoning():
+    text = judgment_flow.format_practical_insight_result(
+        "預售屋遲延交屋",
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": "最高法院 114年度台上字第3753號",
+                    "summary_preview": "案由與當事人資料，未涉及具體法律見解。",
+                    "full_text_excerpt": (
+                        "程序事項：本件上訴合法。\n\n"
+                        "本院認為，預售屋遲延交屋是否構成債務不履行，應先審酌契約約定之交屋期限、"
+                        "可歸責事由及買受人實際損害；出賣人不得僅以行政流程延宕概括免責。\n\n"
+                        "主文：上訴駁回。"
+                    ),
+                    "url": "https://judgment.example/3753",
+                }
+            ],
+        },
+        {"ok": True, "items": []},
+    )
+
+    assert "核心見解" in text
+    assert "預售屋遲延交屋是否構成債務不履行" in text
+    assert "行政流程延宕概括免責" in text
+    assert "案由與當事人資料" not in text
+
+
+def test_practical_insight_blocks_unrelated_excerpts():
+    text = judgment_flow.format_practical_insight_result(
+        "通譯",
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": "臺灣高等法院 111年度上易字第98號",
+                    "summary_preview": "法院認為，被告提領款項之行為與損害間具相當因果關係，應負損害賠償責任。",
+                    "url": "https://judgment.example/unrelated",
+                }
+            ],
+        },
+        {"ok": True, "items": []},
+    )
+
+    assert "沒有可讀且命中查詢重點" in text
+    assert "臺灣高等法院 111年度上易字第98號" not in text
 
 
 def test_run_judgment_collector_routes_practical_insight(monkeypatch):
@@ -91,11 +139,11 @@ def test_practical_insight_falls_back_to_local_archive(monkeypatch):
             "success": True,
             "source_label": "本地判決庫 fallback",
             "items": [
-                {
-                    "title": "臺灣高等法院 侵權行為損害賠償",
-                    "summary_preview": "本地 archive 摘要。",
-                    "url": "https://judgment.local/1",
-                }
+                    {
+                        "title": "臺灣高等法院 侵權行為損害賠償",
+                        "summary_preview": "法院認為，侵權行為損害賠償責任應審酌加害行為、過失及相當因果關係。",
+                        "url": "https://judgment.local/1",
+                    }
             ],
         },
     )
@@ -113,11 +161,11 @@ def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
                 "success": True,
                 "source_label": "本地實務見解庫",
                 "items": [
-                    {
-                        "title": "本地見解",
-                        "summary_preview": "本地摘要。",
-                        "url": "https://judgment.local/1",
-                    }
+                        {
+                            "title": "本地見解",
+                            "summary_preview": "法院認為，遲延交屋爭議應先審酌買賣契約約定之交屋期限與可歸責事由。",
+                            "url": "https://judgment.local/1",
+                        }
                 ],
             }
         return {"ok": True, "items": []}
@@ -132,11 +180,11 @@ def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
             "success": True,
             "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
             "items": [
-                {
-                    "title": "MCP 司法院見解",
-                    "summary_preview": "MCP 摘要。",
-                    "url": "https://judgment.judicial.gov.tw/example",
-                }
+                    {
+                        "title": "MCP 司法院見解",
+                        "summary_preview": "法院認為，遲延交屋是否成立債務不履行，應依契約期限與實際損害判斷。",
+                        "url": "https://judgment.judicial.gov.tw/example",
+                    }
             ],
         },
     )
@@ -155,7 +203,7 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
             "items": [
                 {
                     "title": "原搜尋結果",
-                    "summary_preview": "原搜尋摘要。",
+                    "summary_preview": "法院認為，遲延交屋爭議仍應以契約交屋期限與可歸責事由作為判斷核心。",
                     "url": "https://judgment.local/original",
                 }
             ],
@@ -171,11 +219,11 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
             "success": True,
             "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
             "items": [
-                {
-                    "title": "MCP 補強結果",
-                    "summary_preview": "MCP 補強摘要。",
-                    "url": "https://judgment.judicial.gov.tw/example",
-                }
+                    {
+                        "title": "MCP 補強結果",
+                        "summary_preview": "法院認為，遲延交屋之損害賠償範圍應視買受人所受實際損害而定。",
+                        "url": "https://judgment.judicial.gov.tw/example",
+                    }
             ],
         },
     )
@@ -194,11 +242,11 @@ def test_practical_insight_augments_with_tw_legal_rag(monkeypatch):
                 "success": True,
                 "source_label": "本地實務見解庫",
                 "items": [
-                    {
-                        "title": "本地見解",
-                        "summary_preview": "本地摘要。",
-                        "url": "https://judgment.local/1",
-                    }
+                        {
+                            "title": "本地見解",
+                            "summary_preview": "法院認為，通譯品質會影響被告理解程序與行使防禦權，法院應具體審查。",
+                            "url": "https://judgment.local/1",
+                        }
                 ],
             }
         return {"ok": True, "items": []}
@@ -239,7 +287,7 @@ def test_format_practical_insight_prefers_non_degraded_items():
             "items": [
                 {
                     "title": "正常摘要案例",
-                    "summary_preview": "法院認為應依過失與因果關係判斷損害賠償責任。",
+                    "summary_preview": "法院認為，侵權行為應依過失、權利侵害與相當因果關係判斷損害賠償責任。",
                     "url": "https://judgment.local/good",
                     "is_degraded": False,
                 }

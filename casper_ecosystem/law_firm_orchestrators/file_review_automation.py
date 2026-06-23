@@ -1687,6 +1687,26 @@ class FileReviewManager:
     # by payment_registry so an old PDF is never re-sent just because TTL passed.
     PAYMENT_NOTIFY_COOLDOWN_HOURS = 720
 
+    def _expand_web_payment_notice_key(self, key: object) -> set:
+        """Expand historical raw-case notification keys to normalized case keys."""
+        raw_key = str(key or "").strip()
+        if not raw_key.startswith("web_payment:"):
+            return set()
+        out = {raw_key}
+        if (
+            raw_key.startswith("web_payment:case:")
+            or raw_key.startswith("web_payment:payid:")
+            or raw_key.startswith("web_payment:rowid:")
+        ):
+            return out
+        raw_case = raw_key[len("web_payment:"):].strip()
+        if not raw_case:
+            return out
+        norm = self._normalize_case_keyword_loose(raw_case)
+        if norm:
+            out.add(f"web_payment:case:{norm}")
+        return out
+
     def _load_notified_cases(self) -> set:
         """載入已通知的案件記錄（含 TTL 清理，超過冷卻時間自動移除以便重新通知）"""
         if os.path.exists(self.notified_cases_file):
@@ -1695,14 +1715,21 @@ class FileReviewManager:
                     data = json.load(f)
                 # 相容舊格式 (list) — 全數保留但下次存檔會轉為 dict
                 if isinstance(data, list):
-                    return set(data)
+                    expanded = set()
+                    for key in data:
+                        expanded.update(self._expand_web_payment_notice_key(key))
+                    return expanded
                 # 新格式 (dict: {key: ISO_timestamp}) — 清除超過冷卻時間的
                 if isinstance(data, dict):
                     cutoff = (datetime.now() - timedelta(hours=self.PAYMENT_NOTIFY_COOLDOWN_HOURS)).isoformat()
-                    return {
+                    current = {
                         k for k, v in data.items()
                         if str(k).startswith("web_payment:") or str(v) >= cutoff
                     }
+                    expanded = set()
+                    for key in current:
+                        expanded.update(self._expand_web_payment_notice_key(key))
+                    return expanded
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1330, exc_info=True)
         return set()
@@ -2549,7 +2576,7 @@ class FileReviewManager:
         # 優先使用 file_paths（完整路徑），若檔案仍存在就直接回傳
         direct_paths = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
         if direct_paths:
-            existing = [p for p in direct_paths if os.path.isfile(p)]
+            existing = [p for p in direct_paths if os.path.isfile(p) and self._is_valid_payment_download_artifact(p)]
             if existing:
                 return existing
 
@@ -2700,16 +2727,7 @@ class FileReviewManager:
             self.log(f"  ℹ️ 繳費單已在 registry 處理過，跳過舊 PDF 補發: {notify_key_case or notify_key}")
             return True
 
-        # 手動標記已繳費 → 永久跳過
-        if self._is_payment_dismissed(notify_key, notify_key_case):
-            self.log(f"  ℹ️ 案件已手動標記為已繳費，跳過通知: {notify_key}")
-            return True
-
-        # MAGI 已上傳繳費憑證（payment_proof_registry）→ 跳過
-        if self._is_proof_uploaded_for_case(row_json):
-            self.log(f"  ℹ️ MAGI 已上傳繳費憑證，跳過通知: {notify_key}")
-            return True
-
+        explicit_payment_pdf = False
         if file_paths is not None:
             valid_file_paths = [
                 p for p in (file_paths or [])
@@ -2721,6 +2739,23 @@ class FileReviewManager:
                 )
                 return False
             file_paths = valid_file_paths
+            explicit_payment_pdf = True
+
+        # 手動標記已繳費時，仍要補送本次剛取得的法院 PDF 附件。
+        if self._is_payment_dismissed(notify_key, notify_key_case):
+            if explicit_payment_pdf:
+                self.log(f"  ℹ️ 案件已標記已繳費，但本輪有新繳費單 PDF，仍補送附件: {notify_key}")
+            else:
+                self.log(f"  ℹ️ 案件已手動標記為已繳費，跳過通知: {notify_key}")
+                return True
+
+        # MAGI 已上傳繳費憑證時，仍要補送本次剛取得的法院 PDF 附件。
+        if self._is_proof_uploaded_for_case(row_json):
+            if explicit_payment_pdf:
+                self.log(f"  ℹ️ MAGI 已有繳費憑證，但本輪有新繳費單 PDF，仍補送附件: {notify_key}")
+            else:
+                self.log(f"  ℹ️ MAGI 已上傳繳費憑證，跳過通知: {notify_key}")
+                return True
 
         # 同一 session 已通知 → 跳過（兩個 key 任一命中即跳過）
         if notify_key in self.notified_cases:
@@ -2749,7 +2784,7 @@ class FileReviewManager:
                  f"p_status={row_json.get('p_status')}, payment={row_json.get('payment')}, "
                  f"status={row_json.get('status')}, statusnm={row_json.get('statusnm')}, "
                  f"result={str(row_json.get('result') or '')[:30]}")
-        if self._has_payment_proof_uploaded(row_json):
+        if self._has_payment_proof_uploaded(row_json) and not explicit_payment_pdf:
             self.log(f"  ℹ️ 案件已上傳繳費憑證，跳過通知: {notify_key}")
             return True
 
@@ -5040,15 +5075,27 @@ class FileReviewManager:
 
     def _is_valid_download_pdf(self, path: str) -> bool:
         """Only completed PDF artifacts may enter archive/dedupe registries."""
+        lowered_path = str(path or "").lower()
         filename = os.path.basename(str(path or ""))
+        if "_ignored_downloads" in lowered_path or ".invalid_artifact" in filename.lower():
+            return False
         if not filename.lower().endswith(".pdf"):
+            return False
+        try:
+            if os.path.getsize(path) <= 0:
+                return False
+            with open(path, "rb") as fh:
+                chunk = fh.read(4096)
+        except Exception:
+            return False
+        if not chunk.lstrip().startswith(b"%PDF"):
             return False
         if self._download_payload_looks_like_json_error(path):
             return False
-        try:
-            return os.path.getsize(path) > 0
-        except Exception:
+        lowered = chunk.decode("utf-8", errors="ignore").lower()
+        if any(marker in lowered for marker in ("<html", "<!doctype html", "messagetext", "\"status\"", "\"controller\"")):
             return False
+        return True
 
     def _is_valid_payment_download_artifact(self, path: str) -> bool:
         return self._is_valid_download_pdf(path)
@@ -5786,18 +5833,26 @@ class FileReviewManager:
                 if existing:
                     _existing_paths = existing.get("file_paths") or []
                     _label = rj.get('showyyidno') or rj.get('yyidno') or '-'
-                    if _existing_paths and all(os.path.exists(fp) for fp in _existing_paths):
+                    _valid_existing_paths = [
+                        fp for fp in _existing_paths
+                        if os.path.exists(fp) and self._is_valid_payment_download_artifact(fp)
+                    ]
+                    if _valid_existing_paths:
                         self.log(f"  ⏭️ 已有繳費單: {_label}")
                         results.append({
                             "case_number": rj.get("showyyidno") or rj.get("yyidno") or "",
                             "party": rj.get("clnm") or "",
                             "court": rj.get("crtid") or "",
-                            "pdf_path": _existing_paths[0],
+                            "pdf_path": _valid_existing_paths[0],
+                            "all_paths": _valid_existing_paths,
                             "already_existed": True,
                         })
+                        continue
+                    if _existing_paths:
+                        self.log(f"  ♻️ registry 只有無效/錯誤繳費單，重新下載: {_label}")
                     else:
                         self.log(f"  ⏭️ 已處理過（registry 有記錄）: {_label}")
-                    continue
+                        continue
                 # fallback：相容查詢（舊 registry 格式用未正規化的 key）
                 if self._is_payment_processed(rj):
                     _label = rj.get('showyyidno') or rj.get('yyidno') or '-'
@@ -12308,7 +12363,10 @@ class FileReviewManager:
         """傳送繳費單通知。走 red_phone（TG + DC mirror），附件走 LAFNotifier。"""
         try:
             files = info.files or []
-            existing_files = [fp for fp in files if os.path.exists(fp)]
+            existing_files = [
+                fp for fp in files
+                if os.path.exists(fp) and self._is_valid_payment_download_artifact(fp)
+            ]
             court_case_no = self._notification_case_no(info)
 
             # ── 多路徑 dedup：dismissed / proof / DB，任一命中就跳過 ──
@@ -12316,11 +12374,16 @@ class FileReviewManager:
             _party = info.client_name or ""
             _notify_key = f"web_payment:case:{_ck}:{_party}" if _ck else ""
             _notify_key_no_party = f"web_payment:{_ck}" if _ck else ""
+            delivery_note = ""
 
             # 1. dismissed 比對（人名 key + 案號 key）
             if self._is_payment_dismissed(_notify_key, _notify_key_no_party):
-                self.log(f"  ℹ️ 已標記為已繳費，跳過通知: {_ck} {_party}")
-                return None  # intentional skip — caller must NOT count as "notified"
+                if existing_files:
+                    delivery_note = "已標記已繳費，補送法院來信附件"
+                    self.log(f"  ℹ️ 已標記為已繳費，但仍補送 PDF 附件: {_ck} {_party}")
+                else:
+                    self.log(f"  ℹ️ 已標記為已繳費，跳過通知: {_ck} {_party}")
+                    return None  # intentional skip — caller must NOT count as "notified"
 
             # 2. payment_proof dedup DB 比對（案號格式：115.原侵重訴.000001）
             _ck_norm = re.sub(r"[年度字第號\s]+", "", _ck) if _ck else ""
@@ -12331,8 +12394,12 @@ class FileReviewManager:
                     try:
                         from skills.ops.dedup_db import is_done as _is_done
                         if _is_done("payment_proof", _proof_key):
-                            self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
-                            return None  # intentional skip
+                            if existing_files:
+                                delivery_note = delivery_note or "繳費憑證已上傳，補送法院來信附件"
+                                self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），但仍補送 PDF 附件: {_proof_key}")
+                            else:
+                                self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
+                                return None  # intentional skip
                     except Exception:
                         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12274, exc_info=True)
                     # 也查 proof registry JSON
@@ -12342,8 +12409,12 @@ class FileReviewManager:
                             with open(_proof_path, "r", encoding="utf-8") as _pf:
                                 _proof_reg = json.load(_pf)
                             if _proof_key in _proof_reg:
-                                self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
-                                return None  # intentional skip
+                                if existing_files:
+                                    delivery_note = delivery_note or "繳費憑證已上傳，補送法院來信附件"
+                                    self.log(f"  ℹ️ 繳費憑證已上傳（JSON），但仍補送 PDF 附件: {_proof_key}")
+                                else:
+                                    self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
+                                    return None  # intentional skip
                     except Exception:
                         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12285, exc_info=True)
 
@@ -12352,6 +12423,10 @@ class FileReviewManager:
                 for _dk, _dv in self.dismissed_payments.items():
                     _dkw = _dv.get("keyword", "") if isinstance(_dv, dict) else ""
                     if _dkw and _dkw == _party:
+                        if existing_files:
+                            delivery_note = delivery_note or "當事人已標記已繳費，補送法院來信附件"
+                            self.log(f"  ℹ️ 當事人已標記已繳費，但仍補送 PDF 附件: {_party}")
+                            break
                         self.log(f"  ℹ️ 當事人已標記已繳費，跳過通知: {_party}")
                         return None  # intentional skip
 
@@ -12478,7 +12553,10 @@ class FileReviewManager:
                 )
                 return False
 
-            msg = f"💰 繳費單通知\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
+            title = "繳費單 PDF 補送" if delivery_note else "繳費單通知"
+            msg = f"💰 {title}\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
+            if delivery_note:
+                msg += f"\n狀態: {delivery_note}"
             if info.laf_case_no:
                 msg += f"\n法扶案號: {info.laf_case_no}"
             if info.application_no and info.application_no != info.laf_case_no:
@@ -12504,10 +12582,10 @@ class FileReviewManager:
             except Exception as rp_e:
                 self.log(f"  ⚠️ red_phone import/send 失敗: {rp_e}")
 
-            # ── 附件：TG 走 LAFNotifier，DC 走 red_phone ─────────
+            # ── 附件：LAFNotifier 已同時送 TG + DC；red_phone 僅作 DC fallback ─────────
             if existing_files:
                 file_caption = f"📎 繳費單 PDF — {info.client_name} {court_case_no}"
-                # TG 附件
+                file_delivery_ok = False
                 try:
                     ensure_path_on_sys_path(get_orch_dir())
                     from line_notifier import LAFNotifier
@@ -12518,27 +12596,29 @@ class FileReviewManager:
                         source="file_review_orchestrator",
                     )
                     if tg_file_ok:
+                        file_delivery_ok = True
                         any_ok = True
-                        self.log(f"  ✅ TG PDF 附件已送出 ({len(existing_files)} 份)")
+                        self.log(f"  ✅ PDF 附件已送出 ({len(existing_files)} 份)")
                     else:
-                        self.log(f"  ⚠️ TG PDF 附件送出失敗")
+                        self.log(f"  ⚠️ PDF 附件送出失敗")
                 except Exception as file_e:
                     self.log(f"  ⚠️ LAFNotifier 附件發送失敗: {file_e}")
-                # DC 附件
-                try:
-                    from skills.ops.red_phone import send_discord_bot_file
-                    for fp in existing_files:
-                        dc_file_ok = send_discord_bot_file(
-                            fp, caption=file_caption,
-                            topic_key="filereview_payment",
-                            source="file_review_orchestrator",
-                        )
-                        if dc_file_ok:
-                            self.log(f"  ✅ DC PDF 已上傳: {os.path.basename(fp)}")
-                        else:
-                            self.log(f"  ⚠️ DC PDF 上傳失敗: {os.path.basename(fp)}")
-                except Exception as dc_e:
-                    self.log(f"  ⚠️ DC 檔案上傳失敗: {dc_e}")
+                if not file_delivery_ok:
+                    try:
+                        from skills.ops.red_phone import send_discord_bot_file
+                        for fp in existing_files:
+                            dc_file_ok = send_discord_bot_file(
+                                fp, caption=file_caption,
+                                topic_key="filereview_payment",
+                                source="file_review_orchestrator",
+                            )
+                            if dc_file_ok:
+                                any_ok = True
+                                self.log(f"  ✅ DC PDF fallback 已上傳: {os.path.basename(fp)}")
+                            else:
+                                self.log(f"  ⚠️ DC PDF fallback 上傳失敗: {os.path.basename(fp)}")
+                    except Exception as dc_e:
+                        self.log(f"  ⚠️ DC 檔案 fallback 上傳失敗: {dc_e}")
 
             # ── Fallback: red_phone 不可用時嘗試直接 TG ──────────
             if not any_ok:

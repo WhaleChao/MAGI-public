@@ -10,6 +10,7 @@ try:
         generate_poa,
         generate_receipt,
     )
+    from api.osc.drafts import _osc_build_form_preview
 except Exception as exc:  # pragma: no cover - dependency gate
     pytest.skip(f"osc document generator unavailable: {exc}", allow_module_level=True)
 
@@ -60,3 +61,30 @@ def test_generate_receipt_docx(tmp_path):
     doc.save(output)
     assert output.exists()
     assert output.stat().st_size > 0
+
+
+def test_power_of_attorney_preview_includes_court_specific_fields():
+    preview = _osc_build_form_preview(
+        "power_of_attorney",
+        {
+            "case_number": "2025-0027",
+            "client_name": "林黃阿姐",
+            "case_reason": "債務人異議之訴",
+            "court_case_no": "115年度上字第000221號",
+            "court_name": "臺灣高等法院花蓮分院",
+            "laf_case_no": "LAF-001",
+        },
+        {
+            "lawyer_name": "測試律師",
+            "address": "花蓮市測試路100號",
+            "phone": "0912345678",
+            "tax_id": "A123456789",
+        },
+    )
+
+    text = preview["preview_text"]
+    assert preview["form_type"] == "power_of_attorney"
+    assert "法院名稱：臺灣高等法院花蓮分院" in text
+    assert "法院案號：115年度上字第000221號" in text
+    assert "通訊地址：花蓮市測試路100號" in text
+    assert "身分證字號：A123456789" in text

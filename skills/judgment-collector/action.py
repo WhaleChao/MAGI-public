@@ -61,8 +61,33 @@ except Exception:
 # Config
 # ---------------------------------------------------------------------------
 CODE_DIR = str(get_orch_dir())
-CACHE_ROOT = os.path.expanduser("~/.cache/judgment_collector")
-os.makedirs(CACHE_ROOT, exist_ok=True)
+
+
+def _ensure_cache_root(path_str: str) -> str:
+    """Use the configured cache when healthy, otherwise fall back to local disk.
+
+    Some MAGI hosts used to offload this cache to an external SSD via symlink.
+    When that volume is missing, importing the skill must still work.
+    """
+    primary = os.path.expanduser(path_str or "~/.cache/judgment_collector")
+    try:
+        os.makedirs(primary, exist_ok=True)
+        if os.path.isdir(primary):
+            return primary
+    except OSError as exc:
+        logging.getLogger("judgment-collector").warning(
+            "judgment cache root unavailable, using fallback: %s (%s)",
+            primary,
+            exc,
+        )
+    fallback = os.path.expanduser(
+        os.environ.get("JUDGMENT_CACHE_ROOT_FALLBACK", "~/.cache/judgment_collector_local")
+    )
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+
+CACHE_ROOT = _ensure_cache_root(os.environ.get("JUDGMENT_CACHE_ROOT", "~/.cache/judgment_collector"))
 if load_dotenv is not None:
     try:
         load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)

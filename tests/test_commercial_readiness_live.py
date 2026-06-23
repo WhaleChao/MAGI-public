@@ -62,6 +62,29 @@ def test_run_json_reads_trailing_json(monkeypatch):
     assert elapsed >= 0
 
 
+def test_strict_public_release_audit_uses_public_isolation(monkeypatch):
+    calls = []
+
+    def fake_run_json(cmd, **kwargs):
+        calls.append(cmd)
+        return True, {"ok": True, "errors": 0, "warnings": 0}, "{}", 0.01
+
+    monkeypatch.setattr(gate, "_run_json", fake_run_json)
+
+    result = gate.check_public_release_audit("python3", strict=True)
+
+    assert result.ok is True
+    assert calls == [
+        [
+            "python3",
+            "scripts/public_release_audit.py",
+            "--json",
+            "--public-isolation",
+            "--strict",
+        ]
+    ]
+
+
 def test_public_cleanroom_snapshot_uses_current_worktree(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

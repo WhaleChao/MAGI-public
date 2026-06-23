@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import zipfile
 from pathlib import Path
+import sys
+import types
 
 from api.laf_branch_profiles import LawFirmProfile
 
@@ -48,6 +51,53 @@ def _fake_docx(path: Path, values: dict[str, str] | None = None) -> None:
 
 def _fake_pdf(path: Path) -> None:
     path.write_bytes(b"%PDF-1.4")
+
+
+def _with_fake_fitz(monkeypatch) -> None:
+    png_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5Vx6sAAAAASUVORK5CYII="
+    )
+
+    class _FakePixmap:
+        def save(self, path: str) -> None:
+            Path(path).write_bytes(png_bytes)
+
+    class _FakeRect(types.SimpleNamespace):
+        width: float
+        height: float
+
+    class _FakePage:
+        rect = _FakeRect(width=612, height=792)
+
+        def get_pixmap(self, matrix, alpha=False) -> _FakePixmap:
+            return _FakePixmap()
+
+    class _FakePdf:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._pages = [_FakePage()]
+
+        def __iter__(self):
+            return iter(self._pages)
+
+        def __len__(self) -> int:
+            return len(self._pages)
+
+        def close(self) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self.close()
+
+    class _FakeMatrix:
+        def __init__(self, x: float, y: float) -> None:
+            self.x = x
+            self.y = y
+
+    module = types.SimpleNamespace(open=lambda *_args, **_kwargs: _FakePdf(), Matrix=_FakeMatrix)
+    monkeypatch.setitem(sys.modules, "fitz", module)
 
 
 def test_laf_poa_quality_validator_accepts_complete_fields(tmp_path):
@@ -138,7 +188,7 @@ def test_laf_poa_pdf_creates_fillable_word_companion(tmp_path):
     )
 
     pdf = tmp_path / "委任狀_1150529-E-005_1150601.pdf"
-    _make_pdf(pdf)
+    _fake_pdf(pdf)
 
     result = ensure_laf_poa_docx_companion(
         pdf,
@@ -328,7 +378,7 @@ def test_laf_poa_static_template_can_fill_when_exact_layout_disabled(tmp_path, m
 
     monkeypatch.setenv("MAGI_LAF_POA_EXACT_PDF_LAYOUT", "0")
     pdf = tmp_path / "委任狀_1150529-E-005_1150601.pdf"
-    _make_pdf(pdf)
+    _fake_pdf(pdf)
 
     result = ensure_laf_poa_docx_companion(
         pdf,
@@ -355,6 +405,7 @@ def test_laf_poa_static_template_can_fill_when_exact_layout_disabled(tmp_path, m
     assert "970" in xml
     assert "花蓮縣花蓮市明禮路18之6號1樓" in xml
     assert template_values["LAW_FIRM_PHONE"] in xml
+    assert "案號：年度字第號股" in _docx_text(laf_poa_docx_path(pdf))
     assert "請填法院" not in _docx_text(laf_poa_docx_path(pdf))
     assert "請填法院案號" not in _docx_text(laf_poa_docx_path(pdf))
     assert "{{" not in xml
@@ -418,12 +469,13 @@ def test_laf_poa_indigenous_template_uses_center_phone(tmp_path, monkeypatch):
     assert "{{" not in xml
 
 
-def test_laf_poa_pdf_background_fallback_still_works(tmp_path, monkeypatch):
+def test_laf_poa_template_path_is_used_even_when_exact_layout_flag_on(tmp_path, monkeypatch):
     from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
 
     monkeypatch.setenv("MAGI_LAF_POA_EXACT_PDF_LAYOUT", "1")
+    monkeypatch.setenv("MAGI_LAF_POA_ALLOW_PDF_RENDER_FALLBACK", "1")
     pdf = tmp_path / "委任狀_1150529-E-005_1150601.pdf"
-    _make_pdf(pdf)
+    _make_pdf(pdf, "更生\n法院：臺灣花蓮地方法院")
 
     result = ensure_laf_poa_docx_companion(pdf, case_metadata={"client_name": "王惠薰"})
     xml = _docx_xml(laf_poa_docx_path(pdf))
@@ -431,7 +483,27 @@ def test_laf_poa_pdf_background_fallback_still_works(tmp_path, monkeypatch):
     assert result["ok"] is True
     assert result["status"] == "created"
     assert result["template_key"] == "general"
-    assert "<wp:anchor" in xml and 'behindDoc="1"' in xml, "PDF 頁面應作為文字後方背景，避免打字推動版面"
+    assert "magi_laf_poa_overlay_" not in xml, "避免進入 PDF 背景重建模式"
+    assert result["filled_fields"]["client_name"] == "王惠薰"
+
+
+def test_laf_poa_pdf_background_fallback_requires_explicit_opt_in(tmp_path, monkeypatch):
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path
+
+    monkeypatch.setenv("MAGI_LAF_POA_EXACT_PDF_LAYOUT", "1")
+    monkeypatch.setenv("MAGI_LAF_POA_DOCX_TEMPLATES", "0")
+    monkeypatch.setenv("MAGI_LAF_POA_ALLOW_PDF_RENDER_FALLBACK", "1")
+    _with_fake_fitz(monkeypatch)
+    pdf = tmp_path / "委任狀_1150529-E-005_1150601.pdf"
+    _fake_pdf(pdf)
+
+    result = ensure_laf_poa_docx_companion(pdf, case_metadata={"client_name": "王惠薰"})
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert result["status"] == "created"
+    assert result["template_key"] == "general"
+    assert "<wp:anchor" in xml and 'behindDoc="1"' in xml, "需明確開啟 fallback 才可使用 PDF 重建版"
     assert result["filled_fields"]["client_name"] == "王惠薰"
 
 

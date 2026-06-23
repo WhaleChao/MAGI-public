@@ -21,6 +21,7 @@ import threading
 import logging
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse, urlunparse
 from html import escape
 from collections import defaultdict, deque
 from datetime import datetime
@@ -70,7 +71,7 @@ validate_config()
 from logging.handlers import RotatingFileHandler
 from flask import (
     request, abort, render_template, redirect, url_for, flash,
-    jsonify, Response, send_file, send_from_directory,
+    jsonify, Response, send_file, send_from_directory, session,
 )
 from api.line_compat import (
     AudioMessage, FileMessage, ImageMessage, ImageSendMessage,
@@ -351,6 +352,56 @@ def _require_json_auth(admin: bool = False):
     if admin and not current_user.is_admin():
         return _json_auth_error(403, "admin_required")
     return None
+
+
+def _sanitize_login_next(raw_next: str | None) -> str:
+    """Return a safe post-login redirect target.
+
+    Only same-origin absolute-path targets are allowed; external/absolute URLs and
+    login/register/logout loops are rejected.
+    """
+
+    candidate = (raw_next or "").strip()
+    if not candidate:
+        return "/dashboard/nerv"
+
+    if candidate.startswith("//"):
+        return "/dashboard/nerv"
+
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        return "/dashboard/nerv"
+    if not parsed.path or not parsed.path.startswith("/"):
+        return "/dashboard/nerv"
+    if parsed.path.startswith(("/login", "/register", "/logout")):
+        return "/dashboard/nerv"
+
+    return urlunparse(("", "", parsed.path, "", parsed.query, parsed.fragment))
+
+
+def _is_mobile_app_launch_request() -> bool:
+    """Detect native/PWA mobile launch requests that should start from login."""
+
+    requested_with = (request.headers.get("X-Requested-With") or "").strip().lower()
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if requested_with == "tw.local.magi.mobile":
+        return True
+    if "capacitor" in user_agent:
+        return True
+    if "; wv" in user_agent or " version/4.0 chrome/" in user_agent:
+        return True
+    return "mobile" in user_agent and ("safari" in user_agent or "chrome" in user_agent)
+
+
+def _mobile_app_login_redirect():
+    """Start MAGI Mobile from a clean login state instead of a stale dashboard."""
+
+    try:
+        logout_user()
+    except Exception:
+        logger.debug("mobile app logout cleanup failed", exc_info=True)
+    session.clear()
+    return redirect(url_for("login", next="/mobile", mobile_app="1"))
 
 
 # ---------------------------------------------------------------------------
@@ -770,7 +821,9 @@ def _fallback_to_tools_api(error):
 def index():
     if request.method == "POST":
         return callback()
-    return redirect(url_for("dashboard_pages.dashboard"))
+    if _is_mobile_app_launch_request():
+        return _mobile_app_login_redirect()
+    return redirect("/dashboard/nerv")
 
 
 @app.route("/favicon.ico")
@@ -780,12 +833,14 @@ def favicon():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    next_target = _sanitize_login_next(request.values.get("next", ""))
+    mobile_app_login = request.values.get("mobile_app") == "1" or next_target.startswith("/mobile")
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("login.html")
+            return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG, dictionary=True) as (_conn, cursor):
@@ -794,22 +849,30 @@ def login():
                 if user_data and check_password_hash(user_data["password_hash"], password):
                     user = User(user_data["id"], user_data["username"], user_data["role"])
                     login_user(user)
-                    return redirect(url_for("dashboard_pages.dashboard"))
+                    if mobile_app_login:
+                        session["magi_mobile_app_auth_at"] = int(time.time())
+                    return redirect(next_target)
                 else:
                     flash("Invalid username or password")
         except Exception as e:
             flash(f"Login Error: {str(e)}")
-    return render_template("login.html")
+    return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
+
+
+@app.route("/mobile-app")
+def mobile_app_entry():
+    return _mobile_app_login_redirect()
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    next_target = _sanitize_login_next(request.values.get("next", ""))
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("register.html")
+            return render_template("register.html", next_target=next_target)
         hashed_pw = generate_password_hash(password)
         try:
             from api.db_helper import get_cursor
@@ -823,10 +886,10 @@ def register():
                 )
                 conn.commit()
             flash(f"Registration successful! You are now an {role}. Please login.")
-            return redirect(url_for("login"))
+            return redirect(url_for("login", next=next_target))
         except mysql.connector.Error as err:
             flash(f"Error: {err}")
-    return render_template("register.html")
+    return render_template("register.html", next_target=next_target)
 
 
 @app.route("/logout")

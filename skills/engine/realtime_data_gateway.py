@@ -107,6 +107,33 @@ _REALTIME_CAPABILITY_QUESTION = re.compile(
     r"(?:天氣|氣象|股票|股價|追蹤股票|匯率)",
     re.IGNORECASE,
 )
+_REALTIME_ACTION_VERB = re.compile(
+    r"(?:查一下|查詢|幫我查|幫忙查|幫.{0,6}查|看一下|看看|告訴我|請.{0,6}查|麻煩.{0,6}查|"
+    r"lookup|search|get)",
+    re.IGNORECASE,
+)
+_REALTIME_TIME_CUES = (
+    "現在", "目前", "今天", "明天", "後天", "今晚", "早上", "上午", "中午", "下午", "晚上",
+    "today", "tomorrow", "now",
+)
+
+
+def _looks_like_realtime_action_request(text: str) -> bool:
+    """區分「你可以查天氣嗎」能力詢問與「你能查一下明天台北天氣嗎」實際查詢。"""
+    raw = str(text or "")
+    lowered = raw.lower()
+    has_realtime_topic = (
+        any(k in lowered for k in _WEATHER_KEYWORDS)
+        or any(k in lowered for k in _STOCK_KEYWORDS)
+        or any(k in lowered for k in _FX_KEYWORDS)
+    )
+    if not has_realtime_topic:
+        return False
+    if _REALTIME_ACTION_VERB.search(raw):
+        return True
+    if any(cue in lowered for cue in _REALTIME_TIME_CUES):
+        return True
+    return any(loc in raw for loc in _COUNTY_MAP)
 
 
 def classify_realtime_query(text: str) -> Optional[str]:
@@ -117,7 +144,7 @@ def classify_realtime_query(text: str) -> Optional[str]:
     也不走 weather，避免提醒查詢誤進天氣路徑。
     """
     lowered = (text or "").lower()
-    if _REALTIME_CAPABILITY_QUESTION.search(text or ""):
+    if _REALTIME_CAPABILITY_QUESTION.search(text or "") and not _looks_like_realtime_action_request(text):
         return None
     if any(k in lowered for k in _WEATHER_KEYWORDS):
         # 負面條件：提醒/行程類 → 不走 weather

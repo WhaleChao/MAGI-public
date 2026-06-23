@@ -78,8 +78,8 @@ def test_run_pdf_calendar_scan_records_quarantine_and_keeps_valid_rows(monkeypat
                 "todos": [
                     {
                         "type": "開庭",
-                        "date": "2026-06-17",
-                        "description": "⚖️ 6月17日下午2時 審理",
+                        "date": "2026-12-17",
+                        "description": "⚖️ 12月17日下午2時 審理",
                     },
                 ],
                 "events": [{}],
@@ -90,8 +90,8 @@ def test_run_pdf_calendar_scan_records_quarantine_and_keeps_valid_rows(monkeypat
             "todos": [
                 {
                     "type": "開庭",
-                    "date": "2026-06-22",
-                    "description": "⚖️ 6月22日下午4時 審理",
+                    "date": "2026-12-22",
+                    "description": "⚖️ 12月22日下午4時 審理",
                     "source_file": str(path),
                 },
             ],
@@ -118,5 +118,5 @@ def test_run_pdf_calendar_scan_records_quarantine_and_keeps_valid_rows(monkeypat
     assert result["quarantine_todo_count"] == 1
     assert result["implausible_todo_count"] == 1
     assert len(captured_todos) == 1
-    assert captured_todos[0]["date"] == "2026-06-22"
+    assert captured_todos[0]["date"] == "2026-12-22"
     assert result["quarantined_todos"][0]["source_file"].endswith("old_20250517_notice.pdf")

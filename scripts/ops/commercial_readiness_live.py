@@ -126,7 +126,7 @@ def check_installer_dry_run(py: str) -> Check:
 def check_public_release_audit(py: str, *, strict: bool) -> Check:
     cmd = [py, "scripts/public_release_audit.py", "--json"]
     if strict:
-        cmd.append("--strict")
+        cmd.extend(["--public-isolation", "--strict"])
     ok, payload, raw, elapsed = _run_json(cmd, timeout=60)
     if not ok:
         return Check("public_release_audit", False, "fail", raw, elapsed)

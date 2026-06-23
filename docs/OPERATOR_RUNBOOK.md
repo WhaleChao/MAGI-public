@@ -78,11 +78,13 @@ Public release 必跑：
 ```bash
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 Public isolation strict 的要求：
 
 - `scripts/public_release_audit.py --public-isolation --strict` 必須通過。
+- `scripts/ops/public_push_guard.py --remote public --profile public --json` 必須從乾淨工作樹通過，remote 必須是公版 remote；私版推送使用 `--remote origin --profile private`。
 - `.gitignore` 中保留忽略規則不算違規；被 git 追蹤的私有 runtime 或 private marker 才是阻斷項。
 - 公版不得包含 private legal source marker、private mailbox marker、private NAS marker、私有帳號提示、真實姓名、電話、token、DB dump、portal 截圖。
 - 公版不得啟用多租戶、公開上傳入口、電子簽章或任何未通過 commercial-release 的外部入口。
@@ -153,6 +155,7 @@ Cleanroom current-worktree：
 git status --short
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_cleanroom_latest.json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 cleanroom 的意思不是丟掉目前 worktree，而是用目前要發布的工作樹做一次乾淨檢查：確認沒有私有資料、未追蹤 runtime、臨時報告、DB dump 或 portal 截圖被納入發布範圍。不得用 `git reset --hard` 來「清乾淨」別人的工作。
@@ -177,6 +180,8 @@ cleanroom 的意思不是丟掉目前 worktree，而是用目前要發布的工�
 ./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 判定：
@@ -184,6 +189,7 @@ cleanroom 的意思不是丟掉目前 worktree，而是用目前要發布的工�
 - 任一 required check fail，不得 release。
 - skipped 只可接受於該 suite 明確標示的缺環境情境；production handoff 不可用 skipped 取代 live 驗證。
 - JSON report 要保留在 `.runtime/`，但 `.runtime/` 不得進 git。
+- 公版 push 前必須由 `public_push_guard.py` 確認 remote、乾淨工作樹與 strict public audit；安裝器 release 前必須由 `validate_installer_payload.py` 驗證實際 payload。
 - 文件、交接與 release note 使用 `smoke62` 作為本機完整冒煙測試名稱。
 
 ---
@@ -389,6 +395,7 @@ Rollback：
 - NERV 截止時間與總結，不附含個資截圖。
 - DB backup 與 restore drill 狀態。
 - public isolation strict 結果。
+- public push guard 與 installer payload validation 結果。
 - 已知 skipped 項目、原因與風險接受人。
 - 是否保留所有 confirmation gates。
 

@@ -489,7 +489,8 @@ def _export_file_meta(path: str) -> dict:
     p = os.path.abspath(path)
     filename = os.path.basename(p)
     base = _load_public_base_url().rstrip("/")
-    url = f"{base}/api/osc/files/content?path={quote(p, safe='')}" if base else ""
+    relative_url = f"/api/osc/files/content?path={quote(p, safe='')}"
+    url = f"{base}{relative_url}" if base else relative_url
     return {"success": True, "path": p, "filename": filename, "url": url}
 
 
@@ -1845,8 +1846,15 @@ def _warmup_omlx():
         _t.sleep(5)  # let Ollama/oMLX finish startup
         from skills.bridge.http_pool import get_session
         from api.model_config import TEXT_PRIMARY_MODEL
+        from skills.ops.health_probes import _build_omlx_base_url, resolve_omlx_model
+
         _model = os.environ.get("CASPER_LOCAL_MODEL", TEXT_PRIMARY_MODEL)
-        _chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
+        _chat_url = _build_omlx_base_url(
+            os.environ.get("MAGI_OMLX_CHAT_URL")
+            or os.environ.get("OMLX_BASE_URL")
+            or "http://127.0.0.1:8080"
+        )
+        _model = resolve_omlx_model(_model, base_url=_chat_url, timeout_sec=5)
         r = get_session().post(f"{_chat_url}/v1/chat/completions", json={
             "model": _model,
             "messages": [{"role": "user", "content": "ping"}],

@@ -337,6 +337,12 @@ body.theme-dark .case-module-card.active span:last-child {
     font-size: 15px;
     color: var(--text);
 }
+.case-card .card-subtitle {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
 .case-card .card-badge {
     font-size: 11px;
     padding: 2px 8px;
@@ -433,6 +439,132 @@ body.theme-dark .case-module-card.active span:last-child {
     font-weight: 700;
 }
 .case-card .card-actions .btn.danger { margin-left: 0; }
+
+.case-card-modal-open {
+    overflow: hidden;
+}
+.case-card-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+.case-card-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.46);
+    backdrop-filter: blur(4px);
+}
+.case-card-modal-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(920px, calc(100vw - 48px));
+    max-height: min(82vh, 760px);
+    overflow: auto;
+    border-radius: 16px;
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+.case-card.case-card-expanded {
+    cursor: default;
+    padding: 22px 24px 20px;
+    border-radius: 16px;
+    box-shadow: none;
+}
+.case-card.case-card-expanded:hover {
+    border-color: var(--line);
+    box-shadow: none;
+}
+.case-card.case-card-expanded .card-header {
+    padding-right: 42px;
+}
+.case-card.case-card-expanded .card-title {
+    font-size: 20px;
+    line-height: 1.35;
+}
+.case-card.case-card-expanded .card-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 28px;
+    font-size: 14px;
+}
+.case-card.case-card-expanded .card-meta .value {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.case-card.case-card-expanded .card-notes {
+    font-size: 14px;
+}
+.case-card.case-card-expanded .card-notes .value {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+    white-space: pre-wrap;
+}
+.case-card.case-card-expanded .card-actions {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+}
+.case-card.case-card-expanded .card-actions .btn {
+    min-height: 38px;
+    font-size: 12px;
+}
+.case-card-modal-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    z-index: 2;
+}
+.case-card-modal-close:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+@media (max-width: 760px) {
+    .case-card-modal {
+        padding: 12px;
+        align-items: stretch;
+    }
+    .case-card-modal-dialog {
+        width: calc(100vw - 24px);
+        max-height: calc(100vh - 24px);
+        border-radius: 12px;
+    }
+    .case-card.case-card-expanded {
+        min-height: 100%;
+        padding: 18px 16px;
+        border-radius: 12px;
+    }
+    .case-card.case-card-expanded .card-title {
+        font-size: 18px;
+    }
+    .case-card.case-card-expanded .card-meta {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+    .case-card.case-card-expanded .card-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .case-card.case-card-expanded .card-actions .btn {
+        min-height: 44px;
+        white-space: normal;
+    }
+}
 
 /* ── Google-style Calendar ── */
 .cal-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
@@ -1305,6 +1437,11 @@ textarea:focus {
     background: var(--panel);
     white-space: nowrap;
     font-size: 13px;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
 }
 
@@ -1432,11 +1569,16 @@ body.theme-dark .btn.ghost:hover {
 }
 
 .table-wrap {
-    overflow-x: hidden;
+    overflow-x: auto;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--panel);
+}
+
+.table-wrap > table {
+    min-width: 720px;
 }
 
 table {
@@ -1595,6 +1737,10 @@ tr.row-clickable {
     color: var(--muted);
     background: var(--panel);
     cursor: pointer;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: all 0.15s;
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }

@@ -38,6 +38,24 @@
         driveRoots: [],
     };
     const FM_INTERNAL_DRAG_TYPE = 'application/x-paperclip-file-manager-rel';
+    const FM_MOBILE_QUERY = window.matchMedia('(max-width: 760px)');
+
+    function isMobileFileManager() {
+        return !!(FM_MOBILE_QUERY && FM_MOBILE_QUERY.matches);
+    }
+
+    function focusFilePaneOnMobile() {
+        if (!isMobileFileManager()) return;
+        const main = document.querySelector('#fileManager .fm-main');
+        if (!main) return;
+        window.requestAnimationFrame(() => {
+            main.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    }
+
+    function setPreviewOpenState(open) {
+        document.body.classList.toggle('fm-preview-open', !!open);
+    }
 
     // ── Icons ──────────────────────────────────────────────────────────
     const ICON_FOLDER = '📂';
@@ -864,6 +882,7 @@
         renderBreadcrumb();
         renderEntries(data);
         highlightTree(FM.currentRel);
+        focusFilePaneOnMobile();
     }
 
     async function setRoot(basePath, meta) {
@@ -930,6 +949,15 @@
         if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
     }
 
+    function renderPdfPreview(src) {
+        const safeSrc = escapeHTML(src || '');
+        return '<div class="fm-preview-mobile-help">'
+            + '<span>PDF 可在此上下滑動預覽；若手機瀏覽器顯示空白，請改用開新分頁或下載。</span>'
+            + '<a class="fm-preview-open-link" href="' + safeSrc + '" target="_blank" rel="noopener">開新分頁</a>'
+            + '</div>'
+            + '<iframe class="fm-preview-pdf" title="PDF 預覽" src="' + safeSrc + '"></iframe>';
+    }
+
     async function openPreview(rel, name) {
         const modal = document.getElementById('fmPreviewModal');
         const title = document.getElementById('fmPreviewTitle');
@@ -937,6 +965,7 @@
         const dl = document.getElementById('fmPreviewDownload');
         if (!modal || !body) return;
         modal.hidden = false;
+        setPreviewOpenState(true);
         title.textContent = name || rel;
         body.classList.remove('padded');
         body.innerHTML = '<div class="fm-preview-loading"><div class="spinner"></div>'
@@ -958,7 +987,7 @@
             _previewBlobUrl = URL.createObjectURL(res.blob);
             const ct = res.contentType;
             if (ct.includes('application/pdf')) {
-                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + _previewBlobUrl + '">';
+                body.innerHTML = renderPdfPreview(_previewBlobUrl);
             } else if (ct.startsWith('image/')) {
                 body.classList.add('padded');
                 body.innerHTML = '<img class="fm-preview-img" src="' + _previewBlobUrl + '">';
@@ -975,7 +1004,7 @@
         if (kind === 'pdf' || kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'text') {
             const url = j.content_url || ('/api/osc/files/content?path=' + encodeURIComponent(fullPath) + '&inline=1');
             if (kind === 'pdf') {
-                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + url + '">';
+                body.innerHTML = renderPdfPreview(url);
             } else if (kind === 'image') {
                 body.classList.add('padded');
                 body.innerHTML = '<img class="fm-preview-img" src="' + url + '">';
@@ -1094,6 +1123,7 @@
     function closePreview() {
         const modal = document.getElementById('fmPreviewModal');
         if (modal) modal.hidden = true;
+        setPreviewOpenState(false);
         clearPreviewBlob();
     }
 
@@ -1413,6 +1443,8 @@
     document.addEventListener('scroll', closeContextMenu, true);
 
     async function runContextAction(act, rel, type, name) {
+        const el = document.querySelector('#fmEntriesArea [data-rel="' + cssEsc(rel) + '"]');
+        if (el) selectEntry(rel, type, el);
         const fullPath = buildLocalPath(rel);
         if (act === 'preview' && type === 'file') return openPreview(rel, name);
         if (act === 'pdf-tool' && type === 'file') return openPdfToolFromFileManager(rel);
@@ -1972,6 +2004,7 @@
         const caseRefreshBtn = document.getElementById('fmCaseRefreshBtn');
         const caseSearchInput = document.getElementById('fmCaseSearchInput');
         const rootOverviewBtn = document.getElementById('fmRootOverviewBtn');
+        const backToCasesBtn = document.getElementById('fmBackToCasesBtn');
         const hiddenToggle = document.getElementById('fmShowHiddenToggle');
 
         if (goBtn && !goBtn._fmBound) {
@@ -1994,6 +2027,20 @@
             rootOverviewBtn.addEventListener('click', () => {
                 if (FM.driveRoots && FM.driveRoots.length) showDriveOverview();
                 else loadDriveRoots();
+            });
+        }
+        if (backToCasesBtn && !backToCasesBtn._fmBound) {
+            backToCasesBtn._fmBound = true;
+            backToCasesBtn.addEventListener('click', () => {
+                setPreviewOpenState(false);
+                if (typeof jumpToPaperclipTab === 'function') jumpToPaperclipTab('cases');
+                else {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+                    const casesView = document.getElementById('cases');
+                    if (casesView) casesView.classList.add('active');
+                    if (typeof state !== 'undefined') state.activeTab = 'cases';
+                }
             });
         }
         if (caseSearchInput && !caseSearchInput._fmBound) {

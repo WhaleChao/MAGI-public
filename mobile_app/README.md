@@ -2,10 +2,10 @@
 
 Internal Android/iPhone wrapper for MAGI and Paperclip.
 
-Default server:
+Default server (always starts from the MAGI Mobile login entry):
 
 ```text
-https://aimac-mini.tail6738b7.ts.net
+https://aimac-mini.tail6738b7.ts.net/mobile-app
 ```
 
 ## Android APK

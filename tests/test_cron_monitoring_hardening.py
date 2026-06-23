@@ -569,6 +569,7 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "--upload-limit 80" in by_id["job_drive_case_sync_bidirectional"]["command"]
     assert "--max-download-bytes 1500000000" in by_id["job_drive_case_sync_bidirectional"]["command"]
     assert by_id["job_drive_case_sync_all_files"]["enabled"] is True
+    assert by_id["job_drive_case_sync_all_files"]["cron"] == "12 1,7,13,19 * * *"
     assert "--direct-all-case-limit 96" in by_id["job_drive_case_sync_all_files"]["command"]
     assert "--download-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
     assert "--upload-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
@@ -639,6 +640,13 @@ def test_discord_cron_scheduler_dispatches_without_blocking_loop():
     assert "skip overlapping launch" in source
 
 
+def test_discord_cron_scheduler_parses_quoted_commands_before_blocking_prefixes():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    assert "parse_cron_command(command)" in source
+    assert "command.strip().startswith" not in source
+
+
 def test_daemon_cron_fallback_dispatches_without_blocking_loop():
     source = Path("daemon.py").read_text(encoding="utf-8")
 
@@ -646,6 +654,28 @@ def test_daemon_cron_fallback_dispatches_without_blocking_loop():
     assert "magi-cron-fallback" in source
     assert "executor.submit(_run_fallback_job, job)" in source
     assert "skip overlapping launch" in source
+
+
+def test_seed_cron_jobs_parse_runtime_paths_with_spaces(tmp_path):
+    import scripts.seed_cron_jobs as seed
+    from api.platforms.safe_process import parse_cron_command
+
+    repo_root = tmp_path / "Workspace Home" / "MAGI_v2"
+    python_path = repo_root / "Library" / "Application Support" / "MAGI" / "bin" / "python3"
+
+    jobs = [
+        seed.worldmonitor_job(repo_root=repo_root, python_path=python_path),
+        *seed.business_jobs(repo_root=repo_root, python_path=python_path),
+        *seed.operational_jobs(repo_root=repo_root, python_path=python_path),
+    ]
+
+    for job in jobs:
+        argv = parse_cron_command(job["command"])
+        assert argv, f"failed to parse command for {job['id']}"
+        assert not any("&&" in arg for arg in argv), f"unexpected shell token in {job['id']}"
+
+    worldmonitor = next(job for job in jobs if job["id"] == "job_worldmonitor_intel")
+    assert parse_cron_command(worldmonitor["command"])[0] == str(python_path)
 
 
 def test_seed_cron_jobs_installs_monthly_accounting_bonus_job(tmp_path):

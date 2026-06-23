@@ -41,6 +41,8 @@ Public source package:
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
 
@@ -63,7 +65,9 @@ generated safely by MAGI.
 Private production checkout:
 
 ```bash
-./venv/bin/python scripts/public_release_audit.py --strict
+./venv/bin/python scripts/public_release_audit.py --public-isolation --strict
+./venv/bin/python scripts/packaging/validate_installer_payload.py --json
+./venv/bin/python scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ./venv/bin/python scripts/ops/smoke_three_channels.py --strict-warn
 ./venv/bin/python scripts/ops/smoke_core_routes.py --with-network --with-heavy
@@ -164,7 +168,9 @@ Before launch, publish or provide:
 
 Use a sanitized live-gate summary in public release notes. Do not paste raw
 business-module stdout because it can contain case numbers, court names, or
-other customer-owned details.
+other customer-owned details. `business_module_live_check.py` redacts common
+case/customer keys and sensitive tails in its machine output, but release notes
+should still summarize status instead of copying raw JSON.
 
 Example:
 
@@ -182,6 +188,8 @@ Artifacts: .runtime/production_live_latest.json, .runtime/commercial_release_lat
 ## Go / No-Go Checklist
 
 - [ ] Public repo audit passes strict mode.
+- [ ] Public push guard passes from a clean public worktree.
+- [ ] Installer payload validation passes against the built release archive.
 - [ ] Production checkout audit passes strict mode.
 - [ ] CI is green on the release branch.
 - [ ] Commercial readiness live gate passes on the target machine.

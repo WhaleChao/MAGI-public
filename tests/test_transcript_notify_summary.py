@@ -100,3 +100,36 @@ def test_transcript_summary_uses_case_folder_for_display_name_typos():
     assert "李秀英｜115年度勞簡字第1號（1 份）" in msg
     assert "李秀瑛" not in msg
     assert summary["cases"][0]["client_name"] == "李秀英"
+
+
+def test_transcript_batched_sync_reports_progress_even_without_downloads():
+    mod = _load_transcript_action()
+
+    note = mod._format_transcript_batch_note(
+        {"batched": True, "selected_cases": 24, "eligible_cases": 72},
+        {"cycle_scanned_cases": 48, "eligible_cases": 72},
+    )
+
+    assert "本輪分批掃描：24/72 案" in note
+    assert "目前 cycle 已掃 48/72 案" in note
+    assert "尚餘 24 案" in note
+    assert mod._transcript_notify_topic({"batched": True}, {"downloaded_count": 0}) == "transcript"
+
+
+def test_transcript_sync_report_writes_latest(tmp_path, monkeypatch):
+    mod = _load_transcript_action()
+    monkeypatch.setattr(mod, "TRANSCRIPT_SYNC_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(mod, "TRANSCRIPT_SYNC_STATE_PATH", tmp_path / "state.json")
+
+    latest = mod._write_transcript_sync_report(
+        {"success": True, "batched": True, "selected_cases": 24, "eligible_cases": 72, "cases": []},
+        {"downloaded_count": 0, "scanned_cases_count": 24},
+        "msg",
+    )
+
+    latest_path = Path(latest)
+    assert latest_path.exists()
+    data = latest_path.read_text(encoding="utf-8")
+    assert '"batched": true' in data
+    assert '"selected_cases": 24' in data
+    assert '"last_batch_latest_path"' in (tmp_path / "state.json").read_text(encoding="utf-8")

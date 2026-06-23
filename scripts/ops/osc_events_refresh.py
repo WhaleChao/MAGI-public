@@ -31,7 +31,7 @@ PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
 PDF_SCAN_RULE_VERSION = os.environ.get(
     "OSC_PDF_CALENDAR_RULE_VERSION",
-    "2026-06-14-portable-source-date-guard",
+    "2026-06-20-full-filename-osc-holidays",
 )
 HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
 DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"
@@ -494,17 +494,21 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
     """Scan court PDFs with the same extractor used by the OSC web PDF tool."""
     from api.blueprints import osc_pdf
 
-    limit = max(1, int(getattr(args, "pdf_limit", 240)))
+    requested_limit = max(1, int(getattr(args, "pdf_limit", 240)))
     target_limit_env = int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CANDIDATE_LIMIT", "0") or "0")
-    target_limit = max(limit, min(target_limit_env, 5000)) if target_limit_env > 0 else limit
+    full_text_scan = os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "0").strip().lower() in {"1", "true", "yes", "on"}
+    full_text_scan_limit = max(1, min(10000, int(os.environ.get("OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT", "5000") or "5000")))
+    limit = max(requested_limit, full_text_scan_limit) if full_text_scan else requested_limit
+    target_limit = max(limit, min(target_limit_env, 10000)) if target_limit_env > 0 else limit
     max_pages = max(1, min(int(getattr(args, "pdf_max_pages", 8)), 20))
     dry_run = bool(getattr(args, "dry_run", False))
     scan_text = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", "1").strip().lower() in {"1", "true", "yes", "on"}
-    # Match original OSC behavior: filename rules are authoritative. Text/OCR is
-    # a fallback for ambiguous filenames, not a second pass for every matched PDF.
-    text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # The six-hour job must not miss filename-derived events. Keep that sweep
+    # full-width; PDF text/OCR stays bounded here and becomes full-width only in
+    # the nightly governance job.
+    text_when_filename = os.environ.get("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", "1").strip().lower() in {"1", "true", "yes", "on"}
     filename_sweep = os.environ.get("OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP", "1").strip().lower() in {"1", "true", "yes", "on"}
-    filename_sweep_limit = max(1, min(5000, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "5000") or "5000")))
+    filename_sweep_limit = max(1, min(50000, int(os.environ.get("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "50000") or "50000")))
     file_timeout_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC", "12") or "12"))
     budget_sec = max(0, int(os.environ.get("OSC_PDF_CALENDAR_BUDGET_SEC", "360") or "360"))
     outer_budget = max(0, int(getattr(args, "scan_time_budget_sec", 0) or 0))
@@ -581,9 +585,12 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         total_case_rows = max(0, int(osc_pdf._count_all_case_pdf_case_rows()))
     except Exception:
         total_case_rows = 0
-    case_batch = max(1, min(500, int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_BATCH", "40") or "40")))
+    configured_case_batch = max(1, min(500, int(os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_BATCH", "40") or "40")))
+    case_batch = max(configured_case_batch, total_case_rows or configured_case_batch) if full_text_scan else configured_case_batch
     env_case_offset = os.environ.get("OSC_EVENTS_REFRESH_PDF_CASE_OFFSET")
-    if env_case_offset is not None and str(env_case_offset).strip() != "":
+    if full_text_scan:
+        case_offset = 0
+    elif env_case_offset is not None and str(env_case_offset).strip() != "":
         case_offset = max(0, int(env_case_offset or "0"))
     elif bool(getattr(args, "force_rebuild", False)):
         case_offset = 0
@@ -627,7 +634,8 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
                 # recent/rotating candidate set.
                 if use_text:
                     for idx, (old_path, old_case, old_client, old_use_text, old_mode) in enumerate(target_specs):
-                        if (str(old_path), str(old_case or "")) == key and not old_use_text:
+                        old_key = (Path(str(old_path)).name, str(old_case or ""))
+                        if old_key == key and not old_use_text:
                             target_specs[idx] = (old_path, old_case, old_client or client_name, True, "filename_then_text")
                             text_targets_count += 1
                             break
@@ -822,10 +830,10 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
             if len(errors) < 20:
                 errors.append(f"cache_save_failed:{type(exc).__name__}: {str(exc)[:160]}")
 
-    next_case_offset = (case_offset + case_batch) if total_case_rows else case_offset
+    next_case_offset = 0 if full_text_scan else ((case_offset + case_batch) if total_case_rows else case_offset)
     if total_case_rows and next_case_offset >= total_case_rows:
         next_case_offset = 0
-    if not dry_run:
+    if not dry_run and not full_text_scan:
         try:
             _save_cursor(
                 {
@@ -846,7 +854,10 @@ def _run_pdf_calendar_scan(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "dry_run": dry_run,
         "limit": limit,
+        "requested_limit": requested_limit,
         "candidate_limit": target_limit,
+        "full_text_scan": full_text_scan,
+        "full_text_scan_limit": full_text_scan_limit,
         "max_pages": max_pages,
         "scan_text": scan_text,
         "text_when_filename": text_when_filename,
@@ -1284,6 +1295,33 @@ def _remove_warning(warnings: list[str], value: str) -> None:
         warnings.remove(value)
 
 
+def _run_pdf_todo_share_link_repair(args: argparse.Namespace) -> dict[str, Any]:
+    if os.environ.get("OSC_EVENTS_REFRESH_SHARE_REPAIR_ENABLE", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"ok": True, "skipped": True, "reason": "share_repair_disabled"}
+    try:
+        from scripts.ops.backfill_pdf_todo_share_links import backfill
+
+        limit = max(1, min(1000, int(os.environ.get("OSC_EVENTS_REFRESH_SHARE_REPAIR_LIMIT", "300") or "300")))
+        limit = max(limit, min(1000, int(getattr(args, "gcal_push_limit", 120) or 120) * 2))
+        lookback_days = max(
+            0,
+            int(
+                os.environ.get("OSC_PDF_TODO_SHARE_REPAIR_LOOKBACK_DAYS")
+                or getattr(args, "lookback_days", 30)
+                or 30
+            ),
+        )
+        renew_within_days = max(0, int(os.environ.get("OSC_PDF_TODO_SHARE_RENEW_WITHIN_DAYS", "7") or "7"))
+        return backfill(
+            limit=limit,
+            execute=not bool(getattr(args, "dry_run", False)),
+            lookback_days=lookback_days,
+            renew_within_days=renew_within_days,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+
 def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
     os.environ.setdefault("MAGI_GCAL_DEDUP_ENABLED", "1")
     os.environ.setdefault("MAGI_GCAL_DEDUP_DRY_RUN", "0")
@@ -1304,6 +1342,7 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
         "pdf_calendar_scan": {},
         "transcript_todos": {},
         "calendar_import": {},
+        "pdf_todo_share_repair": {},
         "calendar_push": {},
         "calendar_audit": {},
         "calendar_source_audit": {},
@@ -1463,10 +1502,34 @@ def run_refresh(args: argparse.Namespace) -> dict[str, Any]:
                 result["calendar_import"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
 
             try:
+                share_timeout = max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SHARE_REPAIR_TIMEOUT_SEC", "120") or "120"))
+                with _pdf_scan_time_limit(share_timeout):
+                    result["pdf_todo_share_repair"] = _run_pdf_todo_share_link_repair(args)
+                if not result["pdf_todo_share_repair"].get("ok"):
+                    result["warnings"].append("pdf_todo_share_repair_failed")
+            except _PdfScanTimeout as exc:
+                result["warnings"].append("pdf_todo_share_repair_timeout")
+                result["pdf_todo_share_repair"] = {"ok": False, "error": str(exc)}
+            except Exception as exc:
+                result["warnings"].append("pdf_todo_share_repair_failed")
+                result["pdf_todo_share_repair"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:240]}"}
+
+            share_repair_ids = []
+            for item in result.get("pdf_todo_share_repair", {}).get("items") or []:
+                if not isinstance(item, dict) or str(item.get("status") or "") != "updated":
+                    continue
+                todo_id = _safe_int(item.get("id"))
+                if todo_id:
+                    share_repair_ids.append(todo_id)
+            share_repair_updated = int(result.get("pdf_todo_share_repair", {}).get("updated") or 0)
+            try:
+                repair_limit = min(max(args.gcal_push_limit, args.gcal_push_limit + share_repair_updated), 400)
                 push_payload = {
                     "limit": args.gcal_push_limit,
                     "repair_existing": True,
-                    "repair_limit": args.gcal_push_limit,
+                    "repair_limit": repair_limit,
+                    "repair_todo_ids": share_repair_ids[:400],
+                    "repair_lookback_days": getattr(args, "lookback_days", 30),
                     "retry_max_attempts": 3,
                     "history_cutoff_date": history_cutoff.isoformat(),
                 }

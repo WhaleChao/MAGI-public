@@ -105,6 +105,49 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     assert b"mobile-admin https://magi.tailnet.test" in response.data
 
 
+def test_dashboard_and_mobile_pages_require_login_when_unauthenticated(tmp_path, monkeypatch):
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in (
+        "dashboard.html",
+        "dashboard_nerv.html",
+        "golem_console.html",
+        "research.html",
+        "mobile_home.html",
+        "mobile_admin.html",
+    ):
+        (template_dir / name).write_text("protected", encoding="utf-8")
+    monkeypatch.setattr(
+        "api.blueprints.dashboard_pages._build_mobile_app_config",
+        lambda: {"base_url": "https://magi.tailnet.test", "routes": []},
+    )
+
+    app = _make_app(template_dir)
+
+    @app.route("/login")
+    def login():
+        return "login"
+
+    client = app.test_client()
+    protected_paths = [
+        "/dashboard",
+        "/dashboard/nerv",
+        "/golem",
+        "/research",
+        "/mobile",
+        "/app",
+        "/mobile-admin",
+        "/app-admin",
+        "/dashboard/website",
+        "/wa/",
+    ]
+    for path in protected_paths:
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 302, path
+        assert "/login" in response.location, path
+        assert "next=" in response.location, path
+
+
 def test_mobile_config_and_manifest_routes(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()

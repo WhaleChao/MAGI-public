@@ -368,14 +368,14 @@ def test_six_hour_event_refresh_is_seeded():
     drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_bidirectional")
     assert drive_job["cron"] == "1 */6 * * *"
     assert "drive_case_sync_worker.py" in drive_job["command"]
-    assert "--timeout-sec 1500" in drive_job["command"]
+    assert "--timeout-sec 2400" in drive_job["command"]
     assert "--priority-upcoming-days 21" in drive_job["command"]
     all_drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_all_files")
-    assert all_drive_job["cron"] == "12 */6 * * *"
+    assert all_drive_job["cron"] == "12 1,7,13,19 * * *"
     assert "drive_case_sync_worker.py" in all_drive_job["command"]
     assert "--direct-all-cases" in all_drive_job["command"]
-    assert "--direct-all-case-limit 48" in all_drive_job["command"]
-    assert "--timeout-sec 2700" in all_drive_job["command"]
+    assert "--direct-all-case-limit 96" in all_drive_job["command"]
+    assert "--timeout-sec 4800" in all_drive_job["command"]
     assert job["cron"] == "35 */6 * * *"
     assert job["enabled"] is True
     assert "osc_events_refresh.py" in job["command"]

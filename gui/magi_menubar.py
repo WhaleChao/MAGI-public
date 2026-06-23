@@ -19,7 +19,48 @@ import time
 import re
 import urllib.request
 import urllib.error
+import atexit
+import sys
 from datetime import datetime
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - macOS runtime path
+    fcntl = None
+
+
+_MENUBAR_LOCK_HANDLE = None
+
+
+def _acquire_menubar_singleton() -> None:
+    """Prevent duplicate macOS status bar icons across launchd/direct starts."""
+    global _MENUBAR_LOCK_HANDLE
+    if fcntl is None:
+        return
+    lock_path = os.environ.get("MAGI_MENUBAR_LOCK_PATH", "/tmp/magi-menubar.lock")
+    try:
+        fh = open(lock_path, "w", encoding="utf-8")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.seek(0)
+        fh.truncate(0)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        _MENUBAR_LOCK_HANDLE = fh
+
+        def _release_lock() -> None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+            except Exception:
+                pass
+
+        atexit.register(_release_lock)
+    except BlockingIOError:
+        print("MAGI menubar already running; exiting duplicate instance.", file=sys.stderr)
+        sys.exit(0)
+    except Exception as exc:
+        print(f"MAGI menubar singleton lock unavailable: {exc}", file=sys.stderr)
+
 
 import rumps
 
@@ -43,7 +84,6 @@ except ImportError:
 
 # ── 設定 ──────────────────────────────────────────────────────────
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-import sys
 if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 
@@ -55,7 +95,7 @@ try:
         expected_profile_now as expected_omlx_profile_now,
     )
 except Exception:
-    DAY_MODEL_KEYWORD = "12b"
+    DAY_MODEL_KEYWORD = "e4b"
     DAY_FALLBACK_MODEL_KEYWORD = "e4b"
     NIGHT_MODEL_KEYWORD = "26b"
 
@@ -129,6 +169,7 @@ MONITOR_THREADS = [
     ("法扶信箱監控", "laf-gmail-monitor"),
     ("法扶附件重試", "laf-portal-retry-loop"),
     ("閱卷信箱監控", "filereview-email-monitor"),
+    ("閱卷入口掃描", "filereview-portal-scan"),
 ]
 
 # 排程任務最多顯示的條數
@@ -284,6 +325,17 @@ def _short_model_id(model_id: str, limit: int = 28) -> str:
     return model_id[:limit] if len(model_id) > limit else model_id
 
 
+def _model_label(keyword: str) -> str:
+    keyword = str(keyword or "").lower()
+    if "26b" in keyword:
+        return "26B"
+    if "12b" in keyword:
+        return "12B"
+    if "e4b" in keyword or "4b" in keyword:
+        return "4B"
+    return keyword.upper() if keyword else "未知"
+
+
 def _omlx_text_status(model_id: str, expected_profile: str, expected_keyword: str, active_profile: str) -> dict:
     """Return user-facing text-model status for the menubar."""
     model_low = (model_id or "").lower()
@@ -293,7 +345,7 @@ def _omlx_text_status(model_id: str, expected_profile: str, expected_keyword: st
     active_profile = active_profile or ""
 
     profile_zh = "日間" if expected_profile == "day" else "夜間"
-    expected_label = "12B" if expected_keyword == DAY_MODEL_KEYWORD.lower() else "26B"
+    expected_label = _model_label(expected_keyword)
 
     allowed_active = {expected_profile}
     if expected_profile == "day":
@@ -535,6 +587,22 @@ def _epoch_from_iso(raw: str) -> float:
 def _mem_bar(pct: float, width: int = 8) -> str:
     filled = int(pct / 100 * width)
     return "▓" * filled + "░" * (width - filled)
+
+
+def _system_memory_icon(pct: float) -> str:
+    if pct >= 92:
+        return "🔴"
+    if pct >= 85:
+        return "🟡"
+    return "🟢"
+
+
+def _magi_process_memory_icon(magi_mb: int) -> str:
+    if magi_mb >= 8192:
+        return "🔴"
+    if magi_mb >= 4096:
+        return "🟡"
+    return "🟢"
 
 
 # ── 主程式 ───────────────────────────────────────────────────────
@@ -835,9 +903,18 @@ class MAGIMenuBar(rumps.App):
                 "detail": _retry_detail if _server_up else "",
             }
 
-            # 閱卷 email 現在由 FileReviewAuto worker 管理；優先看 worker 狀態檔。
+            # 閱卷 email 由法扶 Gmail monitor 的同一個 poll cycle 順便掃描；
+            # FileReviewAuto worker 只做補充入口網站檢查，不應拿來代表信箱監控心跳。
+            _fr_email_state = _load_json_file(os.path.join(MAGI_ROOT, "static", "file_review_email_monitor_state.json"))
+            _fr_email_status = str(_fr_email_state.get("status") or "").lower()
+            _fr_email_epoch = _epoch_from_iso(_fr_email_state.get("updated_at", ""))
+            _integrated_review_email = (
+                str(_fr_email_state.get("source") or "") == "laf_gmail_monitor_cycle"
+                or "file review email scan integrated in LAF monitor cycle" in _log_tail
+                or "File Review Email Monitor: integrated into LAF Gmail Monitor cycle" in _log_tail
+            )
             _fr_state = _load_json_file(os.path.join(MAGI_ROOT, "static", "file_review_auto_state.json"))
-            _review_epoch = _epoch_from_iso(_fr_state.get("updated_at", ""))
+            _review_epoch = _fr_email_epoch or _epoch_from_iso(_fr_state.get("updated_at", ""))
             _fr_interval = int(_fr_state.get("interval_sec") or 3600)
             if not _review_epoch:
                 _review_epoch, _ = _find_latest_log_match(
@@ -854,7 +931,15 @@ class MAGIMenuBar(rumps.App):
                 live_text="最近",
                 stale_text="最後活動",
             )
-            if _fr_state and not bool((_fr_state.get("result") or {}).get("ok", True)):
+            if _integrated_review_email and monitors.get("法扶信箱監控", {}).get("state") == "alive":
+                _review_state = "alive"
+                _review_detail = _gmail_detail.replace("最近 ", "隨法扶 ", 1) if _gmail_detail else "隨法扶監控"
+                if _fr_email_status == "running" and _fr_email_epoch:
+                    _review_detail = f"掃描中 {datetime.fromtimestamp(_fr_email_epoch).strftime('%H:%M:%S')}"
+            if _fr_email_status in {"error", "auth_failed"}:
+                _review_state = "down"
+                _review_detail = f"{_fr_email_state.get('status')} {(_fr_email_state.get('error') or '')}".strip()[:60]
+            elif (not _integrated_review_email) and _fr_state and not bool((_fr_state.get("result") or {}).get("ok", True)):
                 _review_state = "down"
                 _review_detail = "worker 上輪失敗"
             if _review_state == "down" and _server_up and "File Review Email Monitor: integrated into LAF Gmail Monitor cycle" in _log_tail:
@@ -870,6 +955,40 @@ class MAGIMenuBar(rumps.App):
                 "alive": _review_state == "alive",
                 "state": _review_state,
                 "detail": _review_detail,
+            }
+
+            # 閱卷入口掃描：FileReviewAuto worker 的入口網站補充檢查心跳。
+            # 這和信箱監控分開顯示，避免補充掃描逾時被誤解為 Gmail 監控失效。
+            _portal_epoch = _epoch_from_iso(_fr_state.get("updated_at", ""))
+            _portal_interval = int(_fr_state.get("interval_sec") or 3600)
+            _portal_phase = str(_fr_state.get("phase") or "").strip()
+            _portal_result = _fr_state.get("result") if isinstance(_fr_state.get("result"), dict) else {}
+            if _portal_phase.startswith("running_") and _portal_epoch:
+                _portal_state = "starting"
+                _portal_detail = f"掃描中 {datetime.fromtimestamp(_portal_epoch).strftime('%H:%M:%S')}"
+            else:
+                _portal_state, _portal_detail = _fmt_recent(
+                    _portal_epoch,
+                    max_age_sec=max(900, _portal_interval + 900),
+                    live_text="最近",
+                    stale_text="最後活動",
+                )
+                if _portal_result:
+                    if not bool(_portal_result.get("ok", True)):
+                        _portal_state = "down"
+                        _portal_detail = "上輪失敗"
+                    elif bool(_portal_result.get("degraded")):
+                        _payment = _portal_result.get("payment_slips") if isinstance(_portal_result.get("payment_slips"), dict) else {}
+                        _reason = "補充掃描逾時" if _payment.get("error") == "timeout" else "補充掃描降級"
+                        if _portal_epoch:
+                            _portal_detail = f"{_reason} {datetime.fromtimestamp(_portal_epoch).strftime('%H:%M:%S')}"
+                        else:
+                            _portal_detail = _reason
+                        _portal_state = "idle"
+            monitors["閱卷入口掃描"] = {
+                "alive": _portal_state == "alive",
+                "state": _portal_state,
+                "detail": _portal_detail,
             }
         except Exception:
             pass
@@ -956,7 +1075,7 @@ class MAGIMenuBar(rumps.App):
         expected_profile = profile_info.get("expected_profile", "") if isinstance(profile_info, dict) else ""
         expected_keyword = profile_info.get("expected_keyword", "") if isinstance(profile_info, dict) else ""
         active_profile = profile_info.get("active_profile", "") if isinstance(profile_info, dict) else ""
-        expected_label = "12B" if str(expected_keyword).lower() == DAY_MODEL_KEYWORD.lower() else "26B"
+        expected_label = _model_label(expected_keyword)
         profile_label = "日間" if expected_profile == "day" else "夜間"
         if text_status.get("degraded"):
             _set_colored_title(self.omlx_header, f"── 推理引擎（{profile_label}{expected_label}→E4B降級）──", None)
@@ -1068,7 +1187,8 @@ class MAGIMenuBar(rumps.App):
                 suffix = f"  {detail}" if detail else "  已啟動但暫無新活動"
                 _set_colored_title(item, f"  🟡 {display_name}{suffix}", None)
             else:
-                _set_colored_title(item, f"  🔴 {display_name}  未偵測到活動", None)
+                suffix = f"  {detail}" if detail else "  未偵測到活動"
+                _set_colored_title(item, f"  🔴 {display_name}{suffix}", None)
 
         # ── NAS ──
         nas = c.get("nas", {})
@@ -1121,11 +1241,11 @@ class MAGIMenuBar(rumps.App):
         if pct > 0:
             bar = _mem_bar(pct)
             mem_color = None
-            icon = "🔴" if pct >= 85 else ("🟡" if pct >= 70 else "🟢")
+            icon = _system_memory_icon(pct)
             _set_colored_title(self.mem_system_item, f"  {icon} {bar} 系統記憶  {pct:.0f}% {avail_gb:.1f}G餘", None)
 
         magi_mb = c.get("magi_mb", 0)
-        icon = "🟡" if magi_mb > 2000 else "🟢"
+        icon = _magi_process_memory_icon(int(magi_mb or 0))
         _set_colored_title(self.mem_total_item, f"  {icon} 程序佔用  {magi_mb}MB", None)
 
         zombies, z_detail = c.get("zombies", (0, ""))
@@ -1192,4 +1312,5 @@ class MAGIMenuBar(rumps.App):
 
 
 if __name__ == "__main__":
+    _acquire_menubar_singleton()
     MAGIMenuBar().run()

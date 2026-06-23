@@ -29,13 +29,29 @@ import uuid
 import glob as _glob
 from urllib.parse import quote
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
+try:
+    from flask_login import current_user
+except ModuleNotFoundError:  # public-safe test environments may omit flask-login
+    current_user = None
 
 logger = logging.getLogger("OSC_Debt")
 
 osc_debt_bp = Blueprint("osc_debt", __name__)
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+@osc_debt_bp.before_request
+def _require_osc_debt_login():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    try:
+        if current_user is not None and bool(getattr(current_user, "is_authenticated", False)):
+            return None
+    except Exception:
+        pass
+    return jsonify({"ok": False, "error": "authentication_required"}), 401
 
 
 def _export_dir():

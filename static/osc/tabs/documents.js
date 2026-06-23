@@ -1673,6 +1673,27 @@ async function runDocCaseAction(action) {
     showWebReplyDialog("MAGI 檔案整理", data.reply || "已完成", data.reply_html || "");
 }
 
+function syncOscFormFields() {
+    const formType = (document.getElementById("formType")?.value || "").trim();
+    document.querySelectorAll("#forms [data-form-types]").forEach((el) => {
+        const types = String(el.getAttribute("data-form-types") || "")
+            .split(/\s+/)
+            .map((v) => v.trim())
+            .filter(Boolean);
+        el.style.display = !types.length || types.includes(formType) ? "" : "none";
+    });
+    const notesLabel = document.querySelector('label[for="formNotes"]');
+    const notes = document.getElementById("formNotes");
+    if (notesLabel) {
+        notesLabel.textContent = formType === "legal_attest" ? "存證信函內文" : "備註";
+    }
+    if (notes) {
+        notes.placeholder = formType === "legal_attest"
+            ? "請輸入存證信函內文"
+            : "補充內容、說明（選填）";
+    }
+}
+
 function collectFormPayload() {
     return {
         form_type: (document.getElementById("formType").value || "").trim(),
@@ -1686,8 +1707,16 @@ function collectFormPayload() {
             item: (document.getElementById("formItem").value || "").trim(),
             payment_method: (document.getElementById("formPaymentMethod").value || "").trim(),
             lawyer_name: (document.getElementById("formLawyerName").value || "").trim(),
+            court_name: (document.getElementById("formCourtName")?.value || "").trim(),
+            case_reason: (document.getElementById("formCaseReason")?.value || "").trim(),
+            case_type_label: (document.getElementById("formCaseTypeLabel")?.value || "").trim(),
+            agent_role: (document.getElementById("formAgentRole")?.value || "").trim(),
             court_case_no: (document.getElementById("formCourtCaseNo").value || "").trim(),
             laf_case_no: (document.getElementById("formLafCaseNo").value || "").trim(),
+            address: (document.getElementById("formAddress")?.value || "").trim(),
+            phone: (document.getElementById("formPhone")?.value || "").trim(),
+            tax_id: (document.getElementById("formTaxId")?.value || "").trim(),
+            email: (document.getElementById("formEmail")?.value || "").trim(),
             sender_name: (document.getElementById("formSenderName")?.value || "").trim(),
             sender_addr: (document.getElementById("formSenderAddr")?.value || "").trim(),
             receiver_name: (document.getElementById("formReceiverName")?.value || "").trim(),
@@ -1711,6 +1740,7 @@ function renderFormPreview(data) {
 }
 
 async function previewForm() {
+    syncOscFormFields();
     const payload = collectFormPayload();
     const data = await api("/api/osc/forms/preview", "POST", payload);
     state.formPreview = data;
@@ -1718,6 +1748,7 @@ async function previewForm() {
 }
 
 async function exportForm() {
+    syncOscFormFields();
     const payload = collectFormPayload();
     const data = await api("/api/osc/forms/export", "POST", payload);
     state.formPreview = data;
@@ -1737,6 +1768,10 @@ async function exportForm() {
         showAlert("MAGI說", "已產出檔案，但目前沒有公開下載網址。");
     }
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+    if (typeof syncOscFormFields === "function") syncOscFormFields();
+});
 
 async function runLafWizard(mode) {
     const payload = {

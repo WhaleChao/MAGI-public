@@ -143,3 +143,17 @@ def test_export_osc_form_files_prefers_pdf_converted_from_docx(tmp_path, monkeyp
     assert result["success"] is True
     assert result["export_pdf"]["renderer"] == "libreoffice"
     assert result["export_pdf"]["source_docx"] == str(docx_path)
+
+
+def test_export_file_meta_falls_back_to_relative_download_url(tmp_path, monkeypatch):
+    from api import startup
+
+    out = tmp_path / "example.docx"
+    out.write_bytes(b"docx")
+
+    monkeypatch.setattr(startup, "_load_public_base_url", lambda: "")
+
+    meta = startup._export_file_meta(str(out))
+
+    assert meta["success"] is True
+    assert meta["url"].startswith("/api/osc/files/content?path=")

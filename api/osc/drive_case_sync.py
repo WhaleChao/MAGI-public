@@ -2650,12 +2650,15 @@ COURT_FINAL_DOC_RE = re.compile(
     r"(?:判決|起訴書|不起訴處分書|緩起訴處分書|確定證明|執行命令|支付命令|調解不成立證明|復權裁定|免責裁定|不免責裁定)"
 )
 COURT_FINAL_RULING_RE = re.compile(
-    r"(?:裁定).{0,24}(?:駁回|准許|許可|認可|免責|不免責|復權|終結|開始更生|開始清算|廢棄|撤銷|移送|確定)"
+    r"(?:(?:裁定).{0,24}(?:駁回|准許|許可|認可|免責|不免責|復權|終結|開始更生|開始清算|廢棄|撤銷|移送|確定)"
+    r"|(?:駁回|准許|許可|認可|免責|不免責|復權|終結|開始更生|開始清算|廢棄|撤銷|移送|確定).{0,24}(?:裁定))"
 )
 PLEADING_FILENAME_RE = re.compile(
     r"(?:書狀|(?<!證)狀|上訴理由|上訴|抗告|聲請|陳報|補正|答辯|準備|意見|更生方案)"
 )
 EVIDENCE_FILENAME_RE = re.compile(r"(?:證據|附件|照片|截圖|錄音|錄影|鑑定|診斷證明|病歷)")
+ACCOUNTING_IMPORT_ONLY_SEGMENTS = {"收支紀錄", "收支明細", "收支明細表", "帳務資料"}
+ACCOUNTING_IMPORT_ONLY_FILENAME_RE = re.compile(r"(?:收支紀錄|收支明細|收入支出|帳務資料|帳務)")
 SEMANTIC_FIRST_SEGMENT = {
     "01_法扶資料": "法扶資料",
     "法扶資料": "法扶資料",
@@ -2770,7 +2773,7 @@ def infer_nas_folder_for_drive_root_file(filename: str) -> str:
         return "08_筆錄"
     if PLEADING_FILENAME_RE.search(name) and not re.search(r"(?:對造|對方|被告|原告).{0,12}(?:書狀|答辯|陳報)", name):
         return "04_我方歷次書狀"
-    if EVIDENCE_FILENAME_RE.search(name):
+    if EVIDENCE_FILENAME_RE.search(name) or re.search(r"(?:財產清單|所得資料)", name):
         return "07_證據資料"
     if "回執" in name or "收據" in name:
         return "11_回執"
@@ -2902,6 +2905,17 @@ def semantic_relative_path(relative_path: str) -> str:
     return PurePosixPath(*parts).as_posix()
 
 
+def is_accounting_import_only_path(relative_path: str) -> bool:
+    """Return True if a path/name should never be synced into OSC case folders."""
+    parts = split_relative_parts(relative_path)
+    if not parts:
+        return False
+    if any(part in ACCOUNTING_IMPORT_ONLY_SEGMENTS for part in parts):
+        return True
+    filename = PurePosixPath(parts[-1]).name
+    return bool(ACCOUNTING_IMPORT_ONLY_FILENAME_RE.search(filename))
+
+
 def drive_to_nas_download_skip_reason(source_relative_path: str, target_relative_path: str) -> str:
     """Return a reason when a Drive file would be copied as a raw Drive folder.
 
@@ -2913,6 +2927,8 @@ def drive_to_nas_download_skip_reason(source_relative_path: str, target_relative
     """
     source_parts = split_relative_parts(source_relative_path)
     target_parts = split_relative_parts(target_relative_path)
+    if is_accounting_import_only_path(source_relative_path):
+        return "accounting_import_only"
     if len(source_parts) <= 1 or not target_parts:
         return ""
     source_first = source_parts[0]
@@ -3933,7 +3949,7 @@ def build_file_sync_plan(
         local_files = {
             normalized_relative_file_key(semantic_relative_path(e.relative_path)): e
             for e in local_entries
-            if not e.is_folder
+            if not e.is_folder and not is_accounting_import_only_path(e.relative_path)
         }
         drive_files = {
             normalized_relative_file_key(semantic_relative_path(export_relative_path(e))): e

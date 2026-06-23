@@ -16,76 +16,110 @@
                         <div class="field-grid cols-4">
                             <div class="field">
                                 <label for="formType">文書類型</label>
-                                <select id="formType" onchange="(function(){
-                                    const isLal = document.getElementById('formType').value === 'legal_attest';
-                                    document.getElementById('formSenderNameField').style.display = isLal ? '' : 'none';
-                                    document.getElementById('formSenderAddrField').style.display = isLal ? '' : 'none';
-                                    document.getElementById('formReceiverNameField').style.display = isLal ? '' : 'none';
-                                    document.getElementById('formReceiverAddrField').style.display = isLal ? '' : 'none';
-                                })()">
+                                <select id="formType" onchange="if (typeof syncOscFormFields === 'function') syncOscFormFields();">
                                     <option value="power_of_attorney">委任狀</option>
                                     <option value="contract">契約書</option>
                                     <option value="receipt">收據</option>
                                     <option value="legal_attest">存證信函</option>
                                 </select>
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney contract receipt">
                                 <label for="formCaseId">系統案件</label>
                                 <input id="formCaseId" placeholder="通常留空；從案件帶入時會自動填">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney contract receipt">
                                 <label for="formCaseNumber">案件編號</label>
                                 <input id="formCaseNumber" placeholder="案件編號（選填）">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney contract receipt">
                                 <label for="formClientName">當事人</label>
                                 <input id="formClientName" placeholder="當事人（選填）">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney contract receipt">
                                 <label for="formDate">日期</label>
                                 <input id="formDate" type="date" placeholder="日期">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="receipt">
                                 <label for="formReceiptNo">收據編號</label>
                                 <input id="formReceiptNo" placeholder="收據用">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="contract receipt">
                                 <label for="formAmount">金額</label>
                                 <input id="formAmount" type="number" step="0.01" placeholder="收據用">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="contract receipt">
                                 <label for="formItem">費用項目</label>
                                 <input id="formItem" placeholder="收據用">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="receipt">
                                 <label for="formPaymentMethod">付款方式</label>
                                 <input id="formPaymentMethod" placeholder="收據用">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney contract receipt">
                                 <label for="formLawyerName">受任律師</label>
                                 <input id="formLawyerName" placeholder="委任狀用">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney">
+                                <label for="formCourtName">法院 / 檢察署</label>
+                                <input id="formCourtName" placeholder="委任狀用">
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney contract">
+                                <label for="formCaseReason">案由 / 事件</label>
+                                <input id="formCaseReason" placeholder="可覆蓋">
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney">
+                                <label for="formCaseTypeLabel">案件類型</label>
+                                <select id="formCaseTypeLabel">
+                                    <option value="民事">民事</option>
+                                    <option value="刑事">刑事</option>
+                                    <option value="行政">行政</option>
+                                </select>
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney">
+                                <label for="formAgentRole">代理角色</label>
+                                <select id="formAgentRole">
+                                    <option value="代理人">代理人</option>
+                                    <option value="辯護人">辯護人</option>
+                                    <option value="告訴代理人">告訴代理人</option>
+                                </select>
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney">
                                 <label for="formCourtCaseNo">法院案號</label>
                                 <input id="formCourtCaseNo" placeholder="可覆蓋">
                             </div>
-                            <div class="field">
+                            <div class="field" data-form-types="power_of_attorney receipt">
                                 <label for="formLafCaseNo">法扶案號</label>
                                 <input id="formLafCaseNo" placeholder="可覆蓋">
                             </div>
-                            <div class="field" id="formSenderNameField" style="display:none;">
+                            <div class="field" data-form-types="power_of_attorney contract">
+                                <label for="formAddress">通訊地址</label>
+                                <input id="formAddress" placeholder="地址">
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney contract">
+                                <label for="formPhone">聯絡電話</label>
+                                <input id="formPhone" placeholder="電話">
+                            </div>
+                            <div class="field" data-form-types="power_of_attorney contract">
+                                <label for="formTaxId">身分證字號</label>
+                                <input id="formTaxId" placeholder="可覆蓋">
+                            </div>
+                            <div class="field" data-form-types="contract">
+                                <label for="formEmail">電子信箱</label>
+                                <input id="formEmail" placeholder="電子信箱">
+                            </div>
+                            <div class="field" id="formSenderNameField" data-form-types="legal_attest" style="display:none;">
                                 <label for="formSenderName">寄件人姓名/公司</label>
                                 <input id="formSenderName" placeholder="存證信函">
                             </div>
-                            <div class="field" id="formSenderAddrField" style="display:none;">
+                            <div class="field" id="formSenderAddrField" data-form-types="legal_attest" style="display:none;">
                                 <label for="formSenderAddr">寄件人地址</label>
                                 <input id="formSenderAddr" placeholder="存證信函">
                             </div>
-                            <div class="field" id="formReceiverNameField" style="display:none;">
+                            <div class="field" id="formReceiverNameField" data-form-types="legal_attest" style="display:none;">
                                 <label for="formReceiverName">收件人姓名/公司</label>
                                 <input id="formReceiverName" placeholder="存證信函">
                             </div>
-                            <div class="field" id="formReceiverAddrField" style="display:none;">
+                            <div class="field" id="formReceiverAddrField" data-form-types="legal_attest" style="display:none;">
                                 <label for="formReceiverAddr">收件人地址</label>
                                 <input id="formReceiverAddr" placeholder="存證信函">
                             </div>

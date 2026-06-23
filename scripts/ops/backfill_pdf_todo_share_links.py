@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Backfill MAGI share links into PDF-created OSC todos.
+"""Backfill/renew MAGI share links into PDF-created OSC todos.
 
 PDF-derived todos must keep a clickable MAGI share URL in the description so
 Google Calendar users can verify the source document.  This repair is bounded
 and conservative: it only updates future/pending PDF-source todos that do not
-already contain a MAGI share link or share-status marker.
+already contain a healthy MAGI share link, or whose link is near expiry.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,28 @@ if str(SKILL_DIR) not in sys.path:
 
 from api.blueprints.osc_pdf import _append_calendar_source_reference, _create_calendar_share_link  # noqa: E402
 from api.osc.utils import _osc_exec, _osc_resolve_existing_local_path  # noqa: E402
+
+_SHARE_EXPIRES_RE = re.compile(r"連結有效至：(?P<expires>[^\n]+)")
+
+
+def _share_expires_soon(desc: str, *, within_days: int) -> bool:
+    match = _SHARE_EXPIRES_RE.search(str(desc or ""))
+    if not match:
+        return True
+    try:
+        expires = datetime.fromisoformat(match.group("expires").strip())
+    except Exception:
+        return True
+    return expires <= datetime.now() + timedelta(days=max(0, within_days))
+
+
+def _needs_share_repair(desc: str, *, renew_within_days: int) -> bool:
+    text = str(desc or "")
+    if "MAGI分享狀態：" in text:
+        return True
+    if "MAGI分享連結：" not in text:
+        return True
+    return _share_expires_soon(text, within_days=renew_within_days)
 
 
 def _source_pdf_name(source_file: str) -> str:
@@ -105,9 +129,17 @@ def _resolve_todo_pdf(row: dict[str, Any]) -> Path | None:
     return None
 
 
-def _candidate_rows(limit: int, case_number: str = "") -> list[dict[str, Any]]:
+def _candidate_rows(
+    limit: int,
+    case_number: str = "",
+    *,
+    lookback_days: int = 30,
+    renew_within_days: int = 7,
+) -> list[dict[str, Any]]:
     where_case = "AND case_number=%s" if case_number else ""
     params: list[Any] = []
+    cutoff = (date.today() - timedelta(days=max(0, int(lookback_days or 0)))).isoformat()
+    params.append(cutoff)
     if case_number:
         params.append(case_number)
     params.append(limit)
@@ -115,11 +147,14 @@ def _candidate_rows(limit: int, case_number: str = "") -> list[dict[str, Any]]:
         f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, source_file, google_calendar_id
         FROM case_todos
-        WHERE todo_date >= CURDATE()
+        WHERE todo_date >= %s
           AND (status IS NULL OR status='' OR status='pending')
           AND COALESCE(source_file,'') LIKE '%%.pdf%%'
-          AND COALESCE(description,'') NOT LIKE '%%MAGI分享連結：%%'
-          AND COALESCE(description,'') NOT LIKE '%%MAGI分享狀態：%%'
+          AND (
+                COALESCE(description,'') NOT LIKE '%%MAGI分享連結：%%'
+             OR COALESCE(description,'') LIKE '%%MAGI分享狀態：%%'
+             OR COALESCE(description,'') LIKE '%%連結有效至：%%'
+          )
           {where_case}
         ORDER BY todo_date ASC, id ASC
         LIMIT %s
@@ -127,12 +162,38 @@ def _candidate_rows(limit: int, case_number: str = "") -> list[dict[str, Any]]:
         tuple(params),
         fetch="all",
     )
-    return [dict(r) for r in rows or []]
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        item = dict(row)
+        if _needs_share_repair(str(item.get("description") or ""), renew_within_days=renew_within_days):
+            out.append(item)
+    return out
 
 
-def backfill(*, limit: int, case_number: str = "", execute: bool = False) -> dict[str, Any]:
-    rows = _candidate_rows(limit, case_number=case_number)
-    out: dict[str, Any] = {"ok": True, "execute": execute, "scanned": len(rows), "updated": 0, "unresolved": 0, "items": []}
+def backfill(
+    *,
+    limit: int,
+    case_number: str = "",
+    execute: bool = False,
+    lookback_days: int = 30,
+    renew_within_days: int = 7,
+) -> dict[str, Any]:
+    rows = _candidate_rows(
+        limit,
+        case_number=case_number,
+        lookback_days=lookback_days,
+        renew_within_days=renew_within_days,
+    )
+    out: dict[str, Any] = {
+        "ok": True,
+        "execute": execute,
+        "lookback_days": lookback_days,
+        "renew_within_days": renew_within_days,
+        "scanned": len(rows),
+        "updated": 0,
+        "unresolved": 0,
+        "items": [],
+    }
     for row in rows:
         pdf_path = _resolve_todo_pdf(row)
         item = {
@@ -161,13 +222,21 @@ def backfill(*, limit: int, case_number: str = "", execute: bool = False) -> dic
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Backfill MAGI share links into future PDF-created OSC todos.")
+    parser = argparse.ArgumentParser(description="Backfill or renew MAGI share links in PDF-created OSC todos.")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--case-number", default="")
+    parser.add_argument("--lookback-days", type=int, default=int(os.environ.get("OSC_PDF_TODO_SHARE_REPAIR_LOOKBACK_DAYS", "30")))
+    parser.add_argument("--renew-within-days", type=int, default=int(os.environ.get("OSC_PDF_TODO_SHARE_RENEW_WITHIN_DAYS", "7")))
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
 
-    result = backfill(limit=max(1, args.limit), case_number=args.case_number.strip(), execute=bool(args.execute))
+    result = backfill(
+        limit=max(1, args.limit),
+        case_number=args.case_number.strip(),
+        execute=bool(args.execute),
+        lookback_days=max(0, args.lookback_days),
+        renew_within_days=max(0, args.renew_within_days),
+    )
     import json
 
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

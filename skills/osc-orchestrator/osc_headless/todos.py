@@ -8,15 +8,19 @@ This intentionally focuses on filename-based parsing because:
 """
 
 from __future__ import annotations
+import json
 import logging
 
 import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Dict, List, Optional
-
-import holidays
+try:
+    import holidays
+except Exception:
+    holidays = None  # type: ignore[assignment]
 
 
 def _portable_basename(value: str) -> str:
@@ -184,7 +188,7 @@ def chinese_to_number(chinese_str: str) -> Optional[int]:
 _TIME_PERIOD_RE = r"(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)"
 _TIME_NUMBER_RE = r"(\d{1,2}|[零一二三四五六七八九十]{1,3})"
 _DAY_NUMBER_RE = r"([\d零一二三四五六七八九十]+)"
-_DURATION_RE = rf"{_DAY_NUMBER_RE}(日|週|周)"
+_DURATION_RE = rf"{_DAY_NUMBER_RE}(日|週|周)?"
 _HEARING_LABELS = (
     "言詞辯論",
     "準備程序",
@@ -310,7 +314,85 @@ def _duration_days(match: re.Match) -> Optional[int]:
     return int(days)
 
 
-def is_tw_holiday(d: date, tw: holidays.Taiwan) -> bool:
+@lru_cache(maxsize=1)
+def _load_custom_holidays() -> Dict[date, str]:
+    """Load the same custom holiday shape used by original OSC.
+
+    Original desktop OSC stores holidays_config.json beside the app.  MAGI may
+    run from source, runtime, or a bundled app, so we check a small set of stable
+    candidate locations and accept either the original year/section format or a
+    flat YYYY-MM-DD mapping.
+    """
+    candidates: list[str] = []
+    for env_name in ("OSC_HOLIDAYS_CONFIG", "MAGI_HOLIDAYS_CONFIG", "HOLIDAYS_CONFIG"):
+        raw = os.environ.get(env_name)
+        if raw:
+            candidates.append(raw)
+    here = os.path.abspath(__file__)
+    roots = [
+        os.getcwd(),
+        os.path.dirname(here),
+        os.path.dirname(os.path.dirname(here)),
+        os.path.dirname(os.path.dirname(os.path.dirname(here))),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here)))),
+    ]
+    for root in roots:
+        candidates.append(os.path.join(root, "holidays_config.json"))
+        candidates.append(os.path.join(root, "json", "holidays_config.json"))
+
+    out: Dict[date, str] = {}
+    for raw_path in candidates:
+        path = os.path.expanduser(str(raw_path or ""))
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh) or {}
+            if not isinstance(data, dict):
+                continue
+            for key, value in data.items():
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(key)):
+                    try:
+                        out[datetime.strptime(str(key), "%Y-%m-%d").date()] = str(value or "")
+                    except Exception:
+                        pass
+                    continue
+                if not str(key).isdigit() or not isinstance(value, dict):
+                    continue
+                for section in ("連假", "臨時假日"):
+                    section_data = value.get(section)
+                    if not isinstance(section_data, dict):
+                        continue
+                    for date_str, name in section_data.items():
+                        try:
+                            out[datetime.strptime(str(date_str), "%Y-%m-%d").date()] = str(name or "")
+                        except Exception:
+                            pass
+        except Exception:
+            logging.getLogger(__name__).debug("failed to load custom holidays: %s", path, exc_info=True)
+    return out
+
+
+def _resolve_taiwan_holidays(base_year: int):
+    if holidays is None:
+        class _FallbackHolidayCalendar:
+            def get(self, _d: date):
+                return None
+
+        return _FallbackHolidayCalendar()
+    try:
+        return holidays.Taiwan(years=range(base_year - 1, base_year + 3))
+    except Exception:
+        class _FallbackHolidayCalendar:
+            def get(self, _d: date):
+                return None
+
+        return _FallbackHolidayCalendar()
+
+
+def is_tw_holiday(d: date, tw) -> bool:
+    if d in _load_custom_holidays():
+        return True
     name = tw.get(d)
     if name:
         if "補行上班日" in str(name):
@@ -349,10 +431,9 @@ def _contains_exclusion(segment: str, pattern: str, todo_type: str) -> bool:
 def _relative_days_from_segment(segment: str) -> Optional[int]:
     text = segment or ""
     patterns = [
-        rf"文到(?:後)?{_DAY_NUMBER_RE}日(?:內)?",
-        rf"送達(?:後|翌日起){_DAY_NUMBER_RE}日(?:內)?",
-        rf"{_DAY_NUMBER_RE}日內",
-        rf"{_DAY_NUMBER_RE}(週|周)內",
+        rf"文到(?:後)?{_DURATION_RE}(?:內)?",
+        rf"送達(?:後|翌日起){_DURATION_RE}(?:內)?",
+        rf"{_DURATION_RE}內",
     ]
     for pat in patterns:
         m = re.search(pat, text)
@@ -907,7 +988,7 @@ def extract_todos_from_filename(
         document_date = datetime.now()
 
     base_year = extract_base_year_from_filename(filename, file_path, document_date)
-    tw = holidays.Taiwan(years=range(base_year - 1, base_year + 3))
+    tw = _resolve_taiwan_holidays(base_year)
 
     all_patterns = patterns or get_default_patterns()
     type_priority = [

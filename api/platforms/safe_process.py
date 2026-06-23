@@ -210,9 +210,36 @@ def parse_cron_command(cmdline: str) -> List[str]:
         if meta in cmdline:
             raise PermissionError(f"cron cmdline contains shell metachar {meta!r}")
     tokens = shlex.split(cmdline, posix=True)
+    tokens = _repair_known_unquoted_space_paths(tokens)
     if not tokens:
         raise ValueError("shlex.split produced empty argv")
     return tokens
+
+
+def _repair_known_unquoted_space_paths(tokens: List[str]) -> List[str]:
+    """Repair legacy cron commands that forgot to quote MAGI's runtime path.
+
+    The installed runtime lives under "Application Support".  Older cron rows
+    stored commands without quotes, so shlex splits the path into
+    "/Users/ai/Library/Application" and "Support/...".  Joining only this
+    exact known prefix keeps shell metachar protection intact while allowing
+    the audit layer to validate the real argv.
+    """
+    repaired: List[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if (
+            token == "/Users/ai/Library/Application"
+            and i + 1 < len(tokens)
+            and tokens[i + 1].startswith("Support/")
+        ):
+            repaired.append(f"{token} {tokens[i + 1]}")
+            i += 2
+            continue
+        repaired.append(token)
+        i += 1
+    return repaired
 
 
 # --- launchctl 操作 -----------------------------------------------------

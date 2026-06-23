@@ -737,6 +737,114 @@ def test_payment_notice_requires_actual_pdf_before_dedup(tmp_path):
         assert "web_payment:case:115原交易21:林建豐" not in saved
 
 
+def test_recent_payment_activity_retries_when_pdf_not_delivered(tmp_path):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_林建豐_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    record = {
+        "processed_at": datetime.now(),
+        "party": "林建豐",
+        "case_number": "115年度原交易字第000021號",
+        "detail": "已下載繳費單（1 份）",
+        "count": 1,
+        "artifact_type": "payment_slip",
+        "source": "payment_registry",
+        "key": "rowid:1075000",
+        "file_paths": [str(pdf)],
+    }
+    fp = module._recent_activity_fingerprint(record)
+    (tmp_path / ".recent_activity_notified.json").write_text(
+        json.dumps({
+            "version": 1,
+            "recent_payment_activity": {fp: "2026-06-22T10:30:41"},
+            "recent_review_download_activity": {},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    fresh = module._filter_unnotified_recent_activity(
+        [record],
+        str(tmp_path),
+        "recent_payment_activity",
+    )
+
+    assert fresh == [record]
+
+
+def test_payment_notice_rejects_pdf_extension_with_non_pdf_payload(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    bad_pdf = tmp_path / "繳費單_梁志祥_114.交上易.000014.pdf"
+    bad_pdf.write_text('{"messageText":"銷帳編號取號失敗"}', encoding="utf-8")
+    ignored_dir = tmp_path / "_ignored_downloads" / "20260622"
+    ignored_dir.mkdir(parents=True)
+    quarantined_pdf = ignored_dir / "繳費單_梁志祥_114.交上易.000014.invalid_artifact.pdf"
+    quarantined_pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "liang-row",
+        "yyidno": "114.交上易.000014",
+        "showyyidno": "114年度交上易字第000014號",
+        "clnm": "梁志祥",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    with patch.object(mgr, "notify_payment_needed", side_effect=AssertionError("must not notify invalid PDF")):
+        assert mgr._notify_payment_if_needed(
+            row,
+            case_info={"party": "梁志祥", "case_number": "114.交上易.000014"},
+            file_paths=[str(bad_pdf)],
+        ) is False
+        assert mgr._notify_payment_if_needed(
+            row,
+            case_info={"party": "梁志祥", "case_number": "114.交上易.000014"},
+            file_paths=[str(quarantined_pdf)],
+        ) is False
+
+    module = _load_action_module()
+    assert module._is_valid_payment_pdf_file(str(quarantined_pdf)) is False
+
+    notified_path = tmp_path / "notified_cases.json"
+    if notified_path.exists():
+        saved = json.loads(notified_path.read_text(encoding="utf-8"))
+        assert "web_payment:case:114交上易14:梁志祥" not in saved
+
+
+def test_legacy_unpadded_payment_notice_key_suppresses_padded_case(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    (tmp_path / "notified_cases.json").write_text(
+        json.dumps({"web_payment:114年度交上易字第14號": "2026-06-10T16:08:26"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    pdf = tmp_path / "繳費單_梁志祥_114.交上易.000014.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "1086357",
+        "yyidno": "114.交上易.000014",
+        "showyyidno": "114年度交上易字第000014號",
+        "clnm": "梁志祥",
+        "paylimitdt": _roc_compact(3),
+        "paystatus": "2",
+        "status": "3",
+        "statusnm": "法院回覆同意",
+        "result": "待繳費",
+    }
+
+    assert "web_payment:case:114交上易14" in mgr.notified_cases
+    with patch.object(mgr, "notify_payment_needed", side_effect=AssertionError("must not resend legacy-notified case")):
+        assert mgr._notify_payment_if_needed(
+            row,
+            case_info={"party": "梁志祥", "case_number": "114.交上易.000014"},
+            file_paths=[str(pdf)],
+        ) is True
+
+
 def test_notify_payment_needed_without_pdf_is_not_delivery(tmp_path):
     from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewInfo, FileReviewManager
 
@@ -796,6 +904,32 @@ def test_portal_pending_payment_skips_legacy_notified_case(tmp_path):
         "result_text": "待繳費",
         "party": "吳志炳",
         "court_case_no": "114年度原交易字第000049號",
+        "pay_deadline": _roc_compact(3),
+    }
+
+    groups = module._filter_urgent_pending_payments(
+        [item],
+        days=14,
+        download_folder=str(tmp_path),
+    )
+
+    assert groups == {"overdue": [], "urgent": [], "unknown": []}
+
+
+def test_portal_pending_payment_skips_legacy_unpadded_notified_case(tmp_path):
+    module = _load_action_module()
+    (tmp_path / "notified_cases.json").write_text(
+        json.dumps({"web_payment:114年度交上易字第14號": "2026-06-10T16:08:26"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    item = {
+        "status": "pending_payment",
+        "paystatus": "2",
+        "status_name": "法院回覆同意",
+        "result_text": "待繳費",
+        "party": "梁志祥",
+        "court_case_no": "114年度交上易字第000014號",
+        "case_number": "114.交上易.000014",
         "pay_deadline": _roc_compact(3),
     }
 

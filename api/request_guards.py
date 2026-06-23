@@ -50,6 +50,10 @@ def install_request_guards(app, logger) -> None:
             "/telegram/webhook",
             "/callback",
             "/health",
+            "/login",
+            "/register",
+            "/favicon.ico",
+            "/static/magi-site.css",
             "/lottery",
             "/api/lottery",
         )

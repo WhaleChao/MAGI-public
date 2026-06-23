@@ -21,6 +21,7 @@ if str(MAGI_ROOT) not in sys.path:
 from scripts.ops.omlx_profile_policy import (  # noqa: E402
     DAY_FALLBACK_MODEL_KEYWORD,
     DAY_MODEL_KEYWORD,
+    NIGHT_FALLBACK_MODEL_KEYWORD,
     NIGHT_MODEL_KEYWORD,
     expected_profile_now as expected_omlx_profile_now,
 )
@@ -112,7 +113,14 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
                 if not _has_keyword(by_port[port], keyword):
                     warnings.append(f"{port} auxiliary not ready")
     else:
-        if not _has_keyword(by_port[8080], NIGHT_MODEL_KEYWORD):
+        if _has_keyword(by_port[8080], NIGHT_MODEL_KEYWORD):
+            pass
+        elif _has_keyword(by_port[8080], NIGHT_FALLBACK_MODEL_KEYWORD):
+            warnings.append(
+                f"8080 is night fallback {NIGHT_FALLBACK_MODEL_KEYWORD.upper()}, "
+                f"expected {NIGHT_MODEL_KEYWORD.upper()}"
+            )
+        else:
             failures.append(
                 f"8080 expected {NIGHT_MODEL_KEYWORD.upper()}, "
                 f"got {by_port[8080].model_id or by_port[8080].error or 'down'}"
@@ -125,19 +133,27 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
     if expected == "day":
         allowed_active.add("day-e4b-degraded")
     if expected == "night":
+        allowed_active.add("night-12b-degraded")
         allowed_active.add("night-e4b-degraded")
     if active and active not in allowed_active:
         failures.append(f"active_profile expected {expected}, got {active}")
 
     degraded = False
     degraded_reason = ""
-    if expected == "day" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
+    if (
+        expected == "day"
+        and DAY_FALLBACK_MODEL_KEYWORD.lower() != DAY_MODEL_KEYWORD.lower()
+        and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD)
+    ):
         degraded = True
         degraded_reason = "day_fell_back_to_e4b"
     if expected == "day" and not failures and (not by_port[8082].ok or not by_port[8083].ok):
         degraded = True
         degraded_reason = degraded_reason or "day_auxiliary_missing"
-    if expected == "night" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
+    if expected == "night" and _has_keyword(by_port[8080], NIGHT_FALLBACK_MODEL_KEYWORD):
+        degraded = True
+        degraded_reason = "night_fell_back_to_12b"
+    elif expected == "night" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
         degraded = True
         degraded_reason = "night_fell_back_to_e4b"
 

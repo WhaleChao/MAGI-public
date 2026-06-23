@@ -55,7 +55,8 @@ _PROCEDURAL_NONCLOSING_KEYWORDS = (
 _CONSUMER_DEBT_TERMINAL_KEYWORDS = (
     "免責裁定", "不免責裁定", "復權裁定", "復權確定",
     "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
-    "駁回更生聲請", "駁回清算聲請",
+    "駁回更生聲請", "更生聲請駁回", "更生之聲請駁回",
+    "駁回清算聲請", "清算聲請駁回", "清算之聲請駁回",
     "調解成立", "和解成立", "協商成立",
     "撤回聲請", "撤回更生", "撤回清算",
 )
@@ -70,7 +71,9 @@ _AUTO_CLOSING_FINAL_KEYWORDS = (
     "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
     "免責裁定", "不免責裁定", "復權裁定", "復權確定",
     "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
-    "駁回更生聲請", "駁回清算聲請", "撤回聲請", "撤回更生", "撤回清算",
+    "駁回更生聲請", "更生聲請駁回", "更生之聲請駁回",
+    "駁回清算聲請", "清算聲請駁回", "清算之聲請駁回",
+    "撤回聲請", "撤回更生", "撤回清算",
 )
 
 _AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS = (
@@ -522,7 +525,14 @@ class LAFOrchestratorDocumentMixin:
             is_closing_keyword = False
         if is_procedural_nonclosing and not is_enforcement_basis:
             is_closing_keyword = False
-        if is_closing_keyword and not LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(full_path):
+        is_terminal_debt_notice = (
+            is_consumer_debt
+            and LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_notice_path(full_path, fn)
+        )
+        if is_closing_keyword and not (
+            LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(full_path)
+            or is_terminal_debt_notice
+        ):
             is_closing_keyword = False
         if is_closing_keyword or is_enforcement_basis:
             # Exclude templates/drafts
@@ -627,6 +637,19 @@ class LAFOrchestratorDocumentMixin:
         return any(marker in normalized for marker in allowed)
 
     @staticmethod
+    def _is_consumer_debt_terminal_notice_path(path: str, fn: str) -> bool:
+        """Allow strict consumer-debt final court rulings misfiled in court notice folder."""
+        normalized = f"/{str(path or '').replace(chr(92), '/').strip('/')}/"
+        if "/09_法院通知或程序裁定/" not in normalized:
+            return False
+        name = str(fn or "")
+        return (
+            "法院" in name
+            and "裁定" in name
+            and LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_doc(name)
+        )
+
+    @staticmethod
     def _is_consumer_debt_intermediate_doc(fn: str) -> bool:
         """Consumer-debt procedure ending/termination is not a final report basis."""
         return any(k in str(fn or "") for k in _CONSUMER_DEBT_INTERMEDIATE_KEYWORDS)
@@ -665,17 +688,22 @@ class LAFOrchestratorDocumentMixin:
             return False
         if Path(fn).suffix.lower() != ".pdf":
             return False
-        if not LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(str(path or "")):
+        text = f"{fn} {case_reason} {folder_path}"
+        is_consumer_debt = any(k in f"{text} {path}" for k in _CONSUMER_DEBT_KEYWORDS)
+        is_terminal_debt_notice = (
+            is_consumer_debt
+            and LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_notice_path(str(path or ""), fn)
+        )
+        if not (
+            LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(str(path or ""))
+            or is_terminal_debt_notice
+        ):
             return False
         if any(k in fn for k in ("範本", "模板", "草稿", "暫存")):
             return False
         if any(k in fn for k in _AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS):
             return False
-        text = f"{fn} {case_reason} {folder_path}"
-        if (
-            any(k in text for k in _CONSUMER_DEBT_KEYWORDS)
-            and LAFOrchestratorDocumentMixin._is_consumer_debt_intermediate_doc(fn)
-        ):
+        if is_consumer_debt and LAFOrchestratorDocumentMixin._is_consumer_debt_intermediate_doc(fn):
             return False
         if LAFOrchestratorDocumentMixin._is_procedural_nonclosing_doc(fn):
             return False
