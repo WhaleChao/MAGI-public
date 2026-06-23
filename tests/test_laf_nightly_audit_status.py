@@ -732,7 +732,7 @@ class TestLafClosingReadiness:
     def test_in_progress_case_is_not_closeable_even_with_judgment(self, tmp_path):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
 
-        judgment_dir = tmp_path / "case" / "10_判決書"
+        judgment_dir = tmp_path / "case" / "10_判決書或終局裁定及處分"
         judgment_dir.mkdir(parents=True)
         (judgment_dir / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf").write_bytes(b"%PDF-1.4\n")
 
@@ -747,7 +747,7 @@ class TestLafClosingReadiness:
     def test_mediation_transcript_and_generic_ruling_are_not_closeable(self, tmp_path):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
 
-        judgment_dir = tmp_path / "case" / "10_判決書"
+        judgment_dir = tmp_path / "case" / "10_判決書或終局裁定及處分"
         judgment_dir.mkdir(parents=True)
         (judgment_dir / "20260601 調解筆錄.pdf").write_bytes(b"%PDF-1.4\n")
         (judgment_dir / "20260601 普通裁定.pdf").write_bytes(b"%PDF-1.4\n")
@@ -763,7 +763,7 @@ class TestLafClosingReadiness:
     def test_waiting_closing_status_accepts_real_judgment(self, tmp_path):
         from casper_ecosystem.law_firm_orchestrators.laf_nightly_audit import scan_laf_reporting_status
 
-        judgment = tmp_path / "case" / "10_判決書" / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf"
+        judgment = tmp_path / "case" / "10_判決書或終局裁定及處分" / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf"
         judgment.parent.mkdir(parents=True)
         judgment.write_bytes(b"%PDF-1.4\n")
 

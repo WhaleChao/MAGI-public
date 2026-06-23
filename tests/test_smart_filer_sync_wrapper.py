@@ -3,6 +3,7 @@
 import os
 import sys
 import importlib.util
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 _SKILL_DIR = os.path.join(os.path.dirname(__file__), "..", "skills", "pdf-namer")
@@ -60,3 +61,26 @@ def test_sync_osc_todos_for_path_skips_when_not_in_case_tree():
 
     assert result.get("success") is False
     assert result.get("skipped") == "not_in_case_tree", f"應 skipped=not_in_case_tree，實際: {result}"
+
+
+def test_find_subfolder_prefers_canonical_judgment_folder_with_legacy_db_rule():
+    fake_training_loader = SimpleNamespace(
+        get_template_for_doc_type=lambda _doc_type: {"archive_destination_type": "判決書"}
+    )
+    case = {
+        "subfolders": [
+            "09_法院通知或程序裁定",
+            "10_判決書",
+            "10_判決書或終局裁定及處分",
+        ]
+    }
+
+    with patch.dict(sys.modules, {"training_loader": fake_training_loader}):
+        assert _mod._find_subfolder(case, "判決") == "10_判決書或終局裁定及處分"
+
+
+def test_find_subfolder_accepts_legacy_judgment_folder_when_canonical_missing():
+    case = {"subfolders": ["09_法院通知或程序裁定", "10_判決書"]}
+
+    with patch.dict(sys.modules, {"training_loader": SimpleNamespace(get_template_for_doc_type=lambda _: None)}):
+        assert _mod._find_subfolder(case, "判決") == "10_判決書"

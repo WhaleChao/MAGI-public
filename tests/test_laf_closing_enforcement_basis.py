@@ -14,7 +14,7 @@ spec.loader.exec_module(docmixins)
 
 def test_enforcement_order_counts_as_closing_basis(tmp_path):
     case_dir = tmp_path / "2026-0004-測試當事人-執行-強制執行"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     basis = judgment_dir / "20260512 花蓮地方法院115年度司執字第000001號執行命令（測試當事人；檢附債權憑證）.pdf"
     basis.write_bytes(b"%PDF-1.4\n")
@@ -43,7 +43,7 @@ def test_random_execution_notice_is_not_closing_basis(tmp_path):
 def test_closing_scan_skips_review_folder_for_large_cases(tmp_path):
     case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
     review_dir = case_dir / "06_閱卷資料" / "20260520"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     review_dir.mkdir(parents=True)
     judgment_dir.mkdir(parents=True)
     noisy_review_file = review_dir / "114年度國審強處字第000001號裁定.pdf"
@@ -60,7 +60,7 @@ def test_closing_scan_skips_review_folder_for_large_cases(tmp_path):
 
 def test_closing_metadata_extracts_short_district_court_name(tmp_path):
     case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     basis = judgment_dir / "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf"
     basis.write_bytes(b"%PDF-1.4\n")
@@ -77,7 +77,7 @@ def test_closing_metadata_extracts_short_district_court_name(tmp_path):
 
 def test_consumer_debt_transfer_ruling_does_not_trigger_closing_basis(tmp_path):
     case_dir = tmp_path / "2025-0087-張慧敏-消費者債務清理-更生"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     transfer = judgment_dir / "20251124 基隆地方法院114年度司消債調字第207號民事裁定（張慧敏；主文：本件移送臺北地方法院）.pdf"
     transfer.write_bytes(b"%PDF-1.4\n")
@@ -90,7 +90,7 @@ def test_consumer_debt_transfer_ruling_does_not_trigger_closing_basis(tmp_path):
 
 def test_consumer_debt_procedure_end_is_not_auto_closing_basis(tmp_path):
     case_dir = tmp_path / "2025-0045-郭麗卿-消費者債務清理-清算"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     intermediate = judgment_dir / "20260601 臺灣花蓮地方法院113年度消債清字第1號裁定（主文：本件清算程序終結）.pdf"
     intermediate.write_bytes(b"%PDF-1.4\n")
@@ -126,7 +126,7 @@ def test_pleading_docx_with_ruling_words_is_not_closing_basis(tmp_path):
 
 def test_ruling_that_mentions_judgment_request_is_not_auto_closing_basis(tmp_path):
     case_dir = tmp_path / "2025-0003-蕭仁俊-非常上訴-強盜殺人"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     ruling = judgment_dir / "20260317 憲法法庭115年審裁字第578號裁定(蕭仁俊；主文：一、補充判決之聲請不受理；二、暫時處分之聲請駁回).pdf"
     ruling.write_bytes(b"%PDF-1.4\n")
@@ -142,7 +142,7 @@ def test_ruling_that_mentions_judgment_request_is_not_auto_closing_basis(tmp_pat
 
 def test_consumer_debt_terminal_rulings_are_closing_basis(tmp_path):
     case_dir = tmp_path / "2025-0088-王小明-消費者債務清理-清算"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     terminal = judgment_dir / "20260601 臺灣花蓮地方法院114年度消債清字第12號免責裁定（王小明）.pdf"
     terminal.write_bytes(b"%PDF-1.4\n")

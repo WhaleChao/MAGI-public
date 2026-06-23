@@ -39,7 +39,7 @@ def test_discover_case_court_info_excludes_criminal_detention_rulings(tmp_path):
 def test_discover_case_court_info_prefers_judgment_over_later_procedural_number(tmp_path):
     case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
     notice_dir = case_dir / "09_法院通知或程序裁定"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     notice_dir.mkdir(parents=True)
     judgment_dir.mkdir(parents=True)
     (notice_dir / "20260711 臺北地方法院114年度國審強處字第1號國民法官庭通知書(游秀鈴；訂調查).pdf").write_bytes(b"%PDF")
@@ -53,7 +53,7 @@ def test_discover_case_court_info_prefers_judgment_over_later_procedural_number(
 
 def test_discover_case_court_info_uses_local_alias_for_canonical_windows_path(tmp_path, monkeypatch):
     case_dir = tmp_path / "2025-0002-游秀鈴-一審-傷害致死"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     (judgment_dir / "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf").write_bytes(b"%PDF")
 

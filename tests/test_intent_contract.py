@@ -71,6 +71,12 @@ def test_broad_analysis_and_tool_requests_route_to_agent():
     assert looks_like_agentic_request("我想知道這份文件的重點與風險")
 
 
+def test_heavy_prefix_does_not_confuse_intent_contract():
+    assert _kind("＠HEAVY你可以查天氣嗎？") == KIND_TOOL_CAPABILITY
+    assert _kind("@重型：我只是想跟你聊聊天") == KIND_CASUAL_CHAT
+    assert _kind("＠重型請幫我比較民法184條與相關判決見解") == KIND_AGENT_TASK
+
+
 def test_agentic_request_excludes_short_replies_and_write_workflows():
     assert classify_intent_contract("50000").kind == KIND_STATEFUL_REPLY
     assert classify_intent_contract("王小明").kind == KIND_UNKNOWN

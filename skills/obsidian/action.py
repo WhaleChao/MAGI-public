@@ -34,6 +34,7 @@ if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name
 
 # ── Config ──────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ HIGH_VALUE_FOLDERS = {
     "07_證據資料",
     "08_筆錄",
     "09_法院通知或程序裁定",
-    "10_判決書",
+    judgment_folder_name(10),
     "12_信件往返",
     "13_電子筆錄",
 }

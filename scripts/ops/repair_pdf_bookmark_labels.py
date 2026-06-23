@@ -29,6 +29,8 @@ MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
+
 DEFAULT_REPORT = MAGI_ROOT / ".runtime" / "pdf_bookmark_label_repair_latest.json"
 HISTORY_PATH = MAGI_ROOT / ".runtime" / "pdf_bookmark_label_repair_history.jsonl"
 
@@ -36,6 +38,7 @@ TARGET_DIR_HINTS = (
     "閱卷資料",
     "法院通知",
     "程序裁定",
+    JUDGMENT_FOLDER_LABEL,
     "判決書",
     "筆錄",
     "證據資料",

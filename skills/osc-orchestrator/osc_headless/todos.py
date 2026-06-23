@@ -22,6 +22,8 @@ try:
 except Exception:
     holidays = None  # type: ignore[assignment]
 
+from skills.bridge.shared_utils.judgment_folder_names import path_has_judgment_folder
+
 
 def _portable_basename(value: str) -> str:
     return re.split(r"[\\/]+", str(value or "").strip())[-1]
@@ -414,7 +416,7 @@ def _filename_segments(filename: str) -> List[str]:
 
 
 def _is_judgment_folder(file_path: str) -> bool:
-    return "判決書" in str(file_path or "")
+    return path_has_judgment_folder(str(file_path or ""))
 
 
 def _contains_exclusion(segment: str, pattern: str, todo_type: str) -> bool:

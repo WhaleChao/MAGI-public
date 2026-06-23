@@ -23,6 +23,11 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    judgment_folder_name,
+    legacy_judgment_folder_name,
+)
 
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
@@ -2542,7 +2547,10 @@ NAS_TO_DRIVE_FIRST_SEGMENT = {
     "07_證據資料": "證據資料",
     "08_筆錄": "筆錄",
     "09_法院通知或程序裁定": "法院通知",
-    "10_判決書": "法院判決",
+    judgment_folder_name(10): "法院判決",
+    legacy_judgment_folder_name(10): "法院判決",
+    JUDGMENT_FOLDER_LABEL: "法院判決",
+    "判決書": "法院判決",
     "11_回執": "回執",
     "12_信件往返": "信件往返",
 }
@@ -2574,6 +2582,7 @@ DRIVE_EXISTING_ALIAS_PRIORITY = {
         "法院裁判",
         "法院裁定",
         "法院判決",
+        JUDGMENT_FOLDER_LABEL,
         "判決書",
         "起訴書",
         "地檢署起訴書",
@@ -2622,13 +2631,14 @@ DRIVE_TO_NAS_FIRST_SEGMENT = {
     "最高檢察署函": "09_法院通知或程序裁定",
     "法院資料": "09_法院通知或程序裁定",
     "程序裁定": "09_法院通知或程序裁定",
-    "起訴書": "10_判決書",
-    "地檢署起訴書": "10_判決書",
-    "另案起訴書": "10_判決書",
-    "法院判決": "10_判決書",
-    "法院裁判": "10_判決書",
-    "判決書": "10_判決書",
-    "調解不成立證明書": "10_判決書",
+    "起訴書": judgment_folder_name(10),
+    "地檢署起訴書": judgment_folder_name(10),
+    "另案起訴書": judgment_folder_name(10),
+    "法院判決": judgment_folder_name(10),
+    "法院裁判": judgment_folder_name(10),
+    JUDGMENT_FOLDER_LABEL: judgment_folder_name(10),
+    "判決書": judgment_folder_name(10),
+    "調解不成立證明書": judgment_folder_name(10),
     "回執": "11_回執",
     "自行收納款項收據": "11_回執",
     "法院收據": "11_回執",
@@ -2638,8 +2648,9 @@ DRIVE_TO_NAS_FIRST_SEGMENT = {
 }
 DRIVE_TO_NAS_PREFIXES = {
     ("閱卷資料", "筆錄"): ("08_筆錄",),
-    ("法院資料", "法院判決"): ("10_判決書",),
-    ("法院資料", "判決書"): ("10_判決書",),
+    ("法院資料", "法院判決"): (judgment_folder_name(10),),
+    ("法院資料", JUDGMENT_FOLDER_LABEL): (judgment_folder_name(10),),
+    ("法院資料", "判決書"): (judgment_folder_name(10),),
     ("法院資料", "法院通知"): ("09_法院通知或程序裁定",),
     ("法院資料", "程序裁定"): ("09_法院通知或程序裁定",),
 }
@@ -2711,10 +2722,12 @@ SEMANTIC_FIRST_SEGMENT = {
     "起訴書": "法院判決",
     "地檢署起訴書": "法院判決",
     "另案起訴書": "法院判決",
-    "10_判決書": "法院判決",
+    judgment_folder_name(10): "法院判決",
+    legacy_judgment_folder_name(10): "法院判決",
     "法院判決": "法院判決",
     "法院裁判": "法院判決",
     "法院裁定": "法院判決",
+    JUDGMENT_FOLDER_LABEL: "法院判決",
     "判決書": "法院判決",
     "調解不成立證明書": "法院判決",
     "11_回執": "回執",
@@ -2731,6 +2744,7 @@ SEMANTIC_PREFIXES = {
     ("閱卷資料", "筆錄"): ("筆錄",),
     ("法院資料", "法院裁判"): ("法院判決",),
     ("法院資料", "法院判決"): ("法院判決",),
+    ("法院資料", JUDGMENT_FOLDER_LABEL): ("法院判決",),
     ("法院資料", "判決書"): ("法院判決",),
     ("法院資料", "法院通知"): ("法院通知",),
     ("法院資料", "程序裁定"): ("法院通知",),
@@ -2827,9 +2841,9 @@ def court_document_target_segment(relative_path: str) -> str:
     if COURT_PROCEDURAL_FORM_RE.search(text) and not re.search(r"(?:確定證明|調解不成立證明)", text):
         return "09_法院通知或程序裁定"
     if COURT_FINAL_DOC_RE.search(text):
-        return "10_判決書"
+        return judgment_folder_name(10)
     if "裁定" in text:
-        return "10_判決書" if COURT_FINAL_RULING_RE.search(text) else "09_法院通知或程序裁定"
+        return judgment_folder_name(10) if COURT_FINAL_RULING_RE.search(text) else "09_法院通知或程序裁定"
     return "09_法院通知或程序裁定"
 
 

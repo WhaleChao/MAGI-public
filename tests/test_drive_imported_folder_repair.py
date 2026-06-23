@@ -17,15 +17,16 @@ def test_drive_imported_alias_detection_and_mapping():
     assert is_noncanonical_drive_folder("電子筆錄") is True
     assert is_noncanonical_drive_folder("地檢署起訴書") is True
     assert is_noncanonical_drive_folder("訊問筆錄") is True
+    assert is_noncanonical_drive_folder("10_判決書或終局裁定及處分") is False
     assert is_noncanonical_drive_folder("10_判決書") is False
     assert mapped_file_relative_path("法院裁判", "a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert mapped_file_relative_path("法院裁判", "20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
-    assert mapped_file_relative_path("法院裁判", "20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
-    assert mapped_file_relative_path("法院裁判", "偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
+    assert mapped_file_relative_path("法院裁判", "20260101 復權裁定.pdf") == "10_判決書或終局裁定及處分/20260101 復權裁定.pdf"
+    assert mapped_file_relative_path("法院裁判", "偵查案件起訴書.pdf") == "10_判決書或終局裁定及處分/偵查案件起訴書.pdf"
     assert mapped_file_relative_path("開庭通知", "a.pdf") == "09_法院通知或程序裁定/a.pdf"
-    assert mapped_file_relative_path("法院裁定", "20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
+    assert mapped_file_relative_path("法院裁定", "20260101 復權裁定.pdf") == "10_判決書或終局裁定及處分/20260101 復權裁定.pdf"
     assert mapped_file_relative_path("起訴書", "20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
-    assert mapped_file_relative_path("法院資料", "起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert mapped_file_relative_path("法院資料", "起訴書/a.pdf") == "10_判決書或終局裁定及處分/a.pdf"
     assert mapped_file_relative_path("電子筆錄", "b.pdf") == "08_筆錄/b.pdf"
     assert mapped_file_relative_path("訊問筆錄", "b.pdf") == "08_筆錄/b.pdf"
     assert is_noncanonical_drive_folder("游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等") is True
@@ -48,7 +49,7 @@ def test_repair_case_folder_moves_alias_files_without_overwrite(tmp_path: Path):
     report = repair_case_folder(case, apply=True)
 
     assert report["errors"] == []
-    assert (case / "10_判決書" / "判決.pdf").read_bytes() == b"judgment"
+    assert (case / "10_判決書或終局裁定及處分" / "判決.pdf").read_bytes() == b"judgment"
     assert not src.exists()
     assert "法院裁判" in report["alias_folders"]
 
@@ -124,7 +125,7 @@ def test_repair_case_folder_unpacks_downloaded_drive_case_shell(tmp_path: Path):
 
 def test_repair_case_folder_moves_misfiled_transcript_from_judgment_folder(tmp_path: Path):
     case = tmp_path / "2026-0028-劉信義-一審-殺人"
-    src = case / "10_判決書" / "20260601 花蓮地方法院調解筆錄.pdf"
+    src = case / "10_判決書或終局裁定及處分" / "20260601 花蓮地方法院調解筆錄.pdf"
     src.parent.mkdir(parents=True)
     src.write_bytes(b"mediation transcript")
 
@@ -137,11 +138,27 @@ def test_repair_case_folder_moves_misfiled_transcript_from_judgment_folder(tmp_p
     assert not src.exists()
 
 
+def test_repair_case_folder_scans_legacy_judgment_folder(tmp_path: Path):
+    case = tmp_path / "2026-0028-劉信義-一審-殺人"
+    src = case / "10_判決書" / "20260601 花蓮地方法院調解筆錄.pdf"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"legacy mediation transcript")
+
+    report = repair_case_folder(case, apply=True)
+
+    dst = case / "08_筆錄" / "20260601 花蓮地方法院調解筆錄.pdf"
+    assert report["errors"] == []
+    assert report["canonical_misfile_scan"][0]["folder"] == "10_判決書"
+    assert len(report["canonical_misfile_moves"]) == 1
+    assert dst.read_bytes() == b"legacy mediation transcript"
+    assert not src.exists()
+
+
 def test_repair_case_folder_moves_procedural_ruling_from_judgment_folder(tmp_path: Path):
     case = tmp_path / "2026-0028-劉信義-一審-殺人"
     src = (
         case
-        / "10_判決書"
+        / "10_判決書或終局裁定及處分"
         / "20260602 花蓮地方法院115年度聲字第169號刑事裁定（准許參與本案訴訟）.pdf"
     )
     src.parent.mkdir(parents=True)
@@ -162,7 +179,7 @@ def test_repair_case_folder_moves_procedural_ruling_from_judgment_folder(tmp_pat
 
 def test_repair_case_folder_keeps_terminal_ruling_in_judgment_folder(tmp_path: Path):
     case = tmp_path / "2026-0001-測試-更生"
-    src = case / "10_判決書" / "20260602 花蓮地方法院115年度消債更字第1號免責裁定.pdf"
+    src = case / "10_判決書或終局裁定及處分" / "20260602 花蓮地方法院115年度消債更字第1號免責裁定.pdf"
     src.parent.mkdir(parents=True)
     src.write_bytes(b"terminal ruling")
 

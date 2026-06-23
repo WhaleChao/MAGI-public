@@ -8,7 +8,7 @@
 |---|---|
 | 公開 / 商用門檻 | README、操作手冊、Commercial Readiness、Operator Runbook 補上 public audit、smoke50、production-live、commercial-release、live gate 與 runtime 私有資料不得進 git |
 | 法扶消債 | 操作手冊補上 OSC 條件邏輯、可複製待補文字、所得清單依年度自動更新 |
-| 法扶結案 | 操作手冊補上強制執行案件可用判決書資料夾內執行命令、同名不同程序不得只靠姓名、已結案仍可開資料夾/檔案 |
+| 法扶結案 | 操作手冊補上強制執行案件可用「判決書或終局裁定及處分」資料夾內執行命令、舊「判決書」資料夾相容讀取、同名不同程序不得只靠姓名、已結案仍可開資料夾/檔案 |
 | 法扶活動計數 | README、操作手冊、USER_GUIDE、Commercial Readiness 補上開庭、會議、律見、閱卷、電話聯繫統計來源與同名消歧 |
 | Google Calendar | README、操作手冊、USER_GUIDE、Operator Runbook 補上 OSC 編號前綴、法扶 DB 身分判斷、同名多案跳過規則 |
 | PDF / OCR | README、操作手冊補上信封頁排除、多引擎 OCR 共識、法律文字修正與人工命名回饋 |
@@ -23,6 +23,6 @@
 
 - 法扶 portal、閱卷、筆錄三模組仍屬外部網站依賴，正式提交前需確認碼或人工確認。
 - Google Calendar 匯入需定期 dry-run，避免同事新增的日曆格式破壞法扶計數。
-- OCR/PDF 命名品質需持續抽測法院通知、程序裁定、判決、對方歷次書狀與判決書資料夾。
+- OCR/PDF 命名品質需持續抽測法院通知、程序裁定、判決、對方歷次書狀與「判決書或終局裁定及處分」資料夾，並保留舊「判決書」資料夾相容驗收。
 - 帳務匯入需定期檢查固定支出與試算表項目是否重複。
 - 公開版與私用版分支不得混推；公開版不得包含私有實務見解來源 / 私有 runtime / token / 案件資料。

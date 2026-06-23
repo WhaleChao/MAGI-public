@@ -33,6 +33,7 @@ if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
 
 # Load .env
 _env_path = os.path.join(MAGI_ROOT, ".env")
@@ -111,6 +112,7 @@ def _normalize_date(d: str) -> Optional[str]:
 def _subfolder_label(subfolder: str) -> Optional[str]:
     """Map subfolder name to category label for validation."""
     mapping = {
+        JUDGMENT_FOLDER_LABEL: "判決",
         "判決書": "判決",
         "法院通知或程序裁定": "法院通知",
         "我方歷次書狀": "書狀_我方",

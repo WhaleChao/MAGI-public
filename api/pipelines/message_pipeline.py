@@ -33,6 +33,21 @@ from api.routing.intent_contract import (
     looks_like_new_task_boundary as _contract_looks_like_new_task_boundary,
     looks_like_tool_capability_query as _contract_looks_like_tool_capability_query,
 )
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        if not match:
+            return False, text
+        return True, text[match.end():].strip()
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
 from skills.ops.red_phone import alert_iron_dome_violation
 
@@ -876,12 +891,8 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底（Plan A, 2026-04-19）
     # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 sanitize 統一轉半形
-    _heavy_opt_in = False
-    _msg_lower_head = message.lstrip().lower()
-    if _msg_lower_head.startswith("@heavy ") or _msg_lower_head.startswith("@重型 "):
-        _heavy_opt_in = True
-        # 保留原大小寫的其餘內容，只剝除前綴
-        message = message.lstrip().split(" ", 1)[1].strip() if " " in message.lstrip() else ""
+    _heavy_opt_in, message = split_heavy_prefix(message)
+    if _heavy_opt_in:
         logger.info("message_pipeline: @heavy opt-in detected, will try NIM fallback if oMLX fails")
     try:
         from flask import g as _flask_g, has_app_context as _has_app_context

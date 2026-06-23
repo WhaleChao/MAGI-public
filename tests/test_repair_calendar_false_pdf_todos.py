@@ -22,7 +22,7 @@ def test_classify_false_pdf_todo_detects_legacy_case_and_source_year_shift():
 
 def test_classify_false_pdf_todo_detects_case_hint_without_0617():
     row = {
-        "source_file": r"K:\\SynologyDrive\\01_案件\\2025-0130-張三\\08_判決書\\notice.pdf",
+        "source_file": r"K:\\SynologyDrive\\01_案件\\2025-0130-張三\\08_判決書或終局裁定及處分\\notice.pdf",
         "todo_type": "開庭",
         "todo_date": "2026-07-09",
         "description": "⚖️ 7月9日下午4時50分 審理",

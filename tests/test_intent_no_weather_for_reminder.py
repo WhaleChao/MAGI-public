@@ -13,6 +13,7 @@ from api.pipelines import message_pipeline
 from api.pipelines.message_pipeline import (
     _looks_like_model_capability_query,
     _looks_like_tool_capability_query,
+    process_message_inner,
     _try_agentic_route,
     _try_semantic_preflight,
 )
@@ -37,6 +38,51 @@ class _PreflightOrchestrator:
 
     def _handle_chat_async(self, user_id, message, platform_hint="LINE"):
         return "⚠️ 目前模型忙碌中，請稍後再試一次。"
+
+
+class _PipelineOrchestrator(_PreflightOrchestrator):
+    def __init__(self):
+        super().__init__()
+        self.history = []
+
+    def _sanitize_incoming_message(self, message):
+        return str(message or "")
+
+    def _append_history(self, user_id, role, message):
+        self.history.append((user_id, role, message))
+
+    def _quick_fixed_reply(self, message, role):
+        return ""
+
+    def _handle_gibberish_report(self, user_id, message, platform):
+        return ""
+
+    def _is_verified_admin_sender(self, user_id, platform):
+        return False
+
+    def remember_recent_attachment(self, **kwargs):
+        return None
+
+    def _maybe_reuse_recent_attachment(self, user_id, platform, message):
+        return None
+
+    def _load_skill_interview_pending(self):
+        return {}
+
+    def _pending_key(self, user_id, platform):
+        return f"{platform}:{user_id}"
+
+    def _handle_skill_interview_if_any(self, user_id, platform, role, message):
+        return False, ""
+
+    def _looks_like_skill_creation_request(self, message):
+        return False
+
+    def _looks_like_capability_question(self, message):
+        return False
+
+    def _handle_memory_confirmation_if_any(self, user_id, platform, message):
+        return False, ""
 
 
 class TestNoWeatherForReminder(unittest.TestCase):
@@ -225,6 +271,46 @@ class TestNoWeatherForReminder(unittest.TestCase):
         trace_meta = orch.traces[0][0][4]
         self.assertTrue(trace_meta["heavy"])
         self.assertEqual(trace_meta["primary_route"], "nvidia_nim")
+
+    def test_message_pipeline_fullwidth_heavy_prefix_reaches_agentic_route(self):
+        """Fullwidth/no-space @HEAVY must survive the top-level pipeline into ReAct."""
+        from skills.bridge import ensemble_inference
+        from skills.bridge.ensemble_inference import ConsensusResult
+
+        calls = []
+        original_enabled = ensemble_inference._ENSEMBLE_TOOLS_ENABLED
+        original_ensemble = ensemble_inference.ensemble_chat_with_tools
+        original_format = ensemble_inference.format_magi_response
+
+        def fake_ensemble_chat_with_tools(**kwargs):
+            calls.append(kwargs)
+            return ConsensusResult(
+                unanimous=True,
+                result="PIPELINE_HEAVY_AGENT",
+                individual_results={"tools_used": ["search_statutes"], "heavy": kwargs.get("heavy")},
+                task_type="agentic",
+            )
+
+        try:
+            ensemble_inference._ENSEMBLE_TOOLS_ENABLED = True
+            ensemble_inference.ensemble_chat_with_tools = fake_ensemble_chat_with_tools
+            ensemble_inference.format_magi_response = lambda cr: cr.result
+
+            orch = _PipelineOrchestrator()
+            reply = process_message_inner(
+                orch,
+                "u1",
+                "＠HEAVY請幫我比較民法184條與相關判決見解，整理成三點",
+                platform="LINE",
+            )
+        finally:
+            ensemble_inference._ENSEMBLE_TOOLS_ENABLED = original_enabled
+            ensemble_inference.ensemble_chat_with_tools = original_ensemble
+            ensemble_inference.format_magi_response = original_format
+
+        self.assertEqual(reply, "PIPELINE_HEAVY_AGENT")
+        self.assertTrue(calls[0]["heavy"])
+        self.assertEqual(calls[0]["prompt"], "請幫我比較民法184條與相關判決見解，整理成三點")
 
     def test_agentic_route_falls_back_to_tool_observations_on_internal_tags(self):
         """Internal model tags should not leak; ReAct observations should be synthesized instead."""

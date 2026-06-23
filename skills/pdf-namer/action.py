@@ -30,6 +30,7 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, is_judgment_folder_segment, path_has_judgment_folder
 from skills.bridge.shared_utils.case_number_utils import extract_case_number as _extract_case_number, RE_CASE_NUMBER
 from skills.bridge.shared_utils.court_utils import extract_court_name as _extract_court_name, RE_COURT_NAME
 
@@ -397,7 +398,7 @@ def _category_from_subfolder(subfolder: str, filename: str = "") -> str:
         return "法扶表單"
     if "回執" in clean:
         return "收據"
-    if "判決書" in clean:
+    if is_judgment_folder_segment(clean):
         return "判決"
     if "證據資料" in clean:
         return "證據"
@@ -1531,6 +1532,7 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
 
 _ARCHIVED_NAME_FOLDERS = (
     "法院通知或程序裁定",
+    JUDGMENT_FOLDER_LABEL,
     "判決書",
     "對方歷次書狀",
     "對造歷次書狀",
@@ -1598,7 +1600,7 @@ def _learned_page_profile_for_path(pdf_path: str) -> dict:
 
 def _is_envelope_prone_path(pdf_path: str) -> bool:
     path_text = str(pdf_path or "")
-    if any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
+    if path_has_judgment_folder(path_text) or any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
         return True
     profile = _learned_page_profile_for_path(pdf_path)
     if profile:

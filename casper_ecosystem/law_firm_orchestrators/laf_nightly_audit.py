@@ -49,6 +49,7 @@ from api.laf_go_live_rules import (
     is_stored_pleading_proof,
 )
 from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
+from skills.bridge.shared_utils.judgment_folder_names import first_existing_judgment_folder
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 # 載入 .env
@@ -2584,7 +2585,7 @@ def _folder_auto_closing_basis_files(mac_folder: str, case: dict | None = None) 
         logger.warning("auto closing basis scan fallback: %s", e)
 
     # Fallback remains intentionally conservative.
-    target = os.path.join(mac_folder, "10_判決書")
+    target = str(first_existing_judgment_folder(Path(mac_folder), 10))
     if not os.path.isdir(target):
         return []
     safe_keywords = (

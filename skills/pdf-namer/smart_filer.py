@@ -33,6 +33,14 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    judgment_folder_matches,
+    is_judgment_folder_segment,
+    sort_judgment_folders_first,
+    strip_number_prefix,
+)
+
 from api.runtime_paths import ensure_orch_on_sys_path, get_orch_dir
 from api.case_path_mapper import (
     default_scan_roots,
@@ -114,7 +122,7 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
 DOC_TYPE_TO_SUBFOLDER = {
     # pdf-namer doc_type → subfolder name keyword (matches XX_ prefix stripped)
     # ── 法院裁判 ──
-    "判決":     "判決書",
+    "判決":     JUDGMENT_FOLDER_LABEL,
     "支付命令": "法院通知或程序裁定",
     "裁定":     "法院通知或程序裁定",
     # ── 法院通知 ──
@@ -504,10 +512,14 @@ def _find_subfolder(case: Dict, doc_type: str) -> str:
     if not target_keyword:
         return ""
 
-    for sf in case.get("subfolders", []):
+    subfolders = list(case.get("subfolders", []))
+    if is_judgment_folder_segment(target_keyword):
+        subfolders = sort_judgment_folders_first(subfolders)
+
+    for sf in subfolders:
         # Strip number prefix (e.g., "09_法院通知或程序裁定" → "法院通知或程序裁定")
-        clean = re.sub(r'^\d+_', '', sf)
-        if target_keyword in clean or clean in target_keyword:
+        clean = strip_number_prefix(sf)
+        if judgment_folder_matches(target_keyword, clean):
             return sf
     return ""
 

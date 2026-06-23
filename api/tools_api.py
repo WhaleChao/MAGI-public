@@ -1127,10 +1127,24 @@ def _external_osc_chat_inner():
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底
     # 注意：不在此剝除前綴，保留到 _chat_inner 自己偵測（P1-2 修）。ThreadPoolExecutor 子 thread
     # 讀不到 request thread 的 flask.g，所以 prompt prefix 是唯一可靠的跨 thread 傳遞方式。
-    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 在 orchestrator sanitize 轉半形
-    heavy_opt_in = False
-    _message_head_lower = message.lstrip().lower()
-    if _message_head_lower.startswith("@heavy ") or _message_head_lower.startswith("@重型 "):
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        import re
+
+        fallback_re = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            match = fallback_re.match(text_inner)
+            return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
+
+    heavy_opt_in, _ = split_heavy_prefix(message)
+    if heavy_opt_in:
         heavy_opt_in = True
         logging.getLogger(__name__).info("external chat: @heavy opt-in detected, will try NIM fallback")
     try:

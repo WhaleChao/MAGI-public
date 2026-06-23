@@ -36,6 +36,7 @@ from api.case_path_mapper import (
     translate_local_path_to_canonical,
 )
 from api.laf_case_classifier import is_administrative_laf_reason, normalize_laf_case_type
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name
 
 CONFIG_PATH = str(get_config_path("config.json"))
 
@@ -50,7 +51,7 @@ STANDARD_SUBFOLDERS = [
     "07_證據資料",
     "08_筆錄",
     "09_法院通知或程序裁定",
-    "10_判決書",
+    judgment_folder_name(10),
     "11_回執",
     "12_信件往返",
 ]

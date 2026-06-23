@@ -29,7 +29,7 @@ def _orchestrator_with_rows(rows):
 
 def test_auto_closing_skips_misfiled_consumer_debt_transfer_ruling(tmp_path):
     case_dir = tmp_path / "2025-0087-張慧敏-消費者債務清理-更生"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     transfer = judgment_dir / "20251124 基隆地方法院114年度司消債調字第207號民事裁定（張慧敏；主文：本件移送臺北地方法院）.pdf"
     transfer.write_bytes(b"%PDF-1.4\n")
@@ -48,7 +48,7 @@ def test_auto_closing_skips_misfiled_consumer_debt_transfer_ruling(tmp_path):
 
 def test_auto_closing_skips_consumer_debt_procedure_end_ruling(tmp_path):
     case_dir = tmp_path / "2025-0045-郭麗卿-消費者債務清理-清算"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     intermediate = judgment_dir / "20260601 臺灣花蓮地方法院113年度消債清字第1號裁定（主文：本件清算程序終結）.pdf"
     intermediate.write_bytes(b"%PDF-1.4\n")
@@ -86,7 +86,7 @@ def test_auto_closing_skips_own_pleading_docx_with_ruling_words(tmp_path):
 
 def test_auto_closing_skips_mediation_transcript_and_generic_ruling(tmp_path):
     case_dir = tmp_path / "2025-0091-測試甲-一審-損害賠償"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     (judgment_dir / "20260601 調解筆錄.pdf").write_bytes(b"%PDF-1.4\n")
     (judgment_dir / "20260601 普通裁定.pdf").write_bytes(b"%PDF-1.4\n")
@@ -105,7 +105,7 @@ def test_auto_closing_skips_mediation_transcript_and_generic_ruling(tmp_path):
 
 def test_auto_closing_accepts_terminal_consumer_debt_ruling(tmp_path):
     case_dir = tmp_path / "2025-0088-王小明-消費者債務清理-清算"
-    judgment_dir = case_dir / "10_判決書"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
     judgment_dir.mkdir(parents=True)
     terminal = judgment_dir / "20260601 臺灣花蓮地方法院114年度消債清字第12號免責裁定（王小明）.pdf"
     terminal.write_bytes(b"%PDF-1.4\n")

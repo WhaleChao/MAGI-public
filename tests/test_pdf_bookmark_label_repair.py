@@ -81,7 +81,7 @@ def test_audit_flags_evidence_table_reference_as_polluted_label(tmp_path: Path):
 
 def test_audit_flags_judgment_body_reference_to_indictment(tmp_path: Path):
     mod = load_repair_module()
-    pdf = tmp_path / "10_判決書" / "判決.pdf"
+    pdf = tmp_path / "10_判決書或終局裁定及處分" / "判決.pdf"
     pdf.parent.mkdir()
     make_text_pdf(
         pdf,

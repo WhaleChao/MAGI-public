@@ -29,6 +29,7 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import ensure_orch_on_sys_path, get_config_path, get_orch_dir, get_skill_python
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_local_path_to_canonical
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, path_has_judgment_folder
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 PENDING_QUEUE_PATH = os.path.join(SKILL_DIR, "_pending_todos.jsonl")
@@ -575,7 +576,7 @@ def _court_case_number_quality(court_case_number: str) -> int:
 
 def _court_info_source_priority(source_path: str, filename: str) -> int:
     text = f"{source_path or ''}/{filename or ''}"
-    if "判決書" in text or "判決" in filename:
+    if path_has_judgment_folder(text) or "判決" in filename:
         return 100
     if "起訴書" in filename:
         return 92
@@ -615,7 +616,7 @@ def _candidate_court_info_dirs(case_path: str, *, max_dirs: int = 48) -> List[st
     if not p:
         return []
     preferred_keywords = (
-        "判決書", "法院通知", "程序裁定", "對方歷次書狀", "我方歷次書狀",
+        JUDGMENT_FOLDER_LABEL, "判決書", "法院通知", "程序裁定", "對方歷次書狀", "我方歷次書狀",
         "回執", "筆錄",
     )
 
@@ -1569,6 +1570,7 @@ def task_scan_cases(payload: Dict[str, Any]) -> Dict[str, Any]:
         "法院通知或程序裁定",
         "法院通知",
         "程序裁定",
+        JUDGMENT_FOLDER_LABEL,
         "判決書",
         "法院_通知",
         "法院_傳票",

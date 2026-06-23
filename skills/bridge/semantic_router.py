@@ -366,8 +366,37 @@ def route(message: str) -> Optional[Dict]:
     if not skills:
         return None
 
-    msg_text = (message or "").lower()
-    msg_tokens = _tokenize(message)
+    raw_message = str(message or "")
+    try:
+        from api.routing.command_prefixes import strip_heavy_prefix
+        from api.routing.intent_contract import (
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_STATEFUL_REPLY,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        clean_message = strip_heavy_prefix(raw_message)
+        decision = classify_intent_contract(clean_message)
+        if decision.kind in {
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_STATEFUL_REPLY,
+            KIND_TOOL_CAPABILITY,
+        }:
+            return None
+    except Exception:
+        clean_message = raw_message
+
+    msg_text = (clean_message or "").lower()
+    msg_tokens = _tokenize(clean_message)
     if not msg_tokens:
         return None
 
@@ -392,9 +421,7 @@ def route(message: str) -> Optional[Dict]:
         best_phrase_skill = max(hard_phrase_bonus, key=lambda k: hard_phrase_bonus[k])
         best_phrase_conf = hard_phrase_bonus[best_phrase_skill]
         if best_phrase_conf >= _ROUTE_THRESHOLD:
-            logger.debug(
-                f"SemanticRouter[phrase]: '{message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})"
-            )
+            logger.debug(f"SemanticRouter[phrase]: '{clean_message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})")
             return {
                 "skill": best_phrase_skill,
                 "confidence": round(best_phrase_conf, 3),
@@ -423,11 +450,11 @@ def route(message: str) -> Optional[Dict]:
         {"skill": name, "score": round(score, 3), "method": "semantic"}
         for score, name in scores[:3]
     ]
-    if _is_soft_ambiguous_message(message) and effective_score < (_ROUTE_THRESHOLD + 0.12):
+    if _is_soft_ambiguous_message(clean_message) and effective_score < (_ROUTE_THRESHOLD + 0.12):
         return None
 
     if effective_score >= _ROUTE_THRESHOLD:
-        logger.debug(f"SemanticRouter: '{message[:60]}' → {best_name} ({effective_score:.3f})")
+        logger.debug(f"SemanticRouter: '{clean_message[:60]}' → {best_name} ({effective_score:.3f})")
         return {
             "skill": best_name,
             "confidence": round(effective_score, 3),
@@ -438,7 +465,7 @@ def route(message: str) -> Optional[Dict]:
 
     # --- Phase 3: LLM fallback for ambiguous mid-range scores ---
     if _LLM_ENABLED and best_score >= _LLM_THRESHOLD:
-        result = _llm_route(message, [s["name"] for s in skills])
+        result = _llm_route(clean_message, [s["name"] for s in skills])
         if result:
             result.setdefault("candidates", top_candidates)
             return result

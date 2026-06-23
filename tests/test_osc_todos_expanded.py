@@ -313,9 +313,15 @@ def test_多日共用同一時間都要建立():
 def test_原版osc固定判決規則只在判決書資料夾產生上訴期限():
     todos = extract_todos_from_filename(
         "20260501 花蓮地方法院判決（王大明）.pdf",
-        "/tmp/case/10_判決書/20260501 花蓮地方法院判決（王大明）.pdf",
+        "/tmp/case/10_判決書或終局裁定及處分/20260501 花蓮地方法院判決（王大明）.pdf",
     )
     assert [(t["type"], t["date"], t["time"]) for t in todos] == [("上訴", "2026-05-21", "")]
+
+    legacy_todos = extract_todos_from_filename(
+        "20260501 花蓮地方法院判決（王大明）.pdf",
+        "/tmp/case/10_判決書/20260501 花蓮地方法院判決（王大明）.pdf",
+    )
+    assert [(t["type"], t["date"], t["time"]) for t in legacy_todos] == [("上訴", "2026-05-21", "")]
 
 
 def test_原版osc固定裁定規則非判決書資料夾不產生抗告期限():
@@ -329,13 +335,13 @@ def test_原版osc固定裁定規則非判決書資料夾不產生抗告期限()
 def test_原版osc固定消債字號需搭配裁定才產生異議期限():
     todos = extract_todos_from_filename(
         "20260501 花蓮地方法院115年度司消債更字第1號裁定（王大明）.pdf",
-        "/tmp/case/10_判決書/20260501 花蓮地方法院115年度司消債更字第1號裁定（王大明）.pdf",
+        "/tmp/case/10_判決書或終局裁定及處分/20260501 花蓮地方法院115年度司消債更字第1號裁定（王大明）.pdf",
     )
     assert [(t["type"], t["date"], t["time"]) for t in todos] == [("異議", "2026-05-11", "")]
 
     no_ruling = extract_todos_from_filename(
         "20260501 花蓮地方法院115年度司消債更字第1號通知（王大明）.pdf",
-        "/tmp/case/10_判決書/20260501 花蓮地方法院115年度司消債更字第1號通知（王大明）.pdf",
+        "/tmp/case/10_判決書或終局裁定及處分/20260501 花蓮地方法院115年度司消債更字第1號通知（王大明）.pdf",
     )
     assert no_ruling == []
 
@@ -343,7 +349,7 @@ def test_原版osc固定消債字號需搭配裁定才產生異議期限():
 def test_原版osc不得抗告排除固定裁定期限():
     todos = extract_todos_from_filename(
         "20260501 花蓮地方法院裁定（王大明；不得抗告）.pdf",
-        "/tmp/case/10_判決書/20260501 花蓮地方法院裁定（王大明；不得抗告）.pdf",
+        "/tmp/case/10_判決書或終局裁定及處分/20260501 花蓮地方法院裁定（王大明；不得抗告）.pdf",
     )
     assert todos == []
 

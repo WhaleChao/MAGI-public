@@ -31,6 +31,7 @@ from api.osc.drive_case_sync import (
     split_relative_parts,
     strip_embedded_drive_case_folder,
 )
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_candidates, judgment_folder_name
 
 DEFAULT_REPORT = MAGI_ROOT / ".runtime" / "drive_imported_folder_repair_latest.json"
 HISTORY_PATH = MAGI_ROOT / ".runtime" / "drive_imported_folder_repair_history.jsonl"
@@ -183,11 +184,15 @@ def _record_file_move(
 
 
 def _target_for_misfiled_judgment_file(case_folder: Path, src: Path) -> str:
-    """Return canonical NAS relative target for files misplaced in 10_判決書."""
-    judgment_dir = case_folder / "10_判決書"
-    try:
-        rel = src.relative_to(judgment_dir).as_posix()
-    except ValueError:
+    """Return canonical NAS relative target for files misplaced in judgment folders."""
+    rel = ""
+    for judgment_dir in judgment_folder_candidates(case_folder, 10):
+        try:
+            rel = src.relative_to(judgment_dir).as_posix()
+            break
+        except ValueError:
+            continue
+    if not rel:
         return ""
     text = rel.replace("\\", "/")
     name = PurePosixPath(text).name
@@ -368,10 +373,13 @@ def repair_case_folder(
         if apply:
             report["removed_empty_dirs"] += _remove_empty_dirs(alias_dir, stop_at=case_folder)
 
-    judgment_dir = case_folder / "10_判決書"
-    if judgment_dir.is_dir():
+    for judgment_dir in judgment_folder_candidates(case_folder, 10):
+        if not judgment_dir.is_dir():
+            continue
         files, meta = _iter_files(judgment_dir, max_files=max_files, max_seconds=max_seconds)
-        report["canonical_misfile_scan"] = {"file_count": len(files), **meta}
+        report.setdefault("canonical_misfile_scan", []).append(
+            {"folder": judgment_dir.name, "file_count": len(files), **meta}
+        )
         for src in files:
             try:
                 target_rel = _target_for_misfiled_judgment_file(case_folder, src)
@@ -388,7 +396,7 @@ def repair_case_folder(
                     move_conflicts_with_suffix=move_conflicts_with_suffix,
                     move_bucket="canonical_misfile_moves",
                     conflict_label="歸檔差異",
-                    reason="misfiled_in_10_判決書",
+                    reason=f"misfiled_in_{judgment_folder_name(10)}",
                 )
             except Exception as exc:
                 report["errors"].append({"source": str(src), "error": f"{type(exc).__name__}: {exc}"})

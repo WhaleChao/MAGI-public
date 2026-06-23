@@ -196,8 +196,25 @@ def _web_summary_length(instruction: str) -> str:
 
 
 def _web_heavy_opt_in(instruction: str) -> bool:
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        import re
+
+        fallback_re = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            match = fallback_re.match(text_inner)
+            return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
+
+    has_prefix, _ = split_heavy_prefix(instruction)
     text = str(instruction or "").lower().replace("＠", "@").lstrip()
-    return text.startswith("@heavy ") or text.startswith("@重型 ") or any(
+    return has_prefix or any(
         token in text for token in (" @heavy ", "\n@heavy ", "使用 heavy", "重型模型", "深度模式")
     )
 

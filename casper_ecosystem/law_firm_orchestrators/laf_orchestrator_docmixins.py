@@ -31,6 +31,7 @@ from api.laf_go_live_rules import (
     is_opening_notice_filename,
     is_stored_pleading_proof,
 )
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name, path_has_judgment_folder
 
 logger = logging.getLogger("laf_orchestrator.docmixins")
 
@@ -399,7 +400,7 @@ class LAFOrchestratorDocumentMixin:
                 "08_法院通知或程序裁定",
                 "09_法院通知或程序裁定",
                 "09_酬金及費用",
-                "10_判決書",
+                judgment_folder_name(10),
                 "11_回執",
                 "12_結案資料",
             ]
@@ -408,9 +409,9 @@ class LAFOrchestratorDocumentMixin:
         if act in {"fee"}:
             return ["", "01_法扶資料", "09_酬金及費用", "11_回執"]
         if act in {"condition"}:
-            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", "10_判決書"]
+            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", judgment_folder_name(10)]
         if act in {"withdrawal"}:
-            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", "10_判決書", "12_結案資料"]
+            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", judgment_folder_name(10), "12_結案資料"]
         return [
             "",
             "01_法扶資料",
@@ -424,7 +425,7 @@ class LAFOrchestratorDocumentMixin:
             "08_筆錄",
             "08_法院通知或程序裁定",
             "09_酬金及費用",
-            "10_判決書",
+            judgment_folder_name(10),
             "11_回執",
             "12_結案資料",
         ]
@@ -607,7 +608,7 @@ class LAFOrchestratorDocumentMixin:
     @staticmethod
     def _is_enforcement_closing_basis(fn: str, full_path: str = "", subdir: str = "") -> bool:
         text = f"{fn} {full_path} {subdir}"
-        in_judgment_folder = "10_判決書" in text or "/判決書/" in text.replace("\\", "/")
+        in_judgment_folder = path_has_judgment_folder(text)
         is_enforcement_case = any(k in text for k in ("強制執行", "司執", "執行"))
         has_enforcement_doc = any(k in fn for k in _ENFORCEMENT_CLOSING_KEYWORDS)
         return bool(in_judgment_folder and is_enforcement_case and has_enforcement_doc)
@@ -627,9 +628,10 @@ class LAFOrchestratorDocumentMixin:
         if any(marker in normalized for marker in blocked):
             return False
         allowed = (
-            "/10_判決書/",
+            f"/{judgment_folder_name(10)}/",
             "/12_結案資料/",
             "/03_結案資料/",
+            "/判決書或終局裁定及處分/",
             "/判決書/",
             "/法院裁判/",
             "/結案資料/",
@@ -741,7 +743,7 @@ class LAFOrchestratorDocumentMixin:
             priority = 7
         else:
             priority = 9
-        folder_priority = 0 if "10_判決書" in path_text else 1
+        folder_priority = 0 if path_has_judgment_folder(path_text) else 1
         return (priority, folder_priority, fn)
 
     def _sort_closing_basis_files(self, files: List[str]) -> List[str]:

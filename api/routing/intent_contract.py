@@ -11,6 +11,19 @@ from dataclasses import dataclass
 import re
 
 from api.help_text import HELP_ALIASES
+try:
+    from api.routing.command_prefixes import strip_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def strip_heavy_prefix(message: str) -> str:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return text[match.end():].strip() if match else text
 
 
 KIND_EMPTY = "empty"
@@ -144,7 +157,7 @@ _AGENTIC_ANALYSIS_INTENT_RE = re.compile(
 
 
 def compact_message(message: str) -> str:
-    return re.sub(r"\s+", "", str(message or "").strip().lower())
+    return re.sub(r"\s+", "", strip_heavy_prefix(message).strip().lower())
 
 
 def looks_like_model_capability_query(message: str) -> bool:
@@ -179,7 +192,7 @@ def looks_like_model_capability_query(message: str) -> bool:
 
 
 def looks_like_tool_capability_query(message: str) -> bool:
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     if not text or len(text) > 90:
         return False
     if _TOOL_ACTION_VERB_RE.search(text):
@@ -188,7 +201,7 @@ def looks_like_tool_capability_query(message: str) -> bool:
 
 
 def looks_like_busy_meta_query(message: str) -> bool:
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     return bool(text and len(text) <= 120 and _BUSY_META_RE.search(text))
 
 
@@ -196,13 +209,13 @@ def classify_realtime_kind(message: str) -> str:
     try:
         from skills.engine.realtime_data_gateway import classify_realtime_query
 
-        return str(classify_realtime_query(message) or "")
+        return str(classify_realtime_query(strip_heavy_prefix(message)) or "")
     except Exception:
         return ""
 
 
 def looks_like_casual_chat_boundary(message: str) -> bool:
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     if not text:
         return False
     compact = compact_message(text)
@@ -212,7 +225,7 @@ def looks_like_casual_chat_boundary(message: str) -> bool:
 
 
 def looks_like_new_task_boundary(message: str) -> bool:
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     if not text:
         return False
     compact = compact_message(text)
@@ -233,7 +246,7 @@ def looks_like_agentic_request(message: str) -> bool:
     second-layer route for analysis/search/planning prompts that would otherwise
     fall into generic chat templates.
     """
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     if not text:
         return False
     compact = compact_message(text)
@@ -262,7 +275,7 @@ def looks_like_agentic_request(message: str) -> bool:
 
 
 def classify_intent_contract(message: str) -> IntentDecision:
-    text = str(message or "").strip()
+    text = strip_heavy_prefix(message).strip()
     if not text:
         return IntentDecision(KIND_EMPTY, 1.0, "empty")
 

@@ -179,3 +179,36 @@ class TestHeavyFastPath:
             r = gw.chat(prompt="@重型 請重型回答", task_type="legal_analysis", timeout=30)
         assert r["route"] == "nvidia_nim"
         assert mock_nim.called
+
+    @pytest.mark.parametrize(
+        "prompt,cleaned",
+        [
+            ("＠HEAVY請解釋民法第184條", "請解釋民法第184條"),
+            ("@HEAVY：請解釋民法第184條", "請解釋民法第184條"),
+            ("＠重型　請解釋民法第184條", "請解釋民法第184條"),
+        ],
+    )
+    def test_heavy_prompt_prefix_fullwidth_and_punctuation_variants(self, prompt, cleaned):
+        nim_ok = {
+            "success": True,
+            "response": "ok",
+            "model": "nvidia/nemotron-3-super-120b-a12b",
+            "pii_scrubbed": False,
+            "pii_counts": {},
+        }
+        captured_prompt = []
+
+        def capture_nim(**kw):
+            captured_prompt.append(kw.get("prompt"))
+            return nim_ok
+
+        with patch("skills.bridge.nim_heavy.run_nim_chat", side_effect=capture_nim) as mock_nim, \
+             patch.object(InferenceGateway, "_omlx_chat") as mock_omlx:
+            gw = InferenceGateway()
+            r = gw.chat(prompt=prompt, task_type="legal_analysis", timeout=30)
+
+        assert r["route"] == "nvidia_nim"
+        assert r.get("heavy_fast_path") is True
+        assert mock_nim.called
+        assert not mock_omlx.called
+        assert captured_prompt[0] == cleaned

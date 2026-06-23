@@ -597,17 +597,28 @@ def test_export_relative_path_adds_google_doc_extension():
 
 
 def test_drive_nas_relative_path_mapping_preserves_each_side_layout():
-    assert drive_to_nas_relative_path("法院判決/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("法院判決/a.pdf") == "10_判決書或終局裁定及處分/a.pdf"
     assert drive_to_nas_relative_path("法院通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("結案酬金領款單/a.pdf") == "03_結案資料/a.pdf"
     assert drive_to_nas_relative_path("閱卷資料/筆錄/a.pdf") == "08_筆錄/a.pdf"
+    assert nas_to_drive_relative_path("10_判決書或終局裁定及處分/a.pdf") == "法院判決/a.pdf"
     assert nas_to_drive_relative_path("10_判決書/a.pdf") == "法院判決/a.pdf"
+    assert nas_to_drive_relative_path("判決書或終局裁定及處分/a.pdf") == "法院判決/a.pdf"
+    assert nas_to_drive_relative_path("判決書/a.pdf") == "法院判決/a.pdf"
+    assert (
+        nas_to_drive_relative_path(
+            "10_判決書或終局裁定及處分/a.pdf",
+            drive_existing_first_segments={"判決書或終局裁定及處分"},
+        )
+        == "判決書或終局裁定及處分/a.pdf"
+    )
     assert nas_to_drive_relative_path("09_法院通知或程序裁定/a.pdf") == "法院通知/a.pdf"
     assert nas_to_drive_relative_path("08_筆錄/a.pdf") == "閱卷資料/筆錄/a.pdf"
     assert (
         nas_to_drive_relative_path("03_結案資料/結案酬金領款單_foo.pdf")
         == "結案酬金領款單/結案酬金領款單_foo.pdf"
     )
+    assert semantic_relative_path("法院判決/a.pdf") == semantic_relative_path("10_判決書或終局裁定及處分/a.pdf")
     assert semantic_relative_path("法院判決/a.pdf") == semantic_relative_path("10_判決書/a.pdf")
     assert (
         drive_to_nas_relative_path("游秀鈴-1140715-A-024-刑事一審辯護-傷害致死等/上訴理由一狀.pdf")
@@ -874,8 +885,8 @@ def test_build_file_sync_plan_compares_drive_and_nas_semantic_paths(monkeypatch)
     local_entries = [
         FileEntry(
             source="nas",
-            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/10_判決書/a.pdf",
-            relative_path="10_判決書/a.pdf",
+            path="/cases/一般案件/民事/2026-0333-測試甲-一審-損害賠償/10_判決書或終局裁定及處分/a.pdf",
+            relative_path="10_判決書或終局裁定及處分/a.pdf",
             name="a.pdf",
             is_folder=False,
             size=5,
@@ -961,22 +972,22 @@ def test_drive_import_aliases_map_to_nas_canonical_folders():
     )
     assert drive_to_nas_relative_path("法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院裁判/20260101 裁定.pdf") == "09_法院通知或程序裁定/20260101 裁定.pdf"
-    assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
-    assert drive_to_nas_relative_path("法院裁判/20260610 更生聲請駁回裁定.pdf") == "10_判決書/20260610 更生聲請駁回裁定.pdf"
-    assert drive_to_nas_relative_path("法院裁判/偵查案件起訴書.pdf") == "10_判決書/偵查案件起訴書.pdf"
+    assert drive_to_nas_relative_path("法院裁判/20260101 復權裁定.pdf") == "10_判決書或終局裁定及處分/20260101 復權裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁判/20260610 更生聲請駁回裁定.pdf") == "10_判決書或終局裁定及處分/20260610 更生聲請駁回裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁判/偵查案件起訴書.pdf") == "10_判決書或終局裁定及處分/偵查案件起訴書.pdf"
     assert drive_to_nas_relative_path("法院裁定/20260101 普通裁定.pdf") == "09_法院通知或程序裁定/20260101 普通裁定.pdf"
-    assert drive_to_nas_relative_path("法院裁定/20260101 復權裁定.pdf") == "10_判決書/20260101 復權裁定.pdf"
+    assert drive_to_nas_relative_path("法院裁定/20260101 復權裁定.pdf") == "10_判決書或終局裁定及處分/20260101 復權裁定.pdf"
     assert drive_to_nas_relative_path("法院資料/法院裁判/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法院資料/法院裁判/20260101 開庭通知.pdf") == "09_法院通知或程序裁定/20260101 開庭通知.pdf"
     assert drive_to_nas_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "09_法院通知或程序裁定/20250306_聲請接續羈押理由書.pdf"
-    assert drive_to_nas_relative_path("起訴書/20250306_起訴書.pdf") == "10_判決書/20250306_起訴書.pdf"
-    assert drive_to_nas_relative_path("20260610 更生聲請駁回裁定.pdf") == "10_判決書/20260610 更生聲請駁回裁定.pdf"
-    assert drive_to_nas_relative_path("法院資料/起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("起訴書/20250306_起訴書.pdf") == "10_判決書或終局裁定及處分/20250306_起訴書.pdf"
+    assert drive_to_nas_relative_path("20260610 更生聲請駁回裁定.pdf") == "10_判決書或終局裁定及處分/20260610 更生聲請駁回裁定.pdf"
+    assert drive_to_nas_relative_path("法院資料/起訴書/a.pdf") == "10_判決書或終局裁定及處分/a.pdf"
     assert drive_to_nas_relative_path("開庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("法庭通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("傳票/a.pdf") == "09_法院通知或程序裁定/a.pdf"
     assert drive_to_nas_relative_path("地檢署通知/a.pdf") == "09_法院通知或程序裁定/a.pdf"
-    assert drive_to_nas_relative_path("地檢署起訴書/a.pdf") == "10_判決書/a.pdf"
+    assert drive_to_nas_relative_path("地檢署起訴書/a.pdf") == "10_判決書或終局裁定及處分/a.pdf"
     assert drive_to_nas_relative_path("電子筆錄/b.pdf") == "08_筆錄/b.pdf"
     assert drive_to_nas_relative_path("調解筆錄/b.pdf") == "08_筆錄/b.pdf"
     assert drive_to_nas_relative_path("書狀資料/c.pdf") == "04_我方歷次書狀/c.pdf"
@@ -990,7 +1001,7 @@ def test_semantic_paths_treat_legacy_drive_folders_as_same_category():
     assert semantic_relative_path("法院裁判/20260101 開庭通知.pdf") == "法院通知/20260101 開庭通知.pdf"
     assert semantic_relative_path("開庭通知/a.pdf") == "法院通知/a.pdf"
     assert semantic_relative_path("法院裁定/20260101 復權裁定.pdf") == "法院判決/20260101 復權裁定.pdf"
-    assert semantic_relative_path("10_判決書/a.pdf") == "法院判決/a.pdf"
+    assert semantic_relative_path("10_判決書或終局裁定及處分/a.pdf") == "法院判決/a.pdf"
     assert semantic_relative_path("起訴書/a.pdf") == "法院判決/a.pdf"
     assert semantic_relative_path("起訴書/20250306_聲請接續羈押理由書.pdf") == "法院通知/20250306_聲請接續羈押理由書.pdf"
     assert semantic_relative_path("電子筆錄/b.pdf") == "筆錄/b.pdf"
@@ -1380,8 +1391,8 @@ def test_build_file_sync_plan_uses_drive_aliases_instead_of_creating_parallel_fo
     local_entries = [
         FileEntry(
             source="nas",
-            path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/10_判決書/new.pdf",
-            relative_path="10_判決書/new.pdf",
+            path="/cases/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死/10_判決書或終局裁定及處分/new.pdf",
+            relative_path="10_判決書或終局裁定及處分/new.pdf",
             name="new.pdf",
             is_folder=False,
             size=5,
@@ -1468,7 +1479,7 @@ def test_execute_uploads_uses_drive_target_relative_path(monkeypatch, tmp_path):
                 "nas_only": [
                     {
                         "path": str(src),
-                        "relative_path": "10_判決書/a.pdf",
+                        "relative_path": "10_判決書或終局裁定及處分/a.pdf",
                         "target_relative_path": "法院判決/a.pdf",
                         "size": src.stat().st_size,
                     }

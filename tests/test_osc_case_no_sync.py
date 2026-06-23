@@ -28,7 +28,7 @@ def test_sync_case_no_prefers_judgment_over_later_procedural_notice(monkeypatch)
             "mtime": 200,
         },
         {
-            "path": "/case/10_判決書/20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf",
+            "path": "/case/10_判決書或終局裁定及處分/20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf",
             "filename": "20260518 臺北地方法院114年度訴字第972號刑事判決(游秀鈴).pdf",
             "mtime": 100,
         },

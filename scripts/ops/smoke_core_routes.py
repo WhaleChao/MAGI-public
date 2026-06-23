@@ -46,12 +46,12 @@ class Case:
 
 def _cases() -> list[Case]:
     return [
-        Case("translate_guide", "你會翻譯嗎？", ("我可以幫您翻譯", "翻譯結果")),
-        Case("summary_guide", "你會摘要嗎？", ("我可以幫您做摘要", "摘要結果", "請提供您需要我分析")),
+        Case("translate_guide", "你會翻譯嗎？", ("我可以幫您翻譯", "翻譯結果", "能力詢問")),
+        Case("summary_guide", "你會摘要嗎？", ("我可以幫您做摘要", "摘要結果", "請提供您需要我分析", "能力詢問")),
         Case("labor_guide", "請介紹勞基法試算功能", ("我可以幫您計算勞基法", "勞動基準法計算說明")),
         Case("labor_exec", "幫我算勞基法加班費 30000", "請提供月薪金額"),
-        Case("judgment_guide", "你會查判決嗎？", "我可以幫您查判決", warn_substring=("missing API key", "unauthorized")),
-        Case("stock_guide", "你會追蹤股票嗎？", "我可以幫您追蹤股票"),
+        Case("judgment_guide", "你會查判決嗎？", ("我可以幫您查判決", "能力詢問"), warn_substring=("missing API key", "unauthorized")),
+        Case("stock_guide", "你會追蹤股票嗎？", ("我可以幫您追蹤股票", "能力詢問")),
         Case("stock_list", "追蹤清單", "目前追蹤股票"),
         Case("translate_exec", "請幫我翻譯 Hello world", ("你好世界", "您好世界"), heavy=True, timeout_sec=45),
         Case(

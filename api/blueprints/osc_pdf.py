@@ -20,6 +20,13 @@ from flask import Blueprint, jsonify, request
 from flask_login import login_required
 from werkzeug.utils import secure_filename
 
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    judgment_folder_name,
+    legacy_judgment_folder_name,
+    path_has_judgment_folder,
+)
+
 
 osc_pdf_bp = Blueprint("osc_pdf", __name__)
 
@@ -378,6 +385,7 @@ _PDF_CALENDAR_SOURCE_HINTS = (
     "法院通知與程序裁定",
     "法院_通知",
     "法院_傳票",
+    JUDGMENT_FOLDER_LABEL,
     "判決書",
     "開庭通知",
     "法庭通知",
@@ -400,10 +408,14 @@ _PDF_CALENDAR_SOURCE_DIR_NAMES = (
     "09_法院通知及程序裁定",
     "法院_通知",
     "法院_傳票",
+    JUDGMENT_FOLDER_LABEL,
+    judgment_folder_name(3),
+    judgment_folder_name(4),
+    judgment_folder_name(10),
     "判決書",
-    "03_判決書",
-    "04_判決書",
-    "10_判決書",
+    legacy_judgment_folder_name(3),
+    legacy_judgment_folder_name(4),
+    legacy_judgment_folder_name(10),
     "開庭通知",
     "法庭通知",
     "庭期通知",
@@ -735,6 +747,8 @@ def _extract_todos_from_pdf_text(path: Path, text: str) -> list[dict[str, Any]]:
 
 def _is_court_calendar_pdf(path: Path, text: str = "") -> bool:
     haystack = f"{path}\n{path.name}\n{(text or '')[:3000]}"
+    if path_has_judgment_folder(str(path)):
+        return True
     return any(
         key in haystack
         for key in (
@@ -742,6 +756,7 @@ def _is_court_calendar_pdf(path: Path, text: str = "") -> bool:
             "程序裁定",
             "法院通知或程序裁定",
             "法院通知及程序裁定",
+            JUDGMENT_FOLDER_LABEL,
             "判決書",
             "地方法院",
             "高等法院",
@@ -1334,6 +1349,7 @@ def _iter_indexed_case_pdf_candidates(
               AND (
                     file_path LIKE '%%法院通知%%'
                  OR file_path LIKE '%%程序裁定%%'
+                 OR file_path LIKE '%%判決書或終局裁定及處分%%'
                  OR file_path LIKE '%%判決書%%'
                  OR file_path LIKE '%%開庭通知%%'
                  OR file_path LIKE '%%法庭通知%%'

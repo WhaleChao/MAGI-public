@@ -591,6 +591,12 @@ def _classify_no_boundary_case(
     return "empty_failure", "no_boundary_without_single_doc_signal"
 
 
+def _single_doc_bookmark_title(pdf: Path, fallback: str = "") -> str:
+    stem = re.sub(r"\s+", " ", (fallback or pdf.stem or "文件")).strip()
+    stem = re.sub(r"[_\-. ]*(?:ocr|OCR|bookmarked|已書籤)$", "", stem).strip()
+    return stem[:120] or "文件"
+
+
 def _audit_no_boundary_multidoc_signals(
     page_texts: list[str],
     detected_doc_types: set[str],
@@ -1024,12 +1030,37 @@ def scan_and_bookmark(
             detected_doc_types=detected_doc_types,
             page_texts=page_texts,
         )
-        doc.close()
         msg = f"未偵測到文件邊界，無法產生書籤（{Path(pdf_path).name}）"
         if classification == "legitimate_single_doc":
             msg = f"{msg}；判定為單一文件（{reason}）"
         elif classification == "filename_bookmark_fallback":
             msg = f"{msg}；判定可用檔名建立 page-1 書籤（{reason}）"
+        if classification in {"legitimate_single_doc", "filename_bookmark_fallback"}:
+            label = _single_doc_bookmark_title(Path(pdf_path), default_name)
+            toc = [[1, label, 1]]
+            if not dry_run:
+                doc.set_toc(toc)
+                out = output_path or pdf_path
+                if out == pdf_path:
+                    temp = pdf_path + ".tmp.pdf"
+                    doc.save(temp, garbage=4, deflate=True)
+                    doc.close()
+                    os.replace(temp, pdf_path)
+                else:
+                    doc.save(out, garbage=4, deflate=True)
+                    doc.close()
+            else:
+                doc.close()
+            return {
+                "success": True,
+                "bookmarks": 1,
+                "toc": toc,
+                "generated_toc": toc,
+                "classification": classification,
+                "classification_reason": reason,
+                "message": f"{msg}；已建立 page-1 書籤",
+            }
+        doc.close()
         logger.warning(msg)
         return {
             "success": False,

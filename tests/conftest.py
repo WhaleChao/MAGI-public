@@ -4,9 +4,20 @@ Shared fixtures for MAGI test suite.
 
 import os
 import json
+import sys
+from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) in sys.path:
+    sys.path.remove(str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT))
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(str(_REPO_ROOT)):
+            sys.modules.pop(_module_name, None)
 
 @pytest.fixture(autouse=True)
 def mock_env_vars(monkeypatch):

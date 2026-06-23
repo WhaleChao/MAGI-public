@@ -63,6 +63,7 @@ from api.laf_go_live_rules import (
     is_stored_pleading_proof,
 )
 from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_aliases, judgment_folder_name
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 CODE_DIR = get_orch_dir()
@@ -2717,7 +2718,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 logger.warning("  ⚠️ 無法產生結案報告：%s 缺少結案基礎文件 (%s)", case_number, folder_path)
                 self.notifier.notify_admin(
                     f"⚠️ 無法產生結案報告：\n案號：{case_number}\n當事人：{client_name}\n"
-                    "原因：`10_判決書` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書/確定證明書」檔案；強制執行案件可放入執行命令。"
+                    f"原因：`{judgment_folder_name(10)}` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書/確定證明書」檔案；強制執行案件可放入執行命令。"
                 )
                 return
         # 註：不再檢查 office_receipt_files（收文章/回執）。
@@ -4676,7 +4677,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         Collect upload files for progress/closing workflows:
         - 04_我方歷次書狀 (recursive): convert all files to PDF
-        - 10_判決書 (recursive): include all PDFs
+        - 10_判決書或終局裁定及處分 (recursive): include all PDFs
         """
         root = (case_folder or "").strip()
         result = {
@@ -4698,7 +4699,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return result
 
         plead_root = os.path.join(root, "04_我方歷次書狀")
-        judgment_root = os.path.join(root, "10_判決書")
+        judgment_roots = [os.path.join(root, name) for name in judgment_folder_aliases(10)]
         court_notice_root = os.path.join(root, "09_法院通知或程序裁定")
         transcript_root = os.path.join(root, "08_筆錄")
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4983,7 +4984,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         result["pleading_source_files"] = pleading_files
 
         judgment_pdfs: List[str] = []
-        if os.path.isdir(judgment_root):
+        for judgment_root in judgment_roots:
+            if not os.path.isdir(judgment_root):
+                continue
             for base in _iter_upload_dirs(judgment_root):
                 try:
                     files = os.listdir(base)
@@ -5000,6 +5003,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             break
                 if len(judgment_pdfs) >= max_judgment_files:
                     break
+            if len(judgment_pdfs) >= max_judgment_files:
+                break
         result["judgment_pdf_files"] = judgment_pdfs
 
         procedural_ruling_pdfs: List[str] = []
@@ -6689,7 +6694,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     def run_closing_drafts(self, max_cases: int = 0) -> dict:
         """
-        自動找「已進入待報結狀態」且 10_判決書已有嚴格終局文件的法扶案件，
+        自動找「已進入待報結狀態」且判決書或終局裁定及處分資料夾已有嚴格終局文件的法扶案件，
         呼叫既有 execute_portal_action_draft(action=closing) 暫存。
         僅暫存，不送出。
         """

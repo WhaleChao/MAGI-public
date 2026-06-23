@@ -41,6 +41,15 @@ try:
 except Exception:
     choose_model_for_request = None
     decision_summary = None
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").lstrip()
+        for prefix in ("@heavy", "@重型"):
+            if text.lower().startswith(prefix):
+                return True, text[len(prefix):].lstrip(" \t\r\n:：,，、。!！?？-–—")
+        return False, text
 
 try:
     from providers import build_provider_registry as _build_provider_registry
@@ -1074,14 +1083,13 @@ class InferenceGateway:
                     heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
             except Exception:
                 logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
-        # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在上游 sanitize 轉半形
-        _prompt_lower_head = prompt.lstrip().lower() if isinstance(prompt, str) else ""
-        if not heavy_opt_in and (_prompt_lower_head.startswith("@heavy ") or _prompt_lower_head.startswith("@重型 ")):
+        _prompt_has_heavy_prefix, _prompt_without_heavy_prefix = split_heavy_prefix(prompt)
+        if not heavy_opt_in and _prompt_has_heavy_prefix:
             heavy_opt_in = True
-            # 剝除前綴，不讓 `@heavy` 字面傳給 LLM（保留 prompt 原大小寫的其餘內容）
-            _p = prompt.lstrip()
-            prompt = _p.split(" ", 1)[1] if " " in _p else ""
+            prompt = _prompt_without_heavy_prefix
             logger.info("inference_chat: @heavy prefix detected in prompt (final-line defense)")
+        elif _prompt_has_heavy_prefix:
+            prompt = _prompt_without_heavy_prefix
 
         smart_decision = None
         if _env_bool("MAGI_SMART_MODEL_ROUTER", True):

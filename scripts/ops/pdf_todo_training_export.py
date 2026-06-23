@@ -26,6 +26,8 @@ OUT_SUMMARY = ROOT / ".runtime" / "pdf_todo_training_summary.json"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, path_has_judgment_folder
+
 
 class _TrainingScanTimeout(TimeoutError):
     pass
@@ -65,8 +67,8 @@ def _folder_kind(path: Path) -> str:
     text = str(path)
     if "筆錄" in text:
         return "筆錄"
-    if "判決書" in text or "法院判決" in text:
-        return "判決書"
+    if path_has_judgment_folder(text):
+        return JUDGMENT_FOLDER_LABEL
     if "程序裁定" in text:
         return "程序裁定"
     if "法院通知" in text or "法院_通知" in text or "法院_傳票" in text:
