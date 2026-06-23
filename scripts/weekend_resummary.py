@@ -41,6 +41,8 @@ from pathlib import Path
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path.home() / "Desktop/MAGI")))
 sys.path.insert(0, str(MAGI_ROOT))
 
+from api.domains.judicial_api_cache import judicial_api_cache_root
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -48,10 +50,11 @@ logging.basicConfig(
 logger = logging.getLogger("weekend_resummary")
 
 # ── 路徑 ──────────────────────────────────────────────────────────────
-NORM_ROOT = Path.home() / ".cache/judgment_collector/judicial_api/normalized"
+_JUDICIAL_API_CACHE_ROOT = judicial_api_cache_root()
+NORM_ROOT = _JUDICIAL_API_CACHE_ROOT / "normalized"
 JUDGMENTS_JSON = MAGI_ROOT / "skills/judgment-collector/judgments.json"
-STATE_PATH = Path.home() / ".cache/judgment_collector/resummary_state.json"
-LOCK_PATH = Path.home() / ".cache/judgment_collector/resummary.pid"
+STATE_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary_state.json"
+LOCK_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary.pid"
 
 # ── 參數 ──────────────────────────────────────────────────────────────
 MIN_TEXT_LEN = 1000         # 全文太短跳過（之前 500 太小，短裁定浪費額度）

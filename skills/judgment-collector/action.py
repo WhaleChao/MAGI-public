@@ -41,6 +41,7 @@ if PROJECT_ROOT not in sys.path:
 from api.runtime_paths import get_orch_dir, get_skill_python
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
+from api.domains.judicial_api_cache import ensure_judgment_cache_root
 from api.domains.judicial_api_policy import judicial_api_env_default
 from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
 from api.osc.insight_filters import is_extractive_fast_judgment_digest, is_non_extractable_legal_insight
@@ -69,22 +70,7 @@ def _ensure_cache_root(path_str: str) -> str:
     Some MAGI hosts used to offload this cache to an external SSD via symlink.
     When that volume is missing, importing the skill must still work.
     """
-    primary = os.path.expanduser(path_str or "~/.cache/judgment_collector")
-    try:
-        os.makedirs(primary, exist_ok=True)
-        if os.path.isdir(primary):
-            return primary
-    except OSError as exc:
-        logging.getLogger("judgment-collector").warning(
-            "judgment cache root unavailable, using fallback: %s (%s)",
-            primary,
-            exc,
-        )
-    fallback = os.path.expanduser(
-        os.environ.get("JUDGMENT_CACHE_ROOT_FALLBACK", "~/.cache/judgment_collector_local")
-    )
-    os.makedirs(fallback, exist_ok=True)
-    return fallback
+    return str(ensure_judgment_cache_root(path_str, logger=logging.getLogger("judgment-collector")))
 
 
 CACHE_ROOT = _ensure_cache_root(os.environ.get("JUDGMENT_CACHE_ROOT", "~/.cache/judgment_collector"))

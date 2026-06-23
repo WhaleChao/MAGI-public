@@ -1,6 +1,49 @@
 from __future__ import annotations
 
 
+def test_start_launcher_forwards_cron_worker_options(monkeypatch, tmp_path):
+    from scripts.ops import start_slow_archive_closed_cases as mod
+
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr(mod, "RUNTIME_DIR", runtime)
+    monkeypatch.setattr(mod, "PID_PATH", runtime / "worker.pid")
+    monkeypatch.setattr(mod, "LOG_PATH", runtime / "worker.log")
+    monkeypatch.setattr(mod, "TRIGGER_PATH", runtime / "trigger.json")
+
+    captured: dict[str, list[str]] = {}
+
+    class FakeProc:
+        pid = 12345
+
+        def __init__(self, cmd, **_kwargs):
+            captured["cmd"] = list(cmd)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", FakeProc)
+
+    rc = mod.main(
+        [
+            "--apply",
+            "--limit",
+            "3",
+            "--min-size-mb",
+            "0",
+            "--json-out",
+            str(runtime / "latest.json"),
+        ]
+    )
+
+    assert rc == 0
+    assert captured["cmd"][2:] == [
+        "--apply",
+        "--limit",
+        "3",
+        "--min-size-mb",
+        "0",
+        "--json-out",
+        str(runtime / "latest.json"),
+    ]
+
+
 def test_closed_rows_includes_closed_active_residue(monkeypatch):
     from scripts.ops import slow_archive_closed_cases as mod
 

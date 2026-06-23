@@ -10,6 +10,7 @@ _MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR") or os.path.abspath(os.path.join(os.
 sys.path.insert(0, _MAGI_ROOT)
 
 import mysql.connector
+from api.domains.judicial_api_cache import judicial_api_cache_root
 
 _db_password = os.environ.get("MAGI_DB_PASSWORD")
 if not _db_password:
@@ -37,8 +38,9 @@ except Exception:
         "charset": "utf8mb4",
     }
 
-RAW_ROOT = "/Users/ai/.cache/judgment_collector/judicial_api/raw"
-PROCESS_STATE = "/Users/ai/.cache/judgment_collector/judicial_api/process_state.json"
+_JUDICIAL_API_CACHE_ROOT = judicial_api_cache_root()
+RAW_ROOT = str(_JUDICIAL_API_CACHE_ROOT / "raw")
+PROCESS_STATE = str(_JUDICIAL_API_CACHE_ROOT / "process_state.json")
 
 def load_state():
     try:

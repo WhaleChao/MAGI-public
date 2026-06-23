@@ -46,8 +46,10 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("reprocess-insights")
 
+from api.domains.judicial_api_cache import judicial_api_cache_root
+
 # ── 路徑 ──────────────────────────────────────────────────────────────
-NORM_ROOT = Path.home() / ".cache/judgment_collector/judicial_api/normalized"
+NORM_ROOT = judicial_api_cache_root() / "normalized"
 NIM_TIMEOUT = int(os.environ.get("OSC_INSIGHT_SUMMARY_TIMEOUT_SEC", "120"))
 
 # ── 司法院 API ────────────────────────────────────────────────────────

@@ -193,3 +193,19 @@ def test_extractive_judgment_summary_is_marked_and_source_bound():
         assert re.sub(r"\s+", "", snippet) in normalized_source
         assert snippet in summary
     assert "民法第184條" in summary
+
+
+def test_judgment_cache_root_falls_back_when_offload_symlink_is_broken(monkeypatch, tmp_path):
+    action_path = Path("skills/judgment-collector/action.py")
+    spec = importlib.util.spec_from_file_location("judgment_action_cache_test", action_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    broken = tmp_path / "judgment_collector"
+    broken.symlink_to(tmp_path / "missing_offload_target")
+    fallback = tmp_path / "judgment_collector_local"
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_FALLBACK", str(fallback))
+
+    assert mod._ensure_cache_root(str(broken)) == str(fallback)
+    assert fallback.is_dir()

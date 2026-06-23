@@ -19,7 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-DEFAULT_CACHE = Path.home() / ".cache" / "judgment_collector" / "judicial_api" / "normalized"
+from api.domains.judicial_api_cache import judicial_api_cache_root
+
+DEFAULT_CACHE = judicial_api_cache_root() / "normalized"
 OUTPUT_PATH = ROOT / ".runtime" / "judgment_summary_live_latest.json"
 
 BAD_MARKERS = (

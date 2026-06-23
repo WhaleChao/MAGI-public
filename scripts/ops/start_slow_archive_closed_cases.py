@@ -56,10 +56,9 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Launch slow_archive_closed_cases.py once in background.")
     parser.add_argument("--print-json", action="store_true")
-    parser.add_argument("worker_args", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    args, worker_args = parser.parse_known_args(argv)
 
-    worker_args = list(args.worker_args)
+    worker_args = list(worker_args)
     if worker_args and worker_args[0] == "--":
         worker_args = worker_args[1:]
 

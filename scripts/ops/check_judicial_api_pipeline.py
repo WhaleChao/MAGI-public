@@ -15,6 +15,7 @@ if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
+from api.domains.judicial_api_cache import judicial_api_cache_root
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -30,7 +31,7 @@ WARNING_EXIT = 10
 RISK_EXIT = 20
 UNKNOWN_EXIT = 30
 
-DEFAULT_CACHE_ROOT = Path.home() / ".cache" / "judgment_collector" / "judicial_api"
+DEFAULT_CACHE_ROOT = judicial_api_cache_root()
 DEFAULT_PULL_STATE = DEFAULT_CACHE_ROOT / "pull_state.json"
 DEFAULT_PROCESS_STATE = DEFAULT_CACHE_ROOT / "process_state.json"
 DEFAULT_RAW_ROOT = DEFAULT_CACHE_ROOT / "raw"
