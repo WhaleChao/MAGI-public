@@ -28,7 +28,7 @@ def test_lottery_page_is_public():
 def test_lottery_csv_draw_masks_sensitive_fields():
     from api.blueprints.lottery import draw_lottery
 
-    csv_text = "姓名,電話,地址\n王小明,0912345678,花蓮縣花蓮市中山路1號\n李大華,038765432,臺北市大安區和平東路2號\n"
+    csv_text = "姓名,電話,地址\n王小明,TEST-MOBILE-001,花蓮縣花蓮市中山路1號\n李大華,TEST-LANDLINE-001,臺北市大安區和平東路2號\n"
 
     result = draw_lottery("名單.csv", csv_text.encode("utf-8-sig"), 1)
 
@@ -37,7 +37,7 @@ def test_lottery_csv_draw_masks_sensitive_fields():
     assert result["winner_count"] == 1
     winner = result["winners"][0]
     assert "小明" not in str(winner)
-    assert "0912345678" not in str(winner)
+    assert "TEST-MOBILE-001" not in str(winner)
     assert "中山路1號" not in str(winner)
     assert "○" in winner["name"]
     assert "○" in winner["phone"]
@@ -50,9 +50,9 @@ def test_lottery_xlsx_draw_count_can_be_specified():
     wb = Workbook()
     ws = wb.active
     ws.append(["姓名", "手機", "收件地址"])
-    ws.append(["王小明", "0912345678", "花蓮縣花蓮市中山路1號"])
-    ws.append(["李大華", "0922333444", "臺北市大安區和平東路2號"])
-    ws.append(["陳美玉", "0933555666", "臺中市西區民生路3號"])
+    ws.append(["王小明", "TEST-MOBILE-001", "花蓮縣花蓮市中山路1號"])
+    ws.append(["李大華", "TEST-MOBILE-002", "臺北市大安區和平東路2號"])
+    ws.append(["陳美玉", "TEST-MOBILE-003", "臺中市西區民生路3號"])
     buf = io.BytesIO()
     wb.save(buf)
 
@@ -77,7 +77,7 @@ def test_lottery_xlsx_draw_count_can_be_specified():
 
 def test_lottery_rejects_too_many_winners():
     client = _make_app().test_client()
-    csv_text = "姓名,電話,地址\n王小明,0912345678,花蓮縣花蓮市中山路1號\n"
+    csv_text = "姓名,電話,地址\n王小明,TEST-MOBILE-001,花蓮縣花蓮市中山路1號\n"
 
     response = client.post(
         "/api/lottery/draw",

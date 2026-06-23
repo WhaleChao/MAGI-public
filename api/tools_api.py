@@ -43,6 +43,7 @@ import threading
 import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Optional
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.exceptions import HTTPException
 
@@ -101,6 +102,38 @@ def _to_bool(value, default=False):
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "y"}
     return bool(value)
+
+
+_SKILL_RUNTIME_MUTATION_ENV = "MAGI_DEV_SKILL_RUNTIME_MUTATIONS"
+
+
+def _skill_runtime_env_opt_in() -> bool:
+    """Runtime skill mutations stay off unless dev/operators explicitly opt in."""
+    return _to_bool(os.environ.get(_SKILL_RUNTIME_MUTATION_ENV), False)
+
+
+def _skill_runtime_default(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _to_bool(os.environ.get(env_name), False)
+    return _skill_runtime_env_opt_in()
+
+
+def _resolve_skill_runtime_flags(data: dict) -> dict:
+    def _flag(key: str, env_name: str) -> bool:
+        if key in data:
+            return _to_bool(data.get(key), False)
+        return _skill_runtime_default(env_name)
+
+    auto_repair = _flag("auto_repair", "MAGI_SKILL_AUTO_REPAIR_DEFAULT")
+    auto_install_deps = _flag("auto_install_deps", "MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+    rollback_on_fail = _flag("rollback_on_fail", "MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT")
+    return {
+        "auto_repair": auto_repair,
+        "auto_install_deps": auto_install_deps,
+        "rollback_on_fail": rollback_on_fail,
+        "mutating_runtime_requested": bool(auto_repair or auto_install_deps or rollback_on_fail),
+        "dev_env_opt_in": _skill_runtime_env_opt_in(),
+    }
 
 
 def _ensure_python_package(import_name: str, pip_name: str) -> bool:
@@ -1296,6 +1329,11 @@ def external_osc_ui():
     Minimal web chat UI for OSC external interface.
     Requires API key and uses /osc/external/chat.
     """
+    ok, err = _check_external_api_key()
+    if not ok:
+        code = 503 if "server_misconfigured" in err else 401
+        return jsonify({"success": False, "error": err}), code
+
     html = """<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -2515,9 +2553,10 @@ def api_run_skill():
     skill = data.get('skill', '')
     task = data.get('task', '')
     timeout_sec = min(180, max(5, int(data.get('timeout_sec', 30))))  # cap 5-180s
-    auto_repair = _to_bool(data.get('auto_repair', True), True)
-    rollback_on_fail = _to_bool(data.get('rollback_on_fail', True), True)
-    auto_install_deps = _to_bool(data.get('auto_install_deps', True), True)
+    runtime_flags = _resolve_skill_runtime_flags(data)
+    auto_repair = runtime_flags["auto_repair"]
+    rollback_on_fail = runtime_flags["rollback_on_fail"]
+    auto_install_deps = runtime_flags["auto_install_deps"]
     route_key = data.get('route_key', '')
     async_mode = _to_bool(data.get('async', False), False)
 
@@ -2527,9 +2566,25 @@ def api_run_skill():
         return jsonify({"error": "Missing 'skill' parameter"}), 400
 
     task_for_run = _skill_task_from_request_payload(task, data)
+    runtime_policy = {
+        "auto_repair": auto_repair,
+        "rollback_on_fail": rollback_on_fail,
+        "auto_install_deps": auto_install_deps,
+        "mutating_runtime_requested": runtime_flags["mutating_runtime_requested"],
+        "dev_env_opt_in": runtime_flags["dev_env_opt_in"],
+        "message": (
+            "Runtime mutation requested explicitly or via developer env opt-in."
+            if runtime_flags["mutating_runtime_requested"]
+            else "Runtime mutation defaults are disabled for product/public mode."
+        ),
+    }
 
     tool_name = f"skill:{skill}"
-    started = _start_tool_event(tool_name, {"task": task_for_run}, {"route": "skills_run"})
+    started = _start_tool_event(
+        tool_name,
+        {"task": task_for_run, "runtime_policy": runtime_policy},
+        {"route": "skills_run", "runtime_policy": runtime_policy},
+    )
     allowed, decision = _check_tool_access(
         tool_name,
         command_subject=tool_name,
@@ -2568,6 +2623,7 @@ def api_run_skill():
             "queued": True,
             "job_id": job_id,
             "poll_url": f"/jobs/{job_id}",
+            "runtime_policy": runtime_policy,
         }), 202
 
     # ── Sync path (unchanged) ─────────────────────────────────────────────────
@@ -2588,6 +2644,8 @@ def api_run_skill():
             f"skills_run_exception: {exc}",
             metadata={"route": "skills_run"},
         )
+    if isinstance(result, dict):
+        result.setdefault("runtime_policy", runtime_policy)
     _finish_tool_event(
         tool_name,
         started,
@@ -3006,6 +3064,55 @@ def api_collab_chat():
     allow_template_fallback = _to_bool(data.get("allow_template_fallback", True), True)
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
+    try:
+        from api.routing.intent_contract import (
+            KIND_AGENT_TASK,
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_EXPLICIT_TASK,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_REALTIME_ACTION,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        _semantic_decision = classify_intent_contract(prompt)
+        if _semantic_decision.kind in {
+            KIND_HELP_COMMAND,
+            KIND_EXPLICIT_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_TOOL_CAPABILITY,
+            KIND_BUSY_STATUS,
+            KIND_REALTIME_ACTION,
+            KIND_CASUAL_CHAT,
+            KIND_AGENT_TASK,
+            KIND_EXPLICIT_TASK,
+        }:
+            _orch = _get_osc_orchestrator()
+            _reply = _orch.process_message(
+                user_id=str(data.get("user_id") or "collab-chat"),
+                message=prompt,
+                platform=str(data.get("platform") or "COLLAB"),
+                role=str(data.get("role") or "user"),
+            )
+            result = {
+                "success": True,
+                "response": str(_reply or ""),
+                "route": "orchestrator_semantic_preflight",
+                "intent_kind": _semantic_decision.kind,
+                "confidence": _semantic_decision.confidence,
+            }
+            result = _guard_payload_fields(result)
+            return jsonify(result), 200
+    except Exception as _semantic_err:
+        logging.getLogger(__name__).warning("collab semantic preflight failed: %s", _semantic_err)
+        return jsonify({
+            "success": False,
+            "error": f"semantic_preflight_failed: {_semantic_err}",
+            "route": "orchestrator_semantic_preflight_failed",
+        }), 503
     primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
     # Use InferenceGateway — handles oMLX/Ollama/remote fallback internally
     try:

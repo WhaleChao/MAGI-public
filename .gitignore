@@ -187,7 +187,8 @@ build/
 .smoke_outputs/
 .magi_doc_runs/
 magi.egg-info/
-bin/
+bin/*
+!bin/cli.py
 dist/
 *.pickle*
 config.json.pre_*

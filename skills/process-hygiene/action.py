@@ -61,6 +61,9 @@ DEFAULT_STUCK_SEC = 3600
 # 這些服務預期可由 launchd 或 MAGI CLI 以 PPID=1 常駐執行；
 # 不應被當作孤兒或卡死程序，否則週報會反覆誤報。
 MANAGED_LONG_RUNNING_SCRIPTS = [
+    "scripts/ops/run_daemon_no_site.py",
+    "scripts/ops/run_menubar_no_site.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "gui/magi_menubar.py",
     "scripts/ops/memory_watchdog.py",
     "scripts/share_gateway.py",

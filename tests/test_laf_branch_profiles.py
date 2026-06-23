@@ -1,27 +1,43 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 
-def test_laf_branch_profile_resolves_seed_aliases():
-    from api.laf_branch_profiles import resolve_laf_branch_profile
 
-    profile = resolve_laf_branch_profile("臺東")
+def _load_laf_profiles_module():
+    repo_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo_root))
+    sys.modules.pop("api.laf_branch_profiles", None)
+    sys.modules.pop("api", None)
+
+    import api.laf_branch_profiles as module
+
+    return module
+
+
+def test_laf_branch_profile_resolves_seed_aliases(monkeypatch):
+    module = _load_laf_profiles_module()
+
+    monkeypatch.setenv("MAGI_LAF_BRANCH_PROFILE_DB", "0")
+    profile = module.resolve_laf_branch_profile("臺東")
 
     assert profile is not None
     assert profile.branch_label == "台東分會"
-    assert profile.phone == "089-361363"
-    assert profile.default_lawyer_name == "喬政翔律師"
+    assert profile.phone == ""
+    assert profile.default_lawyer_name == "受任律師"
 
 
-def test_laf_law_firm_profile_is_prefilled():
-    from api.laf_branch_profiles import get_law_firm_profile
+def test_laf_law_firm_profile_is_prefilled(monkeypatch):
+    module = _load_laf_profiles_module()
 
-    profile = get_law_firm_profile()
+    monkeypatch.setenv("MAGI_LAF_BRANCH_PROFILE_DB", "0")
+    profile = module.get_law_firm_profile()
 
-    assert profile.lawyer_name == "喬政翔律師"
-    assert profile.address_line == "970花蓮縣花蓮市明禮路18之6號1樓"
-    assert profile.phone == "03-835-7186"
-    assert profile.fax == "03-835-7135"
-    assert profile.mobile == "0937-753-800"
+    assert profile.lawyer_name == "受任律師"
+    assert profile.address_line == "範例事務所地址"
+    assert profile.phone == "事務所電話"
+    assert profile.fax == ""
+    assert profile.mobile == ""
 
 
 class _Cursor:
@@ -44,10 +60,10 @@ class _Conn:
 
 
 def test_laf_branch_profile_seed_to_db_creates_branch_and_law_firm_rows():
-    from api.laf_branch_profiles import seed_laf_branch_profiles_to_db
+    module = _load_laf_profiles_module()
 
     conn = _Conn()
-    seed_laf_branch_profiles_to_db(conn)
+    module.seed_laf_branch_profiles_to_db(conn)
     joined_sql = "\n".join(sql for sql, _ in conn.cursor_obj.statements)
 
     assert "CREATE TABLE IF NOT EXISTS laf_branch_profiles" in joined_sql

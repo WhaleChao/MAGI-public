@@ -90,5 +90,15 @@ def test_server_registers_runtime_blueprint_routes():
     assert "/api/nerv/skills" in routes
     assert "/api/status" in routes
     assert "/api/live-log" in routes
+    assert "/livez" in routes
+    assert "/readyz" in routes
     assert "/health" in routes
     assert "/api/transcribe" in routes
+
+
+def test_root_route_redirects_to_nerv_dashboard(monkeypatch):
+    from api import server
+
+    response = server.app.test_client().get("/")
+    assert response.status_code in {301, 302}
+    assert "/dashboard/nerv" in response.headers.get("Location", "")

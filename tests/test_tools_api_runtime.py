@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,10 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 @pytest.fixture
 def tools_api_runtime(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root))
+    sys.modules.pop("api.tools_api", None)
+    sys.modules.pop("api", None)
     import api.tools_api as tools_api
 
     events_path = tmp_path / "tools_runtime_events.jsonl"
@@ -73,6 +78,50 @@ def test_search_emits_pre_and_post_events(monkeypatch, tools_api_runtime):
     assert events[1]["tool_name"] == "search"
     assert events[1]["status"] == "handled"
     assert events[1]["ok"] is True
+
+
+def test_skill_runtime_flags_default_to_non_mutating(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.delenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_REPAIR_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({})
+
+    assert flags["auto_repair"] is False
+    assert flags["auto_install_deps"] is False
+    assert flags["rollback_on_fail"] is False
+    assert flags["mutating_runtime_requested"] is False
+    assert flags["dev_env_opt_in"] is False
+
+
+def test_skill_runtime_flags_require_explicit_dev_opt_in(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", "1")
+    monkeypatch.delenv("MAGI_SKILL_AUTO_REPAIR_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({})
+
+    assert flags["auto_repair"] is True
+    assert flags["auto_install_deps"] is True
+    assert flags["rollback_on_fail"] is True
+    assert flags["mutating_runtime_requested"] is True
+    assert flags["dev_env_opt_in"] is True
+
+
+def test_skill_runtime_flags_payload_can_request_single_mutation(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.delenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({"auto_install_deps": True})
+
+    assert flags["auto_repair"] is False
+    assert flags["auto_install_deps"] is True
+    assert flags["rollback_on_fail"] is False
+    assert flags["mutating_runtime_requested"] is True
 
 
 def test_search_denial_emits_denied_post_event(monkeypatch, tools_api_runtime):
@@ -268,6 +317,97 @@ def test_external_chat_current_main_model_shortcut(monkeypatch, tools_api_runtim
     assert payload["success"] is True
     assert "目標主模型" in payload["reply"]
     assert "gemma-4-e4b-it-4bit" in payload["reply"]
+
+
+def test_collab_chat_semantic_preflight_uses_orchestrator_before_gateway(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def __init__(self):
+            self.calls = []
+
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            self.calls.append((user_id, message, platform, role))
+            return "ORCH_SEMANTIC_REPLY"
+
+    fake_orch = _FakeOrch()
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: fake_orch)
+
+    response = client.post("/collab/chat", json={"prompt": "你可以查天氣嗎？"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["response"] == "ORCH_SEMANTIC_REPLY"
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "tool_capability"
+    assert fake_orch.calls == [("collab-chat", "你可以查天氣嗎？", "COLLAB", "user")]
+
+
+def test_collab_chat_agentic_prompt_uses_orchestrator(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def __init__(self):
+            self.calls = []
+
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            self.calls.append((user_id, message, platform, role))
+            return "ORCH_AGENTIC_REPLY"
+
+    fake_orch = _FakeOrch()
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: fake_orch)
+
+    response = client.post("/collab/chat", json={"prompt": "請幫我比較民法184條與相關判決見解"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["response"] == "ORCH_AGENTIC_REPLY"
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "agent_task"
+    assert fake_orch.calls == [("collab-chat", "請幫我比較民法184條與相關判決見解", "COLLAB", "user")]
+
+
+def test_collab_chat_explicit_task_uses_orchestrator(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            return f"ORCH_EXPLICIT:{message}"
+
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: _FakeOrch())
+
+    response = client.post("/collab/chat", json={"prompt": "查案件 2025-0134"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "explicit_task"
+    assert payload["response"] == "ORCH_EXPLICIT:查案件 2025-0134"
+
+
+def test_external_ui_enforces_api_key(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "secret-key")
+
+    response = client.get("/osc/external/ui")
+    assert response.status_code == 401
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert payload["error"] == "unauthorized: invalid api key"
+
+
+def test_external_ui_loads_with_valid_api_key(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "secret-key")
+    tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
+    tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+
+    response = client.get("/osc/external/ui", headers={"X-API-Key": "secret-key"})
+    assert response.status_code == 200
+    assert "CASPER OSC 外部對話介面" in response.get_data(as_text=True)
 
 
 def test_summarize_circuit_open_uses_resilient_probe(monkeypatch, tools_api_runtime):

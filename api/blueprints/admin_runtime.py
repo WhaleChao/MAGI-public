@@ -13,6 +13,7 @@ import copy
 import importlib
 import importlib.util
 import json
+from collections import deque
 import os
 import re
 import shutil
@@ -825,6 +826,415 @@ def create_admin_runtime_blueprint(
             "setup_url": "https://remotedesktop.google.com/headless",
         }
 
+    def _tail_file_lines(path: Path, max_lines: int = 120) -> list[str]:
+        if max_lines <= 0 or not path.exists():
+            return []
+        rows: deque[str] = deque(maxlen=max_lines)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for raw_line in handle:
+                    line = raw_line.rstrip("\n")
+                    if line:
+                        rows.append(line)
+        except Exception:
+            return []
+        return list(rows)
+
+    def _extract_log_timestamp(raw_line: str) -> float:
+        for pattern in (
+            r"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]",
+            r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+            r"(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})",
+        ):
+            match = re.search(pattern, raw_line)
+            if not match:
+                continue
+            return _safe_epoch(match.group(1).replace(",", ""))
+        return 0.0
+
+    def _classify_activity_type(message: str, source: str) -> str:
+        lowered = (message or "").lower()
+        source_lower = (source or "").lower()
+        if "error" in lowered or "exception" in lowered or "fail" in lowered or "無法" in lowered:
+            return "error"
+        if source_lower == "cron" or "cron" in lowered:
+            return "cron"
+        if "switch" in lowered or "切換" in lowered or "model" in lowered or "reload" in lowered:
+            return "model_switch"
+        return "log"
+
+    def _collect_macos_memory_pressure() -> dict[str, Any]:
+        if sys.platform != "darwin":
+            return {"status": "unknown", "free_percent": None}
+        try:
+            result = subprocess.run(
+                ["memory_pressure"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            output = f"{result.stdout or ''}\n{result.stderr or ''}"
+        except Exception:
+            return {"status": "unknown", "free_percent": None}
+
+        match = re.search(r"System-wide memory free percentage:\s*(\d+)%", output)
+        if not match:
+            return {"status": "unknown", "free_percent": None}
+        free_percent = int(match.group(1))
+        if free_percent < 20:
+            status = "critical"
+        elif free_percent < 30:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "free_percent": free_percent,
+        }
+
+    def _collect_system_telemetry(now_ts: float) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(now_ts).isoformat(),
+            "generated_at": datetime.fromtimestamp(now_ts).isoformat(),
+        }
+        try:
+            out["uptime_seconds"] = max(0.0, now_ts - float(server_start_time))
+        except Exception:
+            out["uptime_seconds"] = None
+
+        try:
+            load_1m, load_5m, load_15m = os.getloadavg()
+            out["loadavg"] = {
+                "1m": round(float(load_1m), 2),
+                "5m": round(float(load_5m), 2),
+                "15m": round(float(load_15m), 2),
+            }
+        except Exception:
+            out["loadavg"] = {}
+
+        try:
+            import psutil
+
+            vm = psutil.virtual_memory()
+            total_bytes = float(vm.total) if isinstance(vm.total, (int, float)) else None
+            available_bytes = float(vm.available) if isinstance(vm.available, (int, float)) else None
+            used_percent = float(getattr(vm, "percent", 0.0))
+            used_gb = None
+            free_gb = None
+            if total_bytes is not None and available_bytes is not None:
+                used_gb = max(0.0, total_bytes - available_bytes) / (1024 ** 3)
+                free_gb = available_bytes / (1024 ** 3)
+            out["memory"] = {
+                "used_gb": round(used_gb, 1) if used_gb is not None else None,
+                "free_gb": round(free_gb, 1) if free_gb is not None else None,
+                "percent": round(used_percent, 1),
+                "pressure": "ok" if used_percent < 85 else ("warn" if used_percent < 92 else "critical"),
+            }
+            out["swap"] = {
+                "percent": round(float(getattr(psutil.swap_memory(), "percent", 0.0)), 1),
+            }
+            out["cpu_percent"] = psutil.cpu_percent(interval=0.05)
+        except Exception:
+            out["memory"] = {"used_gb": None, "free_gb": None, "percent": None, "pressure": "unknown"}
+            out["swap"] = {"percent": None}
+            out["cpu_percent"] = None
+
+        try:
+            disk = shutil.disk_usage(str(root))
+            disk_total = float(disk.total) if isinstance(disk.total, (int, float)) else None
+            disk_used = float(disk.used) if isinstance(disk.used, (int, float)) else None
+            disk_free = float(disk.free) if isinstance(disk.free, (int, float)) else None
+            used_percent = float(getattr(disk, "percent", 0.0))
+            if disk_total is not None and disk_used is not None:
+                used_percent = 100.0 * disk_used / disk_total if disk_total else 0.0
+            out["disk"] = {
+                "free_gb": round(disk_free / (1024 ** 3), 1) if disk_free is not None else None,
+                "percent": round(used_percent, 1),
+            }
+        except Exception:
+            out["disk"] = {"free_gb": None, "percent": None}
+
+        out["macos_memory_pressure"] = _collect_macos_memory_pressure()
+        swap = out.get("swap") if isinstance(out.get("swap"), dict) else {}
+        swap_percent = swap.get("percent")
+        mac_pressure = out.get("macos_memory_pressure") if isinstance(out.get("macos_memory_pressure"), dict) else {}
+        mac_status = str(mac_pressure.get("status") or "unknown")
+        if isinstance(swap_percent, (int, float)):
+            if mac_status == "ok" and swap_percent >= 75:
+                swap["status"] = "historical"
+            elif swap_percent >= 90:
+                swap["status"] = "critical"
+            elif swap_percent >= 75:
+                swap["status"] = "warn"
+            else:
+                swap["status"] = "ok"
+            out["swap"] = swap
+        return out
+
+    def _tcp_alive(port: int, timeout_sec: float = 0.4) -> bool:
+        if port <= 0:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout_sec):
+                return True
+        except Exception:
+            return False
+
+    def _collect_inference_telemetry() -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "active_profile": "unknown",
+            "expected_profile": "unknown",
+            "expected_model_keyword": "unknown",
+            "model_8080": {"status": "unknown", "port": 8080, "models": [], "count": 0, "active_model": ""},
+            "available_models": [],
+            "sidecars": {},
+            "summary": {"status": "unknown", "reasons": []},
+        }
+
+        try:
+            active_profile_path = Path.home() / ".omlx" / "active_profile"
+            if active_profile_path.exists():
+                payload["active_profile"] = active_profile_path.read_text(encoding="utf-8").strip() or "unknown"
+        except Exception:
+            pass
+
+        try:
+            from scripts.ops.omlx_profile_policy import expected_profile_now
+
+            expected_profile, expected_model = expected_profile_now()
+            payload["expected_profile"] = str(expected_profile or "unknown")
+            payload["expected_model_keyword"] = str(expected_model or "unknown")
+            payload["active_profile_expected"] = payload["expected_model_keyword"]
+            if payload.get("active_profile") in {"", "unknown", None}:
+                payload["active_profile"] = payload["expected_profile"]
+        except Exception:
+            payload["active_profile_expected"] = payload["expected_model_keyword"]
+            pass
+
+        expected_keyword = str(payload.get("expected_model_keyword") or "").lower()
+        if not expected_keyword or expected_keyword == "unknown":
+            expected_keyword = _expected_omlx_keyword_now() if str(payload.get("active_profile") or "").startswith("day") else "26b"
+
+        base_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080").rstrip("/")
+        model_payload = payload["model_8080"]
+        try:
+            with urllib.request.urlopen(f"{base_url}/v1/models", timeout=1.5) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+                models = [
+                    str(item.get("id") or "").strip()
+                    for item in (body.get("data") or [])
+                    if str(item.get("id") or "").strip()
+                ]
+                model_payload["models"] = models
+                model_payload["count"] = len(models)
+                model_payload["active_model"] = models[0] if models else ""
+                model_payload["status"] = "online"
+        except Exception:
+            model_payload["status"] = "offline"
+
+        sidecars = {
+            "embed": {"port": 8081, "status": "offline", "managed": None},
+            "phi4": {"port": 8082, "status": "offline", "managed": None},
+            "smol": {"port": 8083, "status": "offline", "managed": None},
+        }
+        for sid, sid_payload in sidecars.items():
+            port = int(sid_payload.get("port") or 0)
+            sid_payload["status"] = "online" if _tcp_alive(port) else "offline"
+            if sid == "embed":
+                sid_payload["managed"] = _launchctl_list_contains("com.magi.omlx-embed")
+            else:
+                sid_payload["managed"] = _launchctl_list_contains(f"com.magi.omlx-{sid}")
+        payload["sidecars"] = sidecars
+
+        summary_reasons: list[str] = []
+        active_model = str(model_payload.get("active_model") or "")
+        active_profile = str(payload.get("active_profile") or "")
+        expected_profile = str(payload.get("expected_profile") or "")
+        sidecar_profile = expected_profile if expected_profile not in {"", "unknown", None} else active_profile
+        if model_payload.get("status") != "online":
+            payload["summary"]["status"] = "critical"
+            summary_reasons.append("8080 api unreachable")
+        elif expected_keyword and active_model and expected_keyword not in active_model.lower():
+            if expected_profile == "night" and active_profile == "night-12b-degraded" and "12b" in active_model.lower():
+                summary_reasons.append("night 26B fallback is using 12B")
+                payload["summary"]["status"] = "warn"
+            else:
+                summary_reasons.append(f"active model does not match expected keyword: {expected_keyword}")
+                payload["summary"]["status"] = "warn"
+        elif summary_reasons:
+            payload["summary"]["status"] = "warn"
+        elif sidecar_profile == "day" and any(
+            sidecars[name].get("status") != "online" for name in ("phi4", "smol")
+        ):
+            payload["summary"]["status"] = "warn"
+            summary_reasons.append("day sidecar not fully online")
+        else:
+            payload["summary"]["status"] = "ok"
+        payload["summary"]["reasons"] = summary_reasons
+        payload["available_models"] = payload["model_8080"]["models"]
+        return payload
+
+    def _collect_activity_events(now_ts: float) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        cron_events: list[dict[str, Any]] = []
+
+        cron_path = root / ".runtime" / "cron_state.json"
+        if cron_path.exists():
+            try:
+                raw = json.loads(cron_path.read_text(encoding="utf-8"))
+            except Exception:
+                raw = None
+            if isinstance(raw, dict):
+                for job_id, value in raw.items():
+                    if isinstance(value, dict):
+                        ts = _safe_epoch(value.get("last_run")) or _safe_epoch(value.get("ts")) or now_ts
+                        status = str(value.get("status") or "")
+                        detail = str(value.get("detail") or "")
+                        message = f"cron {job_id}: {status}" + (f" · {detail}" if detail else "")
+                        cron_events.append({
+                            "ts": ts,
+                            "type": "cron",
+                            "source": "cron_state",
+                            "message": message.strip(),
+                        })
+            elif isinstance(raw, list):
+                for value in raw:
+                    if not isinstance(value, dict):
+                        continue
+                    ts = _safe_epoch(value.get("ts")) or _safe_epoch(value.get("time")) or now_ts
+                    job_id = str(value.get("job") or value.get("job_id") or value.get("source") or "cron")
+                    detail = str(value.get("detail") or value.get("message") or "")
+                    status = str(value.get("status") or value.get("state") or "")
+                    message = f"{job_id}: {status}" + (f" · {detail}" if detail else "")
+                    cron_events.append({"ts": ts, "type": "cron", "source": "cron_state", "message": message.strip()})
+
+        for log_path, source_name in (
+            (Path("/opt/homebrew/var/log/omlx_switch.log"), "omlx_switch"),
+            (root / "casper.log", "casper_log"),
+        ):
+            for line in _tail_file_lines(log_path, max_lines=80):
+                text = line.strip()
+                if not text:
+                    continue
+                event = {
+                    "ts": _extract_log_timestamp(text),
+                    "type": _classify_activity_type(text, source_name),
+                    "source": source_name,
+                    "message": text,
+                }
+                events.append(event)
+
+        cron_events.sort(key=lambda item: item.get("ts", 0.0), reverse=True)
+        events.sort(key=lambda item: item.get("ts", 0.0), reverse=True)
+        selected = cron_events[:8]
+        selected_messages = {(item.get("source"), item.get("message")) for item in selected}
+        for item in events:
+            key = (item.get("source"), item.get("message"))
+            if key in selected_messages:
+                continue
+            selected.append(item)
+            if len(selected) >= 30:
+                break
+        return selected[:30]
+
+    def _collect_pressure_telemetry(
+        system: dict[str, Any],
+        inference: dict[str, Any],
+        activity: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        level = "ok"
+
+        memory = system.get("memory") if isinstance(system, dict) else {}
+        mac_pressure = system.get("macos_memory_pressure") if isinstance(system, dict) else {}
+        mac_status = str((mac_pressure or {}).get("status") or "unknown")
+        mac_free_percent = (mac_pressure or {}).get("free_percent")
+        if mac_status == "critical":
+            level = "critical"
+            reasons.append(f"macOS memory pressure free {mac_free_percent}% < 20")
+        elif mac_status == "warn" and level == "ok":
+            level = "warn"
+            reasons.append(f"macOS memory pressure free {mac_free_percent}% < 30")
+
+        mem_percent = memory.get("percent") if isinstance(memory, dict) else None
+        if isinstance(mem_percent, (int, float)):
+            if mac_status != "ok" and mem_percent >= 92:
+                level = "critical"
+                reasons.append(f"memory pressure {mem_percent}% >= 92")
+            elif mac_status != "ok" and mem_percent >= 85 and level == "ok":
+                level = "warn"
+                reasons.append(f"memory pressure {mem_percent}% >= 85")
+
+        swap = system.get("swap") if isinstance(system, dict) else {}
+        swap_percent = swap.get("percent") if isinstance(swap, dict) else None
+        if isinstance(swap_percent, (int, float)):
+            if mac_status == "ok" and swap_percent >= 75:
+                reasons.append(f"swap reserved {swap_percent}% but macOS memory pressure is healthy")
+            elif swap_percent >= 90:
+                level = "critical"
+                reasons.append(f"swap pressure {swap_percent}% >= 90")
+            elif swap_percent >= 75 and level == "ok":
+                level = "warn"
+                reasons.append(f"swap pressure {swap_percent}% >= 75")
+
+        cpu_load = system.get("loadavg") if isinstance(system, dict) else {}
+        load_1m = cpu_load.get("1m") if isinstance(cpu_load, dict) else None
+        if isinstance(load_1m, (int, float)):
+            if load_1m >= 6.0:
+                level = "critical" if level != "critical" else level
+                reasons.append(f"loadavg_1m {load_1m} high")
+            elif load_1m >= 3.8 and level == "ok":
+                level = "warn"
+                reasons.append(f"loadavg_1m {load_1m} elevated")
+
+        inference_summary = inference.get("summary") if isinstance(inference, dict) else {}
+        if inference_summary.get("status") == "critical":
+            level = "critical"
+            reasons.append("inference critical (8080/sidecar)")
+        elif inference_summary.get("status") == "warn" and level == "ok":
+            level = "warn"
+            reasons.append("inference degraded")
+            if inference_summary.get("reasons"):
+                reasons.extend([str(x) for x in inference_summary.get("reasons")[:3]])
+
+        recent_errors = 0
+        for item in activity[:8]:
+            if str(item.get("type") or "").lower() in {"error", "model_switch"} and "error" in str(item.get("message") or "").lower():
+                recent_errors += 1
+        if recent_errors >= 3:
+            level = "critical"
+            reasons.append(f"recent error events >=3 in latest 8")
+        elif recent_errors:
+            level = "warn" if level == "ok" else level
+            reasons.append("recent inference/runtime error events")
+
+        if not reasons and level == "ok":
+            reasons.append("no pressure warning")
+        return {"level": level, "reasons": reasons}
+
+    def _collect_nerv_telemetry() -> dict[str, Any]:
+        now_ts = time.time()
+        system = _collect_system_telemetry(now_ts)
+        inference = _collect_inference_telemetry()
+        activity_events = _collect_activity_events(now_ts)
+        pressure = _collect_pressure_telemetry(
+            system=system,
+            inference=inference,
+            activity=activity_events,
+        )
+
+        return {
+            "timestamp": datetime.fromtimestamp(now_ts).isoformat(),
+            "system": system,
+            "inference": inference,
+            "activity": {
+                "events": activity_events,
+                "count": len(activity_events),
+            },
+            "pressure": pressure,
+        }
+
     def _mac_screen_sharing_status(tailscale: dict[str, Any]) -> dict[str, Any]:
         running = _launchctl_list_contains("com.apple.screensharing") or _launchctl_list_contains("RemoteDesktop")
         host = str(tailscale.get("dns_name") or tailscale.get("ip") or socket.gethostname() or "").strip()
@@ -996,6 +1406,10 @@ def create_admin_runtime_blueprint(
 
         results["magi_server"] = {"status": "online", "pid": os.getpid()}
         results["timestamp"] = datetime.now().isoformat()
+        try:
+            results["telemetry"] = _collect_nerv_telemetry()
+        except Exception as exc:
+            results["telemetry"] = {"status": "error", "detail": str(exc)[:140], "timestamp": datetime.now().isoformat()}
 
         # FAISS vector DB stats
         try:
@@ -1561,6 +1975,52 @@ def create_admin_runtime_blueprint(
         except Exception as exc:
             return {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
 
+    def _collect_api_token_health_status() -> dict[str, Any]:
+        candidate_roots: list[Path] = []
+        for key in ("MAGI_ROOT", "MAGI_ROOT_DIR"):
+            value = os.environ.get(key)
+            if value:
+                candidate_roots.append(Path(value))
+        candidate_roots.append(root)
+        seen_paths: set[str] = set()
+        report_path = root / ".runtime" / "token_health" / "token_health_latest.json"
+        for candidate_root in candidate_roots:
+            candidate = candidate_root / ".runtime" / "token_health" / "token_health_latest.json"
+            key = str(candidate)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            if candidate.exists():
+                report_path = candidate
+                break
+        if not report_path.exists():
+            return {
+                "ok": None,
+                "status": "unknown",
+                "detail": "尚未產生 API/OAuth token 健康檢查報告",
+            }
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            age_sec = max(0.0, time.time() - report_path.stat().st_mtime)
+            summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+            failures = data.get("failures") if isinstance(data.get("failures"), list) else []
+            stale = age_sec > 12 * 3600
+            ok = bool(data.get("ok")) and not stale
+            return {
+                "ok": ok,
+                "status": "stale" if stale else ("ok" if data.get("ok") else "action_required"),
+                "age_seconds": round(age_sec, 0),
+                "summary": {
+                    "total": int(summary.get("total") or 0),
+                    "failures": int(summary.get("failures") or 0),
+                    "refreshed": int(summary.get("refreshed") or 0),
+                    "skipped": int(summary.get("skipped") or 0),
+                },
+                "failures": failures[:5],
+            }
+        except Exception as exc:
+            return {"ok": False, "status": "invalid_report", "detail": str(exc)[:120]}
+
     def _collect_process_markers() -> dict[str, Any]:
         markers = {
             "daemon_markers": ("daemon.py", "api/discord_bot.py", "rpc-server"),
@@ -1776,6 +2236,53 @@ def create_admin_runtime_blueprint(
             return jsonify({"ok": False, "error": "missing_relative_paths"}), 400
         updated, removed = _dcs.unsync_case_exclusions(paths, exclusion_path=_case_exclusion_file_for_runtime())
         return jsonify({"ok": True, "changed": removed > 0, "removed": removed, **updated}), 200
+
+    def _uptime_seconds() -> float:
+        try:
+            return round(max(0.0, time.time() - float(server_start_time)), 3)
+        except Exception:
+            return 0.0
+
+    @bp.route("/livez", methods=["GET"])
+    def livez():
+        return jsonify({
+            "ok": True,
+            "status": "live",
+            "timestamp": time.time(),
+            "uptime_seconds": _uptime_seconds(),
+        }), 200
+
+    @bp.route("/readyz", methods=["GET"])
+    def readyz():
+        runtime_dir = root / ".runtime"
+        root_ok = root.exists() and root.is_dir()
+        runtime_ok = (
+            (runtime_dir.exists() and runtime_dir.is_dir() and os.access(runtime_dir, os.W_OK))
+            or (not runtime_dir.exists() and root_ok and os.access(root, os.W_OK))
+        )
+        db_ok = bool(
+            str(db_config.get("host") or "").strip()
+            and str(db_config.get("user") or "").strip()
+            and str(db_config.get("password") or "").strip()
+        )
+        checks = {
+            "root": {"ok": bool(root_ok), "path": str(root)},
+            "runtime_dir": {"ok": bool(runtime_ok), "path": str(runtime_dir)},
+            "db_config": {
+                "ok": bool(db_ok),
+                "host_configured": bool(str(db_config.get("host") or "").strip()),
+                "user_configured": bool(str(db_config.get("user") or "").strip()),
+                "password_configured": bool(str(db_config.get("password") or "").strip()),
+            },
+        }
+        ok = all(bool(item.get("ok")) for item in checks.values())
+        return jsonify({
+            "ok": ok,
+            "status": "ready" if ok else "not_ready",
+            "timestamp": time.time(),
+            "uptime_seconds": _uptime_seconds(),
+            "checks": checks,
+        }), 200 if ok else 503
 
     @bp.route("/health", methods=["GET"])
     def health():
@@ -2007,6 +2514,7 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
         checks["drive_sync"] = _collect_drive_sync_status()
+        checks["api_token_health"] = _collect_api_token_health_status()
 
         try:
             audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
@@ -2105,6 +2613,9 @@ def create_admin_runtime_blueprint(
                 _op_health["degraded_reasons"].append(f"cron_failures_24h={cron_failures_24h}>5")
             if high_severity_24h > 10:
                 _op_health["degraded_reasons"].append(f"issue_agenda_high_severity_24h={high_severity_24h}>10")
+            token_health = checks.get("api_token_health") if isinstance(checks.get("api_token_health"), dict) else {}
+            if token_health.get("ok") is False:
+                _op_health["degraded_reasons"].append(f"api_token_health={token_health.get('status')}")
             for _b, _age in bench_freshness.items():
                 if _age is not None and _age > 48:
                     _op_health["degraded_reasons"].append(f"{_b}_stale_{_age}h")
@@ -2152,6 +2663,8 @@ def create_admin_runtime_blueprint(
         if checks.get("operational_health", {}).get("ok") is False:
             degraded = True
         if checks.get("drive_sync", {}).get("ok") is False:
+            degraded = True
+        if checks.get("api_token_health", {}).get("ok") is False:
             degraded = True
         if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True

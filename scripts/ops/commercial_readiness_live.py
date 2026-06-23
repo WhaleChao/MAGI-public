@@ -135,6 +135,57 @@ def check_public_release_audit(py: str, *, strict: bool) -> Check:
     return Check("public_release_audit", passed, "pass" if passed else "fail", detail, elapsed)
 
 
+def _snapshot_current_worktree(dest: Path) -> dict[str, Any]:
+    """Copy the current candidate tree, including uncommitted non-ignored files."""
+    proc = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--modified",
+            "--others",
+            "--exclude-standard",
+        ],
+        cwd=MAGI_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or b"git ls-files failed").decode("utf-8", errors="replace")[-500:])
+
+    seen: set[str] = set()
+    copied = 0
+    skipped = 0
+    dest.mkdir(parents=True, exist_ok=True)
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", errors="surrogateescape")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.parts[:1] == (".git",):
+            skipped += 1
+            continue
+        src = MAGI_ROOT / rel_path
+        target = dest / rel_path
+        if not src.exists() or src.is_dir():
+            skipped += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_symlink():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            os.symlink(os.readlink(src), target)
+        else:
+            shutil.copy2(src, target)
+        copied += 1
+    return {"copied_files": copied, "skipped_files": skipped}
+
+
 def check_public_cleanroom_install(py: str) -> Check:
     started = time.time()
     head_proc = subprocess.run(
@@ -150,21 +201,14 @@ def check_public_cleanroom_install(py: str) -> Check:
     tmp_root = Path(tempfile.mkdtemp(prefix="magi_public_cleanroom_"))
     worktree = tmp_root / "MAGI-public-cleanroom"
     try:
-        clone = subprocess.run(
-            ["git", "clone", "--local", "--no-hardlinks", "--quiet", str(MAGI_ROOT), str(worktree)],
-            cwd=MAGI_ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=180,
-            check=False,
-        )
-        if clone.returncode != 0:
+        try:
+            snapshot = _snapshot_current_worktree(worktree)
+        except Exception as exc:
             return Check(
                 "public_cleanroom_install",
                 False,
                 "fail",
-                f"clone failed: {(clone.stdout or '')[-500:]}",
+                f"worktree snapshot failed: {type(exc).__name__}: {exc}",
                 round(time.time() - started, 3),
             )
 
@@ -208,7 +252,8 @@ def check_public_cleanroom_install(py: str) -> Check:
         summary = wizard.get("summary") if isinstance(wizard.get("summary"), dict) else {}
         passed = ok and bool(wizard.get("ok")) and int(summary.get("fail") or 0) == 0
         detail = (
-            f"head={head} audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
+            f"source=current-worktree head={head} files={snapshot.get('copied_files')} "
+            f"audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
             f"wizard_status={wizard.get('status')} pass={summary.get('pass')} skipped={summary.get('skipped')}"
         )
         if not passed:

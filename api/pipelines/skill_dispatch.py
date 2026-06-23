@@ -26,11 +26,26 @@ def looks_like_capability_question(message: str) -> bool:
     text = str(message or "").strip()
     if not text:
         return False
-    # Must end with question particle
-    if not re.search(r"[嗎嘛呢？\?]$", text):
+    compact = re.sub(r"\s+", "", text.lower())
+    explicit_meta_question = bool(re.search(
+        r"(?:(?:你|magi|casper|這個系統|這套系統).{0,10}"
+        r"(?:可以|能|會|能做|能做到|做得到|可以做).{0,10}"
+        r"(?:什麼|甚麼|哪些|何事|事情|事|功能|能力)|"
+        r"(?:有什麼|有哪些)(?:功能|能力|技能)|"
+        r"(?:功能|能力|技能|指令)(?:列表|清單|一覽))",
+        compact,
+        re.IGNORECASE,
+    ))
+    # Most capability questions end with a question particle; explicit meta
+    # prompts like "請問你能做到什麼事" are common in the web UI and may omit it.
+    if not explicit_meta_question and not re.search(r"[嗎嘛呢？\?]$", text):
         return False
     # Must contain ability-asking keywords
-    if not re.search(r"(可以|可不可以|能不能|會不會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
+    if not explicit_meta_question and not re.search(
+        r"(可以|可不可以|能不能|會不會|你能|你會|能做|能做到|如何|怎麼|有沒有辦法|能否|可否)",
+        text,
+        re.IGNORECASE,
+    ):
         return False
     # If message contains concrete objects/context, it's an ACTION request, not a capability question.
     # Only match true object nouns and demonstratives that point to actual content.
@@ -165,7 +180,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
     try:
         result = run_skill_action(
             found_dir, message,
-            timeout_sec=60, auto_repair=False, auto_install_deps=True,
+            timeout_sec=60, auto_repair=False, auto_install_deps=False,
         )
         if result.get("success"):
             output = result.get("output", "").strip()
