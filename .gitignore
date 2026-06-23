@@ -190,7 +190,9 @@ magi.egg-info/
 bin/*
 !bin/__init__.py
 !bin/_runtime.py
+!bin/check.py
 !bin/cli.py
+!bin/start.py
 dist/
 *.pickle*
 config.json.pre_*

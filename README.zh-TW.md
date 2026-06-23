@@ -1,8 +1,10 @@
-# MAGI — 多代理治理基礎設施
+# MAGI — 本地優先法務營運平台
 
 [English](README.md)
 
-MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常業務設計。全系統在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及深度法務工作流程自動化——全部整合於一個程式碼庫。
+MAGI v2 是一套 local-first、可 self-host 的法務營運平台，供小型法務團隊把案件作業、工作流程自動化與模型推理留在操作者可控的本機環境。全系統可在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及法務工作流程自動化——全部整合於一個程式碼庫。
+
+截至 2026-06-23，此公開 repository 是 public-safe 分支：保留安裝程式、CLI、文件、測試與發布閘門；私有正式環境的 runtime 狀態、客戶/案件資料、憑證、本機部署手札與私有法務資料來源整合不得進 git。私有正式環境應把作業資料留在本機，任何公開前都必須通過同一套 public isolation audit。
 
 **macOS 原生。** 生產環境在 Apple Silicon 透過 [oMLX](https://github.com/omlx/omlx) 以三模型日夜輪換架構執行。Windows / Linux 透過 Ollama 亦可支援。
 
@@ -40,6 +42,8 @@ MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律�
 
 ### 客戶安裝程式（建議交付外部使用者）
 
+外部操作者建議從客戶安裝程式/精靈開始。安裝精靈會建立本機 `.env`、產生本機 secret、準備排程、執行診斷，且不會列印 secret 值。
+
 從乾淨 checkout 建立 macOS 與 Windows 安裝檔：
 
 ```bash
@@ -55,6 +59,12 @@ python3 scripts/packaging/build_installers.py --force
 
 ```bash
 python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --json
+```
+
+安裝後請用正式 `magi` CLI 做維運檢查：
+
+```bash
+magi status
 ```
 
 ### macOS（Apple Silicon）
@@ -98,25 +108,30 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 ## 目前公開狀態
 
-此分支已整理為可公開版本：私有 runtime、代理工作記錄、部署手札、OCR 暫存等資料不再納入 git 追蹤，並由 `.gitignore` 保護。`.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、`docs/deploy/` 應維持本機私有。
+此分支已在 2026-06-23 後整理為 public-safe 發行分支：包含可 self-host 的安裝程式/精靈、公開文件、release gate wiring、正式 `magi` CLI 與公開安全的測試定義；不得包含私有正式環境 runtime。`.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、私有部署手札、本機信箱/NAS 標記、憑證、DB dump、客戶/案件檔、portal 截圖與 runtime 報告都應維持私有且不得被 git 追蹤。
+
+分支邊界是嚴格的：
+
+- `public-safe`：程式碼、文件、安裝程式/精靈、CLI 入口、通用法務營運流程、public CI、公開/商用 release gates。
+- `private production`：本機 `.env`、憑證、OAuth token、DB 內容、NAS 路徑、客戶/案件資料、操作者手札、私有整合與 runtime JSON。
 
 公開前檢查：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
-python3 scripts/customer_install_wizard.py --public --no-live
-python3 scripts/first_run_setup.py --public --json
-python3 scripts/magi_doctor.py --json
-python3 scripts/install_magi.py --dry-run --check-live
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
-`customer_install_wizard.py` 是外部客戶的一鍵安裝入口：會建立本機 `.env`、產生本機 secret、在加上 `--yes` 時安裝 Python 依賴、建立本機排程設定、執行偵測與商用檢查，並寫出 `.runtime/customer_install_wizard_latest.json`，且不會列印 token 或密碼。DMG/EXE 啟動器接著會執行 `runtime_bootstrap.py`，在客戶允許系統套件安裝時協助安裝 MariaDB、Tailscale、oMLX/Ollama 與本地模型；偵測完成後，會把非敏感的外部套件與模型設定安全合併回 `.env`（資料庫主機/連接埠、執行檔路徑、模型後端、模型名稱、本機推論網址），並保留既有密碼、token 與使用者自行填寫的值。`first_run_setup.py` 則保留為較細的 checklist 工具。`public_release_audit.py` 會阻擋高可信度 secret 與被追蹤的私有路徑；公開推送前請加上 `--public-isolation`，一併阻擋私有實務見解來源整合、私人信箱/NAS 標記與私有 runtime JSON。正式發布與商用部署請使用 `--strict`；發布分支預期應通過 `0 errors / 0 warnings`。
+`customer_install_wizard.py` 是外部客戶的一鍵安裝入口：會建立本機 `.env`、產生本機 secret、在加上 `--yes` 時安裝 Python 依賴、建立本機排程設定、執行偵測與商用檢查，並寫出 `.runtime/customer_install_wizard_latest.json`，且不會列印 token 或密碼。DMG/EXE 啟動器接著會執行 `runtime_bootstrap.py`，在客戶允許系統套件安裝時協助安裝 MariaDB、Tailscale、oMLX/Ollama 與本地模型；偵測完成後，會把非敏感的外部套件與模型設定安全合併回 `.env`（資料庫主機/連接埠、執行檔路徑、模型後端、模型名稱、本機推論網址），並保留既有密碼、token 與使用者自行填寫的值。`first_run_setup.py` 則保留為較細的 checklist 工具。`public_release_audit.py --public-isolation --strict` 會阻擋高可信度 secret、被追蹤的私有路徑、私有法務資料來源整合、私人信箱/NAS 標記與私有 runtime JSON；發布分支預期應通過 `0 errors / 0 warnings`。
 
 公開或交付他人使用前，請把以下檢查視為 go/no-go 門檻：
 
 - README、操作手冊、服務條款、隱私權政策、資料保留政策與第三方套件清單均已更新。
 - MAGI daemon 可啟動，`/health`、OSC 主要頁籤、訊息頻道、DB、NAS、Google Calendar OAuth 均通過 live 檢查。
-- `scripts/public_release_audit.py --strict` 不得有 error 或 warning；若只有公開安裝版本、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
+- NERV（`/dashboard/nerv` 或 `/nerv`）是目標主機的正式狀態頁；交付前用它確認模型、OCR、DB、NAS 與背景服務健康。
+- `scripts/public_release_audit.py --public-isolation --strict` 不得有 error 或 warning；若只有公開安裝版本、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
+- `run_test_suite.py` release gates 需通過：`ci`、`smoke62`、`production-live`，共享/商用版本另需通過 `commercial-release`。
 - `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 路徑與 runtime 報告不得被 git 追蹤。
 - 法扶、閱卷、筆錄與日曆同步屬於高風險流程；正式送出、還原 DB、批次搬檔仍需確認碼或人工確認。
 
@@ -127,6 +142,7 @@ git clone https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/public_release_audit.py --public-isolation --strict
+magi status
 ```
 
 正式商用文件：
@@ -149,7 +165,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 私用正式環境商用檢核：
 
 ```bash
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 只有公開安裝版本、不含私有 DB 的檢核才使用 `--skip-db`。
@@ -175,7 +191,7 @@ curl http://127.0.0.1:8090/health
 - **帳務**：Google 試算表匯入可排除非本人標識資料，固定支出與試算表項目會去重，週一/週五排程匯入；薪資等固定支出可在 MAGI 帳務設定修正。
 - **實務見解**：台灣法律資料 MCP 可作為法律見解查詢來源；查不到時回報查不到，不以模型補編。
 - **所務總覽**：網頁版整合案件、待辦、法扶、書狀索引、對外資料與業務概覽入口，避免重複建立功能。
-- **維運**：完整 smoke 已納入商用上線守門、乾淨公開版安裝檢查、公開 secret audit、磁碟低水位告警、快取清理、NAS 掛載守門與通知分流檢查。
+- **維運**：`run_test_suite.py` 統一管理 `ci`、`smoke62`、`production-live`、`commercial-release`；商用 release 包含 strict public isolation、乾淨公開版安裝檢查、磁碟/資源守門、模型 live gate、維運硬化、訊息通道 smoke、heavy route checks 與技能 real-world smoke。
 
 ---
 
@@ -279,7 +295,7 @@ MAGI 依時段自動切換模型組合：
 當本機 oMLX 失敗或需要 SOTA 推理時，MAGI 可向 NVIDIA NIM 免費雲端推理後備：
 
 - **觸發方式**：使用者訊息加 `@heavy` 或 `@重型` 前綴（opt-in，永不自動）
-- **重型主力**：`meta/llama-3.1-405b-instruct`（128K context、多語、無內容審查）
+- **重型主力**：`nvidia/nemotron-3-super-120b-a12b`（多語、長文本、已通過 MAGI 翻譯品質閘門）
 - **快速模型**：`meta/llama-3.3-70b-instruct`（簡單重型任務）
 - **硬編封鎖清單**：中國模型（DeepSeek / Qwen / MiniMax / Kimi / GLM / Yi / Baichuan / Moonshot / InternLM / ChatGLM / SenseTime）— 因內容審查不適用於律師業務
 - **PII 遮蔽**：可逆遮蔽台灣身分證、法扶案號、法院案號、手機、DB 已知當事人姓名（回覆時還原）
@@ -350,6 +366,8 @@ MAGI 可以同時讀取多個 Google Calendar，但匯入 OSC 待辦時採白名
 
 ## 操作管理 — `magi` CLI
 
+`magi` 是已安裝系統的正式維運 CLI，封裝日常狀態、重啟、關機、殭屍程序與日誌操作，讓操作者不必記住各個 LaunchAgent 或 log 命令。
+
 ```
 magi status       # 完整系統健康（服務、oMLX、NAS、DB、殭屍）
 magi restart      # 透過 launchctl kickstart 乾淨重啟
@@ -358,7 +376,7 @@ magi zombie       # 列出並回收殭屍程序
 magi logs         # 追蹤所有日誌
 ```
 
-NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback 路徑）。
+NERV（`/dashboard/nerv` 或 `/nerv`）是交付正式環境時使用的瀏覽器狀態頁；`magi status` 則是終端機狀態檢查。NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback 路徑）。
 
 **50+ 個定時排程任務**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
 
@@ -552,7 +570,8 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 | `MAGI_JUDICIAL_VERIFY_SSL` | `0` | 司法院網站 SSL 驗證（TLS 相容模式關閉） |
 | `NVIDIA_NIM_ENABLE` | `0` | 啟用 NVIDIA NIM 雲端重型後備（Plan A） |
 | `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key（build.nvidia.com 免費層，40 req/min） |
-| `NVIDIA_NIM_MODEL` | `meta/llama-3.1-405b-instruct` | 重型主力（128K context、多語、無審查） |
+| `NVIDIA_NIM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | @heavy 重型主力；405B 歷史設定會自動映射到此模型 |
+| `NVIDIA_NIM_TRANSLATE_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | 重型翻譯專用模型；避免一般 heavy 調整影響交付品質 |
 | `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | 一般 @heavy 請求的快速模型 |
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | 強制使用者主動 `@heavy` / `@重型` 觸發 |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | 送雲端前強制 PII 遮蔽（永不關閉） |
@@ -567,7 +586,7 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 
 | 層次 | 技術 |
 |------|------|
-| **執行環境** | Python 3.9+（生產：macOS 3.14），venv |
+| **執行環境** | Python 3.12+（生產：macOS 3.14），venv |
 | **LLM 推理** | [oMLX](https://github.com/omlx/omlx)（MLX / Apple Silicon）· Ollama（Linux/Windows） |
 | **模型** | Gemma-4 E4B · Phi-4-mini · SmolLM3-3B · Gemma-4 26B（夜間） |
 | **Embedding** | ModernBERT-embed-4bit（port 8081） |
@@ -584,7 +603,7 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 | **NAS** | SMB LAN（MAGI_NAS_HOST）+ Tailscale fallback（MAGI_NAS_TAILSCALE_HOST） |
 | **日曆** | Google Calendar API（OAuth2，自動 refresh） |
 | **安全** | Iron Dome 規則引擎 · SafeProcess argv 白名單 · RemoteHealthGate CB · tw_output_guard · 信任標籤洩漏偵測器 |
-| **測試** | pytest（~1,575 個測試） |
+| **測試** | `scripts/ops/run_test_suite.py` gates，底層包含 pytest 與 live smoke checks |
 
 ---
 
@@ -620,7 +639,7 @@ MAGI_v2/
 │   └── …（共 60+ 技能）
 ├── docs/
 │   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
-├── tests/                      # ~1,575 個 pytest 測試
+├── tests/                      # run_test_suite gates 使用的 pytest 覆蓋
 ├── cron_jobs.json              # 所有排程任務的唯一來源
 └── .env                        # 執行環境設定（不提交至版本控制）
 ```
@@ -644,52 +663,40 @@ MAGI_v2/
 
 ## 測試
 
+README 不再維護手寫的 pytest 模組與測試數量清單。權威來源是 [docs/TESTING_SYSTEM.md](docs/TESTING_SYSTEM.md) 與 `config/test_matrix.json`；請透過 `scripts/ops/run_test_suite.py` 執行，讓 GitHub CI、本機 smoke、正式環境 live check 與商用 release check 保持一致。
+
 ```bash
-# 完整測試（~140 個檔案・~1,575 個測試・約 12 分鐘）
-./venv/bin/python -m pytest -q
+# 列出 gates
+./venv/bin/python scripts/ops/run_test_suite.py --list
 
-# 依模組執行
-pytest tests/test_routing_unified.py            # 統一路由（38 個測試）
-pytest tests/test_tools_api_async_jobs.py       # 非同步任務佇列 API（18 個測試）
-pytest tests/test_react_omlx.py                 # ReAct + ensemble tools
-pytest tests/test_document_reader.py            # MarkItDown adapter（24 個測試）
-pytest tests/test_translator_legal_termbase.py  # 三層法學術語庫（22 個測試）
-pytest tests/test_translator_post_edit.py       # APE 後編輯流程（22 個測試）
-pytest tests/test_hallucination_regression.py   # 幻覺防護（22 個測試）
-pytest tests/test_laf_progress_helper.py        # 法扶進度回報（16 個測試）
-pytest tests/test_memory_policy.py              # 記憶寫入政策（20 個測試）
+# public-safe GitHub / 乾淨 checkout gate
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 
-# Live smoke（需要服務執行中）
+# 本機正式主機 smoke
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62 --json-out .runtime/smoke62_latest.json
+
+# 目標主機 production live validation
+./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
+
+# 公開/商用 release gate
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+```
+
+Release acceptance 代表 `ci`、`smoke62`、`production-live` 在對應環境通過；共享或商用版本還必須通過 `commercial-release`。JSON 報告請保存在 `.runtime/` 或附於 release note，最後以 NERV（`/dashboard/nerv` 或 `/nerv`）加上 `magi status` 作操作者可見的健康確認。
+
+排查執行中主機時常用的 live checks：
+
+```bash
 magi status
 curl http://127.0.0.1:5002/health
 curl http://127.0.0.1:5003/health
-MAGI_USE_SCRAPLING=1 skills/judicial-web-search/action.py --task self_test
-skills/laf-orchestrator/action.py --task self_test
-skills/file-review-orchestrator/action.py --task self_test
-skills/transcript-downloader/action.py --task self_test
 ```
 
-### 測試套件分類（~140 個檔案・~1,575 個測試）
+strict public isolation audit 是 `commercial-release` 的一部分，公開前也可以單獨執行：
 
-| 類別 | 檔案數 | 測試數 | 主要覆蓋範圍 |
-|------|--------|--------|------------|
-| **路由與指令分派** | 13 | 190 | 統一路由、技能合約（市場簡報 / 庭審準備 / 合約審查）、指令分派、技能煙霧測試 |
-| **Apple 平台整合** | 10 | 173 | Spotlight、Keychain、EventKit（行事曆）、CoreML 分類器、NaturalLanguage NLP、聯絡人、檔案監控 |
-| **基礎設施** | 33 | 218 | 健康探針、會話/context 管理、音訊處理流程、文字處理、日誌、packaging、entrypoint、安全基線（CORS / 標頭 / Cookie） |
-| **平台層（R1–R3）** | 7 | 72 | RemoteHealthGate circuit breaker（16）、Balthasar/Melchior/NIM opt-in（15）、SafeProcess argv/env/timeout（19）、RuntimeDir atomic I/O（14）、cron 狀態遷移（8） |
-| **檔案與 PDF** | 7 | 86 | MarkItDown adapter、PDF bridge（OCR + timeout 恢復）、pdf-namer（命名驗證、動態信心度）、pdf-bookmarker（OLA 自適應閾值、Vision fallback） |
-| **法扶（LAF）** | 11 | 81 | 進度回報 helper、submit-pending token 生命週期、結案 E2E mock、郵件分類、案件類別解析、重複去重 |
-| **設定與 Runtime** | 21 | 80 | Runtime 路徑解析、模組化設定、模型設定、授權閘門、provider adapter、任務排程 |
-| **工具 API** | 8 | 76 | 工具優先流程、非同步任務佇列（202/poll 模式）、推理閘道路由、Shortcuts 端點 |
-| **翻譯** | 5 | 65 | 三層法學術語庫（MOJ SQLite / JSON / prompt）、Apple Translation + APE 後編輯驗證器、流程韌性、統一 API |
-| **記憶系統** | 8 | 58 | 記憶寫入政策、接地驗證與 query 增強、Graph-RAG recall、假記憶回歸測試、助理發言升級保護、溯源追蹤 |
-| **驗證與安全** | 6 | 49 | 幻覺回歸（22 情境）、答案驗證器、授權閘門、輸出守衛（trust-badge 洩漏）、安全基線 |
-| **資料與持久化** | 6 | 45 | 任務佇列（SQLite）、embedding 路由器、遷移框架、DB helper、向量處理流程 NLP |
-| **CI / 發布封裝** | 2 | 29 | Hardcode 檢查器、console-script 目標驗證 |
-
-CI 閘門：
-- `scripts/ci/check_hardcodes.py` — 提交的程式碼中有任何 IP / 憑證即失敗。
-- `scripts/ci/check_shell_true.py` — 阻止新增 `shell=True` / `os.system(f"…")`（4 個已核准 legacy 站點列為 grandfather）。
+```bash
+python3 scripts/public_release_audit.py --public-isolation --strict
+```
 
 ---
 

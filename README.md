@@ -1,8 +1,10 @@
-# MAGI — Multi-Agent Governance Infrastructure
+# MAGI — Local-First Legal Operations Platform
 
 [繁體中文版](README.zh-TW.md)
 
-MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law firm. It runs entirely on a single Apple Silicon node, combining a Flask control plane, 60+ modular skill runners, a three-philosopher ensemble inference pipeline, a ReAct agentic tool-call engine, scheduled workers, on-device LLM inference, and deep legal workflow automation — all in one repository.
+MAGI v2 is a local-first, self-hostable legal operations platform for small legal teams. It keeps case operations, workflow automation, and model inference under the operator's control, combining a Flask control plane, 60+ modular skill runners, a three-philosopher ensemble inference pipeline, a ReAct agentic tool-call engine, scheduled workers, on-device LLM inference, and legal workflow automation in one repository.
+
+As of 2026-06-23, this public repository is the public-safe branch: installer, CLI, documentation, tests, and release gates are present, while private production runtime state, client/case material, credentials, local deployment notes, and private legal-source integrations must remain outside git. Private production deployments are expected to keep their operational data local and pass the same public-isolation audit before anything is published.
 
 **macOS-primary.** Production runs on Apple Silicon via [oMLX](https://github.com/omlx/omlx) with a three-model day / night inference architecture. Windows / Linux via Ollama is also supported.
 
@@ -41,6 +43,8 @@ MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law f
 
 ### Customer installer (recommended for external users)
 
+External operators should start with the customer installer/wizard path. The wizard creates a local `.env`, generates local secrets, prepares scheduled jobs, runs diagnostics, and avoids printing secret values.
+
 Build customer-facing installers from a clean checkout:
 
 ```bash
@@ -61,6 +65,12 @@ The runtime-only plan can be previewed without changing the machine:
 
 ```bash
 python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --json
+```
+
+After installation, use the formal `magi` CLI for operator checks:
+
+```bash
+magi status
 ```
 
 ### macOS (Apple Silicon)
@@ -104,26 +114,30 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 ## Current Public Status
 
-This branch is prepared for public release with private runtime material removed from git tracking. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, and operator deployment notes are ignored and should stay private.
+This branch is prepared as the public-safe distribution after the 2026-06-23 cleanup. It contains the self-hostable installer/wizard flow, public documentation, release-gate wiring, the formal `magi` CLI, and public-safe test definitions. It must not contain private production runtime material. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, private deployment notes, local mailbox/NAS markers, credentials, DB dumps, client/case files, portal screenshots, and private runtime reports are ignored and should stay private.
+
+The branch boundary is strict:
+
+- `public-safe`: code, docs, installer/wizard, CLI entrypoints, generic legal-ops workflows, public CI, and public/commercial release gates.
+- `private production`: local `.env`, credentials, OAuth tokens, DB contents, NAS paths, client/case material, operator notes, private integrations, and runtime JSON.
 
 Public readiness checks:
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
-python3 scripts/customer_install_wizard.py --public --no-live
-python3 scripts/first_run_setup.py --public --json
-python3 scripts/magi_doctor.py --json
-python3 scripts/install_magi.py --dry-run --check-live
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
-`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs Python dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. The DMG/EXE launcher then runs `runtime_bootstrap.py`, which detects and can help install MariaDB, Tailscale, oMLX/Ollama, and local models when the customer allows system package installation. After detection, the bootstrapper safely merges non-secret utility and runtime settings back into `.env` (database host/port, binary paths, model provider, model names, local inference URLs), while preserving existing passwords, tokens, and user-owned values. `first_run_setup.py` remains the lower-level checklist tool. The public audit blocks high-confidence secrets and private tracked paths; before pushing to the public project, add `--public-isolation` to also block private legal-source integrations, private mailbox/NAS markers, and private runtime JSON. For release and commercial use, run it with `--strict`; the release branch is expected to pass with `0 errors / 0 warnings`.
+`customer_install_wizard.py` is the one-command customer entrypoint: it creates a local `.env`, generates local secrets, installs Python dependencies when `--yes` is present, seeds local scheduled jobs, runs diagnostics, writes `.runtime/customer_install_wizard_latest.json`, and never prints token or password values. The DMG/EXE launcher then runs `runtime_bootstrap.py`, which detects and can help install MariaDB, Tailscale, oMLX/Ollama, and local models when the customer allows system package installation. After detection, the bootstrapper safely merges non-secret utility and runtime settings back into `.env` (database host/port, binary paths, model provider, model names, local inference URLs), while preserving existing passwords, tokens, and user-owned values. `first_run_setup.py` remains the lower-level checklist tool. `public_release_audit.py --public-isolation --strict` blocks high-confidence secrets, private tracked paths, private legal-source integrations, private mailbox/NAS markers, and private runtime JSON; release branches are expected to pass with `0 errors / 0 warnings`.
 
 Before publishing or handing MAGI to another operator, treat these as go/no-go gates:
 
 - README files, the operator guide, terms, privacy policy, data-retention policy, and third-party bill of materials are current.
 - The daemon starts, and `/health`, the main OSC tabs, messaging channels, DB, NAS/file storage, and Google Calendar OAuth all pass live checks.
 - NERV (`/dashboard/nerv` or `/nerv`) is the production status page for the target host; use it to confirm model, OCR, DB, NAS, and background-service health before handoff.
-- `scripts/public_release_audit.py --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
+- `scripts/public_release_audit.py --public-isolation --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
+- `run_test_suite.py` release gates are clean: `ci`, `smoke62`, `production-live`, and, for shared/commercial builds, `commercial-release`.
 - `.env`, OAuth tokens, DB dumps, case/client material, portal screenshots, NAS paths, and runtime reports are not tracked by git.
 - LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
 - This release is single-host by design. Multi-tenant service, electronic signatures, and a public upload portal are outside the enabled scope; operators should use the built-in "對外資料" copy text with their existing communication channel.
@@ -135,12 +149,15 @@ git clone https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/public_release_audit.py --public-isolation --strict
+magi status
 ```
 
 Commercial readiness documents:
 
 - [Commercial readiness guide](docs/COMMERCIAL_READINESS.md)
 - [General user manual](docs/USER_GUIDE.md)
+- [Very detailed general user manual DOCX](docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx)
+- [Very detailed general user manual PDF](docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf)
 - [Illustrated general user manual DOCX](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx)
 - [Illustrated general user manual PDF](docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)
 - [General user manual DOCX](docs/guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx)
@@ -158,7 +175,7 @@ Commercial readiness documents:
 Commercial production gate:
 
 ```bash
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 Use `--skip-db` only for public installability checks that intentionally do not include a private production database.
@@ -180,10 +197,10 @@ Recent hardening work is reflected in the public docs and live gates:
 - **PDF / OCR**: PDF naming supports envelope-page skipping, multi-engine OCR consensus, legal-text correction, and training feedback for court notices, procedural rulings, judgments, opposing-party pleadings, and judgment folders.
 - **Pleadings**: OSC pleading generation includes Word/PDF layout safeguards and case-reason-scoped correction learning.
 - **Accounting**: Google Sheets imports can exclude coworker-tagged rows, deduplicate recurring fixed expenses, and run on Monday/Friday schedules.
-- **Legal research**: the Taiwan legal MCP adapter is available as a practical-opinion source; misses are reported as misses rather than filled by the model.
+- **Legal research**: the Taiwan legal MCP adapter and TLR full-judgment semantic retrieval can supplement practical-opinion searches and judgment classification; misses are reported as misses rather than filled by the model.
 - **Legal AI delivery gates**: legal answers carry source/coverage review notes; summary, translation, and transcript outputs are blocked when they are too short, off-topic, failed, or leak tool reasoning.
 - **Office overview**: the web UI links cases, todos, LAF, pleading index, public-facing data, and business overview without duplicating the source modules.
-- **Operations**: the full smoke gate now includes commercial-release guards, clean public install checks, public secret audit, disk low-water alarms, cache cleanup, NAS mount guards, and notification-routing checks.
+- **Operations**: `run_test_suite.py` now owns release gates for `ci`, `smoke62`, `production-live`, and `commercial-release`; commercial release includes strict public isolation, clean public install checks, disk/resource guards, model live checks, operational hardening, channel smoke, heavy route checks, and skill real-world smoke.
 
 Live acceptance is covered by `scripts/live_magi_mtp_eval.py`. The latest local verification exercised JSON routing, ReAct real tool calls, all ReAct tool-selection paths, tool-confusion guards, and hallucination abstention checks.
 
@@ -289,7 +306,7 @@ Feature flag: `MAGI_ENSEMBLE_TOOLS=1` (default `0`).
 When local oMLX fails or a request needs SOTA reasoning, MAGI can fall back to NVIDIA NIM's free cloud inference:
 
 - **Trigger**: User prefixes message with `@heavy` or `@重型` (opt-in, never automatic)
-- **Primary model**: `meta/llama-3.1-405b-instruct` (128K context, multilingual, no content censorship)
+- **Primary model**: `nvidia/nemotron-3-super-120b-a12b` (multilingual, long-context, live-tested through MAGI translation quality gates)
 - **Fast model**: `meta/llama-3.3-70b-instruct` for simpler heavy requests
 - **Hardcoded block list**: Chinese models (DeepSeek / Qwen / MiniMax / Kimi / GLM / Yi / Baichuan / Moonshot / InternLM / ChatGLM / SenseTime) — banned due to content censorship unsuitable for legal work
 - **PII scrubber**: Reversible masking of TW ID, LAF case no, court case no, mobile, and DB-known client names (restored in reply)
@@ -338,6 +355,7 @@ MAGI can read multiple Google calendars, but OSC todo import is intentionally na
 - LAF activity-count events may still be imported when the DB identifies the target as a Legal Aid Foundation case and the event text is a reportable activity: hearing, meeting, detention visit, file review, or phone contact.
 - Same-name cases are resolved through DB fields such as `laf_case_no`, `application_no`, `case_category=法律扶助案件`, `legal_aid_status`, and case-reason hints. MAGI skips only when multiple LAF cases for the same client remain indistinguishable.
 - Imported Google Calendar event ids are deduplicated to avoid repeated todos.
+- Historical todo imports are cutoff-aware. `OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE` defaults to `2026-01-01`; older OSC todos are bulk-marked `已完成` during the six-hour refresh and are not re-imported or pushed back to Google Calendar.
 
 ### Court File Review
 
@@ -375,6 +393,8 @@ All require `X-API-Key`. Body size caps: OCR 20 MB, PDF 50 MB, audio 100 MB, tex
 
 ## Operations — `magi` CLI
 
+`magi` is the supported operator CLI for installed systems. It wraps the common day-to-day controls so operators do not need to remember individual LaunchAgent or log commands.
+
 ```
 magi status       # full system health (services, oMLX, NAS, DB, zombies)
 magi restart      # clean restart via launchctl kickstart
@@ -383,7 +403,7 @@ magi zombie       # list + reap zombie processes
 magi logs         # tail all logs
 ```
 
-NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback path).
+NERV (`/dashboard/nerv` or `/nerv`) is the browser status page for production handoff, while `magi status` is the terminal status check. NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback path).
 
 **50+ scheduled cron jobs** (managed via `cron_jobs.json`, executed by the Discord Bot scheduler):
 
@@ -581,7 +601,8 @@ Key environment variables (set in `.env`):
 | `MAGI_JUDICIAL_VERIFY_SSL` | `0` | SSL verify for judicial website (disable for TLS quirks) |
 | `NVIDIA_NIM_ENABLE` | `0` | Enable NVIDIA NIM cloud fallback for heavy tasks (Plan A) |
 | `NVIDIA_NIM_API_KEY` | — | `nvapi-…` key from build.nvidia.com (free tier, 40 req/min) |
-| `NVIDIA_NIM_MODEL` | `meta/llama-3.1-405b-instruct` | Heavy model (128K context, multilingual, non-censored) |
+| `NVIDIA_NIM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Heavy model; legacy 405B configs are mapped to this model |
+| `NVIDIA_NIM_TRANSLATE_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Heavy translation model; isolates legal translation quality from general heavy experiments |
 | `NVIDIA_NIM_MODEL_FAST` | `meta/llama-3.3-70b-instruct` | Fast model for general @heavy requests |
 | `NVIDIA_NIM_REQUIRE_OPTIN` | `1` | Require `@heavy` / `@重型` prefix to trigger NIM |
 | `NVIDIA_NIM_REQUIRE_PII_SCRUB` | `1` | PII scrub before sending to cloud (never disable) |
@@ -596,7 +617,7 @@ Key environment variables (set in `.env`):
 
 | Layer | Technology |
 |-------|-----------|
-| **Runtime** | Python 3.9+ (production: 3.14 on macOS), venv |
+| **Runtime** | Python 3.12+ (production: 3.14 on macOS), venv |
 | **LLM inference** | [oMLX](https://github.com/omlx/omlx) (MLX / Apple Silicon) · Ollama (Linux/Windows) |
 | **Models** | Gemma-4 E4B · Phi-4-mini · SmolLM3-3B · Gemma-4 26B (night) |
 | **Embeddings** | ModernBERT-embed-4bit (port 8081) |
@@ -613,7 +634,7 @@ Key environment variables (set in `.env`):
 | **NAS** | SMB via LAN (MAGI_NAS_HOST) with Tailscale fallback (MAGI_NAS_TAILSCALE_HOST) |
 | **Calendar** | Google Calendar API (OAuth2, auto-refresh) |
 | **Security** | Iron Dome rule engine · tw_output_guard · trust-badge leak detector |
-| **Testing** | pytest (1 336 tests) |
+| **Testing** | `scripts/ops/run_test_suite.py` gates backed by pytest and live smoke checks |
 
 ---
 
@@ -649,7 +670,7 @@ MAGI_v2/
 │   └── … (60+ skills total)
 ├── docs/
 │   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
-├── tests/                      # 1 336 pytest tests
+├── tests/                      # pytest coverage used by run_test_suite gates
 ├── cron_jobs.json              # Single source of truth for all scheduled jobs
 └── .env                        # Runtime configuration (not committed)
 ```
@@ -673,53 +694,40 @@ MAGI_v2/
 
 ## Testing
 
+The README no longer keeps a hand-maintained inventory of individual pytest modules. The source of truth is [docs/TESTING_SYSTEM.md](docs/TESTING_SYSTEM.md) and `config/test_matrix.json`; run everything through `scripts/ops/run_test_suite.py` so GitHub CI, local smoke, production live checks, and commercial release checks stay aligned.
+
 ```bash
-# Full suite (~140 files · ~1 575 tests · ~12 min)
-./venv/bin/python -m pytest -q
+# Discover gates
+./venv/bin/python scripts/ops/run_test_suite.py --list
 
-# By module
-pytest tests/test_routing_unified.py            # unified routing (38 tests)
-pytest tests/test_tools_api_async_jobs.py       # async job queue API (18 tests)
-pytest tests/test_react_omlx.py                 # ReAct + ensemble tools
-pytest tests/test_document_reader.py            # MarkItDown adapter (24 tests)
-pytest tests/test_translator_legal_termbase.py  # three-tier legal termbase (22 tests)
-pytest tests/test_translator_post_edit.py       # APE post-edit pipeline (22 tests)
-pytest tests/test_knowledge_graph.py            # Graph-RAG
-pytest tests/test_hallucination_regression.py   # hallucination guard (22 tests)
-pytest tests/test_laf_progress_helper.py        # LAF progress report helpers (16 tests)
-pytest tests/test_memory_policy.py              # memory write policy (20 tests)
+# Public-safe GitHub / clean-checkout gate
+./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 
-# Live smoke (requires running services)
+# Local production-machine smoke
+./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62 --json-out .runtime/smoke62_latest.json
+
+# Production live validation on the target host
+./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
+
+# Public/commercial release gate
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
+```
+
+Release acceptance means `ci`, `smoke62`, and `production-live` pass on the appropriate machine; shared or commercial builds must also pass `commercial-release`. Keep JSON reports in `.runtime/` or attach them to release notes, and use NERV (`/dashboard/nerv` or `/nerv`) plus `magi status` for the final operator-facing health check.
+
+Useful live checks while investigating a running host:
+
+```bash
 magi status
 curl http://127.0.0.1:5002/health
 curl http://127.0.0.1:5003/health
-MAGI_USE_SCRAPLING=1 skills/judicial-web-search/action.py --task self_test
-skills/laf-orchestrator/action.py --task self_test
-skills/file-review-orchestrator/action.py --task self_test
-skills/transcript-downloader/action.py --task self_test
 ```
 
-### Test Suite Coverage (~140 files · ~1 575 tests)
+The strict public isolation audit is part of `commercial-release` and can also be run directly before publishing:
 
-| Category | Files | Tests | Key areas |
-|----------|-------|-------|-----------|
-| **Routing & dispatch** | 13 | 190 | Unified routing, skill contracts (market-briefing / trial-prep / contract-review), command dispatch, skill smoke |
-| **Apple platform** | 10 | 173 | Spotlight, Keychain, EventKit (calendar), CoreML classifier, NaturalLanguage NLP, Contacts, file monitor |
-| **Infrastructure** | 33 | 218 | Health probes, session/context management, audio pipeline, text processing, logging, packaging, entrypoints, security baseline (CORS / headers / cookies) |
-| **Platform layer (R1–R3)** | 7 | 72 | RemoteHealthGate circuit breaker (16), Balthasar/Melchior/NIM opt-in (15), SafeProcess argv/env/timeout (19), RuntimeDir atomic I/O (14), cron state migration (8) |
-| **Documents & PDF** | 7 | 86 | MarkItDown adapter, PDF bridge (OCR + timeout recovery), pdf-namer (naming_validator, dynamic confidence), pdf-bookmarker (OLA threshold, Vision fallback) |
-| **Legal Aid (LAF)** | 11 | 81 | Progress report helpers, submit-pending token lifecycle, closing E2E mock, email classification, case category resolver, duplicate check |
-| **Config & runtime** | 21 | 80 | Runtime path resolution, modular config, model config, authz, provider adapters, job scheduling |
-| **Tools API** | 8 | 76 | Tool-first pipeline, async job queue (202/poll pattern), inference gateway routing, shortcut endpoints |
-| **Translation** | 5 | 65 | Three-tier legal termbase (MOJ SQLite / JSON / prompt), Apple Translation + APE post-edit validator, pipeline resilience, unified API |
-| **Memory system** | 8 | 58 | Memory write policy, grounding & query augmentation, Graph-RAG recall, false-memory regression, assistant-utterance promotion guard, provenance tracking |
-| **Verification & safety** | 6 | 49 | Hallucination regression (22 scenarios), answer verifier, authz gate, output guard (trust-badge leak), security baseline |
-| **Data & persistence** | 6 | 45 | Job queue (SQLite), embedding router, migration framework, DB helper, vector pipeline NLP |
-| **CI / packaging** | 2 | 29 | Hardcode checker, console-script targets |
-
-CI gates:
-- `scripts/ci/check_hardcodes.py` — fails on any committed IP / credential.
-- `scripts/ci/check_shell_true.py` — blocks new `shell=True` / `os.system(f"…")` additions (grandfather list for 4 approved legacy sites).
+```bash
+python3 scripts/public_release_audit.py --public-isolation --strict
+```
 
 ---
 
