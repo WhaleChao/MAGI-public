@@ -2280,13 +2280,12 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
 
                 msg = "\n".join(summary_lines)
 
-                # Send notification text first
-                _notify(msg, notify)
-
-                # Send PDFs via TG/DC and record actual file delivery.
+                # Each PDF caption is the user-facing notification. Do not send
+                # a separate summary first, or the same payment slip appears
+                # twice with different wording.
                 for i, pdf_path in enumerate(pdf_paths):
                     label = case_labels[i] if i < len(case_labels) else os.path.basename(pdf_path)
-                    caption = f"📄 繳費單 ({i+1}/{len(pdf_paths)}): {label}"
+                    caption = f"💰 繳費單 PDF 下載完成 ({i+1}/{len(pdf_paths)}): {label}"
                     if _notify_file(pdf_path, caption=caption, flag=notify, topic_key="filereview_payment"):
                         _mark_payment_file_delivered(pdf_path, creds["download_folder"], caption=caption)
 
@@ -2299,7 +2298,7 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
                 }
             else:
                 msg = "ℹ️ 無待下載繳費單（可能全部已處理或無待繳費案件）"
-                _notify(msg, notify)
+                _notify(msg, notify, topic_key="quiet_cron")
                 return {
                     "success": True,
                     "count": 0,
@@ -3971,8 +3970,6 @@ def _save_recent_activity_state(download_folder: str, state: dict) -> None:
 def _recent_activity_fingerprint(item: dict) -> str:
     if not isinstance(item, dict):
         return ""
-    processed_at = item.get("processed_at")
-    processed_at_text = processed_at.isoformat() if isinstance(processed_at, datetime) else str(processed_at or "").strip()
     case_key = _portal_item_case_key(
         {
             "case_number": item.get("case_number"),
@@ -3987,7 +3984,6 @@ def _recent_activity_fingerprint(item: dict) -> str:
         case_key,
         str(item.get("detail") or "").strip(),
         str(item.get("count") or "").strip(),
-        processed_at_text,
     ]
     return "|".join(parts)
 
@@ -4918,17 +4914,6 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or review_signal
                 or download_signal
             )
-            # ── DC 靜音策略 ──
-            # 定期檢查但沒有新資訊時，只發 TG（quiet_cron 不在 DC mirror 白名單中）；
-            # 有新的、需要使用者處理的資訊時才鏡像到 DC。
-            _has_new_actionable_info = bool(
-                payment_signal          # 有真正待處理的繳費資訊
-                or pickup_hits > 0      # 有新到院閱卷通知信件
-                or (portal_pickup > 0 and _portal_pickup_changed)  # 可到院閱卷
-                or download_signal      # 有新卷宗下載
-                or err_cnt > 0          # 有掃描錯誤
-                or _portal_failure_alert  # 連續入口失敗才提醒，避免法院短暫抖動洗版
-            )
             # 無新資訊時不推播；手動/cron 呼叫仍會在 out["message"] 回傳摘要。
             should_notify_now = notify and has_something_to_notify
             if should_notify_now or (warn and notify_empty):
@@ -4936,9 +4921,10 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     sent_payment_section = False
                     sent_review_section = False
                     for section_msg, section_topic in section_messages:
-                        # 無新可處理資訊 → quiet_cron → TG only；有新資訊 → 原 topic → TG + DC
-                        effective_topic = section_topic if _has_new_actionable_info else "quiet_cron"
-                        _notify(section_msg, True, topic_key=effective_topic)
+                        # check_emails 是巡檢摘要；單筆繳費通知與實際下載完成
+                        # 已由各自流程發送。這裡固定 TG-only，避免同一案件
+                        # 以「檢查完成 / 回報」文案再鏡像到業務 DC。
+                        _notify(section_msg, True, topic_key="quiet_cron")
                         if section_topic == "filereview_payment":
                             sent_payment_section = True
                         elif section_topic == "filereview_download":

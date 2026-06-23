@@ -12564,27 +12564,9 @@ class FileReviewManager:
 
             any_ok = False
 
-            # ── red_phone: TG 推送 + DC mirror ──────────────────
-            try:
-                from skills.ops.red_phone import send_telegram_push_with_status
-                st = send_telegram_push_with_status(
-                    msg,
-                    severity="info",
-                    source="file_review_orchestrator",
-                    topic_key="filereview_payment",
-                    queue_on_fail=True,
-                ) or {}
-                if bool(st.get("telegram")) or bool(st.get("queued")):
-                    any_ok = True
-                    self.log(f"  ✅ red_phone 繳費通知已送達: {court_case_no}")
-                else:
-                    self.log(f"  ⚠️ red_phone 送達失敗: {st.get('error', '')[:80]}")
-            except Exception as rp_e:
-                self.log(f"  ⚠️ red_phone import/send 失敗: {rp_e}")
-
-            # ── 附件：LAFNotifier 已同時送 TG + DC；red_phone 僅作 DC fallback ─────────
+            # ── 附件優先：有 PDF 時，附件 caption 就是主通知，避免純文字與 PDF 通知各送一次。 ──
             if existing_files:
-                file_caption = f"📎 繳費單 PDF — {info.client_name} {court_case_no}"
+                file_caption = msg
                 file_delivery_ok = False
                 try:
                     ensure_path_on_sys_path(get_orch_dir())
@@ -12619,6 +12601,25 @@ class FileReviewManager:
                                 self.log(f"  ⚠️ DC PDF fallback 上傳失敗: {os.path.basename(fp)}")
                     except Exception as dc_e:
                         self.log(f"  ⚠️ DC 檔案 fallback 上傳失敗: {dc_e}")
+
+            # ── 無 PDF 或附件失敗時，才送純文字 red_phone。 ─────────────────────
+            if not any_ok:
+                try:
+                    from skills.ops.red_phone import send_telegram_push_with_status
+                    st = send_telegram_push_with_status(
+                        msg,
+                        severity="info",
+                        source="file_review_orchestrator",
+                        topic_key="filereview_payment",
+                        queue_on_fail=True,
+                    ) or {}
+                    if bool(st.get("telegram")) or bool(st.get("queued")):
+                        any_ok = True
+                        self.log(f"  ✅ red_phone 繳費通知已送達: {court_case_no}")
+                    else:
+                        self.log(f"  ⚠️ red_phone 送達失敗: {st.get('error', '')[:80]}")
+                except Exception as rp_e:
+                    self.log(f"  ⚠️ red_phone import/send 失敗: {rp_e}")
 
             # ── Fallback: red_phone 不可用時嘗試直接 TG ──────────
             if not any_ok:

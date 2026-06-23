@@ -6,6 +6,7 @@ import base64
 import importlib.util
 import json
 import sys
+import types
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -81,8 +82,17 @@ def test_recent_download_activity_ignores_exists_skip(tmp_path):
     assert records[0]["detail"] == "已下載卷宗（2 份）"
 
 
-def test_recent_activity_backlog_is_seeded_then_only_new_items_surface(tmp_path):
+def test_recent_activity_backlog_is_seeded_then_only_new_items_surface(tmp_path, monkeypatch):
     module = _load_action_module()
+    seen_dedup = set()
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.dedup_db",
+        types.SimpleNamespace(
+            is_done=lambda _category, key: key in seen_dedup,
+            mark_done=lambda _category, key, metadata=None: seen_dedup.add(key),
+        ),
+    )
     download_folder = str(tmp_path)
     base_record = {
         "processed_at": datetime.now() - timedelta(minutes=30),
@@ -670,6 +680,145 @@ def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_pa
     assert data["portal_downloadable"] == 6
     assert data["portal_court_pickup"] == 29
     assert data["portal_pending"] == 0
+
+
+def test_recent_activity_fingerprint_ignores_processed_at_for_same_download():
+    module = _load_action_module()
+    base = {
+        "source": "download_job",
+        "artifact_type": "review_download",
+        "party": "林建豐",
+        "case_number": "115年度原交易字第21號",
+        "detail": "已下載卷宗（2 份）",
+        "count": 2,
+    }
+
+    first = dict(base, processed_at="2026-06-23T10:00:00")
+    second = dict(base, processed_at="2026-06-23T10:05:00")
+
+    assert module._recent_activity_fingerprint(first) == module._recent_activity_fingerprint(second)
+
+
+def test_payment_pdf_notification_uses_file_caption_without_duplicate_text_push(tmp_path, monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import (
+        FileReviewInfo,
+        FileReviewManager,
+    )
+
+    pdf = tmp_path / "繳費單_林建豐_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    info = FileReviewInfo(
+        court="臺灣花蓮地方法院",
+        client_name="林建豐",
+        court_case_no="115年度原交易字第21號",
+        status="待繳費",
+        payment_deadline="2026-06-30",
+        files=[str(pdf)],
+    )
+
+    sent_files = []
+
+    class FakeNotifier:
+        def notify_admin_with_files(self, text, file_paths, **kwargs):
+            sent_files.append((text, file_paths, kwargs))
+            return True
+
+        def notify_admin(self, *_args, **_kwargs):
+            raise AssertionError("text fallback should not run after file delivery")
+
+    def fail_text_push(*_args, **_kwargs):
+        raise AssertionError("red_phone text push should not run before successful file delivery")
+
+    fake_red_phone = types.SimpleNamespace(
+        send_telegram_push_with_status=fail_text_push,
+        send_discord_bot_file=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("discord file fallback should not run after file delivery")
+        ),
+    )
+    fake_line_notifier = types.SimpleNamespace(LAFNotifier=lambda: FakeNotifier())
+    fake_dedup_db = types.SimpleNamespace(is_done=lambda *_args, **_kwargs: False)
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake_red_phone)
+    monkeypatch.setitem(sys.modules, "line_notifier", fake_line_notifier)
+    monkeypatch.setitem(sys.modules, "skills.ops.dedup_db", fake_dedup_db)
+    monkeypatch.setattr(
+        "casper_ecosystem.law_firm_orchestrators.line_notifier.LAFNotifier",
+        lambda: FakeNotifier(),
+    )
+
+    assert mgr.notify_payment_needed(info) is True
+
+    assert len(sent_files) == 1
+    text, file_paths, kwargs = sent_files[0]
+    assert text.startswith("💰 繳費單通知")
+    assert "林建豐 - 115年度原交易字第21號" in text
+    assert file_paths == [str(pdf)]
+    assert kwargs["topic_key"] == "filereview_payment"
+
+
+def test_payment_slip_download_sends_files_without_duplicate_summary_text(tmp_path, monkeypatch):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_凡江_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    text_notifications = []
+    file_notifications = []
+
+    class FakeManager:
+        def __init__(self, **_kwargs):
+            pass
+
+        def login(self):
+            return True
+
+        def navigate_to_file_review(self):
+            return None
+
+        def download_all_payment_slips(self, max_days=14):
+            return [
+                {
+                    "party": "凡江",
+                    "case_number": "115年度原交易字第21號",
+                    "all_paths": [str(pdf)],
+                }
+            ]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(module, "_load_config", lambda: {})
+    monkeypatch.setattr(
+        module,
+        "_get_credentials",
+        lambda _cfg: {
+            "username": "u",
+            "password": "p",
+            "download_folder": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(module, "_get_db_manager", lambda _cfg: None)
+    monkeypatch.setattr(module, "_ensure_imports", lambda: types.SimpleNamespace(FileReviewManager=FakeManager))
+    monkeypatch.setattr(module, "_is_valid_payment_pdf_file", lambda path: path == str(pdf))
+    monkeypatch.setattr(module, "_notify", lambda *args, **kwargs: text_notifications.append((args, kwargs)))
+    monkeypatch.setattr(module, "_notify_file", lambda *args, **kwargs: file_notifications.append((args, kwargs)) or True)
+    monkeypatch.setattr(module, "_mark_payment_file_delivered", lambda *args, **kwargs: None)
+
+    result = module.cmd_download_payment_slips(notify=True)
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert text_notifications == []
+    assert len(file_notifications) == 1
+    args, kwargs = file_notifications[0]
+    assert args[0] == str(pdf)
+    assert kwargs["topic_key"] == "filereview_payment"
+    assert kwargs["caption"].startswith("💰 繳費單 PDF 下載完成")
+
+
+def test_file_review_check_summaries_are_quiet_cron_only():
+    source = MODULE_PATH.read_text(encoding="utf-8")
+
+    assert '_notify(section_msg, True, topic_key="quiet_cron")' in source
+    assert "effective_topic = section_topic" not in source
 
 
 def _roc_compact(days_from_now: int = 3) -> str:

@@ -689,6 +689,34 @@ def _canonical_topic_key(key: str) -> str:
     return aliases.get(k, k)
 
 
+DEFAULT_TELEGRAM_FORUM_TOPICS: dict[str, str] = {
+    "check": "MAGI 巡檢",
+    "alert": "MAGI 警報",
+    "nightly": "MAGI 夜間",
+    "filereview": "閱卷總覽",
+    "filereview_payment": "閱卷繳費",
+    "filereview_download": "閱卷下載",
+    "filereview_apply": "閱卷聲請",
+    "laf": "法扶總覽",
+    "laf_general": "法扶巡檢",
+    "laf_dispatch": "法扶派案",
+    "laf_go_live": "法扶開辦",
+    "laf_closing": "法扶報結",
+    "laf_fee": "法扶費用",
+    "laf_inquiry": "法扶疑義",
+    "laf_condition": "法扶附條件",
+    "laf_progress": "法扶進度",
+    "transcript": "筆錄",
+    "judgment": "判決與裁判",
+    "judicial_api": "司法院 API",
+    "verbatim": "逐字稿",
+    "translation": "翻譯",
+    "summary": "摘要",
+    "filing": "歸檔",
+    "market": "市場",
+}
+
+
 def _normalize_topic_map(raw: dict) -> dict[str, int]:
     out: dict[str, int] = {}
     if not isinstance(raw, dict):
@@ -703,6 +731,115 @@ def _normalize_topic_map(raw: dict) -> dict[str, int]:
             continue
         if tid > 0:
             out[ck] = tid
+    return out
+
+
+def _write_topic_map(topic_map: dict[str, int], *, chat_id: str = "", source: str = "ensure") -> None:
+    normalized = _normalize_topic_map(topic_map)
+    os.makedirs(os.path.dirname(RED_PHONE_TOPIC_MAP_FILE), exist_ok=True)
+    tmp = RED_PHONE_TOPIC_MAP_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, RED_PHONE_TOPIC_MAP_FILE)
+
+    state = {
+        "version": 1,
+        "updated_at": datetime.now().isoformat(),
+        "source": source,
+        "chat_id": str(chat_id or ""),
+        "topicMap": normalized,
+    }
+    tmp_state = TELEGRAM_CHANNEL_STATE_FILE + ".tmp"
+    with open(tmp_state, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_state, TELEGRAM_CHANNEL_STATE_FILE)
+
+
+def ensure_telegram_forum_topics(
+    *,
+    topic_names: Optional[dict[str, str]] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Ensure MAGI Telegram forum topics exist and persist their thread IDs.
+
+    Telegram Bot API cannot list existing forum topics, so this helper is
+    intentionally conservative: it only creates topics missing from the local
+    topic map, then records the returned ``message_thread_id`` for routing.
+    """
+
+    token, chat_ids = _get_telegram_config()
+    topic_names = topic_names or DEFAULT_TELEGRAM_FORUM_TOPICS
+    existing = _load_topic_map()
+    out = {
+        "ok": False,
+        "dry_run": bool(dry_run),
+        "chat_id": str(chat_ids[0]) if chat_ids else "",
+        "is_forum": False,
+        "existing_count": len(existing),
+        "created": {},
+        "skipped": {},
+        "errors": [],
+        "topic_map_file": RED_PHONE_TOPIC_MAP_FILE,
+        "state_file": TELEGRAM_CHANNEL_STATE_FILE,
+    }
+    if not token or not chat_ids:
+        out["errors"].append("telegram token/admin ids missing")
+        return out
+
+    chat_id = str(chat_ids[0])
+    try:
+        req = urlrequest.Request(
+            f"https://api.telegram.org/bot{token}/getChat?chat_id={chat_id}",
+            method="GET",
+        )
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        chat = payload.get("result") or {}
+        out["is_forum"] = bool(chat.get("is_forum"))
+        out["chat_title"] = str(chat.get("title") or "")
+        if not out["is_forum"]:
+            out["errors"].append("telegram target chat is not a forum supergroup")
+            return out
+    except Exception as exc:
+        out["errors"].append(f"getChat failed: {type(exc).__name__}: {str(exc)[:200]}")
+        return out
+
+    merged = dict(existing)
+    for raw_key, title in topic_names.items():
+        key = _canonical_topic_key(raw_key)
+        if not key:
+            continue
+        if key in merged and int(merged[key]) > 0:
+            out["skipped"][key] = int(merged[key])
+            continue
+        if dry_run:
+            out["created"][key] = {"title": title, "dry_run": True}
+            continue
+        body = json.dumps({"chat_id": chat_id, "name": str(title or key)[:128]}, ensure_ascii=False).encode("utf-8")
+        try:
+            req = urlrequest.Request(
+                f"https://api.telegram.org/bot{token}/createForumTopic",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=12) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            result = payload.get("result") or {}
+            tid = int(result.get("message_thread_id") or 0)
+            if tid <= 0:
+                raise RuntimeError("missing message_thread_id")
+            merged[key] = tid
+            out["created"][key] = {"title": title, "message_thread_id": tid}
+        except Exception as exc:
+            out["errors"].append(f"{key}: createForumTopic failed: {type(exc).__name__}: {str(exc)[:240]}")
+
+    if not dry_run:
+        _write_topic_map(merged, chat_id=chat_id, source="ensure_telegram_forum_topics")
+    out["topic_map"] = merged
+    out["ok"] = not out["errors"] and (
+        bool(dry_run) or all(_canonical_topic_key(k) in merged for k in topic_names)
+    )
     return out
 
 
@@ -986,28 +1123,10 @@ def _send_telegram_once(
                     body = (e.read() or b"").decode("utf-8", "ignore")
                 except Exception:
                     body = ""
-                can_retry_without_thread = (
-                    bool(thread_id)
-                    and int(getattr(e, "code", 0) or 0) in {400, 403}
-                    and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
-                )
-                if can_retry_without_thread:
-                    try:
-                        retry_payload = json.dumps({"chat_id": str(chat_id), "text": chunk}, ensure_ascii=False).encode("utf-8")
-                        req2 = urlrequest.Request(
-                            f"https://api.telegram.org/bot{token}/sendMessage",
-                            data=retry_payload,
-                            headers={"Content-Type": "application/json"},
-                            method="POST",
-                        )
-                        with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
-                            pass
-                        continue
-                    except Exception as retry_e:
-                        errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
-                        sent_all = False
-                        break
-                errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
+                if bool(thread_id) and ("message thread not found" in body.lower() or "message_thread_id" in body.lower()):
+                    errors.append(f"{chat_id}:invalid_thread:{thread_id}")
+                else:
+                    errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
                 sent_all = False
                 break
             except URLError as e:
