@@ -10,6 +10,7 @@ P0-05: Config 分為 core required 與 feature-scoped required。
 
 import logging
 import os
+from typing import Optional
 
 logger = logging.getLogger("MAGIConfig")
 

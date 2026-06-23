@@ -39,6 +39,7 @@
             "scripts/ops/resource_governor.py",
             "scripts/ops/model_live_gate.py",
             "scripts/ops/commercial_readiness_live.py",
+            "skills/ops/config.py",
             "skills/process-hygiene/action.py",
             "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
           ],
