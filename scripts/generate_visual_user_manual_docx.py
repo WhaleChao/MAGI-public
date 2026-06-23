@@ -78,6 +78,20 @@ def draw_text_box(
         y += size + line_gap
 
 
+def draw_centered_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box: tuple[int, int, int, int],
+    size: int,
+    fill: str = INK,
+) -> None:
+    text_font = font(size)
+    bbox = draw.textbbox((0, 0), text, font=text_font)
+    x = box[0] + (box[2] - box[0] - (bbox[2] - bbox[0])) / 2
+    y = box[1] + (box[3] - box[1] - (bbox[3] - bbox[1])) / 2
+    draw.text((x, y), text, font=text_font, fill="#" + fill)
+
+
 def save_image(path: Path, image: Image.Image) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, "PNG")
@@ -132,35 +146,52 @@ def make_cover(path: Path) -> Path:
 
 
 def make_module_map(path: Path) -> Path:
-    img = Image.new("RGB", (1500, 760), "#FFFFFF")
+    img = Image.new("RGB", (1600, 980), "#F8FAFC")
     draw = ImageDraw.Draw(img)
-    draw_round_rect(draw, (380, 55, 1120, 205), fill="E0F2FE", outline="7DD3FC", radius=34)
-    draw.text((632, 88), "MAGI", font=font(60), fill="#" + BLUE)
-    draw.text((522, 158), "案件資料核心：不重複建資料、不混同案件", font=font(30), fill="#" + INK)
+    draw.text((70, 48), "MAGI 彩色功能心智圖", font=font(54), fill="#" + INK)
+    draw.text((72, 112), "按使用情境分色：入口、案件、文件、產出、法扶法院、研究、營運、健康安全。", font=font(27), fill="#" + MUTED)
 
-    modules = [
-        ("案件管理", "人工狀態優先", 95, 265, BLUE),
-        ("檔案與 OCR", "預覽 / 分享 / 命名", 515, 265, GREEN),
-        ("AI 交付", "摘要 / 翻譯 / 逐字稿", 935, 265, PURPLE),
-        ("法扶、閱卷、筆錄", "開辦 / 回報 / 去重", 95, 465, AMBER),
-        ("法律資料", "法條 / 判決 / 實務見解", 515, 465, "2563EB"),
-        ("健康維運", "模型 / DB / NAS / 外網", 935, 465, RED),
+    center = (610, 365, 990, 555)
+    draw_round_rect(draw, (center[0] + 8, center[1] + 10, center[2] + 8, center[3] + 10), fill="CBD5E1", outline="CBD5E1", radius=42)
+    draw_round_rect(draw, center, fill="0F172A", outline="38BDF8", radius=42, width=4)
+    draw_centered_text(draw, "MAGI", (center[0], center[1] + 18, center[2], center[1] + 88), 62, "FFFFFF")
+    draw_centered_text(draw, "案件資料核心", (center[0], center[1] + 92, center[2], center[1] + 140), 30, "BAE6FD")
+    draw_centered_text(draw, "查得到才回答；正式動作先確認", (center[0], center[1] + 137, center[2], center[3] - 20), 25, "E2E8F0")
+
+    cards = [
+        ("日常入口", "Web / LINE\nDiscord / Telegram\n自然語言交辦", (70, 195, 390, 365), "06B6D4", "ECFEFF"),
+        ("案件工作", "新建案件\n案件資料夾\n庭期與待辦", (455, 150, 775, 320), BLUE, "EFF6FF"),
+        ("文件處理", "OCR / PDF 命名\nPDF 書籤\n摘要與逐字稿", (825, 150, 1145, 320), GREEN, "F0FDF4"),
+        ("法律產出", "書狀草擬\n委任與收據\n契約與存證信函", (1210, 195, 1530, 365), PURPLE, "F5F3FF"),
+        ("法扶與法院", "法扶開辦報結\n閱卷繳費下載\n筆錄歸檔", (70, 580, 390, 750), AMBER, "FFFBEB"),
+        ("法律研究", "判決與法條\n實務見解庫\n通譯研究", (455, 640, 775, 810), "0F766E", "ECFDF5"),
+        ("營運管理", "帳務與報價\nCalendar / Drive\nNAS 同步", (825, 640, 1145, 810), RED, "FFF1F2"),
+        ("健康安全", "夜間巡檢\nCI / LIVE 驗收\n危險操作確認", (1210, 580, 1530, 750), "475569", "F1F5F9"),
     ]
-    for x1, y1, x2, y2 in [(285, 220, 285, 250), (705, 220, 705, 250), (1125, 220, 1125, 250)]:
-        draw.line((x1, y1, x2, y2), fill="#" + BORDER, width=5)
-    for title, desc, x, y, color in modules:
-        draw_round_rect(draw, (x, y, x + 370, y + 150), fill="F8FAFC", outline=color, radius=26)
-        title_font = font(35 if len(title) <= 6 else 31)
-        bbox = draw.textbbox((0, 0), title, font=title_font)
-        title_w = bbox[2] - bbox[0]
-        draw.text((x + (370 - title_w) / 2, y + 32), title, font=title_font, fill="#" + color)
-        desc_font = font(25)
-        bbox = draw.textbbox((0, 0), desc, font=desc_font)
-        desc_w = bbox[2] - bbox[0]
-        draw.text((x + (370 - desc_w) / 2, y + 92), desc, font=desc_font, fill="#" + MUTED)
+    cx = (center[0] + center[2]) // 2
+    cy = (center[1] + center[3]) // 2
+    for title, body, box, color, fill in cards:
+        bx = (box[0] + box[2]) // 2
+        by = (box[1] + box[3]) // 2
+        draw.line((cx, cy, bx, by), fill="#" + color, width=6)
+    draw_round_rect(draw, (center[0] + 8, center[1] + 10, center[2] + 8, center[3] + 10), fill="CBD5E1", outline="CBD5E1", radius=42)
+    draw_round_rect(draw, center, fill="0F172A", outline="38BDF8", radius=42, width=4)
+    draw_centered_text(draw, "MAGI", (center[0], center[1] + 18, center[2], center[1] + 88), 62, "FFFFFF")
+    draw_centered_text(draw, "案件資料核心", (center[0], center[1] + 92, center[2], center[1] + 140), 30, "BAE6FD")
+    draw_centered_text(draw, "查得到才回答；正式動作先確認", (center[0], center[1] + 137, center[2], center[3] - 20), 25, "E2E8F0")
+    for title, body, box, color, fill in cards:
+        draw_round_rect(draw, (box[0] + 6, box[1] + 8, box[2] + 6, box[3] + 8), fill="E2E8F0", outline="E2E8F0", radius=28)
+        draw_round_rect(draw, box, fill=fill, outline=color, radius=28, width=4)
+        draw_round_rect(draw, (box[0] + 18, box[1] + 18, box[2] - 18, box[1] + 62), fill=color, outline=color, radius=16)
+        draw_centered_text(draw, title, (box[0] + 18, box[1] + 18, box[2] - 18, box[1] + 62), 28, "FFFFFF")
+        y = box[1] + 78
+        for line in body.splitlines():
+            draw.ellipse((box[0] + 28, y + 7, box[0] + 40, y + 19), fill="#" + color)
+            draw.text((box[0] + 52, y), line, font=font(21), fill="#" + INK)
+            y += 29
 
-    draw_round_rect(draw, (95, 670, 1405, 720), fill="F8FAFC", outline=BORDER, radius=18)
-    draw.text((122, 682), "原則：問行程查行事曆；問案件查案件資料；問判決查法律資料；查不到就回報查不到，不用模型猜。", font=font(25), fill="#" + INK)
+    draw_round_rect(draw, (94, 875, 1506, 930), fill="FFFFFF", outline=BORDER, radius=18)
+    draw.text((122, 890), "閱讀方式：從中心往外看。顏色代表功能領域，同一顏色內的任務通常會共享資料、通知與驗收規則。", font=font(25), fill="#" + INK)
     return save_image(path, img)
 
 
