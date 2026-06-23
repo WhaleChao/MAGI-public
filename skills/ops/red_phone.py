@@ -14,6 +14,7 @@ import json
 import logging
 import time
 import uuid
+import hashlib
 from datetime import datetime
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
@@ -68,6 +69,8 @@ RED_PHONE_DELIVERY_LOG = os.environ.get(
 RED_PHONE_RETRY_COUNT = int(os.environ.get("MAGI_NOTIFY_RETRY_COUNT", "2") or "2")
 RED_PHONE_RETRY_BACKOFF_SEC = float(os.environ.get("MAGI_NOTIFY_RETRY_BACKOFF_SEC", "1.0") or "1.0")
 RED_PHONE_OUTBOX_MAX_RETRIES = int(os.environ.get("MAGI_NOTIFY_OUTBOX_MAX_RETRIES", "24") or "24")
+RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC = float(os.environ.get("MAGI_NOTIFY_OUTBOX_INFO_MAX_AGE_SEC", "21600") or "21600")
+RED_PHONE_OUTBOX_MAX_AGE_SEC = float(os.environ.get("MAGI_NOTIFY_OUTBOX_MAX_AGE_SEC", "86400") or "86400")
 RED_PHONE_TOPIC_MAP_FILE = os.environ.get(
     "MAGI_TELEGRAM_TOPIC_MAP_FILE",
     os.path.join(_AGENT_DIR, "telegram_topic_map.json"),
@@ -1009,7 +1012,10 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
     tmap = _load_topic_map()
     if not tmap:
         return "", None
-    key = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+    inferred_key = _infer_topic_key(message, source, severity)
+    key = _canonical_topic_key(topic_key) if topic_key else inferred_key
+    if key in {"laf", "filereview"} and inferred_key.startswith(key + "_"):
+        key = inferred_key
     if key in tmap:
         return key, int(tmap[key])
     # Fallback: filereview_payment → filereview, laf_dispatch → laf, judicial_api → judgment, etc.
@@ -1053,6 +1059,32 @@ def _load_outbox() -> list[dict]:
     return []
 
 
+def _outbox_fingerprint(message: str, severity: str = "", topic_key: str = "") -> str:
+    topic = _canonical_topic_key(str(topic_key or "").strip())
+    sev = str(severity or "warning").strip().lower()
+    body = " ".join(str(message or "").strip().split())
+    raw = "\n".join([sev, topic, body])
+    return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()
+
+
+def _outbox_entry_age_seconds(entry: dict, now_ts: float) -> float:
+    created = str((entry or {}).get("created_at") or "").strip()
+    if not created:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(created)
+        return max(0.0, now_ts - dt.timestamp())
+    except Exception:
+        return 0.0
+
+
+def _outbox_entry_max_age_seconds(entry: dict) -> float:
+    severity = str((entry or {}).get("severity") or "").strip().lower()
+    if severity in {"info", "notice", "debug"}:
+        return max(60.0, float(RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC))
+    return max(3600.0, float(RED_PHONE_OUTBOX_MAX_AGE_SEC))
+
+
 def _save_outbox(items: list[dict]) -> None:
     try:
         os.makedirs(_AGENT_DIR, exist_ok=True)
@@ -1073,19 +1105,50 @@ def _enqueue_outbox(
 ) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
+    inferred_topic = _infer_topic_key(message, source, severity)
+    requested_topic = _canonical_topic_key(topic_key)
+    effective_topic = requested_topic or inferred_topic
+    if requested_topic in {"laf", "filereview"} and inferred_topic.startswith(requested_topic + "_"):
+        effective_topic = inferred_topic
+    fingerprint = _outbox_fingerprint(message, severity=severity, topic_key=effective_topic)
+    outbox = _load_outbox()
+    for existing in outbox:
+        existing_fp = str(existing.get("fingerprint") or "")
+        if not existing_fp:
+            existing_fp = _outbox_fingerprint(
+                str(existing.get("message") or ""),
+                severity=str(existing.get("severity") or ""),
+                topic_key=str(existing.get("topic_key") or ""),
+            )
+            existing["fingerprint"] = existing_fp
+        if existing_fp == fingerprint:
+            existing["updated_at"] = datetime.now().isoformat()
+            existing["last_error"] = str(last_error or existing.get("last_error") or "")[:600]
+            _save_outbox(outbox)
+            _append_delivery_log(
+                {
+                    "event": "outbox_dedup",
+                    "entry_id": existing.get("id"),
+                    "source": source,
+                    "severity": severity,
+                    "topic_key": effective_topic,
+                    "preview": _preview_text(message),
+                }
+            )
+            return str(existing.get("id") or "")
     entry = {
         "id": entry_id,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
         "severity": str(severity or "warning"),
         "source": str(source or "direct"),
-        "topic_key": str(topic_key or ""),
+        "topic_key": str(effective_topic or ""),
         "message": str(message or ""),
+        "fingerprint": fingerprint,
         "attempts": 0,
         "next_retry_at": now_ts,
         "last_error": str(last_error or "")[:600],
     }
-    outbox = _load_outbox()
     outbox.append(entry)
     _save_outbox(outbox)
     return entry_id
@@ -1155,7 +1218,41 @@ def _flush_outbox(max_items: int = 8) -> dict:
     recovered = 0
     checked = 0
     kept = []
+    seen_fingerprints: set[str] = set()
     for entry in outbox:
+        fingerprint = str(entry.get("fingerprint") or "")
+        if not fingerprint:
+            fingerprint = _outbox_fingerprint(
+                str(entry.get("message") or ""),
+                severity=str(entry.get("severity") or ""),
+                topic_key=str(entry.get("topic_key") or ""),
+            )
+            entry["fingerprint"] = fingerprint
+        if fingerprint in seen_fingerprints:
+            _append_delivery_log(
+                {
+                    "event": "outbox_drop",
+                    "entry_id": entry.get("id"),
+                    "reason": "duplicate_pending",
+                    "preview": _preview_text(str(entry.get("message") or "")),
+                }
+            )
+            continue
+        seen_fingerprints.add(fingerprint)
+        age_sec = _outbox_entry_age_seconds(entry, now_ts)
+        max_age_sec = _outbox_entry_max_age_seconds(entry)
+        if age_sec > max_age_sec:
+            _append_delivery_log(
+                {
+                    "event": "outbox_drop",
+                    "entry_id": entry.get("id"),
+                    "reason": "stale",
+                    "age_seconds": round(age_sec, 1),
+                    "max_age_seconds": round(max_age_sec, 1),
+                    "preview": _preview_text(str(entry.get("message") or "")),
+                }
+            )
+            continue
         if checked >= max_items:
             kept.append(entry)
             continue

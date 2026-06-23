@@ -140,3 +140,51 @@ def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     data = __import__("json").loads(outbox_path.read_text("utf-8"))
     assert data[0]["id"] == entry_id
     assert data[0]["topic_key"] == "check"
+
+
+def test_outbox_deduplicates_same_pending_message(tmp_path, monkeypatch):
+    outbox_path = tmp_path / "outbox.json"
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    message = "📧 法扶派案通知\n分會: 花蓮\n當事人: 王惠薰\n法扶案號: 1150529-E-005"
+
+    first_id = red_phone._enqueue_outbox(message, severity="info", source="laf_notifier", topic_key="laf")
+    second_id = red_phone._enqueue_outbox(message, severity="info", source="laf_notifier", topic_key="laf")
+
+    data = __import__("json").loads(outbox_path.read_text("utf-8"))
+    assert second_id == first_id
+    assert len(data) == 1
+    assert data[0]["topic_key"] == "laf_dispatch"
+    assert data[0]["fingerprint"]
+
+
+def test_outbox_flush_drops_stale_info_without_resending(tmp_path, monkeypatch):
+    outbox_path = tmp_path / "outbox.json"
+    delivery_path = tmp_path / "delivery.jsonl"
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_DELIVERY_LOG", str(delivery_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC", 60.0)
+
+    old_entry = {
+        "id": "old_laf_dispatch",
+        "created_at": "2026-06-23T10:20:25",
+        "updated_at": "2026-06-23T10:20:25",
+        "severity": "info",
+        "source": "laf_notifier",
+        "topic_key": "laf_dispatch",
+        "message": "📧 法扶派案通知\n當事人: 王惠薰\n法扶案號: 1150529-E-005",
+        "attempts": 0,
+        "next_retry_at": 0,
+        "last_error": "temporary",
+    }
+    outbox_path.write_text(__import__("json").dumps([old_entry], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(red_phone.time, "time", lambda: __import__("datetime").datetime(2026, 6, 23, 23, 24, 0).timestamp())
+    calls = []
+    monkeypatch.setattr(red_phone, "send_telegram_push_with_status", lambda *a, **k: calls.append((a, k)) or {"telegram": True})
+
+    result = red_phone._flush_outbox(max_items=8)
+
+    assert result["checked"] == 0
+    assert result["recovered"] == 0
+    assert result["remaining"] == 0
+    assert calls == []
+    assert __import__("json").loads(outbox_path.read_text("utf-8")) == []

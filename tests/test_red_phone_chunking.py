@@ -68,6 +68,24 @@ def test_telegram_send_includes_thread_id(monkeypatch):
     assert sent_payloads == [{"chat_id": "-1001", "text": "分層測試", "message_thread_id": 42}]
 
 
+def test_generic_laf_topic_refines_dispatch_message(monkeypatch):
+    monkeypatch.setattr(
+        red_phone,
+        "_load_topic_map",
+        lambda: {"laf": 2814, "laf_dispatch": 2816},
+    )
+
+    topic, thread_id = red_phone._resolve_thread_id(
+        "📧 法扶派案通知\n分會: 花蓮\n當事人: 王惠薰\n法扶案號: 1150529-E-005",
+        "laf_notifier",
+        "info",
+        topic_key="laf",
+    )
+
+    assert topic == "laf_dispatch"
+    assert thread_id == 2816
+
+
 def test_invalid_telegram_thread_does_not_fallback_to_general(monkeypatch):
     sent_payloads = []
 
