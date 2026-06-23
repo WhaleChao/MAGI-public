@@ -27,6 +27,24 @@ def test_enforcement_order_counts_as_closing_basis(tmp_path):
     assert meta["closing_doc_type"] == "執行命令"
 
 
+def test_legacy_judgment_folder_still_counts_as_closing_basis(tmp_path):
+    case_dir = tmp_path / "2026-0006-測試當事人-一審-損害賠償"
+    judgment_dir = case_dir / "10_判決書"
+    judgment_dir.mkdir(parents=True)
+    basis = judgment_dir / "20260601 臺灣花蓮地方法院115年度訴字第1號判決.pdf"
+    basis.write_bytes(b"%PDF-1.4\n")
+
+    scanner = docmixins.LAFOrchestratorDocumentMixin()
+    docs = scanner._scan_case_folder_docs(str(case_dir), action="closing")
+
+    assert str(basis) in docs["closing_basis_files"]
+    assert scanner._is_auto_closing_basis_candidate(
+        str(basis),
+        case_reason="民事",
+        folder_path=str(case_dir),
+    )
+
+
 def test_random_execution_notice_is_not_closing_basis(tmp_path):
     case_dir = tmp_path / "2026-0005-測試-執行-強制執行"
     notice_dir = case_dir / "09_法院通知或程序裁定"

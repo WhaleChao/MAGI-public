@@ -31,7 +31,11 @@ from api.laf_go_live_rules import (
     is_opening_notice_filename,
     is_stored_pleading_proof,
 )
-from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name, path_has_judgment_folder
+from skills.bridge.shared_utils.judgment_folder_names import (
+    judgment_folder_aliases,
+    judgment_folder_name,
+    path_has_judgment_folder,
+)
 
 logger = logging.getLogger("laf_orchestrator.docmixins")
 
@@ -391,6 +395,7 @@ class LAFOrchestratorDocumentMixin:
         very large cases.
         """
         act = (action or "").strip().lower()
+        final_doc_dirs = list(judgment_folder_aliases(10, include_plain=False))
         if act in {"closing", "progress", "inquiry"}:
             return [
                 "",
@@ -400,7 +405,7 @@ class LAFOrchestratorDocumentMixin:
                 "08_法院通知或程序裁定",
                 "09_法院通知或程序裁定",
                 "09_酬金及費用",
-                judgment_folder_name(10),
+                *final_doc_dirs,
                 "11_回執",
                 "12_結案資料",
             ]
@@ -409,9 +414,9 @@ class LAFOrchestratorDocumentMixin:
         if act in {"fee"}:
             return ["", "01_法扶資料", "09_酬金及費用", "11_回執"]
         if act in {"condition"}:
-            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", judgment_folder_name(10)]
+            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", *final_doc_dirs]
         if act in {"withdrawal"}:
-            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", judgment_folder_name(10), "12_結案資料"]
+            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", *final_doc_dirs, "12_結案資料"]
         return [
             "",
             "01_法扶資料",
@@ -425,7 +430,7 @@ class LAFOrchestratorDocumentMixin:
             "08_筆錄",
             "08_法院通知或程序裁定",
             "09_酬金及費用",
-            judgment_folder_name(10),
+            *final_doc_dirs,
             "11_回執",
             "12_結案資料",
         ]
@@ -627,12 +632,11 @@ class LAFOrchestratorDocumentMixin:
         )
         if any(marker in normalized for marker in blocked):
             return False
+        if path_has_judgment_folder(normalized):
+            return True
         allowed = (
-            f"/{judgment_folder_name(10)}/",
             "/12_結案資料/",
             "/03_結案資料/",
-            "/判決書或終局裁定及處分/",
-            "/判決書/",
             "/法院裁判/",
             "/結案資料/",
         )
