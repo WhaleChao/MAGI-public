@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import subprocess
 from pathlib import Path
 
 from scripts.ops import commercial_readiness_live as gate
@@ -59,3 +60,26 @@ def test_run_json_reads_trailing_json(monkeypatch):
     assert payload["value"] == 3
     assert raw.endswith("}")
     assert elapsed >= 0
+
+
+def test_public_cleanroom_snapshot_uses_current_worktree(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+    (repo / ".gitignore").write_text(".runtime/\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("indexed\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "tracked.txt"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("current worktree\n", encoding="utf-8")
+    (repo / "new_public.txt").write_text("new file\n", encoding="utf-8")
+    (repo / ".runtime").mkdir()
+    (repo / ".runtime" / "private.json").write_text("secret\n", encoding="utf-8")
+
+    monkeypatch.setattr(gate, "MAGI_ROOT", repo)
+    dest = tmp_path / "snapshot"
+
+    result = gate._snapshot_current_worktree(dest)
+
+    assert result["copied_files"] >= 3
+    assert (dest / "tracked.txt").read_text(encoding="utf-8") == "current worktree\n"
+    assert (dest / "new_public.txt").read_text(encoding="utf-8") == "new file\n"
+    assert not (dest / ".runtime" / "private.json").exists()

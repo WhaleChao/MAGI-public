@@ -43,6 +43,7 @@ import threading
 import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Optional
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.exceptions import HTTPException
 
@@ -50,6 +51,17 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _STARTUP_TS = time.time()
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+try:
+    from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+    install_mysql_cext_blocker()
+    patch_mysql_connector_for_stability()
+except Exception:
+    logging.getLogger("tools_api").debug("mysql connector early guard failed", exc_info=True)
+    install_mysql_cext_blocker = None
+    patch_mysql_connector_for_stability = None
 from api.model_config import TEXT_PRIMARY_MODEL
 
 # Auto-reap zombie children (skill subprocesses, etc.)
@@ -92,12 +104,44 @@ def _to_bool(value, default=False):
     return bool(value)
 
 
+_SKILL_RUNTIME_MUTATION_ENV = "MAGI_DEV_SKILL_RUNTIME_MUTATIONS"
+
+
+def _skill_runtime_env_opt_in() -> bool:
+    """Runtime skill mutations stay off unless dev/operators explicitly opt in."""
+    return _to_bool(os.environ.get(_SKILL_RUNTIME_MUTATION_ENV), False)
+
+
+def _skill_runtime_default(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _to_bool(os.environ.get(env_name), False)
+    return _skill_runtime_env_opt_in()
+
+
+def _resolve_skill_runtime_flags(data: dict) -> dict:
+    def _flag(key: str, env_name: str) -> bool:
+        if key in data:
+            return _to_bool(data.get(key), False)
+        return _skill_runtime_default(env_name)
+
+    auto_repair = _flag("auto_repair", "MAGI_SKILL_AUTO_REPAIR_DEFAULT")
+    auto_install_deps = _flag("auto_install_deps", "MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+    rollback_on_fail = _flag("rollback_on_fail", "MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT")
+    return {
+        "auto_repair": auto_repair,
+        "auto_install_deps": auto_install_deps,
+        "rollback_on_fail": rollback_on_fail,
+        "mutating_runtime_requested": bool(auto_repair or auto_install_deps or rollback_on_fail),
+        "dev_env_opt_in": _skill_runtime_env_opt_in(),
+    }
+
+
 def _ensure_python_package(import_name: str, pip_name: str) -> bool:
     try:
         __import__(import_name)
         return True
     except ModuleNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 99, exc_info=True)
     except Exception:
         return False
 
@@ -136,12 +180,10 @@ else:
 
 # Stability-first default: avoid distributed inference unless explicitly enabled.
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 
 # DB connector stability guard:
 # default to pure-python mysql-connector path to avoid C-extension segfaults under threaded load.
-os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
-if patch_mysql_connector_for_stability():
+if callable(patch_mysql_connector_for_stability) and patch_mysql_connector_for_stability():
     logging.getLogger("tools_api").info("mysql connector guard enabled (MAGI_MYSQL_USE_PURE=%s)", os.environ.get("MAGI_MYSQL_USE_PURE", "1"))
 
 from skills.research.web_research import search_web, research_topic, fetch_url_content
@@ -173,7 +215,7 @@ def _global_exception_hook(e):
             source="tools_api.errorhandler",
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 175, exc_info=True)
     raise
 
 
@@ -422,7 +464,7 @@ def _append_jsonl(path: str, row: dict) -> None:
             from api.events.sinks import rotate_jsonl
             rotate_jsonl(p)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 424, exc_info=True)
     except Exception:
         return
 
@@ -510,7 +552,7 @@ def _record_external_chat_metric(
             if len(lines) > 500:
                 p.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 512, exc_info=True)
 
 
 def _guard_text(s: str, platform: str = "WEB") -> str:
@@ -1095,7 +1137,7 @@ def _external_osc_chat_inner():
         from flask import g as _flask_g
         _flask_g.heavy_opt_in = heavy_opt_in
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1097, exc_info=True)
 
     user_id = str(data.get("user_id") or "external_api_user")
     platform = _infer_external_platform(str(data.get("platform") or ""), user_id=user_id)
@@ -1287,6 +1329,11 @@ def external_osc_ui():
     Minimal web chat UI for OSC external interface.
     Requires API key and uses /osc/external/chat.
     """
+    ok, err = _check_external_api_key()
+    if not ok:
+        code = 503 if "server_misconfigured" in err else 401
+        return jsonify({"success": False, "error": err}), code
+
     html = """<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -1687,7 +1734,7 @@ def api_vision():
                         },
                     )
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1689, exc_info=True)
                 _text = _consensus_result.corrected_text or _consensus_result.selected_text or ""
                 _finish_tool_event(
                     "vision",
@@ -2164,7 +2211,7 @@ def _shortcut_write_temp(data: bytes, suffix: str) -> str:
         try:
             os.close(fd)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2166, exc_info=True)
         raise
     return path
 
@@ -2245,7 +2292,7 @@ def api_shortcut_ocr():
                             },
                         )
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2247, exc_info=True)
                     _txt = _cs.corrected_text or _cs.selected_text or ""
                     return _shortcut_text_response(_txt)
             except Exception as _ce:
@@ -2278,7 +2325,7 @@ def api_shortcut_ocr():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2280, exc_info=True)
 
 
 @app.route('/shortcut/pdf_text', methods=['POST'])
@@ -2307,7 +2354,7 @@ def api_shortcut_pdf_text():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2309, exc_info=True)
 
 
 @app.route('/shortcut/summarize', methods=['POST'])
@@ -2384,7 +2431,7 @@ def api_shortcut_transcribe():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2386, exc_info=True)
 
 
 # ============== Skills ==============
@@ -2447,6 +2494,52 @@ def api_acquire_skill():
     return jsonify(result)
 
 
+_SKILL_RUN_CONTROL_KEYS = {
+    "skill",
+    "task",
+    "timeout_sec",
+    "auto_repair",
+    "rollback_on_fail",
+    "auto_install_deps",
+    "route_key",
+    "async",
+}
+
+
+def _skill_task_from_request_payload(task: str, data: dict) -> str:
+    """Keep the public /skills/run payload structured while preserving old skills.
+
+    ReAct callers should send {"task": "search", "keywords": "..."} so the
+    tool name and arguments stay separated.  Most MAGI skills still accept a
+    single CLI task string, so the API folds non-control fields into
+    ``task {json}`` only at the execution boundary.
+    """
+    task_arg = (task or "").strip()
+    if "{" in task_arg:
+        return task_arg
+
+    params: dict = {}
+    raw_params = data.get("params")
+    if isinstance(raw_params, dict):
+        params.update({str(k): v for k, v in raw_params.items() if v is not None})
+    elif isinstance(raw_params, str) and raw_params.strip():
+        try:
+            parsed = json.loads(raw_params)
+            if isinstance(parsed, dict):
+                params.update({str(k): v for k, v in parsed.items() if v is not None})
+        except Exception as exc:
+            logger.warning("skills/run ignored invalid params JSON: %s", str(exc)[:160])
+
+    for key, value in data.items():
+        if key in _SKILL_RUN_CONTROL_KEYS or key == "params" or value is None:
+            continue
+        params[str(key)] = value
+
+    if not params:
+        return task_arg
+    return f"{task_arg} {json.dumps(params, ensure_ascii=False)}"
+
+
 @app.route('/skills/run', methods=['POST'])
 @require_api_key
 def api_run_skill():
@@ -2460,9 +2553,10 @@ def api_run_skill():
     skill = data.get('skill', '')
     task = data.get('task', '')
     timeout_sec = min(180, max(5, int(data.get('timeout_sec', 30))))  # cap 5-180s
-    auto_repair = _to_bool(data.get('auto_repair', True), True)
-    rollback_on_fail = _to_bool(data.get('rollback_on_fail', True), True)
-    auto_install_deps = _to_bool(data.get('auto_install_deps', True), True)
+    runtime_flags = _resolve_skill_runtime_flags(data)
+    auto_repair = runtime_flags["auto_repair"]
+    rollback_on_fail = runtime_flags["rollback_on_fail"]
+    auto_install_deps = runtime_flags["auto_install_deps"]
     route_key = data.get('route_key', '')
     async_mode = _to_bool(data.get('async', False), False)
 
@@ -2471,8 +2565,26 @@ def api_run_skill():
     if not skill:
         return jsonify({"error": "Missing 'skill' parameter"}), 400
 
+    task_for_run = _skill_task_from_request_payload(task, data)
+    runtime_policy = {
+        "auto_repair": auto_repair,
+        "rollback_on_fail": rollback_on_fail,
+        "auto_install_deps": auto_install_deps,
+        "mutating_runtime_requested": runtime_flags["mutating_runtime_requested"],
+        "dev_env_opt_in": runtime_flags["dev_env_opt_in"],
+        "message": (
+            "Runtime mutation requested explicitly or via developer env opt-in."
+            if runtime_flags["mutating_runtime_requested"]
+            else "Runtime mutation defaults are disabled for product/public mode."
+        ),
+    }
+
     tool_name = f"skill:{skill}"
-    started = _start_tool_event(tool_name, {"task": task}, {"route": "skills_run"})
+    started = _start_tool_event(
+        tool_name,
+        {"task": task_for_run, "runtime_policy": runtime_policy},
+        {"route": "skills_run", "runtime_policy": runtime_policy},
+    )
     allowed, decision = _check_tool_access(
         tool_name,
         command_subject=tool_name,
@@ -2489,11 +2601,11 @@ def api_run_skill():
             platform="api",
             user_id=request.headers.get("X-Api-Key-Id", "api"),
             role="operator",
-            user_text=f"{skill}:{task}",
+            user_text=f"{skill}:{task_for_run}",
             chat_id="",
             payload={
                 "skill": skill,
-                "task": task,
+                "task": task_for_run,
                 "timeout_sec": timeout_sec,
                 "auto_repair": auto_repair,
                 "rollback_on_fail": rollback_on_fail,
@@ -2503,7 +2615,7 @@ def api_run_skill():
         )
         _INLINE_EXECUTOR.submit(
             _run_skill_job_background,
-            job_id, skill, task, timeout_sec,
+            job_id, skill, task_for_run, timeout_sec,
             auto_repair, rollback_on_fail, auto_install_deps, route_key,
         )
         return jsonify({
@@ -2511,13 +2623,14 @@ def api_run_skill():
             "queued": True,
             "job_id": job_id,
             "poll_url": f"/jobs/{job_id}",
+            "runtime_policy": runtime_policy,
         }), 202
 
     # ── Sync path (unchanged) ─────────────────────────────────────────────────
     try:
         result = run_skill_action(
             skill,
-            task,
+            task_for_run,
             timeout_sec=timeout_sec,
             auto_repair=auto_repair,
             rollback_on_fail=rollback_on_fail,
@@ -2531,6 +2644,8 @@ def api_run_skill():
             f"skills_run_exception: {exc}",
             metadata={"route": "skills_run"},
         )
+    if isinstance(result, dict):
+        result.setdefault("runtime_policy", runtime_policy)
     _finish_tool_event(
         tool_name,
         started,
@@ -2949,6 +3064,55 @@ def api_collab_chat():
     allow_template_fallback = _to_bool(data.get("allow_template_fallback", True), True)
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
+    try:
+        from api.routing.intent_contract import (
+            KIND_AGENT_TASK,
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_EXPLICIT_TASK,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_REALTIME_ACTION,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        _semantic_decision = classify_intent_contract(prompt)
+        if _semantic_decision.kind in {
+            KIND_HELP_COMMAND,
+            KIND_EXPLICIT_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_TOOL_CAPABILITY,
+            KIND_BUSY_STATUS,
+            KIND_REALTIME_ACTION,
+            KIND_CASUAL_CHAT,
+            KIND_AGENT_TASK,
+            KIND_EXPLICIT_TASK,
+        }:
+            _orch = _get_osc_orchestrator()
+            _reply = _orch.process_message(
+                user_id=str(data.get("user_id") or "collab-chat"),
+                message=prompt,
+                platform=str(data.get("platform") or "COLLAB"),
+                role=str(data.get("role") or "user"),
+            )
+            result = {
+                "success": True,
+                "response": str(_reply or ""),
+                "route": "orchestrator_semantic_preflight",
+                "intent_kind": _semantic_decision.kind,
+                "confidence": _semantic_decision.confidence,
+            }
+            result = _guard_payload_fields(result)
+            return jsonify(result), 200
+    except Exception as _semantic_err:
+        logging.getLogger(__name__).warning("collab semantic preflight failed: %s", _semantic_err)
+        return jsonify({
+            "success": False,
+            "error": f"semantic_preflight_failed: {_semantic_err}",
+            "route": "orchestrator_semantic_preflight_failed",
+        }), 503
     primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
     # Use InferenceGateway — handles oMLX/Ollama/remote fallback internally
     try:

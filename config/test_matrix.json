@@ -13,6 +13,7 @@
             "-m",
             "py_compile",
             "api/model_config.py",
+            "api/blueprints/admin_runtime.py",
             "api/pipelines/message_pipeline.py",
             "api/pipelines/message_router.py",
             "api/domains/judgment_flow.py",
@@ -28,6 +29,8 @@
             "bin/release_bundle.py",
             "scripts/ops/resource_governor.py",
             "scripts/ops/model_live_gate.py",
+            "scripts/ops/commercial_readiness_live.py",
+            "skills/process-hygiene/action.py",
             "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
           ],
           "timeout_sec": 30
@@ -44,9 +47,13 @@
             "tests/test_model_config.py",
             "tests/test_smoke_core_routes.py",
             "tests/test_cron_monitoring_hardening.py",
+            "tests/test_health_readiness_routes.py",
             "tests/test_intent_no_weather_for_reminder.py",
+            "tests/test_runtime_report_contract.py",
             "tests/test_run_test_suite.py",
             "tests/test_customer_install_wizard.py",
+            "tests/test_commercial_readiness_live.py",
+            "tests/test_process_hygiene_managed_services.py",
             "tests/test_installer_bootstrap.py",
             "tests/test_resource_governor.py",
             "tests/test_model_live_gate.py",
@@ -57,11 +64,11 @@
       ]
     },
     "smoke50": {
-      "description": "Backward-compatible alias for the MAGI full smoke gate; currently 62 checks with commercial release guards.",
+      "description": "Backward-compatible alias for the MAGI local full smoke gate; commercial/public release guards are opt-in.",
       "checks": [
         {
           "id": "smoke_test_full_current",
-          "name": "MAGI full smoke with commercial guards",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -73,11 +80,11 @@
       ]
     },
     "smoke62": {
-      "description": "MAGI full smoke gate with 62 checks, including commercial release and cleanroom install guards.",
+      "description": "MAGI local full smoke gate for the production machine; commercial/public release guards live in commercial-release.",
       "checks": [
         {
           "id": "smoke_test_full_62",
-          "name": "MAGI 62-check smoke",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -156,7 +163,7 @@
         },
         {
           "id": "smoke62",
-          "name": "MAGI 62-check smoke",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -165,10 +172,22 @@
           ],
           "timeout_sec": 240
         },
-        {
-          "id": "business_modules_live",
-          "name": "LAF/file-review/transcript live check",
-          "command": [
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening audit",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_audit_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "business_modules_live",
+        "name": "LAF/file-review/transcript live check",
+        "command": [
             "{python}",
             "scripts/ops/business_module_live_check.py"
           ],
@@ -195,10 +214,11 @@
       "checks": [
         {
           "id": "public_release_audit",
-          "name": "Public release audit strict",
+          "name": "Public release audit public-isolation strict",
           "command": [
             "{python}",
             "scripts/public_release_audit.py",
+            "--public-isolation",
             "--strict"
           ],
           "timeout_sec": 180
@@ -241,10 +261,22 @@
           ],
           "timeout_sec": 60
         },
-        {
-          "id": "channels_strict",
-          "name": "Messaging channel smoke strict",
-          "command": [
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening release gate",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_release_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "channels_strict",
+        "name": "Messaging channel smoke strict",
+        "command": [
             "{python}",
             "scripts/ops/smoke_three_channels.py",
             "--strict-warn"

@@ -78,6 +78,7 @@ def test_runtime_bootstrap_plans_mariadb_and_tailscale_when_missing(tmp_path, mo
         is_apple_silicon=True,
     )
     monkeypatch.setattr(bootstrap, "detect_hardware", lambda: profile)
+    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Darwin")
 
     def fake_which(name: str) -> str:
         if name in {"mariadb", "mysql", "tailscale", "omlx"}:

@@ -61,11 +61,20 @@ DEFAULT_STUCK_SEC = 3600
 # 這些服務預期可由 launchd 或 MAGI CLI 以 PPID=1 常駐執行；
 # 不應被當作孤兒或卡死程序，否則週報會反覆誤報。
 MANAGED_LONG_RUNNING_SCRIPTS = [
+    "scripts/ops/run_daemon_no_site.py",
+    "scripts/ops/run_menubar_no_site.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "gui/magi_menubar.py",
     "scripts/ops/memory_watchdog.py",
     "scripts/share_gateway.py",
     "scripts/share_tunnel_supervisor.py",
     "scripts/serve_mlx_mtp.py",
+]
+
+# These jobs are intentionally detached from request/cron parents so user-facing
+# actions can return immediately. They are still bounded by scan_stuck().
+EXPECTED_DETACHED_JOB_MARKERS = [
+    "download_worker",
 ]
 
 
@@ -147,6 +156,17 @@ def _is_managed_long_running(cmd: str) -> bool:
     return any(marker in (cmd or "") for marker in MANAGED_LONG_RUNNING_SCRIPTS)
 
 
+def _is_expected_detached_job(cmd: str) -> bool:
+    return any(marker in (cmd or "") for marker in EXPECTED_DETACHED_JOB_MARKERS)
+
+
+def _stuck_threshold_for_command(cmd: str) -> int:
+    for key, val in STUCK_THRESHOLDS.items():
+        if key in cmd:
+            return val
+    return DEFAULT_STUCK_SEC
+
+
 def _safe_kill(pid: int, sig: int = signal.SIGTERM) -> bool:
     """安全發送訊號，返回是否成功。"""
     try:
@@ -171,12 +191,17 @@ def scan_zombies(procs: List[Dict]) -> List[Dict]:
                 if pp["pid"] == p["ppid"]:
                     parent_cmd = pp["command"][:120]
                     break
+            is_magi = _is_magi_process(parent_cmd)
+            # MAGI health should not fail because the host app (for example
+            # Codex while we are developing) has an unrelated zombie child.
+            if not is_magi:
+                continue
             zombies.append({
                 "pid": p["pid"],
                 "ppid": p["ppid"],
                 "etime": p["etime"],
                 "parent_command": parent_cmd,
-                "is_magi": _is_magi_process(parent_cmd),
+                "is_magi": is_magi,
             })
     return zombies
 
@@ -292,6 +317,10 @@ def scan_orphans(procs: List[Dict]) -> List[Dict]:
             # 排除 jedi language server 等 IDE 程序
             if "jedi" in p["command"] or "language-server" in p["command"]:
                 continue
+            if _is_expected_detached_job(p["command"]):
+                elapsed = _etime_to_seconds(p["etime"])
+                if elapsed <= _stuck_threshold_for_command(p["command"]):
+                    continue
             orphans.append({
                 "pid": p["pid"],
                 "ppid": p["ppid"],
@@ -322,11 +351,7 @@ def scan_stuck(procs: List[Dict]) -> List[Dict]:
             continue
 
         elapsed = _etime_to_seconds(p["etime"])
-        threshold = DEFAULT_STUCK_SEC
-        for key, val in STUCK_THRESHOLDS.items():
-            if key in p["command"]:
-                threshold = val
-                break
+        threshold = _stuck_threshold_for_command(p["command"])
 
         if elapsed > threshold:
             stuck.append({

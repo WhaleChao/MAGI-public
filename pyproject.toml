@@ -101,6 +101,7 @@ all = [
 ]
 
 [project.scripts]
+magi = "bin.cli:main"
 magi-start = "bin.start:main"
 magi-check = "bin.check:main"
 

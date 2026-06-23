@@ -26,11 +26,26 @@ def looks_like_capability_question(message: str) -> bool:
     text = str(message or "").strip()
     if not text:
         return False
-    # Must end with question particle
-    if not re.search(r"[嗎嘛呢？\?]$", text):
+    compact = re.sub(r"\s+", "", text.lower())
+    explicit_meta_question = bool(re.search(
+        r"(?:(?:你|magi|casper|這個系統|這套系統).{0,10}"
+        r"(?:可以|能|會|能做|能做到|做得到|可以做).{0,10}"
+        r"(?:什麼|甚麼|哪些|何事|事情|事|功能|能力)|"
+        r"(?:有什麼|有哪些)(?:功能|能力|技能)|"
+        r"(?:功能|能力|技能|指令)(?:列表|清單|一覽))",
+        compact,
+        re.IGNORECASE,
+    ))
+    # Most capability questions end with a question particle; explicit meta
+    # prompts like "請問你能做到什麼事" are common in the web UI and may omit it.
+    if not explicit_meta_question and not re.search(r"[嗎嘛呢？\?]$", text):
         return False
     # Must contain ability-asking keywords
-    if not re.search(r"(可以|可不可以|能不能|會不會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
+    if not explicit_meta_question and not re.search(
+        r"(可以|可不可以|能不能|會不會|你能|你會|能做|能做到|如何|怎麼|有沒有辦法|能否|可否)",
+        text,
+        re.IGNORECASE,
+    ):
         return False
     # If message contains concrete objects/context, it's an ACTION request, not a capability question.
     # Only match true object nouns and demonstratives that point to actual content.
@@ -165,7 +180,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
     try:
         result = run_skill_action(
             found_dir, message,
-            timeout_sec=60, auto_repair=False, auto_install_deps=True,
+            timeout_sec=60, auto_repair=False, auto_install_deps=False,
         )
         if result.get("success"):
             output = result.get("output", "").strip()
@@ -703,7 +718,9 @@ def dispatch_client_management(message, user_id="", platform=""):
         if not name:
             return "請提供當事人姓名。"
 
-        row_id = "cli-%s" % _uuid.uuid4().hex[:10]
+        from api.osc.client_ids import generate_next_client_id
+
+        row_id = generate_next_client_id()
         try:
             _osc_exec(
                 "INSERT INTO clients (id, name, phone, address, status) VALUES (%s,%s,%s,%s,%s)",
@@ -791,7 +808,7 @@ def dispatch_accounting(message, user_id="", platform=""):
         try:
             case_id = _osc_resolve_case_id(client_or_case)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 795, exc_info=True)
 
     # Use first case if still not found
     if not case_id and client_or_case:
@@ -804,7 +821,7 @@ def dispatch_accounting(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 808, exc_info=True)
 
     if not case_id:
         return "找不到案件「%s」，請先建案或直接使用案號。" % (client_or_case or "")
@@ -886,7 +903,7 @@ def dispatch_quotation(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 890, exc_info=True)
 
         row_id = "quot-%s" % _uuid.uuid4().hex[:8]
         today = _date.today().strftime("%Y-%m-%d")
@@ -988,20 +1005,43 @@ def dispatch_calendar_event(message, user_id="", platform=""):
     todo_inserted = False
     try:
         from api.osc.utils import _osc_exec
-        _osc_exec(
-            "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'pending')",
-            (
-                event_case_number,
-                "",
-                "開庭" if is_court else "開會",
-                start_dt.strftime("%Y-%m-%d"),
-                start_dt.strftime("%H:%M:%S"),
-                "%s — %s" % (title, location) if location else title,
-            ),
-            fetch=None,
+        todo_type = "開庭" if is_court else "開會"
+        todo_date = start_dt.strftime("%Y-%m-%d")
+        todo_time = start_dt.strftime("%H:%M:%S")
+        todo_desc = "%s — %s" % (title, location) if location else title
+        source_file = "manual_dispatch:calendar_event"
+        existing, _ = _osc_exec(
+            """
+            SELECT id FROM case_todos
+            WHERE case_number=%s
+              AND todo_type=%s
+              AND todo_date=%s
+              AND todo_time=%s
+              AND description=%s
+              AND (status IS NULL OR status='' OR status!='deleted')
+            LIMIT 1
+            """,
+            (event_case_number, todo_type, todo_date, todo_time, todo_desc),
+            fetch="one",
         )
-        todo_inserted = True
+        if existing:
+            todo_inserted = True
+        else:
+            _osc_exec(
+                "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, source_file, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')",
+                (
+                    event_case_number,
+                    "",
+                    todo_type,
+                    todo_date,
+                    todo_time,
+                    todo_desc,
+                    source_file,
+                ),
+                fetch=None,
+            )
+            todo_inserted = True
     except Exception as _dbe:
         logger.warning("dispatch_calendar_event db insert failed: %s", _dbe)
 
@@ -1094,7 +1134,7 @@ def dispatch_ai_draft(message, user_id="", platform=""):
                 (like, like), fetch="one",
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1098, exc_info=True)
 
     _case_no = case_number or (case_row.get("case_number") if case_row else "")
     _client = (case_row.get("client_name") if case_row else "") or ""
@@ -1139,7 +1179,7 @@ def dispatch_ai_draft(message, user_id="", platform=""):
         _hd = json.loads(_h.read().decode())
         _omlx_ready = int(_hd.get("engine_pool", {}).get("loaded_count", 0)) > 0
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1143, exc_info=True)
     if _omlx_ready:
         try:
             draft_text = _call_llm(_omlx_url, _omlx_model, _omlx_timeout)

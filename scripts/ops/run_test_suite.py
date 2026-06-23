@@ -102,6 +102,8 @@ def run_check(check: dict[str, Any], *, dry_run: bool) -> CheckResult:
     extra_env = check.get("env")
     if isinstance(extra_env, dict):
         env.update({str(k): str(v) for k, v in extra_env.items()})
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(MAGI_ROOT) + (os.pathsep + current_pythonpath if current_pythonpath else "")
 
     timeout = int(check.get("timeout_sec") or 300)
     start = time.time()

@@ -8,9 +8,13 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -35,5 +39,5 @@ jobs:
             bin/release_bundle.py
       - name: Fast unit tests
         run: |
-          python -m pip install -U pip pytest requests python-dotenv
+          python -m pip install -U pip pytest requests python-dotenv flask flask-login
           python scripts/ops/run_test_suite.py --suite ci

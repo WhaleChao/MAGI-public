@@ -61,8 +61,11 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     assert "/dashboard" in routes
     assert "/dashboard/nerv" in routes
     assert "/magi-adjust" in routes
+    assert "/research/judgment-classifier" in routes
     assert "/golem" in routes
     assert "/api/golem/status" in routes
+    assert "/api/osc/raziel/status" in routes
+    assert "/api/osc/raziel/delivery" in routes
     assert "/intel" in routes
     assert "/openclaw" not in routes
 
@@ -80,11 +83,22 @@ def test_server_registers_runtime_blueprint_routes():
     assert "/api/osc/chat" in routes
     assert "/api/osc/poll" in routes
     assert "/api/osc/judgments_legacy" in routes
+    assert "/api/osc/raziel/status" in routes
     assert "/dashboard/nerv/api/health" in routes
     assert "/api/system-test" in routes
     assert "/api/self-repair" in routes
     assert "/api/nerv/skills" in routes
     assert "/api/status" in routes
     assert "/api/live-log" in routes
+    assert "/livez" in routes
+    assert "/readyz" in routes
     assert "/health" in routes
     assert "/api/transcribe" in routes
+
+
+def test_root_route_redirects_to_nerv_dashboard(monkeypatch):
+    from api import server
+
+    response = server.app.test_client().get("/")
+    assert response.status_code in {301, 302}
+    assert "/dashboard/nerv" in response.headers.get("Location", "")
