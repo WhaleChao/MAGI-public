@@ -27,11 +27,25 @@ def _load_osc_debt_module():
 def _build_app() -> tuple[Flask, object]:
     app = Flask(__name__)
     app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = True
     app.secret_key = "test"
     mod = _load_osc_debt_module()
 
     app.register_blueprint(mod.osc_debt_bp)
     return app, mod
+
+
+def test_debt_routes_require_login_by_default():
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.secret_key = "test"
+    mod = _load_osc_debt_module()
+    app.register_blueprint(mod.osc_debt_bp)
+
+    r = app.test_client().get("/api/osc/debt/forms")
+
+    assert r.status_code == 401
+    assert r.get_json()["error"] == "authentication_required"
 
 
 def test_debt_supplement_checklist_writes_case_checklists_not_todos():

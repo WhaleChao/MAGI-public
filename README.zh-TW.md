@@ -48,6 +48,7 @@ MAGI v2 是一套 local-first、可 self-host 的法務營運平台，供小型�
 
 ```bash
 python3 scripts/packaging/build_installers.py --force
+python3 scripts/packaging/validate_installer_payload.py --json
 ```
 
 產物：
@@ -119,6 +120,7 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
@@ -131,6 +133,8 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 - MAGI daemon 可啟動，`/health`、OSC 主要頁籤、訊息頻道、DB、NAS、Google Calendar OAuth 均通過 live 檢查。
 - NERV（`/dashboard/nerv` 或 `/nerv`）是目標主機的正式狀態頁；交付前用它確認模型、OCR、DB、NAS 與背景服務健康。
 - `scripts/public_release_audit.py --public-isolation --strict` 不得有 error 或 warning；若只有公開安裝版本、不含私有 DB，可另外用 `--skip-db` 跑安裝檢查。
+- 從乾淨工作樹執行 `scripts/ops/public_push_guard.py --remote public --profile public --json` 必須通過，才可推送 `MAGI-public`；私版推送使用 `--remote origin --profile private`。
+- 安裝器產物必須通過 `scripts/packaging/validate_installer_payload.py --json`，直接稽核真正包入安裝器的 release zip 並從解壓內容跑 public wizard。
 - `run_test_suite.py` release gates 需通過：`ci`、`smoke62`、`production-live`，共享/商用版本另需通過 `commercial-release`。
 - `.env`、OAuth token、DB dump、案件資料、portal 截圖、NAS 路徑與 runtime 報告不得被 git 追蹤。
 - 法扶、閱卷、筆錄與日曆同步屬於高風險流程；正式送出、還原 DB、批次搬檔仍需確認碼或人工確認。
@@ -696,6 +700,7 @@ strict public isolation audit 是 `commercial-release` 的一部分，公開前�
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 ---

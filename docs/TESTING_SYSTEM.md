@@ -39,7 +39,8 @@ fast live gate that should run often.
 
 `ci`
 : Public-safe fast checks for every push. This must not require private
-credentials, NAS mounts, or live portals.
+credentials, NAS mounts, or live portals. The suite includes syntax checks plus
+the hardcoded-runtime and unsafe-shell static guards.
 
 `smoke62`
 : Local full smoke for the private production machine. Run after code changes and after restarts.
@@ -73,6 +74,9 @@ A MAGI build can be called "live verified" only when:
 - The JSON output is saved in `.runtime/` or attached to the release note.
 - Public release notes use a sanitized summary, not raw portal or business
   module stdout.
+- Public pushes pass `scripts/ops/public_push_guard.py --remote public --profile public --json`
+  from a clean worktree, and customer installers pass
+  `scripts/packaging/validate_installer_payload.py --json`.
 
 ## Adding Coverage
 

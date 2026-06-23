@@ -29,7 +29,11 @@ import uuid
 import glob as _glob
 from urllib.parse import quote
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
+try:
+    from flask_login import current_user
+except ModuleNotFoundError:  # public-safe test environments may omit flask-login
+    current_user = None
 
 logger = logging.getLogger("OSC_Debt")
 
@@ -38,10 +42,28 @@ osc_debt_bp = Blueprint("osc_debt", __name__)
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+@osc_debt_bp.before_request
+def _require_osc_debt_login():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    try:
+        if current_user is not None and bool(getattr(current_user, "is_authenticated", False)):
+            return None
+    except Exception:
+        pass
+    return jsonify({"ok": False, "error": "authentication_required"}), 401
+
+
 def _export_dir():
     d = os.path.join(_MAGI_ROOT, "exports")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _file_meta(path: str) -> dict:
+    from api.startup import _export_file_meta
+
+    return _export_file_meta(path)
 
 
 def _save_doc(doc, form_type: str, data: dict) -> dict:
@@ -64,14 +86,15 @@ def _save_doc(doc, form_type: str, data: dict) -> dict:
 
     docx_path = os.path.join(_export_dir(), filename)
     doc.save(docx_path)
+    meta = _file_meta(docx_path)
 
     return {
         "ok": True,
         "form_type": form_type,
         "filename": os.path.basename(docx_path),
         "path": docx_path,
-        "url": f"/exports/{os.path.basename(docx_path)}",
-        "download_url": f"/api/osc/files/content?path={quote(docx_path)}",
+        "url": meta.get("url") or f"/api/osc/files/content?path={quote(docx_path, safe='')}",
+        "download_url": f"/api/osc/files/content?path={quote(docx_path, safe='')}",
         "share_path": docx_path,
         "message": f"已產生 {base_name}",
     }
@@ -273,9 +296,8 @@ def _debt_import_candidates() -> dict:
 
     try:
         from api.case_path_mapper import translate_case_path_to_local
-        from api.osc.utils import _osc_exec
 
-        rows, _ = _osc_exec(
+        rows, _ = _debt_osc_exec(
             """
             SELECT id, case_number, client_name, folder_path
             FROM cases
@@ -830,13 +852,14 @@ def debt_merge_pdf():
         return jsonify({"ok": False, "error": f"合併失敗: {e}"}), 500
 
     shutil.rmtree(temp_dir, ignore_errors=True)
+    meta = _file_meta(output_path)
 
     return jsonify({
         "ok": True,
         "filename": os.path.basename(output_path),
         "path": output_path,
-        "url": f"/exports/{os.path.basename(output_path)}",
-        "download_url": f"/api/osc/files/content?path={quote(output_path)}",
+        "url": meta.get("url") or f"/api/osc/files/content?path={quote(output_path, safe='')}",
+        "download_url": f"/api/osc/files/content?path={quote(output_path, safe='')}",
         "share_path": output_path,
         "message": f"已合併 {len(file_paths)} 個檔案",
     })

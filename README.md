@@ -49,6 +49,7 @@ Build customer-facing installers from a clean checkout:
 
 ```bash
 python3 scripts/packaging/build_installers.py --force
+python3 scripts/packaging/validate_installer_payload.py --json
 ```
 
 Artifacts:
@@ -125,6 +126,7 @@ Public readiness checks:
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
@@ -137,6 +139,8 @@ Before publishing or handing MAGI to another operator, treat these as go/no-go g
 - The daemon starts, and `/health`, the main OSC tabs, messaging channels, DB, NAS/file storage, and Google Calendar OAuth all pass live checks.
 - NERV (`/dashboard/nerv` or `/nerv`) is the production status page for the target host; use it to confirm model, OCR, DB, NAS, and background-service health before handoff.
 - `scripts/public_release_audit.py --public-isolation --strict` has no errors or warnings. Install-only packages without a private DB may use the dedicated `--skip-db` installability check.
+- `scripts/ops/public_push_guard.py --remote public --profile public --json` passes from a clean worktree before pushing to `MAGI-public`; private pushes use `--remote origin --profile private`.
+- Installer builds pass `scripts/packaging/validate_installer_payload.py --json`, which audits the actual release zip and runs the public wizard from the extracted payload.
 - `run_test_suite.py` release gates are clean: `ci`, `smoke62`, `production-live`, and, for shared/commercial builds, `commercial-release`.
 - `.env`, OAuth tokens, DB dumps, case/client material, portal screenshots, NAS paths, and runtime reports are not tracked by git.
 - LAF, court file review, transcript, and calendar workflows are high-risk workflows; production submission, DB restore, and bulk file movement must remain confirmation-gated.
@@ -727,6 +731,7 @@ The strict public isolation audit is part of `commercial-release` and can also b
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 ---

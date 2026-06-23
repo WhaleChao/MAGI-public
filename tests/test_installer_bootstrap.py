@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.packaging import build_installers
 from scripts.packaging import magi_install_launcher as launcher
 from scripts.packaging import runtime_bootstrap as bootstrap
+from scripts.packaging import validate_installer_payload
 from scripts import public_release_audit
 
 
@@ -78,7 +79,6 @@ def test_runtime_bootstrap_plans_mariadb_and_tailscale_when_missing(tmp_path, mo
         is_apple_silicon=True,
     )
     monkeypatch.setattr(bootstrap, "detect_hardware", lambda: profile)
-    monkeypatch.setattr(bootstrap.platform, "system", lambda: "Darwin")
 
     def fake_which(name: str) -> str:
         if name in {"mariadb", "mysql", "tailscale", "omlx"}:
@@ -252,3 +252,38 @@ def test_public_release_audit_scans_unpacked_release_without_git(tmp_path):
     findings = public_release_audit.scan_tracked_files(repo_root=tmp_path)
 
     assert findings == []
+
+
+def test_validate_installer_payload_scans_archive_and_runs_wizard(tmp_path):
+    archive = tmp_path / "MAGI-release.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("MAGI-test/README.md", "MAGI\n")
+        zf.writestr("MAGI-test/.env.example", "MAGI_API_KEY=<<replace_with_key>>\n")
+        zf.writestr(
+            "MAGI-test/scripts/customer_install_wizard.py",
+            "import json, sys\nprint(json.dumps({'ok': True, 'args': sys.argv[1:]}))\n",
+        )
+    manifest = tmp_path / "installer_manifest.json"
+    manifest.write_text(json.dumps({"archive": archive.name}), encoding="utf-8")
+
+    result = validate_installer_payload.validate_payload(manifest)
+
+    assert result["ok"] is True
+    assert result["audit"]["ok"] is True
+    assert result["wizard_returncode"] == 0
+
+
+def test_validate_installer_payload_blocks_zip_traversal(tmp_path):
+    archive = tmp_path / "MAGI-release.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("MAGI-test/scripts/customer_install_wizard.py", "print('ok')\n")
+        zf.writestr("../private.txt", "no\n")
+    manifest = tmp_path / "installer_manifest.json"
+    manifest.write_text(json.dumps({"archive": archive.name}), encoding="utf-8")
+
+    try:
+        validate_installer_payload.validate_payload(manifest)
+    except ValueError as exc:
+        assert "unsafe zip member" in str(exc)
+    else:
+        raise AssertionError("unsafe installer payload was accepted")

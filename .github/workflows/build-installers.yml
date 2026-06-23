@@ -20,6 +20,9 @@ jobs:
       - name: Build macOS DMG
         run: |
           python scripts/packaging/build_installers.py --force --json
+      - name: Validate macOS installer payload
+        run: |
+          python scripts/packaging/validate_installer_payload.py --json
       - uses: actions/upload-artifact@v5
         with:
           name: MAGI-macOS-installer
@@ -39,6 +42,10 @@ jobs:
         shell: pwsh
         run: |
           python scripts/packaging/build_installers.py --force --no-dmg --windows-exe --json
+      - name: Validate Windows installer payload
+        shell: pwsh
+        run: |
+          python scripts/packaging/validate_installer_payload.py --json
       - uses: actions/upload-artifact@v5
         with:
           name: MAGI-Windows-installer

@@ -16,6 +16,7 @@
             "api/blueprints/admin_runtime.py",
             "api/pipelines/message_pipeline.py",
             "api/pipelines/message_router.py",
+            "api/orchestrator.py",
             "api/domains/judgment_flow.py",
             "skills/bridge/melchior_client.py",
             "skills/bridge/inference_gateway.py",
@@ -26,6 +27,12 @@
             "scripts/packaging/magi_install_launcher.py",
             "scripts/packaging/runtime_bootstrap.py",
             "scripts/packaging/build_installers.py",
+            "scripts/packaging/validate_installer_payload.py",
+            "scripts/ci/check_hardcodes.py",
+            "scripts/ci/check_shell_true.py",
+            "scripts/ops/business_module_live_check.py",
+            "scripts/ops/public_push_guard.py",
+            "scripts/ops/token_health_check.py",
             "bin/check.py",
             "bin/cli.py",
             "bin/release_bundle.py",
@@ -33,8 +40,27 @@
             "scripts/ops/resource_governor.py",
             "scripts/ops/model_live_gate.py",
             "scripts/ops/commercial_readiness_live.py",
+            "skills/ops/config.py",
             "skills/process-hygiene/action.py",
             "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "hardcoded_runtime_guard",
+          "name": "No new hardcoded runtime endpoints",
+          "command": [
+            "{python}",
+            "scripts/ci/check_hardcodes.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "shell_true_guard",
+          "name": "No new unsafe shell execution",
+          "command": [
+            "{python}",
+            "scripts/ci/check_shell_true.py"
           ],
           "timeout_sec": 30
         },
@@ -57,6 +83,11 @@
             "tests/test_entrypoints.py",
             "tests/test_customer_install_wizard.py",
             "tests/test_commercial_readiness_live.py",
+            "tests/test_business_module_live_check.py",
+            "tests/test_release_bundle.py",
+            "tests/test_osc_debt_supplement_checklist.py",
+            "tests/test_public_push_guard.py",
+            "tests/test_token_health_check.py",
             "tests/test_process_hygiene_managed_services.py",
             "tests/test_installer_bootstrap.py",
             "tests/test_resource_governor.py",
@@ -121,7 +152,10 @@
             "--json"
           ],
           "timeout_sec": 120,
-          "ok_returncodes": [0, 10]
+          "ok_returncodes": [
+            0,
+            10
+          ]
         },
         {
           "id": "self_repair_dry_run",
@@ -149,7 +183,10 @@
             "status"
           ],
           "timeout_sec": 60,
-          "ok_returncodes": [0, 2]
+          "ok_returncodes": [
+            0,
+            2
+          ]
         },
         {
           "id": "model_live_gate",
@@ -176,22 +213,22 @@
           ],
           "timeout_sec": 240
         },
-      {
-        "id": "operational_hardening",
-        "name": "Operational hardening audit",
-        "command": [
-          "{python}",
-          "scripts/ops/audit_operational_hardening.py",
-          "--fail-on-red",
-          "--json-out",
-          ".runtime/operational_hardening_audit_latest.json"
-        ],
-        "timeout_sec": 180
-      },
-      {
-        "id": "business_modules_live",
-        "name": "LAF/file-review/transcript live check",
-        "command": [
+        {
+          "id": "operational_hardening",
+          "name": "Operational hardening audit",
+          "command": [
+            "{python}",
+            "scripts/ops/audit_operational_hardening.py",
+            "--fail-on-red",
+            "--json-out",
+            ".runtime/operational_hardening_audit_latest.json"
+          ],
+          "timeout_sec": 180
+        },
+        {
+          "id": "business_modules_live",
+          "name": "LAF/file-review/transcript live check",
+          "command": [
             "{python}",
             "scripts/ops/business_module_live_check.py"
           ],
@@ -249,7 +286,10 @@
             "status"
           ],
           "timeout_sec": 60,
-          "ok_returncodes": [0, 2]
+          "ok_returncodes": [
+            0,
+            2
+          ]
         },
         {
           "id": "model_live_gate",
@@ -265,22 +305,22 @@
           ],
           "timeout_sec": 60
         },
-      {
-        "id": "operational_hardening",
-        "name": "Operational hardening release gate",
-        "command": [
-          "{python}",
-          "scripts/ops/audit_operational_hardening.py",
-          "--fail-on-red",
-          "--json-out",
-          ".runtime/operational_hardening_release_latest.json"
-        ],
-        "timeout_sec": 180
-      },
-      {
-        "id": "channels_strict",
-        "name": "Messaging channel smoke strict",
-        "command": [
+        {
+          "id": "operational_hardening",
+          "name": "Operational hardening release gate",
+          "command": [
+            "{python}",
+            "scripts/ops/audit_operational_hardening.py",
+            "--fail-on-red",
+            "--json-out",
+            ".runtime/operational_hardening_release_latest.json"
+          ],
+          "timeout_sec": 180
+        },
+        {
+          "id": "channels_strict",
+          "name": "Messaging channel smoke strict",
+          "command": [
             "{python}",
             "scripts/ops/smoke_three_channels.py",
             "--strict-warn"

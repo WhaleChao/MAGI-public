@@ -8,7 +8,7 @@
 
 本手冊不記載真實密碼、token、cookie、OAuth 憑證或任何可直接登入外部服務的資訊。若需要設定金鑰，請使用本機 `.env` 或密碼管理工具。
 
-一般使用者每日操作請先閱讀 [MAGI 一般使用者手冊](USER_GUIDE.md)；若要交付文件，請優先使用 [一般使用者圖文操作手冊 DOCX](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 或 [PDF](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)，另保留 [一般使用者完整操作手冊 DOCX](guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx) 作為純文字詳版。本文件偏向私有版正式環境、法扶、閱卷、NAS、通知與維運細節。
+一般使用者每日操作請先閱讀 [MAGI 一般使用者手冊](USER_GUIDE.md)；若要交付給同事或外部使用者，請優先使用 [一般使用者超詳細操作手冊 DOCX](guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx) 或 [PDF](guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf)。[圖文操作手冊 DOCX](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 與 [PDF](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf) 已同步為同一份詳版內容，保留作為舊連結相容。本文件偏向私有版正式環境、法扶、閱卷、NAS、通知與維運細節。
 
 ## 目錄
 
@@ -291,6 +291,32 @@ PDF 命名目標：
 - 將繳費單視為閱卷成果。
 - 因為第一頁信封而錯命名整份文件。
 
+### 9.1 私用版 Chandra OCR fallback
+
+Chandra OCR 只供私用版選用，不屬於公開版預設功能。2026-05-20 複查 upstream 後，Chandra OCR 2 的 model card 標籤與 credits 顯示 `qwen3_5` / Qwen 3.5；若事務所政策禁止中國系模型，保持關閉即可。MAGI 不會自動下載模型，也不會在公開版啟用。
+
+啟用前必須同時設定：
+
+```bash
+MAGI_CHANDRA_OCR_ENABLE=1
+MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1
+MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1
+MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1
+MAGI_CHANDRA_CLI=/tmp/magi_chandra_venv/bin/chandra
+MAGI_CHANDRA_OCR_METHOD=vllm
+MAGI_CHANDRA_VLLM_API_BASE=http://127.0.0.1:8000/v1
+```
+
+建議先跑 readiness：
+
+```bash
+python3 scripts/ops/chandra_ocr_healthcheck.py
+MAGI_CHANDRA_OCR_ENABLE=1 MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1 MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1 MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1 \
+python3 scripts/ops/chandra_ocr_healthcheck.py
+```
+
+若回報 `vLLM unavailable`，代表 MAGI 接線正常，但 Chandra 後端尚未啟動；此時 pdf-namer 仍會使用 macOS Vision / RapidOCR / Tesseract，不會因 Chandra 缺席而故障。`chandra_ocr_healthcheck.py` 不會把 OCR 原文寫入 runtime，只記錄是否可用、字元數與法律實體數量。
+
 ## 10. 書狀產生、範本與學習回饋
 
 書狀流程：
@@ -531,12 +557,14 @@ NERV 是私有版狀態頁。每日應看：
 ```bash
 git status --short
 python3 scripts/public_release_audit.py --strict
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
 ```
 
 公開版推送前：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 公開版必須移除：
@@ -639,6 +667,8 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/ops/tailscale_funnel_healthcheck.py --apply
 python3 scripts/public_release_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ```
 
