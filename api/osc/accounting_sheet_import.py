@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -98,6 +99,57 @@ class AccountingImportError(RuntimeError):
 
 class SheetsAuthorizationRequired(AccountingImportError):
     pass
+
+
+def _atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), mode)
+            except Exception:
+                pass
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(mode)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _backup_google_token(token_path: Path, *, reason: str) -> Path | None:
+    token_path = token_path.expanduser()
+    if not token_path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    backup_dir = token_path.parent / "token_backups"
+    backup_path = backup_dir / f"{token_path.name}.{reason}.{stamp}.bak"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path.write_bytes(token_path.read_bytes())
+        backup_path.chmod(0o600)
+        return backup_path
+    except Exception:
+        return None
+
+
+def _persist_google_credentials(token_path: Path, creds: Any) -> None:
+    _atomic_write_text(token_path, creds.to_json())
 
 
 def is_revoked_google_token_error(exc: BaseException) -> bool:
@@ -546,6 +598,7 @@ def _load_google_credentials(
     creds = None
     token_has_requested_scopes = False
     if force_auth and interactive:
+        _backup_google_token(token_path, reason="reauth")
         try:
             token_path.unlink()
         except FileNotFoundError:
@@ -563,6 +616,7 @@ def _load_google_credentials(
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
+            _persist_google_credentials(token_path, creds)
         except Exception as exc:
             if not is_revoked_google_token_error(exc):
                 raise
@@ -571,6 +625,7 @@ def _load_google_credentials(
                     f"Google Sheets/Drive 授權已過期或被撤銷。請執行 scripts/import_accounting_sheet.py --auth，"
                     f"並用 {account_hint} 重新登入。"
                 ) from exc
+            _backup_google_token(token_path, reason="revoked")
             try:
                 token_path.unlink()
             except FileNotFoundError:
@@ -597,11 +652,7 @@ def _load_google_credentials(
             ),
         )
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        try:
-            token_path.chmod(0o600)
-        except Exception:
-            pass
+        _persist_google_credentials(token_path, creds)
     return creds
 
 

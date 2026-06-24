@@ -3,6 +3,7 @@ from api.osc.accounting_sheet_import import (
     DEFAULT_ACCOUNT_HINT,
     _default_credentials_path,
     _default_token_path,
+    _persist_google_credentials,
     fixed_expense_overlap_details,
     is_revoked_google_token_error,
     month_window,
@@ -37,6 +38,18 @@ def test_accounting_google_env_paths_are_isolated(monkeypatch):
     monkeypatch.setenv("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN", "/accounting/token.json")
     assert str(_default_credentials_path()) == "/accounting/credentials.json"
     assert str(_default_token_path()) == "/accounting/token.json"
+
+
+def test_accounting_google_token_persist_is_atomic_and_private(tmp_path):
+    class FakeCreds:
+        def to_json(self):
+            return '{"token":"new","refresh_token":"keep"}'
+
+    token_path = tmp_path / "nested" / "token.json"
+    _persist_google_credentials(token_path, FakeCreds())
+
+    assert token_path.read_text(encoding="utf-8") == '{"token":"new","refresh_token":"keep"}'
+    assert oct(token_path.stat().st_mode & 0o777) == "0o600"
 
 
 def test_parse_date_accepts_roc_year():
