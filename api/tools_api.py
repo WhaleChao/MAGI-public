@@ -400,7 +400,7 @@ def _sanitize_definitions_payload(payload: dict) -> dict:
                 dropped_hidden_tools += 1
                 continue
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("tool definition visibility check failed", exc_info=True)
         endpoint = str(tool.get("endpoint") or "").strip()
         name = str(tool.get("name") or "").strip()
 

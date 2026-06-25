@@ -997,7 +997,7 @@ def create_admin_runtime_blueprint(
             if active_profile_path.exists():
                 payload["active_profile"] = active_profile_path.read_text(encoding="utf-8").strip() or "unknown"
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("active oMLX profile probe failed", exc_info=True)
 
         try:
             from scripts.ops.omlx_profile_policy import expected_profile_now
@@ -2065,7 +2065,7 @@ def create_admin_runtime_blueprint(
                 try:
                     conn.close()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("DB status connection close failed", exc_info=True)
 
     def _collect_model_status() -> dict[str, Any]:
         try:

@@ -728,7 +728,7 @@ def _osc_clear_case_root_outage() -> None:
     try:
         _osc_case_root_outage_path().unlink()
     except FileNotFoundError:
-        pass
+        _log.debug("case root outage marker already absent")
     except Exception:
         _log.debug("silent-catch clear case root outage", exc_info=True)
 
@@ -2693,16 +2693,16 @@ def _osc_remove_tree_robust(path: str) -> None:
                 try:
                     os.unlink(os.path.join(root, filename))
                 except FileNotFoundError:
-                    pass
+                    _log.debug("archive source file already removed during cleanup: %s", filename)
             for dirname in dirnames:
                 try:
                     os.rmdir(os.path.join(root, dirname))
                 except FileNotFoundError:
-                    pass
+                    _log.debug("archive source directory already removed during cleanup: %s", dirname)
         try:
             os.rmdir(path)
         except FileNotFoundError:
-            pass
+            _log.debug("archive source root already removed during cleanup: %s", path)
 
 
 def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:

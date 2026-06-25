@@ -115,7 +115,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
                     if not is_public_definition_tool(tool, include_deprecated=False):
                         continue
                 except Exception:
-                    pass
+                    logger.debug("skill definition visibility probe failed", exc_info=True)
                 if str(tool.get("name") or "").strip() != str(skill or "").strip():
                     continue
                 skill_prop = (((tool.get("parameters") or {}).get("properties") or {}).get("skill") or {})

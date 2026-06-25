@@ -434,7 +434,7 @@ def _casual_chat_reply(orch, message: str, user_id="", role="", platform="") -> 
         if reply and not _reply_looks_degraded(reply):
             return reply
     except Exception:
-        pass
+        logger.debug("casual chat conversational intent skipped", exc_info=True)
     try:
         reply = orch._handle_chat_async(user_id, message, platform_hint=platform)
         if reply and not _reply_looks_degraded(reply):
@@ -462,19 +462,19 @@ def _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, message: 
         if _clear_skill_interview_state_for_user(orch, user_id, platform):
             _trace_state_boundary(orch, user_id, platform, "skill_interview", f"{decision_kind}_preflight_clear", message)
     except Exception:
-        pass
+        logger.debug("skill interview state preflight clear failed", exc_info=True)
     try:
         legal_attest_state_file = f"{_MAGI_ROOT}/.agent/legal_attest_state.json"
         if _clear_json_state_for_user(legal_attest_state_file, user_id):
             _trace_state_boundary(orch, user_id, platform, "legal_attest", f"{decision_kind}_preflight_clear", message)
     except Exception:
-        pass
+        logger.debug("legal attest state preflight clear failed", exc_info=True)
     try:
         poa_state_file = f"{_MAGI_ROOT}/.agent/poa_chat_state.json"
         if _clear_json_state_for_user(poa_state_file, user_id):
             _trace_state_boundary(orch, user_id, platform, "poa", f"{decision_kind}_preflight_clear", message)
     except Exception:
-        pass
+        logger.debug("POA state preflight clear failed", exc_info=True)
 
 
 def _try_semantic_preflight(orch, message: str, user_id="", role="", platform="") -> str:
@@ -503,7 +503,7 @@ def _try_semantic_preflight(orch, message: str, user_id="", role="", platform=""
                 },
             )
     except Exception:
-        pass
+        logger.debug("semantic preflight route trace failed", exc_info=True)
     if decision.kind in {KIND_HELP_COMMAND, KIND_EXPLICIT_COMMAND}:
         return ""
     if decision.kind == KIND_AGENT_TASK:
@@ -597,7 +597,7 @@ def _try_agentic_route(orch, message: str, user_id="", role="", platform="", dec
                 },
             )
         except Exception:
-            pass
+            logger.debug("agentic router route trace failed", exc_info=True)
         return reply
     except Exception as exc:
         logger.warning("Agentic router skipped: %s", exc)
@@ -618,7 +618,7 @@ def _looks_like_general_chat_boundary(orch, message: str, user_id="", role="", p
         if orch._looks_like_capability_question(text):
             return True
     except Exception:
-        pass
+        logger.debug("capability-question boundary probe failed", exc_info=True)
     compact = _compact_message(text)
     if len(compact) > 120:
         return False
@@ -634,7 +634,7 @@ def _general_chat_boundary_reply(orch, message: str, user_id="", role="", platfo
         if reply:
             return reply
     except Exception:
-        pass
+        logger.debug("general chat conversational intent skipped", exc_info=True)
     try:
         from api.pipelines.message_router import magi_capability_overview
         return magi_capability_overview()
@@ -692,7 +692,7 @@ def _trace_state_boundary(orch, user_id, platform, state_name: str, boundary: st
             {"preview": str(message or "")[:80]},
         )
     except Exception:
-        pass
+        logger.debug("stateful boundary route trace failed", exc_info=True)
 
 
 def _normalize_arithmetic_expression(expr: str) -> str:

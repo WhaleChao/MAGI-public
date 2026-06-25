@@ -50,7 +50,7 @@ def _require_osc_debt_login():
         if current_user is not None and bool(getattr(current_user, "is_authenticated", False)):
             return None
     except Exception:
-        pass
+        logger.debug("current_user authentication probe failed", exc_info=True)
     return jsonify({"ok": False, "error": "authentication_required"}), 401
 
 
