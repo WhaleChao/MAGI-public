@@ -19,6 +19,11 @@ DEPRECATED_JOB_IDS = {
     "job_1772867062892_e33b6a",
 }
 
+KNOWN_MAGI_ROOTS = (
+    "/Users/ai/Desktop/MAGI_v2",
+    "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2",
+)
+
 
 def qcmd(*parts: object) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
@@ -243,6 +248,8 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                 "--",
                 python_bin,
                 repo_root / "scripts" / "ops" / "business_module_live_check.py",
+                "--json-out",
+                repo_root / ".runtime" / "business_module_live_check_latest.json",
             ),
             "desc": "業務三模組 LIVE/健康檢查（法扶/閱卷/筆錄）",
             "channel_id": None,
@@ -988,6 +995,20 @@ def load_jobs(path: Path) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def canonicalize_job_command(job: dict[str, Any], repo_root: Path) -> tuple[dict[str, Any], bool]:
+    command = job.get("command")
+    if not isinstance(command, str) or not command:
+        return job, False
+    root_text = str(repo_root)
+    new_command = command
+    for old_root in KNOWN_MAGI_ROOTS:
+        if old_root != root_text:
+            new_command = new_command.replace(old_root, root_text)
+    if new_command == command:
+        return job, False
+    return {**job, "command": new_command}, True
+
+
 def seed_jobs(repo_root: Path = REPO_ROOT, *, python_path: Path | None = None) -> dict[str, Any]:
     cron_path = repo_root / "cron_jobs.json"
     jobs = load_jobs(cron_path)
@@ -1032,6 +1053,9 @@ def seed_jobs(repo_root: Path = REPO_ROOT, *, python_path: Path | None = None) -
                 "no_catchup": True,
                 "desc": f"已停用：{job.get('desc') or job_id}",
             }
+            changed = True
+        job, path_changed = canonicalize_job_command(job, repo_root)
+        if path_changed:
             changed = True
         deduped.append(job)
     if len(deduped) != len(jobs):

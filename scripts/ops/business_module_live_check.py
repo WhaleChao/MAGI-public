@@ -155,6 +155,122 @@ def _load_json_file(path: Path, default: Any) -> Any:
         return default
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _age_seconds(path: Path) -> float | None:
+    try:
+        return max(0.0, datetime.now().timestamp() - path.stat().st_mtime)
+    except Exception:
+        return None
+
+
+def _token_health_live() -> dict[str, Any]:
+    return _run(
+        "token_health_refresh",
+        [
+            PYTHON,
+            str(REPO_ROOT / "scripts" / "ops" / "token_health_check.py"),
+            "--refresh",
+            "--threshold-days",
+            "7",
+            "--json-out",
+            str(REPO_ROOT / ".runtime" / "token_health" / "business_module_token_health_latest.json"),
+        ],
+        timeout=240,
+    )
+
+
+def _nas_mounts_live() -> dict[str, Any]:
+    try:
+        from api import nas_mount_guard
+
+        shares = nas_mount_guard.get_configured_shares(refresh=True)
+        detail = {name: nas_mount_guard.get_share_status(name, volume) for name, volume in shares}
+        ok = bool(detail) and all(bool(item.get("available") or item.get("mounted")) for item in detail.values())
+        return {
+            "name": "nas_mounts_live",
+            "ok": ok,
+            "parsed": {
+                "shares": {
+                    name: {
+                        "available": bool(item.get("available")),
+                        "mounted": bool(item.get("mounted")),
+                        "mode": item.get("mode") or "",
+                    }
+                    for name, item in detail.items()
+                }
+            },
+        }
+    except Exception as exc:
+        return {"name": "nas_mounts_live", "ok": False, "error": _redact_text(f"{type(exc).__name__}: {exc}")}
+
+
+def _drive_sync_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
+    path = REPO_ROOT / ".runtime" / "drive_sync" / "drive_case_sync_worker_status_latest.json"
+    data = _load_json_file(path, {})
+    if not isinstance(data, dict) or not data:
+        return {"name": "drive_sync_status_live", "ok": False, "error": "missing_drive_sync_status"}
+    status = str(data.get("status") or "")
+    pid = int(data.get("pid") or 0)
+    age = _age_seconds(path)
+    stale_age = age is not None and age > max_age_hours * 3600
+    running_without_pid = "running" in status and (not pid or not _pid_alive(pid))
+    ok = bool(data.get("ok")) and not stale_age and not running_without_pid
+    return {
+        "name": "drive_sync_status_live",
+        "ok": ok,
+        "parsed": {
+            "status": status,
+            "worker_kind": data.get("worker_kind") or "",
+            "pid": pid,
+            "pid_alive": _pid_alive(pid) if pid else False,
+            "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
+            "matched_case_folders": ((data.get("summary") or {}).get("matched_case_folders")),
+            "running_without_pid": running_without_pid,
+        },
+    }
+
+
+def _calendar_todo_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
+    path = REPO_ROOT / ".runtime" / "osc_events_refresh_latest.json"
+    data = _load_json_file(path, {})
+    if not isinstance(data, dict) or not data:
+        return {"name": "calendar_todo_status_live", "ok": False, "error": "missing_osc_events_refresh_status"}
+    age = _age_seconds(path)
+    audit = data.get("calendar_audit") if isinstance(data.get("calendar_audit"), dict) else {}
+    imported = data.get("calendar_import") if isinstance(data.get("calendar_import"), dict) else {}
+    ok = bool(audit.get("ok", True)) and bool(imported.get("ok", True)) and not (age is not None and age > max_age_hours * 3600)
+    return {
+        "name": "calendar_todo_status_live",
+        "ok": ok,
+        "parsed": {
+            "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
+            "calendar_audit_ok": bool(audit.get("ok", True)),
+            "calendar_import_ok": bool(imported.get("ok", True)),
+            "checked_primary_events": ((audit.get("summary") or {}).get("checked_primary_events")),
+            "checked_source_events": ((audit.get("summary") or {}).get("checked_source_events")),
+            "imported": imported.get("imported"),
+            "skipped": imported.get("skipped"),
+        },
+    }
+
+
 def _iter_source_files(root: Path) -> list[Path]:
     out: list[Path] = []
     for dirname in _ACTIVE_SCAN_DIRS:
@@ -541,6 +657,26 @@ def _summarize(results: list[dict[str, Any]]) -> str:
                 detail = f"可下載 {parsed.get('downloadable_count')} / 待繳費 {parsed.get('pending_payment_count')}"
             elif "eligible_cases" in parsed:
                 detail = f"可同步案件 {parsed.get('eligible_cases')}"
+            elif isinstance(parsed.get("summary"), dict) and "failures" in parsed["summary"]:
+                summary = parsed["summary"]
+                detail = f"checks {summary.get('total')} / failures {summary.get('failures')}"
+            elif "failures" in parsed and "total" in parsed:
+                detail = f"checks {parsed.get('total')} / failures {parsed.get('failures')}"
+            elif "shares" in parsed:
+                detail = " / ".join(
+                    f"{k}:{'OK' if v.get('available') or v.get('mounted') else 'NG'}"
+                    for k, v in (parsed.get("shares") or {}).items()
+                )
+            elif "matched_case_folders" in parsed:
+                detail = (
+                    f"{parsed.get('status')} / matched {parsed.get('matched_case_folders')} / "
+                    f"age {parsed.get('age_hours')}h"
+                )
+            elif "calendar_audit_ok" in parsed:
+                detail = (
+                    f"audit {parsed.get('calendar_audit_ok')} / import {parsed.get('calendar_import_ok')} / "
+                    f"age {parsed.get('age_hours')}h"
+                )
             elif "case_status_drafts" in parsed:
                 detail = (
                     f"案件狀態暫存 {parsed.get('case_status_drafts')} / "
@@ -619,6 +755,12 @@ def main(argv: list[str] | None = None) -> int:
                 },
             }
         )
+    results.extend([
+        _token_health_live(),
+        _nas_mounts_live(),
+        _drive_sync_status_live(),
+        _calendar_todo_status_live(),
+    ])
     results.extend([
         _run("laf_self_test", [PYTHON, str(REPO_ROOT / "skills" / "laf-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),
         _run("file_review_self_test", [PYTHON, str(REPO_ROOT / "skills" / "file-review-orchestrator" / "action.py"), "--task", "self_test"], timeout=120),

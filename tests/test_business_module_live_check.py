@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from scripts.ops import business_module_live_check as live_check
 
 
@@ -63,3 +65,39 @@ def test_laf_portal_live_redacts_portal_errors(monkeypatch):
     assert "2025-0134" not in result["parsed"]["error"]
     assert "person@example.com" not in result["parsed"]["error"]
     assert "/Users/example" not in result["parsed"]["error"]
+
+
+def test_drive_sync_status_flags_running_without_live_pid(tmp_path, monkeypatch):
+    runtime = tmp_path / ".runtime" / "drive_sync"
+    runtime.mkdir(parents=True)
+    (runtime / "drive_case_sync_worker_status_latest.json").write_text(
+        json.dumps({"ok": True, "status": "direct_all_case_sync_running", "pid": 999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_pid_alive", lambda pid: False)
+
+    result = live_check._drive_sync_status_live()
+
+    assert result["ok"] is False
+    assert result["parsed"]["running_without_pid"] is True
+
+
+def test_calendar_todo_status_accepts_recent_ok_report(tmp_path, monkeypatch):
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir()
+    (runtime / "osc_events_refresh_latest.json").write_text(
+        json.dumps(
+            {
+                "calendar_audit": {"ok": True, "summary": {"checked_primary_events": 3}},
+                "calendar_import": {"ok": True, "imported": 0, "skipped": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+
+    result = live_check._calendar_todo_status_live()
+
+    assert result["ok"] is True
+    assert result["parsed"]["calendar_audit_ok"] is True

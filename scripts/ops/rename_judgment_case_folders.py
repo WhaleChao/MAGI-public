@@ -149,6 +149,9 @@ def rename_folder(path: Path, *, apply: bool) -> dict[str, Any]:
     if not new_name:
         item_report["errors"].append("not_legacy_judgment_folder")
         return item_report
+    if not path.exists():
+        item_report["already_gone"] = True
+        return item_report
     target = path.with_name(new_name)
     try:
         if not target.exists():

@@ -269,6 +269,91 @@ def test_calendar_gap_drive_remediation_respects_skip_drive_sync():
     assert out == {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
 
 
+def test_calendar_gap_drive_remediation_has_hard_timeout(monkeypatch):
+    class FakeDriveSync:
+        @staticmethod
+        def run_priority_case_sync(**_kwargs):
+            raise AssertionError("run_priority_case_sync should be interrupted by the outer timeout")
+
+    monkeypatch.setitem(__import__("sys").modules, "api.osc.drive_case_sync", FakeDriveSync)
+    monkeypatch.setenv("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_TIMEOUT_SEC", "5")
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_pdf_scan_time_limit",
+        lambda seconds: (_ for _ in ()).throw(osc_events_refresh._PdfScanTimeout(f"pdf_scan_timeout:{seconds}s")),
+    )
+
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=False),
+    )
+
+    assert out["ok"] is False
+    assert out["reason"] == "drive_remediation_timeout"
+    assert out["timeout_sec"] == 5
+    assert out["case_numbers"] == ["2025-0001"]
+
+
+def test_refresh_surfaces_calendar_source_drive_remediation_failure(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+
+    class FakeOscAction:
+        @staticmethod
+        def task_gcal_import(_payload):
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(_payload):
+            return {"ok": True, "inserted": 0, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(_payload):
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda _args: {"ok": True, "updated": 0, "items": []},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_calendar_source_audit",
+        lambda _args: {
+            "ok": True,
+            "calendar_import_only_count": 1,
+            "sample_items": [{"case_number": "2025-0001"}],
+            "drive_remediation": {"ok": False, "reason": "drive_remediation_timeout"},
+        },
+    )
+
+    args = SimpleNamespace(
+        calendar_only=True,
+        scan_only=False,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=True,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert "calendar_source_drive_remediation_failed" in result["warnings"]
+    assert "calendar_import_only_without_pdf_source" not in result["warnings"]
+
+
 def test_refresh_skips_when_canonical_lock_is_held(monkeypatch, tmp_path):
     from scripts.ops import background_task_locks
 

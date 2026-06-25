@@ -1114,6 +1114,7 @@ def _run_calendar_gap_drive_remediation(
         return {"ok": False, "error": f"load_drive_sync_failed:{type(exc).__name__}"}
 
     download_limit = max(1, min(80, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DOWNLOAD_LIMIT", "24") or "24")))
+    timeout_sec = max(5, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_TIMEOUT_SEC", "180") or "180"))
     max_download_bytes = max(
         1,
         min(
@@ -1122,24 +1123,37 @@ def _run_calendar_gap_drive_remediation(
         ),
     )
     try:
-        report = run_priority_case_sync(
-            case_numbers=case_numbers,
-            root_name=os.environ.get("MAGI_DRIVE_SYNC_ROOT_NAME", "案件辦理"),
-            file_diff=True,
-            execute_downloads=True,
-            execute_uploads=False,
-            download_limit=download_limit,
-            max_download_bytes=max_download_bytes,
-            upload_limit=0,
-            max_upload_bytes=0,
-            max_case_depth=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_DEPTH", "5") or "5")),
-            max_case_items=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_ITEMS", "260") or "260")),
-            ensure_drive_case_folders=False,
-        )
+        with _pdf_scan_time_limit(timeout_sec):
+            report = run_priority_case_sync(
+                case_numbers=case_numbers,
+                root_name=os.environ.get("MAGI_DRIVE_SYNC_ROOT_NAME", "案件辦理"),
+                file_diff=True,
+                execute_downloads=True,
+                execute_uploads=False,
+                download_limit=download_limit,
+                max_download_bytes=max_download_bytes,
+                upload_limit=0,
+                max_upload_bytes=0,
+                max_case_depth=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_DEPTH", "5") or "5")),
+                max_case_items=max(1, int(os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_MAX_CASE_ITEMS", "260") or "260")),
+                ensure_drive_case_folders=False,
+            )
+    except _PdfScanTimeout as exc:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "drive_remediation_timeout",
+            "case_numbers": case_numbers,
+            "download_limit": download_limit,
+            "timeout_sec": timeout_sec,
+            "error": str(exc),
+        }
     except Exception as exc:
         return {
             "ok": False,
             "case_numbers": case_numbers,
+            "download_limit": download_limit,
+            "timeout_sec": timeout_sec,
             "error": f"{type(exc).__name__}: {str(exc)[:220]}",
         }
 
@@ -1149,6 +1163,7 @@ def _run_calendar_gap_drive_remediation(
         "ok": bool(report.get("ok", True)),
         "case_numbers": case_numbers,
         "download_limit": download_limit,
+        "timeout_sec": timeout_sec,
         "max_download_bytes": max_download_bytes,
         "summary": report.get("summary") or {},
         "file_sync_summary": file_sync.get("summary") if isinstance(file_sync, dict) else file_sync,
@@ -1580,6 +1595,8 @@ def _run_refresh_locked(args: argparse.Namespace) -> dict[str, Any]:
             result["calendar_source_audit"] = _run_calendar_source_audit(args)
             if not result["calendar_source_audit"].get("ok"):
                 result["warnings"].append("calendar_source_audit_failed")
+            elif not (result["calendar_source_audit"].get("drive_remediation") or {}).get("ok", True):
+                result["warnings"].append("calendar_source_drive_remediation_failed")
             elif int(result["calendar_source_audit"].get("calendar_import_only_count") or 0) > 0:
                 result["warnings"].append("calendar_import_only_without_pdf_source")
 

@@ -137,6 +137,68 @@ def test_operational_audit_allows_single_transcript_indexer(tmp_path, monkeypatc
     assert report["issue_count"] == 0
 
 
+def test_operational_audit_flags_cron_root_mismatch(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "job_bad_root",
+            "enabled": True,
+            "cron": "0 * * * *",
+            "command": "/Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/x.py",
+            "desc": "bad",
+        }
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+
+    report = audit.audit_runtime_root_consistency()
+
+    assert report["ok"] is False
+    assert report["mismatch_count"] == 1
+
+
+def test_operational_audit_flags_stale_runtime_lock(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "demo.lock").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks()
+
+    assert report["ok"] is False
+    assert report["stale_count"] == 1
+
+
+def test_operational_audit_requires_laf_gmail_fallback_json_out(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_laf_gmail_dispatch_scan",
+                    "enabled": True,
+                    "cron": "*/5 * * * *",
+                    "command": "python scripts/ops/laf_gmail_dispatch_scan.py --json-out static/laf_gmail_monitor_state.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+
+    report = audit.audit_laf_gmail_fallback_job()
+
+    assert report["ok"] is True
+
+
 def test_operational_audit_flags_unmanaged_cloudflared_port(tmp_path, monkeypatch):
     import scripts.ops.audit_operational_hardening as audit
 
@@ -526,13 +588,15 @@ def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     jobs = _cron_jobs_text_or_skip()
     parsed_jobs = json.loads(jobs)
     by_id = {job["id"]: job for job in parsed_jobs}
+    expected_switch = str(Path.cwd() / "config" / "bin" / "omlx_switch_model.sh")
 
     assert "/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh" not in jobs
-    assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
+    assert expected_switch in jobs
     assert '"id": "job_health_report"' in jobs
     assert '"cron": "30 6 * * *"' in jobs
     assert by_id["job_omlx_profile_guard"]["cron"] == "*/15 * * * *"
-    assert "omlx_switch_model.sh auto" in by_id["job_omlx_profile_guard"]["command"]
+    assert "omlx_switch_model.sh" in by_id["job_omlx_profile_guard"]["command"]
+    assert by_id["job_omlx_profile_guard"]["command"].endswith(" auto")
     assert by_id["job_omlx_profile_guard"]["timeout_sec"] >= 1800
     assert by_id["job_distill_train_gemma"]["enabled"] is True
     assert "validation-gated" in by_id["job_distill_train_gemma"]["desc"]

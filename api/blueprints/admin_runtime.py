@@ -424,7 +424,7 @@ def _classify_cron_issue(
     *,
     active_cutoff: float,
     latest_cron_issue_ts_by_job: dict[str, float],
-    cron_last_run_ts: dict[str, float],
+    cron_success_ts: dict[str, float],
 ) -> str:
     if _is_false_positive_cron_issue(row):
         return "false_positive"
@@ -437,7 +437,7 @@ def _classify_cron_issue(
         return "stale" if ts < active_cutoff else "active_unresolved"
 
     latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts)
-    last_run_ts = cron_last_run_ts.get(job_id, 0.0)
+    last_success_ts = cron_success_ts.get(job_id, 0.0)
     if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"}:
         if _is_omlx_switch_recovered():
             return "recovered"
@@ -447,7 +447,7 @@ def _classify_cron_issue(
         return "recovered"
     if latest_issue_ts > ts:
         return "superseded"
-    if last_run_ts > ts:
+    if last_success_ts > ts:
         return "recovered"
     if ts < active_cutoff:
         return "stale"
@@ -472,7 +472,7 @@ def _load_recent_issue_rows(issue_path: Path, cutoff_ts: float) -> list[dict[str
     return rows
 
 
-def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
+def _load_cron_success_ts(root: Path) -> dict[str, float]:
     state_path = root / ".runtime" / "cron_state.json"
     if not state_path.exists():
         return {}
@@ -486,7 +486,7 @@ def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
     for job_id, data in raw.items():
         if not isinstance(data, dict):
             continue
-        ts = _safe_epoch(data.get("last_run"))
+        ts = _safe_epoch(data.get("last_success_at"))
         if ts > 0:
             out[str(job_id)] = ts
     return out
@@ -545,7 +545,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
     active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
     active_cutoff = now_ts - active_window_sec
     rows = _load_recent_issue_rows(root / ".runtime" / "issue_agenda.jsonl", cutoff_24h)
-    cron_last_run_ts = _load_cron_last_run_ts(root)
+    cron_success_ts = _load_cron_success_ts(root)
 
     latest_cron_issue_ts_by_job: dict[str, float] = {}
     for row in rows:
@@ -593,7 +593,7 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
             row,
             active_cutoff=active_cutoff,
             latest_cron_issue_ts_by_job=latest_cron_issue_ts_by_job,
-            cron_last_run_ts=cron_last_run_ts,
+            cron_success_ts=cron_success_ts,
         )
         if state == "false_positive":
             false_positive_cron_failures += 1

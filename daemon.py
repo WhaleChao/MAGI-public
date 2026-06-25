@@ -831,33 +831,68 @@ def _start_cron_fallback() -> None:
         def _run_fallback_job(job: dict[str, Any]) -> None:
             command = job.get("command", "")
             job_id = job.get("id", "?")
+            started_at = time.time()
             logger.info("⏰ [CronFallback] Executing job: %s", job_id)
+
+            def _record_result(
+                *,
+                success: bool,
+                returncode: int | None = None,
+                timed_out: bool = False,
+                error: str = "",
+                stdout_tail: str = "",
+                stderr_tail: str = "",
+            ) -> None:
+                try:
+                    scheduler.mark_job_result(
+                        str(job_id),
+                        success=success,
+                        returncode=returncode,
+                        timed_out=timed_out,
+                        error=error,
+                        stdout_tail=stdout_tail,
+                        stderr_tail=stderr_tail,
+                        duration_sec=time.time() - started_at,
+                    )
+                except Exception:
+                    logger.debug("CronFallback result write failed", exc_info=True)
+
             try:
                 if command.startswith("@MAGI"):
-                    clean_cmd = command.replace("@MAGI", "").strip()
-                    response = orchestrator.process_message(
-                        "SYSTEM_CRON", clean_cmd,
-                        platform="DAEMON_CRON", role="admin",
-                    )
-                    if response:
-                        try:
-                            orchestrator.record_assistant_reply("SYSTEM_CRON", response)
-                        except Exception:
-                            pass
-                        logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
-                                    job_id, len(response), response)
+                    try:
+                        clean_cmd = command.replace("@MAGI", "").strip()
+                        response = orchestrator.process_message(
+                            "SYSTEM_CRON", clean_cmd,
+                            platform="DAEMON_CRON", role="admin",
+                        )
+                        if response:
+                            try:
+                                orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                            except Exception:
+                                pass
+                            logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
+                                        job_id, len(response), response)
+                        _record_result(success=True, returncode=0, stdout_tail=str(response or "")[-1200:])
+                    except Exception as exc:
+                        _record_result(success=False, returncode=1, error=f"{type(exc).__name__}: {exc}")
+                        raise
                     return
 
                 _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
                 if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
                     logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
+                    _record_result(success=False, returncode=None, error="blocked_suspicious_command")
                     return
 
                 _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
                 result_returncode = -1
                 result_stderr = ""
+                result_stdout = ""
+                result_timed_out = False
                 try:
                     from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                    from skills.ops.cron_result_policy import should_log_cron_issue
+
                     argv = parse_cron_command(command)
                     _custom_timeout = job.get("timeout_sec")
                     if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
@@ -874,17 +909,34 @@ def _start_cron_fallback() -> None:
                     _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT, env_extra=_shell_env)
                     result_returncode = _sr.returncode
                     result_stderr = _sr.stderr
+                    result_stdout = _sr.stdout
+                    result_timed_out = bool(getattr(_sr, "timed_out", False))
                 except Exception as _e:
                     logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
                     result_returncode = 1
                     result_stderr = str(_e)
+                result_success = (not result_timed_out) and int(result_returncode or 0) == 0
                 if result_returncode != 0:
+                    try:
+                        if should_log_cron_issue(result_returncode, result_stdout or "", result_stderr or "") is False:
+                            result_success = True
+                    except Exception:
+                        pass
                     logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
                                    job_id, result_returncode, (result_stderr or "")[:300])
                 else:
                     logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
+                _record_result(
+                    success=result_success,
+                    returncode=int(result_returncode or 0),
+                    timed_out=result_timed_out,
+                    error=(result_stderr or result_stdout or "")[-1200:] if not result_success else "",
+                    stdout_tail=(result_stdout or "")[-1200:],
+                    stderr_tail=(result_stderr or "")[-1200:],
+                )
             except Exception as je:
                 logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                _record_result(success=False, returncode=1, error=f"{type(je).__name__}: {je}")
 
         while True:
             try:

@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 import time
 import uuid
-from typing import Dict
+from typing import Any, Dict
 
 # === R3: runtime_dir 接入 ===
 try:
@@ -46,6 +46,13 @@ def _save_cron_state(state: Dict[str, Dict[str, str]]) -> None:
     if not _use_runtime_dir():
         return
     _rd.atomic_write_json(_rd.cron_state(), state)
+
+
+def _tail_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
 
 logger = logging.getLogger("CronScheduler")
 
@@ -128,8 +135,8 @@ class CronScheduler:
             for j in self.jobs:
                 jid = j.get("id")
                 if jid and jid in state:
-                    j["last_run"] = state[jid].get("last_run", j.get("last_run"))
-                    j["last_run_minute"] = state[jid].get("last_run_minute", j.get("last_run_minute"))
+                    for key, value in state[jid].items():
+                        j[key] = value
 
     def _hot_reload_if_changed(self):
         """Reload jobs from disk if the file was modified externally."""
@@ -210,6 +217,7 @@ class CronScheduler:
         payload = {
             "last_run": now.isoformat(),
             "last_run_minute": now.strftime("%Y-%m-%d %H:%M"),
+            "last_dispatch": now.isoformat(),
         }
         changed = False
         for job in self.jobs:
@@ -221,10 +229,76 @@ class CronScheduler:
             return False
         if _use_runtime_dir():
             state = _load_cron_state()
-            state[jid] = payload
+            previous = dict(state.get(jid) or {})
+            previous.update(payload)
+            state[jid] = previous
             _save_cron_state(state)
         self._save_jobs()
         return True
+
+    def mark_job_result(
+        self,
+        job_id: str,
+        *,
+        success: bool,
+        returncode: int | None = None,
+        timed_out: bool = False,
+        error: str = "",
+        stdout_tail: str = "",
+        stderr_tail: str = "",
+        duration_sec: float | None = None,
+        when: datetime | None = None,
+    ) -> bool:
+        """Record the actual result of a dispatched cron job.
+
+        ``mark_job_run`` intentionally records dispatch before execution so
+        catch-up does not double-launch long jobs. This method is the second
+        half of that contract: it records whether the launched job actually
+        finished successfully.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return False
+        now = when or datetime.now()
+        payload: Dict[str, Any] = {
+            "last_result_at": now.isoformat(),
+            "last_success": bool(success),
+            "last_returncode": returncode,
+            "last_timed_out": bool(timed_out),
+        }
+        if duration_sec is not None:
+            try:
+                payload["last_duration_sec"] = round(float(duration_sec), 3)
+            except Exception:
+                pass
+        if success:
+            payload["last_success_at"] = now.isoformat()
+            payload["last_error"] = ""
+        else:
+            payload["last_failure_at"] = now.isoformat()
+            payload["last_error"] = _tail_text(error, 1200)
+        if stdout_tail:
+            payload["last_stdout_tail"] = _tail_text(stdout_tail, 1200)
+        if stderr_tail:
+            payload["last_stderr_tail"] = _tail_text(stderr_tail, 1200)
+
+        changed = False
+        for job in self.jobs:
+            if str(job.get("id") or "") == jid:
+                job.update(payload)
+                changed = True
+                break
+
+        if _use_runtime_dir():
+            state = _load_cron_state()
+            previous = dict(state.get(jid) or {})
+            previous.update(payload)
+            state[jid] = previous
+            _save_cron_state(state)
+            changed = True
+        elif changed:
+            self._save_jobs()
+        return changed
 
     def _normalize_cron_expr(self, cron_expr: str):
         raw = (cron_expr or "").strip().lower()
@@ -418,10 +492,13 @@ class CronScheduler:
                     # R3: 寫到 cron_state.json，cron_jobs.json 由 strip 腳本清乾淨
                     if _use_runtime_dir():
                         st = _load_cron_state()
-                        st[job["id"]] = {
+                        previous = dict(st.get(job["id"]) or {})
+                        previous.update({
                             "last_run": job["last_run"],
                             "last_run_minute": job["last_run_minute"],
-                        }
+                            "last_dispatch": job["last_run"],
+                        })
+                        st[job["id"]] = previous
                         _save_cron_state(st)
 
             except Exception as e:

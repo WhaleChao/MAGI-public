@@ -97,7 +97,7 @@ def _is_false_positive_cron_issue(row: dict[str, Any]) -> bool:
     return ("\"success\": true" in err_lower) or ("✅" in err)
 
 
-def _load_cron_last_run_ts() -> dict[str, float]:
+def _load_cron_success_ts() -> dict[str, float]:
     state_path = ROOT / ".runtime" / "cron_state.json"
     if not state_path.exists():
         return {}
@@ -108,7 +108,7 @@ def _load_cron_last_run_ts() -> dict[str, float]:
     for job_id, data in raw.items():
         if not isinstance(data, dict):
             continue
-        ts = _safe_epoch(data.get("last_run"))
+        ts = _safe_epoch(data.get("last_success_at"))
         if ts > 0:
             out[str(job_id)] = ts
     return out
@@ -202,7 +202,7 @@ def _classify_issue_row(
     *,
     active_cutoff: float,
     latest_cron_issue_ts_by_job: dict[str, float],
-    cron_last_run_ts: dict[str, float],
+    cron_success_ts: dict[str, float],
 ) -> str:
     source = str(row.get("source", ""))
     if not source.startswith("discord_bot.cron_scheduler"):
@@ -224,7 +224,7 @@ def _classify_issue_row(
         return "recovered"
     if latest_cron_issue_ts_by_job.get(job_id, ts) > ts:
         return "superseded"
-    if cron_last_run_ts.get(job_id, 0.0) > ts:
+    if cron_success_ts.get(job_id, 0.0) > ts:
         return "recovered"
     if ts < active_cutoff:
         return "stale"
@@ -236,6 +236,24 @@ def _load_json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
 
 
 def _load_dotenv_value(key: str, default: str = "") -> str:
@@ -327,6 +345,122 @@ def audit_cron() -> dict[str, Any]:
         "parse_failures": parse_failures,
         "collision_count": len(collisions),
         "collisions": collisions,
+    }
+
+
+def audit_runtime_root_consistency() -> dict[str, Any]:
+    """Find active cron commands that point at a different MAGI checkout."""
+    jobs = _load_json(ROOT / "cron_jobs.json", [])
+    enabled = [j for j in jobs if j.get("enabled", True)]
+    root_text = str(ROOT)
+    known_roots = {
+        root_text,
+        "/Users/ai/Desktop/MAGI_v2",
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2",
+    }
+    runtime_env = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    mismatches: list[dict[str, Any]] = []
+    for job in enabled:
+        command = str(job.get("command") or "")
+        hits = sorted(root for root in known_roots if root and root in command)
+        bad_hits = [root for root in hits if root != root_text]
+        if bad_hits:
+            mismatches.append(
+                {
+                    "id": job.get("id"),
+                    "cron": job.get("cron"),
+                    "desc": job.get("desc"),
+                    "unexpected_roots": bad_hits,
+                    "command": command[:320],
+                }
+            )
+    return {
+        "ok": not mismatches,
+        "root": root_text,
+        "runtime_dir": runtime_env,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches[:30],
+        "requirement": "Enabled cron jobs should execute inside the same MAGI root as the running daemon checkout.",
+    }
+
+
+def audit_stale_runtime_locks() -> dict[str, Any]:
+    """Report lock files whose owner PID is gone.
+
+    This is intentionally read-only.  Some lock owners clean themselves on the
+    next acquisition, but stale locks must be visible in health reports instead
+    of looking like healthy running work.
+    """
+    roots = [ROOT / ".runtime" / "locks"]
+    runtime_dir = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    if runtime_dir:
+        roots.append(Path(runtime_dir) / "locks")
+    seen: set[str] = set()
+    stale: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
+    malformed: list[dict[str, Any]] = []
+    for lock_dir in roots:
+        if not lock_dir.exists():
+            continue
+        for path in sorted(lock_dir.glob("*.lock")):
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            data = _load_json(path, {})
+            if not isinstance(data, dict):
+                malformed.append({"path": str(path), "sample": raw[:200]})
+                continue
+            pid = int(data.get("pid") or 0)
+            item = {
+                "path": str(path),
+                "domain": data.get("domain") or path.stem,
+                "owner": data.get("owner") or "",
+                "pid": pid,
+                "started_at": data.get("started_at") or "",
+            }
+            if pid and _pid_alive(pid):
+                active.append(item)
+            else:
+                stale.append(item)
+    return {
+        "ok": not stale and not malformed,
+        "active_count": len(active),
+        "stale_count": len(stale),
+        "malformed_count": len(malformed),
+        "active": active[:30],
+        "stale": stale[:30],
+        "malformed": malformed[:10],
+        "requirement": "Runtime lock files must point to a live PID or be cleaned by the next owner.",
+    }
+
+
+def audit_laf_gmail_fallback_job() -> dict[str, Any]:
+    jobs = _load_json(ROOT / "cron_jobs.json", [])
+    matches = [
+        j
+        for j in jobs
+        if j.get("enabled", True)
+        and (
+            str(j.get("id") or "") == "job_laf_gmail_dispatch_scan"
+            or "laf_gmail_dispatch_scan.py" in str(j.get("command") or "")
+        )
+    ]
+    ok = bool(matches) and any("--json-out" in str(j.get("command") or "") for j in matches)
+    return {
+        "ok": ok,
+        "match_count": len(matches),
+        "jobs": [
+            {
+                "id": j.get("id"),
+                "cron": j.get("cron"),
+                "desc": j.get("desc"),
+                "has_json_out": "--json-out" in str(j.get("command") or ""),
+            }
+            for j in matches
+        ],
+        "requirement": "LAF Gmail dispatch monitor needs the five-minute fallback scanner with durable JSON output.",
     }
 
 
@@ -567,7 +701,7 @@ def audit_issue_agenda(limit: int = 20) -> dict[str, Any]:
 
     active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
     active_cutoff = time.time() - active_window_sec
-    cron_last_run_ts = _load_cron_last_run_ts()
+    cron_success_ts = _load_cron_success_ts()
     class_counts: dict[str, int] = defaultdict(int)
     recent = []
     for row in rows:
@@ -575,7 +709,7 @@ def audit_issue_agenda(limit: int = 20) -> dict[str, Any]:
             row,
             active_cutoff=active_cutoff,
             latest_cron_issue_ts_by_job=latest_cron_issue_ts_by_job,
-            cron_last_run_ts=cron_last_run_ts,
+            cron_success_ts=cron_success_ts,
         )
         class_counts[state] += 1
         recent.append(
@@ -786,11 +920,14 @@ def main() -> int:
 
     report = {
         "cron": audit_cron(),
+        "runtime_root_consistency": audit_runtime_root_consistency(),
+        "stale_runtime_locks": audit_stale_runtime_locks(),
         "domain_interference": audit_domain_interference(),
         "background_task_locks": audit_background_task_locks(),
         "git": audit_git(),
         "issue_agenda": audit_issue_agenda(),
         "gmail_monitor": audit_gmail_monitor_mode(),
+        "laf_gmail_fallback_job": audit_laf_gmail_fallback_job(),
         "omlx_profile": audit_omlx_profile(),
         "silent_exception_handlers": audit_silent_exception_handlers(),
         "retired_feature_residue": audit_retired_feature_residue(),
@@ -803,11 +940,14 @@ def main() -> int:
     print(json.dumps({
         "cron_parse_failures": report["cron"]["parse_failure_count"],
         "cron_collisions": report["cron"]["collision_count"],
+        "runtime_root_mismatch_count": report["runtime_root_consistency"]["mismatch_count"],
+        "stale_runtime_lock_count": report["stale_runtime_locks"]["stale_count"],
         "domain_interference_count": report["domain_interference"]["issue_count"],
         "background_task_locks_ok": report["background_task_locks"]["ok"],
         "dirty_count": report["git"]["dirty_count"],
         "recent_issues": int(report["issue_agenda"].get("recent_count") or 0),
         "gmail_monitor_mode": report["gmail_monitor"]["mode"],
+        "laf_gmail_fallback_job_ok": report["laf_gmail_fallback_job"]["ok"],
         "omlx_profile_ok": report["omlx_profile"]["ok"],
         "omlx_expected": report["omlx_profile"]["expected_profile"],
         "omlx_models": report["omlx_profile"]["models"],
@@ -820,9 +960,12 @@ def main() -> int:
     if args.fail_on_red and (
         report["cron"]["parse_failure_count"] > 0
         or report["cron"]["collision_count"] > 0
+        or not report["runtime_root_consistency"]["ok"]
+        or not report["stale_runtime_locks"]["ok"]
         or report["domain_interference"]["issue_count"] > 0
         or not report["background_task_locks"]["ok"]
         or not report["gmail_monitor"]["ok"]
+        or not report["laf_gmail_fallback_job"]["ok"]
         or not report["omlx_profile"]["ok"]
         or not report["retired_feature_residue"]["ok"]
         or not report["osc_route_integrity"]["ok"]

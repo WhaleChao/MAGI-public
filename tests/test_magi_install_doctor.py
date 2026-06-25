@@ -102,6 +102,8 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_file_review_check" in cron_text
     assert "job_transcript_sync" in cron_text
     assert "job_business_module_live_check" in cron_text
+    assert "business_module_live_check.py --json-out" in cron_text
+    assert ".runtime/business_module_live_check_latest.json" in cron_text
     assert "job_accounting_monthly_bonus" in cron_text
     assert "accounting_monthly_bonus.py" in cron_text
     assert "--commit --refresh-import --catch-up --export-xlsx" in cron_text
@@ -130,6 +132,30 @@ def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatc
     assert f"{tmp_path}/venv/bin/python3" in cron_text
     assert '"id": "job_resource_governor"' in cron_text
     assert '"cron": "20 * * * *"' in cron_text
+
+
+def test_seed_cron_jobs_canonicalizes_existing_magi_root_paths(tmp_path):
+    cron_path = tmp_path / "cron_jobs.json"
+    cron_path.write_text(
+        """
+[
+  {
+    "id": "custom_old_root",
+    "cron": "0 * * * *",
+    "command": "/Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/custom.py",
+    "enabled": true
+  }
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    cron_text = cron_path.read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert "/Users/ai/Desktop/MAGI_v2" not in cron_text
+    assert f"{tmp_path}/venv/bin/python3 {tmp_path}/scripts/custom.py" in cron_text
 
 
 def test_seed_cron_jobs_prefers_dotvenv_when_created_by_installer(tmp_path, monkeypatch):

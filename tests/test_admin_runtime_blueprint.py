@@ -844,7 +844,7 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
     )
 
     cron_state = {
-        "job_debug_cleanup": {"last_run": str(now - 100)},
+        "job_debug_cleanup": {"last_success_at": str(now - 100)},
         "job_obsidian_ingest": {"last_run": str(now - 400)},
     }
     (runtime_dir / "cron_state.json").write_text(

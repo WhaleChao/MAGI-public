@@ -528,34 +528,65 @@ def _cron_job_timeout(job: dict) -> int:
     return 7200 if job_id in _LONG_JOBS else 600
 
 
-async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> None:
+async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore, scheduler=None) -> None:
     """Run one cron job without blocking the minute-by-minute scheduler loop."""
     async with semaphore:
         loop = asyncio.get_running_loop()
         command = str(job.get("command") or "")
         job_id = str(job.get("id") or "?")
+        started_at = time.time()
         logger.info("⏰ Executing scheduled job %s: %s", job_id, command[:300])
 
+        def _record_result(
+            *,
+            success: bool,
+            returncode: int | None = None,
+            timed_out: bool = False,
+            error: str = "",
+            stdout_tail: str = "",
+            stderr_tail: str = "",
+        ) -> None:
+            if scheduler is None:
+                return
+            try:
+                scheduler.mark_job_result(
+                    job_id,
+                    success=success,
+                    returncode=returncode,
+                    timed_out=timed_out,
+                    error=error,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    duration_sec=time.time() - started_at,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_record_result", exc_info=True)
+
         if command.startswith("@MAGI"):
-            clean_cmd = command.replace("@MAGI", "").strip()
-            response = await loop.run_in_executor(
-                _CRON_EXECUTOR,
-                lambda: orchestrator.process_message(
-                    "SYSTEM_CRON",
-                    clean_cmd,
-                    platform="DISCORD_CRON",
-                    role="admin",
-                ),
-            )
-            if response:
-                try:
-                    await loop.run_in_executor(
-                        _CRON_EXECUTOR,
-                        lambda: orchestrator.record_assistant_reply("SYSTEM_CRON", response),
-                    )
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 512, exc_info=True)
-                logger.info("⏰ Cron job [%s] result (%d chars): %.200s", job_id, len(response), response)
+            try:
+                clean_cmd = command.replace("@MAGI", "").strip()
+                response = await loop.run_in_executor(
+                    _CRON_EXECUTOR,
+                    lambda: orchestrator.process_message(
+                        "SYSTEM_CRON",
+                        clean_cmd,
+                        platform="DISCORD_CRON",
+                        role="admin",
+                    ),
+                )
+                if response:
+                    try:
+                        await loop.run_in_executor(
+                            _CRON_EXECUTOR,
+                            lambda: orchestrator.record_assistant_reply("SYSTEM_CRON", response),
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 512, exc_info=True)
+                    logger.info("⏰ Cron job [%s] result (%d chars): %.200s", job_id, len(response), response)
+                _record_result(success=True, returncode=0, stdout_tail=str(response or "")[-1200:])
+            except Exception as exc:
+                _record_result(success=False, returncode=1, error=f"{type(exc).__name__}: {exc}")
+                raise
             return
 
         _timeout = _cron_job_timeout(job)
@@ -584,6 +615,7 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> Non
                 )
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 576, exc_info=True)
+            _record_result(success=False, returncode=None, error=f"parse_error={type(parse_exc).__name__}: {parse_exc}")
             return
         try:
             _sr = await loop.run_in_executor(
@@ -597,6 +629,7 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> Non
             )
             _stdout_text = _sr.stdout or ""
             _stderr_text = _sr.stderr or ""
+            result_success = (not _sr.timed_out) and int(_sr.returncode or 0) == 0
             if _sr.timed_out:
                 logger.warning("⚠️ Shell job %s timed out (%ds)", job_id, _timeout)
             if _sr.returncode != 0:
@@ -620,10 +653,20 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore) -> Non
                     logger.warning("⚠️ Shell job %s exited %d: %s", job_id, _sr.returncode, _err_text)
                 else:
                     logger.info("✅ Shell job %s returned %d but stdout indicates success; issue suppressed", job_id, _sr.returncode)
+                    result_success = True
             else:
                 logger.info("✅ Shell job %s completed OK", job_id)
+            _record_result(
+                success=result_success,
+                returncode=int(_sr.returncode or 0),
+                timed_out=bool(_sr.timed_out),
+                error=(_stderr_text or _stdout_text)[-1200:] if not result_success else "",
+                stdout_tail=_stdout_text[-1200:],
+                stderr_tail=_stderr_text[-1200:],
+            )
         except Exception as _se:
             logger.warning("⚠️ Shell job %s error: %s", job_id, _se)
+            _record_result(success=False, returncode=1, error=f"{type(_se).__name__}: {_se}")
 
 
 def _cron_task_done(job_id: str, task: asyncio.Task) -> None:
@@ -733,7 +776,7 @@ async def bg_scheduler_loop():
                     logger.info("⏭️ Cron job %s already running; skip overlapping launch", job_id)
                     continue
                 task = asyncio.create_task(
-                    _execute_scheduled_job(job, cron_semaphore),
+                    _execute_scheduled_job(job, cron_semaphore, scheduler),
                     name=f"magi-cron:{job_id}",
                 )
                 _CRON_RUNNING_TASKS[job_id] = task
