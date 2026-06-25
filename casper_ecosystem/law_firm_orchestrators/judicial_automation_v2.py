@@ -939,6 +939,9 @@ class CourtRecordDownloader:
         self._last_pdf_fetch_count = 0
         self._last_pdf_known_duplicate_count = 0
         self._last_no_new_files_reason = ""
+        self._last_download_error = ""
+        self.last_login_error_code = ""
+        self.last_login_error_detail = ""
 
         # ★ Cookie 持久化：成功登入後存檔，下次直接沿用 session
         _runtime_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -1215,6 +1218,8 @@ class CourtRecordDownloader:
         # ★ 如果已經登入，直接回傳 True，避免重複登入流程
         if self.logged_in:
             return True
+        self.last_login_error_code = ""
+        self.last_login_error_detail = ""
 
         # 策略：筆錄調閱站常見情況是「不填驗證碼也能登入」。
         # 預設先不碰驗證碼（避免刷新造成欄位清空/stale），只有在系統明確提示需要驗證碼時才啟用 OCR。
@@ -1538,6 +1543,8 @@ class CourtRecordDownloader:
                     self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
                     
             except Exception as e:
+                self.last_login_error_code = "login_exception"
+                self.last_login_error_detail = f"login_exception: {str(e)[:240]}"
                 self.log(f"登入異常: {e}")
                 traceback.print_exc()
                 # driver.get() timeout 後 driver 可能進入不穩狀態；直接重建以提升成功率
@@ -1549,7 +1556,21 @@ class CourtRecordDownloader:
                 self.driver = None
                 self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
         
-        self.log("❌ 登入失敗 - 已達最大重試次數")
+        if not self.last_login_error_detail:
+            page_text = " ".join((self._current_page_text(max_chars=1200) or "").split())
+            if self._page_has_unauthorized_marker():
+                self.last_login_error_code = "ezlawyer_not_authorized"
+                self.last_login_error_detail = (
+                    "ezlawyer_not_authorized: 已登入電子筆錄服務網，但目前頁面顯示未授權；"
+                    f"url={self._current_url_safe()[:120]}"
+                )
+            else:
+                self.last_login_error_code = "login_failed"
+                self.last_login_error_detail = (
+                    f"SSO login failed: url={self._current_url_safe()[:120]}"
+                    + (f"; page={page_text[:240]}" if page_text else "")
+                )
+        self.log(f"❌ 登入失敗 - 已達最大重試次數: {self.last_login_error_detail[:160]}")
         return False
     
     def _solve_captcha(self) -> bool:
@@ -1825,10 +1846,211 @@ class CourtRecordDownloader:
     def _has_logout_link(self) -> bool:
         """檢查頁面是否有登出連結（表示已登入）"""
         try:
-            self.driver.find_element(By.XPATH, "//a[contains(text(), '登出')]")
+            text = self._current_page_text(max_chars=2000)
+            compact = re.sub(r"\s+", "", text or "")
+            if "會員姓名：尚未登入" in text or "會員姓名:尚未登入" in text or "會員姓名：尚未登入" in compact or "會員姓名:尚未登入" in compact:
+                return False
+        except Exception:
+            pass
+        try:
+            self.driver.find_element(By.XPATH, "//a[contains(text(), '登出') or contains(text(), 'Logout')]")
             return True
-        except NoSuchElementException:
-            return False
+        except Exception:
+            pass
+        try:
+            found = self.driver.execute_script("""
+                return Array.from(document.querySelectorAll('a')).some(a => {
+                    const text = (a.innerText || a.textContent || '').trim();
+                    const href = (a.href || a.getAttribute('href') || '').toLowerCase();
+                    return text.includes('登出') || text.toLowerCase().includes('logout') || href.includes('logout');
+                });
+            """)
+            if bool(found):
+                return True
+        except Exception:
+            pass
+        try:
+            text = self._current_page_text(max_chars=2000)
+            if "會員姓名" in text and ("會員期限" in text or "電子筆錄調閱" in text):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _current_url_safe(self) -> str:
+        try:
+            return str(getattr(self.driver, "current_url", "") or "")
+        except Exception:
+            return ""
+
+    def _current_page_text(self, max_chars: int = 8000) -> str:
+        try:
+            return (self.driver.find_element(By.TAG_NAME, "body").text or "")[:max_chars]
+        except Exception:
+            try:
+                return (getattr(self.driver, "page_source", "") or "")[:max_chars]
+            except Exception:
+                return ""
+
+    def _page_has_unauthorized_marker(self) -> bool:
+        """ezlawyer may show a logged-in page that is not authorized for a deep link."""
+        text = self._current_page_text().lower()
+        markers = [
+            "not authorized to access this page",
+            "you are not authorized",
+            "沒有權限",
+            "無權限",
+            "未授權",
+            "未被授權",
+            "未獲授權",
+        ]
+        return any(marker.lower() in text for marker in markers)
+
+    def _search_form_ready(self, timeout_sec: float = 0) -> bool:
+        deadline = time.time() + max(0, float(timeout_sec or 0))
+        while True:
+            try:
+                self.driver.find_element(By.ID, "jud_name")
+                return True
+            except Exception:
+                if time.time() >= deadline:
+                    return False
+                time.sleep(0.25)
+
+    def _wait_for_search_form(self, timeout_ms: int = 15000) -> bool:
+        _page = getattr(self.driver, "_page", None)
+        if _page is not None:
+            try:
+                _page.wait_for_selector("#jud_name", timeout=timeout_ms, state="attached")
+                return True
+            except Exception:
+                return self._search_form_ready(timeout_sec=1)
+        return self._search_form_ready(timeout_sec=max(1, timeout_ms / 1000))
+
+    def _transcript_menu_href(self) -> str:
+        js = """
+            const anchors = Array.from(document.querySelectorAll('a'));
+            const hit = anchors.find(a => {
+                const text = (a.innerText || a.textContent || '').trim();
+                const href = a.href || a.getAttribute('href') || '';
+                return text.includes('電子筆錄調閱') || href.includes('/eb/user/downloadEB');
+            });
+            return hit ? (hit.href || hit.getAttribute('href') || '') : '';
+        """
+        try:
+            href = self.driver.execute_script(js)
+            return str(href or "").strip()
+        except Exception:
+            return ""
+
+    def _click_transcript_menu_entry(self, label: str = "側欄點擊") -> bool:
+        _page = getattr(self.driver, "_page", None)
+        if _page is not None:
+            try:
+                locator = _page.locator("a", has_text="電子筆錄調閱").first
+                locator.click(timeout=5000)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                    return True
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄入口點擊失敗: {str(_ce)[:120]}")
+        else:
+            try:
+                for el in self.driver.find_elements(By.TAG_NAME, "a"):
+                    text = (el.text or "").strip()
+                    href_attr = (el.get_attribute("href") or "").strip()
+                    if "電子筆錄調閱" in text or "/eb/user/downloadEB" in href_attr:
+                        el.click()
+                        if self._wait_for_search_form(timeout_ms=20000):
+                            self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                            return True
+                        break
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄入口點擊失敗: {str(_ce)[:120]}")
+        return False
+
+    def _open_transcript_search_page(self) -> bool:
+        """
+        Open the transcript search form. The ezlawyer site sometimes rejects a
+        direct deep link while the logged-in sidebar still exposes the valid
+        transcript entry, so try the official menu entry as a fallback.
+        """
+        _page = getattr(self.driver, "_page", None)
+
+        def _goto(url: str, label: str) -> bool:
+            try:
+                if _page is not None:
+                    _page.goto(url, timeout=15000, wait_until="commit")
+                else:
+                    self.driver.get(url)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                    return True
+                if self._page_has_unauthorized_marker():
+                    self.log(f"  ⚠️ {label} 顯示未授權頁，改試側欄入口")
+                else:
+                    self.log(f"  ⚠️ {label} 未出現搜尋表單")
+                return False
+            except Exception as _ne:
+                self.log(f"  ⚠️ {label} 導航失敗: {str(_ne)[:120]}")
+                return False
+
+        href = self._transcript_menu_href()
+        if href and not href.lower().startswith("javascript"):
+            self.log(f"  ℹ️ 由目前頁面的電子筆錄入口進入")
+            if _goto(href, "側欄入口"):
+                return True
+        if self._click_transcript_menu_entry("側欄點擊"):
+            return True
+
+        if _goto(self.SEARCH_URL, "直接入口"):
+            return True
+
+        # Direct deep link may bounce to a bare login/access page. Restore the
+        # logged-in user page once and try the sidebar again.
+        user_page = f"{self.BASE_URL}/eb/user/userPage"
+        try:
+            if _page is not None:
+                _page.goto(user_page, timeout=15000, wait_until="commit")
+            else:
+                self.driver.get(user_page)
+            time.sleep(1)
+        except Exception as _ue:
+            self.log(f"  ⚠️ 回到會員頁失敗: {str(_ue)[:120]}")
+
+        href = self._transcript_menu_href()
+        if href and not href.lower().startswith("javascript"):
+            self.log(f"  ℹ️ 由會員頁電子筆錄入口重新進入")
+            if _goto(href, "會員頁側欄入口"):
+                return True
+        if self._click_transcript_menu_entry("會員頁側欄點擊"):
+            return True
+
+        if _page is not None:
+            try:
+                locator = _page.locator("text=電子筆錄調閱").first
+                locator.click(timeout=5000)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log("  ✓ 搜尋頁就緒（文字點擊）")
+                    return True
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄文字點擊失敗: {str(_ce)[:120]}")
+
+        if self._page_has_unauthorized_marker():
+            msg = (
+                "ezlawyer_not_authorized: 已登入電子筆錄服務網，但目前帳號/入口未授權存取調閱頁"
+                f"；url={self._current_url_safe()[:120]}"
+            )
+        else:
+            msg = (
+                "transcript_search_page_unavailable: 已登入但找不到電子筆錄搜尋表單"
+                f"；url={self._current_url_safe()[:120]}"
+            )
+        self._last_download_error = msg
+        self.last_login_error_code = "ezlawyer_not_authorized" if msg.startswith("ezlawyer_not_authorized") else "search_page_unavailable"
+        self.last_login_error_detail = msg
+        self.log(f"  ❌ {msg}")
+        return False
     
     def _solve_captcha_with_melchior(self, captcha_img, expected_len: int = 6) -> str:
         """InferenceGateway 備援 OCR — 驗證碼交叉驗證（alphanumeric）"""
@@ -2002,39 +2224,10 @@ class CourtRecordDownloader:
                 self.log(f"  ⚠️ 無法解析案號: {case.court_case_number}")
                 return False
             
-            # 導航到搜尋頁面
-            # 根因：登入後 ezlawyer userPage 在 $(document).ready 時觸發
-            # alert("密碼超過180天未變更...")（native browser alert）
-            # Playwright wrapper 的 dialog handler 會 dismiss，但 timing 上 alert
-            # 可能仍 pending 阻擋後續 page.goto / evaluate 的 sync API 呼叫
-            # 修法：navigate 前用 CDP 強制清理 dialog 狀態，再用 page.goto wait_until="commit"
-            if self.driver.current_url != self.SEARCH_URL:
-                _nav_ok = False
-                _page = getattr(self.driver, "_page", None)
-                if _page is not None:
-                    # Wrapper 已透過 add_init_script override window.alert/confirm/prompt
-                    # → ezlawyer userPage 的 alert("密碼超過180天未變更...") 不再卡 sync API
-                    # 直接用 page.goto(commit) navigate
-                    try:
-                        _page.goto(self.SEARCH_URL, timeout=15000, wait_until="commit")
-                        _nav_ok = True
-                    except Exception as _ne:
-                        self.log(f"  ⚠️ goto(commit) 失敗: {str(_ne)[:120]}")
-                    if _nav_ok:
-                        try:
-                            _page.wait_for_selector("#jud_name", timeout=20000, state="attached")
-                            self.log(f"  ✓ 搜尋頁就緒")
-                        except Exception as _se:
-                            self.log(f"  ⚠️ #jud_name 等待逾時: {str(_se)[:120]}")
-                else:
-                    # Selenium fallback
-                    try:
-                        self.driver.get(self.SEARCH_URL)
-                        _nav_ok = True
-                    except Exception as _ne:
-                        self.log(f"  ⚠️ driver.get 失敗: {str(_ne)[:120]}")
-                if not _nav_ok:
-                    self.log(f"  ❌ 導航搜尋頁失敗（視為 search 失敗，不視為 no_new_files）")
+            # 導航到搜尋頁面。直接 deep link 在 ezlawyer 偶爾會回 logged-in
+            # unauthorized 頁，需改由側欄「電子筆錄調閱」入口進入。
+            if not self._search_form_ready(timeout_sec=0.5):
+                if not self._open_transcript_search_page():
                     return False
             time.sleep(1)
             

@@ -505,6 +505,34 @@ def _looks_like_captcha_error(msg: str) -> bool:
     return any(k in s for k in keys)
 
 
+def _portal_failure_from_downloader(downloader: Any, default: str = "SSO login failed") -> Tuple[str, str, str]:
+    code = str(getattr(downloader, "last_login_error_code", "") or "").strip()
+    detail = str(getattr(downloader, "last_login_error_detail", "") or "").strip()
+    download_error = str(getattr(downloader, "_last_download_error", "") or "").strip()
+    raw = detail or download_error or default
+    lowered = raw.lower()
+
+    if not code:
+        if raw.startswith("ezlawyer_not_authorized") or "not authorized" in lowered or "未授權" in raw or "無權限" in raw:
+            code = "ezlawyer_not_authorized"
+        elif raw.startswith("transcript_search_page_unavailable") or "search_page_unavailable" in raw:
+            code = "search_page_unavailable"
+        else:
+            code = "login_failed"
+
+    if code == "ezlawyer_not_authorized":
+        msg = "ezlawyer_not_authorized: 已登入電子筆錄服務網，但帳號或入口未授權存取電子筆錄調閱頁。"
+        if raw and raw != msg:
+            msg += " " + raw[:240]
+        return code, msg, "not_authorized"
+    if code == "search_page_unavailable":
+        msg = "transcript_search_page_unavailable: 已登入，但找不到電子筆錄搜尋表單。"
+        if raw and raw != msg:
+            msg += " " + raw[:240]
+        return code, msg, "search_page_unavailable"
+    return code, raw or default, "login_failed"
+
+
 def _payload_contains_captcha(payload) -> bool:
     try:
         if payload is None:
@@ -526,7 +554,7 @@ def _payload_contains_captcha(payload) -> bool:
     return False
 
 
-def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
+def _enqueue_manual_review(action: str, payload: dict, error_msg: str, reason: str = "captcha") -> str:
     ticket = f"tr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(3).hex()}"
     row = {
         "ticket": ticket,
@@ -534,7 +562,7 @@ def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
         "status": "pending_manual",
         "action": str(action or "unknown"),
         "payload": payload or {},
-        "reason": "captcha",
+        "reason": str(reason or "captcha"),
         "error": str(error_msg or "")[:500],
     }
     try:
@@ -1250,21 +1278,23 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             logger.info("Logging into ezlawyer SSO...")
             login_ok = downloader.login()
             if not login_ok:
-                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="SSO login failed", ok=False)
-                msg = "SSO login failed"
+                code, msg, manual_reason = _portal_failure_from_downloader(downloader)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail=msg[:240], ok=False)
                 if os.environ.get("MAGI_TRANSCRIPT_LOGIN_FAIL_QUEUE", "1").strip().lower() in {"1", "true", "yes", "on"}:
                     ticket = _enqueue_manual_review(
                         "download",
                         {"case_number": case_number, "court_name": court_name, "case_type": case_type, "headless": bool(headless)},
                         msg,
+                        reason=manual_reason,
                     )
-                    notify_msg = f"🧩 筆錄登入失敗，已轉人工佇列（ticket={ticket}）。請檢查帳密/驗證狀態後重試。"
+                    notify_msg = f"🧩 筆錄入口失敗，已轉人工佇列（ticket={ticket}）。{msg[:180]}"
                     _notify(notify_msg, notify)
                     out = {
                         "success": False,
                         "error": msg,
+                        "error_code": code,
                         "manual_required": True,
-                        "manual_reason": "login_failed",
+                        "manual_reason": manual_reason,
                         "manual_ticket": ticket,
                     }
                     _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
@@ -1601,7 +1631,8 @@ def _download_sync_batch(downloader: Any, *, batch_size: int, notify: bool = Tru
         logger.warning("Transcript download cleanup failed: %s", str(e)[:160])
 
     if not downloader.login():
-        results.update({"success": False, "error": "SSO login failed"})
+        code, msg, manual_reason = _portal_failure_from_downloader(downloader)
+        results.update({"success": False, "error": msg, "error_code": code, "manual_reason": manual_reason})
         return results
 
     all_cases = sorted(downloader.get_cases_from_db() or [], key=_case_sort_key, reverse=True)
@@ -1708,7 +1739,12 @@ def _download_sync_batch(downloader: Any, *, batch_size: int, notify: bool = Tru
 
     _update_cycle_completion(state, all_cases)
     _save_sync_state(state)
-    results["success"] = True
+    failed_count = int(results.get("failed") or 0)
+    if failed_count > 0:
+        results["success"] = False
+        results["error"] = f"transcript batch failed for {failed_count} case(s)"
+    else:
+        results["success"] = True
     results["sync_status"] = _sync_status_payload()
     return results
 
