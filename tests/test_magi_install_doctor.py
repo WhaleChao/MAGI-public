@@ -92,6 +92,8 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in cron_text
     assert "job_laf_nightly_audit" in cron_text
     assert "job_laf_pending_scan" in cron_text
+    assert "job_laf_gmail_dispatch_scan" in cron_text
+    assert "laf_gmail_dispatch_scan.py" in cron_text
     assert "osc-orchestrator/action.py --task laf_pending_scan" in cron_text
     assert "@MAGI 法扶未開辦掃描" not in cron_text
     assert "job_laf_portal_new_files_scan" in cron_text

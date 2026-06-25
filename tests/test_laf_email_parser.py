@@ -131,6 +131,74 @@ def test_laf_orchestrator_routes_staff_material_without_go_live():
     assert orch._resolve_email_route(dispatch, dispatch.notification_type) == "dispatch"
 
 
+def test_laf_parser_keeps_branch_staff_material_out_of_dispatch():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "[台東分會]檢送1150116-J-002潘美雲之案件資料"
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.notification_type == "專員來信"
+        assert info.laf_case_number == "1150116-J-002"
+        assert info.client_name == "潘美雲"
+        assert info.needs_download is False
+        assert info.has_attachment is True
+
+
+def test_laf_parser_recognizes_formal_taitung_dispatch():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "【法扶台東分會派案通知】潘美雲-1150116-J-002-刑事偵查中辯護-詐欺等案"
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.notification_type == "派案通知"
+        assert info.branch == "台東"
+        assert info.laf_case_number == "1150116-J-002"
+        assert info.client_name == "潘美雲"
+        assert info.case_type == "刑事"
+        assert info.case_stage == "偵查"
+        assert info.case_reason == "詐欺等"
+        assert info.needs_download is True
+
+
+def test_laf_parser_routes_inquiry_transfer_notice_as_inquiry():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subject = "通知喬政翔律師回報(對扶助案件有疑義)1150121-T-017-呂柏暐-消費者債務清理事件-消費者債務清理事件之資料，業經分會轉入系統"
+    orch = LAFOrchestrator.__new__(LAFOrchestrator)
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        info = parser.parse_subject(subject)
+        assert info is not None
+        assert info.notification_type == "疑義"
+        assert info.laf_case_number == "1150121-T-017"
+        assert info.client_name == "呂柏暐"
+        assert info.case_type == "消費者債務清理"
+        assert info.needs_download is False
+        assert orch._resolve_email_route(info, info.notification_type) == "inquiry"
+
+
+def test_legacy_laf_parser_treats_short_staff_attachment_as_staff_material():
+    from skills.legal.laf import LAFCaseTypeParser
+
+    for subject in (
+        "潘美雲(1150116-J-002)--案情文件",
+        "1150116-J-002潘美雲(刑事)",
+    ):
+        info = LAFCaseTypeParser.parse_subject(subject)
+        assert info is not None
+        assert info.notification_type == "專員來信"
+        assert info.laf_case_number == "1150116-J-002"
+        assert info.needs_download is False
+
+
 def test_laf_gmail_queries_cover_full_mailbox_and_non_laf_senders():
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFGmailMonitor
     from skills.legal.laf import LAFGmailMonitor as LegacyLAFGmailMonitor

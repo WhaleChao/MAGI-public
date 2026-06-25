@@ -820,10 +820,11 @@ class LAFCaseTypeParser:
 
         # 2. 嘗試解析新格式：[XX分會]檢送1141127-J-001楊志杰之案件資料
         # 格式：[XX分會]檢送(案號)(當事人)之案件資料
+        # 這是專員補充資料，不是正式派案；不得啟動建案/開辦流程。
         new_format_match = re.search(r'\[(.+?)分會\]檢送([A-Z0-9\-]+)(.+?)之案件資料', subject)
         if new_format_match:
             info.branch = new_format_match.group(1)
-            info.notification_type = "派案通知" # 視為派案通知
+            info.notification_type = "專員來信"
             info.laf_case_number = new_format_match.group(2)
             info.client_name = new_format_match.group(3)
             
@@ -833,7 +834,8 @@ class LAFCaseTypeParser:
             info.case_reason = "待確認"
             info.laf_case_type = "一般案件"
             
-            info.needs_download = True
+            info.has_attachment = True
+            info.needs_download = False
             return info
         
         # 3. ★ 原民中心格式：寄送1141216-W-002、003[當事人J]案件資料
@@ -899,6 +901,42 @@ class LAFCaseTypeParser:
             )
 
             info.needs_download = True
+            return info
+
+        # 4.05. 疑義回報格式：通知律師回報(對扶助案件有疑義)...
+        inquiry_result_match = re.search(
+            r'回報[（(](?:對扶助案件有疑義|疑義)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
+            subject,
+        )
+        if inquiry_result_match:
+            info.notification_type = "疑義"
+            info.branch = "待確認"
+            info.laf_case_number = (inquiry_result_match.group(1) or "").strip()
+            tail = (inquiry_result_match.group(2) or "").strip(" -")
+            tail = re.sub(r'之資料.*$', '', tail).strip()
+            parts = [p.strip() for p in tail.split('-') if p.strip()]
+
+            if parts:
+                info.client_name = parts[0]
+            if len(parts) >= 2:
+                info.laf_case_type = parts[1]
+                info.case_type, info.case_stage = cls._determine_case_type(info.laf_case_type)
+            else:
+                info.case_type = "民事"
+                info.case_stage = "一審"
+                info.laf_case_type = "一般案件"
+            if len(parts) >= 3:
+                info.case_reason = cls._cleanup_reason("-".join(parts[2:]))
+            else:
+                info.case_reason = "待確認"
+            info.case_type, info.case_stage = normalize_laf_case_type(
+                info.case_type,
+                info.case_stage,
+                info.case_reason,
+                info.laf_case_type,
+            )
+            info.has_attachment = True
+            info.needs_download = False
             return info
 
         # 5. 進度回報提醒格式：提醒！請扶助律師回報案件辦理進度
@@ -7646,15 +7684,21 @@ class LAFGmailMonitor:
             return None
 
     def _laf_message_already_processed(self, msg_id: str, check_exists_func=None) -> bool:
-        """DB record wins; JSON-only/dedup-only state is recoverable."""
+        """Return whether an LAF Gmail message has already been handled."""
         durable_exists = self._durable_laf_record_exists(msg_id, check_exists_func)
         if durable_exists is True:
             return True
 
         fallback_exists = msg_id in self._processed_ids
         if fallback_exists and durable_exists is False:
-            self.log(f"  ♻️ 已處理暫存有紀錄但 DB 無紀錄，重新補處理法扶信件 (ID: {msg_id[-6:]}...)")
-            return False
+            recover_json_only = str(
+                os.environ.get("MAGI_LAF_GMAIL_RECOVER_JSON_ONLY", "0")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if recover_json_only:
+                self.log(f"  ♻️ 已處理暫存有紀錄但 DB 無紀錄，依 recovery 設定重新補處理法扶信件 (ID: {msg_id[-6:]}...)")
+                return False
+            self.log(f"  ⏭️ 已處理暫存有紀錄但 DB 無紀錄，為避免重複通知仍略過 (ID: {msg_id[-6:]}...)")
+            return True
         return fallback_exists
 
     def mark_laf_processed(self, msg_id: str):

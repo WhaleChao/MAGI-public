@@ -129,9 +129,36 @@ def test_laf_gmail_monitor_warns_when_restore_scope_missing():
     assert any("缺 gmail.modify" in line for line in logs)
 
 
-def test_laf_gmail_monitor_recovers_when_json_processed_but_db_missing(tmp_path):
+def test_laf_gmail_monitor_skips_json_processed_even_when_db_missing_by_default(tmp_path):
     from skills.legal.laf import LAFGmailMonitor
 
+    logs = []
+    subject = "【法扶花蓮分會派案通知】王惠薰-1150529-E-005-消費者債務清理事件-消費者債務清理程序"
+    msg = _laf_message(subject, ["INBOX"])
+    service = _FakeService({"MSG-RECOVER": msg})
+    monitor = LAFGmailMonitor(
+        "credentials.json",
+        "token.pickle",
+        log_callback=logs.append,
+        processed_ids_file=str(tmp_path / "processed_laf_emails.json"),
+    )
+    monitor.service = service
+    monitor._processed_ids = {"MSG-RECOVER"}
+
+    results = monitor.check_emails(
+        max_results=10,
+        check_exists_func=lambda _mid: False,
+        mark_processed=False,
+    )
+
+    assert results == []
+    assert any("為避免重複通知仍略過" in line for line in logs)
+
+
+def test_laf_gmail_monitor_can_recover_json_processed_when_enabled(tmp_path, monkeypatch):
+    from skills.legal.laf import LAFGmailMonitor
+
+    monkeypatch.setenv("MAGI_LAF_GMAIL_RECOVER_JSON_ONLY", "1")
     logs = []
     subject = "【法扶花蓮分會派案通知】王惠薰-1150529-E-005-消費者債務清理事件-消費者債務清理程序"
     msg = _laf_message(subject, ["INBOX"])
@@ -154,7 +181,7 @@ def test_laf_gmail_monitor_recovers_when_json_processed_but_db_missing(tmp_path)
     assert len(results) == 1
     assert results[0].client_name == "王惠薰"
     assert results[0].laf_case_number == "1150529-E-005"
-    assert any("重新補處理法扶信件" in line for line in logs)
+    assert any("依 recovery 設定重新補處理法扶信件" in line for line in logs)
 
 
 def test_laf_gmail_monitor_trusts_db_record_over_json(tmp_path):
