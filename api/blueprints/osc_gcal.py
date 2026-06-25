@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import importlib.util
+import tempfile
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify
@@ -31,6 +32,8 @@ osc_gcal_bp = Blueprint("osc_gcal", __name__)
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
 MAGI_PORT = int(os.environ.get("MAGI_PORT", "5002"))
+_LAST_CREDS_STATUS = "unknown"
+_LAST_CREDS_ERROR = ""
 
 
 def _get_osc_exec():
@@ -54,9 +57,41 @@ def _get_setting(key: str) -> str | None:
         return None
 
 
+def _write_token_atomic(path: Path, text: str) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                logger.debug("token temp chmod failed", exc_info=True)
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                logger.debug("token temp fsync failed", exc_info=True)
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(0o600)
+        except Exception:
+            logger.debug("token chmod failed", exc_info=True)
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _load_creds():
     """Load credentials from token.json, refreshing if expired."""
+    global _LAST_CREDS_STATUS, _LAST_CREDS_ERROR
+    _LAST_CREDS_STATUS = "unknown"
+    _LAST_CREDS_ERROR = ""
     if not TOKEN_PATH.exists():
+        _LAST_CREDS_STATUS = "missing_token"
         return None
     try:
         from google.oauth2.credentials import Credentials
@@ -65,10 +100,19 @@ def _load_creds():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
-            TOKEN_PATH.chmod(0o600)
+            _write_token_atomic(TOKEN_PATH, creds.to_json())
+        _LAST_CREDS_STATUS = "connected" if creds and creds.valid else "invalid_credentials"
         return creds
     except Exception as exc:
+        text = str(exc)
+        low = text.lower()
+        if "invalid_grant" in low or "expired or revoked" in low or "token has been revoked" in low:
+            _LAST_CREDS_STATUS = "auth_required"
+        elif isinstance(exc, json.JSONDecodeError):
+            _LAST_CREDS_STATUS = "token_corrupt"
+        else:
+            _LAST_CREDS_STATUS = "refresh_failed"
+        _LAST_CREDS_ERROR = f"{type(exc).__name__}: {text[:180]}"
         logger.warning("_load_creds failed: %s", exc)
         return None
 
@@ -100,9 +144,16 @@ def _build_redirect_uri() -> str:
 def gcal_status():
     creds = _load_creds()
     if creds is None or not creds.valid:
-        return jsonify({"ok": True, "connected": False})
+        reason = _LAST_CREDS_STATUS if _LAST_CREDS_STATUS != "unknown" else "auth_required"
+        return jsonify({
+            "ok": False,
+            "connected": False,
+            "healthy": False,
+            "reason": reason,
+            "error": _LAST_CREDS_ERROR,
+        })
 
-    info = {"ok": True, "connected": True}
+    info = {"ok": True, "connected": True, "healthy": True}
     try:
         token_data = json.loads(TOKEN_PATH.read_text())
         info["email"] = token_data.get("client_id", "")

@@ -111,8 +111,10 @@ class TestGcalStatus:
             rv = client.get("/api/osc/gcal/status")
         assert rv.status_code == 200
         data = rv.get_json()
-        assert data["ok"] is True
+        assert data["ok"] is False
         assert data["connected"] is False
+        assert data["healthy"] is False
+        assert data["reason"] == "missing_token"
 
     def test_status_when_connected(self, client, tmp_token):
         """When token.json exists and creds are valid, connected=true."""
@@ -125,7 +127,9 @@ class TestGcalStatus:
             rv = client.get("/api/osc/gcal/status")
         assert rv.status_code == 200
         data = rv.get_json()
+        assert data["ok"] is True
         assert data["connected"] is True
+        assert data["healthy"] is True
         assert data["import_calendar_ids"] == "primary, team-calendar@example.com"
 
 

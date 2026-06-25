@@ -44,6 +44,7 @@ from scripts.ops.background_task_locks import (
 )
 
 _WORKER_LOCK_HANDLE = None
+_CURRENT_RUN_CONTEXT: dict = {}
 from api.domains.case_file_operation_lock import acquire_case_file_operation_lock, release_case_file_operation_lock
 
 
@@ -167,6 +168,43 @@ def _release_worker_lock(path: Path | None = None, pid: int | None = None) -> No
             _WORKER_LOCK_HANDLE.release()
         finally:
             _WORKER_LOCK_HANDLE = None
+
+
+def _termination_status(signum: int) -> dict:
+    ctx = dict(_CURRENT_RUN_CONTEXT or {})
+    return {
+        "ok": False,
+        "status": "interrupted",
+        "action_required": False,
+        "pid": os.getpid(),
+        "worker_kind": str(ctx.get("worker_kind") or ""),
+        "started_at": str(ctx.get("started_at") or ""),
+        "finished_at": iso_now(),
+        "signal": int(signum),
+        "matched_case_offset": int(ctx.get("matched_case_offset") or 0),
+        "all_case_offset": int(ctx.get("all_case_offset") or 0),
+        "all_case_total": int(ctx.get("all_case_total") or 0),
+        "message": "Drive/NAS 同步被外層 watchdog 或系統訊號中止；狀態已落盤，下次排程會從保存的 offset 重試。",
+    }
+
+
+def _install_termination_status_handler() -> None:
+    def _handle(signum, _frame):
+        status = _termination_status(int(signum))
+        kind = str(status.get("worker_kind") or "")
+        try:
+            save_worker_status(status, kind=kind)
+        finally:
+            try:
+                release_case_file_operation_lock()
+            finally:
+                _release_worker_lock()
+        raise SystemExit(128 + int(signum))
+
+    for sig_name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            signal.signal(sig, _handle)
 
 
 def acquire_worker_lock() -> dict:
@@ -613,6 +651,17 @@ def main(argv: list[str] | None = None) -> int:
     direct_mode_label = "direct_all_case_sync_running" if args.direct_all_cases else "direct_priority_sync_running"
     needs_write_scope = not args.no_uploads or not args.no_create_drive_folders
     started_at = iso_now()
+    _CURRENT_RUN_CONTEXT.clear()
+    _CURRENT_RUN_CONTEXT.update(
+        {
+            "worker_kind": worker_kind,
+            "started_at": started_at,
+            "matched_case_offset": offset,
+            "all_case_offset": all_case_offset,
+            "all_case_total": all_case_total,
+        }
+    )
+    _install_termination_status_handler()
     stale_status = clear_stale_running_status()
     save_worker_status({
         "ok": None,
@@ -804,6 +853,7 @@ def main(argv: list[str] | None = None) -> int:
         "drive_imported_folder_repair": state["last_drive_imported_folder_repair"],
         "output_paths": report.get("output_paths") or {},
     }, ensure_ascii=False, indent=2))
+    _CURRENT_RUN_CONTEXT.clear()
     release_case_file_operation_lock()
     _release_worker_lock()
     return 0

@@ -17,6 +17,7 @@ import argparse
 import re
 import plistlib
 import html
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
@@ -24,6 +25,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LIVE_RUNTIME_ROOT = Path("/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2")
 PYTHON = os.environ.get("MAGI_SKILL_PYTHON") or str(REPO_ROOT / "venv" / "bin" / "python3")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
@@ -52,6 +54,26 @@ _AUTO_DISPATCH_FILES = (
     "skills/bridge/embedding_router.py",
     "skills/definitions.json",
 )
+_LIVE_ROOT_FINGERPRINT_FILES = (
+    "api/server.py",
+    "api/discord_bot.py",
+    "api/tools_api.py",
+    "scripts/ops/business_module_live_check.py",
+    "scripts/ops/run_after_token_refresh.py",
+    "skills/laf-orchestrator/action.py",
+    "skills/file-review-orchestrator/action.py",
+    "skills/transcript-downloader/action.py",
+    "config/test_matrix.json",
+)
+_LIVE_ROOT_GOOGLE_CRON_JOBS = {
+    "job_accounting_sheet_import",
+    "job_accounting_monthly_bonus",
+    "job_drive_case_sync_bidirectional",
+    "job_drive_case_sync_all_files",
+    "job_osc_events_refresh",
+    "job_osc_todo_governance",
+    "job_api_token_health_check",
+}
 
 
 _REDACT_KEYS = {
@@ -123,13 +145,19 @@ def _run(name: str, argv: list[str], timeout: int = 600) -> dict[str, Any]:
 
     parsed = _redact_obj(_parse_last_json(proc.stdout or ""))
     ok = proc.returncode == 0
+    contract_error = ""
     if isinstance(parsed, dict):
-        ok = ok and bool(parsed.get("success", parsed.get("ok", True)))
+        if "success" in parsed or "ok" in parsed:
+            ok = ok and bool(parsed.get("success", parsed.get("ok", False)))
+        else:
+            ok = False
+            contract_error = "missing_success_or_ok_contract"
     return {
         "name": name,
         "ok": bool(ok),
         "returncode": proc.returncode,
         "parsed": parsed,
+        "contract_error": contract_error,
         "stdout_tail": _redact_text(proc.stdout or "")[-1600:],
         "stderr_tail": _redact_text(proc.stderr or "")[-1600:],
     }
@@ -180,6 +208,90 @@ def _age_seconds(path: Path) -> float | None:
         return None
 
 
+def _sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _semantic_cron_job(job: dict[str, Any]) -> dict[str, Any]:
+    command = str(job.get("command") or "")
+    return {
+        "id": str(job.get("id") or ""),
+        "enabled": bool(job.get("enabled", True)),
+        "cron": str(job.get("cron") or ""),
+        "scripts": sorted(_command_script_keys(command)),
+        "token_refresh_gate": "scripts/ops/run_after_token_refresh.py" in command,
+    }
+
+
+def _cron_semantic_map(root: Path) -> dict[str, dict[str, Any]]:
+    jobs = _load_json_file(root / "cron_jobs.json", [])
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(jobs, list):
+        return out
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = str(job.get("id") or "")
+        if job_id:
+            out[job_id] = _semantic_cron_job(job)
+    return out
+
+
+def _live_runtime_root_live() -> dict[str, Any]:
+    runtime_root = Path(os.environ.get("MAGI_LIVE_RUNTIME_ROOT") or DEFAULT_LIVE_RUNTIME_ROOT).expanduser()
+    if not runtime_root.exists():
+        return {
+            "name": "live_runtime_root_fingerprint",
+            "ok": True,
+            "skipped": True,
+            "parsed": {"reason": "live_runtime_root_missing", "runtime_root": str(runtime_root)},
+        }
+    if runtime_root.resolve() == REPO_ROOT.resolve():
+        return {
+            "name": "live_runtime_root_fingerprint",
+            "ok": True,
+            "parsed": {"runtime_root": str(runtime_root), "same_root": True},
+        }
+
+    file_mismatches = []
+    missing = []
+    for rel in _LIVE_ROOT_FINGERPRINT_FILES:
+        src = REPO_ROOT / rel
+        live = runtime_root / rel
+        if not src.exists() or not live.exists():
+            missing.append({"file": rel, "source_exists": src.exists(), "runtime_exists": live.exists()})
+            continue
+        src_hash = _sha256_file(src)
+        live_hash = _sha256_file(live)
+        if src_hash != live_hash:
+            file_mismatches.append({"file": rel, "source": src_hash[:12], "runtime": live_hash[:12]})
+
+    source_cron = _cron_semantic_map(REPO_ROOT)
+    runtime_cron = _cron_semantic_map(runtime_root)
+    cron_mismatches = []
+    for job_id in sorted(_LIVE_ROOT_GOOGLE_CRON_JOBS):
+        source_job = source_cron.get(job_id)
+        runtime_job = runtime_cron.get(job_id)
+        if source_job != runtime_job:
+            cron_mismatches.append({"id": job_id, "source": source_job or {}, "runtime": runtime_job or {}})
+
+    ok = not file_mismatches and not missing and not cron_mismatches
+    return {
+        "name": "live_runtime_root_fingerprint",
+        "ok": ok,
+        "parsed": {
+            "source_root": str(REPO_ROOT),
+            "runtime_root": str(runtime_root),
+            "file_mismatches": file_mismatches,
+            "missing": missing,
+            "cron_mismatches": cron_mismatches,
+        },
+    }
+
+
 def _token_health_live() -> dict[str, Any]:
     return _run(
         "token_health_refresh",
@@ -228,10 +340,21 @@ def _drive_sync_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
         return {"name": "drive_sync_status_live", "ok": False, "error": "missing_drive_sync_status"}
     status = str(data.get("status") or "")
     pid = int(data.get("pid") or 0)
+    pid_alive = _pid_alive(pid) if pid else False
     age = _age_seconds(path)
     stale_age = age is not None and age > max_age_hours * 3600
-    running_without_pid = "running" in status and (not pid or not _pid_alive(pid))
-    ok = bool(data.get("ok")) and not stale_age and not running_without_pid
+    is_running = "running" in status
+    active_running = is_running and pid_alive and not stale_age
+    running_without_pid = is_running and (not pid or not pid_alive)
+    contract_ok = bool(data.get("ok")) or bool(data.get("success")) or active_running
+    ok = contract_ok and not stale_age and not running_without_pid
+    reasons = []
+    if not contract_ok:
+        reasons.append("missing_ok_contract")
+    if stale_age:
+        reasons.append("stale_status")
+    if running_without_pid:
+        reasons.append("running_without_live_pid")
     return {
         "name": "drive_sync_status_live",
         "ok": ok,
@@ -239,10 +362,12 @@ def _drive_sync_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
             "status": status,
             "worker_kind": data.get("worker_kind") or "",
             "pid": pid,
-            "pid_alive": _pid_alive(pid) if pid else False,
+            "pid_alive": pid_alive,
             "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
             "matched_case_folders": ((data.get("summary") or {}).get("matched_case_folders")),
+            "active_running": active_running,
             "running_without_pid": running_without_pid,
+            "reason": ",".join(reasons),
         },
     }
 
@@ -755,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
             }
         )
+    results.append(_live_runtime_root_live())
     results.extend([
         _token_health_live(),
         _nas_mounts_live(),

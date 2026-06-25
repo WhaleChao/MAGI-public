@@ -65,3 +65,24 @@ def test_ps_all_requests_wide_command_output(monkeypatch):
     assert calls[0][0][:2] == ["ps", "axww"]
     assert calls[0][1]["env"]["COLUMNS"] == "4096"
     assert procs[0]["command"].endswith("scripts/ops/run_daemon_no_site.py")
+
+
+def test_drive_case_sync_worker_uses_guarded_timeout_window():
+    module = _load_process_hygiene()
+    procs = [
+        {
+            "pid": 200,
+            "ppid": 1,
+            "stat": "S",
+            "etime": "01:05:00",
+            "command": "/usr/bin/python /app/scripts/drive_case_sync_worker.py --direct-all-cases",
+        }
+    ]
+
+    assert module.scan_orphans(procs) == []
+    assert module.scan_stuck(procs) == []
+
+    procs[0]["etime"] = "01:35:00"
+
+    assert module.scan_orphans(procs)
+    assert module.scan_stuck(procs)

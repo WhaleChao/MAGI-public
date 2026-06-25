@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from scripts.ops import token_health_check as thc
+from scripts.ops import run_after_token_refresh
 
 
 def _write_token(path, *, expiry, scopes=None, refresh_token="refresh-token"):
@@ -90,3 +92,50 @@ def test_api_key_required_env_reports_missing(monkeypatch):
 
     assert result["ok"] is False
     assert result["status"] == "missing_key"
+
+
+def test_run_after_token_refresh_blocks_when_refresh_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_after_token_refresh.token_health_check,
+        "build_report",
+        lambda **kwargs: {"ok": False, "failures": [{"name": "google_calendar", "status": "auth_required"}]},
+    )
+    writes = []
+    monkeypatch.setattr(
+        run_after_token_refresh.token_health_check,
+        "_atomic_write_text",
+        lambda *args, **kwargs: writes.append(args),
+    )
+    monkeypatch.setattr(run_after_token_refresh.os, "execvpe", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not exec")))
+
+    rc = run_after_token_refresh.main(["--", "python", "job.py"])
+
+    assert rc == 1
+    assert writes
+
+
+def test_run_after_token_refresh_execs_with_env_prefix(monkeypatch):
+    monkeypatch.setattr(
+        run_after_token_refresh.token_health_check,
+        "build_report",
+        lambda **kwargs: {"ok": True, "failures": []},
+    )
+    monkeypatch.setattr(run_after_token_refresh.token_health_check, "_atomic_write_text", lambda *args, **kwargs: None)
+    called = {}
+
+    def fake_execvpe(program, command, env):
+        called["program"] = program
+        called["command"] = command
+        called["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(run_after_token_refresh.os, "execvpe", fake_execvpe)
+
+    try:
+        run_after_token_refresh.main(["MAGI_TEST_FLAG=1", "--", "python", "job.py"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert called["program"] == "python"
+    assert called["command"] == ["python", "job.py"]
+    assert called["env"]["MAGI_TEST_FLAG"] == "1"

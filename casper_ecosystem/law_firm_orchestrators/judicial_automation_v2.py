@@ -1850,13 +1850,13 @@ class CourtRecordDownloader:
             compact = re.sub(r"\s+", "", text or "")
             if "會員姓名：尚未登入" in text or "會員姓名:尚未登入" in text or "會員姓名：尚未登入" in compact or "會員姓名:尚未登入" in compact:
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"  登入狀態文字檢查失敗，改用後續方式判斷: {type(e).__name__}")
         try:
             self.driver.find_element(By.XPATH, "//a[contains(text(), '登出') or contains(text(), 'Logout')]")
             return True
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"  登出連結檢查失敗，改用 JS 判斷: {type(e).__name__}")
         try:
             found = self.driver.execute_script("""
                 return Array.from(document.querySelectorAll('a')).some(a => {
@@ -1867,14 +1867,14 @@ class CourtRecordDownloader:
             """)
             if bool(found):
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"  JS 登出連結檢查失敗，改用頁面文字判斷: {type(e).__name__}")
         try:
             text = self._current_page_text(max_chars=2000)
             if "會員姓名" in text and ("會員期限" in text or "電子筆錄調閱" in text):
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"  登入狀態 fallback 文字檢查失敗: {type(e).__name__}")
         return False
 
     def _current_url_safe(self) -> str:

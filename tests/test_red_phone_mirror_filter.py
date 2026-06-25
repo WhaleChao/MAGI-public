@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import sys
+import types
+
 from skills.ops import red_phone
 
 
@@ -188,3 +192,27 @@ def test_outbox_flush_drops_stale_info_without_resending(tmp_path, monkeypatch):
     assert result["remaining"] == 0
     assert calls == []
     assert __import__("json").loads(outbox_path.read_text("utf-8")) == []
+
+
+def test_alert_admin_dedup_does_not_report_fake_delivery(tmp_path, monkeypatch):
+    delivery_path = tmp_path / "delivery.jsonl"
+    outbox_path = tmp_path / "outbox.json"
+    monkeypatch.setattr(red_phone, "RED_PHONE_DELIVERY_LOG", str(delivery_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.dedup_db",
+        types.SimpleNamespace(
+            is_done=lambda category, key: True,
+            mark_done=lambda *args, **kwargs: None,
+        ),
+    )
+
+    result = red_phone.alert_admin("同一則警報", severity="info", source="unit", topic_key="check")
+
+    assert result["deduplicated"] is True
+    assert result["telegram"] is False
+    assert result["line"] is False
+    assert result["discord"] is False
+    entries = [json.loads(line) for line in delivery_path.read_text(encoding="utf-8").splitlines()]
+    assert entries[-1]["event"] == "deduplicated"

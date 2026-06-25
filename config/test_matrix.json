@@ -33,6 +33,7 @@
             "scripts/ops/business_module_live_check.py",
             "scripts/ops/public_push_guard.py",
             "scripts/ops/token_health_check.py",
+            "scripts/ops/run_after_token_refresh.py",
             "bin/check.py",
             "bin/cli.py",
             "bin/release_bundle.py",

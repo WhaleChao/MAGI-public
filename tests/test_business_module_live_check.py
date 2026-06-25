@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from scripts.ops import business_module_live_check as live_check
 
@@ -81,6 +83,41 @@ def test_drive_sync_status_flags_running_without_live_pid(tmp_path, monkeypatch)
 
     assert result["ok"] is False
     assert result["parsed"]["running_without_pid"] is True
+    assert "running_without_live_pid" in result["parsed"]["reason"]
+
+
+def test_drive_sync_status_flags_stale_completed_status(tmp_path, monkeypatch):
+    runtime = tmp_path / ".runtime" / "drive_sync"
+    runtime.mkdir(parents=True)
+    status_file = runtime / "drive_case_sync_worker_status_latest.json"
+    status_file.write_text(
+        json.dumps({"ok": True, "status": "ok", "pid": 1234, "summary": {"matched_case_folders": 21}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda path: 49 * 3600)
+
+    result = live_check._drive_sync_status_live()
+
+    assert result["ok"] is False
+    assert "stale_status" in result["parsed"]["reason"]
+
+
+def test_drive_sync_status_accepts_active_running_pid(tmp_path, monkeypatch):
+    runtime = tmp_path / ".runtime" / "drive_sync"
+    runtime.mkdir(parents=True)
+    (runtime / "drive_case_sync_worker_status_latest.json").write_text(
+        json.dumps({"status": "direct_all_case_sync_running", "pid": 1234, "worker_kind": "all_files"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda path: 30)
+
+    result = live_check._drive_sync_status_live()
+
+    assert result["ok"] is True
+    assert result["parsed"]["active_running"] is True
 
 
 def test_calendar_todo_status_accepts_recent_ok_report(tmp_path, monkeypatch):
@@ -101,3 +138,64 @@ def test_calendar_todo_status_accepts_recent_ok_report(tmp_path, monkeypatch):
 
     assert result["ok"] is True
     assert result["parsed"]["calendar_audit_ok"] is True
+
+
+def test_run_requires_success_or_ok_contract(monkeypatch):
+    monkeypatch.setattr(
+        live_check.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{"message":"done"}\n', stderr=""),
+    )
+
+    result = live_check._run("contractless", ["python", "fake.py"], timeout=1)
+
+    assert result["ok"] is False
+    assert result["contract_error"] == "missing_success_or_ok_contract"
+
+
+def test_live_runtime_root_fingerprint_detects_cron_semantic_drift(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    runtime = tmp_path / "runtime"
+    source.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(live_check, "REPO_ROOT", source)
+    monkeypatch.setattr(live_check, "DEFAULT_LIVE_RUNTIME_ROOT", runtime)
+    monkeypatch.setattr(live_check, "_LIVE_ROOT_FINGERPRINT_FILES", ("api/server.py",))
+    monkeypatch.setattr(live_check, "_LIVE_ROOT_GOOGLE_CRON_JOBS", {"job_osc_events_refresh"})
+
+    for root in (source, runtime):
+        path = root / "api" / "server.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("print('same')\n", encoding="utf-8")
+
+    (source / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_osc_events_refresh",
+                    "enabled": True,
+                    "cron": "35 */6 * * *",
+                    "command": "python scripts/ops/run_after_token_refresh.py -- python scripts/ops/osc_events_refresh.py",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (runtime / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_osc_events_refresh",
+                    "enabled": True,
+                    "cron": "35 */6 * * *",
+                    "command": "python scripts/ops/osc_events_refresh.py",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = live_check._live_runtime_root_live()
+
+    assert result["ok"] is False
+    assert result["parsed"]["cron_mismatches"][0]["id"] == "job_osc_events_refresh"

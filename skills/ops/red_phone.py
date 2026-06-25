@@ -1561,7 +1561,29 @@ def alert_admin(
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] alert_admin: Deduplicated identical message: %s", _preview_text(message))
-            return {"deduplicated": True, "telegram": True, "line": True, "discord": True}
+            _append_delivery_log(
+                {
+                    "event": "deduplicated",
+                    "source": source,
+                    "severity": severity,
+                    "topic_key": _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity),
+                    "preview": _preview_text(message),
+                }
+            )
+            return {
+                "deduplicated": True,
+                "telegram": False,
+                "line": False,
+                "discord": False,
+                "telegram_ack": 0,
+                "telegram_total": 0,
+                "outbox_queued": False,
+                "outbox_id": "",
+                "outbox_flushed": 0,
+                "outbox_remaining": len(_load_outbox()),
+                "topic_key": _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity),
+                "thread_id": 0,
+            }
     except Exception as e:
         logger.debug("[RED PHONE] alert_admin dedup check failed: %s", e)
 

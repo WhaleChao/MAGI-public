@@ -54,6 +54,8 @@ STUCK_THRESHOLDS = {
     "action.py": 3600,       # skill action 最多 1 小時
     "autopilot": 7200,       # autopilot tick 最多 2 小時
     "worker": 3600,          # worker 最多 1 小時
+    "scripts/drive_case_sync_worker.py": 5400,  # cron resource_guarded timeout is 4800s
+    "scripts/ops/resource_guarded_run.py": 5400,
 }
 
 DEFAULT_STUCK_SEC = 3600
@@ -75,6 +77,8 @@ MANAGED_LONG_RUNNING_SCRIPTS = [
 # actions can return immediately. They are still bounded by scan_stuck().
 EXPECTED_DETACHED_JOB_MARKERS = [
     "download_worker",
+    "scripts/drive_case_sync_worker.py",
+    "scripts/ops/resource_guarded_run.py",
 ]
 
 
@@ -163,7 +167,7 @@ def _is_expected_detached_job(cmd: str) -> bool:
 
 
 def _stuck_threshold_for_command(cmd: str) -> int:
-    for key, val in STUCK_THRESHOLDS.items():
+    for key, val in sorted(STUCK_THRESHOLDS.items(), key=lambda item: len(item[0]), reverse=True):
         if key in cmd:
             return val
     return DEFAULT_STUCK_SEC

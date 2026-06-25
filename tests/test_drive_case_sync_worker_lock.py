@@ -119,3 +119,26 @@ def test_worker_state_keeps_status_by_kind_and_kind_specific_file(tmp_path, monk
     assert general["status_by_kind"]["all_files"]["status_code"] == "all_files_ok"
     assert (tmp_path / "worker_state_priority.json").exists()
     assert (tmp_path / "worker_state_all_files.json").exists()
+
+
+def test_termination_status_marks_interrupted_with_offsets():
+    worker = load_worker_module()
+    worker._CURRENT_RUN_CONTEXT.clear()
+    worker._CURRENT_RUN_CONTEXT.update(
+        {
+            "worker_kind": "all_files",
+            "started_at": "2026-06-26T01:12:58+08:00",
+            "matched_case_offset": 24,
+            "all_case_offset": 1,
+            "all_case_total": 207,
+        }
+    )
+
+    status = worker._termination_status(15)
+
+    assert status["ok"] is False
+    assert status["status"] == "interrupted"
+    assert status["worker_kind"] == "all_files"
+    assert status["signal"] == 15
+    assert status["matched_case_offset"] == 24
+    assert status["all_case_total"] == 207
