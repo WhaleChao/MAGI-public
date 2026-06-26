@@ -36,8 +36,8 @@ def laf_poa_docx_templates_enabled() -> bool:
 
 
 def laf_poa_static_templates_enabled() -> bool:
-    # Keep the curated Word templates available only for explicit compatibility
-    # tests or manual opt-out from the exact PDF-backed layout.
+    # Keep the curated Word templates available for explicit compatibility
+    # mode, when exact PDF-backed layout is disabled or unavailable.
     return os.environ.get("MAGI_LAF_POA_STATIC_TEMPLATES", "1").strip().lower() not in FALSE_VALUES
 
 
@@ -46,9 +46,10 @@ def laf_poa_pdf_render_fallback_enabled() -> bool:
 
 
 def laf_poa_exact_pdf_layout_enabled() -> bool:
-    # Prefer the official Word template so Windows Word users can edit the form
-    # natively.  Keep the PDF-backed layout as an explicit fallback only.
-    return os.environ.get("MAGI_LAF_POA_EXACT_PDF_LAYOUT", "0").strip().lower() not in FALSE_VALUES
+    # The user-facing companion must visually match the official PDF.  Use the
+    # PDF as the page background and put editable Word text boxes over fields by
+    # default; the static Word template remains an explicit compatibility mode.
+    return os.environ.get("MAGI_LAF_POA_EXACT_PDF_LAYOUT", "1").strip().lower() not in FALSE_VALUES
 
 
 def is_laf_power_of_attorney_pdf(path: str | os.PathLike[str]) -> bool:
@@ -227,6 +228,15 @@ def _exists_quick(path: str | os.PathLike[str]) -> bool:
         return True
     except Exception:
         return False
+
+
+def _is_exact_pdf_backed_docx(path: str | os.PathLike[str]) -> bool:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
+    except Exception:
+        return False
+    return "<wp:anchor" in xml and 'behindDoc="1"' in xml and "magi_laf_poa_overlay_" in xml
 
 
 def _metadata_first(data: dict[str, Any], *keys: str) -> str:
@@ -867,9 +877,10 @@ def ensure_laf_poa_docx_companion(
 ) -> dict[str, Any]:
     """Create a Word companion for LAF power-of-attorney PDFs.
 
-    The default output copies the official Word template and fills known case
-    fields directly, leaving the original PDF untouched.  A PDF-backed Word file
-    is available only as an explicit fallback.
+    The default output preserves the official PDF appearance by using it as a
+    page background and placing editable Word text boxes over known fields.  The
+    curated static Word template is available as a compatibility fallback when
+    exact layout is explicitly disabled.
     """
 
     source = Path(pdf_path)
@@ -914,20 +925,22 @@ def ensure_laf_poa_docx_companion(
     normalized_metadata = _normalize_case_metadata(combined_metadata)
     template_key = _laf_poa_template_key(normalized_metadata)
     result["pdf_extracted_fields"] = pdf_metadata
+    exact_pdf_layout = laf_poa_exact_pdf_layout_enabled()
 
     if _exists_quick(target) and _exists_quick(template_target) and not overwrite:
         try:
             target_stat = _stat_quick(target)
             source_stat = _stat_quick(source)
             if target_stat.st_mtime >= source_stat.st_mtime and target_stat.st_size > 0:
-                result.update(ok=True, status="exists")
-                return result
+                if not exact_pdf_layout or _is_exact_pdf_backed_docx(target):
+                    result.update(ok=True, status="exists")
+                    return result
+                result["warnings"].append("stale_non_exact_docx_rebuilt")
         except OSError:
             pass
 
-    selected_template = select_laf_poa_template(normalized_metadata)
-    exact_pdf_layout = laf_poa_exact_pdf_layout_enabled()
-    fallback_allowed = selected_template is None and laf_poa_pdf_render_fallback_enabled()
+    selected_template = None if exact_pdf_layout else select_laf_poa_template(normalized_metadata)
+    fallback_allowed = exact_pdf_layout or (selected_template is None and laf_poa_pdf_render_fallback_enabled())
 
     if selected_template is not None:
         template_key, template_path = selected_template
@@ -1123,6 +1136,93 @@ def ensure_laf_poa_docx_companion(
                 align="left",
                 color="666666" if firm_placeholder else "000000",
                 italic=firm_placeholder,
+            )
+
+            laf_case_number, laf_case_placeholder = _value_or_placeholder(
+                values.get("LAF_CASE_NUMBER", ""),
+                "請填法扶案號",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                laf_case_number,
+                x_pt=118,
+                y_pt=100,
+                width_pt=142,
+                height_pt=20,
+                font_pt=9.5,
+                align="left",
+                color="666666" if laf_case_placeholder else "000000",
+                italic=laf_case_placeholder,
+            )
+
+            client_name, client_placeholder = _value_or_placeholder(
+                values.get("CLIENT_NAME", ""),
+                "請填當事人",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                client_name,
+                x_pt=118,
+                y_pt=184,
+                width_pt=96,
+                height_pt=22,
+                font_pt=12,
+                color="666666" if client_placeholder else "000000",
+                italic=client_placeholder,
+            )
+
+            birthday, birthday_placeholder = _value_or_placeholder(
+                values.get("CLIENT_BIRTHDAY", ""),
+                "請填生日",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                birthday,
+                x_pt=222,
+                y_pt=184,
+                width_pt=92,
+                height_pt=22,
+                font_pt=10,
+                color="666666" if birthday_placeholder else "000000",
+                italic=birthday_placeholder,
+            )
+
+            client_id, client_id_placeholder = _value_or_placeholder(
+                values.get("CLIENT_ID", ""),
+                "請填身分證",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                client_id,
+                x_pt=322,
+                y_pt=184,
+                width_pt=82,
+                height_pt=22,
+                font_pt=10,
+                color="666666" if client_id_placeholder else "000000",
+                italic=client_id_placeholder,
+            )
+
+            address_phone, address_phone_placeholder = _value_or_placeholder(
+                values.get("CLIENT_ADDRESS_PHONE", ""),
+                "請填地址電話",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                address_phone,
+                x_pt=118,
+                y_pt=286,
+                width_pt=282,
+                height_pt=60,
+                font_pt=9.5,
+                align="left",
+                color="666666" if address_phone_placeholder else "000000",
+                italic=address_phone_placeholder,
             )
 
             court_case_number, court_case_placeholder = _value_or_placeholder(

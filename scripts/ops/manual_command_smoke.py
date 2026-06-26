@@ -85,10 +85,30 @@ def route_checks() -> list[Check]:
 
 def docx_pdf_checks() -> list[Check]:
     checks: list[Check] = []
+    user_manual = ROOT / "docs/guides/MAGI_一般使用者完整操作手冊_2026-06-26.docx"
     docx = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx"
     pdf = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf"
     detailed_docx = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx"
     detailed_pdf = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf"
+
+    if not user_manual.exists():
+        checks.append(Check("user_manual_docx_exists", False, "missing", expected=str(user_manual)))
+    else:
+        from docx import Document
+
+        d = Document(user_manual)
+        all_text = "\n".join(p.text for p in d.paragraphs)
+        required = ["先看這裡", "跟 MAGI 說話的方式", "常用功能", "附錄：本版功能驗收摘要"]
+        ok = len(d.tables) >= 10 and all(token in all_text for token in required)
+        checks.append(
+            Check(
+                "user_manual_docx_user_first",
+                ok,
+                f"tables={len(d.tables)} paragraphs={len(d.paragraphs)} required={required}",
+                expected="一般使用者導向章節在前，驗收摘要在附錄",
+                actual=f"tables={len(d.tables)}",
+            )
+        )
 
     if not docx.exists():
         checks.append(Check("docx_exists", False, "missing", expected=str(docx)))
