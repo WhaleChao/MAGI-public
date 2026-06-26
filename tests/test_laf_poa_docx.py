@@ -213,11 +213,16 @@ def test_laf_poa_pdf_creates_fillable_word_companion(tmp_path):
     assert result["pages"] == 1
     assert result["template_key"] == "general"
     assert result["filled_fields"]["laf_case_number"] == "1150529-E-005"
-    assert template_path.exists()
+    assert not template_path.exists(), "exact PDF layout 不應在案件資料夾留下委任狀（範本）"
     assert docx_path.exists()
     xml = _docx_xml(docx_path)
     assert "<wp:anchor" in xml and 'behindDoc="1"' in xml, "預設必須以 PDF 作底圖，讓可填寫版貼近原 PDF"
     assert "magi_laf_poa_overlay_" in xml, "PDF 底圖上必須有可編輯欄位 overlay"
+    assert "<w:sdt>" in xml, "可填寫項目必須是 Word content controls，不只是不可追蹤的普通文字"
+    assert "magi_laf_poa.client_name" in xml
+    assert "magi_laf_poa.case_reason" in xml
+    assert "w14:checkbox" in xml, "表單勾選項目必須提供 Word checkbox controls"
+    assert "magi_laf_poa.role_defender" in xml
     assert "王惠薰" in xml
     assert "70年1月1日" in xml
     assert "A123456789" in xml
@@ -236,12 +241,6 @@ def test_laf_poa_pdf_creates_fillable_word_companion(tmp_path):
     assert "標楷體" in xml
     assert "Times New Roman" not in xml
     assert "{{" not in xml
-    template_xml = _docx_xml(template_path)
-    assert "<wp:anchor" in template_xml
-    assert "請填律師姓名" in template_xml
-    assert "標楷體" in template_xml
-    assert "Times New Roman" not in template_xml
-    assert "{{LAF_CASE_NUMBER}}" not in template_xml
 
     second = ensure_laf_poa_docx_companion(pdf)
     assert second["ok"] is True
@@ -272,10 +271,61 @@ def test_laf_poa_existing_static_companion_is_rebuilt_for_exact_layout(tmp_path)
     assert result["ok"] is True
     assert result["status"] == "created"
     assert "stale_non_exact_docx_rebuilt" in result["warnings"]
+    assert not template_path.exists(), "重建 exact 可填寫版時也要清掉舊範本檔"
     assert "<wp:anchor" in xml and 'behindDoc="1"' in xml
     assert "magi_laf_poa_overlay_" in xml
     assert "舊版靜態範本" not in xml
     assert "王惠薰" in xml
+
+
+def test_criminal_poa_pdf_creates_usable_content_controls_without_template(tmp_path):
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path, laf_poa_template_docx_path
+
+    pdf = tmp_path / "刑事委任狀_測試.pdf"
+    _make_pdf(pdf, "刑事委任狀\n案號：\n股別：\n為委任辯護人事")
+
+    result = ensure_laf_poa_docx_companion(
+        pdf,
+        case_metadata={
+            "poa_layout": "criminal",
+            "client_name": "林稚芳",
+            "client_address_phone": "花蓮市測試路1號",
+            "poa_lawyer_name": "喬政翔律師",
+            "law_firm_office_name": "偵理法律事務所",
+            "law_firm_address_line": "970花蓮縣花蓮市明禮路18-6號1樓",
+            "law_firm_phone": "03-8357-186",
+            "law_firm_fax": "03-8357-135",
+            "case_reason": "過失傷害",
+            "court_name": "臺灣花蓮地方檢察署",
+            "court_case_number": "115年度偵字第123號",
+            "roc_year": "115",
+            "roc_month": "6",
+            "roc_day": "26",
+        },
+    )
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert result["status"] == "created"
+    assert not laf_poa_template_docx_path(pdf).exists()
+    assert "<wp:anchor" in xml and 'behindDoc="1"' in xml
+    for field in (
+        "criminal_case_number",
+        "criminal_client_name",
+        "criminal_client_address",
+        "criminal_lawyer_name",
+        "criminal_law_firm_contact",
+        "criminal_case_reason",
+        "criminal_court_name",
+        "criminal_client_signature_name",
+        "criminal_lawyer_signature_name",
+        "criminal_roc_year",
+    ):
+        assert f"magi_laf_poa.{field}" in xml
+    assert "<w:sdt>" in xml
+    assert "林稚芳" in xml
+    assert "喬政翔律師" in xml
+    assert "過失傷害" in xml
 
 
 def test_laf_poa_generation_records_quality_validation_in_result(tmp_path, monkeypatch):

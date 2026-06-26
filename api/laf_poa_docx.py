@@ -239,6 +239,14 @@ def _is_exact_pdf_backed_docx(path: str | os.PathLike[str]) -> bool:
     return "<wp:anchor" in xml and 'behindDoc="1"' in xml and "magi_laf_poa_overlay_" in xml
 
 
+def _remove_stale_laf_poa_template(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
 def _metadata_first(data: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = _text(data.get(key))
@@ -411,11 +419,48 @@ def _extract_laf_poa_pdf_metadata(path: Path) -> dict[str, str]:
 
         with fitz.open(str(path)) as pdf:
             text = "\n".join(page.get_text("text") for page in pdf)
+            first_page_words = pdf[0].get_text("words") if len(pdf) else []
     except Exception:
         return data
 
     normalized_text = re.sub(r"[ \t\u3000]+", " ", text)
     lines = [_compact_pdf_line(line) for line in text.splitlines()]
+    if "刑事委任狀" in normalized_text:
+        data["poa_layout"] = "criminal"
+
+        def words_in_rect(x0: float, y0: float, x1: float, y1: float) -> str:
+            items: list[tuple[float, float, str]] = []
+            for word in first_page_words:
+                wx0, wy0, wx1, wy1, value, *_ = word
+                if wx0 >= x0 and wy0 >= y0 and wx1 <= x1 and wy1 <= y1 and _text(value):
+                    items.append((wy0, wx0, _text(value)))
+            return _compact_pdf_line(" ".join(value for _y, _x, value in sorted(items)))
+
+        client_name = words_in_rect(70, 135, 245, 250)
+        if client_name and len(client_name) <= 20:
+            data["client_name"] = client_name
+        lawyer_name = words_in_rect(80, 285, 235, 335)
+        lawyer_match = re.search(r"([\u4e00-\u9fff]{2,4}律師)", lawyer_name)
+        if lawyer_match:
+            data["lawyer_name"] = lawyer_match.group(1)
+        office_text = words_in_rect(245, 280, 560, 385)
+        if office_text:
+            office_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9　 ]{2,30}(?:事務所|法律事務所))", office_text)
+            if office_match:
+                data["law_firm_office_name"] = _compact_pdf_line(office_match.group(1))
+            address_match = re.search(r"地址[:：]\s*([^電話傳真]+)", office_text)
+            if address_match:
+                data["law_firm_address_line"] = _compact_pdf_line(address_match.group(1))
+            phone_match = re.search(r"電話[:：]\s*([^傳真]+)", office_text)
+            if phone_match:
+                data["law_firm_phone"] = _compact_pdf_line(phone_match.group(1))
+            fax_match = re.search(r"傳真[:：]\s*(.+)$", office_text)
+            if fax_match:
+                data["law_firm_fax"] = _compact_pdf_line(fax_match.group(1))
+        court_text = words_in_rect(65, 520, 265, 555)
+        court_match = re.search(r"(臺灣|台灣).+?(?:法院|檢察署)", court_text)
+        if court_match:
+            data["court_name"] = court_match.group(0)
 
     laf_match = re.search(r"本會申請編號[:：]\s*([0-9]{6,7}-[A-Z]-\d{3})", normalized_text)
     if laf_match:
@@ -486,6 +531,7 @@ def _normalize_case_metadata(case_metadata: dict[str, Any] | None) -> dict[str, 
         case_reason,
     )
     return {
+        "poa_layout": _metadata_first(data, "poa_layout", "layout"),
         "client_name": _metadata_first(data, "client_name", "name", "party_name", "當事人"),
         "client_birthday": _metadata_first(data, "client_birthday", "birthday", "birth_date", "birth"),
         "client_id": _metadata_first(data, "client_id", "id_number", "identity_number", "national_id"),
@@ -497,6 +543,10 @@ def _normalize_case_metadata(case_metadata: dict[str, Any] | None) -> dict[str, 
         "case_reason": case_reason,
         "case_type": case_type,
         "lawyer_name": lawyer_name,
+        "law_firm_office_name": _metadata_first(data, "law_firm_office_name", "office_name", "firm_name"),
+        "law_firm_address_line": _metadata_first(data, "law_firm_address_line", "firm_address", "office_address"),
+        "law_firm_phone": _metadata_first(data, "law_firm_phone", "firm_phone", "office_phone"),
+        "law_firm_fax": _metadata_first(data, "law_firm_fax", "firm_fax", "office_fax"),
         "court_name": court_name,
         "court_line": _court_line(data),
         "stage_marks": _stage_marks(data),
@@ -548,10 +598,10 @@ def _template_values(metadata: dict[str, str]) -> dict[str, str]:
         "CLIENT_ID": metadata["client_id"],
         "CLIENT_ADDRESS_PHONE": metadata["client_address_phone"],
         "LAWYER_NAME": metadata["lawyer_name"] or firm.lawyer_name,
-        "LAW_FIRM_OFFICE_NAME": firm.office_name,
-        "LAW_FIRM_ADDRESS_LINE": firm.address_line,
-        "LAW_FIRM_PHONE": firm.phone,
-        "LAW_FIRM_FAX": firm.fax,
+        "LAW_FIRM_OFFICE_NAME": metadata.get("law_firm_office_name", "") or firm.office_name,
+        "LAW_FIRM_ADDRESS_LINE": metadata.get("law_firm_address_line", "") or firm.address_line,
+        "LAW_FIRM_PHONE": metadata.get("law_firm_phone", "") or firm.phone,
+        "LAW_FIRM_FAX": metadata.get("law_firm_fax", "") or firm.fax,
         "LAW_FIRM_MOBILE": firm.mobile,
         "CASE_REASON": metadata["case_reason"],
         "COURT_NAME": metadata.get("court_name", ""),
@@ -926,8 +976,11 @@ def ensure_laf_poa_docx_companion(
     template_key = _laf_poa_template_key(normalized_metadata)
     result["pdf_extracted_fields"] = pdf_metadata
     exact_pdf_layout = laf_poa_exact_pdf_layout_enabled()
+    if exact_pdf_layout:
+        _remove_stale_laf_poa_template(template_target)
 
-    if _exists_quick(target) and _exists_quick(template_target) and not overwrite:
+    existing_ready = _exists_quick(target) and (exact_pdf_layout or _exists_quick(template_target))
+    if existing_ready and not overwrite:
         try:
             target_stat = _stat_quick(target)
             source_stat = _stat_quick(source)
@@ -1029,6 +1082,10 @@ def ensure_laf_poa_docx_companion(
 
         overlay_counter = 0
 
+        def field_tag(name: str) -> str:
+            tag = re.sub(r"[^A-Za-z0-9_.:-]+", "_", name).strip("_")
+            return tag or "field"
+
         def _overlay_textbox_xml(
             text: str,
             *,
@@ -1040,6 +1097,7 @@ def ensure_laf_poa_docx_companion(
             align: str = "center",
             color: str = "000000",
             italic: bool = False,
+            field_name: str = "text",
         ):
             nonlocal overlay_counter
             overlay_counter += 1
@@ -1055,6 +1113,8 @@ def ensure_laf_poa_docx_companion(
             italic_xml = "<w:i/>" if italic else ""
             size = max(1, int(round(font_pt * 2)))
             align = align if align in {"left", "center", "right"} else "center"
+            alias = html.escape(field_name.replace("_", " "), quote=True)
+            tag = html.escape(f"magi_laf_poa.{field_tag(field_name)}", quote=True)
             return parse_xml(
                 f"""
                 <w:pict {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml">
@@ -1068,15 +1128,24 @@ def ensure_laf_poa_docx_companion(
                             <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
                             <w:jc w:val="{align}"/>
                           </w:pPr>
-                          <w:r>
-                              <w:rPr>
-                              <w:rFonts w:ascii="標楷體" w:eastAsia="標楷體" w:hAnsi="標楷體" w:cs="標楷體"/>
-                              <w:color w:val="{color}"/>
-                              <w:sz w:val="{size}"/>
-                              {italic_xml}
-                            </w:rPr>
-                            {run_xml}
-                          </w:r>
+                          <w:sdt>
+                            <w:sdtPr>
+                              <w:alias w:val="{alias}"/>
+                              <w:tag w:val="{tag}"/>
+                              <w:text/>
+                            </w:sdtPr>
+                            <w:sdtContent>
+                              <w:r>
+                                <w:rPr>
+                                  <w:rFonts w:ascii="標楷體" w:eastAsia="標楷體" w:hAnsi="標楷體" w:cs="標楷體"/>
+                                  <w:color w:val="{color}"/>
+                                  <w:sz w:val="{size}"/>
+                                  {italic_xml}
+                                </w:rPr>
+                                {run_xml}
+                              </w:r>
+                            </w:sdtContent>
+                          </w:sdt>
                         </w:p>
                       </w:txbxContent>
                     </v:textbox>
@@ -1089,6 +1158,62 @@ def ensure_laf_poa_docx_companion(
             element = _overlay_textbox_xml(text, **kwargs)
             if element is not None:
                 paragraph._p.append(element)
+
+        def _overlay_checkbox_xml(
+            field_name: str,
+            *,
+            x_pt: float,
+            y_pt: float,
+            checked: bool = False,
+            size_pt: float = 11,
+        ):
+            nonlocal overlay_counter
+            overlay_counter += 1
+            char = "☒" if checked else "☐"
+            checked_value = "1" if checked else "0"
+            size = max(1, int(round(size_pt * 2)))
+            alias = html.escape(field_name.replace("_", " "), quote=True)
+            tag = html.escape(f"magi_laf_poa.{field_tag(field_name)}", quote=True)
+            return parse_xml(
+                f"""
+                <w:pict {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+                  <v:shape id="magi_laf_poa_overlay_{overlay_counter}" type="#_x0000_t202"
+                    style="position:absolute;margin-left:{x_pt:.2f}pt;margin-top:{y_pt:.2f}pt;width:15.00pt;height:15.00pt;z-index:251659265;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-wrap-style:none"
+                    stroked="f" filled="f">
+                    <v:textbox inset="0,0,0,0">
+                      <w:txbxContent>
+                        <w:p>
+                          <w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>
+                          <w:sdt>
+                            <w:sdtPr>
+                              <w:alias w:val="{alias}"/>
+                              <w:tag w:val="{tag}"/>
+                              <w14:checkbox>
+                                <w14:checked w14:val="{checked_value}"/>
+                                <w14:checkedState w14:val="2612" w14:font="MS Gothic"/>
+                                <w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>
+                              </w14:checkbox>
+                            </w:sdtPr>
+                            <w:sdtContent>
+                              <w:r>
+                                <w:rPr>
+                                  <w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/>
+                                  <w:sz w:val="{size}"/>
+                                </w:rPr>
+                                <w:t>{char}</w:t>
+                              </w:r>
+                            </w:sdtContent>
+                          </w:sdt>
+                        </w:p>
+                      </w:txbxContent>
+                    </v:textbox>
+                  </v:shape>
+                </w:pict>
+                """
+            )
+
+        def add_overlay_checkbox(paragraph, field_name: str, **kwargs) -> None:
+            paragraph._p.append(_overlay_checkbox_xml(field_name, **kwargs))
 
         def _value_or_placeholder(value: str, placeholder: str, fill_values: bool) -> tuple[str, bool]:
             if fill_values and _text(value):
@@ -1106,6 +1231,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 lawyer_name,
+                field_name="lawyer_name",
                 x_pt=412,
                 y_pt=184,
                 width_pt=118,
@@ -1128,6 +1254,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 firm_text,
+                field_name="law_firm_contact",
                 x_pt=414,
                 y_pt=286,
                 width_pt=126,
@@ -1146,6 +1273,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 laf_case_number,
+                field_name="laf_case_number",
                 x_pt=118,
                 y_pt=100,
                 width_pt=142,
@@ -1164,6 +1292,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 client_name,
+                field_name="client_name",
                 x_pt=118,
                 y_pt=184,
                 width_pt=96,
@@ -1181,6 +1310,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 birthday,
+                field_name="client_birthday",
                 x_pt=222,
                 y_pt=184,
                 width_pt=92,
@@ -1198,6 +1328,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 client_id,
+                field_name="client_id",
                 x_pt=322,
                 y_pt=184,
                 width_pt=82,
@@ -1215,6 +1346,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 address_phone,
+                field_name="client_address_phone",
                 x_pt=118,
                 y_pt=286,
                 width_pt=282,
@@ -1233,6 +1365,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 court_case_number,
+                field_name="court_case_number",
                 x_pt=388,
                 y_pt=100,
                 width_pt=145,
@@ -1250,6 +1383,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 case_reason,
+                field_name="case_reason",
                 x_pt=156,
                 y_pt=433,
                 width_pt=212,
@@ -1274,6 +1408,7 @@ def ensure_laf_poa_docx_companion(
             add_overlay_textbox(
                 paragraph,
                 court_text,
+                field_name="court_name",
                 x_pt=104,
                 y_pt=625,
                 width_pt=198,
@@ -1284,20 +1419,227 @@ def ensure_laf_poa_docx_companion(
                 italic=court_placeholder,
             )
 
+            court_line_source = _text(values.get("COURT_LINE", ""))
+            add_overlay_checkbox(paragraph, "court_kind_court", x_pt=82, y_pt=625, checked="■" in court_line_source and "法院" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_prosecutor", x_pt=164, y_pt=625, checked="■" in court_line_source and "檢" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_transfer", x_pt=266, y_pt=625, checked="■轉呈" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_committee", x_pt=324, y_pt=625, checked="■" in court_line_source and "委員會" in court_line_source)
+
+            stage_marks = _text(values.get("STAGE_MARKS", ""))
+            add_overlay_checkbox(paragraph, "stage_first", x_pt=118, y_pt=478, checked="■第 一 審" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_second", x_pt=204, y_pt=478, checked="■第 二 審" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_third", x_pt=290, y_pt=478, checked="■第 三 審" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_investigation", x_pt=376, y_pt=478, checked="■偵" in stage_marks)
+
+            role_marks = _text(values.get("ROLE_MARKS", ""))
+            add_overlay_checkbox(paragraph, "role_agent", x_pt=118, y_pt=514, checked="■代 理 人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_complainant_agent", x_pt=204, y_pt=514, checked="■告訴代理人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_defender", x_pt=318, y_pt=514, checked="■辯 護 人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_assistant", x_pt=430, y_pt=514, checked="■輔 佐 人" in role_marks)
+
             year, year_placeholder = _value_or_placeholder(values.get("ROC_YEAR", ""), "年", fill_values)
             month, month_placeholder = _value_or_placeholder(values.get("ROC_MONTH", ""), "月", fill_values)
             day, day_placeholder = _value_or_placeholder(values.get("ROC_DAY", ""), "日", fill_values)
-            for text, x_pt, placeholder in (
-                (year, 407, year_placeholder),
-                (month, 471, month_placeholder),
-                (day, 527, day_placeholder),
+            for text, field_name, x_pt, placeholder in (
+                (year, "roc_year", 407, year_placeholder),
+                (month, "roc_month", 471, month_placeholder),
+                (day, "roc_day", 527, day_placeholder),
             ):
                 add_overlay_textbox(
                     paragraph,
                     text,
+                    field_name=field_name,
                     x_pt=x_pt,
                     y_pt=808,
                     width_pt=32,
+                    height_pt=18,
+                    font_pt=11,
+                    color="666666" if placeholder else "000000",
+                    italic=placeholder,
+                )
+
+        def add_criminal_overlay_fields(paragraph, values: dict[str, str], *, fill_values: bool) -> None:
+            """Place editable controls over the common criminal POA PDF layout."""
+
+            def value(key: str, placeholder: str) -> tuple[str, bool]:
+                return _value_or_placeholder(values.get(key, ""), placeholder, fill_values)
+
+            court_case_number, court_case_placeholder = value("COURT_CASE_NUMBER", "請填案號")
+            add_overlay_textbox(
+                paragraph,
+                court_case_number,
+                field_name="criminal_case_number",
+                x_pt=382,
+                y_pt=55,
+                width_pt=86,
+                height_pt=18,
+                font_pt=10,
+                color="666666" if court_case_placeholder else "000000",
+                italic=court_case_placeholder,
+            )
+            stock, stock_placeholder = value("COURT_CASE_STOCK", "股別")
+            add_overlay_textbox(
+                paragraph,
+                stock,
+                field_name="criminal_stock",
+                x_pt=526,
+                y_pt=55,
+                width_pt=42,
+                height_pt=18,
+                font_pt=10,
+                color="666666" if stock_placeholder else "000000",
+                italic=stock_placeholder,
+            )
+            client_name, client_placeholder = value("CLIENT_NAME", "請填委任人")
+            add_overlay_textbox(
+                paragraph,
+                client_name,
+                field_name="criminal_client_name",
+                x_pt=90,
+                y_pt=181,
+                width_pt=144,
+                height_pt=22,
+                font_pt=12,
+                color="666666" if client_placeholder else "000000",
+                italic=client_placeholder,
+            )
+            for field_name, placeholder, x_pt, width_pt in (
+                ("criminal_client_age", "年齡", 248, 30),
+                ("criminal_client_occupation", "職業", 277, 30),
+                ("criminal_client_registry", "籍貫", 304, 30),
+            ):
+                text, is_placeholder = _value_or_placeholder("", placeholder, fill_values)
+                add_overlay_textbox(
+                    paragraph,
+                    text,
+                    field_name=field_name,
+                    x_pt=x_pt,
+                    y_pt=181,
+                    width_pt=width_pt,
+                    height_pt=22,
+                    font_pt=9,
+                    color="666666",
+                    italic=is_placeholder,
+                )
+            address, address_placeholder = value("CLIENT_ADDRESS_PHONE", "請填住居所")
+            add_overlay_textbox(
+                paragraph,
+                address,
+                field_name="criminal_client_address",
+                x_pt=340,
+                y_pt=180,
+                width_pt=200,
+                height_pt=44,
+                font_pt=9.5,
+                color="666666" if address_placeholder else "000000",
+                italic=address_placeholder,
+            )
+            lawyer_name, lawyer_placeholder = value("LAWYER_NAME", "請填受任律師")
+            add_overlay_textbox(
+                paragraph,
+                lawyer_name,
+                field_name="criminal_lawyer_name",
+                x_pt=88,
+                y_pt=306,
+                width_pt=146,
+                height_pt=22,
+                font_pt=12,
+                color="666666" if lawyer_placeholder else "000000",
+                italic=lawyer_placeholder,
+            )
+            office_lines = [
+                _text(values.get("LAW_FIRM_OFFICE_NAME", "")),
+                f"地址：{_text(values.get('LAW_FIRM_ADDRESS_LINE', ''))}" if _text(values.get("LAW_FIRM_ADDRESS_LINE", "")) else "",
+                f"電話：{_text(values.get('LAW_FIRM_PHONE', ''))}" if _text(values.get("LAW_FIRM_PHONE", "")) else "",
+                f"傳真：{_text(values.get('LAW_FIRM_FAX', ''))}" if _text(values.get("LAW_FIRM_FAX", "")) else "",
+            ]
+            office_text, office_placeholder = _value_or_placeholder(
+                "\n".join(line for line in office_lines if line),
+                "請填事務所資料",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                office_text,
+                field_name="criminal_law_firm_contact",
+                x_pt=262,
+                y_pt=290,
+                width_pt=282,
+                height_pt=86,
+                font_pt=10,
+                align="left",
+                color="666666" if office_placeholder else "000000",
+                italic=office_placeholder,
+            )
+            case_reason, reason_placeholder = value("CASE_REASON", "請填案由")
+            add_overlay_textbox(
+                paragraph,
+                case_reason,
+                field_name="criminal_case_reason",
+                x_pt=86,
+                y_pt=432,
+                width_pt=68,
+                height_pt=20,
+                font_pt=11,
+                color="666666" if reason_placeholder else "000000",
+                italic=reason_placeholder,
+            )
+            court_name = _text(values.get("COURT_NAME", "")) or _strip_court_target(values.get("COURT_LINE", ""))
+            court_text, court_placeholder = _value_or_placeholder(court_name, "請填法院/檢署", fill_values)
+            add_overlay_textbox(
+                paragraph,
+                court_text,
+                field_name="criminal_court_name",
+                x_pt=68,
+                y_pt=529,
+                width_pt=184,
+                height_pt=20,
+                font_pt=11,
+                align="left",
+                color="666666" if court_placeholder else "000000",
+                italic=court_placeholder,
+            )
+            signer_client, signer_client_placeholder = value("CLIENT_NAME", "請填委任人")
+            add_overlay_textbox(
+                paragraph,
+                f"委任人：{signer_client}",
+                field_name="criminal_client_signature_name",
+                x_pt=334,
+                y_pt=638,
+                width_pt=150,
+                height_pt=20,
+                font_pt=11,
+                color="666666" if signer_client_placeholder else "000000",
+                italic=signer_client_placeholder,
+            )
+            signer_lawyer, signer_lawyer_placeholder = value("LAWYER_NAME", "請填受任人")
+            add_overlay_textbox(
+                paragraph,
+                f"受任人：{signer_lawyer}",
+                field_name="criminal_lawyer_signature_name",
+                x_pt=334,
+                y_pt=701,
+                width_pt=170,
+                height_pt=20,
+                font_pt=11,
+                color="666666" if signer_lawyer_placeholder else "000000",
+                italic=signer_lawyer_placeholder,
+            )
+            year, year_placeholder = _value_or_placeholder(values.get("ROC_YEAR", ""), "年", fill_values)
+            month, month_placeholder = _value_or_placeholder(values.get("ROC_MONTH", ""), "月", fill_values)
+            day, day_placeholder = _value_or_placeholder(values.get("ROC_DAY", ""), "日", fill_values)
+            for text, field_name, x_pt, placeholder in (
+                (year, "criminal_roc_year", 278, year_placeholder),
+                (month, "criminal_roc_month", 374, month_placeholder),
+                (day, "criminal_roc_day", 470, day_placeholder),
+            ):
+                add_overlay_textbox(
+                    paragraph,
+                    text,
+                    field_name=field_name,
+                    x_pt=x_pt,
+                    y_pt=750,
+                    width_pt=42,
                     height_pt=18,
                     font_pt=11,
                     color="666666" if placeholder else "000000",
@@ -1361,6 +1703,7 @@ def ensure_laf_poa_docx_companion(
             *,
             overlay_values: dict[str, str] | None = None,
             fill_values: bool = False,
+            poa_layout: str = "",
         ) -> None:
             section.page_width = Pt(width_pt)
             section.page_height = Pt(height_pt)
@@ -1397,7 +1740,10 @@ def ensure_laf_poa_docx_companion(
             )
             inline_to_page_background(inline_shape._inline, width_pt, height_pt)
             if overlay_values is not None:
-                add_fillable_overlay_fields(paragraph, overlay_values, fill_values=fill_values)
+                if poa_layout == "criminal":
+                    add_criminal_overlay_fields(paragraph, overlay_values, fill_values=fill_values)
+                else:
+                    add_fillable_overlay_fields(paragraph, overlay_values, fill_values=fill_values)
 
         def build_template_document(*, fill_values: bool) -> tuple[Any, int]:
             doc = Document()
@@ -1428,6 +1774,7 @@ def ensure_laf_poa_docx_companion(
                         float(rect.height),
                         overlay_values=values if idx == 0 else None,
                         fill_values=fill_values,
+                        poa_layout=normalized_metadata.get("poa_layout", ""),
                     )
                     page_count += 1
             return doc, page_count
@@ -1476,18 +1823,27 @@ def ensure_laf_poa_docx_companion(
                 cells[1].text = value
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        template_doc, page_count = build_template_document(fill_values=False)
-        if page_count == 0:
+        from docx import Document as _Document  # type: ignore
+        if exact_pdf_layout:
+            _remove_stale_laf_poa_template(template_target)
+            page_count = 0
+        else:
+            template_doc, page_count = build_template_document(fill_values=False)
+            if page_count == 0:
+                result.update(status="empty_pdf", error="pdf_has_no_pages")
+                return result
+
+            tmp_template = template_target.with_suffix(template_target.suffix + ".tmp")
+            template_doc.save(str(tmp_template))
+            _Document(str(tmp_template))
+            os.replace(tmp_template, template_target)
+
+        case_doc, case_page_count = build_template_document(fill_values=True)
+        if case_page_count == 0:
             result.update(status="empty_pdf", error="pdf_has_no_pages")
             return result
-
-        tmp_template = template_target.with_suffix(template_target.suffix + ".tmp")
-        template_doc.save(str(tmp_template))
-        from docx import Document as _Document  # type: ignore
-        _Document(str(tmp_template))
-        os.replace(tmp_template, template_target)
-
-        case_doc, _ = build_template_document(fill_values=True)
+        if page_count == 0:
+            page_count = case_page_count
         if not exact_pdf_layout:
             add_case_metadata_page(case_doc)
         tmp_docx = target.with_suffix(target.suffix + ".tmp")
