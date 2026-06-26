@@ -175,6 +175,10 @@ def test_operational_audit_flags_stale_runtime_lock(tmp_path, monkeypatch):
         json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
         encoding="utf-8",
     )
+    (lock_dir / "demo.lock.json").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(audit, "ROOT", tmp_path)
     monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
 

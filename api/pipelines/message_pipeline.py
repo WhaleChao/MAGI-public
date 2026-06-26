@@ -549,7 +549,7 @@ def _try_agentic_route(orch, message: str, user_id="", role="", platform="", dec
         if user_declines_tool_dispatch(text):
             return ""
     except Exception:
-        pass
+        logger.debug("Agentic decline policy check failed; continuing with agentic routing.", exc_info=True)
     decision = decision or classify_intent_contract(text)
     if getattr(decision, "kind", "") != KIND_AGENT_TASK and not _contract_looks_like_agentic_request(text):
         return ""

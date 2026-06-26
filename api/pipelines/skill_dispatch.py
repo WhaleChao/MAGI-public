@@ -294,7 +294,7 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         if user_declines_tool_dispatch(text):
             return False, ""
     except Exception:
-        pass
+        logger.debug("Tool-dispatch decline policy check failed; continuing with semantic routing.", exc_info=True)
 
     safe_skills = {
         "web_search": "command", "translate_document": "command",

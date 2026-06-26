@@ -407,8 +407,15 @@ def audit_stale_runtime_locks() -> dict[str, Any]:
             if key in seen:
                 continue
             seen.add(key)
+            meta_path = Path(str(path) + ".json")
+            if not meta_path.exists():
+                # BackgroundLock removes the sidecar metadata on clean release
+                # but intentionally may leave the flock file itself behind.
+                # Without metadata, the file is only a reusable lock anchor, not
+                # evidence of a running or stale owner.
+                continue
             raw = path.read_text(encoding="utf-8", errors="replace")
-            data = _load_json(path, {})
+            data = _load_json(meta_path, {}) or _load_json(path, {})
             if not isinstance(data, dict):
                 malformed.append({"path": str(path), "sample": raw[:200]})
                 continue
