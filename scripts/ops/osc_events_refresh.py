@@ -1093,6 +1093,8 @@ def _run_calendar_gap_drive_remediation(
         return {"ok": True, "skipped": True, "reason": "no_calendar_source_gaps"}
     if bool(getattr(args, "dry_run", False)):
         return {"ok": True, "skipped": True, "reason": "dry_run"}
+    if bool(getattr(args, "calendar_only", False)):
+        return {"ok": True, "skipped": True, "reason": "calendar_only"}
     if bool(getattr(args, "skip_drive_sync", False)):
         return {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
     if os.environ.get("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_REMEDIATE_ENABLE", "1").strip().lower() not in {"1", "true", "yes", "on"}:

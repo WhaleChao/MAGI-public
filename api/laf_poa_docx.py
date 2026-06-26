@@ -461,6 +461,8 @@ def _extract_laf_poa_pdf_metadata(path: Path) -> dict[str, str]:
         court_match = re.search(r"(臺灣|台灣).+?(?:法院|檢察署)", court_text)
         if court_match:
             data["court_name"] = court_match.group(0)
+    elif "財團法人法律扶助基金會專用委任狀" in normalized_text:
+        data["poa_layout"] = "laf_foundation"
 
     laf_match = re.search(r"本會申請編號[:：]\s*([0-9]{6,7}-[A-Z]-\d{3})", normalized_text)
     if laf_match:
@@ -1080,27 +1082,94 @@ def ensure_laf_poa_docx_companion(
                 margin.set(qn("w:w"), "0")
                 margin.set(qn("w:type"), "dxa")
 
+        def set_table_fixed_geometry(table, width_pt: float, col_width_pt: float, cols: int) -> None:
+            tbl = table._tbl
+            tbl_pr = tbl.tblPr
+            layout = tbl_pr.find(qn("w:tblLayout"))
+            if layout is None:
+                layout = OxmlElement("w:tblLayout")
+                tbl_pr.append(layout)
+            layout.set(qn("w:type"), "fixed")
+            tbl_w = tbl_pr.find(qn("w:tblW"))
+            if tbl_w is None:
+                tbl_w = OxmlElement("w:tblW")
+                tbl_pr.append(tbl_w)
+            tbl_w.set(qn("w:type"), "dxa")
+            tbl_w.set(qn("w:w"), str(int(round(width_pt * 20))))
+            grid = tbl.tblGrid
+            if grid is None:
+                grid = OxmlElement("w:tblGrid")
+                tbl.insert(0, grid)
+            for child in list(grid):
+                grid.remove(child)
+            for _ in range(cols):
+                grid_col = OxmlElement("w:gridCol")
+                grid_col.set(qn("w:w"), str(int(round(col_width_pt * 20))))
+                grid.append(grid_col)
+
         overlay_counter = 0
 
         def field_tag(name: str) -> str:
             tag = re.sub(r"[^A-Za-z0-9_.:-]+", "_", name).strip("_")
             return tag or "field"
 
-        def _overlay_textbox_xml(
-            text: str,
+        def _overlay_grid_paragraph(
+            host,
             *,
             x_pt: float,
             y_pt: float,
             width_pt: float,
             height_pt: float,
+            align: str = "center",
+        ):
+            if not isinstance(host, dict):
+                return host
+            table = host["table"]
+            rows = int(host["rows"])
+            cols = int(host["cols"])
+            row_height = float(host["row_height"])
+            col_width = float(host["col_width"])
+            row_idx = max(0, min(rows - 1, int(y_pt / row_height)))
+            col_idx = max(0, min(cols - 1, int(x_pt / col_width)))
+            end_row = max(row_idx, min(rows - 1, int((y_pt + max(height_pt, row_height) - 0.1) / row_height)))
+            end_col = max(col_idx, min(cols - 1, int((x_pt + max(width_pt, col_width) - 0.1) / col_width)))
+            cell = table.cell(row_idx, col_idx)
+            try:
+                if end_row != row_idx or end_col != col_idx:
+                    cell = cell.merge(table.cell(end_row, end_col))
+            except Exception:
+                pass
+            paragraph = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+            if paragraph._p.xpath("./w:r|./w:sdt"):
+                paragraph = cell.add_paragraph()
+            clear_paragraph(paragraph)
+            paragraph.alignment = {
+                "left": WD_ALIGN_PARAGRAPH.LEFT,
+                "right": WD_ALIGN_PARAGRAPH.RIGHT,
+            }.get(align, WD_ALIGN_PARAGRAPH.CENTER)
+            return paragraph
+
+        def _append_overlay_marker(paragraph) -> None:
+            nonlocal overlay_counter
+            paragraph._p.append(
+                parse_xml(
+                    f'<w:bookmarkStart {nsdecls("w")} w:id="{overlay_counter}" '
+                    f'w:name="magi_laf_poa_overlay_{overlay_counter}"/>'
+                )
+            )
+            paragraph._p.append(
+                parse_xml(f'<w:bookmarkEnd {nsdecls("w")} w:id="{overlay_counter}"/>')
+            )
+
+        def _inline_text_control_xml(
+            text: str,
+            *,
             font_pt: float = 10.5,
             align: str = "center",
             color: str = "000000",
             italic: bool = False,
             field_name: str = "text",
         ):
-            nonlocal overlay_counter
-            overlay_counter += 1
             clean = html.escape(_text(text), quote=True)
             if not clean:
                 return None
@@ -1117,58 +1186,49 @@ def ensure_laf_poa_docx_companion(
             tag = html.escape(f"magi_laf_poa.{field_tag(field_name)}", quote=True)
             return parse_xml(
                 f"""
-                <w:pict {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml">
-                  <v:shape id="magi_laf_poa_overlay_{overlay_counter}" type="#_x0000_t202"
-                    style="position:absolute;margin-left:{x_pt:.2f}pt;margin-top:{y_pt:.2f}pt;width:{width_pt:.2f}pt;height:{height_pt:.2f}pt;z-index:251659265;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-wrap-style:none"
-                    stroked="f" filled="f">
-                    <v:textbox inset="0,0,0,0">
-                      <w:txbxContent>
-                        <w:p>
-                          <w:pPr>
-                            <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
-                            <w:jc w:val="{align}"/>
-                          </w:pPr>
-                          <w:sdt>
-                            <w:sdtPr>
-                              <w:alias w:val="{alias}"/>
-                              <w:tag w:val="{tag}"/>
-                              <w:text/>
-                            </w:sdtPr>
-                            <w:sdtContent>
-                              <w:r>
-                                <w:rPr>
-                                  <w:rFonts w:ascii="標楷體" w:eastAsia="標楷體" w:hAnsi="標楷體" w:cs="標楷體"/>
-                                  <w:color w:val="{color}"/>
-                                  <w:sz w:val="{size}"/>
-                                  {italic_xml}
-                                </w:rPr>
-                                {run_xml}
-                              </w:r>
-                            </w:sdtContent>
-                          </w:sdt>
-                        </w:p>
-                      </w:txbxContent>
-                    </v:textbox>
-                  </v:shape>
-                </w:pict>
+                <w:sdt {nsdecls("w")}>
+                  <w:sdtPr>
+                    <w:alias w:val="{alias}"/>
+                    <w:tag w:val="{tag}"/>
+                    <w:text/>
+                  </w:sdtPr>
+                  <w:sdtContent>
+                    <w:r>
+                      <w:rPr>
+                        <w:rFonts w:ascii="標楷體" w:eastAsia="標楷體" w:hAnsi="標楷體" w:cs="標楷體"/>
+                        <w:color w:val="{color}"/>
+                        <w:sz w:val="{size}"/>
+                        {italic_xml}
+                      </w:rPr>
+                      {run_xml}
+                    </w:r>
+                  </w:sdtContent>
+                </w:sdt>
                 """
             )
 
-        def add_overlay_textbox(paragraph, text: str, **kwargs) -> None:
-            element = _overlay_textbox_xml(text, **kwargs)
+        def add_overlay_textbox(host, text: str, **kwargs) -> None:
+            nonlocal overlay_counter
+            paragraph = _overlay_grid_paragraph(
+                host,
+                x_pt=float(kwargs.pop("x_pt")),
+                y_pt=float(kwargs.pop("y_pt")),
+                width_pt=float(kwargs.pop("width_pt")),
+                height_pt=float(kwargs.pop("height_pt")),
+                align=str(kwargs.get("align", "center")),
+            )
+            overlay_counter += 1
+            element = _inline_text_control_xml(text, **kwargs)
             if element is not None:
+                _append_overlay_marker(paragraph)
                 paragraph._p.append(element)
 
-        def _overlay_checkbox_xml(
+        def _inline_checkbox_control_xml(
             field_name: str,
             *,
-            x_pt: float,
-            y_pt: float,
             checked: bool = False,
             size_pt: float = 11,
         ):
-            nonlocal overlay_counter
-            overlay_counter += 1
             char = "☒" if checked else "☐"
             checked_value = "1" if checked else "0"
             size = max(1, int(round(size_pt * 2)))
@@ -1176,44 +1236,43 @@ def ensure_laf_poa_docx_companion(
             tag = html.escape(f"magi_laf_poa.{field_tag(field_name)}", quote=True)
             return parse_xml(
                 f"""
-                <w:pict {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
-                  <v:shape id="magi_laf_poa_overlay_{overlay_counter}" type="#_x0000_t202"
-                    style="position:absolute;margin-left:{x_pt:.2f}pt;margin-top:{y_pt:.2f}pt;width:15.00pt;height:15.00pt;z-index:251659265;mso-position-horizontal-relative:page;mso-position-vertical-relative:page;mso-wrap-style:none"
-                    stroked="f" filled="f">
-                    <v:textbox inset="0,0,0,0">
-                      <w:txbxContent>
-                        <w:p>
-                          <w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>
-                          <w:sdt>
-                            <w:sdtPr>
-                              <w:alias w:val="{alias}"/>
-                              <w:tag w:val="{tag}"/>
-                              <w14:checkbox>
-                                <w14:checked w14:val="{checked_value}"/>
-                                <w14:checkedState w14:val="2612" w14:font="MS Gothic"/>
-                                <w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>
-                              </w14:checkbox>
-                            </w:sdtPr>
-                            <w:sdtContent>
-                              <w:r>
-                                <w:rPr>
-                                  <w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/>
-                                  <w:sz w:val="{size}"/>
-                                </w:rPr>
-                                <w:t>{char}</w:t>
-                              </w:r>
-                            </w:sdtContent>
-                          </w:sdt>
-                        </w:p>
-                      </w:txbxContent>
-                    </v:textbox>
-                  </v:shape>
-                </w:pict>
+                <w:sdt {nsdecls("w")} xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+                  <w:sdtPr>
+                    <w:alias w:val="{alias}"/>
+                    <w:tag w:val="{tag}"/>
+                    <w14:checkbox>
+                      <w14:checked w14:val="{checked_value}"/>
+                      <w14:checkedState w14:val="2612" w14:font="MS Gothic"/>
+                      <w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>
+                    </w14:checkbox>
+                  </w:sdtPr>
+                  <w:sdtContent>
+                    <w:r>
+                      <w:rPr>
+                        <w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/>
+                        <w:sz w:val="{size}"/>
+                      </w:rPr>
+                      <w:t>{char}</w:t>
+                    </w:r>
+                  </w:sdtContent>
+                </w:sdt>
                 """
             )
 
-        def add_overlay_checkbox(paragraph, field_name: str, **kwargs) -> None:
-            paragraph._p.append(_overlay_checkbox_xml(field_name, **kwargs))
+        def add_overlay_checkbox(host, field_name: str, **kwargs) -> None:
+            nonlocal overlay_counter
+            size_pt = float(kwargs.get("size_pt", 11))
+            paragraph = _overlay_grid_paragraph(
+                host,
+                x_pt=float(kwargs.pop("x_pt")),
+                y_pt=float(kwargs.pop("y_pt")),
+                width_pt=size_pt,
+                height_pt=size_pt,
+                align="center",
+            )
+            overlay_counter += 1
+            _append_overlay_marker(paragraph)
+            paragraph._p.append(_inline_checkbox_control_xml(field_name, **kwargs))
 
         def _value_or_placeholder(value: str, placeholder: str, fill_values: bool) -> tuple[str, bool]:
             if fill_values and _text(value):
@@ -1454,6 +1513,299 @@ def ensure_laf_poa_docx_companion(
                     width_pt=32,
                     height_pt=18,
                     font_pt=11,
+                    color="666666" if placeholder else "000000",
+                    italic=placeholder,
+                )
+
+        def add_laf_foundation_overlay_fields(paragraph, values: dict[str, str], *, fill_values: bool) -> None:
+            """Place controls for the current LAF foundation official POA layout."""
+
+            case_type = _text(values.get("CASE_TYPE", ""))
+            role_marks = _text(values.get("ROLE_MARKS", ""))
+            stage_marks = _text(values.get("STAGE_MARKS", ""))
+            court_line_source = _text(values.get("COURT_LINE", ""))
+
+            add_overlay_checkbox(
+                paragraph,
+                "case_type_civil",
+                x_pt=67,
+                y_pt=51,
+                checked=not any(key in case_type for key in ("刑", "行政", "訴願")),
+            )
+            add_overlay_checkbox(paragraph, "case_type_criminal", x_pt=67, y_pt=67, checked="刑" in case_type)
+            add_overlay_checkbox(
+                paragraph,
+                "case_type_administrative",
+                x_pt=67,
+                y_pt=83,
+                checked="行政" in case_type and "訴願" not in case_type,
+            )
+            add_overlay_checkbox(paragraph, "case_type_petition", x_pt=67, y_pt=99, checked="訴願" in case_type)
+
+            laf_case_number, laf_case_placeholder = _value_or_placeholder(
+                values.get("LAF_CASE_NUMBER", ""),
+                "請填法扶案號",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                laf_case_number,
+                field_name="laf_case_number",
+                x_pt=365,
+                y_pt=66,
+                width_pt=120,
+                height_pt=14,
+                font_pt=9,
+                align="left",
+                color="666666" if laf_case_placeholder else "000000",
+                italic=laf_case_placeholder,
+            )
+
+            court_case_number, court_case_placeholder = _value_or_placeholder(
+                values.get("COURT_CASE_NUMBER", ""),
+                "請填法院案號",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                court_case_number,
+                field_name="court_case_number",
+                x_pt=350,
+                y_pt=84,
+                width_pt=190,
+                height_pt=15,
+                font_pt=8.5,
+                color="666666" if court_case_placeholder else "000000",
+                italic=court_case_placeholder,
+            )
+
+            client_name, client_placeholder = _value_or_placeholder(
+                values.get("CLIENT_NAME", ""),
+                "請填當事人",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                client_name,
+                field_name="client_name",
+                x_pt=220,
+                y_pt=140,
+                width_pt=110,
+                height_pt=17,
+                font_pt=10.5,
+                color="666666" if client_placeholder else "000000",
+                italic=client_placeholder,
+            )
+
+            birthday, birthday_placeholder = _value_or_placeholder(
+                values.get("CLIENT_BIRTHDAY", ""),
+                "請填生日",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                birthday,
+                field_name="client_birthday",
+                x_pt=210,
+                y_pt=161,
+                width_pt=126,
+                height_pt=17,
+                font_pt=10,
+                color="666666" if birthday_placeholder else "000000",
+                italic=birthday_placeholder,
+            )
+
+            client_id, client_id_placeholder = _value_or_placeholder(
+                values.get("CLIENT_ID", ""),
+                "請填身分證",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                client_id,
+                field_name="client_id",
+                x_pt=215,
+                y_pt=184,
+                width_pt=126,
+                height_pt=17,
+                font_pt=10,
+                color="666666" if client_id_placeholder else "000000",
+                italic=client_id_placeholder,
+            )
+
+            lawyer_name, lawyer_placeholder = _value_or_placeholder(
+                values.get("LAWYER_NAME", ""),
+                "請填律師姓名",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                lawyer_name,
+                field_name="lawyer_name",
+                x_pt=425,
+                y_pt=182,
+                width_pt=110,
+                height_pt=18,
+                font_pt=10.5,
+                color="666666" if lawyer_placeholder else "000000",
+                italic=lawyer_placeholder,
+            )
+
+            address_phone, address_phone_placeholder = _value_or_placeholder(
+                values.get("CLIENT_ADDRESS_PHONE", ""),
+                "請填地址電話",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                address_phone,
+                field_name="client_address_phone",
+                x_pt=150,
+                y_pt=210,
+                width_pt=178,
+                height_pt=48,
+                font_pt=8.5,
+                align="left",
+                color="666666" if address_phone_placeholder else "000000",
+                italic=address_phone_placeholder,
+            )
+
+            address_parts = []
+            if _text(values.get("LAW_FIRM_ADDRESS_LINE", "")):
+                address_parts.append(_text(values["LAW_FIRM_ADDRESS_LINE"]))
+            if _text(values.get("LAW_FIRM_PHONE", "")):
+                address_parts.append(f"電話：{_text(values['LAW_FIRM_PHONE'])}")
+            firm_text, firm_placeholder = _value_or_placeholder(
+                "\n".join(address_parts),
+                "請填事務所地址\n請填電話",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                firm_text,
+                field_name="law_firm_contact",
+                x_pt=375,
+                y_pt=292,
+                width_pt=170,
+                height_pt=64,
+                font_pt=8.5,
+                align="left",
+                color="666666" if firm_placeholder else "000000",
+                italic=firm_placeholder,
+            )
+
+            case_reason, case_reason_placeholder = _value_or_placeholder(
+                values.get("CASE_REASON", ""),
+                "請填案由",
+                fill_values,
+            )
+            add_overlay_textbox(
+                paragraph,
+                case_reason,
+                field_name="case_reason",
+                x_pt=83,
+                y_pt=405,
+                width_pt=280,
+                height_pt=18,
+                font_pt=10.5,
+                align="left",
+                color="666666" if case_reason_placeholder else "000000",
+                italic=case_reason_placeholder,
+            )
+
+            add_overlay_checkbox(paragraph, "stage_first", x_pt=62, y_pt=473, checked="■第 一 審" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_investigation", x_pt=62, y_pt=487, checked="■偵" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_second", x_pt=62, y_pt=501, checked="■第 二 審" in stage_marks)
+            add_overlay_checkbox(paragraph, "stage_third", x_pt=62, y_pt=515, checked="■第 三 審" in stage_marks)
+
+            add_overlay_checkbox(paragraph, "role_agent", x_pt=156, y_pt=466, checked="■代 理 人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_complainant_agent", x_pt=156, y_pt=480, checked="■告訴代理人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_defender", x_pt=156, y_pt=494, checked="■辯 護 人" in role_marks)
+            add_overlay_checkbox(paragraph, "role_assistant", x_pt=156, y_pt=508, checked="■輔 佐 人" in role_marks)
+
+            add_overlay_checkbox(paragraph, "right_settlement_yes", x_pt=256, y_pt=454, checked=False)
+            add_overlay_checkbox(paragraph, "right_settlement_no", x_pt=286, y_pt=454, checked=False)
+            add_overlay_checkbox(paragraph, "right_execution_yes", x_pt=256, y_pt=498, checked=False)
+            add_overlay_checkbox(paragraph, "right_execution_no", x_pt=286, y_pt=498, checked=False)
+
+            court_name = ""
+            court_line = court_line_source
+            for mark in ("■", "□", "法 院", "檢察署", "轉呈", "委員會"):
+                court_line = court_line.replace(mark, " ")
+            court_name = re.sub(r"\s+", "", court_line).strip() or _text(values.get("COURT_NAME", ""))
+            court_text, court_placeholder = _value_or_placeholder(
+                court_name,
+                "請填法院/檢署/委員會",
+                fill_values,
+            )
+            if "檢" in court_line_source:
+                court_y = 607
+            elif "委員會" in court_line_source:
+                court_y = 637
+            else:
+                court_y = 577
+            add_overlay_checkbox(paragraph, "court_kind_court", x_pt=62, y_pt=578, checked="■" in court_line_source and "法院" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_prosecutor", x_pt=62, y_pt=608, checked="■" in court_line_source and "檢" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_transfer", x_pt=370, y_pt=608, checked="■轉呈" in court_line_source)
+            add_overlay_checkbox(paragraph, "court_kind_committee", x_pt=62, y_pt=638, checked="■" in court_line_source and "委員會" in court_line_source)
+            add_overlay_textbox(
+                paragraph,
+                court_text,
+                field_name="court_name",
+                x_pt=78,
+                y_pt=court_y,
+                width_pt=118,
+                height_pt=18,
+                font_pt=10.5,
+                align="left",
+                color="666666" if court_placeholder else "000000",
+                italic=court_placeholder,
+            )
+
+            signer_client, signer_client_placeholder = _value_or_placeholder(values.get("CLIENT_NAME", ""), "請填委任人", fill_values)
+            signer_lawyer, signer_lawyer_placeholder = _value_or_placeholder(values.get("LAWYER_NAME", ""), "請填受任人", fill_values)
+            add_overlay_textbox(
+                paragraph,
+                signer_client,
+                field_name="client_signature_name",
+                x_pt=340,
+                y_pt=684,
+                width_pt=110,
+                height_pt=18,
+                font_pt=10,
+                color="666666" if signer_client_placeholder else "000000",
+                italic=signer_client_placeholder,
+            )
+            add_overlay_textbox(
+                paragraph,
+                signer_lawyer,
+                field_name="lawyer_signature_name",
+                x_pt=340,
+                y_pt=718,
+                width_pt=110,
+                height_pt=18,
+                font_pt=10,
+                color="666666" if signer_lawyer_placeholder else "000000",
+                italic=signer_lawyer_placeholder,
+            )
+
+            year, year_placeholder = _value_or_placeholder(values.get("ROC_YEAR", ""), "年", fill_values)
+            month, month_placeholder = _value_or_placeholder(values.get("ROC_MONTH", ""), "月", fill_values)
+            day, day_placeholder = _value_or_placeholder(values.get("ROC_DAY", ""), "日", fill_values)
+            for text, field_name, x_pt, placeholder in (
+                (year, "roc_year", 350, year_placeholder),
+                (month, "roc_month", 410, month_placeholder),
+                (day, "roc_day", 470, day_placeholder),
+            ):
+                add_overlay_textbox(
+                    paragraph,
+                    text,
+                    field_name=field_name,
+                    x_pt=x_pt,
+                    y_pt=786,
+                    width_pt=42,
+                    height_pt=18,
+                    font_pt=10.5,
                     color="666666" if placeholder else "000000",
                     italic=placeholder,
                 )
@@ -1714,7 +2066,7 @@ def ensure_laf_poa_docx_companion(
             section.header_distance = Mm(0)
             section.footer_distance = Mm(0)
 
-            rows, cols = 28, 8
+            rows, cols = 84, 60
             table = doc.add_table(rows=rows, cols=cols)
             table.alignment = WD_TABLE_ALIGNMENT.LEFT
             table.autofit = False
@@ -1722,6 +2074,7 @@ def ensure_laf_poa_docx_companion(
 
             col_width = width_pt / cols
             row_height = max(1.0, (height_pt - 2.0) / rows)
+            set_table_fixed_geometry(table, width_pt, col_width, cols)
             for row in table.rows:
                 row.height = Pt(row_height)
                 row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
@@ -1740,10 +2093,19 @@ def ensure_laf_poa_docx_companion(
             )
             inline_to_page_background(inline_shape._inline, width_pt, height_pt)
             if overlay_values is not None:
+                overlay_host = {
+                    "table": table,
+                    "rows": rows,
+                    "cols": cols,
+                    "row_height": row_height,
+                    "col_width": col_width,
+                }
                 if poa_layout == "criminal":
-                    add_criminal_overlay_fields(paragraph, overlay_values, fill_values=fill_values)
+                    add_criminal_overlay_fields(overlay_host, overlay_values, fill_values=fill_values)
+                elif poa_layout == "laf_foundation":
+                    add_laf_foundation_overlay_fields(overlay_host, overlay_values, fill_values=fill_values)
                 else:
-                    add_fillable_overlay_fields(paragraph, overlay_values, fill_values=fill_values)
+                    add_fillable_overlay_fields(overlay_host, overlay_values, fill_values=fill_values)
 
         def build_template_document(*, fill_values: bool) -> tuple[Any, int]:
             doc = Document()

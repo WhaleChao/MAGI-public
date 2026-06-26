@@ -247,6 +247,59 @@ def test_laf_poa_pdf_creates_fillable_word_companion(tmp_path):
     assert second["status"] == "exists"
 
 
+def test_laf_foundation_poa_layout_adds_all_current_form_controls(tmp_path):
+    from api.laf_poa_docx import ensure_laf_poa_docx_companion, laf_poa_docx_path, laf_poa_template_docx_path
+
+    pdf = tmp_path / "委任狀_1150612-E-020_1150617.pdf"
+    _make_pdf(
+        pdf,
+        "\n".join(
+            [
+                "財團法人法律扶助基金會專用委任狀",
+                "本會申請編號：1150612-E-020",
+                "案號： 年度 字第 號 股",
+                "姓名",
+                "陳弘穎",
+                "出生年月日",
+                "64年10月14日",
+                "P120465804",
+                "本事件經本會 花蓮分會 審核准予扶助，請逕致電分會(03-8222128)。",
+            ]
+        ),
+    )
+
+    result = ensure_laf_poa_docx_companion(
+        pdf,
+        case_metadata={
+            "poa_layout": "laf_foundation",
+            "case_type": "消費者債務清理",
+            "case_reason": "更生",
+            "court_name": "臺灣花蓮地方法院",
+            "client_address_phone": "花蓮市測試路1號；03-0000000",
+            "poa_lawyer_name": "喬政翔律師",
+        },
+    )
+    xml = _docx_xml(laf_poa_docx_path(pdf))
+
+    assert result["ok"] is True
+    assert result["filled_fields"]["poa_layout"] == "laf_foundation"
+    assert not laf_poa_template_docx_path(pdf).exists()
+    for field in (
+        "case_type_civil",
+        "case_type_criminal",
+        "case_type_administrative",
+        "case_type_petition",
+        "right_settlement_yes",
+        "right_settlement_no",
+        "right_execution_yes",
+        "right_execution_no",
+        "client_signature_name",
+        "lawyer_signature_name",
+    ):
+        assert f"magi_laf_poa.{field}" in xml
+    assert xml.count("<w14:checkbox>") == 20
+
+
 def test_laf_poa_existing_static_companion_is_rebuilt_for_exact_layout(tmp_path):
     import os
 

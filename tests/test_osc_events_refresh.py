@@ -269,6 +269,15 @@ def test_calendar_gap_drive_remediation_respects_skip_drive_sync():
     assert out == {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
 
 
+def test_calendar_gap_drive_remediation_respects_calendar_only():
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=False, calendar_only=True),
+    )
+
+    assert out == {"ok": True, "skipped": True, "reason": "calendar_only"}
+
+
 def test_calendar_gap_drive_remediation_has_hard_timeout(monkeypatch):
     class FakeDriveSync:
         @staticmethod
