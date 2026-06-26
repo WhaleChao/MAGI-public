@@ -83,6 +83,7 @@ if not _STARTUP_HOOKS_DISABLED:
 
 from api.hooks import HookBus
 from api.permissions import (
+    PermissionDecision,
     PermissionEnforcer,
     PermissionMode,
     PermissionPolicy,
@@ -1149,9 +1150,22 @@ def _external_osc_chat_inner():
             r"\s*[:：,，、。!！?？\-–—]*\s*",
             re.IGNORECASE,
         )
+        magi_prefix_re = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+        heavy_word_prefix_re = re.compile(
+            r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
 
         def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
             text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            magi_match = magi_prefix_re.match(text_inner)
+            if magi_match:
+                rest = text_inner[magi_match.end():]
+                heavy_after_magi = heavy_word_prefix_re.match(rest)
+                if heavy_after_magi:
+                    cleaned = rest[heavy_after_magi.end():].strip()
+                    return True, f"@MAGI {cleaned}".strip()
             match = fallback_re.match(text_inner)
             return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
 
@@ -1689,6 +1703,7 @@ def api_fetch():
 
 # ============== MELCHIOR (視覺分析) ==============
 @app.route('/vision', methods=['POST'])
+@require_api_key
 def api_vision():
     """Melchior vision analysis endpoint."""
     data = request.get_json() or {}
@@ -1700,7 +1715,8 @@ def api_vision():
         return jsonify({"error": "Missing 'image_path' parameter"}), 400
 
     if not os.path.exists(image_path):
-        return jsonify({"error": f"Image not found: {image_path}"}), 404
+        logging.getLogger(__name__).warning("vision image not found: %s", image_path)
+        return jsonify({"error": "image_not_found"}), 404
 
     started = _start_tool_event(
         "vision",
@@ -2626,6 +2642,24 @@ def _run_skill_from_payload(data: dict, *, user_id: str = "api"):
     )
     if not allowed:
         return _tool_denied_response(tool_name, started, decision, {"route": "skills_run"})
+    try:
+        from api.routing.route_policy import direct_skill_run_denial_reason
+
+        route_policy_reason = direct_skill_run_denial_reason(skill)
+    except Exception as exc:
+        logger.warning("skills/run route policy probe failed for %s: %s", skill, exc)
+        route_policy_reason = "route_policy_unavailable"
+    if route_policy_reason:
+        policy_decision = PermissionDecision(
+            allowed=False,
+            reason=f"route_policy_denied:{route_policy_reason}",
+            mode=PermissionMode.PERMISSIVE,
+            subject_kind="command",
+            subject=tool_name,
+            matched_rule="route_policy.skills_run",
+            details=(f"skill={skill}",),
+        )
+        return _tool_denied_response(tool_name, started, policy_decision, {"route": "skills_run", "policy": "route_policy"})
 
     # ── Async path ────────────────────────────────────────────────────────────
     if async_mode:
@@ -2746,6 +2780,7 @@ def api_get_job(job_id: str):
 
 
 @app.route('/skills/versions', methods=['POST'])
+@require_api_key
 def api_skill_versions():
     """List available snapshots for a skill."""
     from skills.evolution.skill_genesis import list_skill_versions
@@ -2758,6 +2793,7 @@ def api_skill_versions():
 
 
 @app.route('/skills/rollback', methods=['POST'])
+@require_api_key
 def api_skill_rollback():
     """Rollback skill files to a previous snapshot."""
     from skills.evolution.skill_genesis import rollback_skill_version
@@ -2771,6 +2807,7 @@ def api_skill_rollback():
 
 
 @app.route('/skills/release', methods=['GET'])
+@require_api_key
 def api_skill_release_state():
     """Get stable/canary release state."""
     from skills.evolution.skill_genesis import get_skill_release_state
@@ -2782,6 +2819,7 @@ def api_skill_release_state():
 
 
 @app.route('/skills/stable', methods=['POST'])
+@require_api_key
 def api_skill_set_stable():
     """Mark a stable version for a skill."""
     from skills.evolution.skill_genesis import set_stable_skill_version
@@ -2796,6 +2834,7 @@ def api_skill_set_stable():
 
 
 @app.route('/skills/canary/start', methods=['POST'])
+@require_api_key
 def api_skill_canary_start():
     """Start canary release for a specific version."""
     from skills.evolution.skill_genesis import start_canary_release
@@ -2828,6 +2867,7 @@ def api_skill_canary_start():
 
 
 @app.route('/skills/canary/stop', methods=['POST'])
+@require_api_key
 def api_skill_canary_stop():
     """Stop canary release for a skill."""
     from skills.evolution.skill_genesis import stop_canary_release
@@ -2841,6 +2881,7 @@ def api_skill_canary_stop():
 
 
 @app.route('/skills/ci', methods=['POST'])
+@require_api_key
 def api_skill_ci():
     """Run skill CI checks (safety/compile/smoke)."""
     from skills.evolution.skill_genesis import run_skill_ci
@@ -2855,6 +2896,7 @@ def api_skill_ci():
 
 
 @app.route('/skills/events', methods=['GET'])
+@require_api_key
 def api_skill_events():
     """Get skill runtime event summary."""
     from skills.evolution.skill_genesis import get_skill_runtime_stats
@@ -2864,6 +2906,7 @@ def api_skill_events():
 
 
 @app.route('/skills/teach', methods=['POST'])
+@require_api_key
 def api_skill_teach():
     """Teach CASPER a new tip/lesson."""
     from skills.management.auto_skill import AutoSkill
@@ -2883,6 +2926,7 @@ def api_skill_teach():
 
 
 @app.route('/skills/teach/file', methods=['POST'])
+@require_api_key
 def api_skill_teach_file():
     """Teach CASPER from a text/code file."""
     from skills.management.auto_skill import AutoSkill
@@ -2899,6 +2943,7 @@ def api_skill_teach_file():
 
 
 @app.route('/skills/internalize', methods=['POST'])
+@require_api_key
 def api_skill_internalize():
     """Internalize learned knowledge as a runnable skill."""
     from skills.management.auto_skill import AutoSkill
@@ -2920,6 +2965,7 @@ def api_skill_internalize():
 
 
 @app.route('/skills/internalize/codebase', methods=['POST'])
+@require_api_key
 def api_skill_internalize_codebase():
     """Convert codebase Python modules into wrapper skills with incremental index."""
     from skills.management.auto_skill import AutoSkill
@@ -2947,6 +2993,7 @@ def api_skill_internalize_codebase():
 
 
 @app.route('/skills/import/toolsai-auto-skill', methods=['POST'])
+@require_api_key
 def api_import_toolsai_auto_skill():
     """Import knowledge and experience from Toolsai/auto-skill repository."""
     from skills.management.auto_skill import AutoSkill
@@ -2965,6 +3012,7 @@ def api_import_toolsai_auto_skill():
 
 # ============== Iron Dome Dynamic Rules ==============
 @app.route('/iron-dome/patterns', methods=['GET'])
+@require_api_key
 def api_iron_dome_patterns_list():
     """List Iron Dome dynamic patterns."""
     from skills.evolution.skill_genesis import list_iron_dome_patterns
@@ -2980,6 +3028,7 @@ def api_iron_dome_patterns_list():
 
 
 @app.route('/iron-dome/patterns', methods=['POST'])
+@require_api_key
 def api_iron_dome_patterns_add():
     """Add or update an Iron Dome dynamic pattern."""
     from skills.evolution.skill_genesis import add_iron_dome_pattern
@@ -2995,6 +3044,7 @@ def api_iron_dome_patterns_add():
 
 
 @app.route('/iron-dome/auto-harden', methods=['POST'])
+@require_api_key
 def api_iron_dome_auto_harden():
     """Auto-harden Iron Dome scope from an incident text."""
     from skills.evolution.skill_genesis import auto_harden_iron_dome_scope
@@ -3009,6 +3059,7 @@ def api_iron_dome_auto_harden():
 
 
 @app.route('/skills/knowledge/stats', methods=['GET'])
+@require_api_key
 def api_skill_knowledge_stats():
     """Get AutoSkill knowledge base stats."""
     from skills.management.auto_skill import AutoSkill
@@ -3017,6 +3068,7 @@ def api_skill_knowledge_stats():
 
 
 @app.route('/code/autofix', methods=['POST'])
+@require_api_key
 def api_code_autofix():
     """Run autonomous code auto-fix loop for allowed paths."""
     from skills.management.code_autofix import autofix_codebase
@@ -3043,6 +3095,7 @@ def api_code_autofix():
 
 
 @app.route('/code/skill-cycle', methods=['POST'])
+@require_api_key
 def api_code_skill_cycle():
     """Run full automation cycle: code auto-fix + code-to-skill internalization."""
     from scripts.code_skill_cycle import run_cycle
@@ -3209,6 +3262,7 @@ def api_collab_transcribe():
 
 
 @app.route('/council/core/pending', methods=['GET'])
+@require_api_key
 def api_council_core_pending():
     """List pending core-change approvals raised by nightly council."""
     from skills.magi.council_approval import list_pending_core_changes
@@ -3219,6 +3273,7 @@ def api_council_core_pending():
 
 
 @app.route('/council/core/approve', methods=['POST'])
+@require_api_key
 def api_council_core_approve():
     """Approve a pending core change by approval id."""
     from skills.magi.council_approval import resolve_core_change
@@ -3234,6 +3289,7 @@ def api_council_core_approve():
 
 
 @app.route('/council/core/reject', methods=['POST'])
+@require_api_key
 def api_council_core_reject():
     """Reject a pending core change by approval id."""
     from skills.magi.council_approval import resolve_core_change
@@ -3445,6 +3501,7 @@ def api_laf_smoke_login():
 
 # ============== Audit Log (Iron Dome) ==============
 @app.route('/api/audit_log', methods=['GET'])
+@require_api_key
 def api_list_audit_log():
     """List recent audit log entries for one-click restore UI."""
     from datetime import datetime, timedelta
@@ -3498,6 +3555,7 @@ def api_list_audit_log():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/audit_log/restore/<int:log_id>', methods=['POST'])
+@require_api_key
 def api_restore_from_audit(log_id):
     """Restore data from audit log snapshot (one-click restore)."""
     from api.db_helper import get_cursor

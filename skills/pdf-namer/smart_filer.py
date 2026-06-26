@@ -139,7 +139,8 @@ DOC_TYPE_TO_SUBFOLDER = {
     "傳票":     "法院通知或程序裁定",
     # ── 檢察機關 ──
     "起訴書":   "法院通知或程序裁定",
-    "不起訴處分書": "法院通知或程序裁定",
+    "不起訴處分書": JUDGMENT_FOLDER_LABEL,
+    "緩起訴處分書": JUDGMENT_FOLDER_LABEL,
     "聲請簡易判決處刑書": "法院通知或程序裁定",
     # ── 書狀 ──
     "書狀_我方": "我方歷次書狀",
@@ -184,6 +185,42 @@ DOC_TYPE_TO_SUBFOLDER = {
     "信件":     "回執",
     "契約":     "回執",
 }
+
+_TERMINAL_RULING_MARKERS = (
+    "終局裁定",
+    "免責裁定",
+    "不免責裁定",
+    "復權裁定",
+    "清算程序終結",
+    "清算程序終止",
+    "更生之聲請駁回",
+    "更生聲請駁回",
+    "清算之聲請駁回",
+    "清算聲請駁回",
+    "聲請駁回裁定",
+    "抗告駁回裁定",
+    "上訴駁回裁定",
+)
+
+_TERMINAL_DISPOSITION_MARKERS = (
+    "不起訴處分",
+    "緩起訴處分",
+    "再議駁回處分",
+    "撤銷緩起訴處分",
+)
+
+
+def _doc_type_targets_judgment_folder(doc_type: str) -> bool:
+    compact = re.sub(r"\s+", "", str(doc_type or ""))
+    if not compact:
+        return False
+    if "判決" in compact:
+        return True
+    if any(marker in compact for marker in _TERMINAL_RULING_MARKERS):
+        return True
+    if any(marker in compact for marker in _TERMINAL_DISPOSITION_MARKERS):
+        return True
+    return False
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -518,8 +555,13 @@ def _find_subfolder(case: Dict, doc_type: str) -> str:
     """
     target_keyword = ""
 
+    # Terminal judgments/rulings/dispositions override stale DB rules that used
+    # to send every 裁定/處分 into the procedural notice folder.
+    if _doc_type_targets_judgment_folder(doc_type):
+        target_keyword = JUDGMENT_FOLDER_LABEL
+
     # Tier 1: Look up archive_destination_type from MariaDB doc_rules
-    if doc_type:
+    if doc_type and not target_keyword:
         try:
             from training_loader import get_template_for_doc_type
             rule = get_template_for_doc_type(doc_type)

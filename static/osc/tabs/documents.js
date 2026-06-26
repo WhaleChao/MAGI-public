@@ -1859,10 +1859,16 @@ async function executeArchiveMove() {
     if (!await showConfirm("MAGI說", `確定搬移 ${picks.length} 筆已結案案件？\n\nMAGI 會排入背景任務，不會卡住網頁。`)) return;
     const summaryEl = document.getElementById("archiveSummary");
     if (summaryEl) summaryEl.textContent = `結案搬移已排入背景：${picks.length} 筆`;
-    const data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force, max_items: picks.length, background: true });
+    let data;
+    try {
+        data = await api("/api/osc/archive-wizard/execute", "POST", { confirm: true, case_ids: picks, force, max_items: picks.length, background: true });
+    } catch (e) {
+        data = (e && e.payload) || { ok: false, error: e.message || e };
+    }
     const s = data.summary || {};
     const jobs = data.jobs || [];
-    showAlert("MAGI說", `結案搬移已排入背景任務。\n\n已排入：${s.queued || jobs.length || 0}\n找不到案件：${s.errors || 0}\n\n完成後案件路徑會自動更新，列表也會重新整理。`);
+    const errorLines = (data.errors || []).map(x => `${x.id || x.case_number || "-"}：${x.error || x.reason || "未知"}`).slice(0, 5);
+    showAlert("MAGI說", `結案搬移已排入背景任務。\n\n已排入：${s.queued || jobs.length || 0}\n錯誤：${s.errors || errorLines.length || 0}${errorLines.length ? "\n\n" + errorLines.join("\n") : ""}\n\n完成後案件路徑會自動更新，列表也會重新整理。`);
     jobs.forEach(job => pollArchiveJob(job.id));
     await loadArchivePreview();
     await loadCases();

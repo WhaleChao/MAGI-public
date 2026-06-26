@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import shlex
 import subprocess
 import threading
@@ -172,16 +173,23 @@ def run(
             cwd=cwd,
             shell=False,               # 絕不 shell=True
             close_fds=True,
+            start_new_session=True,
         )
         try:
             out_b, err_b = proc.communicate(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.terminate()
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                proc.terminate()
             try:
                 out_b, err_b = proc.communicate(timeout=_SIGTERM_GRACE_SEC)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    proc.kill()
                 killed = True
                 out_b, err_b = proc.communicate(timeout=2.0)
         rc = proc.returncode if proc.returncode is not None else -1

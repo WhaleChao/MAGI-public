@@ -236,7 +236,7 @@ OSC 案件管理是私有版案件資料的核心。案件卡片與清單應至�
 
 - 進行中逾期案件應完整列出，不只顯示數字。
 - 使用者可回覆「案號/姓名 已回報」或相似語意。
-- MAGI 應將該案冷卻 60 天。
+- MAGI 應將該案冷卻 90 天。
 - 冷卻後應登上行事曆，提醒下一次回報。
 - 進度回報提醒可發到 DC；一般法扶巡檢不應誤發到 DC 業務頻道。
 
@@ -479,7 +479,7 @@ NAS 原則：
 - 系統通知：健康、排程、自我修復、磁碟、NAS。
 - 法扶一般：巡檢、缺檔、資料補填。
 - 法扶派案：新派案、開辦、派案附件。
-- 進度回報：逾期案件與 60 天冷卻提醒。
+- 進度回報：逾期案件與 90 天冷卻提醒。
 - 檔案通知：下載、歸檔、筆錄與閱卷。
 - 錯誤通知：需人工介入。
 
@@ -669,7 +669,7 @@ python3 scripts/public_release_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
 python3 scripts/ops/public_push_guard.py --remote public --profile public --json
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 常用路由：

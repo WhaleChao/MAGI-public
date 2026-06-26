@@ -11,6 +11,16 @@ class _MockOrch:
         self.notification_callback = None
 
 
+class _ImmediateThread:
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+
+    def start(self):
+        self.target(*self.args, **self.kwargs)
+
+
 # ── register_laf_progress_submit_pending ─────────────────────────────────
 
 def test_register_returns_6hex_token(tmp_path):
@@ -176,3 +186,38 @@ def test_no_hex_token_in_text_returns_none(tmp_path):
         orch, platform="discord", user_id="lawyer1", text="請幫我查一下案件進度"
     )
     assert result is None
+
+
+def test_progress_submit_pretty_json_failure_marks_pending_failed(monkeypatch, tmp_path):
+    from api.domains import laf_flow
+    from api.domains.laf_flow import (
+        register_laf_progress_submit_pending,
+        handle_laf_progress_submit_confirmation_if_any,
+        _load_progress_pending,
+        _progress_pending_file,
+    )
+
+    orch = _MockOrch(tmp_path)
+    token = register_laf_progress_submit_pending(
+        orch,
+        platform="discord",
+        requester_user_id="lawyer1",
+        payload={"laf_case_no": "1140806-J-005", "client_name": "測試人"},
+        result_data={},
+    )
+
+    class _Proc:
+        returncode = 0
+        stdout = json.dumps({"success": False, "error": "未偵測到法院端已送出"}, ensure_ascii=False, indent=2)
+        stderr = ""
+
+    monkeypatch.setattr(laf_flow.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(laf_flow.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    result = handle_laf_progress_submit_confirmation_if_any(
+        orch, platform="discord", user_id="lawyer1", text=f"確認 {token}"
+    )
+
+    assert result and result["handled"] is True
+    pending = _load_progress_pending(_progress_pending_file(orch))
+    assert pending[token]["status"] == "failed"

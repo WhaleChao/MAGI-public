@@ -333,7 +333,7 @@ def _send_discord_bot_message(
             fallback_channel_id=default_channel_id,
         )
         if routed_id == "__SILENT__":
-            return True  # 靜默：不發 DC
+            return False
         if routed_id:
             channel_id = routed_id
     except Exception:
@@ -415,7 +415,7 @@ def send_discord_bot_file(
             fallback_channel_id=default_channel_id,
         )
         if routed_id == "__SILENT__":
-            return True  # 靜默：不發 DC
+            return False
         if routed_id:
             channel_id = routed_id
     except Exception:
@@ -690,6 +690,35 @@ def _canonical_topic_key(key: str) -> str:
         "quiet-cron": "check",
     }
     return aliases.get(k, k)
+
+
+def _is_unknown_business_topic_key(key: str) -> bool:
+    k = str(key or "").strip().lower()
+    if not k:
+        return False
+    known = {
+        "general", "filereview", "filereview_payment", "filereview_download", "filereview_apply",
+        "transcript", "laf", "laf_general", "laf_dispatch", "laf_go_live", "laf_closing",
+        "laf_fee", "laf_inquiry", "laf_condition", "laf_progress", "judgment", "judicial_api",
+        "verbatim", "translation", "summary", "market", "check", "nightly", "alert",
+        "filing", "research_daily", "research_interpretation", "research_ethno",
+        "research_humanrights", "research_language", "research_eastasia",
+    }
+    if k in known:
+        return False
+    return k.startswith((
+        "laf_",
+        "filereview_",
+        "file_review_",
+        "research_",
+        "transcript_",
+        "verbatim_",
+        "summary_",
+        "translation_",
+        "judgment_",
+        "filing_",
+        "pdf_",
+    ))
 
 
 DEFAULT_TELEGRAM_FORUM_TOPICS: dict[str, str] = {
@@ -1031,6 +1060,8 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
     fb = _TG_TOPIC_FALLBACK.get(key, "")
     if fb and fb in tmap:
         return key, int(tmap[fb])
+    if _is_unknown_business_topic_key(key):
+        return key, None
     if "general" in tmap:
         return (key or "general"), int(tmap["general"])
     return key, None
@@ -1409,6 +1440,7 @@ def send_telegram_push_with_status(
             )
         return {
             "telegram": False,
+            "delivered": False,
             "acked": 0,
             "total": len(admin_ids),
             "queued": bool(queued_id),
@@ -1448,6 +1480,7 @@ def send_telegram_push_with_status(
             _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
             return {
                 "telegram": True,
+                "delivered": True,
                 "acked": len(last_status.get("acked") or []),
                 "total": int(last_status.get("total") or 0),
                 "queued": False,
@@ -1485,6 +1518,7 @@ def send_telegram_push_with_status(
     )
     return {
         "telegram": False,
+        "delivered": False,
         "acked": 0,
         "total": int(last_status.get("total") or len(admin_ids)),
         "queued": bool(queued_id),
@@ -1515,7 +1549,7 @@ def send_telegram_push(message: str) -> bool:
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] Deduplicated identical message (already sent today): %s", _preview_text(message))
-            return True
+            return False
         
         # 發送成功後才標記（在 send_telegram_push_with_status 內處理）
     except Exception as e:
@@ -1573,6 +1607,7 @@ def alert_admin(
             return {
                 "deduplicated": True,
                 "telegram": False,
+                "delivered": False,
                 "line": False,
                 "discord": False,
                 "telegram_ack": 0,
@@ -1656,6 +1691,7 @@ def alert_admin(
         "line": line_ok,
         "discord": discord_ok,
         "telegram": bool(status.get("telegram")),
+        "delivered": bool(status.get("telegram")) or bool(line_ok),
         "telegram_ack": int(status.get("acked") or 0),
         "telegram_total": int(status.get("total") or 0),
         "outbox_queued": bool(status.get("queued")),

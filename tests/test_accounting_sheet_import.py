@@ -223,6 +223,52 @@ def test_resolve_accounting_case_ref_returns_none_for_unknown_laf_no(monkeypatch
     assert resolve_accounting_case_ref("1150519-E-014") is None
 
 
+def test_import_rows_rolls_back_when_ledger_insert_fails(monkeypatch):
+    from api.osc.accounting_sheet_import import import_rows
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        normalized = " ".join(str(sql).split()).upper()
+        calls.append(normalized)
+        if normalized.startswith("SELECT FINGERPRINT"):
+            return None, {}
+        if normalized.startswith("SELECT ID FROM CASE_TRANSACTIONS"):
+            return None, {}
+        if normalized.startswith("INSERT INTO CASE_TRANSACTIONS"):
+            return {"lastrowid": 42}, {}
+        if normalized.startswith("INSERT INTO ACCOUNTING_IMPORT_RECORDS"):
+            raise RuntimeError("ledger failed")
+        return {}, {}
+
+    monkeypatch.setattr(
+        "api.osc.accounting_sheet_import._get_osc_helpers",
+        lambda: (fake_exec, lambda ref: ref),
+    )
+    monkeypatch.setattr("api.osc.accounting_sheet_import.fixed_expense_overlap_details", lambda row: None)
+    monkeypatch.setattr("api.osc.accounting_sheet_import.resolve_accounting_case_ref", lambda ref: None)
+    row = AccountingSheetRow(
+        source_row=2,
+        date="2026-05-01",
+        type="收入",
+        amount=1000,
+        category="委任費",
+        description="測試",
+        fingerprint="f" * 64,
+    )
+
+    try:
+        import_rows([row], month="2026-05", dry_run=False)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected ledger failure")
+
+    assert "START TRANSACTION" in calls
+    assert "ROLLBACK" in calls
+    assert "COMMIT" not in calls
+
+
 def test_fixed_expense_overlap_reports_amount_conflict(monkeypatch):
     def fake_helpers():
         def fake_exec(sql, params=(), fetch="none"):

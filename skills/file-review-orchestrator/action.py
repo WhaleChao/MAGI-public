@@ -209,10 +209,11 @@ def _safe_finalize_flow(flow_id: str, result: Dict[str, Any]) -> None:
             blockers.append("cancel_requested")
         elif result_key == "ready":
             flow_status = "blocked"
-            ok = True
+            ok = False
             blockers.append("manual_confirmation_required")
         elif bool(result.get("manual_required")):
             flow_status = "blocked"
+            ok = False
             blockers.append(str(result.get("manual_reason") or "manual_required").strip())
         elif status_key == "already_running":
             flow_status = "succeeded"
@@ -256,8 +257,8 @@ def _result_step_status(result: Dict[str, Any]) -> Tuple[str, bool]:
     if bool(result.get("cancelled")) or str(result.get("status") or "").strip().lower() == "cancelled":
         return "cancelled", False
     ok = bool(result.get("success", result.get("ok")))
-    if ok and str(result.get("result") or "").strip().lower() == "ready":
-        return "blocked", True
+    if str(result.get("result") or "").strip().lower() == "ready" or bool(result.get("manual_required")):
+        return "blocked", False
     if ok:
         return "succeeded", True
     return "failed", False
@@ -650,6 +651,13 @@ def _ok(payload: dict) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BrokenPipeError:
         pass
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            return 1
+        if payload.get("manual_required") or payload.get("blocked"):
+            return 1
+        if str(payload.get("result") or "").strip().lower() == "ready":
+            return 1
     return 0
 
 
@@ -2927,7 +2935,11 @@ def cmd_download_status(job_id: str = "") -> dict:
             st = _write_download_job(jid, {"running": False, "status": "stopped", "finished_at": datetime.now().isoformat()})
         else:
             st = _write_download_job(jid, {"running": False})
-    st["success"] = True
+    status_name = str(st.get("status") or "").strip().lower()
+    if status_name in {"failed", "stopped", "cancelled"} or st.get("success") is False:
+        st["success"] = False
+    else:
+        st["success"] = True
     return st
 
 

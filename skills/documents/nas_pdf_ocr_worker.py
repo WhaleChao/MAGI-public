@@ -51,6 +51,7 @@ _NAS_HOME_USER = (
 NAS_ROOT = os.environ.get("MAGI_NAS_CASE_ROOT", f"/Volumes/homes/{_NAS_HOME_USER}/01_案件")
 ARCHIVE_SUBDIR = "_Archive_No_OCR"
 NAS_OCR_QUEUE_LOCK_NAME = "nas_pdf_ocr_queue_worker"
+STALE_PROCESSING_MINUTES = int(os.environ.get("MAGI_NAS_OCR_STALE_MINUTES", "180") or "180")
 
 # OCR Tool Path
 OCRMYPDF_BIN = "/opt/homebrew/bin/ocrmypdf"
@@ -68,11 +69,25 @@ def acquire_nas_ocr_queue_lock(owner: str = "nas_pdf_ocr_worker"):
 def _empty_worker_counters():
     return {
         "processed": 0,
+        "stale_requeued": 0,
         "missing": 0,
         "skipped_digital": 0,
         "completed": 0,
         "failed": 0,
     }
+
+
+def _unique_path(path: str) -> str:
+    """Return a non-existing path by appending a timestamp suffix if needed."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    for _ in range(50):
+        candidate = f"{base}_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000000) % 1000000:06d}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        time.sleep(0.001)
+    return f"{base}_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}{ext}"
 
 
 def init_db():
@@ -205,6 +220,21 @@ def _run_worker_locked(batch_size=20, counters=None):
         
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    stale_minutes = max(1, int(STALE_PROCESSING_MINUTES))
+    c.execute(
+        f"""
+        UPDATE ocr_queue
+        SET status='failed',
+            error_msg=COALESCE(error_msg, '') || ' | stale processing requeued'
+        WHERE status='processing'
+          AND attempt_count < 3
+          AND (last_attempt IS NULL OR last_attempt < datetime('now', '-{stale_minutes} minutes'))
+        """
+    )
+    counters["stale_requeued"] += int(c.rowcount or 0)
+    if counters["stale_requeued"]:
+        logger.warning("Requeued %d stale processing OCR jobs", counters["stale_requeued"])
+        conn.commit()
     # Get pending items
     c.execute("""
         SELECT file_path FROM ocr_queue 
@@ -244,7 +274,7 @@ def _run_worker_locked(batch_size=20, counters=None):
             counters["skipped_digital"] += 1
             continue
             
-        out_path = pdf_path[:-4] + "_OCR.pdf"
+        out_path = _unique_path(pdf_path[:-4] + "_OCR.pdf")
         
         try:
             # Execute ocrmypdf
@@ -276,7 +306,7 @@ def _run_worker_locked(batch_size=20, counters=None):
                 os.makedirs(archive_dir, exist_ok=True)
                 
                 old_filename = os.path.basename(pdf_path)
-                archive_path = os.path.join(archive_dir, old_filename)
+                archive_path = _unique_path(os.path.join(archive_dir, old_filename))
                 
                 try:
                     os.rename(pdf_path, archive_path)

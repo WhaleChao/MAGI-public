@@ -917,13 +917,21 @@ def _start_cron_fallback() -> None:
                     result_stderr = str(_e)
                 result_success = (not result_timed_out) and int(result_returncode or 0) == 0
                 if result_returncode != 0:
+                    issue_suppressed = False
                     try:
                         if should_log_cron_issue(result_returncode, result_stdout or "", result_stderr or "") is False:
-                            result_success = True
+                            issue_suppressed = True
                     except Exception:
                         pass
-                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
-                                   job_id, result_returncode, (result_stderr or "")[:300])
+                    if issue_suppressed:
+                        logger.info(
+                            "ℹ️ [CronFallback] Shell job %s exited %d but issue logging was suppressed by policy",
+                            job_id,
+                            result_returncode,
+                        )
+                    else:
+                        logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
+                                       job_id, result_returncode, (result_stderr or "")[:300])
                 else:
                     logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
                 _record_result(

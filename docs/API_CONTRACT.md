@@ -730,7 +730,7 @@ Sync skills with MELCHIOR.
 ### Miscellaneous
 
 #### POST /laf/smoke_login
-LAF (Legal AI Framework) smoke test login.
+LAF (Legal Aid Foundation) portal smoke-test login.
 
 **Auth**: admin role
 **Rate Limit**: api (60 req/min)

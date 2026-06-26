@@ -87,6 +87,18 @@ def test_find_subfolder_accepts_legacy_judgment_folder_when_canonical_missing():
         assert _mod._find_subfolder(case, "判決") == "10_判決書"
 
 
+def test_find_subfolder_routes_terminal_rulings_and_dispositions_to_judgment_folder():
+    case = {"subfolders": ["09_法院通知或程序裁定", "10_判決書或終局裁定及處分"]}
+    stale_rule = SimpleNamespace(
+        get_template_for_doc_type=lambda _doc_type: {"archive_destination_type": "法院通知或程序裁定"}
+    )
+
+    with patch.dict(sys.modules, {"training_loader": stale_rule}):
+        assert _mod._find_subfolder(case, "免責裁定") == "10_判決書或終局裁定及處分"
+        assert _mod._find_subfolder(case, "不起訴處分書") == "10_判決書或終局裁定及處分"
+        assert _mod._find_subfolder(case, "裁定") == "09_法院通知或程序裁定"
+
+
 def test_build_case_index_normalizes_cached_legacy_judgment_folders(tmp_path, monkeypatch):
     cache = tmp_path / "_case_index.json"
     cache.write_text(

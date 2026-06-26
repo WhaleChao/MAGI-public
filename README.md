@@ -2,7 +2,7 @@
 
 [繁體中文版](README.zh-TW.md)
 
-MAGI v2 is a local-first, self-hostable legal operations platform for small legal teams. It keeps case operations, workflow automation, and model inference under the operator's control, combining a Flask control plane, 60+ modular skill runners, a three-philosopher ensemble inference pipeline, a ReAct agentic tool-call engine, scheduled workers, on-device LLM inference, and legal workflow automation in one repository.
+MAGI v2 is a local-first, self-hostable legal operations platform for small legal teams. It keeps case operations, workflow automation, and model inference under the operator's control, combining a Flask control plane, 48 documented user-facing skill runners, a three-philosopher ensemble inference pipeline, a ReAct agentic tool-call engine, scheduled workers, on-device LLM inference, and legal workflow automation in one repository.
 
 As of 2026-06-23, this public repository is the public-safe branch: installer, CLI, documentation, tests, and release gates are present, while private production runtime state, client/case material, credentials, local deployment notes, and private legal-source integrations must remain outside git. Private production deployments are expected to keep their operational data local and pass the same public-isolation audit before anything is published.
 
@@ -409,7 +409,7 @@ magi logs         # tail all logs
 
 NERV (`/dashboard/nerv` or `/nerv`) is the browser status page for production handoff, while `magi status` is the terminal status check. NAS status checks both `/Volumes/` and `~/.magi_mounts/` (Tailscale fallback path).
 
-**50+ scheduled cron jobs** (managed via `cron_jobs.json`, executed by the Discord Bot scheduler):
+**90 scheduled cron jobs (76 enabled)** (managed via `cron_jobs.json`, executed by the Discord Bot scheduler):
 
 | Category | Jobs |
 |----------|------|
@@ -436,7 +436,7 @@ NERV (`/dashboard/nerv` or `/nerv`) is the browser status page for production ha
 
 ## Skill Catalogue
 
-60+ skill runners under `skills/`, each with a standalone `action.py` entry point.
+48 user-facing skill runners are documented under `skills/`; internal, test, and developer-only runners are intentionally omitted from the public catalogue.
 
 ### Legal
 | Skill | Function |
@@ -633,7 +633,7 @@ Key environment variables (set in `.env`):
 | **Document parsing** | MarkItDown · pdftotext · fitz · pdfplumber · Tesseract · macOS Vision |
 | **OCR** | macOS Vision · RapidOCR · Tesseract · unified runtime `skills/engine/ocr/` (Vision + Tesseract consensus, SHA-256 image cache, legal-text corrector, feature-flagged) |
 | **API framework** | Flask · Flask-Login · Flask-SocketIO |
-| **Scheduling** | Internal CronScheduler in `discord_bot.py` (cron_jobs.json) |
+| **Scheduling** | Internal CronScheduler in `discord_bot.py` (`cron_jobs.json`: 90 definitions / 76 enabled) |
 | **Channels** | LINE Messaging API · Discord.py · python-telegram-bot |
 | **NAS** | SMB via LAN (MAGI_NAS_HOST) with Tailscale fallback (MAGI_NAS_TAILSCALE_HOST) |
 | **Calendar** | Google Calendar API (OAuth2, auto-refresh) |
@@ -671,11 +671,11 @@ MAGI_v2/
 │   ├── transcript-downloader/
 │   ├── pdf-namer/
 │   ├── market-briefing/        # Hedge fund committee (agents/, models/, predict/)
-│   └── … (60+ skills total)
+│   └── … (48 user-facing skills documented; internal/test runners omitted)
 ├── docs/
 │   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
 ├── tests/                      # pytest coverage used by run_test_suite gates
-├── cron_jobs.json              # Single source of truth for all scheduled jobs
+├── cron_jobs.json              # Single source of truth for scheduled jobs (90 definitions / 76 enabled)
 └── .env                        # Runtime configuration (not committed)
 ```
 
@@ -691,6 +691,7 @@ MAGI_v2/
 | `8081` | oMLX embed — ModernBERT-embed-4bit |
 | `8082` | oMLX text — Phi-4-mini-instruct (Melchior, day only) |
 | `8083` | oMLX text — SmolLM3-3B (Balthasar, day only) |
+| `5016` | OSC shell NAS helper (`/listdir`, `/stage`) |
 | `8088` | Website Admin panel |
 | `50052` | gRPC RPC Worker |
 

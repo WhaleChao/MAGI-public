@@ -1399,6 +1399,87 @@ def test_debt_auto_import_selected_docs_and_candidates(client, tmp_path, monkeyp
     assert body["max_bank"] == "測試銀行"
 
 
+def test_debt_auto_import_upload_uses_secure_temp_filename(client, monkeypatch):
+    import api.debt_document_generator as gen
+
+    seen = {}
+
+    def fake_auto_import_from_docs(asset_statement_path="", creditor_list_path=""):
+        seen["asset"] = asset_statement_path
+        seen["creditor"] = creditor_list_path
+        return {"asset_total": 1, "debt_total": 2}
+
+    monkeypatch.setattr(gen, "auto_import_from_docs", fake_auto_import_from_docs)
+    r = client.post(
+        "/api/osc/debt/auto-import",
+        data={"asset_doc": (BytesIO(b"not a real docx"), "../../escape.docx")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body["ok"] is True
+    assert seen["asset"]
+    assert Path(seen["asset"]).name.endswith("escape.docx")
+    assert ".." not in Path(seen["asset"]).name
+
+
+def test_file_manager_chunk_requires_base_path_on_every_chunk(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_CHUNK_TMP_DIR", tmp_path / "chunks")
+    r = client.post(
+        "/api/osc/files/upload-chunked",
+        data={
+            "session_id": "sessmissingbase",
+            "chunk_index": "0",
+            "total_chunks": "2",
+            "filename": "large.pdf",
+            "chunk": (BytesIO(b"abc"), "large.pdf.part0"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 404
+    assert r.get_json()["error"] == "base_not_found_or_not_allowed"
+
+
+def test_file_manager_chunk_rejects_oversize_before_finalize(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    base = tmp_path / "fm-root"
+    base.mkdir()
+    monkeypatch.setenv("PAPERCLIP_FILEMANAGER_TEST_BASE", str(base))
+    monkeypatch.setattr(mod, "_CHUNK_TMP_DIR", tmp_path / "chunks")
+    monkeypatch.setattr(mod, "_MAX_UPLOAD_BYTES_PER_FILE", 5)
+    r = client.post(
+        "/api/osc/files/upload-chunked",
+        data={
+            "session_id": "sessoversize",
+            "chunk_index": "0",
+            "total_chunks": "2",
+            "filename": "large.pdf",
+            "base_path": str(base),
+            "relative_path": "",
+            "chunk": (BytesIO(b"abcdef"), "large.pdf.part0"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 413
+    assert r.get_json()["error"] == "file_too_large"
+
+
+def test_labor_law_parse_files_rejects_paths_outside_allowed_roots(client, tmp_path):
+    outside = tmp_path / "attendance.xlsx"
+    outside.write_bytes(b"not really xlsx")
+    r = client.post(
+        "/api/osc/labor-law/parse-files",
+        json={"file_paths": [str(outside)]},
+    )
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["error"] == "file_paths_not_allowed"
+
+
 def test_debt_generate_word_files_and_bank_json_record(client, tmp_path, monkeypatch):
     from api import debt_document_generator as gen
     from api.blueprints import osc_debt as mod

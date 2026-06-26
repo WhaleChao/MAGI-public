@@ -21,6 +21,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 
+from scripts.ops.token_health_check import google_token_file_lock
+
 
 DEFAULT_SPREADSHEET_ID = os.environ.get("MAGI_ACCOUNTING_SHEET_ID", "").strip()
 DEFAULT_GID = int(os.environ.get("MAGI_ACCOUNTING_SHEET_GID", "1995190935") or "1995190935")
@@ -148,8 +150,13 @@ def _backup_google_token(token_path: Path, *, reason: str) -> Path | None:
         return None
 
 
-def _persist_google_credentials(token_path: Path, creds: Any) -> None:
+def _persist_google_credentials_unlocked(token_path: Path, creds: Any) -> None:
     _atomic_write_text(token_path, creds.to_json())
+
+
+def _persist_google_credentials(token_path: Path, creds: Any) -> None:
+    with google_token_file_lock(token_path):
+        _persist_google_credentials_unlocked(token_path, creds)
 
 
 def is_revoked_google_token_error(exc: BaseException) -> bool:
@@ -606,18 +613,28 @@ def _load_google_credentials(
         except Exception:
             pass
     if token_path.exists():
-        try:
-            token_data = json.loads(token_path.read_text(encoding="utf-8"))
-            token_scopes = set(token_data.get("scopes") or [])
-            token_has_requested_scopes = set(GOOGLE_READ_SCOPES).issubset(token_scopes)
-        except Exception:
-            token_has_requested_scopes = False
-        creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_READ_SCOPES)
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            _persist_google_credentials(token_path, creds)
-        except Exception as exc:
+        with google_token_file_lock(token_path):
+            try:
+                token_data = json.loads(token_path.read_text(encoding="utf-8"))
+                token_scopes = set(token_data.get("scopes") or [])
+                token_has_requested_scopes = set(GOOGLE_READ_SCOPES).issubset(token_scopes)
+            except Exception:
+                token_has_requested_scopes = False
+            creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_READ_SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    _persist_google_credentials_unlocked(token_path, creds)
+                except Exception as exc:
+                    refresh_exc = exc
+                    creds = None
+                    token_has_requested_scopes = False
+                else:
+                    refresh_exc = None
+            else:
+                refresh_exc = None
+        if refresh_exc is not None:
+            exc = refresh_exc
             if not is_revoked_google_token_error(exc):
                 raise
             if not interactive:
@@ -632,8 +649,6 @@ def _load_google_credentials(
                 pass
             except Exception:
                 pass
-            creds = None
-            token_has_requested_scopes = False
     has_scopes = bool(creds and creds.valid and token_has_requested_scopes and creds.has_scopes(GOOGLE_READ_SCOPES))
     if not creds or not creds.valid or not has_scopes:
         if not interactive:
@@ -1035,96 +1050,108 @@ def import_rows(rows: list[AccountingSheetRow], *, month: str, dry_run: bool = T
     existing_matches: list[dict[str, Any]] = []
     fixed_expense_skips: list[dict[str, Any]] = []
     fixed_expense_conflicts: list[dict[str, Any]] = []
-    for row in rows:
-        exists, _ = _osc_exec(
-            "SELECT fingerprint, transaction_id FROM accounting_import_records WHERE fingerprint=%s",
-            (row.fingerprint,),
-            fetch="one",
-        )
-        row_dict = asdict(row)
-        if exists:
-            duplicates.append(row_dict)
-            continue
-        fixed_overlap = fixed_expense_overlap_details(row)
-        if fixed_overlap:
-            row_dict["skip_reason"] = "covered_by_recurring_expense"
-            row_dict["fixed_expense_match"] = fixed_overlap
-            fixed_expense_skips.append(row_dict)
-            if fixed_overlap.get("amount_conflict"):
-                row_dict["warning"] = "colleague_sheet_amount_differs_from_recurring_expense"
-                fixed_expense_conflicts.append(row_dict)
-            continue
-        case_id = resolve_accounting_case_ref(row.case_ref)
-        existing_tx, _ = _osc_exec(
-            """
-            SELECT id FROM case_transactions
-             WHERE date=%s
-               AND type=%s
-               AND ABS(amount)=%s
-               AND COALESCE(category,'')=%s
-               AND COALESCE(description,'')=%s
-             LIMIT 1
-            """,
-            (
-                row.date,
-                row.type,
-                row.amount,
-                row.category or "",
-                row.description or "",
-            ),
-            fetch="one",
-        )
-        if existing_tx and existing_tx.get("id"):
-            row_dict["transaction_id"] = existing_tx.get("id")
-            existing_matches.append(row_dict)
-            if not dry_run:
-                _osc_exec(
-                    """
-                    INSERT INTO accounting_import_records
-                      (fingerprint, source, source_row, source_month, transaction_id, payload_json)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        row.fingerprint,
-                        "colleague_google_sheet",
-                        row.source_row,
-                        month,
-                        existing_tx.get("id"),
-                        json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
-                    ),
-                    fetch="none",
-                )
-            continue
-        if dry_run:
+    if not dry_run:
+        _osc_exec("START TRANSACTION", fetch="none")
+    try:
+        for row in rows:
+            exists, _ = _osc_exec(
+                "SELECT fingerprint, transaction_id FROM accounting_import_records WHERE fingerprint=%s",
+                (row.fingerprint,),
+                fetch="one",
+            )
+            row_dict = asdict(row)
+            if exists:
+                duplicates.append(row_dict)
+                continue
+            fixed_overlap = fixed_expense_overlap_details(row)
+            if fixed_overlap:
+                row_dict["skip_reason"] = "covered_by_recurring_expense"
+                row_dict["fixed_expense_match"] = fixed_overlap
+                fixed_expense_skips.append(row_dict)
+                if fixed_overlap.get("amount_conflict"):
+                    row_dict["warning"] = "colleague_sheet_amount_differs_from_recurring_expense"
+                    fixed_expense_conflicts.append(row_dict)
+                continue
+            case_id = resolve_accounting_case_ref(row.case_ref)
+            existing_tx, _ = _osc_exec(
+                """
+                SELECT id FROM case_transactions
+                 WHERE date=%s
+                   AND type=%s
+                   AND ABS(amount)=%s
+                   AND COALESCE(category,'')=%s
+                   AND COALESCE(description,'')=%s
+                 LIMIT 1
+                """,
+                (
+                    row.date,
+                    row.type,
+                    row.amount,
+                    row.category or "",
+                    row.description or "",
+                ),
+                fetch="one",
+            )
+            if existing_tx and existing_tx.get("id"):
+                row_dict["transaction_id"] = existing_tx.get("id")
+                existing_matches.append(row_dict)
+                if not dry_run:
+                    _osc_exec(
+                        """
+                        INSERT INTO accounting_import_records
+                          (fingerprint, source, source_row, source_month, transaction_id, payload_json)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            row.fingerprint,
+                            "colleague_google_sheet",
+                            row.source_row,
+                            month,
+                            existing_tx.get("id"),
+                            json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
+                        ),
+                        fetch="none",
+                    )
+                continue
+            if dry_run:
+                imported.append(row_dict)
+                continue
+            result, _ = _osc_exec(
+                """
+                INSERT INTO case_transactions (case_id, date, type, sub_type, category, description, amount)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (case_id, row.date, row.type, row.sub_type, row.category, row.description, row.amount),
+                fetch="none",
+            )
+            tx_id = (result or {}).get("lastrowid")
+            row_dict["transaction_id"] = tx_id
+            _osc_exec(
+                """
+                INSERT INTO accounting_import_records
+                  (fingerprint, source, source_row, source_month, transaction_id, payload_json)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    row.fingerprint,
+                    "colleague_google_sheet",
+                    row.source_row,
+                    month,
+                    tx_id,
+                    json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
+                ),
+                fetch="none",
+            )
             imported.append(row_dict)
-            continue
-        result, _ = _osc_exec(
-            """
-            INSERT INTO case_transactions (case_id, date, type, sub_type, category, description, amount)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (case_id, row.date, row.type, row.sub_type, row.category, row.description, row.amount),
-            fetch="none",
-        )
-        tx_id = (result or {}).get("lastrowid")
-        _osc_exec(
-            """
-            INSERT INTO accounting_import_records
-              (fingerprint, source, source_row, source_month, transaction_id, payload_json)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                row.fingerprint,
-                "colleague_google_sheet",
-                row.source_row,
-                month,
-                tx_id,
-                json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
-            ),
-            fetch="none",
-        )
-        row_dict["transaction_id"] = tx_id
-        imported.append(row_dict)
+        if not dry_run:
+            _osc_exec("COMMIT", fetch="none")
+    except Exception:
+        if not dry_run:
+            try:
+                _osc_exec("ROLLBACK", fetch="none")
+            except Exception:
+                pass
+        raise
     return {
         "ok": True,
         "dry_run": dry_run,

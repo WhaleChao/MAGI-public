@@ -1058,12 +1058,29 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
     try:
         from api.routing.command_prefixes import split_heavy_prefix
     except Exception:
+        _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+        _MAGI_PREFIX_FALLBACK_RE = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+        _HEAVY_WORD_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
         def split_heavy_prefix(_message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
-            _text = str(_message or "").replace("＠", "@").lstrip()
-            for _prefix in ("@heavy", "@重型"):
-                if _text.lower().startswith(_prefix):
-                    return True, _text[len(_prefix):].lstrip(" \t\r\n:：,，、。!！?？-–—")
-            return False, _text
+            _text = str(_message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            _magi_match = _MAGI_PREFIX_FALLBACK_RE.match(_text)
+            if _magi_match:
+                _rest = _text[_magi_match.end():]
+                _heavy_after_magi = _HEAVY_WORD_PREFIX_FALLBACK_RE.match(_rest)
+                if _heavy_after_magi:
+                    _cleaned = _rest[_heavy_after_magi.end():].strip()
+                    return True, f"@MAGI {_cleaned}".strip()
+            _match = _HEAVY_PREFIX_FALLBACK_RE.match(_text)
+            return (True, _text[_match.end():].strip()) if _match else (False, _text)
     # 2026-04-24：三保險偵測（prefix / flask.g / explicit kwarg）
     # - prefix：上游尚未剝除時直接命中
     # - flask.g：同 request thread 設定，但 ThreadPoolExecutor 子 thread 讀不到

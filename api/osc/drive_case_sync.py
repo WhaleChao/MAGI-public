@@ -28,6 +28,7 @@ from skills.bridge.shared_utils.judgment_folder_names import (
     judgment_folder_name,
     legacy_judgment_folder_name,
 )
+from scripts.ops.token_health_check import google_token_file_lock
 
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
@@ -292,7 +293,7 @@ def drive_sync_account_hint() -> str:
     ).strip() or "primary"
 
 
-def _write_google_credentials(creds: Any, *, token_path: Path) -> None:
+def _write_google_credentials_unlocked(creds: Any, *, token_path: Path) -> None:
     token_path = token_path.expanduser()
     token_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
@@ -318,6 +319,11 @@ def _write_google_credentials(creds: Any, *, token_path: Path) -> None:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _write_google_credentials(creds: Any, *, token_path: Path) -> None:
+    with google_token_file_lock(token_path):
+        _write_google_credentials_unlocked(creds, token_path=token_path)
 
 
 def _backup_google_token(token_path: Path) -> Path | None:
@@ -361,27 +367,28 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
         _backup_google_token(token_path)
         token_path.unlink(missing_ok=True)
     if token_path.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
-        except Exception as exc:
-            if not interactive and write:
+        with google_token_file_lock(token_path):
+            read_failed = False
+            try:
+                creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+            except Exception as exc:
+                read_exc = exc
+                creds = None
+                read_failed = True
+            else:
+                read_exc = None
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    _write_google_credentials_unlocked(creds, token_path=token_path)
+                except Exception as exc:
+                    read_exc = exc
+                    creds = None
+        if read_exc is not None and creds is None:
+            exc = read_exc
+            if not interactive and write and read_failed:
                 raise DriveCaseSyncAuthRequired(
                     f"Google Drive 授權檔無法讀取，請重新授權：{token_path}",
-                    token_path=token_path,
-                    write=write,
-                ) from exc
-            deferred_auth_error = exc
-            if interactive:
-                token_path.unlink(missing_ok=True)
-            creds = None
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            _write_google_credentials(creds, token_path=token_path)
-        except Exception as exc:
-            if not interactive and write:
-                raise DriveCaseSyncAuthRequired(
-                    _google_auth_required_message(exc, token_path=token_path, write=write),
                     token_path=token_path,
                     write=write,
                 ) from exc
@@ -393,10 +400,11 @@ def _load_google_credentials(*, interactive: bool = False, force_auth: bool = Fa
         fallback_path = drive_sync_token_path(write=True)
         if fallback_path.exists():
             try:
-                fallback = Credentials.from_authorized_user_file(str(fallback_path), WRITE_SCOPES)
-                if fallback.expired and fallback.refresh_token:
-                    fallback.refresh(Request())
-                    _write_google_credentials(fallback, token_path=fallback_path)
+                with google_token_file_lock(fallback_path):
+                    fallback = Credentials.from_authorized_user_file(str(fallback_path), WRITE_SCOPES)
+                    if fallback.expired and fallback.refresh_token:
+                        fallback.refresh(Request())
+                        _write_google_credentials_unlocked(fallback, token_path=fallback_path)
                 if fallback and fallback.valid and fallback.has_scopes(WRITE_SCOPES):
                     return fallback
             except Exception as exc:
@@ -4193,6 +4201,7 @@ def execute_drive_to_nas_downloads(
         if summary["stopped_by_limit"] or summary["stopped_by_bytes"]:
             break
     return {
+        "ok": summary["failed"] == 0,
         "mode": "execute_drive_to_nas_missing_only",
         "write_actions_enabled": True,
         "safety": "no_overwrite_no_delete",
@@ -4268,6 +4277,7 @@ def execute_nas_to_drive_uploads(
         if summary["stopped_by_limit"] or summary["stopped_by_bytes"]:
             break
     return {
+        "ok": summary["failed"] == 0,
         "mode": "execute_nas_to_drive_missing_only",
         "write_actions_enabled": True,
         "safety": "no_overwrite_no_delete",
@@ -4288,6 +4298,7 @@ def combine_execution_results(
     download_summary = (download_result or {}).get("summary") or {}
     upload_summary = (upload_result or {}).get("summary") or {}
     return {
+        "ok": (download_summary.get("failed", 0) or 0) == 0 and (upload_summary.get("failed", 0) or 0) == 0,
         "mode": "execute_bidirectional_missing_only",
         "write_actions_enabled": True,
         "safety": "no_overwrite_no_delete_conflicts_blocked",
@@ -4307,6 +4318,31 @@ def combine_execution_results(
         "download_result": download_result or {},
         "upload_result": upload_result or {},
     }
+
+
+def report_has_partial_failures(report: dict[str, Any]) -> bool:
+    """Return True when a Drive sync report contains failed write/repair work."""
+    def _failed(summary: dict[str, Any], *keys: str) -> int:
+        total = 0
+        for key in keys:
+            try:
+                total += int(summary.get(key) or 0)
+            except Exception:
+                continue
+        return total
+
+    execution_summary = (report.get("execution_result") or {}).get("summary") or {}
+    folder_summary = (report.get("drive_folder_result") or {}).get("summary") or {}
+    repair_summary = (report.get("duplicate_repair_result") or {}).get("summary") or {}
+    imported_repair_summary = (report.get("drive_imported_folder_repair") or {}).get("summary") or {}
+    return any(
+        (
+            _failed(execution_summary, "failed", "download_failed", "upload_failed") > 0,
+            _failed(folder_summary, "failed") > 0,
+            _failed(repair_summary, "failed") > 0,
+            _failed(imported_repair_summary, "errors") > 0,
+        )
+    )
 
 
 def _drive_case_from_local_case_result(local_case: CaseFolder, result: dict[str, Any]) -> CaseFolder | None:
@@ -4476,6 +4512,7 @@ def run_priority_case_sync(
             upload_result=upload_result,
         )
     drive_folder_result = {
+        "ok": sum(1 for item in folder_records if (not item.get("ok")) and not item.get("skipped")) == 0,
         "mode": "direct_db_case_drive_folder_resolution",
         "write_actions_enabled": bool(ensure_drive_case_folders or execute_uploads),
         "safety": "find_or_create_case_folder_only_no_file_delete",
@@ -4826,6 +4863,7 @@ def repair_drive_duplicate_case_folders(
             summary["failed"] += 1
         records.append(record)
     return {
+        "ok": summary["failed"] == 0,
         "mode": "drive_duplicate_case_folder_repair",
         "write_actions_enabled": bool(execute),
         "safety": (
@@ -4907,6 +4945,7 @@ def create_missing_drive_case_folders(
             summary["failed"] += 1
         records.append(record)
     return {
+        "ok": summary["failed"] == 0,
         "mode": "ensure_google_drive_case_folders",
         "write_actions_enabled": True,
         "safety": "create_folders_only_no_file_write_no_delete",
@@ -5567,8 +5606,9 @@ def main(argv: list[str] | None = None) -> int:
         repair_drive_duplicate_quarantine_path=args.repair_drive_duplicate_quarantine_path,
         delete_resolved_drive_duplicates=args.delete_resolved_drive_duplicates,
     )
+    has_partial_failures = report_has_partial_failures(report)
     print(json.dumps({
-        "ok": True,
+        "ok": not has_partial_failures,
         "mode": "conservative_drive_nas_sync",
         "summary": report["summary"],
         "sync_plan_summary": (report.get("sync_plan") or {}).get("summary", {}),
@@ -5578,7 +5618,7 @@ def main(argv: list[str] | None = None) -> int:
         "duplicate_repair_summary": (report.get("duplicate_repair_result") or {}).get("summary", {}),
         "output_paths": report["output_paths"],
     }, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if has_partial_failures else 0
 
 
 if __name__ == "__main__":

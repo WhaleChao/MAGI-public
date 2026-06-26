@@ -22,9 +22,12 @@ import logging
 import os
 import re
 import sys
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from scripts.ops.token_health_check import google_token_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +57,43 @@ def _load_creds():
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
-            TOKEN_PATH.chmod(0o600)
+        with google_token_file_lock(TOKEN_PATH):
+            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                _write_token_atomic(TOKEN_PATH, creds.to_json())
         return creds
     except Exception as exc:
         logger.warning("gcal_sync._load_creds failed: %s", exc)
         return None
+
+
+def _write_token_atomic(path: Path, text: str) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                pass
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _build_service(creds):
@@ -243,9 +274,20 @@ def _event_start_date_time(event: dict) -> tuple[str, str]:
     return day, (match.group(1) if match else "")
 
 
-def _classify_todo_type(summary: str) -> str:
+def _classify_todo_type(summary: str, description: str = "") -> str:
+    text = f"{summary or ''}\n{description or ''}"
     for kw, todo_type in [
+        ("律見", "律見"),
+        ("律師接見", "律見"),
+        ("接見", "律見"),
+        ("會議", "會議"),
+        ("會面", "會議"),
+        ("開會", "會議"),
+        ("視訊會議", "視訊會議"),
+        ("電話聯繫", "電話聯繫"),
+        ("電聯", "電話聯繫"),
         ("開庭", "開庭"),
+        ("庭期", "開庭"),
         ("期日", "期日"),
         ("調解", "調解"),
         ("期限", "期限"),
@@ -255,9 +297,10 @@ def _classify_todo_type(summary: str) -> str:
         ("筆錄", "筆錄"),
         ("提出", "提出"),
         ("答辯", "答辯"),
+        ("法扶開辦末日", "法扶開辦末日"),
         ("法扶", "法扶"),
     ]:
-        if kw in summary:
+        if kw in text:
             return todo_type
     return "行事曆事件"
 
@@ -590,7 +633,7 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         (
                             case_number,
                             client_name,
-                            _classify_todo_type(summary),
+                            _classify_todo_type(summary, description),
                             start_date,
                             start_time or None,
                             summary[:500],
@@ -735,6 +778,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     creds = _load_creds()
     if creds is None or not creds.valid:
         stats["errors"].append("No valid GCal credentials. Run OAuth first.")
+        stats["ok"] = False
         return stats
 
     calendar_id = _get_setting_value("gcal_calendar_id", "primary") or "primary"
@@ -817,4 +861,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
             logger.warning("push_todo id=%s failed: %s", todo.get("id"), exc)
             stats["errors"].append(f"todo id={todo.get('id')}: {exc}")
 
+    stats["ok"] = not bool(stats.get("errors") or stats.get("import_errors"))
+    if not stats["ok"]:
+        stats["error"] = "partial_gcal_sync_failure"
     return stats

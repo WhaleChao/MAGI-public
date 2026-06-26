@@ -7,7 +7,7 @@ The source of truth for which checks belong to each gate is:
 config/test_matrix.json
 ```
 
-As of 2026-06-23 the matrix has four canonical suites plus one legacy alias:
+As of 2026-06-26 the matrix has four canonical suites plus one legacy alias:
 `ci`, `smoke62`, `production-live`, `commercial-release`, and `smoke50`.
 Treat direct pytest commands as focused diagnostics; they are not release
 acceptance by themselves.
@@ -51,7 +51,7 @@ release notes unless you are preserving old automation output.
 
 `production-live`
 : Real production-machine live validation. It runs doctor, judicial pipeline,
-self-repair dry-run, smoke62, business modules, and commercial readiness.
+self-repair dry-run, smoke62, business modules, and the commercial-release gate.
 
 `commercial-release`
 : Release gate before sharing a build or selling service. It adds strict public

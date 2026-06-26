@@ -44,6 +44,37 @@ _HIGH_RISK_SKILLS: dict[str, float] = {
 # Default minimum confidence for any skill dispatch
 _DEFAULT_MIN_CONFIDENCE = 0.55
 
+_DIRECT_RUN_DENY_SKILLS = frozenset({
+    "doctor",
+    "magi-doctor",
+    "magi_doctor",
+    "run_magi_doctor",
+    "magi-self-repair",
+    "magi_self_repair",
+    "run_magi_self_repair",
+    "iron-dome",
+    "iron_dome",
+    "run_iron_dome",
+    "iron_dome_scan",
+    "run_iron_dome_scan",
+    "drop_table",
+    "admin_panel",
+    "system_test",
+    "laf-go-live",
+    "laf_go_live",
+    "laf_pending",
+})
+
+_TOOL_DECLINE_RE = re.compile(
+    r"(?:"
+    r"只是聊天|只想聊天|先聊聊|不要(?:查|搜尋|搜|調|叫|呼叫|使用|用)(?:工具|tool|網路|資料庫|系統)?|"
+    r"不用(?:查|搜尋|搜|調|叫|呼叫|使用|用)?(?:工具|tool|網路|資料庫|系統)|"
+    r"不要上網|不用上網|不要連網|不用連網|不要執行|先不要執行|不是任務|不要當任務|"
+    r"no\s+tools?|do\s+not\s+use\s+tools?|don't\s+use\s+tools?|without\s+tools?"
+    r")",
+    re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Generic words that should NOT alone trigger a skill
 # ---------------------------------------------------------------------------
@@ -65,6 +96,60 @@ _SHORT_MSG_THRESHOLD = 15  # chars
 def get_skill_min_confidence(skill_name: str) -> float:
     """Return the minimum confidence required to auto-dispatch *skill_name*."""
     return _HIGH_RISK_SKILLS.get(skill_name, _DEFAULT_MIN_CONFIDENCE)
+
+
+def _skill_aliases(skill_name: str) -> set[str]:
+    raw = str(skill_name or "").strip()
+    if not raw:
+        return set()
+    lowered = raw.lower()
+    hyphen = lowered.replace("_", "-")
+    underscore = lowered.replace("-", "_")
+    aliases = {lowered, hyphen, underscore}
+    if lowered.startswith("run_"):
+        aliases.add(lowered[4:])
+        aliases.add(lowered[4:].replace("_", "-"))
+    if lowered.startswith("run-"):
+        aliases.add(lowered[4:])
+        aliases.add(lowered[4:].replace("-", "_"))
+    aliases.add(f"run_{underscore}")
+    aliases.add(f"run_{hyphen.replace('-', '_')}")
+    return {item for item in aliases if item}
+
+
+def is_high_risk_skill(skill_name: str) -> bool:
+    """Return True when a skill is too risky for direct or low-confidence routing."""
+    aliases = _skill_aliases(skill_name)
+    high_risk = set(_HIGH_RISK_SKILLS) | _DIRECT_RUN_DENY_SKILLS
+    return any(alias in high_risk for alias in aliases)
+
+
+def user_declines_tool_dispatch(message: str) -> bool:
+    """Detect explicit natural-language requests to avoid tools/dispatch."""
+    text = str(message or "").strip()
+    return bool(text and _TOOL_DECLINE_RE.search(text))
+
+
+def direct_skill_run_denial_reason(skill_name: str) -> str:
+    """Return a denial reason for direct /skills/run, or empty string if allowed."""
+    aliases = _skill_aliases(skill_name)
+    if not aliases:
+        return "empty_skill"
+
+    try:
+        from skills.catalog import DEPRECATED_SKILL_DIRS, canonical_skill_dir_name
+
+        canonical = canonical_skill_dir_name(skill_name)
+        aliases |= _skill_aliases(canonical)
+        deprecated_dirs = set(DEPRECATED_SKILL_DIRS)
+    except Exception:
+        deprecated_dirs = set()
+
+    if any(alias in deprecated_dirs for alias in aliases):
+        return "deprecated_skill_must_not_run_directly"
+    if is_high_risk_skill(skill_name):
+        return "high_risk_skill_must_route_through_policy"
+    return ""
 
 
 def is_generic_word_only(message: str) -> bool:
@@ -103,6 +188,9 @@ def should_dispatch_skill(
     - The intent is CHAT and confidence is below the CHAT override threshold
     """
     min_conf = get_skill_min_confidence(skill_name)
+
+    if user_declines_tool_dispatch(message):
+        return False
 
     # Generic word check: short generic messages should never trigger skills
     if is_generic_word_only(message):

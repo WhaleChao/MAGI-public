@@ -1077,6 +1077,8 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
         text = _normalize_judicial_text(_clean_text(text))
         if "查無資料" in text or "系統忙碌" in text:
             return {"success": False, "error": "site returned error page", "hint": text[:200]}
+        if len(text) < 80 or ("裁判字號" not in text and "主文" not in text and "理由" not in text):
+            return {"success": False, "error": "playwright_empty_or_unrecognized", "hint": text[:200]}
 
         # Write full text to a cache file to avoid JSON stdout truncation by the skill runner.
         try:

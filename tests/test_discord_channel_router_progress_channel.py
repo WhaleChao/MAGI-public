@@ -301,3 +301,14 @@ def test_business_notification_preference_can_silence_non_system_topics(monkeypa
         source="file_review_orchestrator",
         fallback_channel_id="999",
     ) == ("filereview_download", "__SILENT__")
+
+
+def test_unknown_business_topic_does_not_fallback_to_general(monkeypatch):
+    monkeypatch.setattr(router, "_load_channel_map", lambda: {"general": "999"})
+
+    assert router.resolve_discord_channel(
+        "未知法扶業務通知",
+        topic_key="laf_unknown",
+        source="unit",
+        fallback_channel_id="999",
+    ) == ("laf_unknown", "__SILENT__")

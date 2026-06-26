@@ -108,16 +108,26 @@ def _run_orchestrator(args_list, timeout=300, extra_env=None):
                     break
                 except Exception:
                     continue
+        parse_failed = False
         if result is None and stdout:
             # Try the whole stdout as JSON
             try:
                 result = json.loads(stdout)
             except Exception:
+                parse_failed = True
                 result = {"raw_stdout": stdout[-3000:]}
+        payload_ok = True
+        if isinstance(result, dict):
+            nested = result.get("result")
+            if isinstance(nested, dict) and (nested.get("success") is False or nested.get("ok") is False):
+                payload_ok = False
+            if result.get("success") is False or result.get("ok") is False:
+                payload_ok = False
         return {
-            "success": r.returncode == 0,
+            "success": r.returncode == 0 and payload_ok and not parse_failed,
             "returncode": r.returncode,
             "result": result or {},
+            "error": "json_parse_failed" if parse_failed else (str(result.get("error") or "") if isinstance(result, dict) else ""),
             "stderr_tail": stderr[-1000:] if stderr else "",
         }
     except subprocess.TimeoutExpired:

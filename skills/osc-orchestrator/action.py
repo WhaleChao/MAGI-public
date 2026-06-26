@@ -18,6 +18,7 @@ import pickle
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ if str(_MAGI_ROOT) not in sys.path:
 from api.runtime_paths import ensure_orch_on_sys_path, get_config_path, get_orch_dir, get_skill_python
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_local_path_to_canonical
 from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, path_has_judgment_folder
+from scripts.ops.token_health_check import google_token_file_lock
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 PENDING_QUEUE_PATH = os.path.join(SKILL_DIR, "_pending_todos.jsonl")
@@ -41,6 +43,34 @@ VENV_PY = str(get_skill_python())
 
 _LS_BIN = "/bin/ls"
 _TEST_BIN = "/bin/test"
+
+
+def _write_token_atomic(path: str | Path, text: str) -> None:
+    token_path = Path(path).expanduser()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(token_path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                pass
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), token_path)
+        try:
+            token_path.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
     """
@@ -1737,11 +1767,12 @@ def _build_google_calendar_service(
 
     if creds and creds.expired and creds.refresh_token:
         try:
-            creds.refresh(Request())
             if token_path:
-                os.makedirs(os.path.dirname(token_path), exist_ok=True)
-                with open(token_path, "w", encoding="utf-8") as f:
-                    f.write(creds.to_json())
+                with google_token_file_lock(Path(token_path)):
+                    creds.refresh(Request())
+                    _write_token_atomic(token_path, creds.to_json())
+            else:
+                creds.refresh(Request())
         except Exception:
             creds = None
 
@@ -1752,9 +1783,8 @@ def _build_google_calendar_service(
         try:
             flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
-            os.makedirs(os.path.dirname(token_path), exist_ok=True)
-            with open(token_path, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
+            with google_token_file_lock(Path(token_path)):
+                _write_token_atomic(token_path, creds.to_json())
         except Exception as e:
             return {"ok": False, "error": f"interactive_oauth_failed:{type(e).__name__}"}
 
@@ -1765,9 +1795,8 @@ def _build_google_calendar_service(
     # If creds came from a legacy pickle path, persist canonical json token for nightly.
     try:
         if token_path and creds and creds.valid and loaded_from and os.path.abspath(loaded_from) != os.path.abspath(token_path):
-            os.makedirs(os.path.dirname(token_path), exist_ok=True)
-            with open(token_path, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
+            with google_token_file_lock(Path(token_path)):
+                _write_token_atomic(token_path, creds.to_json())
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1333, exc_info=True)
 
@@ -1948,12 +1977,16 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
         dedup_key = ""
 
     key = court_case_no or case_number
-    summary = "⚖️ "
-    if client:
-        summary += f"{client} "
-    if key:
-        summary += f"{key} "
-    summary += todo_type
+    source_is_gcal_import = src.startswith("gcal_import")
+    if source_is_gcal_import and todo_type == "行事曆事件" and desc:
+        summary = desc[:120]
+    else:
+        summary = "⚖️ "
+        if client:
+            summary += f"{client} "
+        if key:
+            summary += f"{key} "
+        summary += todo_type
 
     lines = []
     if court_name:
@@ -2020,6 +2053,37 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
         body["end"] = {"date": end_d}
 
     return body
+
+
+def _classify_gcal_import_todo_type(summary: str, description: str = "") -> str:
+    text = f"{summary or ''}\n{description or ''}"
+    for kw, todo_type in [
+        ("律見", "律見"),
+        ("律師接見", "律見"),
+        ("接見", "律見"),
+        ("會議", "會議"),
+        ("會面", "會議"),
+        ("開會", "會議"),
+        ("視訊會議", "視訊會議"),
+        ("電話聯繫", "電話聯繫"),
+        ("電聯", "電話聯繫"),
+        ("開庭", "開庭"),
+        ("庭期", "開庭"),
+        ("期日", "期日"),
+        ("調解", "調解"),
+        ("期限", "期限"),
+        ("補正", "補正"),
+        ("繳費", "繳費"),
+        ("閱卷", "閱卷"),
+        ("筆錄", "筆錄"),
+        ("提出", "提出"),
+        ("答辯", "答辯"),
+        ("法扶開辦末日", "法扶開辦末日"),
+        ("法扶", "法扶"),
+    ]:
+        if kw in text:
+            return todo_type
+    return "行事曆事件"
 
 
 def _target_calendar_aliases(service: Any, calendar_id: str) -> set[str]:
@@ -3215,8 +3279,9 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         return out
 
+    sync_ok = failed == 0
     out = {
-        "ok": True,
+        "ok": sync_ok,
         "limit": limit,
         "fetched": len(todos or []),
         "inserted": inserted,
@@ -3238,7 +3303,9 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
         "failed_items": failed_items,
         "retry_max_attempts": retry_max_attempts,
     }
-    _eventlog("osc:gcal_sync", ok=True, payload={"fetched": len(todos or []), "inserted": inserted, "failed": failed})
+    if not sync_ok:
+        out["error"] = "partial_gcal_sync_failure"
+    _eventlog("osc:gcal_sync", ok=sync_ok, payload={"fetched": len(todos or []), "inserted": inserted, "failed": failed})
     return out
 
 
@@ -3991,14 +4058,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
                 start_date or "",
             )
 
-        # Determine todo_type from summary keywords
-        todo_type = "行事曆事件"
-        for kw, t in [("開庭", "開庭"), ("期日", "期日"), ("調解", "調解"),
-                       ("期限", "期限"), ("繳費", "繳費"), ("閱卷", "閱卷"),
-                       ("筆錄", "筆錄"), ("提出", "提出"), ("答辯", "答辯")]:
-            if kw in summary:
-                todo_type = t
-                break
+        todo_type = _classify_gcal_import_todo_type(summary, description)
 
         if dedup_enabled:
             try:

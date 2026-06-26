@@ -30,6 +30,7 @@ import glob as _glob
 from urllib.parse import quote
 
 from flask import Blueprint, current_app, jsonify, request, send_file
+from werkzeug.utils import secure_filename
 try:
     from flask_login import current_user
 except ModuleNotFoundError:  # public-safe test environments may omit flask-login
@@ -58,6 +59,13 @@ def _export_dir():
     d = os.path.join(_MAGI_ROOT, "exports")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _secure_temp_upload_path(temp_dir: str, filename: str) -> str:
+    safe_name = secure_filename(os.path.basename(str(filename or "").strip()))
+    if not safe_name:
+        raise ValueError("invalid_upload_filename")
+    return os.path.join(temp_dir, f"{uuid.uuid4().hex}_{safe_name}")
 
 
 def _file_meta(path: str) -> dict:
@@ -713,7 +721,10 @@ def debt_auto_import():
         for key in ["asset_doc", "creditor_doc"]:
             f = request.files.get(key)
             if f and f.filename:
-                save_path = os.path.join(temp_dir, f.filename)
+                try:
+                    save_path = _secure_temp_upload_path(temp_dir, f.filename)
+                except ValueError as exc:
+                    return jsonify({"ok": False, "error": str(exc)}), 400
                 f.save(save_path)
                 paths[key] = save_path
             form_path = request.form.get(f"{key}_path")
@@ -835,7 +846,11 @@ def debt_merge_pdf():
     file_paths = []
     for f in uploaded_files:
         if f.filename:
-            save_path = os.path.join(temp_dir, f.filename)
+            try:
+                save_path = _secure_temp_upload_path(temp_dir, f.filename)
+            except ValueError as exc:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return jsonify({"ok": False, "error": str(exc)}), 400
             f.save(save_path)
             file_paths.append(save_path)
 

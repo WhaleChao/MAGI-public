@@ -18,6 +18,9 @@ DEFINITION_SHIM_NAMES = {
 DEPRECATED_AUTOROUTE_SKILLS = {
     "pdf_annotate",
 }
+DEPRECATED_SKILL_DIRS = {
+    "pdf-annotator",
+}
 
 
 def is_runtime_skill_dir_name(name: str, *, include_generated: bool = False) -> bool:
@@ -46,6 +49,10 @@ def is_public_skill_dir_name(
     if (not include_shims) and name in SKILL_SHIM_ALIASES:
         return False
     return True
+
+
+def is_deprecated_skill_dir_name(name: str) -> bool:
+    return str(name or "").strip() in DEPRECATED_SKILL_DIRS
 
 
 def is_public_definition_tool(

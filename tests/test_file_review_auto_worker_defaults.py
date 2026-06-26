@@ -29,3 +29,23 @@ def test_file_review_worker_tail_normalizes_timeout_bytes():
     spec.loader.exec_module(mod)
     assert mod._tail(b"  abc\xe4\xb8\xad  ") == "abc中"
     assert mod._task_ok_or_nonfatal({"ok": False, "nonfatal": True}) is True
+
+
+def test_file_review_worker_pretty_json_failure_overrides_returncode(monkeypatch):
+    path = ROOT / "skills" / "ops" / "file_review_auto_worker.py"
+    spec = importlib.util.spec_from_file_location("file_review_auto_worker_pretty_json_test", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class _Proc:
+        returncode = 0
+        stdout = '{\n  "success": false,\n  "error": "manual blocked"\n}\n'
+        stderr = ""
+
+    monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    result = mod._run_task("download", 30, {})
+
+    assert result["ok"] is False
+    assert result["parsed"]["error"] == "manual blocked"

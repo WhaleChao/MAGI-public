@@ -46,6 +46,27 @@ def test_worker_lock_replaces_stale_pid_and_releases(tmp_path, monkeypatch):
     assert not (tmp_path / "drive_case_sync_worker.pid").exists()
 
 
+def test_worker_lock_precisely_fails_when_flock_owner_metadata_is_stale(tmp_path, monkeypatch):
+    worker = load_worker_module()
+    monkeypatch.setattr(worker, "runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr(worker, "_pid_is_alive", lambda pid: False)
+
+    class FakeLock:
+        acquired = False
+        active_owner = {"pid": 999999, "owner": "old"}
+
+        def as_dict(self):
+            return {"acquired": False, "active_owner": self.active_owner}
+
+    monkeypatch.setattr(worker, "acquire_lock", lambda *args, **kwargs: FakeLock())
+
+    result = worker.acquire_worker_lock()
+
+    assert result["acquired"] is False
+    assert result["status"] == "lock_held_unknown_owner"
+    assert result["stale_lock_audit"]["action"] == "precise_fail"
+
+
 def test_worker_status_writes_general_and_kind_specific_latest(tmp_path, monkeypatch):
     worker = load_worker_module()
     monkeypatch.setattr(worker, "runtime_dir", lambda: tmp_path)

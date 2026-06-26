@@ -34,6 +34,7 @@ except Exception:
 from api.osc.drive_case_sync import (
     DEFAULT_DRIVE_ROOT_NAME,
     DriveCaseSyncAuthRequired,
+    report_has_partial_failures,
     run_inventory,
     run_priority_case_sync,
     runtime_dir,
@@ -236,10 +237,24 @@ def acquire_worker_lock() -> dict:
         write_pid_file=True,
     )
     if not lock.acquired:
+        active_pid = int((lock.active_owner or {}).get("pid") or previous_pid or 0)
+        if not active_pid or not _pid_is_alive(active_pid):
+            return {
+                "acquired": False,
+                "status": "lock_held_unknown_owner",
+                "active_pid": active_pid,
+                "lock_path": str(path),
+                "lock": lock.as_dict(),
+                "stale_lock_audit": {
+                    "action": "precise_fail",
+                    "reason": "flock_is_held_but_owner_metadata_has_no_live_pid",
+                    "metadata": lock.active_owner or {},
+                },
+            }
         return {
             "acquired": False,
             "status": "already_running",
-            "active_pid": int((lock.active_owner or {}).get("pid") or previous_pid or 0),
+            "active_pid": active_pid,
             "lock_path": str(path),
             "lock": lock.as_dict(),
         }
@@ -589,17 +604,24 @@ def main(argv: list[str] | None = None) -> int:
 
     worker_lock = acquire_worker_lock()
     if not worker_lock.get("acquired"):
+        lock_status = str(worker_lock.get("status") or "already_running")
+        precise_fail = lock_status != "already_running"
         status = {
-            "ok": True,
-            "status": "already_running",
-            "action_required": False,
+            "ok": not precise_fail,
+            "status": lock_status,
+            "action_required": precise_fail,
             "pid": os.getpid(),
             "active_worker_pid": worker_lock.get("active_pid"),
             "lock_path": worker_lock.get("lock_path") or "",
             "started_at": iso_now(),
             "finished_at": iso_now(),
-            "message": "Drive/NAS 同步已在執行中，本次排程已略過，避免同時上傳/下載造成重複或錯放。",
+            "message": (
+                "Drive/NAS worker lock 被持有，但找不到活的 owner metadata；本次精準失敗，避免誤判排程成功。"
+                if precise_fail
+                else "Drive/NAS 同步已在執行中，本次排程已略過，避免同時上傳/下載造成重複或錯放。"
+            ),
             "worker_kind": worker_kind,
+            "stale_lock_audit": worker_lock.get("stale_lock_audit") or {},
         }
         skip_path = runtime_dir() / f"drive_case_sync_worker_skip_{worker_kind}_latest.json"
         try:
@@ -611,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         save_worker_status(status, kind=worker_kind)
         print(json.dumps(status, ensure_ascii=False, indent=2))
-        return 0
+        return 1 if precise_fail else 0
     case_file_lock = acquire_case_file_operation_lock(owner=f"drive_case_sync_worker:{worker_kind}")
     if not case_file_lock.get("acquired"):
         status = {
@@ -802,12 +824,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     report["drive_imported_folder_repair"] = repair_summary
     state["last_drive_imported_folder_repair"] = repair_summary.get("summary") or repair_summary
+    has_partial_failures = report_has_partial_failures(report)
     state["last_priority_case_numbers"] = priority_case_numbers[:30]
     state["last_all_case_numbers"] = all_case_numbers[:30]
     success_status = {
-        "ok": True,
-        "status": "ok",
-        "action_required": False,
+        "ok": not has_partial_failures,
+        "status": "partial_failure" if has_partial_failures else "ok",
+        "action_required": bool(has_partial_failures),
         "pid": os.getpid(),
         "worker_kind": worker_kind,
         "worker_lock": worker_lock,
@@ -820,6 +843,10 @@ def main(argv: list[str] | None = None) -> int:
         "all_case_offset_after": state.get("all_case_offset", all_case_offset),
         "all_case_total": all_case_total,
         "mode": report.get("mode") or "",
+        "message": (
+            "Drive/NAS 同步完成，但部分下載、上傳、建資料夾或整理動作失敗；請查看 summary 與 manifest。"
+            if has_partial_failures else ""
+        ),
     }
     state["last_status"] = success_status
     clear_auth_required()
@@ -837,7 +864,8 @@ def main(argv: list[str] | None = None) -> int:
     }, kind=worker_kind)
 
     print(json.dumps({
-        "ok": True,
+        "ok": not has_partial_failures,
+        "status": "partial_failure" if has_partial_failures else "ok",
         "matched_case_offset_before": offset,
         "matched_case_offset_after": state["matched_case_offset"],
         "all_case_offset_before": all_case_offset,
@@ -856,7 +884,7 @@ def main(argv: list[str] | None = None) -> int:
     _CURRENT_RUN_CONTEXT.clear()
     release_case_file_operation_lock()
     _release_worker_lock()
-    return 0
+    return 1 if has_partial_failures else 0
 
 
 if __name__ == "__main__":

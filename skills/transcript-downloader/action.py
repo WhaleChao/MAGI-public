@@ -756,8 +756,8 @@ def _update_cycle_completion(state: Dict[str, Any], cases: List[Any]) -> None:
     scanned_this_cycle = 0
     for key in active_keys:
         item = case_state.get(key) if isinstance(case_state, dict) else {}
-        last_attempt = str(item.get("last_attempt_at") or "") if isinstance(item, dict) else ""
-        if _parse_dt_or_zero(last_attempt) >= cycle_start:
+        last_success = str(item.get("last_success_at") or "") if isinstance(item, dict) else ""
+        if _parse_dt_or_zero(last_success) >= cycle_start:
             scanned_this_cycle += 1
 
     state["eligible_cases"] = len(active_keys)
@@ -1502,6 +1502,15 @@ def cmd_download_all(headless: bool = True, notify: bool = True, flow_id: str = 
             logger.info("Running download_all (all active cases)...")
             _safe_flow_step_status(flow_id, "portal_query", status="running", detail="download_all")
             results = downloader.download_all() or {}
+            if isinstance(results, dict) and results.get("success") is False:
+                err = str(results.get("error") or "download_all failed")
+                _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=err[:240], ok=False)
+                msg = "❌ 筆錄批次下載失敗: " + err[:200]
+                _notify(msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
+                out = {"success": False, "error": err, "download_results": results}
+                _eventlog("transcript:download_all:done", ok=False, payload=out)
+                return out
             if _payload_contains_captcha(results):
                 _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="captcha detected", ok=False)
                 ticket = _enqueue_manual_review("download_all", {"headless": bool(headless)}, "captcha in download_all results")

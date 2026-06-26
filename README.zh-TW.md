@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-MAGI v2 是一套 local-first、可 self-host 的法務營運平台，供小型法務團隊把案件作業、工作流程自動化與模型推理留在操作者可控的本機環境。全系統可在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及法務工作流程自動化——全部整合於一個程式碼庫。
+MAGI v2 是一套 local-first、可 self-host 的法務營運平台，供小型法務團隊把案件作業、工作流程自動化與模型推理留在操作者可控的本機環境。全系統可在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、48 個文件列明的使用者可見技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及法務工作流程自動化——全部整合於一個程式碼庫。
 
 截至 2026-06-23，此公開 repository 是 public-safe 分支：保留安裝程式、CLI、文件、測試與發布閘門；私有正式環境的 runtime 狀態、客戶/案件資料、憑證、本機部署手札與私有法務資料來源整合不得進 git。私有正式環境應把作業資料留在本機，任何公開前都必須通過同一套 public isolation audit。
 
@@ -382,7 +382,7 @@ magi logs         # 追蹤所有日誌
 
 NERV（`/dashboard/nerv` 或 `/nerv`）是交付正式環境時使用的瀏覽器狀態頁；`magi status` 則是終端機狀態檢查。NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback 路徑）。
 
-**50+ 個定時排程任務**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
+**90 個定時排程任務（其中 76 個啟用）**（由 `cron_jobs.json` 管理，由 Discord Bot 排程器執行）：
 
 | 類別 | 任務 |
 |------|------|
@@ -409,7 +409,7 @@ NERV（`/dashboard/nerv` 或 `/nerv`）是交付正式環境時使用的瀏覽�
 
 ## 技能目錄
 
-60+ 個技能模組位於 `skills/`，各自有獨立的 `action.py` 入口。
+文件列出 48 個使用者可見技能；內部測試、維運與開發者專用 runner 不列入一般技能目錄。
 
 ### 法務
 | 技能 | 功能 |
@@ -602,7 +602,7 @@ NERV（`/dashboard/nerv` 或 `/nerv`）是交付正式環境時使用的瀏覽�
 | **檔案解析** | MarkItDown · pdftotext · fitz · pdfplumber · Tesseract · macOS Vision |
 | **OCR** | macOS Vision · RapidOCR · Tesseract · 統一 runtime `skills/engine/ocr/`（Vision + Tesseract 共識、SHA-256 image cache、法律文字修正、feature flag） |
 | **API 框架** | Flask · Flask-Login · Flask-SocketIO |
-| **排程** | `discord_bot.py` 內建 CronScheduler（cron_jobs.json） |
+| **排程** | `discord_bot.py` 內建 CronScheduler（`cron_jobs.json`：90 筆定義 / 76 筆啟用） |
 | **訊息頻道** | LINE Messaging API · Discord.py · python-telegram-bot |
 | **NAS** | SMB LAN（MAGI_NAS_HOST）+ Tailscale fallback（MAGI_NAS_TAILSCALE_HOST） |
 | **日曆** | Google Calendar API（OAuth2，自動 refresh） |
@@ -640,11 +640,11 @@ MAGI_v2/
 │   ├── transcript-downloader/
 │   ├── pdf-namer/
 │   ├── market-briefing/        # 對沖基金委員會（agents/、models/、predict/）
-│   └── …（共 60+ 技能）
+│   └── …（共 48 個使用者可見技能；內部/測試 runner 另列維運文件）
 ├── docs/
 │   └── soul/                   # SOUL_CASPER.md · SOUL_MELCHIOR.md · SOUL_BALTHASAR.md
 ├── tests/                      # run_test_suite gates 使用的 pytest 覆蓋
-├── cron_jobs.json              # 所有排程任務的唯一來源
+├── cron_jobs.json              # 排程任務唯一來源（90 筆定義 / 76 筆啟用）
 └── .env                        # 執行環境設定（不提交至版本控制）
 ```
 
@@ -660,6 +660,7 @@ MAGI_v2/
 | `8081` | oMLX Embedding — ModernBERT-embed-4bit |
 | `8082` | oMLX 文字 — Phi-4-mini-instruct（Melchior，僅日間） |
 | `8083` | oMLX 文字 — SmolLM3-3B（Balthasar，僅日間） |
+| `5016` | OSC Shell NAS helper（`/listdir`、`/stage`） |
 | `8088` | Website Admin 管理頁 |
 | `50052` | gRPC RPC Worker |
 

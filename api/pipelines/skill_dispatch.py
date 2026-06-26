@@ -288,6 +288,13 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         return False, ""
     if len(text) > 600:
         return False, ""
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(text):
+            return False, ""
+    except Exception:
+        pass
 
     safe_skills = {
         "web_search": "command", "translate_document": "command",
@@ -329,6 +336,15 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         return False, ""
     if confidence < float(min_conf.get(method, 0.38)):
         return False, ""
+    try:
+        from api.routing.route_policy import is_generic_word_only, is_high_risk_skill, should_dispatch_skill
+
+        if is_generic_word_only(text):
+            return False, ""
+        if is_high_risk_skill(skill) and not should_dispatch_skill(skill, confidence, text, intent="CHAT", method=method):
+            return False, ""
+    except Exception:
+        logger.debug("route policy semantic dispatch probe failed", exc_info=True)
 
     synthetic = suggest_trigger(skill, text)
     route_mode = safe_skills[skill]

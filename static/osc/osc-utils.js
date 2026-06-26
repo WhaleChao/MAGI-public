@@ -200,7 +200,7 @@ async function shareFileLink(path, label = "檔案") {
     const resp = await fetch("/api/osc/files/share", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ path: rawPath }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -278,6 +278,21 @@ function _csrfToken() {
     return m ? decodeURIComponent(m[1]) : "";
 }
 
+function csrfHeaders(extra = {}) {
+    const headers = { ...(extra || {}) };
+    const csrf = _csrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    return headers;
+}
+
+function apiErrorMessage(data, fallback = "request_failed") {
+    const payload = data && typeof data === "object" ? data : {};
+    const detail = shortText(payload.message || payload.detail || payload.body || "", 240);
+    let message = payload.error || payload.reason || fallback || "request_failed";
+    if (detail && !String(message).includes(detail)) message = `${message}：${detail}`;
+    return String(message || "request_failed");
+}
+
 // session expired 時直接 redirect 到 login（每 30s 內只做一次，避免 setInterval 風暴）
 function _handleSessionExpired() {
     const now = Date.now();
@@ -288,9 +303,7 @@ function _handleSessionExpired() {
 }
 
 async function api(path, method = "GET", body = null) {
-    const opts = { method, headers: {}, redirect: "manual" };  // redirect:manual 才能偵測 302
-    const csrf = _csrfToken();
-    if (csrf) opts.headers["X-CSRF-Token"] = csrf;
+    const opts = { method, headers: csrfHeaders(), credentials: "same-origin", redirect: "manual" };  // redirect:manual 才能偵測 302
     if (body !== null) {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(body);
@@ -319,24 +332,30 @@ async function api(path, method = "GET", body = null) {
         throw new Error("登入已逾時，正在跳轉登入頁...");
     }
     if (!res.ok) {
-        const detail = shortText(data.message || data.detail || data.body || "", 240);
-        let message = data.error || res.statusText || `HTTP ${res.status}`;
-        if (detail && !message.includes(detail)) message = `${message}：${detail}`;
-        throw new Error(message);
+        throw new Error(apiErrorMessage(data, res.statusText || `HTTP ${res.status}`));
+    }
+    if (data && data.ok === false) {
+        const err = new Error(apiErrorMessage(data, "request_failed"));
+        err.payload = data;
+        err.status = res.status;
+        throw err;
     }
     return data;
 }
 
 async function apiForm(path, formData) {
-    const hdrs = {};
-    const csrf = _csrfToken();
-    if (csrf) hdrs["X-CSRF-Token"] = csrf;
-    const res = await fetch(path, { method: "POST", headers: hdrs, body: formData });
+    const res = await fetch(path, { method: "POST", credentials: "same-origin", headers: csrfHeaders(), body: formData });
     const txt = await res.text();
     let data = {};
     try { data = txt ? JSON.parse(txt) : {}; } catch { data = { ok: false, error: txt || res.statusText }; }
     if (!res.ok) {
-        const err = new Error(data.error || res.statusText || "request_failed");
+        const err = new Error(apiErrorMessage(data, res.statusText || "request_failed"));
+        err.payload = data;
+        err.status = res.status;
+        throw err;
+    }
+    if (data && data.ok === false) {
+        const err = new Error(apiErrorMessage(data, "request_failed"));
         err.payload = data;
         err.status = res.status;
         throw err;

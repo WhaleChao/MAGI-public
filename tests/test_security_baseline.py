@@ -55,6 +55,38 @@ class TestToolsAPICors:
             elif 'api.tools_api' in sys.modules:
                 del sys.modules['api.tools_api']
 
+    def test_sensitive_tools_api_routes_require_api_key(self):
+        """Mutating/read-sensitive Tools API routes must not be exposed unauthenticated."""
+        import re
+        from pathlib import Path
+
+        tools_api_path = Path(__file__).parent.parent / "api" / "tools_api.py"
+        source = tools_api_path.read_text(encoding="utf-8")
+        protected_routes = [
+            "/vision",
+            "/skills/versions",
+            "/skills/rollback",
+            "/skills/stable",
+            "/skills/canary/start",
+            "/skills/teach",
+            "/skills/teach/file",
+            "/skills/internalize",
+            "/skills/internalize/codebase",
+            "/code/autofix",
+            "/council/core/approve",
+            "/api/audit_log",
+            "/api/audit_log/restore/<int:log_id>",
+        ]
+
+        for route in protected_routes:
+            pattern = (
+                r"@app\.route\(" + re.escape(repr(route)) + r".*?\)\n"
+                r"(?:(?:@[^\n]+\n))*?"
+                r"@require_api_key\n"
+                r"def "
+            )
+            assert re.search(pattern, source, re.DOTALL), f"{route} must require API key"
+
 
 class TestServerSecurityHeaders:
     """Tests for Flask bootstrap security headers."""
@@ -212,6 +244,58 @@ class TestCORSMiddlewarePresence:
         source = tools_api_path.read_text(encoding="utf-8")
 
         assert "CORS(app" in source
+
+
+class TestTelegramWebhookSecurity:
+    def test_production_webhook_requires_secret_when_missing(self, monkeypatch):
+        from flask import Flask
+        from api.webhooks import telegram
+
+        monkeypatch.setenv("MAGI_TELEGRAM_WEBHOOK_PRODUCTION", "1")
+        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+        monkeypatch.delenv("OPENCLAW_TELEGRAM_WEBHOOK_SECRET", raising=False)
+
+        app = Flask(__name__)
+        with app.test_request_context("/telegram/webhook", method="POST"):
+            assert telegram._telegram_verify_webhook_secret() is False
+
+    def test_production_webhook_requires_allowlisted_sender(self, monkeypatch):
+        import sys
+        import types
+        from flask import Flask
+        from api.webhooks import telegram
+
+        monkeypatch.setenv("MAGI_TELEGRAM_WEBHOOK_PRODUCTION", "1")
+        monkeypatch.delenv("MAGI_ADMIN_TELEGRAM_IDS", raising=False)
+        monkeypatch.delenv("MAGI_NOTIFY_TELEGRAM_IDS", raising=False)
+        monkeypatch.setattr(telegram, "_telegram_send_text_to", lambda *args, **kwargs: False)
+        monkeypatch.setitem(
+            sys.modules,
+            "api.server",
+            types.SimpleNamespace(_check_rate_limit=lambda *_args, **_kwargs: False, orchestrator=object()),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "api.startup",
+            types.SimpleNamespace(_record_last_public_base_url=lambda: None),
+        )
+
+        update = {
+            "update_id": 123,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": "100", "type": "private"},
+                "from": {"id": "200"},
+                "text": "hello",
+            },
+        }
+
+        app = Flask(__name__)
+        with app.test_request_context("/telegram/webhook", method="POST"):
+            result = telegram._telegram_handle_update(update)
+
+        assert result["ok"] is False
+        assert result["blocked"] == "allowlist"
 
 
 class TestSecurityHeadersNotWildcard:

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from flask import Blueprint, request, jsonify
 from flask_login import login_required
+from scripts.ops.token_health_check import google_token_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,11 @@ def _load_creds():
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            _write_token_atomic(TOKEN_PATH, creds.to_json())
+        with google_token_file_lock(TOKEN_PATH):
+            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                _write_token_atomic(TOKEN_PATH, creds.to_json())
         _LAST_CREDS_STATUS = "connected" if creds and creds.valid else "invalid_credentials"
         return creds
     except Exception as exc:
@@ -235,9 +237,8 @@ def gcal_auth_callback():
         flow.fetch_token(code=code)
         creds = flow.credentials
 
-        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_PATH.write_text(creds.to_json())
-        TOKEN_PATH.chmod(0o600)
+        with google_token_file_lock(TOKEN_PATH):
+            _write_token_atomic(TOKEN_PATH, creds.to_json())
 
         logger.info("GCal token saved to %s", TOKEN_PATH)
         return _html_page("✅ 授權成功", "Google Calendar 已成功連線，可關閉此分頁。", close=True)

@@ -220,6 +220,27 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "research_eastasia": ["research_daily", "general"],
 }
 
+_BUSINESS_TOPIC_PREFIXES = (
+    "laf_",
+    "filereview_",
+    "file_review_",
+    "research_",
+    "transcript_",
+    "verbatim_",
+    "summary_",
+    "translation_",
+    "judgment_",
+    "filing_",
+    "pdf_",
+)
+
+
+def _is_unknown_business_topic(topic: str) -> bool:
+    t = str(topic or "").strip().lower()
+    if not t or t == "general" or t in _FALLBACK_CHAIN:
+        return False
+    return t.startswith(_BUSINESS_TOPIC_PREFIXES)
+
 
 # ───────── Channel Map 載入/儲存 ─────────
 
@@ -489,6 +510,9 @@ def resolve_discord_channel(
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
     cmap = _load_channel_map()
+    if _is_unknown_business_topic(sub_topic):
+        logger.warning("Unknown business notification topic '%s'; suppressing general fallback.", sub_topic)
+        return sub_topic, "__SILENT__"
     policy = _notification_policy_for(sub_topic, source)
     if policy == "silent":
         return sub_topic, "__SILENT__"

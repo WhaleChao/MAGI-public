@@ -645,6 +645,10 @@ async function pollArchiveJob(jobId, caseId = "", attempt = 0) {
 function showArchiveResult(archive) {
     if (!archive) return;
     const reason = archiveReasonText(archive.reason);
+    if (["queued", "running"].includes(String(archive.reason || archive.status || "").toLowerCase())) {
+        showToast(`結案搬移：${reason}`, "warn", 5000);
+        return;
+    }
     if (archive.ok && !archive.skipped) {
         showToast(`結案搬移：${reason}${archive.to ? " → " + archive.to : ""}`, "ok", 6000);
         return;
@@ -2243,7 +2247,7 @@ async function handleCasesCsvUpload(file) {
     fd.append("file", file);
     showToast("匯入中...", "info", 2000);
     try {
-        const res = await fetch("/api/osc/cases/import-csv", { method: "POST", body: fd });
+        const res = await fetch("/api/osc/cases/import-csv", { method: "POST", credentials: "same-origin", headers: csrfHeaders(), body: fd });
         const data = await res.json();
         if (data.ok) {
             const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
@@ -2278,7 +2282,7 @@ async function handleClientsCsvUpload(file) {
     fd.append("file", file);
     showToast("匯入中...", "info", 2000);
     try {
-        const res = await fetch("/api/osc/clients/import-csv", { method: "POST", body: fd });
+        const res = await fetch("/api/osc/clients/import-csv", { method: "POST", credentials: "same-origin", headers: csrfHeaders(), body: fd });
         const data = await res.json();
         if (data.ok) {
             const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
@@ -2345,7 +2349,7 @@ function addressLabelDialog(caseId) {
         document.getElementById("al-download-btn").style.display = "none";
         try {
             const url = `/api/osc/cases/${encodeURIComponent(caseId)}/address-label?mode=preview&recipient=${recipient}`;
-            const resp = await fetch(url, { credentials: "same-origin" });
+            const resp = await fetch(url, { credentials: "same-origin", headers: csrfHeaders() });
             if (!resp.ok) {
                 const json = await resp.json().catch(() => ({}));
                 previewDiv.innerHTML = `<span style="color:red">錯誤：${json.error || resp.statusText}</span>`;

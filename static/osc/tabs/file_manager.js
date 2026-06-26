@@ -127,8 +127,7 @@
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
             + '&show_hidden=' + (FM.showHidden ? '1' : '0');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+        return api(url);
     }
 
     async function apiTree(basePath, relativePath) {
@@ -136,8 +135,7 @@
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
             + '&show_hidden=' + (FM.showHidden ? '1' : '0');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+        return api(url);
     }
 
     async function apiCaseSearch(query) {
@@ -145,13 +143,11 @@
         const statusScope = q ? 'all' : 'working';
         const url = '/api/osc/cases?limit=120&category=全部&status_scope=' + encodeURIComponent(statusScope)
             + (q ? '&q=' + encodeURIComponent(q) : '');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+        return api(url);
     }
 
     async function apiDriveRoots() {
-        const r = await fetch('/api/osc/folders/roots', { credentials: 'same-origin' });
-        return r.json();
+        return api('/api/osc/folders/roots');
     }
 
     function caseResultMeta(c) {
@@ -777,7 +773,15 @@
         const seq = ++FM.treeSeq;
         const baseAtStart = FM.basePath;
         root.innerHTML = '<div class="fm-loading-inline">載入樹狀…</div>';
-        const data = await apiTree(FM.basePath, '');
+        let data;
+        try {
+            data = await apiTree(FM.basePath, '');
+        } catch (e) {
+            if (seq === FM.treeSeq && baseAtStart === FM.basePath) {
+                root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(e.message || e) + '</div>';
+            }
+            return;
+        }
         if (seq !== FM.treeSeq || baseAtStart !== FM.basePath) return;
         if (!data || data.ok === false) {
             const friendly = (data && data.message) || (data && data.error) || '未知錯誤';
@@ -829,7 +833,13 @@
                 childWrap.className = 'fm-tree-children';
                 childWrap.innerHTML = '<div class="fm-loading-inline">…</div>';
                 wrap.appendChild(childWrap);
-                const data = await apiTree(FM.basePath, node.relative_path || '');
+                let data;
+                try {
+                    data = await apiTree(FM.basePath, node.relative_path || '');
+                } catch (e) {
+                    childWrap.innerHTML = '<div class="fm-loading-inline">載入失敗：' + escapeHTML(e.message || e) + '</div>';
+                    return;
+                }
                 childWrap.innerHTML = '';
                 if (data && data.ok && (data.children || []).length) {
                     for (const c of data.children) {
@@ -869,7 +879,17 @@
         FM.lastSelectedRel = null;
         updateSelectionControls();
         setStatus('載入中…');
-        const data = await apiBrowse(FM.basePath, rel);
+        let data;
+        try {
+            data = await apiBrowse(FM.basePath, rel);
+        } catch (e) {
+            if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
+            FM.loading = false;
+            const msg = e.message || e || '未知錯誤';
+            setStatus('載入失敗：' + msg, true);
+            renderEntries({ ok: false, error: msg });
+            return;
+        }
         if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
         FM.loading = false;
         if (!data || data.ok === false) {
@@ -912,7 +932,7 @@
     // ── Preview Modal (Phase 2 commit 8) ──────────────────────────────
     async function apiPreview(filePath) {
         const url = '/api/osc/files/preview?path=' + encodeURIComponent(filePath);
-        const r = await fetch(url, { credentials: 'same-origin' });
+        const r = await fetch(url, { credentials: 'same-origin', headers: csrfHeaders() });
         const ct = (r.headers.get('Content-Type') || '').toLowerCase();
         if (ct.includes('application/json')) {
             return { json: await r.json(), blob: null, contentType: ct, status: r.status };
@@ -1017,7 +1037,7 @@
             } else if (kind === 'text') {
                 body.classList.add('padded');
                 try {
-                    const tr = await fetch(url, { credentials: 'same-origin' });
+                    const tr = await fetch(url, { credentials: 'same-origin', headers: csrfHeaders() });
                     const txt = await tr.text();
                     body.innerHTML = '<pre class="fm-preview-text">' + escapeHTML(txt.slice(0, 500000)) + '</pre>';
                 } catch (e) {
@@ -1133,40 +1153,20 @@
 
     // ── Rename / move-to-trash API (Phase 2 commit 11) ───────────────
     async function apiRename(basePath, relativePath, newName) {
-        const r = await fetch('/api/osc/folders/rename', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, new_name: newName }),
-        });
-        return r.json();
+        return api('/api/osc/folders/rename', 'POST', { base_path: basePath, relative_path: relativePath, new_name: newName });
     }
     async function apiMoveToTrash(basePath, relativePath) {
-        const r = await fetch('/api/osc/folders/move', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, source_relative_path: relativePath, to_trash: true }),
-        });
-        return r.json();
+        return api('/api/osc/folders/move', 'POST', { base_path: basePath, source_relative_path: relativePath, to_trash: true });
     }
     async function apiMove(basePath, sourceRelativePath, targetRelativePath) {
-        const r = await fetch('/api/osc/folders/move', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                base_path: basePath,
-                source_relative_path: sourceRelativePath,
-                target_relative_path: targetRelativePath || '',
-            }),
+        return api('/api/osc/folders/move', 'POST', {
+            base_path: basePath,
+            source_relative_path: sourceRelativePath,
+            target_relative_path: targetRelativePath || '',
         });
-        return r.json();
     }
     async function apiShareFile(fullPath) {
-        const r = await fetch('/api/osc/files/share', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: fullPath }),
-        });
-        return r.json();
+        return api('/api/osc/files/share', 'POST', { path: fullPath });
     }
 
     async function createShareLink(rel, name) {
@@ -1175,7 +1175,12 @@
             return;
         }
         const fullPath = buildLocalPath(rel);
-        const r = await apiShareFile(fullPath);
+        let r;
+        try {
+            r = await apiShareFile(fullPath);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (!r || !r.ok) {
             const msg = r && r.error === 'share_public_base_required'
                 ? '尚未設定獨立分享入口。為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。'
@@ -1313,7 +1318,12 @@
         const errors = [];
         let moved = 0;
         for (const entry of entries) {
-            const r = await apiMove(FM.basePath, entry.rel, target);
+            let r;
+            try {
+                r = await apiMove(FM.basePath, entry.rel, target);
+            } catch (e) {
+                r = (e && e.payload) || { ok: false, error: e.message || e };
+            }
             if (r && r.ok) moved += 1;
             else errors.push((entry.name || pathBaseName(entry.rel)) + '：' + moveErrorText(r && r.error));
         }
@@ -1503,7 +1513,12 @@
         if (newName == null) return;
         const trimmed = newName.trim();
         if (!trimmed || trimmed === oldName) return;
-        const r = await apiRename(FM.basePath, rel, trimmed);
+        let r;
+        try {
+            r = await apiRename(FM.basePath, rel, trimmed);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (r && r.ok) { setStatus('已重新命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
         else setStatus('重新命名失敗：' + ((r && r.error) || '未知'), true);
     }
@@ -1511,7 +1526,12 @@
     async function trashSelected(rel, name) {
         if (!rel) return;
         if (!await showConfirm('MAGI說', '將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
-        const r = await apiMoveToTrash(FM.basePath, rel);
+        let r;
+        try {
+            r = await apiMoveToTrash(FM.basePath, rel);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (r && r.ok) { setStatus('已移到回收桶：' + r.new_relative_path); refresh(); setTimeout(() => setStatus(''), 3000); }
         else setStatus('移到回收桶失敗：' + ((r && r.error) || '未知'), true);
     }
@@ -1526,12 +1546,7 @@
     const _ensuredFolders = new Set();
 
     async function apiMkdir(basePath, relativePath, name) {
-        const r = await fetch('/api/osc/folders/mkdir', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, name }),
-        });
-        return r.json();
+        return api('/api/osc/folders/mkdir', 'POST', { base_path: basePath, relative_path: relativePath, name });
     }
 
     function openConflictDialog(name, message) {
@@ -1759,6 +1774,8 @@
             const xhr = new XMLHttpRequest();
             xhr.open('POST', url);
             xhr.withCredentials = true;
+            const csrf = _csrfToken();
+            if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
             xhr.upload.onprogress = (ev) => {
                 if (!ev.lengthComputable) return;
                 const pct = Math.round(ev.loaded / ev.total * 95);
@@ -1793,9 +1810,10 @@
             fd.append('chunk', blob, q.file.name + '.part' + i);
 
             const r = await fetch('/api/osc/files/upload-chunked', {
-                method: 'POST', credentials: 'same-origin', body: fd,
+                method: 'POST', credentials: 'same-origin', headers: csrfHeaders(), body: fd,
             });
-            const j = await r.json();
+            const j = await r.json().catch(() => ({ ok: false, error: r.statusText || 'chunk_failed' }));
+            if (!r.ok && j.ok !== false) j.ok = false;
             if (!j.ok) {
                 if (j.error === 'file_exists') {
                     if (_uploadConflictPolicy === 'skip-all') return { skipped: true };
@@ -2173,7 +2191,12 @@
                 if (!FM.basePath) { setStatus('請先開啟資料夾', true); return; }
                 const name = await showPrompt('MAGI說', '新資料夾名稱：', '');
                 if (!name) return;
-                const r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
+                let r;
+                try {
+                    r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
+                } catch (e) {
+                    r = (e && e.payload) || { ok: false, error: e.message || e };
+                }
                 if (r && r.ok) { setStatus('已建立資料夾：' + name); refresh(); setTimeout(() => setStatus(''), 2000); }
                 else setStatus('建立失敗：' + ((r && r.error) || '未知'), true);
             });

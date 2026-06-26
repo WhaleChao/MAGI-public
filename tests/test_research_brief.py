@@ -325,6 +325,43 @@ def test_memory_ingestion_same_content_different_brief_ids_are_allowed(rb_action
     assert captured[0]["metadata"]["brief_id"] != captured[1]["metadata"]["brief_id"]
 
 
+def test_digest_reports_degraded_when_memory_ingest_fails(rb_action, monkeypatch, capsys):
+    import types
+
+    rb_action.task_add_namespace("Tfail")
+    rb_action.task_add_source("Tfail", "https://example.com/feed", stype="rss")
+
+    fetchers_mod = _load_skill_module("fetchers", "fetchers.py")
+    monkeypatch.setattr(
+        fetchers_mod,
+        "fetch_source",
+        lambda _src: [{
+            "title": "Important Human Rights Update",
+            "url": "https://example.com/a",
+            "snippet": "body",
+            "raw": "body",
+        }],
+    )
+    sys.modules["fetchers"] = fetchers_mod
+
+    digest_mod = types.ModuleType("digest")
+    digest_mod.format_digest = lambda namespace, entries, keyword_pool=None: "digest"
+    monkeypatch.setitem(sys.modules, "digest", digest_mod)
+
+    mem_stub = types.ModuleType("skills.memory.mem_bridge")
+    mem_stub.remember_batch = lambda _payloads: 0
+    monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", mem_stub)
+
+    capsys.readouterr()
+    rc = rb_action.task_digest("Tfail", notify=False)
+    payload = rb_action.json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["success"] is False
+    assert payload["results"][0]["degraded"] is True
+    assert payload["results"][0]["error"] == "memory_ingest_failed"
+
+
 # ───────── translator ─────────
 
 def test_translator_passthrough_for_zh(rb_translator):

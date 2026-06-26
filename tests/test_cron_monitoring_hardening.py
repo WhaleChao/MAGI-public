@@ -51,6 +51,14 @@ def test_cron_result_policy_keeps_real_failure():
     assert should_log_cron_issue(1, "", "Traceback: boom") is True
 
 
+def test_cron_result_policy_does_not_hide_stderr_failure_with_success_json():
+    from skills.ops.cron_result_policy import should_log_cron_issue
+
+    stdout = json.dumps({"success": True, "severity": "OK", "alarm_triggered": False})
+
+    assert should_log_cron_issue(1, stdout, "Traceback: boom") is True
+
+
 def test_operational_audit_ignores_macro_cron_companions(tmp_path, monkeypatch):
     import scripts.ops.audit_operational_hardening as audit
 

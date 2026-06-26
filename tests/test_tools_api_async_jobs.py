@@ -48,6 +48,10 @@ _AUTH_HEADER = {"X-API-Key": _TEST_API_KEY}
 @pytest.fixture(autouse=True)
 def _tools_api_import_stubs(monkeypatch):
     """Keep async /skills/run tests isolated from unrelated optional imports."""
+    flask_login = types.ModuleType("flask_login")
+    flask_login.current_user = types.SimpleNamespace(is_authenticated=False, role="")
+    monkeypatch.setitem(sys.modules, "flask_login", flask_login)
+
     web_research = types.ModuleType("skills.research.web_research")
     web_research.search_web = lambda query, num_results=5: {"results": []}
     web_research.research_topic = lambda *args, **kwargs: {"success": True, "results": []}
@@ -203,6 +207,68 @@ def test_sync_skill_run_folds_structured_params_at_execution_boundary(ctx):
     assert output.startswith("done:search ")
     assert '"keywords": "最高法院 通譯"' in output
     assert '"max_results": 3' in output
+
+
+def test_sync_skill_run_denies_high_risk_before_runner(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    calls = []
+    denied = {}
+    monkeypatch.setattr(
+        sg,
+        "run_skill_action",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or _ok_result("magi-doctor", "diagnose"),
+    )
+
+    def _capture_denied(_tool, _started, decision, _meta=None):
+        denied["reason"] = decision.reason
+        return {"error": decision.reason}, 403
+
+    monkeypatch.setattr(
+        ctx["tools_api"],
+        "_tool_denied_response",
+        _capture_denied,
+    )
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "magi-doctor", "task": "diagnose"},
+    )
+
+    assert resp.status_code == 403
+    assert "route_policy_denied:high_risk_skill_must_route_through_policy" in denied["reason"]
+    assert calls == []
+
+
+def test_sync_skill_run_denies_deprecated_before_runner(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    calls = []
+    denied = {}
+    monkeypatch.setattr(
+        sg,
+        "run_skill_action",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or _ok_result("pdf-annotator", "run"),
+    )
+
+    def _capture_denied(_tool, _started, decision, _meta=None):
+        denied["reason"] = decision.reason
+        return {"error": decision.reason}, 403
+
+    monkeypatch.setattr(
+        ctx["tools_api"],
+        "_tool_denied_response",
+        _capture_denied,
+    )
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "pdf-annotator", "task": "run"},
+    )
+
+    assert resp.status_code == 403
+    assert "route_policy_denied:deprecated_skill_must_not_run_directly" in denied["reason"]
+    assert calls == []
 
 
 def test_sync_skill_run_missing_task_returns_400(ctx):

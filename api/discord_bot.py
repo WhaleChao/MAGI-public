@@ -652,8 +652,11 @@ async def _execute_scheduled_job(job: dict, semaphore: asyncio.Semaphore, schedu
                         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 568, exc_info=True)
                     logger.warning("⚠️ Shell job %s exited %d: %s", job_id, _sr.returncode, _err_text)
                 else:
-                    logger.info("✅ Shell job %s returned %d but stdout indicates success; issue suppressed", job_id, _sr.returncode)
-                    result_success = True
+                    logger.info(
+                        "ℹ️ Shell job %s returned %d; issue suppressed by policy but result remains failed",
+                        job_id,
+                        _sr.returncode,
+                    )
             else:
                 logger.info("✅ Shell job %s completed OK", job_id)
             _record_result(

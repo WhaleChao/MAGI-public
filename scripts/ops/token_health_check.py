@@ -8,6 +8,8 @@ expiry timestamps, and status. Secret values are never printed or written.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -25,6 +27,7 @@ if str(MAGI_ROOT) not in sys.path:
 
 DEFAULT_REPORT_PATH = MAGI_ROOT / ".runtime" / "token_health" / "token_health_latest.json"
 INVALID_GRANT_MARKERS = ("invalid_grant", "expired or revoked", "token has been revoked")
+TOKEN_LOCK_TIMEOUT_SEC = float(os.environ.get("MAGI_GOOGLE_TOKEN_LOCK_TIMEOUT_SEC", "30") or "30")
 
 
 @dataclass
@@ -159,6 +162,34 @@ def _atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
         raise
 
 
+def _token_lock_path(token_path: Path) -> Path:
+    path = token_path.expanduser()
+    safe_name = path.name.replace(os.sep, "_") or "token"
+    return path.parent / f".{safe_name}.lock"
+
+
+@contextlib.contextmanager
+def google_token_file_lock(token_path: Path, *, timeout_sec: float | None = None):
+    """Cross-process lock for a single Google OAuth token file."""
+    path = token_path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _token_lock_path(path)
+    deadline = time.monotonic() + (TOKEN_LOCK_TIMEOUT_SEC if timeout_sec is None else max(0.0, timeout_sec))
+    with lock_path.open("a+", encoding="utf-8") as fh:
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"google_token_lock_timeout:{lock_path}")
+                time.sleep(0.05)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _safe_token_metadata(token_path: Path) -> tuple[dict[str, Any] | None, str]:
     try:
         data = json.loads(token_path.read_text(encoding="utf-8"))
@@ -177,11 +208,12 @@ def _refresh_google_token(spec: GoogleTokenSpec) -> tuple[bool, str]:
         return False, f"missing_google_dependencies:{type(exc).__name__}"
 
     try:
-        creds = Credentials.from_authorized_user_file(str(spec.token_path), spec.scopes)
-        if not getattr(creds, "refresh_token", None):
-            return False, "missing_refresh_token"
-        creds.refresh(Request())
-        _atomic_write_text(spec.token_path, creds.to_json())
+        with google_token_file_lock(spec.token_path):
+            creds = Credentials.from_authorized_user_file(str(spec.token_path), spec.scopes)
+            if not getattr(creds, "refresh_token", None):
+                return False, "missing_refresh_token"
+            creds.refresh(Request())
+            _atomic_write_text(spec.token_path, creds.to_json())
         return True, ""
     except Exception as exc:
         text = str(exc)

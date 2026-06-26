@@ -35,6 +35,36 @@ def test_run_orchestrator_parses_sentinel_json(monkeypatch):
     assert result["result"] == {"ok": True, "nested": {"value": 7}}
 
 
+def test_run_orchestrator_pretty_json_failure_is_failure(monkeypatch):
+    action = _load_action_module()
+
+    def fake_run(*args, **kwargs):
+        payload = {"success": False, "error": "portal submit failed"}
+        return subprocess.CompletedProcess(args[0], 0, stdout=json.dumps(payload, ensure_ascii=False, indent=2), stderr="")
+
+    monkeypatch.setattr(action.subprocess, "run", fake_run)
+
+    result = action._run_orchestrator(["--mode", "portal-submit"], timeout=1)
+
+    assert result["success"] is False
+    assert result["result"]["error"] == "portal submit failed"
+
+
+def test_run_orchestrator_nested_payload_failure_overrides_returncode(monkeypatch):
+    action = _load_action_module()
+
+    def fake_run(*args, **kwargs):
+        payload = {"success": True, "result": {"ok": False, "error": "inner failed"}}
+        return subprocess.CompletedProcess(args[0], 0, stdout=json.dumps(payload, ensure_ascii=False, indent=2), stderr="")
+
+    monkeypatch.setattr(action.subprocess, "run", fake_run)
+
+    result = action._run_orchestrator(["--mode", "portal-submit"], timeout=1)
+
+    assert result["success"] is False
+    assert result["result"]["result"]["error"] == "inner failed"
+
+
 def test_portal_action_forwards_no_notify(monkeypatch):
     action = _load_action_module()
     captured = {}

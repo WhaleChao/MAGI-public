@@ -543,6 +543,13 @@ def _try_agentic_route(orch, message: str, user_id="", role="", platform="", dec
     text = str(message or "").strip()
     if not text:
         return ""
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(text):
+            return ""
+    except Exception:
+        pass
     decision = decision or classify_intent_contract(text)
     if getattr(decision, "kind", "") != KIND_AGENT_TASK and not _contract_looks_like_agentic_request(text):
         return ""
@@ -750,6 +757,91 @@ def _try_arithmetic_tool_fast_path(message: str) -> str:
     if not result:
         return "計算工具沒有回傳結果。"
     return f"{result}\n\n（使用工具：calculate）"
+
+
+_TOOL_FIRST_REGISTRY_MAP = {
+    "case_query": ("query_cases", {"query": "message"}),
+    "calendar_query": ("get_schedule", {"date": "message"}),
+    "legal_reference": ("search_statutes", {"query": "message"}),
+    "judgment_query": ("search_judgments", {"keywords": "message"}),
+    "web_research": ("web_search", {"query": "message"}),
+    "memory_recall": ("search_memory", {"query": "message"}),
+    "db_query": ("query_cases", {"query": "message"}),
+}
+
+
+def _tool_output_looks_failed(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return True
+    return any(
+        marker in lowered
+        for marker in (
+            "失敗",
+            "錯誤",
+            "exception",
+            "timeout",
+            "timed out",
+            "api 回傳 4",
+            "api 回傳 5",
+        )
+    )
+
+
+def _try_tool_first_policy_route(orch, message: str, *, intent: str, user_id="", role="", platform="", heavy: bool = False) -> str:
+    """Enforce required tool-first policy in the production message pipeline."""
+    try:
+        from api.tools.policies import format_tool_failure_response
+        from api.tools.tool_router import route_to_tool
+    except Exception:
+        return ""
+
+    routed = route_to_tool(message, intent=intent, user_id=str(user_id or ""), platform=str(platform or ""))
+    if not routed.used_tool or routed.requirement_level != "required":
+        return ""
+
+    mapping = _TOOL_FIRST_REGISTRY_MAP.get(routed.tool_hint)
+    if mapping:
+        tool_name, arg_map = mapping
+        try:
+            from skills.engine.tool_registry import TOOLS
+
+            spec = TOOLS.get(tool_name) or {}
+            fn = spec.get("fn")
+            if callable(fn):
+                kwargs = {
+                    key: message if value == "message" else value
+                    for key, value in arg_map.items()
+                }
+                output = str(fn(**kwargs) or "").strip()
+                if output and not _tool_output_looks_failed(output):
+                    try:
+                        orch._append_route_trace(
+                            str(user_id or ""),
+                            str(platform or ""),
+                            "tool_first_policy",
+                            str(routed.tool_hint or tool_name),
+                            {"tool": tool_name, "requirement": routed.requirement_level},
+                        )
+                    except Exception:
+                        logger.debug("tool-first route trace failed", exc_info=True)
+                    return output
+                return format_tool_failure_response(routed.tool_hint, output or "empty_tool_output")
+        except Exception as exc:
+            logger.warning("Tool-first registry route failed for %s: %s", routed.tool_hint, exc)
+            return format_tool_failure_response(routed.tool_hint, str(exc))
+
+    agent_reply = _try_agentic_route(
+        orch,
+        message,
+        user_id=user_id,
+        role=role,
+        platform=platform,
+        heavy=heavy,
+    )
+    if agent_reply:
+        return agent_reply
+    return routed.failure_response or format_tool_failure_response(routed.tool_hint)
 
 
 def _find_file_review_confirm_record(message: str) -> tuple[str, dict, str]:
@@ -3270,9 +3362,38 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         str(intent or ""),
         {"role": str(role or "user")},
     )
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch as _user_declines_tool_dispatch
+
+        _tool_dispatch_declined = _user_declines_tool_dispatch(message)
+    except Exception:
+        _tool_dispatch_declined = False
+    if _tool_dispatch_declined and intent in {"CMD", "QUERY"} and not str(message or "").lstrip().startswith(("/", "!", "@MAGI")):
+        orch._append_route_trace(
+            str(user_id or ""),
+            str(platform or ""),
+            "route_policy",
+            "tool_dispatch_declined",
+            {"original_intent": str(intent or "")},
+        )
+        intent = "CHAT"
 
     # 6. Routing — Embedding Router (primary) → legacy if/elif → SemanticRouter (fallback)
     response = ""
+
+    if intent == "QUERY" and not _tool_dispatch_declined:
+        tool_first_reply = _try_tool_first_policy_route(
+            orch,
+            message,
+            intent=intent,
+            user_id=user_id,
+            role=role,
+            platform=platform,
+            heavy=_heavy_opt_in,
+        )
+        if tool_first_reply:
+            orch._append_history(user_id, "assistant", tool_first_reply)
+            return tool_first_reply
 
     # 6.0 Embedding-based skill dispatch (fast, runs before legacy handlers)
     # Route ONCE here; reuse result for CHAT override below (avoid duplicate embed call)
@@ -3285,7 +3406,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5744, exc_info=True)
 
-    if intent in ("CMD", "QUERY"):
+    if intent in ("CMD", "QUERY") and not _tool_dispatch_declined:
         try:
             _er_result = _er_cached_result
             # LAF 回報指令已有專屬 handler，不讓 EmbeddingRouter 攔截
@@ -3434,7 +3555,7 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         # Reuse _er_cached_result from above — no duplicate embedding call
         # 2026-03-29: In general/LINE channels (no topic), raise threshold to
         # 0.85 to prevent casual mentions from hijacking conversations.
-        if not _embed_dispatched:
+        if not _embed_dispatched and not _tool_dispatch_declined:
             try:
                 _er_result = _er_cached_result
                 if _er_result:

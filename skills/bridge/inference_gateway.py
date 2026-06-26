@@ -44,12 +44,29 @@ except Exception:
 try:
     from api.routing.command_prefixes import split_heavy_prefix
 except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+    _MAGI_PREFIX_FALLBACK_RE = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+    _HEAVY_WORD_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
     def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
-        text = str(message or "").replace("＠", "@").lstrip()
-        for prefix in ("@heavy", "@重型"):
-            if text.lower().startswith(prefix):
-                return True, text[len(prefix):].lstrip(" \t\r\n:：,，、。!！?？-–—")
-        return False, text
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        magi_match = _MAGI_PREFIX_FALLBACK_RE.match(text)
+        if magi_match:
+            rest = text[magi_match.end():]
+            heavy_after_magi = _HEAVY_WORD_PREFIX_FALLBACK_RE.match(rest)
+            if heavy_after_magi:
+                cleaned = rest[heavy_after_magi.end():].strip()
+                return True, f"@MAGI {cleaned}".strip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 try:
     from providers import build_provider_registry as _build_provider_registry

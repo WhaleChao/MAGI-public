@@ -3,7 +3,7 @@
 快速入庫：將 judicial_api/raw/ 下的 JSON 直接寫入 court_judgments 表。
 跳過 LLM 摘要，只存全文。摘要之後用 resummary 補。
 """
-import sys, os, json, glob, hashlib, time
+import sys, os, json, glob, hashlib, time, re
 
 sys.stdout.reconfigure(line_buffering=True)
 _MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR") or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

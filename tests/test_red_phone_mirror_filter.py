@@ -130,6 +130,20 @@ def test_laf_general_telegram_fallback_does_not_use_laf_business_topic(monkeypat
     assert thread_id == 999
 
 
+def test_unknown_business_topic_does_not_use_telegram_general_thread(monkeypatch):
+    monkeypatch.setattr(red_phone, "_load_topic_map", lambda: {"general": 999})
+
+    topic, thread_id = red_phone._resolve_thread_id(
+        "未知法扶業務通知",
+        "unit",
+        "warning",
+        topic_key="laf_unknown",
+    )
+
+    assert topic == "laf_unknown"
+    assert thread_id is None
+
+
 def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     outbox_path = tmp_path / "outbox.json"
     monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
@@ -214,5 +228,29 @@ def test_alert_admin_dedup_does_not_report_fake_delivery(tmp_path, monkeypatch):
     assert result["telegram"] is False
     assert result["line"] is False
     assert result["discord"] is False
+    assert result["delivered"] is False
     entries = [json.loads(line) for line in delivery_path.read_text(encoding="utf-8").splitlines()]
     assert entries[-1]["event"] == "deduplicated"
+
+
+def test_send_telegram_push_dedup_returns_false(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.dedup_db",
+        types.SimpleNamespace(
+            is_done=lambda category, key: True,
+            mark_done=lambda *args, **kwargs: None,
+        ),
+    )
+
+    assert red_phone.send_telegram_push("同一則警報") is False
+
+
+def test_discord_silent_route_is_not_delivery_success(monkeypatch):
+    from api import discord_channel_router as router
+
+    monkeypatch.setattr(red_phone, "DISCORD_BOT_TOKEN", "token")
+    monkeypatch.setattr(red_phone, "_get_discord_channel_id_fallback", lambda: "123")
+    monkeypatch.setattr(router, "resolve_discord_channel", lambda *args, **kwargs: ("laf_unknown", "__SILENT__"))
+
+    assert red_phone._send_discord_bot_message("未知法扶業務通知", "warning", topic_key="laf_unknown") is False

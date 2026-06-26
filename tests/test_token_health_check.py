@@ -1,4 +1,8 @@
 import json
+import subprocess
+import sys
+import time
+import pytest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -139,3 +143,31 @@ def test_run_after_token_refresh_execs_with_env_prefix(monkeypatch):
     assert called["program"] == "python"
     assert called["command"] == ["python", "job.py"]
     assert called["env"]["MAGI_TEST_FLAG"] == "1"
+
+
+def test_google_token_file_lock_times_out_when_held(tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text("{}", encoding="utf-8")
+
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib,time\n"
+                "from scripts.ops.token_health_check import google_token_file_lock\n"
+                f"p=pathlib.Path({str(token)!r})\n"
+                "with google_token_file_lock(p, timeout_sec=1):\n"
+                "    time.sleep(1.5)\n"
+            ),
+        ],
+        cwd=str(thc.MAGI_ROOT),
+    )
+    time.sleep(0.2)
+    try:
+        with pytest.raises(TimeoutError):
+            with thc.google_token_file_lock(token, timeout_sec=0.01):
+                pass
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)

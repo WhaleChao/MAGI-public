@@ -67,6 +67,22 @@ def _parse_subprocess_result(stdout_text: str):
     return None, "parse_failed"
 
 
+def _subprocess_payload_succeeded(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False or data.get("ok") is False:
+        return False
+    nested = data.get("result")
+    if isinstance(nested, dict):
+        if nested.get("success") is False or nested.get("ok") is False:
+            return False
+        if nested.get("success") is True or nested.get("ok") is True:
+            return True
+    if data.get("success") is True or data.get("ok") is True:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # LAF submit pending persistence
 # ---------------------------------------------------------------------------
@@ -386,11 +402,11 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
             stdout_text = (proc.stdout or "").strip()
             stderr_text = (proc.stderr or "").strip()
             data, _parse_method = _parse_subprocess_result(stdout_text)
-            if proc.returncode != 0 and not (isinstance(data, dict) and data.get("ok")):
+            if proc.returncode != 0 and not _subprocess_payload_succeeded(data):
                 # \u771f\u6b63\u5931\u6557\uff1areturncode \u975e\u96f6\u4e14 result \u4e5f\u4e0d\u662f ok=True
                 text = f"\u274c \u958b\u8fa6\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {token_id}\uff0ccode={proc.returncode}\uff09\n{(stderr_text or stdout_text)[:1200]}"
             else:
-                if isinstance(data, dict) and data.get("ok"):
+                if _subprocess_payload_succeeded(data):
                     identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
                     cname = str(identity.get("client_name") or payload_obj.get("client_name") or "").strip()
                     laf_no = str(identity.get("laf_case_number") or payload_obj.get("laf_case_no") or "").strip()
@@ -651,19 +667,13 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
             stdout_text = (proc.stdout or "").strip()
-            data = None
-            for line in reversed(stdout_text.splitlines()):
-                try:
-                    data = json.loads(line)
-                    if isinstance(data, dict):
-                        break
-                except Exception:
-                    pass
-            if proc.returncode == 0 and isinstance(data, dict) and data.get("success"):
+            stderr_text = (proc.stderr or "").strip()
+            data, _parse_method = _parse_subprocess_result(stdout_text)
+            if proc.returncode == 0 and _subprocess_payload_succeeded(data):
                 text_out = f"\u2705 \u9032\u5ea6\u56de\u5831\u5df2\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {tok}\uff09"
                 success = True
             else:
-                err = str((data or {}).get("error") or stdout_text[:300]) if data else stdout_text[:300]
+                err = str((data or {}).get("error") or stderr_text[:300] or stdout_text[:300]) if data else (stderr_text[:300] or stdout_text[:300])
                 text_out = f"\u274c \u9032\u5ea6\u56de\u5831\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {tok}\uff09\uff1a{err}"
         except subprocess.TimeoutExpired:
             text_out = f"\u23f3 \u9032\u5ea6\u56de\u5831\u9001\u51fa\u903e\u6642\uff08\u78ba\u8a8d\u78bc {tok}\uff09\u3002"

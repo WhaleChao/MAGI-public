@@ -248,6 +248,29 @@ def test_todo_to_gcal_event_embeds_dedup_metadata():
     assert private.get("magi_dedup_key")
 
 
+def test_gcal_imported_lawyer_visit_keeps_human_calendar_title():
+    mod = _load_action_module()
+
+    assert mod._classify_gcal_import_todo_type("謝易霖律見", "") == "律見"
+
+    body = mod._todo_to_gcal_event(
+        {
+            "id": 1002,
+            "case_number": "2026-0007",
+            "client_name": "謝易霖",
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-06-26",
+            "todo_time": "14:00",
+            "description": "謝易霖律見",
+            "source_file": "gcal_import:primary",
+        },
+        tz="Asia/Taipei",
+    )
+
+    assert body["summary"] == "謝易霖律見"
+    assert "行事曆事件 謝易霖" not in body["summary"]
+
+
 def test_materialize_imported_calendar_mirror_rows():
     mod = _load_action_module()
     conn = _MirrorConn(

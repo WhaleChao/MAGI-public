@@ -92,6 +92,20 @@ def _parse_last_json(stdout: str) -> Dict[str, Any]:
     s = (stdout or "").strip()
     if not s:
         return {}
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    decoder = json.JSONDecoder()
+    for idx in [m.start() for m in re.finditer(r"\{", s)][::-1]:
+        try:
+            obj, _end = decoder.raw_decode(s[idx:])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
     lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
     for ln in reversed(lines):
         if ln.startswith("{") and ln.endswith("}"):
@@ -250,8 +264,11 @@ def _run_task(task: str, timeout_sec: int, env: Dict[str, str]) -> Dict[str, Any
             cwd=_MAGI_ROOT,
         )
         parsed = _parse_last_json(p.stdout or "")
-        ok = bool((parsed.get("success") if isinstance(parsed, dict) else None))
-        if not isinstance(parsed, dict) or ("success" not in parsed):
+        if isinstance(parsed, dict) and ("success" in parsed or "ok" in parsed):
+            ok = bool(parsed.get("success", parsed.get("ok")))
+            if parsed.get("manual_required") or str(parsed.get("result") or "").strip().lower() == "ready":
+                ok = False
+        else:
             ok = p.returncode == 0
         return {
             "ok": bool(ok),

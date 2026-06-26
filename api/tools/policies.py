@@ -97,6 +97,13 @@ def classify_tool_requirement(
     text = (message or "").strip()
     if not text:
         return ToolRequirement(level="none", tool_hint="", reason="empty message")
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(text):
+            return ToolRequirement(level="none", tool_hint="", reason="user explicitly declined tools")
+    except Exception:
+        pass
 
     # Check required patterns first
     for pattern, tool_hint in _TOOL_REQUIRED_PATTERNS:

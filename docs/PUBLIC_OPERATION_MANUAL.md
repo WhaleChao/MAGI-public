@@ -202,7 +202,7 @@ MAGI 主頁提供主要功能入口：
 管理者可用測試命令確認工具調用：
 
 ```bash
-python3 scripts/ops/commercial_readiness_live.py --strict-public
+python3 scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 ## 8. 案件管理
@@ -442,7 +442,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict --skip-db
 python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/packaging/validate_installer_payload.py --json
 python3 scripts/ops/public_push_guard.py --remote public --profile public --json
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 檢核內容應包含：
@@ -512,7 +512,7 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/public_release_audit.py --public-isolation --strict
 python3 scripts/packaging/validate_installer_payload.py --json
 python3 scripts/ops/public_push_guard.py --remote public --profile public --json
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 常用路由：

@@ -88,6 +88,17 @@ def _db_processed_checker(orchestrator: LAFOrchestrator):
     return check
 
 
+def _callback_succeeded(result: Any) -> bool:
+    if result is False or result is None:
+        return False
+    if isinstance(result, dict):
+        if result.get("success") is False or result.get("ok") is False:
+            return False
+        if result.get("error"):
+            return False
+    return True
+
+
 def run_once(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
     orchestrator = LAFOrchestrator(dry_run=bool(args.dry_run))
@@ -157,12 +168,18 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
 
         try:
             callback_result = orchestrator.on_new_email(case_info)
-            if callback_result is not False:
+            if _callback_succeeded(callback_result):
                 summary["handled"] += 1
                 case_row["handled"] = True
                 monitor.mark_laf_processed(case_info.message_id)
                 summary["marked_processed"] += 1
                 case_row["marked_processed"] = True
+            else:
+                case_row["error"] = "callback_failed"
+                if isinstance(callback_result, dict):
+                    case_row["callback_result"] = callback_result
+                    err = str(callback_result.get("error") or callback_result.get("message") or "callback_failed")
+                    summary["errors"].append(err[:500])
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             summary["errors"].append(err[:500])

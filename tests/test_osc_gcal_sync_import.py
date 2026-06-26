@@ -125,6 +125,13 @@ def test_import_gcal_events_reads_all_visible_calendars(monkeypatch):
     assert writes[0][1] == "測試"
 
 
+def test_import_gcal_events_classifies_lawyer_visit(monkeypatch):
+    module = _load_gcal_sync_module()
+
+    assert module._classify_todo_type("謝易霖律見") == "律見"
+    assert module._classify_todo_type("謝易霖", "律師接見") == "律見"
+
+
 def test_import_gcal_events_dry_run_counts_only_osc_owned_events(monkeypatch):
     module = _load_gcal_sync_module()
 

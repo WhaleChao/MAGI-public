@@ -127,3 +127,32 @@ def test_semantic_router_skips_deprecated_pdf_annotate(tmp_path, monkeypatch):
     assert all(item["name"] != "pdf_annotate" for item in semantic_router._load_skills())
     assert semantic_router.route("PDF標籤") is None
     assert "pdf-bookmarker" in semantic_router.deprecated_route_hint("請幫 PDF 標籤")
+
+
+def test_semantic_router_respects_explicit_no_tool_request(tmp_path, monkeypatch):
+    from skills.bridge import semantic_router
+
+    definitions = {
+        "tools": [
+            {
+                "name": "web_search",
+                "description": "Search the web for current information",
+                "endpoint": "/search",
+            },
+            {
+                "name": "query_clients",
+                "description": "查詢案件與客戶資料",
+                "endpoint": "/skills/run",
+                "parameters": {"properties": {"skill": {"default": "case-query"}}},
+            },
+        ]
+    }
+    defs_path = tmp_path / "definitions.json"
+    defs_path.write_text(json.dumps(definitions), encoding="utf-8")
+
+    monkeypatch.setattr(semantic_router, "_DEFINITIONS_PATH", str(defs_path))
+    monkeypatch.setattr(semantic_router, "_SKILLS_CACHE", None)
+    monkeypatch.setattr(semantic_router, "_SKILLS_CACHE_TS", 0.0)
+    monkeypatch.setattr(semantic_router, "_LLM_ENABLED", False)
+
+    assert semantic_router.route("只是聊天，不要查案件，也不要調工具") is None

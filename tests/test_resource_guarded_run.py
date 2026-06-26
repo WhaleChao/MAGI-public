@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 from scripts.ops import resource_governor as rg
 from scripts.ops import resource_guarded_run as guarded
@@ -94,3 +95,36 @@ def test_guarded_run_accepts_env_prefix(monkeypatch, tmp_path):
 
     assert rc == 0
     assert json.loads(out_path.read_text(encoding="utf-8"))["value"] == "works"
+
+
+def test_guarded_run_timeout_kills_child_process_group(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.resource_governor, "collect_snapshot", lambda: _decision("normal").snapshot)
+    monkeypatch.setattr(guarded.resource_governor, "classify", lambda _snapshot: _decision("normal"))
+    monkeypatch.setattr(guarded, "_append_event", lambda _payload: None)
+    monkeypatch.setattr(guarded, "_mark_drive_sync_guard_timeout", lambda *args, **kwargs: None)
+    marker = tmp_path / "guarded-child-survived.txt"
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        f"\"import pathlib,time; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
+        "time.sleep(30)"
+    )
+
+    rc = guarded.main(
+        [
+            "--job-id",
+            "test_timeout_group",
+            "--block-at",
+            "critical",
+            "--timeout-sec",
+            "1",
+            "--",
+            sys.executable,
+            "-c",
+            code,
+        ]
+    )
+    time.sleep(3.5)
+
+    assert rc == 124
+    assert not marker.exists()

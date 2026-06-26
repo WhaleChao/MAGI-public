@@ -688,7 +688,7 @@ def build_manual() -> None:
             [
                 ["法扶", "新派案、開辦、應備事項、進度回報、結案。", "同名不同案不可混搬；開辦不應有暫存舊流程混淆。"],
                 ["消債應備事項", "依 OSC 邏輯列出當事人待補資料。", "所得清單每年 5 月後按可申請年度自動推進。"],
-                ["進度回報", "逾期案件完整列出，回覆已回報後冷卻 60 天。", "只把進度回報送到正確頻道。"],
+                ["進度回報", "逾期案件完整列出，回覆已回報後冷卻 90 天。", "只把進度回報送到正確頻道。"],
                 ["閱卷", "檢查可下載、到院閱卷、下載與歸檔。", "已下載或已歸檔不重複通知；只有繳費單不算閱卷次數。"],
                 ["筆錄", "下載、命名、歸檔與通知。", "通知只列有下載到檔案的案件，不列一長串 0 份。"],
             ],
@@ -738,13 +738,13 @@ def build_manual() -> None:
                 "python3 scripts/magi_doctor.py --json",
                 "python3 scripts/public_release_audit.py --public-isolation --strict --json",
                 "./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62",
-                "./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public",
+                "./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json",
             ],
         )
         callout(
             doc,
             "商用部署最低標準",
-            "公開版要通過 public isolation、乾淨公開版安裝檢查、secret audit、ci、smoke62 與商用 readiness。私有版要確認模型、DB、NAS、OCR、外網、通知、備份與資料清理都正常。",
+            "公開版要通過 public isolation、乾淨公開版安裝檢查、secret audit、ci、smoke62 與 commercial-release。私有版要確認模型、DB、NAS、OCR、外網、通知、備份與資料清理都正常。",
             fill="F0FDF4",
             accent=GREEN,
         )
@@ -808,7 +808,7 @@ def build_manual() -> None:
                 ["範本", "開啟書狀範本資料夾。", "範本清單、預覽、下載、分享連結。"],
                 ["法扶狀態", "查 1150421-W-004 法扶狀態。", "開辦、進度、附件、結案狀態。"],
                 ["消債應備", "產生這件消債待補資料文字。", "可複製給當事人的待補清單。"],
-                ["進度回報", "羅伊辰已回報。", "冷卻 60 天並建立下次提醒。"],
+                ["進度回報", "羅伊辰已回報。", "冷卻 90 天並建立下次提醒。"],
                 ["閱卷", "檢查這件是否有新閱卷資料。", "只列真正新資料，已歸檔不重複通知。"],
                 ["筆錄", "下載這件的新筆錄。", "新筆錄檔案與歸檔位置。"],
                 ["法律資料", "查民法第184條與相關判決。", "法條、裁判來源、引用片段。"],
@@ -818,7 +818,7 @@ def build_manual() -> None:
                 ["健康", "MAGI 系統狀態。", "主狀態、DB、模型、OCR、NAS、外網。"],
                 ["外網", "檢查外網為什麼連不上。", "本機健康、通道、憑證與服務狀態。"],
                 ["公版檢查", "執行公開版隔離檢查。", "0 errors / 0 warnings 或待修項。"],
-                ["商用檢查", "跑完整 smoke62 與 commercial readiness。", "通過/失敗摘要與報告路徑。"],
+                ["商用檢查", "跑完整 smoke62 與 commercial-release。", "通過/失敗摘要與報告路徑。"],
             ],
         )
 
@@ -1013,7 +1013,7 @@ def build_pdf(assets: dict[str, Path]) -> None:
                 "python3 scripts/magi_doctor.py --json",
                 "python3 scripts/public_release_audit.py --public-isolation --strict --json",
                 "./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62",
-                "./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public",
+                "./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json",
             ],
             styles,
         ),

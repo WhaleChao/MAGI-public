@@ -378,6 +378,13 @@ def route(message: str) -> Optional[Dict]:
 
     raw_message = str(message or "")
     try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(raw_message):
+            return None
+    except Exception:
+        pass
+    try:
         from api.routing.command_prefixes import strip_heavy_prefix
         from api.routing.intent_contract import (
             KIND_BUSY_STATUS,

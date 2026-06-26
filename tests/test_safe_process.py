@@ -119,6 +119,22 @@ def test_sigkill_after_grace():
     assert r.timed_out is True and r.killed is True
 
 
+def test_timeout_kills_child_process_group(tmp_path):
+    marker = tmp_path / "child-survived.txt"
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        f"\"import pathlib,time; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
+        "time.sleep(30)"
+    )
+
+    r = sp.run(["python3", "-c", code], timeout_sec=0.5)
+    time.sleep(3.5)
+
+    assert r.timed_out is True
+    assert not marker.exists()
+
+
 # --- stdout / stderr cap -----------------------------------------------
 
 def test_stdout_truncated_at_1mb():

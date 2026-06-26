@@ -50,6 +50,8 @@ from api.osc.drive_case_sync import (
     load_case_aliases,
     load_case_exclusions,
     run_priority_case_sync,
+    combine_execution_results,
+    report_has_partial_failures,
     _closed_status_text,
     _download_drive_entry,
     _drive_list_children,
@@ -164,6 +166,16 @@ def test_extract_osc_case_folder_metadata():
     assert meta.case_number == "2026-0001"
     assert meta.client_hint == "測試甲"
     assert meta.reason_hint == "勞工爭議"
+
+
+def test_drive_execution_partial_failure_is_not_ok():
+    combined = combine_execution_results(
+        download_result={"summary": {"attempted": 2, "downloaded": 1, "failed": 1, "bytes": 10}},
+        upload_result={"summary": {"attempted": 1, "uploaded": 1, "failed": 0, "bytes": 20, "folders_created": 0}},
+    )
+
+    assert combined["ok"] is False
+    assert report_has_partial_failures({"execution_result": combined}) is True
 
 
 def test_pending_laf_report_status_is_not_archived_closed():

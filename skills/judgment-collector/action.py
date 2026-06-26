@@ -3607,6 +3607,7 @@ def collect(
     judicial_fallback_error = ""
     # JUDGMENT_SKIP_JIRS=1 disables 司法院API fallback (e.g. during planned maintenance)
     _skip_jirs = _env("JUDGMENT_SKIP_JIRS", "0").lower() in {"1", "true", "yes"}
+    _skip_fill = _env("JUDGMENT_SKIP_JY_FILL", "0").lower() in {"1", "true", "yes"}
     # Track overall time budget from here (includes fill + per-item phases)
     import time as _time
     _collect_start = _time.monotonic()
@@ -3850,10 +3851,13 @@ def collect(
 
     # 6) Notify
     ok_count = len([r for r in results if r.get("success")])
+    usable_count = len([r for r in results if r.get("success") and not r.get("is_degraded")])
+    degraded_count = len([r for r in results if r.get("success") and r.get("is_degraded")])
     notify_text = (
         "📚 判決收集完成 — " + case_reason + "\n"
             "法院: " + courts_display + "\n"
             "收集筆數: " + str(ok_count) + "/" + str(len(items)) + "\n"
+            "可用摘要: " + str(usable_count) + "；降級: " + str(degraded_count) + "\n"
             "報告: " + summary_path + "\n"
         )
     if db_ids:
@@ -3872,8 +3876,10 @@ def collect(
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3291, exc_info=True)
 
+    degraded_failure = bool(ok_count > 0 and usable_count == 0)
     return {
-        "success": True,
+        "success": not degraded_failure,
+        "error": "all_judgment_summaries_degraded" if degraded_failure else "",
         "case_reason": case_reason,
         "case_type": case_type,
         "court_level": courts_display,
@@ -3882,6 +3888,8 @@ def collect(
         "archive_dir": archive_dir,
         "summary_path": summary_path,
         "count": ok_count,
+        "usable_count": usable_count,
+        "degraded_count": degraded_count,
         "retry_queued_count": retry_queued_count,
         "db_ids": db_ids,
         "items": results[: max(10, min(120, int(max_results)))],

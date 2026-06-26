@@ -8527,9 +8527,7 @@ def osc_labor_law_calc():
     """
     勞動基準法計算器 API。
     """
-    skill_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "skills", "labor-law-calculator", "action.py"
-    )
+    skill_path = str(Path(__file__).resolve().parents[2] / "skills" / "labor-law-calculator" / "action.py")
     skill_dir = os.path.dirname(skill_path)
     if skill_dir not in sys.path:
         sys.path.insert(0, skill_dir)
@@ -8601,15 +8599,44 @@ def osc_labor_law_calc():
     return jsonify({"ok": True, "result": result_text})
 
 
+def _osc_labor_resolve_allowed_file_paths(file_paths: list[str]) -> tuple[list[str], list[str]]:
+    resolved: list[str] = []
+    errors: list[str] = []
+    for raw in file_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        local = _osc_resolve_existing_local_path(text, prefer_dir=False)
+        if not local or not os.path.isfile(local) or not _osc_is_safe_local_path(local):
+            errors.append(f"path_not_allowed:{text}")
+            continue
+        ext = os.path.splitext(local)[1].lower()
+        if ext not in {".xlsx", ".xls", ".pdf"}:
+            errors.append(f"unsupported_extension:{text}")
+            continue
+        resolved.append(local)
+    return resolved, errors
+
+
 @osc_bp.route("/api/osc/labor-law/parse-files", methods=["POST"])
 @login_required
 def osc_labor_law_parse_files():
     """
     解析指定路徑的出勤 Excel/PDF，回傳每日加班明細（不計算金額）。
     """
-    skill_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "skills", "labor-law-calculator", "action.py"
-    )
+    data = request.get_json() or {}
+    file_paths = [str(p) for p in (data.get("file_paths") or [])]
+    monthly_wage = float(data.get("monthly_wage") or 0) or None
+
+    if not file_paths:
+        return jsonify({"ok": False, "error": "請提供 file_paths"}), 400
+    file_paths, path_errors = _osc_labor_resolve_allowed_file_paths(file_paths)
+    if path_errors:
+        return jsonify({"ok": False, "error": "file_paths_not_allowed", "errors": path_errors}), 400
+    if not file_paths:
+        return jsonify({"ok": False, "error": "沒有允許解析的檔案路徑"}), 400
+
+    skill_path = str(Path(__file__).resolve().parents[2] / "skills" / "labor-law-calculator" / "action.py")
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("labor_law_action", os.path.abspath(skill_path))
@@ -8617,13 +8644,6 @@ def osc_labor_law_parse_files():
         spec.loader.exec_module(mod)
     except Exception as e:
         return jsonify({"ok": False, "error": f"無法載入 skill：{e}"}), 500
-
-    data = request.get_json() or {}
-    file_paths = [str(p) for p in (data.get("file_paths") or [])]
-    monthly_wage = float(data.get("monthly_wage") or 0) or None
-
-    if not file_paths:
-        return jsonify({"ok": False, "error": "請提供 file_paths"}), 400
 
     all_records = []
     errors = []
