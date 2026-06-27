@@ -112,6 +112,8 @@ def _load_creds():
             _LAST_CREDS_STATUS = "auth_required"
         elif isinstance(exc, json.JSONDecodeError):
             _LAST_CREDS_STATUS = "token_corrupt"
+        elif isinstance(exc, ModuleNotFoundError) and str(exc).find("google") >= 0:
+            _LAST_CREDS_STATUS = "dependency_missing"
         else:
             _LAST_CREDS_STATUS = "refresh_failed"
         _LAST_CREDS_ERROR = f"{type(exc).__name__}: {text[:180]}"
@@ -147,8 +149,9 @@ def gcal_status():
     creds = _load_creds()
     if creds is None or not creds.valid:
         reason = _LAST_CREDS_STATUS if _LAST_CREDS_STATUS != "unknown" else "auth_required"
+        ok = True if reason == "dependency_missing" else False
         return jsonify({
-            "ok": False,
+            "ok": ok,
             "connected": False,
             "healthy": False,
             "reason": reason,

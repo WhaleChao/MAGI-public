@@ -236,6 +236,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "doc-kw-del") return await delDocumentKeyword(Number(id));
     if (act === "doc-rp-del") return await delDocumentReplacement(Number(id));
     if (act === "draft-doc-toggle") return toggleDraftDocument(id);
+    if (act === "draft-reuse-select") return selectDraftReuseDocument(id);
+    if (act === "draft-reuse-clear") return clearDraftReuseSelection();
     if (act === "draft-insight-toggle") return toggleDraftInsight(id);
 
     if (act === "tx-edit") return await editTransaction(Number(id));
@@ -605,6 +607,9 @@ function bindEvents() {
         renderDraftDocuments();
         setDraftStatus("已清除參考書狀選取。");
     });
+    document.getElementById("draftReuseSearchBtn").addEventListener("click", () => loadDraftReuseDocuments().catch(reportDraftError));
+    document.getElementById("draftReuseRunBtn").addEventListener("click", () => reuseDraftDocument().catch(reportDraftError));
+    document.getElementById("draftReuseClearBtn").addEventListener("click", clearDraftReuseSelection);
     document.getElementById("draftInsightsSearchBtn").addEventListener("click", () => loadDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsAutoBtn").addEventListener("click", () => autoDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsClearBtn").addEventListener("click", () => {
@@ -629,6 +634,7 @@ function bindEvents() {
     });
     bindEnterSubmit(["draftCaseSearch"], "draftCaseSearchBtn", searchDraftCases, { actionLabel: "案件搜尋", onError: reportDraftError });
     bindEnterSubmit(["draftDocsQ", "draftDocsCaseFilter"], "draftDocsSearchBtn", loadDraftDocuments, { actionLabel: "書狀搜尋", onError: reportDraftError });
+    bindEnterSubmit(["draftReuseQ", "draftReuseCaseFilter"], "draftReuseSearchBtn", loadDraftReuseDocuments, { actionLabel: "沿用書狀搜尋", onError: reportDraftError });
     bindEnterSubmit(["draftInsightsQ", "draftInsightsCaseFilter", "draftInsightsReasonFilter"], "draftInsightsSearchBtn", loadDraftInsights, { actionLabel: "見解搜尋", onError: reportDraftError });
     document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
 

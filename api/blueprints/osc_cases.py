@@ -80,6 +80,7 @@ from api.osc.draft_learning import (
     recent_draft_feedback,
     record_draft_feedback,
 )
+from api.osc.document_reuse import reuse_document as _osc_reuse_document
 from api.osc.saas_workbench import (
     build_ai_governance,
     build_client_packet,
@@ -4897,6 +4898,247 @@ def osc_drafts_export_api():
     return jsonify({"ok": bool(exported.get("success")), **exported, "status": status}), http_status
 
 
+def _osc_lookup_case_for_reuse(*, row_id: str = "", case_number: str = "") -> dict:
+    row_id = str(row_id or "").strip()
+    case_number = str(case_number or "").strip()
+    row = None
+    if row_id:
+        row, _ = _osc_exec("SELECT * FROM cases WHERE id=%s LIMIT 1", (row_id,), fetch="one")
+    if (not row) and case_number:
+        row, _ = _osc_exec(
+            """
+            SELECT *
+            FROM cases
+            WHERE case_number=%s OR court_case_no=%s OR court_case_number=%s
+            ORDER BY updated_at DESC, created_date DESC
+            LIMIT 1
+            """,
+            (case_number, case_number, case_number),
+            fetch="one",
+        )
+    return row or {}
+
+
+def _osc_reuse_case_opponents(case_number: str) -> str:
+    cn = str(case_number or "").strip()
+    if not cn:
+        return ""
+    try:
+        rows, _ = _osc_exec(
+            """
+            SELECT name
+            FROM opponents
+            WHERE case_number=%s AND (is_active=1 OR is_active IS NULL)
+            ORDER BY updated_date DESC, id DESC
+            LIMIT 10
+            """,
+            (cn,),
+            fetch="all",
+        )
+        return "、".join(_osc_unique_strings(r.get("name") for r in (rows or []) if isinstance(r, dict)))
+    except Exception:
+        logger.debug("silent-catch _osc_reuse_case_opponents", exc_info=True)
+        return ""
+
+
+def _osc_enrich_case_for_document_reuse(case_row: dict, payload_values: dict | None = None) -> dict:
+    row = dict(case_row or {})
+    p = payload_values or {}
+    displayed_case_no = str(p.get("case_number") or p.get("court_case_no") or p.get("court_case_number") or "").strip()
+    if displayed_case_no:
+        row["court_case_no"] = displayed_case_no
+        row["court_case_number"] = displayed_case_no
+    if str(p.get("division") or "").strip():
+        row["court_division"] = str(p.get("division") or "").strip()
+    if str(p.get("court_name") or "").strip():
+        row["court_name"] = str(p.get("court_name") or "").strip()
+    if str(p.get("reason") or p.get("case_reason") or "").strip():
+        row["case_reason"] = str(p.get("reason") or p.get("case_reason") or "").strip()
+    if str(p.get("plaintiff") or p.get("client_name") or "").strip():
+        plaintiff = str(p.get("plaintiff") or p.get("client_name") or "").strip()
+        row["client_name"] = plaintiff
+        row["plaintiff_name"] = plaintiff
+    if str(p.get("defendant") or p.get("opponent_name") or "").strip():
+        defendant = str(p.get("defendant") or p.get("opponent_name") or "").strip()
+        row["opponent_name"] = defendant
+        row["defendant_name"] = defendant
+    if not str(row.get("opponent_name") or "").strip():
+        opponents = _osc_reuse_case_opponents(str(row.get("case_number") or ""))
+        if opponents:
+            row["opponent_name"] = opponents
+            row["defendant_name"] = opponents
+    return row
+
+
+def _osc_reuse_output_dir(target_case: dict, displayed_case_no: str = "") -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    raw_folder = str((target_case or {}).get("folder_path") or "").strip()
+    if not raw_folder:
+        raw_folder = _osc_guess_case_folder(str((target_case or {}).get("case_number") or displayed_case_no or ""))
+    base = _osc_resolve_existing_local_path(raw_folder, prefer_dir=True) if raw_folder else ""
+    if not base:
+        raise FileNotFoundError("target_case_folder_not_found")
+
+    preferred_names = ("04_我方歷次書狀", "02_我方歷次書狀", "我方歷次書狀")
+    for name in preferred_names:
+        candidate = os.path.join(base, name)
+        if os.path.isdir(candidate):
+            return candidate, warnings
+    try:
+        for name in os.listdir(base):
+            if "我方歷次書狀" in name:
+                candidate = os.path.join(base, name)
+                if os.path.isdir(candidate):
+                    return candidate, warnings
+    except OSError:
+        logger.debug("silent-catch _osc_reuse_output_dir:listdir", exc_info=True)
+
+    target = os.path.join(base, "04_我方歷次書狀")
+    os.makedirs(target, exist_ok=True)
+    warnings.append("created_output_folder:04_我方歷次書狀")
+    return target, warnings
+
+
+def _osc_register_reused_document(target_case: dict, result: dict, payload: dict) -> list[str]:
+    warnings: list[str] = []
+    output_path = str(result.get("output_path") or "").strip()
+    file_name = str(result.get("file_name") or os.path.basename(output_path) or "").strip()
+    case_number = str((target_case or {}).get("case_number") or payload.get("case_lookup_number") or payload.get("case_number") or "").strip()
+    case_id = str((target_case or {}).get("id") or payload.get("case_id") or "").strip()
+    source_path = str(result.get("source_path") or payload.get("source_path") or "").strip()
+    try:
+        _osc_exec(
+            """
+            INSERT INTO case_documents (case_id, document_type, file_name, file_path, description, upload_date)
+            VALUES (%s,%s,%s,%s,%s,NOW())
+            """,
+            (
+                case_id or case_number,
+                "沿用舊書狀",
+                file_name,
+                output_path,
+                f"由既有書狀沿用產生：{os.path.basename(source_path)}" if source_path else "由既有書狀沿用產生",
+            ),
+            fetch="none",
+        )
+    except Exception:
+        warnings.append("case_documents_register_failed")
+        logger.debug("silent-catch _osc_register_reused_document:case_documents", exc_info=True)
+    try:
+        _osc_exec(
+            """
+            INSERT INTO document_replacements (template_file, new_case_number, old_client_name, new_client_name, old_data, new_data)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                source_path or None,
+                case_number or None,
+                str((payload.get("source_case") or {}).get("client_name") or ""),
+                str((target_case or {}).get("client_name") or payload.get("plaintiff") or ""),
+                json.dumps({"source_path": source_path, "source_case_number": payload.get("source_case_number") or ""}, ensure_ascii=False),
+                json.dumps({"output_path": output_path, "replacements": result.get("replacements") or []}, ensure_ascii=False),
+            ),
+            fetch="none",
+        )
+    except Exception:
+        warnings.append("document_replacements_log_failed")
+        logger.debug("silent-catch _osc_register_reused_document:document_replacements", exc_info=True)
+    return warnings
+
+
+@osc_bp.route("/api/osc/drafts/reuse-document", methods=["POST"])
+@login_required
+def osc_drafts_reuse_document_api():
+    payload = request.get_json() or {}
+    source_doc = payload.get("source_document") if isinstance(payload.get("source_document"), dict) else {}
+    source_path_raw = str(payload.get("source_path") or source_doc.get("file_path") or source_doc.get("path") or "").strip()
+    if not source_path_raw:
+        return jsonify({"ok": False, "error": "source_path required"}), 400
+    source_path = _osc_resolve_existing_local_path(source_path_raw, prefer_dir=False)
+    if not source_path:
+        return jsonify({"ok": False, "error": "source_file_not_found", "source_path": source_path_raw}), 404
+    if Path(source_path).suffix.lower() != ".docx":
+        return jsonify({"ok": False, "error": "only_docx_supported"}), 400
+
+    target_case = _osc_lookup_case_for_reuse(
+        row_id=str(payload.get("case_id") or payload.get("selected_case_id") or ""),
+        case_number=str(payload.get("case_lookup_number") or payload.get("selected_case_number") or payload.get("case_number") or ""),
+    )
+    if not target_case:
+        return jsonify({"ok": False, "error": "target_case_required"}), 400
+    target_case = _osc_enrich_case_for_document_reuse(target_case, payload)
+
+    source_case_number = str(
+        payload.get("source_case_number")
+        or source_doc.get("case_number")
+        or source_doc.get("case_no")
+        or ""
+    ).strip()
+    payload["source_case_number"] = source_case_number
+    source_case = _osc_lookup_case_for_reuse(case_number=source_case_number) if source_case_number else {}
+    source_case = _osc_enrich_case_for_document_reuse(source_case, {})
+    warnings: list[str] = []
+    if not source_case:
+        source_case = {"case_number": source_case_number}
+        warnings.append("source_case_metadata_missing")
+    payload["source_case"] = source_case
+
+    try:
+        output_dir, dir_warnings = _osc_reuse_output_dir(target_case, str(payload.get("case_number") or ""))
+        warnings.extend(dir_warnings)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+
+    overrides = {
+        "court_case_no": payload.get("case_number") or "",
+        "court_case_number": payload.get("case_number") or "",
+        "court_division": payload.get("division") or "",
+        "court_name": payload.get("court_name") or "",
+        "case_reason": payload.get("reason") or "",
+        "client_name": payload.get("plaintiff") or "",
+        "plaintiff_name": payload.get("plaintiff") or "",
+        "opponent_name": payload.get("defendant") or "",
+        "defendant_name": payload.get("defendant") or "",
+        "replacements": payload.get("replacements") if isinstance(payload.get("replacements"), dict) else {},
+    }
+    suggested = str(payload.get("suggested_filename") or "").strip()
+    try:
+        result = _osc_reuse_document(
+            source_path,
+            source_case,
+            target_case,
+            overrides=overrides,
+            suggested_filename=suggested or None,
+            output_dir=output_dir,
+        )
+    except Exception as e:
+        _osc_log_activity(
+            "draft:reuse_error",
+            "drafts",
+            str(target_case.get("id") or target_case.get("case_number") or ""),
+            {"source_path": source_path_raw, "error": str(e)},
+        )
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    if not int(result.get("replacement_count") or 0):
+        warnings.append("no_replacements_made")
+    warnings.extend(_osc_register_reused_document(target_case, result, payload))
+    result["output_dir"] = output_dir
+    result["warnings"] = warnings
+    _osc_log_activity(
+        "draft:reuse_document",
+        "drafts",
+        str(target_case.get("id") or target_case.get("case_number") or ""),
+        {
+            "source_path": source_path_raw,
+            "output_path": result.get("output_path"),
+            "replacement_count": result.get("replacement_count"),
+            "warnings": warnings,
+        },
+    )
+    return jsonify({"ok": True, "result": result})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Documents
 # ══════════════════════════════════════════════════════════════════════════════
@@ -9387,20 +9629,71 @@ def _osc_find_font() -> str:
     return ""
 
 
+def _osc_minimal_pdf_bytes(title: str, lines: list[str] | None = None) -> bytes:
+    def _pdf_text(value: object) -> str:
+        text = str(value or "")
+        text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        return text.encode("latin-1", errors="replace").decode("latin-1")
+
+    rows = [_pdf_text(title or "MAGI PDF")]
+    rows.extend(_pdf_text(x) for x in (lines or []) if str(x or "").strip())
+    stream_lines = ["BT", "/F1 12 Tf", "72 780 Td"]
+    for idx, row in enumerate(rows[:28]):
+        if idx:
+            stream_lines.append("0 -18 Td")
+        stream_lines.append(f"({row}) Tj")
+    stream_lines.append("ET")
+    stream = "\n".join(stream_lines).encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, 1):
+        offsets.append(len(out))
+        out.extend(f"{idx} 0 obj\n".encode("ascii"))
+        out.extend(obj)
+        out.extend(b"\nendobj\n")
+    xref_at = len(out)
+    out.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    out.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        out.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    out.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(out)
+
+
 def _osc_build_quotation_pdf(row: dict) -> bytes:
     """Generate a PDF using the same layout as the standalone OSC quotation exporter."""
     from io import BytesIO
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.lib import colors
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
-    )
-    from reportlab.platypus import Image as ReportlabImage
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+        )
+        from reportlab.platypus import Image as ReportlabImage
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ModuleNotFoundError:
+        return _osc_minimal_pdf_bytes(
+            "MAGI quotation PDF fallback",
+            [
+                f"client: {row.get('client_name') or ''}",
+                f"case: {row.get('case_number') or ''}",
+                f"total: {row.get('total') or ''}",
+                "reportlab dependency is not installed in this runtime.",
+            ],
+        )
 
     font_path = _osc_find_font()
     font_name = "NotoSansTC"
@@ -9679,6 +9972,30 @@ def osc_quotation_export_pdf(row_id):
 # P2: 地址標籤 PNG 預覽 + 下載
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _osc_minimal_png_bytes(width: int = 945, height: int = 472) -> bytes:
+    import binascii
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    width = max(1, min(int(width or 1), 2000))
+    height = max(1, min(int(height or 1), 2000))
+    raw = b"".join(b"\x00" + (b"\xff\xff\xff" * width) for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def _osc_build_address_label(
     sender_name: str,
     sender_address: str,
@@ -9688,7 +10005,10 @@ def _osc_build_address_label(
     """Render address label PNG (8cm×4cm @300 DPI) and return raw PNG bytes."""
     import textwrap
     from io import BytesIO
-    from PIL import Image, ImageDraw, ImageFont
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ModuleNotFoundError:
+        return _osc_minimal_png_bytes()
 
     W, H = 945, 472  # 8cm × 4cm @ 300 DPI
 

@@ -141,6 +141,109 @@ function renderDraftDocuments() {
     renderDraftDocSelections();
 }
 
+function draftReuseIsDocx(item) {
+    const raw = String(item?.file_path || item?.file_name || "").trim().toLowerCase();
+    return raw.endsWith(".docx");
+}
+
+function draftReuseFolderPath(path) {
+    const raw = String(path || "").trim();
+    if (!raw) return "";
+    const idx = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
+    return idx > 0 ? raw.slice(0, idx) : raw;
+}
+
+function renderDraftReuseSelection() {
+    const selected = state.draft.selectedReuseDocument || null;
+    const label = document.getElementById("draftReuseSelectedLabel");
+    const box = document.getElementById("draftReuseSelected");
+    if (!label || !box) return;
+    if (!selected) {
+        label.textContent = "尚未選取來源書狀";
+        box.innerHTML = `<div class="muted">請從全書狀索引選取一份 DOCX 書狀。</div>`;
+        return;
+    }
+    label.textContent = "已選取來源書狀";
+    box.innerHTML = `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(selected.file_name || selected.file_path || "")}</div>
+                <div class="muted">來源案號：${esc(selected.case_number || "-")}｜${esc(selected.kind_label || "書狀")}</div>
+                <div class="muted">${esc(shortText(selected.file_path || "", 160))}</div>
+            </div>
+            <div class="inline-actions">
+                <button class="btn ghost" data-act="draft-reuse-clear">移除</button>
+                <button class="btn" data-act="doc-open" data-path="${esc(selected.file_path || "")}">開啟來源</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderDraftReuseResult() {
+    const box = document.getElementById("draftReuseResult");
+    if (!box) return;
+    const result = state.draft.lastReuseResult || null;
+    if (!result) {
+        box.innerHTML = `<div class="muted">尚未產生沿用檔案。</div>`;
+        return;
+    }
+    const outputPath = result.output_path || result.path || "";
+    const folderPath = result.output_dir || draftReuseFolderPath(outputPath);
+    const replacementItems = result.replacements || result.replacement_summary || [];
+    const replacementText = Array.isArray(replacementItems)
+        ? replacementItems
+            .filter(x => Number(x.count || 0) > 0)
+            .slice(0, 8)
+            .map(x => `${esc(x.field || x.label || x.key || x.source || "欄位")} ${Number(x.count || 0)} 次`)
+            .join("、")
+        : "";
+    const warnings = result.warnings || [];
+    box.innerHTML = `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(result.file_name || (outputPath ? outputPath.split(/[\\/]/).pop() : "沿用書狀"))}</div>
+                <div class="muted">${esc(shortText(outputPath, 180))}</div>
+                ${replacementText ? `<div class="muted">替換：${replacementText}</div>` : ""}
+                ${warnings.length ? `<div class="status-banner warn" style="margin-top:6px;">${esc(warnings.join("；"))}</div>` : ""}
+            </div>
+            <div class="inline-actions">
+                ${outputPath ? `<button class="btn" data-act="doc-open" data-path="${esc(outputPath)}">開啟新檔</button>` : ""}
+                ${folderPath ? `<button class="btn" data-act="doc-open-folder" data-path="${esc(folderPath)}">開資料夾</button>` : ""}
+                ${outputPath ? `<button class="btn ghost" data-act="doc-copy" data-path="${esc(outputPath)}">複製路徑</button>` : ""}
+            </div>
+        </div>
+    `;
+}
+
+function renderDraftReuseDocuments() {
+    const body = document.getElementById("draftReuseDocsBody");
+    if (!body) return;
+    const selectedId = String(state.draft.selectedReuseDocument?.id || "");
+    const items = state.draft.reuseDocuments || [];
+    if (!items.length) {
+        body.innerHTML = `<tr><td colspan="5" class="muted">尚未搜尋，或沒有符合條件的書狀。</td></tr>`;
+        renderDraftReuseSelection();
+        renderDraftReuseResult();
+        return;
+    }
+    body.innerHTML = items.map(r => {
+        const picked = selectedId && selectedId === String(r.id);
+        const isDocx = draftReuseIsDocx(r);
+        const selectLabel = !isDocx ? "僅 DOCX" : (picked ? "✓ 已選" : "沿用");
+        return `
+            <tr>
+                <td><button class="btn ${picked ? "selected-toggle" : ""}" data-act="draft-reuse-select" data-id="${esc(r.id)}" ${isDocx ? "" : "disabled"}>${selectLabel}</button></td>
+                <td>${esc(r.case_number || "")}</td>
+                <td>${esc(r.kind_label || "")}</td>
+                <td>${esc(r.file_name || "")}</td>
+                <td title="${esc(r.file_path || "")}">${esc(shortText(r.file_path || "", 120))}</td>
+            </tr>
+        `;
+    }).join("");
+    renderDraftReuseSelection();
+    renderDraftReuseResult();
+}
+
 function renderDraftInsights() {
     const body = document.getElementById("draftInsightsBody");
     const selectedIds = new Set((state.draft.selectedInsights || []).map(x => String(x.id)));
@@ -177,6 +280,18 @@ async function loadDraftDocuments() {
     });
 }
 
+async function loadDraftReuseDocuments() {
+    await withBusy("draftReuseSearchBtn", "搜尋中...", async () => {
+        const q = encodeURIComponent((document.getElementById("draftReuseQ").value || "").trim());
+        const caseNumber = encodeURIComponent((document.getElementById("draftReuseCaseFilter").value || "").trim());
+        const kind = encodeURIComponent((document.getElementById("draftReuseKind").value || "pleading").trim());
+        const data = await api(`/api/osc/documents?limit=200&q=${q}&case_number=${caseNumber}&kind=${kind}`);
+        state.draft.reuseDocuments = data.items || [];
+        renderDraftReuseDocuments();
+        setDraftStatus(`全書狀索引搜尋完成，共 ${state.draft.reuseDocuments.length} 筆。`);
+    });
+}
+
 async function loadDraftInsights() {
     await withBusy("draftInsightsSearchBtn", "搜尋中...", async () => {
         const q = encodeURIComponent((document.getElementById("draftInsightsQ").value || "").trim());
@@ -199,6 +314,25 @@ function toggleDraftDocument(id) {
         if (item) state.draft.selectedDocuments.push({ ...item });
     }
     renderDraftDocuments();
+}
+
+function selectDraftReuseDocument(id) {
+    const sid = String(id || "");
+    const item = (state.draft.reuseDocuments || []).find(x => String(x.id) === sid);
+    if (!item) return;
+    if (!draftReuseIsDocx(item)) {
+        showAlert("MAGI說", "沿用舊書狀目前只支援 DOCX 來源檔。");
+        return;
+    }
+    state.draft.selectedReuseDocument = { ...item };
+    renderDraftReuseDocuments();
+    setDraftStatus(`已選取沿用來源：${item.file_name || item.file_path || ""}`);
+}
+
+function clearDraftReuseSelection() {
+    state.draft.selectedReuseDocument = null;
+    renderDraftReuseDocuments();
+    setDraftStatus("已清除沿用來源。");
 }
 
 function toggleDraftInsight(id) {
@@ -229,6 +363,26 @@ function collectDraftPayload() {
         selected_documents: [...(state.draft.selectedDocuments || [])],
         selected_insights: [...(state.draft.selectedInsights || [])],
     };
+}
+
+async function reuseDraftDocument() {
+    await withBusy("draftReuseRunBtn", "另存中...", async () => {
+        const source = state.draft.selectedReuseDocument || null;
+        if (!source) return showAlert("MAGI說", "請先從全書狀索引選取一份 DOCX 書狀。");
+        if (!draftReuseIsDocx(source)) return showAlert("MAGI說", "沿用舊書狀目前只支援 DOCX 來源檔。");
+        const payload = collectDraftPayload();
+        payload.source_document = source;
+        payload.source_path = source.file_path || "";
+        payload.source_document_id = source.id || "";
+        payload.source_case_number = source.case_number || "";
+        payload.suggested_filename = (document.getElementById("draftSuggestedName").value || "").trim()
+            || `${(document.getElementById("draftDocType").value || "沿用書狀").trim()}_${(document.getElementById("draftCaseNumber").value || "未命名").trim()}`;
+        setDraftStatus("正在沿用舊書狀並另存新檔...");
+        const data = await api("/api/osc/drafts/reuse-document", "POST", payload);
+        state.draft.lastReuseResult = data.result || data;
+        renderDraftReuseResult();
+        setDraftStatus(`沿用完成：${state.draft.lastReuseResult.file_name || "已產生新檔"}`);
+    });
 }
 
 async function previewDraftPrompt() {
@@ -447,6 +601,7 @@ async function loadDraftComposer() {
             renderDraftCases();
         }
         renderDraftDocuments();
+        renderDraftReuseDocuments();
         renderDraftInsights();
         renderDraftDocSelections();
         renderDraftInsightSelections();
