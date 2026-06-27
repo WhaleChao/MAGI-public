@@ -141,9 +141,9 @@ function renderDraftDocuments() {
     renderDraftDocSelections();
 }
 
-function draftReuseIsDocx(item) {
+function draftReuseIsWord(item) {
     const raw = String(item?.file_path || item?.file_name || "").trim().toLowerCase();
-    return raw.endsWith(".docx");
+    return raw.endsWith(".docx") || raw.endsWith(".doc");
 }
 
 function draftReuseFolderPath(path) {
@@ -160,7 +160,7 @@ function renderDraftReuseSelection() {
     if (!label || !box) return;
     if (!selected) {
         label.textContent = "尚未選取來源書狀";
-        box.innerHTML = `<div class="muted">請從我方歷次書狀 Word 索引選取一份 DOCX 書狀。</div>`;
+        box.innerHTML = `<div class="muted">請從我方歷次書狀 Word 索引選取一份 Word 書狀。</div>`;
         return;
     }
     label.textContent = "已選取來源書狀";
@@ -228,11 +228,11 @@ function renderDraftReuseDocuments() {
     }
     body.innerHTML = items.map(r => {
         const picked = selectedId && selectedId === String(r.id);
-        const isDocx = draftReuseIsDocx(r);
-        const selectLabel = !isDocx ? "僅 DOCX" : (picked ? "✓ 已選" : "沿用");
+        const isWord = draftReuseIsWord(r);
+        const selectLabel = !isWord ? "僅 Word" : (picked ? "✓ 已選" : "沿用");
         return `
             <tr>
-                <td><button class="btn ${picked ? "selected-toggle" : ""}" data-act="draft-reuse-select" data-id="${esc(r.id)}" ${isDocx ? "" : "disabled"}>${selectLabel}</button></td>
+                <td><button class="btn ${picked ? "selected-toggle" : ""}" data-act="draft-reuse-select" data-id="${esc(r.id)}" ${isWord ? "" : "disabled"}>${selectLabel}</button></td>
                 <td>${esc(r.case_number || "")}</td>
                 <td>${esc(r.kind_label || "")}</td>
                 <td>${esc(r.file_name || "")}</td>
@@ -320,8 +320,8 @@ function selectDraftReuseDocument(id) {
     const sid = String(id || "");
     const item = (state.draft.reuseDocuments || []).find(x => String(x.id) === sid);
     if (!item) return;
-    if (!draftReuseIsDocx(item)) {
-        showAlert("MAGI說", "沿用舊書狀目前只支援 DOCX 來源檔。");
+    if (!draftReuseIsWord(item)) {
+        showAlert("MAGI說", "沿用舊書狀目前只支援 Word 來源檔。");
         return;
     }
     state.draft.selectedReuseDocument = { ...item };
@@ -368,8 +368,8 @@ function collectDraftPayload() {
 async function reuseDraftDocument() {
     await withBusy("draftReuseRunBtn", "另存中...", async () => {
         const source = state.draft.selectedReuseDocument || null;
-        if (!source) return showAlert("MAGI說", "請先從我方歷次書狀 Word 索引選取一份 DOCX 書狀。");
-        if (!draftReuseIsDocx(source)) return showAlert("MAGI說", "沿用舊書狀目前只支援 DOCX 來源檔。");
+        if (!source) return showAlert("MAGI說", "請先從我方歷次書狀 Word 索引選取一份 Word 書狀。");
+        if (!draftReuseIsWord(source)) return showAlert("MAGI說", "沿用舊書狀目前只支援 Word 來源檔。");
         const payload = collectDraftPayload();
         payload.source_document = source;
         payload.source_path = source.file_path || "";

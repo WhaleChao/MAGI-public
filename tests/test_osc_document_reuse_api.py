@@ -69,15 +69,17 @@ def _doc_text(path: Path) -> str:
     return "\n".join(parts)
 
 
-def test_reuse_document_api_creates_target_case_docx_and_logs(tmp_path):
+def test_reuse_document_api_creates_target_case_word_doc_and_logs(tmp_path):
     app = _build_app()
     client = app.test_client()
     source_dir = tmp_path / "source"
     target_case_dir = tmp_path / "target-case"
     source_dir.mkdir()
     target_case_dir.mkdir()
-    source = source_dir / "舊案民事準備書狀.docx"
-    _make_source_docx(source)
+    source = source_dir / "舊案民事準備書狀.doc"
+    converted_source = source_dir / "converted-source.docx"
+    source.write_bytes(b"legacy-doc")
+    _make_source_docx(converted_source)
 
     calls = []
     source_case = {
@@ -127,6 +129,8 @@ def test_reuse_document_api_creates_target_case_docx_and_logs(tmp_path):
 
     with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), patch(
         "api.blueprints.osc_cases._osc_resolve_existing_local_path", side_effect=resolve_existing
+    ), patch(
+        "api.osc.document_reuse._convert_doc_to_docx", return_value=converted_source
     ):
         response = client.post(
             "/api/osc/drafts/reuse-document",
@@ -252,6 +256,8 @@ def test_draft_reuse_ui_is_wired_to_api():
     assert 'id="draftReuseDocsBody"' in html
     assert "/api/osc/drafts/reuse-document" in js
     assert "reuse_scope=own_pleading_word" in js
+    assert "draftReuseIsWord" in js
+    assert "僅 DOCX" not in js
     assert "own_pleading_word" in html
     assert "draft-reuse-select" in events
     assert "draftReuseRunBtn" in events

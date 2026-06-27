@@ -151,11 +151,44 @@ def test_reuse_docx_never_overwrites_existing_output(tmp_path):
     assert existing.read_bytes() == before
 
 
-def test_reuse_docx_rejects_non_docx_source(tmp_path):
+def test_reuse_legacy_doc_converts_to_docx_before_replacing(tmp_path, monkeypatch):
+    source = tmp_path / "舊案民事準備書狀.doc"
+    converted = tmp_path / "converted.docx"
+    output_dir = tmp_path / "out"
+    source.write_bytes(b"legacy-doc")
+    _make_source_docx(converted)
+
+    calls = []
+
+    def fake_convert_doc_to_docx(path, out_dir):
+        calls.append((Path(path), Path(out_dir)))
+        return converted
+
+    monkeypatch.setattr("api.osc.document_reuse._convert_doc_to_docx", fake_convert_doc_to_docx)
+
+    result = reuse_docx_document(
+        source,
+        {"court_case_no": "113年度訴字第100號", "court_name": "臺灣臺北地方法院"},
+        {"court_case_no": "115年度重訴字第888號", "court_name": "臺灣新北地方法院"},
+        suggested_filename="轉成新案.doc",
+        output_dir=output_dir,
+    )
+
+    output = Path(result["output_path"])
+    assert calls and calls[0][0] == source
+    assert output.name == "轉成新案.docx"
+    assert output.exists()
+    text = _all_doc_text(output)
+    assert "115年度重訴字第888號" in text
+    assert "臺灣新北地方法院" in text
+    assert "113年度訴字第100號" not in text
+
+
+def test_reuse_docx_rejects_non_word_source(tmp_path):
     source = tmp_path / "書狀.pdf"
     source.write_bytes(b"%PDF-1.4\n")
 
-    with pytest.raises(ValueError, match="Only .docx"):
+    with pytest.raises(ValueError, match="Only Word source files"):
         reuse_docx_document(source, {}, {})
 
 

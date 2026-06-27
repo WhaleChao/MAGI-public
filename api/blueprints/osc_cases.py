@@ -5057,8 +5057,8 @@ def osc_drafts_reuse_document_api():
     source_path = _osc_resolve_existing_local_path(source_path_raw, prefer_dir=False)
     if not source_path:
         return jsonify({"ok": False, "error": "source_file_not_found", "source_path": source_path_raw}), 404
-    if Path(source_path).suffix.lower() != ".docx":
-        return jsonify({"ok": False, "error": "only_docx_supported"}), 400
+    if Path(source_path).suffix.lower() not in {".docx", ".doc"}:
+        return jsonify({"ok": False, "error": "only_word_supported"}), 400
 
     target_case = _osc_lookup_case_for_reuse(
         row_id=str(payload.get("case_id") or payload.get("selected_case_id") or ""),

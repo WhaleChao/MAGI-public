@@ -1,7 +1,7 @@
-"""Core helpers for reusing prior OSC pleading DOCX files.
+"""Core helpers for reusing prior OSC pleading Word files.
 
 The web route layer is intentionally kept out of this module.  Callers pass a
-source DOCX plus source/target case dictionaries; this module copies the file,
+source Word file plus source/target case dictionaries; this module copies the file,
 replaces case-specific header/footer/table/body text, and saves a new DOCX
 without touching the source.
 """
@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +20,8 @@ from typing import Any
 
 
 DOCX_SUFFIX = ".docx"
+DOC_SUFFIX = ".doc"
+WORD_SUFFIXES = (DOCX_SUFFIX, DOC_SUFFIX)
 _WORD_TEMP_PREFIX = "~$"
 _OWN_PLEADING_FOLDER_MARKER = "我方歷次書狀"
 
@@ -166,10 +171,10 @@ def index_pleading_docx(
     recursive: bool = True,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Return reusable DOCX pleading candidates under ``root_dir``.
+    """Return reusable Word pleading candidates under ``root_dir``.
 
     The route layer can use this for the "all pleadings" index.  Results are
-    conservative: Word temporary files are skipped, only ``.docx`` files are
+    conservative: Word temporary files are skipped, only Word files are
     returned, and only files under ``我方歷次書狀`` are indexed.  This prevents
     similarly named Word files such as 委任狀 from polluting the reuse list.
     """
@@ -183,7 +188,7 @@ def index_pleading_docx(
     for path in root.glob(pattern):
         if not path.is_file():
             continue
-        if path.suffix.lower() != DOCX_SUFFIX or path.name.startswith(_WORD_TEMP_PREFIX):
+        if path.suffix.lower() not in WORD_SUFFIXES or path.name.startswith(_WORD_TEMP_PREFIX):
             continue
         marker_text = str(path.relative_to(root))
         if _OWN_PLEADING_FOLDER_MARKER not in marker_text:
@@ -240,7 +245,7 @@ def reuse_docx_document(
     """
 
     source = Path(source_path).expanduser()
-    _validate_docx_source(source)
+    _validate_word_source(source)
 
     effective_overrides = dict(overrides or {})
     if suggested_filename is None:
@@ -257,11 +262,22 @@ def reuse_docx_document(
     try:
         from docx import Document  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on optional install state
-        raise RuntimeError("python-docx is required to reuse DOCX files") from exc
+        raise RuntimeError("python-docx is required to reuse Word files") from exc
 
-    doc = Document(str(source))
-    counts = _replace_in_document(doc, rules)
-    doc.save(str(out_path))
+    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        working_source = source
+        if source.suffix.lower() == DOC_SUFFIX:
+            tmp_dir = tempfile.TemporaryDirectory(prefix="magi_doc_reuse_")
+            working_source = _convert_doc_to_docx(source, Path(tmp_dir.name))
+
+        doc = Document(str(working_source))
+        counts = _replace_in_document(doc, rules)
+        doc.save(str(out_path))
+        Document(str(out_path))
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
     replacements = [
         {
@@ -303,13 +319,71 @@ def reuse_document(
     )
 
 
-def _validate_docx_source(source: Path) -> None:
-    if source.suffix.lower() != DOCX_SUFFIX:
-        raise ValueError("Only .docx source files are supported")
+def _validate_word_source(source: Path) -> None:
+    if source.suffix.lower() not in WORD_SUFFIXES:
+        raise ValueError("Only Word source files (.docx/.doc) are supported")
     if not source.exists() or not source.is_file():
         raise FileNotFoundError(str(source))
     if source.name.startswith(_WORD_TEMP_PREFIX):
-        raise ValueError("Word temporary .docx files are not supported")
+        raise ValueError("Word temporary files are not supported")
+
+
+def _find_soffice_binary() -> str:
+    for candidate in (
+        shutil.which("soffice"),
+        shutil.which("libreoffice"),
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/libreoffice",
+        "/opt/homebrew/bin/soffice",
+        "/usr/bin/soffice",
+        "/usr/local/bin/soffice",
+    ):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _convert_doc_to_docx(source: Path, out_dir: Path) -> Path:
+    soffice = _find_soffice_binary()
+    if not soffice:
+        raise RuntimeError("LibreOffice is required to reuse .doc source files")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--norestore",
+                "--nologo",
+                "--nofirststartwizard",
+                "--convert-to",
+                "docx",
+                "--outdir",
+                str(out_dir),
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("LibreOffice timed out while converting .doc source file") from exc
+    except OSError as exc:
+        raise RuntimeError(f"LibreOffice failed to start: {exc}") from exc
+
+    expected = out_dir / f"{source.stem}{DOCX_SUFFIX}"
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"LibreOffice failed to convert .doc source file: {stderr[:300]}")
+    if expected.exists():
+        return expected
+    converted = sorted(out_dir.glob(f"*{DOCX_SUFFIX}"))
+    if converted:
+        return converted[0]
+    stderr = (proc.stderr or proc.stdout or "").strip()
+    raise RuntimeError(f"LibreOffice conversion completed but no DOCX was produced: {stderr[:300]}")
 
 
 def _default_filename(source: Path, target_case: Mapping[str, Any] | None) -> str:
@@ -330,7 +404,9 @@ def _unique_output_path(output_dir: Path, suggested_filename: str) -> Path:
         name = f"reused-document{DOCX_SUFFIX}"
     candidate = output_dir / name
     if candidate.suffix:
-        if candidate.suffix.lower() != DOCX_SUFFIX:
+        if candidate.suffix.lower() == DOC_SUFFIX:
+            candidate = candidate.with_suffix(DOCX_SUFFIX)
+        elif candidate.suffix.lower() != DOCX_SUFFIX:
             raise ValueError("Only .docx output files are supported")
     else:
         candidate = candidate.with_suffix(DOCX_SUFFIX)
