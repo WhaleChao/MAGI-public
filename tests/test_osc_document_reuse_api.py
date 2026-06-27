@@ -160,15 +160,99 @@ def test_reuse_document_api_creates_target_case_docx_and_logs(tmp_path):
     assert any("insert into document_replacements" in " ".join(sql.lower().split()) for sql, _, _ in calls)
 
 
+def test_documents_api_own_pleading_word_scope_excludes_poa_word_files(tmp_path):
+    app = _build_app()
+    client = app.test_client()
+    case_root = tmp_path / "case"
+    pleading_dir = case_root / "04_我方歷次書狀"
+    poa_dir = case_root / "01_委任狀"
+    pleading_dir.mkdir(parents=True)
+    poa_dir.mkdir(parents=True)
+
+    def fake_exec(sql, params=(), fetch="none"):
+        lowered = " ".join(str(sql).lower().split())
+        if "from document_index" in lowered:
+            return [
+                {
+                    "id": 1,
+                    "case_number": "SRC-001",
+                    "file_name": "民事準備書狀.docx",
+                    "file_path": str(pleading_dir / "民事準備書狀.docx"),
+                    "subfolder_name": "04_我方歷次書狀",
+                    "reason": "損害賠償",
+                    "party": "王小明",
+                    "modified_date": None,
+                },
+                {
+                    "id": 2,
+                    "case_number": "SRC-001",
+                    "file_name": "委任狀（可填寫版）.docx",
+                    "file_path": str(poa_dir / "委任狀（可填寫版）.docx"),
+                    "subfolder_name": "01_委任狀",
+                    "reason": "",
+                    "party": "王小明",
+                    "modified_date": None,
+                },
+                {
+                    "id": 3,
+                    "case_number": "SRC-001",
+                    "file_name": "民事準備書狀.pdf",
+                    "file_path": str(pleading_dir / "民事準備書狀.pdf"),
+                    "subfolder_name": "04_我方歷次書狀",
+                    "reason": "",
+                    "party": "",
+                    "modified_date": None,
+                },
+            ], {}
+        if "from case_documents" in lowered:
+            return [
+                {
+                    "id": 4,
+                    "case_id": "SRC-001",
+                    "case_number_ref": "SRC-001",
+                    "document_type": "04_我方歷次書狀",
+                    "file_name": "舊式民事聲請狀.doc",
+                    "file_path": str(pleading_dir / "舊式民事聲請狀.doc"),
+                    "description": "沿用舊書狀",
+                    "upload_date": None,
+                },
+                {
+                    "id": 5,
+                    "case_id": "SRC-001",
+                    "case_number_ref": "SRC-001",
+                    "document_type": "01_委任狀",
+                    "file_name": "委任狀.docx",
+                    "file_path": str(poa_dir / "委任狀.docx"),
+                    "description": "",
+                    "upload_date": None,
+                },
+            ], {}
+        return [], {}
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        response = client.get("/api/osc/documents?kind=own_pleading_word&reuse_scope=own_pleading_word&limit=20")
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert [item["file_name"] for item in payload["items"]] == [
+        "民事準備書狀.docx",
+        "舊式民事聲請狀.doc",
+    ]
+    assert {item["kind_label"] for item in payload["items"]} == {"書狀"}
+
+
 def test_draft_reuse_ui_is_wired_to_api():
     html = (ROOT / "templates" / "partials" / "osc" / "drafts.html").read_text(encoding="utf-8")
     js = (ROOT / "static" / "osc" / "tabs" / "drafts.js").read_text(encoding="utf-8")
     events = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
     state = (ROOT / "static" / "osc" / "osc-state.js").read_text(encoding="utf-8")
 
-    assert "全書狀索引 / 沿用舊書狀" in html
+    assert "我方歷次書狀 Word 索引 / 沿用舊書狀" in html
     assert 'id="draftReuseDocsBody"' in html
     assert "/api/osc/drafts/reuse-document" in js
+    assert "reuse_scope=own_pleading_word" in js
+    assert "own_pleading_word" in html
     assert "draft-reuse-select" in events
     assert "draftReuseRunBtn" in events
     assert "selectedReuseDocument" in state

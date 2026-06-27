@@ -220,8 +220,8 @@
                 <div class="card">
                     <div class="section-head">
                         <div>
-                            <h3>全書狀索引 / 沿用舊書狀</h3>
-                            <div class="section-note">搜尋既有 DOCX 書狀，直接套用上方案件資料另存新檔；此流程不呼叫 AI，也不會覆蓋來源檔。</div>
+                            <h3>我方歷次書狀 Word 索引 / 沿用舊書狀</h3>
+                            <div class="section-note">只搜尋「我方歷次書狀」資料夾內的 Word 檔，直接套用上方案件資料另存新檔；此流程不呼叫 AI，也不會覆蓋來源檔。</div>
                         </div>
                         <div class="inline-actions">
                             <button class="btn" id="draftReuseSearchBtn">搜尋書狀</button>
@@ -231,7 +231,7 @@
                     </div>
                     <div class="field-grid cols-4">
                         <div class="field" style="grid-column: span 2;">
-                            <label for="draftReuseQ">全書狀搜尋</label>
+                            <label for="draftReuseQ">我方歷次書狀搜尋</label>
                             <input id="draftReuseQ" placeholder="檔名 / 舊案號 / 當事人 / 關鍵字">
                         </div>
                         <div class="field">
@@ -239,10 +239,9 @@
                             <input id="draftReuseCaseFilter" placeholder="選填；留空搜尋全部書狀">
                         </div>
                         <div class="field">
-                            <label for="draftReuseKind">來源類型</label>
+                            <label for="draftReuseKind">索引範圍</label>
                             <select id="draftReuseKind">
-                                <option value="pleading">書狀/草稿/完稿</option>
-                                <option value="all">全部檔案</option>
+                                <option value="own_pleading_word">我方歷次書狀 Word</option>
                             </select>
                         </div>
                     </div>

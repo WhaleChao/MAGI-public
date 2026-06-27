@@ -18,6 +18,7 @@ from typing import Any
 
 DOCX_SUFFIX = ".docx"
 _WORD_TEMP_PREFIX = "~$"
+_OWN_PLEADING_FOLDER_MARKER = "我方歷次書狀"
 
 _PLEADING_MARKERS = (
     "書狀",
@@ -169,7 +170,8 @@ def index_pleading_docx(
 
     The route layer can use this for the "all pleadings" index.  Results are
     conservative: Word temporary files are skipped, only ``.docx`` files are
-    returned, and pleading-looking paths are preferred when markers are present.
+    returned, and only files under ``我方歷次書狀`` are indexed.  This prevents
+    similarly named Word files such as 委任狀 from polluting the reuse list.
     """
 
     root = Path(root_dir).expanduser()
@@ -184,6 +186,8 @@ def index_pleading_docx(
         if path.suffix.lower() != DOCX_SUFFIX or path.name.startswith(_WORD_TEMP_PREFIX):
             continue
         marker_text = str(path.relative_to(root))
+        if _OWN_PLEADING_FOLDER_MARKER not in marker_text:
+            continue
         if _PLEADING_MARKERS and not any(marker in marker_text for marker in _PLEADING_MARKERS):
             continue
         try:
@@ -589,4 +593,3 @@ def _paragraph_text_nodes(paragraph: Any) -> list[Any]:
         return list(element.xpath(".//w:t"))
     except Exception:
         return []
-

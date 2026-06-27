@@ -160,7 +160,7 @@ function renderDraftReuseSelection() {
     if (!label || !box) return;
     if (!selected) {
         label.textContent = "尚未選取來源書狀";
-        box.innerHTML = `<div class="muted">請從全書狀索引選取一份 DOCX 書狀。</div>`;
+        box.innerHTML = `<div class="muted">請從我方歷次書狀 Word 索引選取一份 DOCX 書狀。</div>`;
         return;
     }
     label.textContent = "已選取來源書狀";
@@ -284,11 +284,11 @@ async function loadDraftReuseDocuments() {
     await withBusy("draftReuseSearchBtn", "搜尋中...", async () => {
         const q = encodeURIComponent((document.getElementById("draftReuseQ").value || "").trim());
         const caseNumber = encodeURIComponent((document.getElementById("draftReuseCaseFilter").value || "").trim());
-        const kind = encodeURIComponent((document.getElementById("draftReuseKind").value || "pleading").trim());
-        const data = await api(`/api/osc/documents?limit=200&q=${q}&case_number=${caseNumber}&kind=${kind}`);
+        const kind = encodeURIComponent((document.getElementById("draftReuseKind").value || "own_pleading_word").trim());
+        const data = await api(`/api/osc/documents?limit=200&q=${q}&case_number=${caseNumber}&kind=${kind}&reuse_scope=own_pleading_word`);
         state.draft.reuseDocuments = data.items || [];
         renderDraftReuseDocuments();
-        setDraftStatus(`全書狀索引搜尋完成，共 ${state.draft.reuseDocuments.length} 筆。`);
+        setDraftStatus(`我方歷次書狀 Word 索引搜尋完成，共 ${state.draft.reuseDocuments.length} 筆。`);
     });
 }
 
@@ -368,7 +368,7 @@ function collectDraftPayload() {
 async function reuseDraftDocument() {
     await withBusy("draftReuseRunBtn", "另存中...", async () => {
         const source = state.draft.selectedReuseDocument || null;
-        if (!source) return showAlert("MAGI說", "請先從全書狀索引選取一份 DOCX 書狀。");
+        if (!source) return showAlert("MAGI說", "請先從我方歷次書狀 Word 索引選取一份 DOCX 書狀。");
         if (!draftReuseIsDocx(source)) return showAlert("MAGI說", "沿用舊書狀目前只支援 DOCX 來源檔。");
         const payload = collectDraftPayload();
         payload.source_document = source;

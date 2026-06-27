@@ -160,12 +160,20 @@ def test_reuse_docx_rejects_non_docx_source(tmp_path):
 
 
 def test_build_pleading_index_lists_docx_pleadings_newest_first(tmp_path):
-    old_doc = tmp_path / "20250101 民事準備書狀.docx"
-    new_doc = tmp_path / "20260101 民事聲請狀.docx"
-    ignored = tmp_path / "筆錄.docx"
+    pleading_dir = tmp_path / "04_我方歷次書狀"
+    poa_dir = tmp_path / "01_委任狀"
+    pleading_dir.mkdir()
+    poa_dir.mkdir()
+    old_doc = pleading_dir / "20250101 民事準備書狀.docx"
+    new_doc = pleading_dir / "20260101 民事聲請狀.docx"
+    ignored_other_word = tmp_path / "筆錄.docx"
+    ignored_poa_word = poa_dir / "委任狀（可填寫版）.docx"
+    ignored_pdf = pleading_dir / "20260101 民事聲請狀.pdf"
     _make_source_docx(old_doc)
     _make_source_docx(new_doc)
-    _make_source_docx(ignored)
+    _make_source_docx(ignored_other_word)
+    _make_source_docx(ignored_poa_word)
+    ignored_pdf.write_bytes(b"%PDF-1.4\n")
     old_doc.touch()
     new_doc.touch()
 
@@ -175,4 +183,3 @@ def test_build_pleading_index_lists_docx_pleadings_newest_first(tmp_path):
         "20260101 民事聲請狀.docx",
         "20250101 民事準備書狀.docx",
     ]
-

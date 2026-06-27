@@ -5144,12 +5144,37 @@ def osc_drafts_reuse_document_api():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+_OSC_OWN_PLEADING_FOLDER_MARKER = "我方歷次書狀"
+_OSC_WORD_EXTENSIONS = (".docx", ".doc")
+_OSC_OWN_PLEADING_WORD_SCOPES = {"own_pleading_word", "own-pleading-word", "reuse_pleading", "reuse-pleading"}
+
+
+def _osc_is_word_document_path(file_name: str = "", file_path: str = "") -> bool:
+    text = f"{file_name or ''} {file_path or ''}".strip().lower()
+    if not text:
+        return False
+    base_name = os.path.basename(str(file_name or file_path or "")).strip()
+    if base_name.startswith("~$"):
+        return False
+    return any(text.endswith(ext) or f"{ext}?" in text for ext in _OSC_WORD_EXTENSIONS)
+
+
+def _osc_is_own_pleading_word(file_name: str = "", file_path: str = "", subfolder_name: str = "") -> bool:
+    location_blob = " ".join(str(x or "") for x in (file_path, subfolder_name))
+    if _OSC_OWN_PLEADING_FOLDER_MARKER not in location_blob:
+        return False
+    return _osc_is_word_document_path(file_name, file_path)
+
+
 @osc_bp.route("/api/osc/documents", methods=["GET"])
 @login_required
 def osc_documents_api():
     q = (request.args.get("q") or "").strip().lower()
     case_number = (request.args.get("case_number") or "").strip()
     kind = (request.args.get("kind") or "all").strip()
+    scope = (request.args.get("reuse_scope") or request.args.get("scope") or "").strip().lower()
+    own_pleading_word_only = scope in _OSC_OWN_PLEADING_WORD_SCOPES or kind.strip().lower() in _OSC_OWN_PLEADING_WORD_SCOPES
+    match_kind = "all" if own_pleading_word_only else kind
     limit = max(1, min(1000, int(request.args.get("limit") or "300")))
 
     items = []
@@ -5165,6 +5190,11 @@ def osc_documents_api():
         like = f"%{q}%"
         di_where.append("(file_name LIKE %s OR file_path LIKE %s OR reason LIKE %s OR party LIKE %s OR subfolder_name LIKE %s)")
         di_params.extend([like, like, like, like, like])
+    if own_pleading_word_only:
+        di_where.append("(file_path LIKE %s OR subfolder_name LIKE %s)")
+        di_params.extend([f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%", f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%"])
+        di_where.append("(file_name LIKE %s OR file_name LIKE %s OR file_path LIKE %s OR file_path LIKE %s)")
+        di_params.extend(["%.docx", "%.doc", "%.docx", "%.doc"])
     di_sql = """
         SELECT id, case_number, file_name, file_path, subfolder_name, reason, party, modified_date
         FROM document_index
@@ -5183,7 +5213,9 @@ def osc_documents_api():
                 str(r.get("party") or ""),
             ]
         )
-        if not _osc_doc_kind_match(kind, blob):
+        if own_pleading_word_only and not _osc_is_own_pleading_word(r.get("file_name") or "", r.get("file_path") or "", r.get("subfolder_name") or ""):
+            continue
+        if not _osc_doc_kind_match(match_kind, blob):
             continue
         ts = r.get("modified_date")
         items.append(
@@ -5196,7 +5228,7 @@ def osc_documents_api():
                 "subfolder_name": r.get("subfolder_name") or "",
                 "reason": r.get("reason") or "",
                 "party": r.get("party") or "",
-                "kind_label": _osc_doc_kind_label(blob),
+                "kind_label": "書狀" if own_pleading_word_only else _osc_doc_kind_label(blob),
                 "timestamp": _osc_json_value(ts) if ts else "",
                 "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
             }
@@ -5211,6 +5243,11 @@ def osc_documents_api():
         like = f"%{q}%"
         cd_where.append("(cd.file_name LIKE %s OR cd.file_path LIKE %s OR cd.document_type LIKE %s OR cd.description LIKE %s)")
         cd_params.extend([like, like, like, like])
+    if own_pleading_word_only:
+        cd_where.append("(cd.file_path LIKE %s OR cd.document_type LIKE %s)")
+        cd_params.extend([f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%", f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%"])
+        cd_where.append("(cd.file_name LIKE %s OR cd.file_name LIKE %s OR cd.file_path LIKE %s OR cd.file_path LIKE %s)")
+        cd_params.extend(["%.docx", "%.doc", "%.docx", "%.doc"])
     cd_sql = """
         SELECT cd.id, cd.case_id, c.case_number AS case_number_ref, cd.document_type, cd.file_name, cd.file_path, cd.description, cd.upload_date
         FROM case_documents cd
@@ -5229,7 +5266,9 @@ def osc_documents_api():
                 str(r.get("description") or ""),
             ]
         )
-        if not _osc_doc_kind_match(kind, blob):
+        if own_pleading_word_only and not _osc_is_own_pleading_word(r.get("file_name") or "", r.get("file_path") or "", r.get("document_type") or ""):
+            continue
+        if not _osc_doc_kind_match(match_kind, blob):
             continue
         ts = r.get("upload_date")
         items.append(
@@ -5242,7 +5281,7 @@ def osc_documents_api():
                 "subfolder_name": r.get("document_type") or "",
                 "reason": r.get("description") or "",
                 "party": "",
-                "kind_label": _osc_doc_kind_label(blob),
+                "kind_label": "書狀" if own_pleading_word_only else _osc_doc_kind_label(blob),
                 "timestamp": _osc_json_value(ts) if ts else "",
                 "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
             }
