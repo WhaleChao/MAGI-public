@@ -12,6 +12,8 @@ import os
 import re
 import time
 
+from api.laf_case_classifier import clean_laf_case_reason
+
 logger = logging.getLogger("Orchestrator")
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -635,7 +637,7 @@ def dispatch_case_management(message, user_id="", platform=""):
         case_number = parts[0] if len(parts) > 0 else ""
         client_name = parts[1] if len(parts) > 1 else ""
         case_type = parts[2] if len(parts) > 2 else ""
-        case_reason = " ".join(parts[3:]) if len(parts) > 3 else ""
+        case_reason = clean_laf_case_reason(" ".join(parts[3:]) if len(parts) > 3 else "")
         if not client_name:
             return "請提供當事人姓名，例如：建案 114原訴24 王大明 民事 侵權行為"
 

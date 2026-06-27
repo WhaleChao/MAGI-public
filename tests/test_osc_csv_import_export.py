@@ -172,6 +172,35 @@ def test_cases_import_blank_case_number_uses_osc_number(client):
     assert not params[1].startswith("web-csv-")
 
 
+def test_cases_import_strips_suspected_marker_from_reason(client):
+    csv_bytes = _make_csv(
+        [{"案件編號": "2026-0071", "當事人": "李滿金", "案由": "涉詐欺、洗錢防制法", "狀態": "進行中"}],
+        fieldnames=["案件編號", "當事人", "案由", "狀態"],
+    )
+    inserted = {}
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        sql_upper = sql.strip().upper()
+        if "SELECT ID FROM CASES WHERE CASE_NUMBER" in sql_upper:
+            return (None, None)
+        if "INSERT INTO CASES" in sql_upper:
+            inserted["params"] = params
+            return ({"affectedRows": 1}, None)
+        return (None, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        data = {"file": (io.BytesIO(csv_bytes), "cases.csv", "text/csv")}
+        r = client.post(
+            "/api/osc/cases/import-csv",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    assert r.get_json()["imported"] == 1
+    assert inserted["params"][7] == "詐欺、洗錢防制法"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Cases export — returns CSV with correct content type
 # ──────────────────────────────────────────────────────────────────────────────

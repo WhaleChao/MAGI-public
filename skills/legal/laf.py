@@ -52,6 +52,7 @@ from api.case_path_mapper import (
     translate_local_path_to_canonical,
 )
 from api.laf_case_classifier import (
+    clean_laf_case_reason,
     extract_laf_staff_case_hint,
     is_pending_laf_reason,
     normalize_laf_case_fields,
@@ -472,6 +473,7 @@ class LAFCaseTypeParser:
     
     # 常見案由清理規則
     REASON_CLEANUP_PATTERNS = [
+        (r'^(涉嫌|涉及|涉犯|涉有|涉(?!外))', ''),  # 移除法扶主旨中非案由的「涉」
         (r'^違反', ''),         # 移除開頭的「違反」
         (r'等$', ''),           # 移除結尾的「等」
         (r'案件之訴訟代理$', ''),  # 移除「案件之訴訟代理」
@@ -857,7 +859,7 @@ class LAFCaseTypeParser:
                 continue
             reason = re.sub(pattern, replacement, reason)
         
-        return reason.strip()
+        return clean_laf_case_reason(reason)
     
     @classmethod
     def _extract_stage_from_reason(cls, raw_reason: str, current_stage: str) -> Tuple[str, str]:

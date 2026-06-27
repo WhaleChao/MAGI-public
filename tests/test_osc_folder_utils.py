@@ -23,6 +23,33 @@ def test_build_full_case_path_uses_civil_folder_for_attached_civil_laf_case():
     assert "/法扶案件/民事/" in path
 
 
+def test_build_full_case_path_strips_laf_suspected_reason_prefix():
+    path = build_full_case_path(
+        "/cases",
+        "2026-0071",
+        "李滿金",
+        case_type="刑事",
+        case_category="法律扶助案件",
+        case_stage="一審",
+        case_reason="涉詐欺、洗錢防制法",
+    )
+    assert path.endswith("/法扶案件/刑事/2026-0071-李滿金-一審-詐欺、洗錢防制法")
+    assert "-涉詐欺" not in path
+
+
+def test_build_full_case_path_keeps_substantive_foreign_law_reason():
+    path = build_full_case_path(
+        "/cases",
+        "2026-0072",
+        "測試",
+        case_type="民事",
+        case_category="一般案件",
+        case_stage="一審",
+        case_reason="涉外民事法律適用法",
+    )
+    assert path.endswith("/一般案件/民事/2026-0072-測試-一審-涉外民事法律適用法")
+
+
 def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():
     path = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/法扶案件/民事/測試案/卷證.pdf"
     candidates = local_synology_path_candidates(path)

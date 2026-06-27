@@ -283,6 +283,13 @@ def test_capacitor_app_starts_from_mobile_login_entry():
     android_config = json.loads(
         (root / "mobile_app" / "android" / "app" / "src" / "main" / "assets" / "capacitor.config.json").read_text(encoding="utf-8")
     )
+    manifest = (root / "mobile_app" / "android" / "app" / "src" / "main" / "AndroidManifest.xml").read_text(
+        encoding="utf-8"
+    )
 
     assert config["server"]["url"].endswith("/mobile-app")
     assert android_config["server"]["url"].endswith("/mobile-app")
+    assert config["server"] == android_config["server"]
+    if config["server"]["url"].startswith("http://"):
+        assert config["server"]["cleartext"] is True
+        assert 'android:usesCleartextTraffic="true"' in manifest

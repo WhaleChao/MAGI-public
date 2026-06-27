@@ -78,6 +78,27 @@ def test_laf_parser_files_labor_insurance_dispute_as_admin():
         assert info.case_stage == "一審"
 
 
+def test_laf_parser_strips_suspected_marker_from_criminal_reason():
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
+    from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser
+
+    subjects = (
+        "【法扶花蓮分會派案通知】李滿金-1150626-E-008-刑事通常程序第一審-涉洗錢防制法、詐欺",
+        "【法扶花蓮分會派案通知】李滿金-1150626-E-008-刑事通常程序第一審-涉嫌洗錢防制法、詐欺",
+        "【法扶花蓮分會派案通知】李滿金-1150626-E-008-刑事通常程序第一審-涉及洗錢防制法、詐欺",
+    )
+
+    for parser in (LAFCaseTypeParser, LegacyLAFCaseTypeParser):
+        for subject in subjects:
+            info = parser.parse_subject(subject)
+            assert info is not None
+            assert info.laf_case_number == "1150626-E-008"
+            assert info.client_name == "李滿金"
+            assert info.case_type == "刑事"
+            assert info.case_stage == "一審"
+            assert info.case_reason == "洗錢防制法、詐欺"
+
+
 def test_indigenous_staff_material_body_fills_pending_consumer_debt_reason(tmp_path):
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
         LAFGmailMonitor,

@@ -9,6 +9,7 @@ rebuilds Funnel when every public probe fails.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -93,24 +94,32 @@ def _extract_targets(status: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _public_ips(host: str) -> list[str]:
+    def is_public_ip(value: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return addr.is_global
+
     ips: list[str] = []
     if shutil.which("dig"):
         for resolver in ("1.1.1.1", "8.8.8.8"):
-            res = _run(["dig", f"@{resolver}", "+short", host], timeout=6)
-            if not res["ok"]:
-                continue
-            for line in res["stdout"].splitlines():
-                line = line.strip()
-                if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", line) and not line.startswith("100."):
-                    ips.append(line)
+            for record_type in ("A", "AAAA"):
+                res = _run(["dig", f"@{resolver}", "+short", host, record_type], timeout=6)
+                if not res["ok"]:
+                    continue
+                for line in res["stdout"].splitlines():
+                    line = line.strip()
+                    if is_public_ip(line):
+                        ips.append(line)
     elif shutil.which("nslookup"):
         for resolver in ("1.1.1.1", "8.8.8.8"):
             res = _run(["nslookup", host, resolver], timeout=6)
             if not res["ok"]:
                 continue
             for line in res["stdout"].splitlines():
-                match = re.search(r"Address:\s*(\d+\.\d+\.\d+\.\d+)", line)
-                if match and not match.group(1).startswith("100."):
+                match = re.search(r"Address:\s*([0-9a-fA-F:.]+)", line)
+                if match and is_public_ip(match.group(1)):
                     ips.append(match.group(1))
     return sorted(set(ips))
 
@@ -118,6 +127,7 @@ def _public_ips(host: str) -> list[str]:
 def _probe(host: str, ip: str, path: str) -> dict[str, Any]:
     url_path = path if path.startswith("/") else f"/{path}"
     url = f"https://{host}{url_path if url_path != '/' else '/'}"
+    resolve_ip = f"[{ip}]" if ":" in ip else ip
     res = _run(
         [
             "curl",
@@ -126,7 +136,7 @@ def _probe(host: str, ip: str, path: str) -> dict[str, Any]:
             "--max-time",
             "20",
             "--resolve",
-            f"{host}:443:{ip}",
+            f"{host}:443:{resolve_ip}",
             "-o",
             "/dev/null",
             "-w",
@@ -246,7 +256,7 @@ def check(apply: bool = False) -> dict[str, Any]:
     for target in targets:
         ips = _public_ips(target["host"])
         if not ips:
-            probes.append({"host": target["host"], "path": target["path"], "ok": False, "error": "no public DNS A record"})
+            probes.append({"host": target["host"], "path": target["path"], "ok": False, "error": "no public DNS A/AAAA record"})
             continue
         for ip in ips:
             probes.append(_probe(target["host"], ip, target["path"]))
@@ -273,13 +283,16 @@ def check(apply: bool = False) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="reset and restore Funnel when public probes fail")
+    parser.add_argument("--print-json", action="store_true", help="print JSON only; useful for manual/live checks")
     parser.add_argument("--json-out", default=str(STATE_PATH))
     args = parser.parse_args(argv)
 
     payload = check(apply=args.apply)
-    out_path = Path(args.json_out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    should_write = args.json_out != "-" and not (args.print_json and args.json_out == str(STATE_PATH))
+    if should_write:
+        out_path = Path(args.json_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload["status"] in {"ok", "skipped", "recovered"} else 1
 

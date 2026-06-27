@@ -92,6 +92,8 @@ def clean_laf_case_reason(value: str) -> str:
     """Return a compact case-reason string parsed from noisy LAF email text."""
     text = re.sub(r"\s+", "", str(value or "").strip())
     text = text.strip("：:，,。；;、（）()[]【】")
+    text = re.sub(r"^(涉嫌|涉及|涉犯|涉有|涉(?!外))", "", text)
+    text = text.strip("：:，,。；;、（）()[]【】")
     text = re.sub(r"(之)?案件資料$", "", text)
     text = re.sub(r"(之)?資料$", "", text)
     text = text.strip("：:，,。；;、（）()[]【】")

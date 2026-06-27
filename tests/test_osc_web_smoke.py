@@ -551,6 +551,35 @@ def test_case_create_replaces_demo_lawyer_with_setting_default(client):
     assert "範例律師" not in insert_params
 
 
+def test_case_create_strips_suspected_marker_before_db_insert(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    payload = {
+        "id": "web-test-suspected-reason",
+        "case_number": "2026-0071",
+        "client_name": "李滿金",
+        "case_category": "法律扶助案件",
+        "case_type": "刑事",
+        "case_stage": "一審",
+        "case_reason": "涉詐欺、洗錢防制法",
+        "auto_create_folder": False,
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    _insert_sql, insert_params = calls[0]
+    assert "詐欺、洗錢防制法" in insert_params
+    assert "涉詐欺、洗錢防制法" not in insert_params
+
+
 def test_consumer_debt_case_defaults_to_debt_lawyer(client):
     calls = []
 

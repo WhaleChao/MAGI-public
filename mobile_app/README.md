@@ -8,6 +8,10 @@ Default server (always starts from the MAGI Mobile login entry):
 https://aimac-mini.tail6738b7.ts.net/mobile-app
 ```
 
+This uses the verified Tailscale Funnel HTTPS endpoint. If public DNS is still
+propagating, `scripts/mobile_app_status.py` also reports a Tailnet fallback URL
+for phones already connected to the MAGI Tailnet.
+
 ## Android APK
 
 This folder is prepared for Capacitor. Building an APK requires installing the npm dependencies and Android build tooling:

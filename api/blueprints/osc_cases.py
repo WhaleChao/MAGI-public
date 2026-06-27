@@ -81,6 +81,7 @@ from api.osc.draft_learning import (
     record_draft_feedback,
 )
 from api.osc.document_reuse import reuse_document as _osc_reuse_document
+from api.laf_case_classifier import clean_laf_case_reason
 from api.osc.saas_workbench import (
     build_ai_governance,
     build_client_packet,
@@ -143,6 +144,10 @@ def _osc_existing_resource_path(setting_key: str, filename: str, fallback: str =
 
 
 _OSC_DEMO_LAWYER_VALUES = set(_CASE_DEMO_LAWYER_VALUES)
+
+
+def _osc_clean_case_reason(value: object) -> str:
+    return clean_laf_case_reason(str(value or ""))
 
 
 def _osc_case_uses_consumer_debt_lawyer(*values: object) -> bool:
@@ -960,7 +965,7 @@ def _osc_try_create_drive_case_folder(
             case_type=(payload.get("case_type") or payload.get("type") or "").strip(),
             laf_case_no=_osc_synced_laf_number(payload),
             case_stage=(payload.get("case_stage") or "").strip(),
-            case_reason=(payload.get("case_reason") or "").strip(),
+            case_reason=_osc_clean_case_reason(payload.get("case_reason")),
             status=status or "active",
             owner_bucket=drive_owner_bucket(),
         )
@@ -994,7 +999,7 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
     client_name = (payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip()
     case_type = (payload.get("case_type") or payload.get("type") or "").strip()
     case_stage = (payload.get("case_stage") or "").strip()
-    case_reason = (payload.get("case_reason") or "").strip()
+    case_reason = _osc_clean_case_reason(payload.get("case_reason"))
 
     if not case_number or not client_name:
         return {"ok": False, "error": "missing_case_number_or_client_name"}
@@ -1545,6 +1550,7 @@ def osc_cases_api():
     if is_template_payload:
         case_type_value = _OSC_TEMPLATE_DISPLAY_VALUE
     case_reason_value = (payload.get("case_reason") or "").strip() or None
+    case_reason_value = _osc_clean_case_reason(case_reason_value) or None
     if is_template_payload:
         case_reason_value = _OSC_TEMPLATE_DISPLAY_VALUE
     lawyer_value = _osc_normalize_case_lawyer(
@@ -1591,6 +1597,7 @@ def osc_cases_api():
             folder_payload = dict(payload)
             folder_payload["case_number"] = case_number
             folder_payload["client_name"] = client_name
+            folder_payload["case_reason"] = case_reason_value
             folder_resp = _osc_auto_create_folder_for_case(row_id, folder_payload, case_category)
             resp["folder"] = folder_resp
         if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
@@ -1728,7 +1735,7 @@ def osc_case_detail_api(row_id):
     vals = []
     lawyer_case_category = payload.get("case_category") or (current_row or {}).get("case_category") or ""
     lawyer_case_type = payload.get("case_type") or (current_row or {}).get("case_type") or ""
-    lawyer_case_reason = payload.get("case_reason") or (current_row or {}).get("case_reason") or ""
+    lawyer_case_reason = _osc_clean_case_reason(payload.get("case_reason") or (current_row or {}).get("case_reason") or "")
     for k in allowed:
         if k in payload:
             sets.append(f"{k}=%s")
@@ -1739,6 +1746,8 @@ def osc_case_detail_api(row_id):
                 v = (payload.get("court_case_number") or "").strip() or None
             if k == "laf_case_no" and not v:
                 v = (payload.get("legal_aid_number") or "").strip() or None
+            if k == "case_reason":
+                v = _osc_clean_case_reason(v) or None
             if k == "folder_path" and v:
                 v = translate_local_path_to_canonical(v) or v
             if k == "lawyer":
@@ -8397,7 +8406,7 @@ def osc_cases_import_csv_api():
         case_type = (row.get("案件分類") or row.get("案件類型") or "").strip() or None
         case_category = _osc_norm_case_category((row.get("案件種類") or "").strip())
         case_subject = (row.get("案件標的") or "").strip() or None
-        case_reason = (row.get("案由") or "").strip() or None
+        case_reason = _osc_clean_case_reason(row.get("案由")) or None
         status = (row.get("狀態") or "進行中").strip() or "進行中"
         court_case_no = (row.get("法院案號") or "").strip() or None
         court_name = (row.get("法院/地檢署名稱") or "").strip() or None

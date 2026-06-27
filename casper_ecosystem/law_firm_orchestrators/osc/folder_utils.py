@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from api.laf_case_classifier import clean_laf_case_reason
 from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name
 
 SUBFOLDERS = {
@@ -66,6 +67,7 @@ def build_case_folder_name(
     case_stage: str = "",
     case_reason: str = "",
 ) -> str:
+    case_reason = clean_laf_case_reason(case_reason)
     if case_type == "消費者債務清理" or "消費者債務清理" in (case_reason or ""):
         # 消費者債務清理派案，資料夾案由必須帶「更生」
         reason = case_reason or ""
@@ -79,6 +81,7 @@ def build_case_folder_name(
 
 def resolve_type_folder(case_type: str = "", case_stage: str = "", case_reason: str = "") -> str:
     """Resolve the second-level case folder from explicit type first, then safe fallbacks."""
+    case_reason = clean_laf_case_reason(case_reason)
     explicit = (case_type or "").strip()
     text = " ".join(filter(None, [explicit, (case_stage or "").strip(), (case_reason or "").strip()]))
 
