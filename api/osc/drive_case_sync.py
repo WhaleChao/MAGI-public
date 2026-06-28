@@ -73,6 +73,7 @@ SYNC_IGNORE_NAMES = {
 }
 SYNC_IGNORE_PREFIXES = ("~$", "._")
 DEFAULT_LOCAL_HASH_MAX_BYTES = 25_000_000
+DEFAULT_MAX_SINGLE_UPLOAD_BYTES = 100_000_000
 OSC_CASE_RE = re.compile(r"(20\d{2}-\d{4})")
 LAF_CASE_RE = re.compile(r"(\d{6,7}-[A-Z]-\d{3})")
 COURT_CASE_RE = re.compile(r"(\d{2,3}年度[^\\/\s()（）-]{1,12}字第?\d{1,8}號)")
@@ -3825,6 +3826,7 @@ def upload_local_file_to_drive(
 
     if not local_path.exists() or not local_path.is_file():
         raise DriveCaseSyncError(f"找不到可上傳檔案：{local_path}")
+    local_size = int(local_path.stat().st_size)
     parent_id, created_folders = ensure_drive_parent_folder(service, drive_case_folder_id, relative_path)
     name = PurePosixPath(str(relative_path).replace("\\", "/")).name
     if find_drive_child_file(service, parent_id, name):
@@ -3835,7 +3837,11 @@ def upload_local_file_to_drive(
             "bytes": 0,
             "created_folders": created_folders,
         }
-    media = MediaFileUpload(str(local_path), resumable=True)
+    resumable_min = max(
+        0,
+        int(os.environ.get("MAGI_DRIVE_SYNC_RESUMABLE_UPLOAD_MIN_BYTES") or DEFAULT_MAX_SINGLE_UPLOAD_BYTES),
+    )
+    media = MediaFileUpload(str(local_path), resumable=bool(resumable_min and local_size >= resumable_min))
     created = _drive_execute_with_timeout(service.files().create(
         body={"name": name, "parents": [parent_id]},
         media_body=media,
@@ -3846,7 +3852,7 @@ def upload_local_file_to_drive(
         "status": "uploaded",
         "drive_id": str(created.get("id") or ""),
         "web_url": str(created.get("webViewLink") or ""),
-        "bytes": int(created["size"]) if str(created.get("size") or "").isdigit() else int(local_path.stat().st_size),
+        "bytes": int(created["size"]) if str(created.get("size") or "").isdigit() else local_size,
         "created_folders": created_folders,
         "md5": str(created.get("md5Checksum") or ""),
     }
@@ -4225,9 +4231,14 @@ def execute_nas_to_drive_uploads(
         "failed": 0,
         "bytes": 0,
         "folders_created": 0,
+        "large_upload_deferred": 0,
         "stopped_by_limit": False,
         "stopped_by_bytes": False,
     }
+    max_single_upload_bytes = max(
+        0,
+        int(os.environ.get("MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES") or DEFAULT_MAX_SINGLE_UPLOAD_BYTES),
+    )
     for case in file_sync_plan.get("cases") or []:
         drive_case_folder_id = str(case.get("drive_id") or "")
         if not drive_case_folder_id:
@@ -4255,6 +4266,12 @@ def execute_nas_to_drive_uploads(
                 "error": "",
                 "created_folders": [],
             }
+            if max_single_upload_bytes and size_hint and size_hint > max_single_upload_bytes:
+                record["status"] = "deferred_large_file"
+                record["reason"] = f"large_upload_deferred:{size_hint}>{max_single_upload_bytes}"
+                summary["large_upload_deferred"] += 1
+                manifest.append(record)
+                continue
             try:
                 result = upload_local_file_to_drive(
                     drive_service,

@@ -283,7 +283,7 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
                     _GIBBERISH_KEYWORDS.append(gram)
                     logger.info(f"[亂碼學習] 新增關鍵字: {gram}")
     except Exception:
-        pass  # best-effort
+        logger.debug("亂碼關鍵字 best-effort 學習失敗；已保留原始回報紀錄。", exc_info=True)
 
     return f"✅ 已記錄該亂碼回覆，偵測模組會自動學習。感謝回報！"
 

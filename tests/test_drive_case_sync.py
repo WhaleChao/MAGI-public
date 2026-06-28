@@ -1532,6 +1532,39 @@ def test_execute_uploads_respects_byte_limit(tmp_path):
     assert result["summary"]["stopped_by_bytes"] is True
 
 
+def test_execute_uploads_defers_large_single_file(monkeypatch, tmp_path):
+    src = tmp_path / "huge.pdf"
+    src.write_bytes(b"12345")
+    plan = {
+        "cases": [
+            {
+                "case_number": "2026-0333",
+                "drive_path": "一般案件/Lumi/2026-0333-測試甲-一審-損害賠償",
+                "drive_id": "drive-case",
+                "nas_only": [
+                    {"path": str(src), "relative_path": "huge.pdf", "size": src.stat().st_size}
+                ],
+            }
+        ]
+    }
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("large uploads should be deferred before Drive API upload")
+
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES", "4")
+    monkeypatch.setattr("api.osc.drive_case_sync.upload_local_file_to_drive", fake_upload)
+    result = execute_nas_to_drive_uploads(object(), plan)
+    assert result["ok"] is True
+    assert result["summary"]["attempted"] == 1
+    assert result["summary"]["failed"] == 0
+    assert result["summary"]["large_upload_deferred"] == 1
+    assert result["manifest"][0]["status"] == "deferred_large_file"
+    assert result["manifest"][0]["reason"] == "large_upload_deferred:5>4"
+    assert calls == []
+
+
 def test_drive_relative_path_for_local_case_preserves_drive_layout(monkeypatch):
     monkeypatch.setenv("MAGI_DRIVE_SYNC_OWNER_BUCKET", "Lumi")
     normal = CaseFolder(
