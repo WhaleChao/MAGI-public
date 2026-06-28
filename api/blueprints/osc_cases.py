@@ -4988,24 +4988,23 @@ def _osc_reuse_output_dir(target_case: dict, displayed_case_no: str = "") -> tup
     if not base:
         raise FileNotFoundError("target_case_folder_not_found")
 
-    preferred_names = ("04_我方歷次書狀", "02_我方歷次書狀", "我方歷次書狀")
-    for name in preferred_names:
-        candidate = os.path.join(base, name)
-        if os.path.isdir(candidate):
-            return candidate, warnings
+    canonical_name = "04_我方歷次書狀"
+    canonical = os.path.join(base, canonical_name)
+    if os.path.isdir(canonical):
+        return canonical, warnings
+
     try:
         for name in os.listdir(base):
-            if "我方歷次書狀" in name:
+            if "我方歷次書狀" in name and name != canonical_name:
                 candidate = os.path.join(base, name)
                 if os.path.isdir(candidate):
-                    return candidate, warnings
+                    warnings.append(f"legacy_own_pleading_folder_present:{name}")
     except OSError:
         logger.debug("silent-catch _osc_reuse_output_dir:listdir", exc_info=True)
 
-    target = os.path.join(base, "04_我方歷次書狀")
-    os.makedirs(target, exist_ok=True)
-    warnings.append("created_output_folder:04_我方歷次書狀")
-    return target, warnings
+    os.makedirs(canonical, exist_ok=True)
+    warnings.append(f"created_output_folder:{canonical_name}")
+    return canonical, warnings
 
 
 def _osc_register_reused_document(target_case: dict, result: dict, payload: dict) -> list[str]:
@@ -5068,6 +5067,17 @@ def osc_drafts_reuse_document_api():
         return jsonify({"ok": False, "error": "source_file_not_found", "source_path": source_path_raw}), 404
     if Path(source_path).suffix.lower() not in {".docx", ".doc"}:
         return jsonify({"ok": False, "error": "only_word_supported"}), 400
+    source_scope = " ".join(
+        str(x or "")
+        for x in (
+            source_path,
+            source_path_raw,
+            source_doc.get("subfolder_name"),
+            source_doc.get("document_type"),
+        )
+    )
+    if not _osc_is_own_pleading_word(os.path.basename(source_path), source_path, source_scope):
+        return jsonify({"ok": False, "error": "source_must_be_own_pleading_word", "source_path": source_path_raw}), 400
 
     target_case = _osc_lookup_case_for_reuse(
         row_id=str(payload.get("case_id") or payload.get("selected_case_id") or ""),

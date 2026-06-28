@@ -72,9 +72,10 @@ def _doc_text(path: Path) -> str:
 def test_reuse_document_api_creates_target_case_word_doc_and_logs(tmp_path):
     app = _build_app()
     client = app.test_client()
-    source_dir = tmp_path / "source"
+    source_case_dir = tmp_path / "source"
+    source_dir = source_case_dir / "04_我方歷次書狀"
     target_case_dir = tmp_path / "target-case"
-    source_dir.mkdir()
+    source_dir.mkdir(parents=True)
     target_case_dir.mkdir()
     source = source_dir / "舊案民事準備書狀.doc"
     converted_source = source_dir / "converted-source.docx"
@@ -92,7 +93,7 @@ def test_reuse_document_api_creates_target_case_word_doc_and_logs(tmp_path):
         "court_case_number": "113年度訴字第1號",
         "court_division": "義股",
         "case_reason": "損害賠償",
-        "folder_path": str(source_dir),
+        "folder_path": str(source_case_dir),
     }
     target_case = {
         "id": "2",
@@ -162,6 +163,56 @@ def test_reuse_document_api_creates_target_case_word_doc_and_logs(tmp_path):
     assert "王小明" not in text
     assert any("insert into case_documents" in " ".join(sql.lower().split()) for sql, _, _ in calls)
     assert any("insert into document_replacements" in " ".join(sql.lower().split()) for sql, _, _ in calls)
+
+
+def test_reuse_output_dir_always_creates_canonical_own_pleading_folder(tmp_path):
+    from api.blueprints import osc_cases as mod
+
+    target_case_dir = tmp_path / "target-case"
+    legacy_dir = target_case_dir / "02_我方歷次書狀"
+    legacy_dir.mkdir(parents=True)
+
+    def resolve_existing(path, prefer_dir=None):
+        p = Path(str(path))
+        return str(p) if p.exists() else ""
+
+    with patch("api.blueprints.osc_cases._osc_resolve_existing_local_path", side_effect=resolve_existing):
+        output_dir, warnings = mod._osc_reuse_output_dir({"folder_path": str(target_case_dir)}, "")
+
+    canonical_dir = target_case_dir / "04_我方歷次書狀"
+    assert Path(output_dir) == canonical_dir
+    assert canonical_dir.is_dir()
+    assert legacy_dir.is_dir()
+    assert "legacy_own_pleading_folder_present:02_我方歷次書狀" in warnings
+    assert "created_output_folder:04_我方歷次書狀" in warnings
+
+
+def test_reuse_document_api_rejects_word_outside_own_pleading_folder(tmp_path):
+    app = _build_app()
+    client = app.test_client()
+    source_dir = tmp_path / "source" / "01_委任狀"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "委任狀.docx"
+    _make_source_docx(source)
+
+    def resolve_existing(path, prefer_dir=None):
+        p = Path(str(path))
+        return str(p) if p.exists() else ""
+
+    with patch("api.blueprints.osc_cases._osc_resolve_existing_local_path", side_effect=resolve_existing):
+        response = client.post(
+            "/api/osc/drafts/reuse-document",
+            json={
+                "case_id": "2",
+                "case_number": "115年度重訴字第9號",
+                "source_path": str(source),
+            },
+        )
+
+    assert response.status_code == 400, response.get_data(as_text=True)
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["error"] == "source_must_be_own_pleading_word"
 
 
 def test_documents_api_own_pleading_word_scope_excludes_poa_word_files(tmp_path):
