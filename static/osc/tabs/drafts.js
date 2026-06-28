@@ -171,11 +171,24 @@ function documentReuseFieldValue(id) {
     return (document.getElementById(id)?.value || "").trim();
 }
 
+let documentReuseDocNameSearchTimer = null;
+
+function updateDocumentReuseSuggestedNameFromFields(force = false) {
+    const input = document.getElementById("reuseSuggestedName");
+    if (!input) return;
+    const current = (input.value || "").trim();
+    if (!force && current && input.dataset.autoFromDocName !== "1") return;
+    const docType = documentReuseFieldValue("reuseDocType") || "沿用書狀";
+    const caseNo = documentReuseFieldValue("reuseCaseNumber") || "未命名";
+    input.value = `${docType}_${caseNo}`;
+    input.dataset.autoFromDocName = "1";
+}
+
 function renderDocumentReusePreview() {
     const box = document.getElementById("reusePreview");
     if (!box) return;
     const rows = [
-        ["書狀類型", documentReuseFieldValue("reuseDocType")],
+        ["書狀名稱", documentReuseFieldValue("reuseDocType")],
         ["案號", documentReuseFieldValue("reuseCaseNumber")],
         ["股別", documentReuseFieldValue("reuseDivision")],
         ["法院 / 地檢署", documentReuseFieldValue("reuseCourtName")],
@@ -197,6 +210,44 @@ function renderDocumentReusePreview() {
             </div>
         </div>
     `).join("");
+}
+
+function showDocumentReuseWarning(message, focusId = "") {
+    setReuseStatus(message, "warn");
+    if (focusId) {
+        const el = document.getElementById(focusId);
+        if (el && typeof el.focus === "function") el.focus();
+    }
+    if (typeof showAlert === "function") showAlert("MAGI說", message);
+}
+
+function syncDocumentReuseDocNameSearch(options = {}) {
+    const immediate = !!options.immediate;
+    const docName = documentReuseFieldValue("reuseDocType");
+    const q = document.getElementById("reuseQ");
+    updateDocumentReuseSuggestedNameFromFields();
+    renderDocumentReusePreview();
+    if (documentReuseDocNameSearchTimer) {
+        clearTimeout(documentReuseDocNameSearchTimer);
+        documentReuseDocNameSearchTimer = null;
+    }
+    if (!q) return;
+    if (!docName) {
+        if (q.dataset.autoFromDocName === "1") q.value = "";
+        return;
+    }
+    q.value = docName;
+    q.dataset.autoFromDocName = "1";
+    const run = () => {
+        if (!document.getElementById("documentReuse")?.classList.contains("active")) return;
+        setReuseStatus(`正在依「${docName}」自動搜尋舊書狀底稿...`);
+        loadDocumentReuseDocuments().catch(reportDocumentReuseError);
+    };
+    if (immediate) {
+        run();
+        return;
+    }
+    documentReuseDocNameSearchTimer = setTimeout(run, 450);
 }
 
 function renderDocumentReuseCases() {
@@ -243,11 +294,7 @@ async function loadDocumentReuseSelectedCase() {
         if (!(document.getElementById("reuseDocType").value || "").trim()) {
             document.getElementById("reuseDocType").value = "沿用書狀";
         }
-        if (!(document.getElementById("reuseSuggestedName").value || "").trim()) {
-            const docType = (document.getElementById("reuseDocType").value || "沿用書狀").trim();
-            const shownCase = (x.court_case_number || x.court_case_no || x.case_number || "未命名").trim();
-            document.getElementById("reuseSuggestedName").value = `${docType}_${shownCase}`;
-        }
+        updateDocumentReuseSuggestedNameFromFields();
         renderDocumentReusePreview();
         setReuseStatus(`已載入新案件資料：${x.client_name || ""} / ${x.case_number || id}`);
     });
@@ -401,14 +448,28 @@ function collectDocumentReusePayload() {
 }
 
 async function reuseDocumentReuseDocument() {
-    await withBusy("reuseRunBtn", "另存中...", async () => {
+    await withBusy("reuseRunBtn", "產生中...", async () => {
+        setReuseStatus("正在檢查是否已選新案件資料與舊書狀底稿...");
         const reuse = documentReuseState();
         const source = reuse.selectedDocument || null;
-        if (!source) return showAlert("MAGI說", "請先在第二步選一份舊書狀底稿。");
-        if (!documentReuseIsWord(source)) return showAlert("MAGI說", "沿用舊書狀目前只支援 Word 來源檔。");
+        if (!source) {
+            showDocumentReuseWarning("還沒選舊書狀底稿。請先在第二步搜尋舊書狀，按「選為底稿」。", "reuseQ");
+            return;
+        }
+        if (!documentReuseIsWord(source)) {
+            showDocumentReuseWarning("目前只能用 Word 檔當底稿，請改選 .doc 或 .docx。", "reuseQ");
+            return;
+        }
         const payload = collectDocumentReusePayload();
         const hasTargetData = [payload.case_number, payload.court_name, payload.reason, payload.plaintiff, payload.defendant].some(Boolean);
-        if (!hasTargetData) return showAlert("MAGI說", "請先載入或填寫新案件資料。");
+        if (!hasTargetData) {
+            showDocumentReuseWarning("還沒載入或填寫新案件資料。請先完成第一步的新案件資料。", "reuseCaseSearch");
+            return;
+        }
+        if (!source.file_path) {
+            showDocumentReuseWarning("這份舊書狀沒有可用路徑，請改選另一份底稿。", "reuseQ");
+            return;
+        }
         payload.source_document = source;
         payload.source_path = source.file_path || "";
         payload.source_document_id = source.id || "";

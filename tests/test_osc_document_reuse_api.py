@@ -260,6 +260,8 @@ def test_document_reuse_ui_is_separate_from_document_index_and_wired_to_api():
     assert "1. 新案件資料" in reuse_html
     assert "2. 舊書狀底稿" in reuse_html
     assert "3. 檢查後產生" in reuse_html
+    assert "書狀名稱" in reuse_html
+    assert "填上方書狀名稱後會自動搜尋" in reuse_html
     assert 'id="reuseDocsBody"' in reuse_html
     assert 'id="reusePreview"' in reuse_html
     assert "產生新書狀" in reuse_html
@@ -274,11 +276,15 @@ def test_document_reuse_ui_is_separate_from_document_index_and_wired_to_api():
     assert "reuse_scope=own_pleading_word" in js
     assert "documentReuseIsWord" in js
     assert "renderDocumentReusePreview" in js
+    assert "syncDocumentReuseDocNameSearch" in js
+    assert "showDocumentReuseWarning" in js
     assert "選為底稿" in js
+    assert "reuseDocType.addEventListener(\"input\"" in events
+    assert "reuseRunBtn" in events
+    assert "產生中" in js
     assert "僅 DOCX" not in js
     assert "own_pleading_word" in reuse_html
     assert "document-reuse-select" in events
-    assert "reuseRunBtn" in events
     assert "loadDocumentReuse" in events
     assert "documentReuse" in state
     assert "selectedDocument" in state

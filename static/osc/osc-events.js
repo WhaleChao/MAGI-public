@@ -635,15 +635,29 @@ function bindEvents() {
             document.getElementById("draftSuggestedName").value = `${docType}_${caseNo}`;
         }
     });
-    document.getElementById("reuseDocType").addEventListener("change", () => {
+    const reuseDocType = document.getElementById("reuseDocType");
+    reuseDocType.addEventListener("input", () => {
         if (!(document.getElementById("reuseSuggestedName").value || "").trim()) {
-            const docType = (document.getElementById("reuseDocType").value || "沿用書狀").trim();
+            const docType = (reuseDocType.value || "沿用書狀").trim();
             const caseNo = (document.getElementById("reuseCaseNumber").value || "未命名").trim();
             document.getElementById("reuseSuggestedName").value = `${docType}_${caseNo}`;
         }
+        syncDocumentReuseDocNameSearch();
+    });
+    reuseDocType.addEventListener("change", () => syncDocumentReuseDocNameSearch({ immediate: true }));
+    const reuseQ = document.getElementById("reuseQ");
+    if (reuseQ) reuseQ.addEventListener("input", () => { reuseQ.dataset.autoFromDocName = "0"; });
+    const reuseCaseNumber = document.getElementById("reuseCaseNumber");
+    if (reuseCaseNumber) reuseCaseNumber.addEventListener("input", () => {
+        updateDocumentReuseSuggestedNameFromFields();
         renderDocumentReusePreview();
     });
-    ["reuseCaseNumber", "reuseDivision", "reuseCourtName", "reuseReason", "reusePlaintiff", "reuseDefendant", "reuseSuggestedName"].forEach(id => {
+    const reuseSuggestedName = document.getElementById("reuseSuggestedName");
+    if (reuseSuggestedName) reuseSuggestedName.addEventListener("input", () => {
+        reuseSuggestedName.dataset.autoFromDocName = "0";
+        renderDocumentReusePreview();
+    });
+    ["reuseDivision", "reuseCourtName", "reuseReason", "reusePlaintiff", "reuseDefendant"].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener("input", renderDocumentReusePreview);
     });
