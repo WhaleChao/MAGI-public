@@ -641,6 +641,11 @@ function bindEvents() {
             const caseNo = (document.getElementById("reuseCaseNumber").value || "未命名").trim();
             document.getElementById("reuseSuggestedName").value = `${docType}_${caseNo}`;
         }
+        renderDocumentReusePreview();
+    });
+    ["reuseCaseNumber", "reuseDivision", "reuseCourtName", "reuseReason", "reusePlaintiff", "reuseDefendant", "reuseSuggestedName"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("input", renderDocumentReusePreview);
     });
     bindEnterSubmit(["draftCaseSearch"], "draftCaseSearchBtn", searchDraftCases, { actionLabel: "案件搜尋", onError: reportDraftError });
     bindEnterSubmit(["draftDocsQ", "draftDocsCaseFilter"], "draftDocsSearchBtn", loadDraftDocuments, { actionLabel: "書狀搜尋", onError: reportDraftError });

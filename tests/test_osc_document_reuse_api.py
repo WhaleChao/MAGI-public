@@ -256,8 +256,13 @@ def test_document_reuse_ui_is_separate_from_document_index_and_wired_to_api():
     state = (ROOT / "static" / "osc" / "osc-state.js").read_text(encoding="utf-8")
 
     assert 'id="documentReuse"' in reuse_html
-    assert "沿用舊書狀" in reuse_html
+    assert "沿用舊書狀" in osc_html
+    assert "1. 新案件資料" in reuse_html
+    assert "2. 舊書狀底稿" in reuse_html
+    assert "3. 檢查後產生" in reuse_html
     assert 'id="reuseDocsBody"' in reuse_html
+    assert 'id="reusePreview"' in reuse_html
+    assert "產生新書狀" in reuse_html
     assert 'id="draftReuseDocsBody"' not in drafts_html
     assert "我方歷次書狀 Word 索引 / 沿用舊書狀" not in drafts_html
     assert 'data-tab="documentReuse"' in osc_html
@@ -268,6 +273,8 @@ def test_document_reuse_ui_is_separate_from_document_index_and_wired_to_api():
     assert "/api/osc/drafts/reuse-document" in js
     assert "reuse_scope=own_pleading_word" in js
     assert "documentReuseIsWord" in js
+    assert "renderDocumentReusePreview" in js
+    assert "選為底稿" in js
     assert "僅 DOCX" not in js
     assert "own_pleading_word" in reuse_html
     assert "document-reuse-select" in events
