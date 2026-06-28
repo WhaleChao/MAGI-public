@@ -24,7 +24,7 @@ def test_select_runtime_prefers_omlx_on_apple_silicon():
     plan = bootstrap.select_runtime_plan(profile)
 
     assert plan.provider == "omlx"
-    assert plan.primary_model == "gemma-4-12B-it-4bit"
+    assert plan.primary_model == "gemma-4-e4b-it-4bit"
     assert plan.heavy_model == ""
     assert any(item.role == "primary" and item.source.startswith("mlx-community/") for item in plan.downloads)
 
@@ -147,8 +147,8 @@ def test_runtime_bootstrap_installs_detected_utility_settings_into_env(tmp_path,
     assert "MAGI_INFERENCE_PROVIDER=omlx" in env_text
     assert "MAGI_MARIADB_BIN=/opt/homebrew/bin/mariadb" in env_text
     assert "MAGI_TAILSCALE_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale" in env_text
-    assert "MAGI_DEFAULT_MODEL=gemma-4-12B-it-4bit" in env_text
-    assert "MAGI_TEXT_PRIMARY_MODEL=gemma-4-12B-it-4bit" in env_text
+    assert "MAGI_DEFAULT_MODEL=gemma-4-e4b-it-4bit" in env_text
+    assert "MAGI_TEXT_PRIMARY_MODEL=gemma-4-e4b-it-4bit" in env_text
 
 
 def test_runtime_bootstrap_dry_run_does_not_write_env(tmp_path, monkeypatch):

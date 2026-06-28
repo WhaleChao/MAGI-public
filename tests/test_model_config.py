@@ -32,6 +32,8 @@ def test_china_models_are_blocked_from_resolution(monkeypatch):
 
 
 def test_env_china_primary_model_falls_back(monkeypatch):
+    monkeypatch.delenv("MAGI_TEXT_PRIMARY_MODEL", raising=False)
+    monkeypatch.delenv("CASPER_LOCAL_MODEL", raising=False)
     monkeypatch.setenv("MAGI_MAIN_MODEL", "qwen2.5-coder:7b")
     import api.model_config as model_config
 

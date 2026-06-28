@@ -60,8 +60,9 @@ def _sigchld_handler(_signum, _frame):
 if os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower() not in {"1", "true", "yes", "on"}:
     _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
-# Load Env — always use explicit path to guarantee .env is found regardless of cwd
-load_dotenv(os.path.join(_MAGI_ROOT, ".env"))
+# Load Env — always use explicit path to guarantee .env is found regardless of cwd.
+# Override inherited daemon values so edited .env model routing takes effect on restart.
+load_dotenv(os.path.join(_MAGI_ROOT, ".env"), override=True)
 
 # Validate required config before anything else
 from skills.ops.config import validate_config

@@ -17,19 +17,19 @@ def test_service_alive_accepts_display_name_aliases():
     assert _service_alive({"主伺服器": False}, "主伺服器", "Server") is False
 
 
-def test_menubar_text_status_marks_day_12b_primary():
-    status = _omlx_text_status("gemma-4-12B-it-4bit", "day", "12b", "day")
+def test_menubar_text_status_marks_day_e4b_primary():
+    status = _omlx_text_status("gemma-4-e4b-it-4bit", "day", "e4b", "day")
     assert status["icon"] == "🟢"
     assert status["degraded"] is False
-    assert "日間12B" in status["label"]
+    assert "日間4B" in status["label"]
 
 
-def test_menubar_text_status_marks_day_e4b_degraded_fallback():
-    status = _omlx_text_status("gemma-4-e4b-it-4bit", "day", "12b", "day-e4b-degraded")
+def test_menubar_text_status_marks_night_e4b_degraded_fallback():
+    status = _omlx_text_status("gemma-4-e4b-it-4bit", "night", "26b", "night-e4b-degraded")
     assert status["icon"] == "🟡"
     assert status["degraded"] is True
-    assert "日間降級E4B" in status["label"]
-    assert "預期12B" in status["label"]
+    assert "夜間降級E4B" in status["label"]
+    assert "預期26B" in status["label"]
 
 
 def test_check_omlx_returns_actual_model_instead_of_legacy_main_model_filter(monkeypatch):
