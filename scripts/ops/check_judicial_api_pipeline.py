@@ -11,11 +11,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
-if str(MAGI_ROOT) not in sys.path:
-    sys.path.insert(0, str(MAGI_ROOT))
+if str(MAGI_ROOT) in sys.path:
+    sys.path.remove(str(MAGI_ROOT))
+sys.path.insert(0, str(MAGI_ROOT))
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(str(MAGI_ROOT)):
+            sys.modules.pop(_module_name, None)
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
 from api.domains.judicial_api_cache import judicial_api_cache_root
+from api.domains.judicial_api_policy import judicial_api_env_default
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -61,6 +68,17 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def is_judicial_raw_payload(path: Path) -> bool:
+    name = path.name
+    if name.startswith("._"):
+        return False
+    if path.suffix != ".json":
+        return False
+    if ".json." in name:
+        return False
+    return True
+
+
 def parse_iso(value: str) -> Optional[datetime]:
     if not value:
         return None
@@ -76,10 +94,19 @@ def age_hours(dt: Optional[datetime]) -> Optional[float]:
     return max(0.0, (time.time() - dt.timestamp()) / 3600.0)
 
 
-def list_files(root: Path) -> list[Path]:
+def list_files(root: Path, *, judicial_raw_only: bool = False) -> list[Path]:
     if not root.exists():
         return []
-    return sorted(path for path in root.rglob("*") if path.is_file())
+    files = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if judicial_raw_only and not is_judicial_raw_payload(path):
+            continue
+        if path.name.startswith("._"):
+            continue
+        files.append(path)
+    return sorted(files)
 
 
 def iso_or_empty(dt: Optional[datetime]) -> str:
@@ -117,7 +144,7 @@ def detect_credentials() -> dict:
 def backlog_status(cache_root: Path, process_state_path: Path, raw_root: Path) -> dict:
     proc_state = load_json(process_state_path)
     processed_map = proc_state.get("processed") if isinstance(proc_state.get("processed"), dict) else {}
-    raw_files = list_files(raw_root)
+    raw_files = list_files(raw_root, judicial_raw_only=True)
 
     backlog_count = 0
     unreadable_count = 0
@@ -334,14 +361,18 @@ def build_report() -> dict:
     backlog_count = int(backlog.get("backlog_count") or 0)
     oldest_backlog_age_hours = float(backlog.get("oldest_backlog_age_hours") or 0.0)
     last_run = process.get("last_run") if isinstance(process.get("last_run"), dict) else {}
+    scheduled_avg_batch = int(scheduled_capacity.get("avg_batch") or 0)
     try:
-        configured_batch = max(
-            int(last_run.get("max_docs") or 0),
-            int(scheduled_capacity.get("avg_batch") or 0),
-            int(os.environ.get("JDG_API_DAY_MAX_PROCESS", "200") or "200"),
+        env_batch = os.environ.get("JUDICIAL_API_DAY_MAX_PROCESS") or os.environ.get("JDG_API_DAY_MAX_PROCESS")
+        configured_batch = int(
+            scheduled_avg_batch
+            or (env_batch if env_batch else 0)
+            or last_run.get("max_docs")
+            or judicial_api_env_default("JUDICIAL_API_DAY_MAX_PROCESS", "60")
+            or "60"
         )
     except Exception:
-        configured_batch = 200
+        configured_batch = scheduled_avg_batch or 60
     try:
         runs_per_day = int(os.environ.get("JUDICIAL_API_DAY_RUNS_PER_DAY") or scheduled_capacity.get("runs_per_day") or "5")
     except Exception:
@@ -378,8 +409,9 @@ def build_report() -> dict:
             if status == "PIPELINE_HEALTHY":
                 status = "BACKLOG_CATCHING_UP"
                 exit_code = WARNING_EXIT
+            aging_clause = "且已有跨日老化，" if interpretation_status == "AGING" else ""
             reasons.append(
-                f"裁判資料尚有 {backlog_count} 份待整理，且已有跨日老化，但本輪正在處理（消化 {interpretation_reduced}，處理 {interpretation_handled}）。"
+                f"裁判資料尚有 {backlog_count} 份待整理，{aging_clause}本輪正在處理（消化 {interpretation_reduced}，處理 {interpretation_handled}）。"
             )
         elif oldest_backlog_age_hours >= backlog_risk_age_hours:
             status = "BACKLOG_STALE"

@@ -1,9 +1,9 @@
 """Central load policy for Judicial Yuan API jobs.
 
-MAGI now treats the official Judicial Yuan API as a small incremental cache
-source.  Broad semantic retrieval is handled by Taiwan Legal RAG/TLR first, so
-the default scheduler must not keep draining thousands of official API records
-every day.
+MAGI treats the official Judicial Yuan API as an incremental cache source while
+semantic retrieval is handled by Taiwan Legal RAG/TLR first.  The default
+TLR-smart mode keeps summaries extractive and skips attachments/vectors, but it
+may drain backlog aggressively when a NAS-backed cache is available.
 """
 from __future__ import annotations
 
@@ -16,27 +16,27 @@ DEFAULT_LOAD_MODE = "tlr_smart"
 
 _MODE_DEFAULTS: dict[str, dict[str, str]] = {
     "tlr_smart": {
-        "enable_day_process": "0",
+        "enable_day_process": "1",
         "enable_night_pull": "1",
         "enable_nightly_process": "1",
-        "night_max_jdocs": "300",
-        "night_max_days": "2",
-        "night_timeout_sec": "1800",
-        "day_max_docs": "60",
-        "day_summary_max": "12",
+        "night_max_jdocs": "600",
+        "night_max_days": "3",
+        "night_timeout_sec": "2400",
+        "day_max_docs": "240",
+        "day_summary_max": "48",
         "day_summary_mode": "extractive",
         "day_skip_assets": "1",
         "day_vector_ingest": "0",
-        "day_timeout_sec": "900",
-        "day_retry_on_backlog": "0",
-        "day_retry_max_docs": "120",
-        "day_retry_timeout_sec": "600",
-        "nightly_process_max_docs": "80",
-        "nightly_summary_max": "20",
+        "day_timeout_sec": "2400",
+        "day_retry_on_backlog": "1",
+        "day_retry_max_docs": "480",
+        "day_retry_timeout_sec": "1800",
+        "nightly_process_max_docs": "240",
+        "nightly_summary_max": "48",
         "nightly_summary_mode": "extractive",
         "nightly_skip_assets": "1",
         "nightly_vector_ingest": "0",
-        "nightly_process_timeout_sec": "1800",
+        "nightly_process_timeout_sec": "3600",
         "tlr_cache_hits": "1",
     },
     "balanced": {

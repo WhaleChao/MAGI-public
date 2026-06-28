@@ -5,18 +5,21 @@ import json
 from api.domains import judicial_api_policy as policy
 
 
-def test_tlr_smart_policy_is_low_load(monkeypatch):
+def test_tlr_smart_policy_uses_nas_accelerated_extract_only_batches(monkeypatch):
     monkeypatch.delenv("MAGI_JUDICIAL_API_LOAD_MODE", raising=False)
 
     report = policy.judicial_api_policy_report()
 
     assert report["mode"] == "tlr_smart"
-    assert report["enable_day_process"] == "0"
-    assert int(report["night_max_jdocs"]) <= 300
-    assert int(report["day_max_docs"]) <= 60
+    assert report["enable_day_process"] == "1"
+    assert int(report["night_max_jdocs"]) == 600
+    assert int(report["day_max_docs"]) == 240
+    assert int(report["day_summary_max"]) == 48
     assert report["day_summary_mode"] == "extractive"
     assert report["day_skip_assets"] == "1"
     assert report["day_vector_ingest"] == "0"
+    assert int(report["day_timeout_sec"]) >= 2400
+    assert report["day_retry_on_backlog"] == "1"
 
 
 def test_legacy_policy_preserves_old_manual_escape_hatch(monkeypatch):
@@ -30,7 +33,7 @@ def test_legacy_policy_preserves_old_manual_escape_hatch(monkeypatch):
     assert report["day_vector_ingest"] == "1"
 
 
-def test_tune_judicial_api_load_disables_heavy_day_batches(tmp_path, monkeypatch):
+def test_tune_judicial_api_load_enables_guarded_nas_backlog_catchup(tmp_path, monkeypatch):
     monkeypatch.delenv("MAGI_JUDICIAL_API_LOAD_MODE", raising=False)
     cron_path = tmp_path / "cron_jobs.json"
     cron_path.write_text(
@@ -55,8 +58,14 @@ def test_tune_judicial_api_load_disables_heavy_day_batches(tmp_path, monkeypatch
 
     assert result["ok"] is True
     assert jobs["job_judicial_api_night_pull"]["enabled"] is True
-    assert '\\"max_jdocs\\":300' in jobs["job_judicial_api_night_pull"]["command"]
+    assert '\\"max_jdocs\\":600' in jobs["job_judicial_api_night_pull"]["command"]
+    assert '\\"max_days\\":3' in jobs["job_judicial_api_night_pull"]["command"]
     assert jobs["job_judicial_api_morning"]["enabled"] is True
-    assert '\\"max_docs\\":60' in jobs["job_judicial_api_morning"]["command"]
-    assert jobs["job_judicial_api_noon"]["enabled"] is False
-    assert jobs["job_judicial_api_backlog_clear"]["enabled"] is False
+    assert '\\"max_docs\\":240' in jobs["job_judicial_api_morning"]["command"]
+    assert '\\"summarize_max\\":48' in jobs["job_judicial_api_morning"]["command"]
+    assert "JUDICIAL_API_DAY_RUNS_PER_DAY=5" in jobs["job_judicial_api_morning"]["command"]
+    assert jobs["job_judicial_api_noon"]["enabled"] is True
+    assert jobs["job_judicial_api_afternoon"]["enabled"] is True
+    assert jobs["job_judicial_api_evening"]["enabled"] is True
+    assert jobs["job_judicial_api_backlog_clear"]["enabled"] is True
+    assert "已停用" not in jobs["job_judicial_api_backlog_clear"]["desc"]

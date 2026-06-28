@@ -110,7 +110,11 @@ def build_backlog_interpretation(
         else:
             lines.append("- 預估：本輪未消化成功，無法估算清空時間")
     if cache_root:
-        lines.append("- 資料檔資料夾：本機司法院裁判資料快取")
+        normalized_cache_root = str(cache_root)
+        if "/.magi_mounts/" in normalized_cache_root or normalized_cache_root.startswith("/Volumes/"):
+            lines.append(f"- 資料檔資料夾：NAS 司法院裁判資料快取（{normalized_cache_root}）")
+        else:
+            lines.append(f"- 資料檔資料夾：本機司法院裁判資料快取（{normalized_cache_root}）")
 
     suggestions: List[str] = []
     if err:

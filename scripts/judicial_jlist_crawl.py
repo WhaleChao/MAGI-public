@@ -22,7 +22,14 @@ from datetime import datetime
 from pathlib import Path
 
 MAGI_ROOT = Path(__file__).resolve().parents[1]
+if str(MAGI_ROOT) in sys.path:
+    sys.path.remove(str(MAGI_ROOT))
 sys.path.insert(0, str(MAGI_ROOT))
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(str(MAGI_ROOT)):
+            sys.modules.pop(_module_name, None)
 
 # Load .env
 for line in (MAGI_ROOT / ".env").read_text().splitlines():
@@ -43,10 +50,11 @@ logger = logging.getLogger("JListCrawl")
 
 # ── 從 judgment-collector 借用 API 工具 ──
 sys.path.insert(0, str(MAGI_ROOT / "skills" / "judgment-collector"))
+from api.domains.judicial_api_cache import ensure_judgment_cache_root  # noqa: E402
 from action import _jdg_post_json, _get_jdg_credentials  # noqa: E402
 
 DEFAULT_BUDGET_SEC = int(os.environ.get("JUDICIAL_JLIST_BUDGET_SEC", "18000"))  # 5 小時
-SAVE_DIR = MAGI_ROOT / ".cache" / "judgment_collector"
+SAVE_DIR = ensure_judgment_cache_root(logger=logger)
 TOKEN_REFRESH_INTERVAL = 80  # 每 80 筆重新認證
 REQUEST_DELAY = 0.3  # 每筆間隔秒數
 

@@ -38,6 +38,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(PROJECT_ROOT):
+            sys.modules.pop(_module_name, None)
 from api.runtime_paths import get_orch_dir, get_skill_python
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
@@ -49,6 +54,11 @@ try:
     from dotenv import load_dotenv
 except Exception:
     load_dotenv = None  # type: ignore
+if load_dotenv is not None:
+    try:
+        load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
+    except Exception as _e:
+        logging.getLogger("judgment-collector").debug("load_dotenv skipped: %s", _e)
 try:
     from api.tw_output_guard import normalize_output_text as _normalize_output_text
 except Exception:
@@ -74,11 +84,6 @@ def _ensure_cache_root(path_str: str) -> str:
 
 
 CACHE_ROOT = _ensure_cache_root(os.environ.get("JUDGMENT_CACHE_ROOT", "~/.cache/judgment_collector"))
-if load_dotenv is not None:
-    try:
-        load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
-    except Exception as _e:
-        logging.getLogger("judgment-collector").debug("load_dotenv skipped: %s", _e)
 
 # Cache run directory retention (days)
 CACHE_RETENTION_DAYS = int(os.environ.get("JUDGMENT_CACHE_RETENTION_DAYS", "14"))
@@ -3906,7 +3911,7 @@ def _iter_jdg_raw_files() -> list[str]:
         return out
     for p in root.glob("*/*.json"):
         try:
-            if p.is_file():
+            if p.is_file() and not p.name.startswith("._"):
                 out.append(str(p))
         except Exception:
             continue

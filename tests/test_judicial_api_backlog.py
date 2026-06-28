@@ -205,7 +205,23 @@ def test_judgment_cache_root_falls_back_when_offload_symlink_is_broken(monkeypat
     broken = tmp_path / "judgment_collector"
     broken.symlink_to(tmp_path / "missing_offload_target")
     fallback = tmp_path / "judgment_collector_local"
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_NAS_FALLBACK", "/Volumes/MAGI_TEST_MISSING/judgment_collector")
     monkeypatch.setenv("JUDGMENT_CACHE_ROOT_FALLBACK", str(fallback))
 
     assert mod._ensure_cache_root(str(broken)) == str(fallback)
     assert fallback.is_dir()
+
+
+def test_judgment_cache_root_prefers_configured_nas_before_local_fallback(monkeypatch, tmp_path):
+    from api.domains.judicial_api_cache import ensure_judgment_cache_root
+
+    broken = tmp_path / "judgment_collector"
+    broken.symlink_to(tmp_path / "missing_offload_target")
+    nas = tmp_path / "nas" / "judgment_collector"
+    local = tmp_path / "judgment_collector_local"
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_NAS_FALLBACK", str(nas))
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_FALLBACK", str(local))
+
+    assert ensure_judgment_cache_root(str(broken)) == nas
+    assert nas.is_dir()
+    assert not local.exists()

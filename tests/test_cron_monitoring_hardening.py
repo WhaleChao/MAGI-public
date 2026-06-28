@@ -834,15 +834,16 @@ def test_judicial_daytime_cron_batches_are_bounded():
     jobs = _cron_jobs_or_skip()
     by_id = {job["id"]: job for job in jobs}
     expected_caps = {
-        "job_judicial_api_morning": (60, 12, 900, "extractive", True, False),
-        "job_judicial_api_noon": (60, 12, 900, "extractive", True, False),
-        "job_judicial_api_afternoon": (60, 12, 900, "extractive", True, False),
-        "job_judicial_api_evening": (60, 12, 900, "extractive", True, False),
-        "job_judicial_api_backlog_clear": (60, 12, 900, "extractive", True, False),
+        "job_judicial_api_morning": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_noon": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_afternoon": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_evening": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_backlog_clear": (240, 48, 2400, "extractive", True, False),
     }
 
     for job_id, (max_docs, summarize_max, timeout_sec, summary_mode, skip_assets, vector_ingest) in expected_caps.items():
         job = by_id[job_id]
+        assert job["enabled"] is True
         match = re.search(r"official_api_day_process (\{.*?\})(?:'|\")", job["command"])
         assert match, job_id
         payload = json.loads(match.group(1).replace(r"\"", '"'))
