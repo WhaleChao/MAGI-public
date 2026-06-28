@@ -23,9 +23,6 @@ const state = {
         meta: null,
         cases: [],
         documents: [],
-        reuseDocuments: [],
-        selectedReuseDocument: null,
-        lastReuseResult: null,
         insights: [],
         selectedCaseId: "",
         selectedDocuments: [],
@@ -35,6 +32,13 @@ const state = {
         resultMode: "",
         feedback: [],
         feedbackSummary: null,
+    },
+    documentReuse: {
+        cases: [],
+        selectedCaseId: "",
+        documents: [],
+        selectedDocument: null,
+        lastResult: null,
     },
     saas: {
         overview: null,

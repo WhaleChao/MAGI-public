@@ -1,0 +1,109 @@
+        <section id="documentReuse" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>沿用舊書狀</h3>
+                        <div class="section-note">只索引「我方歷次書狀」資料夾內的 Word 檔，替換狀頭、案號、股別、當事人與狀尾法院後另存新檔。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" id="reuseCaseSearchBtn">搜尋案件</button>
+                        <button class="btn" id="reuseCaseLoadBtn">載入案件資料</button>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseCaseSearch">目標案件搜尋</label>
+                        <input id="reuseCaseSearch" placeholder="輸入當事人 / 案號 / 法扶案號">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCaseSelect">目標案件清單</label>
+                        <select id="reuseCaseSelect">
+                            <option value="">請先搜尋案件</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="reuseDocType">新檔書狀類型</label>
+                        <input id="reuseDocType" placeholder="例如 民事準備書狀">
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:12px;">
+                    <div class="field">
+                        <label for="reuseCaseNumber">新案號</label>
+                        <input id="reuseCaseNumber" placeholder="法院案號或內部案號">
+                    </div>
+                    <div class="field">
+                        <label for="reuseDivision">新股別</label>
+                        <input id="reuseDivision" placeholder="例如 民一庭 / 義股">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCourtName">法院 / 地檢署</label>
+                        <input id="reuseCourtName" placeholder="法院或地檢署名稱">
+                    </div>
+                    <div class="field">
+                        <label for="reuseReason">新案由</label>
+                        <input id="reuseReason" placeholder="例如 更生 / 損害賠償">
+                    </div>
+                    <div class="field">
+                        <label for="reusePlaintiff">原告 / 聲請人</label>
+                        <input id="reusePlaintiff" placeholder="我方或主要當事人">
+                    </div>
+                    <div class="field">
+                        <label for="reuseDefendant">被告 / 相對人</label>
+                        <input id="reuseDefendant" placeholder="對造或相對人">
+                    </div>
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseSuggestedName">另存檔名</label>
+                        <input id="reuseSuggestedName" placeholder="可留空，系統自動產生">
+                    </div>
+                </div>
+                <div id="reuseStatus" class="status-banner">沿用舊書狀功能待命中。</div>
+            </div>
+
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>我方歷次書狀 Word 來源</h3>
+                        <div class="section-note">這裡只列 Word 來源檔，不會混入委任狀、PDF、對造書狀或其他案件文件。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" id="reuseSearchBtn">搜尋來源書狀</button>
+                        <button class="btn primary" id="reuseRunBtn">沿用並另存新檔</button>
+                        <button class="btn ghost" id="reuseClearBtn">清除來源</button>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseQ">來源書狀搜尋</label>
+                        <input id="reuseQ" placeholder="檔名 / 舊案號 / 當事人 / 關鍵字">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCaseFilter">來源案件編號</label>
+                        <input id="reuseCaseFilter" placeholder="選填；留空搜尋全部書狀">
+                    </div>
+                    <div class="field">
+                        <label for="reuseKind">來源範圍</label>
+                        <select id="reuseKind">
+                            <option value="own_pleading_word">我方歷次書狀 Word</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin-top:8px;">
+                    <table>
+                        <thead><tr><th>來源</th><th>案號</th><th>類型</th><th>檔名</th><th>路徑</th></tr></thead>
+                        <tbody id="reuseDocsBody"></tbody>
+                    </table>
+                </div>
+                <div class="grid-2" style="margin-top:10px;">
+                    <div>
+                        <div class="muted" id="reuseSelectedLabel">尚未選取來源書狀</div>
+                        <div id="reuseSelected" class="selection-list" style="margin-top:8px;"></div>
+                    </div>
+                    <div>
+                        <div class="muted">另存結果</div>
+                        <div id="reuseResult" class="selection-list" style="margin-top:8px;">
+                            <div class="muted">尚未產生沿用檔案。</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>

@@ -1784,13 +1784,13 @@ function renderCaseStampableDocuments(c = {}, docs = [], options = {}) {
         <div class="toolbar" style="margin:8px 0;">
             <input id="caseDocFinalizeQ" value="${esc(options.q || "")}" placeholder="在本案書狀內搜尋檔名 / 類型" style="max-width:360px;">
             <button class="btn primary" data-act="case-doc-finalize-search" data-id="${esc(caseId)}">搜尋</button>
-            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開全域書狀索引</button>
+            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開文件總索引</button>
         </div>
     ` : "";
     if (!rows.length) {
         return `
             ${searchBox}
-            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描書狀索引。</div>
+            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描文件總索引。</div>
         `;
     }
     return `
@@ -1845,7 +1845,7 @@ async function openCaseDocumentFinalizer(id, q = "") {
             <div class="muted" style="margin-top:8px;">載入中...</div>
         </div>
     `);
-    wbSetStatus("正在讀取本案書狀索引。", "info");
+    wbSetStatus("正在讀取本案文件總索引。", "info");
     const data = await api(`/api/osc/documents?limit=300&case_number=${encodeURIComponent(caseNumber)}&q=${encodeURIComponent(q || "")}`);
     const docs = data.items || [];
     state.wb.data = { case: c, documents: docs, q };

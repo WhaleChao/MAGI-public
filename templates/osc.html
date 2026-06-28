@@ -49,7 +49,7 @@
                 </div>
             </div>
 
-            <!-- 書狀（3 sub-tab + 消債羅伯特連結）-->
+            <!-- 書狀（AI 草擬、沿用、索引、範本、PDF、表單 + 消債羅伯特連結）-->
             <div class="sidebar-group" data-group="document">
                 <button class="group-btn" data-group-toggle="document">
                     <span class="group-icon">✍️</span>
@@ -58,7 +58,8 @@
                 </button>
                 <div class="group-children" data-group-children="document" hidden>
                     <button class="tab-btn sub-tab" data-tab="drafts"><span class="sub-icon">🤖</span> AI 草擬</button>
-                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 書狀索引</button>
+                    <button class="tab-btn sub-tab" data-tab="documentReuse"><span class="sub-icon">↪</span> 沿用舊書狀</button>
+                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 文件總索引</button>
                     <button class="tab-btn sub-tab" data-tab="templateFolder"><span class="sub-icon">🗂</span> 範本資料夾</button>
                     <button class="tab-btn sub-tab" data-tab="pdfTools"><span class="sub-icon">📕</span> PDF 工具</button>
                     <button class="tab-btn sub-tab" data-tab="forms"><span class="sub-icon">🖨</span> 委任 / 收據</button>
@@ -128,6 +129,7 @@
         {% include "partials/osc/cases.html" %}
         {% include "partials/osc/laf.html" %}
         {% include "partials/osc/documents.html" %}
+        {% include "partials/osc/documentReuse.html" %}
         {% include "partials/osc/templateFolder.html" %}
         {% include "partials/osc/pdfTools.html" %}
         {% include "partials/osc/drafts.html" %}
@@ -165,7 +167,7 @@
         </div>
     </div>
 
-    <script src="/static/osc/osc-state.js?v=20260621-case-sort-v1"></script>
+    <script src="/static/osc/osc-state.js?v=20260628-document-reuse-v1"></script>
     <script src="/static/osc/osc-utils.js?v=20260506-web-reply-v1"></script>
     <script src="/static/osc/osc-ui.js?v=20260512-overview-merge-v1"></script>
     <script src="/static/osc/osc-grouping.js?v=20260505-paperclip-mobile-v1"></script>
@@ -176,13 +178,13 @@
     <script src="/static/osc/tabs/calendar.js?v=20260504-calendar-todo-contrast-v3"></script>
     <script src="/static/osc/tabs/todos.js?v=20260513-todo-source-split-v1"></script>
             <script src="/static/osc/tabs/admin.js?v=20260616-live-validation-v1"></script>
-    <script src="/static/osc/tabs/drafts.js?v=20260504-insight-filter-v1"></script>
+    <script src="/static/osc/tabs/drafts.js?v=20260628-document-reuse-v1"></script>
     <script src="/static/osc/tabs/documents.js?v=20260513-laf-activity-stats-v1-template-folder-v3"></script>
     <script src="/static/osc/tabs/accounting.js?v=20260508-quotation-form-v1"></script>
     <script src="/static/osc/tabs/insights.js?v=20260506-web-reply-v1"></script>
     <script src="/static/osc/tabs/checklists.js"></script>
     <script src="/static/osc/tabs/file_manager.js?v=20260621-case-back-v1"></script>
-            <script src="/static/osc/osc-events.js?v=20260621-case-sort-v1"></script>
+            <script src="/static/osc/osc-events.js?v=20260628-document-reuse-v1"></script>
 </body>
 
 </html>

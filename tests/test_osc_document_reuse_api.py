@@ -246,19 +246,33 @@ def test_documents_api_own_pleading_word_scope_excludes_poa_word_files(tmp_path)
     assert {item["kind_label"] for item in payload["items"]} == {"書狀"}
 
 
-def test_draft_reuse_ui_is_wired_to_api():
-    html = (ROOT / "templates" / "partials" / "osc" / "drafts.html").read_text(encoding="utf-8")
+def test_document_reuse_ui_is_separate_from_document_index_and_wired_to_api():
+    drafts_html = (ROOT / "templates" / "partials" / "osc" / "drafts.html").read_text(encoding="utf-8")
+    reuse_html = (ROOT / "templates" / "partials" / "osc" / "documentReuse.html").read_text(encoding="utf-8")
+    documents_html = (ROOT / "templates" / "partials" / "osc" / "documents.html").read_text(encoding="utf-8")
+    osc_html = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
     js = (ROOT / "static" / "osc" / "tabs" / "drafts.js").read_text(encoding="utf-8")
     events = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
     state = (ROOT / "static" / "osc" / "osc-state.js").read_text(encoding="utf-8")
 
-    assert "我方歷次書狀 Word 索引 / 沿用舊書狀" in html
-    assert 'id="draftReuseDocsBody"' in html
+    assert 'id="documentReuse"' in reuse_html
+    assert "沿用舊書狀" in reuse_html
+    assert 'id="reuseDocsBody"' in reuse_html
+    assert 'id="draftReuseDocsBody"' not in drafts_html
+    assert "我方歷次書狀 Word 索引 / 沿用舊書狀" not in drafts_html
+    assert 'data-tab="documentReuse"' in osc_html
+    assert 'data-tab="documents"' in osc_html
+    assert osc_html.index('data-tab="documentReuse"') < osc_html.index('data-tab="documents"')
+    assert "文件總索引" in osc_html
+    assert "文件總索引" in documents_html
     assert "/api/osc/drafts/reuse-document" in js
     assert "reuse_scope=own_pleading_word" in js
-    assert "draftReuseIsWord" in js
+    assert "documentReuseIsWord" in js
     assert "僅 DOCX" not in js
-    assert "own_pleading_word" in html
-    assert "draft-reuse-select" in events
-    assert "draftReuseRunBtn" in events
-    assert "selectedReuseDocument" in state
+    assert "own_pleading_word" in reuse_html
+    assert "document-reuse-select" in events
+    assert "reuseRunBtn" in events
+    assert "loadDocumentReuse" in events
+    assert "documentReuse" in state
+    assert "selectedDocument" in state
+    assert "selectedReuseDocument" not in state

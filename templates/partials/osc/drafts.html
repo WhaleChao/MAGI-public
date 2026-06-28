@@ -220,53 +220,6 @@
                 <div class="card">
                     <div class="section-head">
                         <div>
-                            <h3>我方歷次書狀 Word 索引 / 沿用舊書狀</h3>
-                            <div class="section-note">只搜尋「我方歷次書狀」資料夾內的 Word 檔，直接套用上方案件資料另存新檔；此流程不呼叫 AI，也不會覆蓋來源檔。</div>
-                        </div>
-                        <div class="inline-actions">
-                            <button class="btn" id="draftReuseSearchBtn">搜尋書狀</button>
-                            <button class="btn primary" id="draftReuseRunBtn">沿用並另存新檔</button>
-                            <button class="btn ghost" id="draftReuseClearBtn">清除來源</button>
-                        </div>
-                    </div>
-                    <div class="field-grid cols-4">
-                        <div class="field" style="grid-column: span 2;">
-                            <label for="draftReuseQ">我方歷次書狀搜尋</label>
-                            <input id="draftReuseQ" placeholder="檔名 / 舊案號 / 當事人 / 關鍵字">
-                        </div>
-                        <div class="field">
-                            <label for="draftReuseCaseFilter">來源案件編號</label>
-                            <input id="draftReuseCaseFilter" placeholder="選填；留空搜尋全部書狀">
-                        </div>
-                        <div class="field">
-                            <label for="draftReuseKind">索引範圍</label>
-                            <select id="draftReuseKind">
-                                <option value="own_pleading_word">我方歷次書狀 Word</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="table-wrap" style="margin-top:8px;">
-                        <table>
-                            <thead><tr><th>來源</th><th>案號</th><th>類型</th><th>檔名</th><th>路徑</th></tr></thead>
-                            <tbody id="draftReuseDocsBody"></tbody>
-                        </table>
-                    </div>
-                    <div class="grid-2" style="margin-top:10px;">
-                        <div>
-                            <div class="muted" id="draftReuseSelectedLabel">尚未選取來源書狀</div>
-                            <div id="draftReuseSelected" class="selection-list" style="margin-top:8px;"></div>
-                        </div>
-                        <div>
-                            <div class="muted">另存結果</div>
-                            <div id="draftReuseResult" class="selection-list" style="margin-top:8px;">
-                                <div class="muted">尚未產生沿用檔案。</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="card">
-                    <div class="section-head">
-                        <div>
                             <h3>產生結果 <span id="draftModeIndicator" class="draft-mode-indicator" style="display:none;"></span></h3>
                             <div class="section-note">可直接在這裡人工修稿，再按匯出。若結果偏題，先回頭修案件事實或減少參考素材。</div>
                         </div>

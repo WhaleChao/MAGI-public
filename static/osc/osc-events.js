@@ -42,7 +42,7 @@ function bindTabs() {
             if (tabId === "calendar") _withLoading("載入行事曆...", loadCalendarEvents);
             if (tabId === "todos") _withLoading("載入待辦事項...", loadTodos);
             if (tabId === "documents") {
-                _withLoading("載入書狀索引...", loadDocuments);
+                _withLoading("載入文件總索引...", loadDocuments);
                 loadDocumentTemplates();
                 loadDocumentKeywords();
                 loadDocumentReplacements();
@@ -55,11 +55,12 @@ function bindTabs() {
                     if (status) {
                         status.hidden = false;
                         status.className = "status-banner";
-                        status.textContent = "請從案件資料夾或書狀索引帶入 PDF，或直接貼上 PDF 路徑。";
+                        status.textContent = "請從案件資料夾或文件總索引帶入 PDF，或直接貼上 PDF 路徑。";
                     }
                 }
             }
             if (tabId === "drafts") _withLoading("載入書狀草擬...", loadDraftComposer);
+            if (tabId === "documentReuse") _withLoading("載入沿用舊書狀...", loadDocumentReuse);
             if (tabId === "forms") {
                 const now = new Date();
                 const d = now.toISOString().slice(0, 10);
@@ -236,8 +237,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "doc-kw-del") return await delDocumentKeyword(Number(id));
     if (act === "doc-rp-del") return await delDocumentReplacement(Number(id));
     if (act === "draft-doc-toggle") return toggleDraftDocument(id);
-    if (act === "draft-reuse-select") return selectDraftReuseDocument(id);
-    if (act === "draft-reuse-clear") return clearDraftReuseSelection();
+    if (act === "document-reuse-select") return selectDocumentReuseDocument(id);
+    if (act === "document-reuse-clear") return clearDocumentReuseSelection();
     if (act === "draft-insight-toggle") return toggleDraftInsight(id);
 
     if (act === "tx-edit") return await editTransaction(Number(id));
@@ -607,9 +608,11 @@ function bindEvents() {
         renderDraftDocuments();
         setDraftStatus("已清除參考書狀選取。");
     });
-    document.getElementById("draftReuseSearchBtn").addEventListener("click", () => loadDraftReuseDocuments().catch(reportDraftError));
-    document.getElementById("draftReuseRunBtn").addEventListener("click", () => reuseDraftDocument().catch(reportDraftError));
-    document.getElementById("draftReuseClearBtn").addEventListener("click", clearDraftReuseSelection);
+    document.getElementById("reuseCaseSearchBtn").addEventListener("click", () => searchDocumentReuseCases().catch(reportDocumentReuseError));
+    document.getElementById("reuseCaseLoadBtn").addEventListener("click", () => loadDocumentReuseSelectedCase().catch(reportDocumentReuseError));
+    document.getElementById("reuseSearchBtn").addEventListener("click", () => loadDocumentReuseDocuments().catch(reportDocumentReuseError));
+    document.getElementById("reuseRunBtn").addEventListener("click", () => reuseDocumentReuseDocument().catch(reportDocumentReuseError));
+    document.getElementById("reuseClearBtn").addEventListener("click", clearDocumentReuseSelection);
     document.getElementById("draftInsightsSearchBtn").addEventListener("click", () => loadDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsAutoBtn").addEventListener("click", () => autoDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsClearBtn").addEventListener("click", () => {
@@ -632,9 +635,17 @@ function bindEvents() {
             document.getElementById("draftSuggestedName").value = `${docType}_${caseNo}`;
         }
     });
+    document.getElementById("reuseDocType").addEventListener("change", () => {
+        if (!(document.getElementById("reuseSuggestedName").value || "").trim()) {
+            const docType = (document.getElementById("reuseDocType").value || "沿用書狀").trim();
+            const caseNo = (document.getElementById("reuseCaseNumber").value || "未命名").trim();
+            document.getElementById("reuseSuggestedName").value = `${docType}_${caseNo}`;
+        }
+    });
     bindEnterSubmit(["draftCaseSearch"], "draftCaseSearchBtn", searchDraftCases, { actionLabel: "案件搜尋", onError: reportDraftError });
     bindEnterSubmit(["draftDocsQ", "draftDocsCaseFilter"], "draftDocsSearchBtn", loadDraftDocuments, { actionLabel: "書狀搜尋", onError: reportDraftError });
-    bindEnterSubmit(["draftReuseQ", "draftReuseCaseFilter"], "draftReuseSearchBtn", loadDraftReuseDocuments, { actionLabel: "沿用書狀搜尋", onError: reportDraftError });
+    bindEnterSubmit(["reuseCaseSearch"], "reuseCaseSearchBtn", searchDocumentReuseCases, { actionLabel: "沿用案件搜尋", onError: reportDocumentReuseError });
+    bindEnterSubmit(["reuseQ", "reuseCaseFilter"], "reuseSearchBtn", loadDocumentReuseDocuments, { actionLabel: "沿用來源搜尋", onError: reportDocumentReuseError });
     bindEnterSubmit(["draftInsightsQ", "draftInsightsCaseFilter", "draftInsightsReasonFilter"], "draftInsightsSearchBtn", loadDraftInsights, { actionLabel: "見解搜尋", onError: reportDraftError });
     document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
 

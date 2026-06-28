@@ -170,7 +170,7 @@ function renderSaasIntegration(integration) {
         {area: "案件資料", mode: "新增、查詢、開資料夾", source: "案件列表、當事人", target_tabs: [{tab: "cases", label: "案件列表"}, {tab: "clients", label: "當事人"}]},
         {area: "期限與待辦", mode: "待辦、日曆、風險提醒", source: "待辦事項、行事曆", target_tabs: [{tab: "todos", label: "待辦事項"}, {tab: "calendar", label: "行事曆"}]},
         {area: "法扶流程", mode: "派案、開辦、二階段、結案", source: "法扶管理", target_tab: "laf", target_label: "法扶管理"},
-        {area: "文件與書狀", mode: "索引、草擬、人工修正學習", source: "書狀索引、AI 草擬", target_tabs: [{tab: "documents", label: "書狀索引"}, {tab: "drafts", label: "AI 草擬"}]},
+        {area: "文件與書狀", mode: "索引、草擬、人工修正學習", source: "文件總索引、AI 草擬", target_tabs: [{tab: "documents", label: "文件總索引"}, {tab: "drafts", label: "AI 草擬"}]},
     ];
     host.innerHTML = items.length ? items.map(x => `
         <div class="stat-card">
