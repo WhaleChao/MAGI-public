@@ -887,7 +887,43 @@ def test_cases_post_generates_osc_number_syncs_laf_and_keeps_division(client, mo
     assert inserted["case_number"] == "2026-0099"
     assert inserted["laf_case_no"] == "1150101-E-001"
     assert inserted["application_no"] == "1150101-E-001"
+    assert inserted["court_case_no"] == "115年度建字第1號"
+    assert inserted["court_case_number"] == "115年度建字第1號"
     assert inserted["court_division"] == "義股"
+
+
+def test_case_put_syncs_legacy_court_case_number_to_canonical(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "2025-0007",
+                "client_name": "張偉銘",
+                "case_category": "法律扶助案件",
+                "case_type": "刑事",
+                "case_reason": "傷害致死",
+                "folder_path": "",
+                "manual_status_lock": 0,
+            }, {"host": "127.0.0.1"}
+        return {"rowcount": 1}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+
+    r = client.put("/api/osc/cases/case-1", json={"court_case_number": "114年度原訴字第24號"})
+
+    assert r.status_code == 200
+    update_sql, update_params, _ = next(c for c in calls if c[0].startswith("UPDATE cases SET"))
+    assert "court_case_no=%s" in update_sql
+    assert "court_case_number=%s" in update_sql
+    cols = [part.split("=")[0] for part in re.search(r"UPDATE cases SET (.*?) WHERE", update_sql).group(1).split(",")]
+    updated = dict(zip(cols, update_params))
+    assert updated["court_case_no"] == "114年度原訴字第24號"
+    assert updated["court_case_number"] == "114年度原訴字第24號"
 
 
 def test_cases_post_defaults_to_folder_creation_for_manual_new_case(client, monkeypatch):

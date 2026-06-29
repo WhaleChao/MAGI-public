@@ -1977,8 +1977,8 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
         dedup_key = ""
 
     key = court_case_no or case_number
-    source_is_gcal_import = src.startswith("gcal_import")
-    if source_is_gcal_import and todo_type == "行事曆事件" and desc:
+    source_is_human_calendar = src.startswith("gcal_import") or src.startswith("gcal_mirror")
+    if source_is_human_calendar and todo_type == "行事曆事件" and desc:
         summary = desc[:120]
     else:
         summary = "⚖️ "
@@ -2069,6 +2069,10 @@ def _classify_gcal_import_todo_type(summary: str, description: str = "") -> str:
         ("電聯", "電話聯繫"),
         ("開庭", "開庭"),
         ("庭期", "開庭"),
+        ("準備程序", "準備程序"),
+        ("言詞辯論", "言詞辯論"),
+        ("審理程序", "審理程序"),
+        ("宣判", "宣判"),
         ("期日", "期日"),
         ("調解", "調解"),
         ("期限", "期限"),
@@ -2076,6 +2080,10 @@ def _classify_gcal_import_todo_type(summary: str, description: str = "") -> str:
         ("繳費", "繳費"),
         ("閱卷", "閱卷"),
         ("筆錄", "筆錄"),
+        ("來所提供資料", "來所提供資料"),
+        ("來所簽", "來所提供資料"),
+        ("來所用印", "來所提供資料"),
+        ("面談", "會議"),
         ("提出", "提出"),
         ("答辯", "答辯"),
         ("法扶開辦末日", "法扶開辦末日"),

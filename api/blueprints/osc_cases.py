@@ -1537,10 +1537,11 @@ def osc_cases_api():
     case_category = _osc_norm_case_category(payload.get("case_category") or payload.get("category") or "")
     if is_template_payload:
         case_category = _OSC_TEMPLATE_DISPLAY_VALUE
+    court_case_no_value = (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None
     cols = [
         "id", "case_number", "client_name", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
-        "laf_case_no", "application_no", "court_name", "court_case_no", "court_division",
+        "laf_case_no", "application_no", "court_name", "court_case_no", "court_case_number", "court_division",
         "lawyer", "status", "notes", "folder_path"
     ]
     status_value = (payload.get("status") or "進行中").strip() or "進行中"
@@ -1577,7 +1578,8 @@ def osc_cases_api():
         laf_number or None,
         laf_number or None,
         (payload.get("court_name") or payload.get("court") or "").strip() or None,
-        (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+        court_case_no_value,
+        court_case_no_value,
         (payload.get("court_division") or payload.get("division") or "").strip() or None,
         lawyer_value or None,
         status_value,
@@ -1644,7 +1646,8 @@ def osc_cases_api():
             "laf_case_no": laf_number or None,
             "application_no": laf_number or None,
             "court_name": (payload.get("court_name") or payload.get("court") or "").strip() or None,
-            "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+            "court_case_no": court_case_no_value,
+            "court_case_number": court_case_no_value,
             "court_division": (payload.get("court_division") or payload.get("division") or "").strip() or None,
             "notes": (payload.get("notes") or "").strip() or None,
         }
@@ -1712,6 +1715,11 @@ def osc_case_detail_api(row_id):
         synced_laf = _osc_synced_laf_number(payload)
         payload["laf_case_no"] = synced_laf
         payload["application_no"] = synced_laf
+    if any(k in payload for k in ("court_case_no", "court_case_number")):
+        payload = dict(payload)
+        synced_court_case_no = (payload.get("court_case_no") or payload.get("court_case_number") or "").strip()
+        payload["court_case_no"] = synced_court_case_no
+        payload["court_case_number"] = synced_court_case_no
     current_row, _ = _osc_exec(
         "SELECT id, case_number, client_name, case_category, case_type, case_reason, folder_path, manual_status_lock FROM cases WHERE id=%s",
         (row_id,),
@@ -1742,8 +1750,6 @@ def osc_case_detail_api(row_id):
             v = (payload.get(k) or "").strip() or None
             if k == "case_category":
                 v = _osc_norm_case_category(v or "")
-            if k == "court_case_no" and not v:
-                v = (payload.get("court_case_number") or "").strip() or None
             if k == "laf_case_no" and not v:
                 v = (payload.get("legal_aid_number") or "").strip() or None
             if k == "case_reason":

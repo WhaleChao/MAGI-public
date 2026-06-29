@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
-from scripts.ops.check_judicial_api_pipeline import build_report, scheduled_day_process_capacity
+from scripts.ops.check_judicial_api_pipeline import backlog_status, build_report, scheduled_day_process_capacity
 
 
 def test_backlog_interpretation_explains_stale_backlog():
@@ -71,6 +71,35 @@ def test_scheduled_day_process_capacity_reads_cron_payloads(tmp_path):
     assert cap["runs_per_day"] == 2
     assert cap["daily_max_docs"] == 2300
     assert cap["avg_batch"] == 1150
+
+
+def test_backlog_status_defaults_to_fast_processed_map_without_rehash(tmp_path):
+    cache_root = tmp_path / "judicial_api"
+    raw_root = cache_root / "raw"
+    raw_root.mkdir(parents=True)
+    done = raw_root / "done.json"
+    done.write_text('{"payload":{"JID":"DONE"}}', encoding="utf-8")
+    pending = raw_root / "pending.json"
+    pending.write_text('{"payload":{"JID":"PENDING"}}', encoding="utf-8")
+    process_state = cache_root / "process_state.json"
+    process_state.write_text(
+        """
+{
+  "processed": {
+    "raw/done.json": "stale-hash-but-fast-health-check-trusts-state"
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    fast = backlog_status(cache_root, process_state, raw_root)
+    deep = backlog_status(cache_root, process_state, raw_root, verify_hashes=True)
+
+    assert fast["raw_total"] == 2
+    assert fast["backlog_count"] == 1
+    assert fast["pending_examples"] == ["raw/pending.json"]
+    assert deep["backlog_count"] == 2
 
 
 def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):

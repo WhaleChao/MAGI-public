@@ -252,6 +252,7 @@ def test_gcal_imported_lawyer_visit_keeps_human_calendar_title():
     mod = _load_action_module()
 
     assert mod._classify_gcal_import_todo_type("謝易霖律見", "") == "律見"
+    assert mod._classify_gcal_import_todo_type("[2025-0007] 張偉銘 - 準備程序", "") == "準備程序"
 
     body = mod._todo_to_gcal_event(
         {
@@ -269,6 +270,28 @@ def test_gcal_imported_lawyer_visit_keeps_human_calendar_title():
 
     assert body["summary"] == "謝易霖律見"
     assert "行事曆事件 謝易霖" not in body["summary"]
+
+
+def test_gcal_mirror_calendar_event_keeps_human_calendar_title():
+    mod = _load_action_module()
+
+    body = mod._todo_to_gcal_event(
+        {
+            "id": 1003,
+            "case_number": "2026-0020",
+            "client_name": "黃宥茹",
+            "todo_type": "行事曆事件",
+            "todo_date": "2026-08-03",
+            "todo_time": "10:00",
+            "description": "黃宥茹轉銜會議",
+            "source_file": "gcal_mirror:whalelawyer@gmail.com",
+            "court_case_number": "115年度家護字第12號",
+        },
+        tz="Asia/Taipei",
+    )
+
+    assert body["summary"] == "黃宥茹轉銜會議"
+    assert "行事曆事件" not in body["summary"]
 
 
 def test_materialize_imported_calendar_mirror_rows():

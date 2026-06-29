@@ -10154,6 +10154,50 @@ class FileReviewManager:
         "臺灣高等法院高雄分院": "KSH",
         "臺灣高等法院花蓮分院": "HLH",
     }
+    _COURT_ALIAS_MAP = {
+        "臺北簡易庭": "臺灣臺北地方法院",
+        "新店簡易庭": "臺灣臺北地方法院",
+        "板橋簡易庭": "臺灣新北地方法院",
+        "三重簡易庭": "臺灣新北地方法院",
+        "新北簡易庭": "臺灣新北地方法院",
+        "士林簡易庭": "臺灣士林地方法院",
+        "內湖簡易庭": "臺灣士林地方法院",
+        "桃園簡易庭": "臺灣桃園地方法院",
+        "中壢簡易庭": "臺灣桃園地方法院",
+        "新竹簡易庭": "臺灣新竹地方法院",
+        "竹北簡易庭": "臺灣新竹地方法院",
+        "苗栗簡易庭": "臺灣苗栗地方法院",
+        "臺中簡易庭": "臺灣臺中地方法院",
+        "豐原簡易庭": "臺灣臺中地方法院",
+        "沙鹿簡易庭": "臺灣臺中地方法院",
+        "彰化簡易庭": "臺灣彰化地方法院",
+        "員林簡易庭": "臺灣彰化地方法院",
+        "南投簡易庭": "臺灣南投地方法院",
+        "雲林簡易庭": "臺灣雲林地方法院",
+        "斗六簡易庭": "臺灣雲林地方法院",
+        "北港簡易庭": "臺灣雲林地方法院",
+        "嘉義簡易庭": "臺灣嘉義地方法院",
+        "臺南簡易庭": "臺灣臺南地方法院",
+        "新市簡易庭": "臺灣臺南地方法院",
+        "柳營簡易庭": "臺灣臺南地方法院",
+        "高雄簡易庭": "臺灣高雄地方法院",
+        "鳳山簡易庭": "臺灣高雄地方法院",
+        "橋頭簡易庭": "臺灣橋頭地方法院",
+        "屏東簡易庭": "臺灣屏東地方法院",
+        "潮州簡易庭": "臺灣屏東地方法院",
+        "花蓮簡易庭": "臺灣花蓮地方法院",
+        "玉里簡易庭": "臺灣花蓮地方法院",
+        "臺東簡易庭": "臺灣臺東地方法院",
+        "宜蘭簡易庭": "臺灣宜蘭地方法院",
+        "羅東簡易庭": "臺灣宜蘭地方法院",
+        "基隆簡易庭": "臺灣基隆地方法院",
+        "澎湖簡易庭": "臺灣澎湖地方法院",
+        "金門簡易庭": "福建金門地方法院",
+        "連江簡易庭": "福建連江地方法院",
+        "花蓮地院": "臺灣花蓮地方法院",
+        "臺東地院": "臺灣臺東地方法院",
+        "台東地院": "臺灣臺東地方法院",
+    }
 
     @classmethod
     def _canonical_court_name(cls, court_name: str) -> str:
@@ -10171,6 +10215,10 @@ class FileReviewManager:
             .replace("臺柬", "臺東")
             .replace("臺束", "臺東")
         )
+        compact = re.sub(r"\s+", "", name)
+        for alias, full_name in cls._COURT_ALIAS_MAP.items():
+            if alias in compact:
+                return full_name
         if name in cls._FULL_COURT_MAP:
             return name
         for full_name in cls._FULL_COURT_MAP:
@@ -10379,23 +10427,78 @@ class FileReviewManager:
         case_number = str(int(case_number_raw))
         raw_case_id = f"{year}.{case_type}.{case_number_raw}"
 
-        # 法院名稱: 臺灣...法院 或 福建...法院（含分院）
-        court_match = _re.search(r'[臺台福][灣]?[^\s]*法院(?:[^\s]*分院)?', text)
+        # 法院名稱: 臺灣...法院、福建...法院、花蓮簡易庭等表格簡稱。
+        court_pattern = r'(?:[臺台福][灣]?)?[^\s]{1,12}(?:地方法院|高等法院[^\s]*分院|法院|簡易庭|地院)'
+        court_match = _re.search(
+            court_pattern,
+            text,
+        )
         court_name = court_match.group(0).rstrip() if court_match else ""
         court_name = FileReviewManager._canonical_court_name(court_name)
 
         court_code = FileReviewManager._court_name_to_code(court_name)
 
-        # 金額: 在 court_name 後面找純數字（排除銷帳編號等長數字和日期）
-        amount = ""
-        # 找所有 1-4 位數字（繳費金額通常 50-9999）
-        nums = _re.findall(r'(?<!\d)(\d{2,4})(?!\d)', text)
-        # 過濾掉年份(114,115)、日期(1150311 的片段)等
-        for n in nums:
-            val = int(n)
-            if 50 <= val <= 9999 and n != year:
-                amount = n
+        # 寬表格截圖通常同列含：案號 銷帳編號 繳款人 法院 期限 金額 //繳費日 狀態。
+        line = ""
+        for raw_line in str(text or "").splitlines():
+            if raw_case_id in raw_line:
+                line = raw_line
                 break
+        line = line or str(text or "")
+        tail = line[line.find(raw_case_id) + len(raw_case_id):] if raw_case_id in line else line
+
+        pay_id = ""
+        pay_id_match = _re.search(r'(?<!\d)(\d{10,20})(?!\d)', tail)
+        if pay_id_match:
+            pay_id = pay_id_match.group(1)
+
+        payer = ""
+        line_court_match = _re.search(court_pattern, line)
+        if line_court_match:
+            line_court_name = FileReviewManager._canonical_court_name(line_court_match.group(0).rstrip())
+            line_court_code = FileReviewManager._court_name_to_code(line_court_name)
+            if line_court_code or not court_code:
+                court_name = line_court_name
+                court_code = line_court_code
+        if pay_id and line_court_match:
+            between = line[line.find(pay_id) + len(pay_id):line_court_match.start()]
+            payer = _re.sub(r"\s+", "", between).strip()
+
+        payment_deadline = ""
+        payment_date = ""
+        payment_status = ""
+
+        compact_line = _re.sub(r"\s+", "", line)
+        status_match = _re.search(r'(繳費(?:完成|成功|失敗|未完成|逾期)?(?:[（(][^）)]*[）)])?)', compact_line)
+        if status_match:
+            payment_status = status_match.group(1).replace("(", "（").replace(")", "）")
+
+        court_raw = (line_court_match or court_match).group(0) if (line_court_match or court_match) else ""
+        court_pos = compact_line.find(_re.sub(r"\s+", "", court_raw)) if court_raw else -1
+        after_court = compact_line[court_pos + len(_re.sub(r"\s+", "", court_raw)):] if court_pos >= 0 else compact_line
+
+        # 金額: 表格欄位優先；找不到才退回全 OCR 文字，避免把案號 502 誤當金額。
+        amount = ""
+        table_amount_match = _re.search(r'(?P<deadline>1\d{6})(?P<amount>\d{1,5})(?://?(?P<paydate>1\d{6}))?', after_court)
+        if table_amount_match:
+            payment_deadline = table_amount_match.group("deadline") or ""
+            amount = table_amount_match.group("amount") or ""
+            payment_date = table_amount_match.group("paydate") or ""
+        if not payment_deadline or not payment_date:
+            dates = _re.findall(r'(?<!\d)(1\d{6})(?!\d)', line)
+            if dates and not payment_deadline:
+                payment_deadline = dates[0]
+            if len(dates) >= 2 and not payment_date:
+                payment_date = dates[-1]
+
+        nums = _re.findall(r'(?<!\d)(\d{2,5})(?!\d)', after_court if after_court else text)
+        # 過濾掉年份(114,115)、日期(1150311 的片段)等
+        if not amount:
+            for n in nums:
+                val = int(n)
+                if 50 <= val <= 99999 and n != year and n not in {case_number_raw, payment_deadline, payment_date}:
+                    amount = n
+                    break
 
         return {
             "year": year,
@@ -10405,7 +10508,11 @@ class FileReviewManager:
             "court_code": court_code,
             "raw_case_id": raw_case_id,
             "amount": amount,
-            "payer": "",  # tesseract 中文人名容易亂碼，不強求
+            "payer": payer,
+            "pay_id": pay_id,
+            "payment_deadline": payment_deadline,
+            "payment_date": payment_date,
+            "payment_status": payment_status,
         }
 
     def _try_upload_in_current_context(self, file_path: str, file_remark: str = "") -> bool:

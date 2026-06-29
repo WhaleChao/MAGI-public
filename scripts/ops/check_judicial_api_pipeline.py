@@ -119,6 +119,13 @@ def rounded(value: Optional[float]) -> Optional[float]:
     return round(float(value), 2)
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
 def detect_credentials() -> dict:
     sources = []
     config_path = env_path("MAGI_CONFIG_PATH", DEFAULT_CONFIG_PATH)
@@ -141,10 +148,18 @@ def detect_credentials() -> dict:
     }
 
 
-def backlog_status(cache_root: Path, process_state_path: Path, raw_root: Path) -> dict:
+def backlog_status(
+    cache_root: Path,
+    process_state_path: Path,
+    raw_root: Path,
+    *,
+    verify_hashes: Optional[bool] = None,
+) -> dict:
     proc_state = load_json(process_state_path)
     processed_map = proc_state.get("processed") if isinstance(proc_state.get("processed"), dict) else {}
     raw_files = list_files(raw_root, judicial_raw_only=True)
+    if verify_hashes is None:
+        verify_hashes = env_bool("JUDICIAL_API_BACKLOG_HASH_VERIFY", False)
 
     backlog_count = 0
     unreadable_count = 0
@@ -154,15 +169,19 @@ def backlog_status(cache_root: Path, process_state_path: Path, raw_root: Path) -
 
     for raw_path in raw_files:
         rel = os.path.relpath(raw_path, cache_root)
-        raw_text = read_text(raw_path)
+        processed_hash = processed_map.get(rel)
         pending = False
-        if not raw_text:
-            unreadable_count += 1
-            pending = True
+        if processed_hash and not verify_hashes:
+            pending = False
         else:
-            raw_hash = hashlib.sha1(raw_text.encode("utf-8", errors="ignore")).hexdigest()
-            if processed_map.get(rel) != raw_hash:
+            raw_text = read_text(raw_path)
+            if not raw_text:
+                unreadable_count += 1
                 pending = True
+            else:
+                raw_hash = hashlib.sha1(raw_text.encode("utf-8", errors="ignore")).hexdigest()
+                if processed_hash != raw_hash:
+                    pending = True
         if not pending:
             continue
         backlog_count += 1
