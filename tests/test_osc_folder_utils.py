@@ -1,7 +1,11 @@
-from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import (
+from api.osc import case_folder_schema as schema
+from api.osc.folder_utils import (
+    SUBFOLDERS,
     build_full_case_path,
+    create_folder_structure,
     resolve_type_folder,
 )
+from casper_ecosystem.law_firm_orchestrators.osc import folder_utils as legacy_folder_utils
 from api.case_path_mapper import local_synology_path_candidates
 
 
@@ -48,6 +52,31 @@ def test_build_full_case_path_keeps_substantive_foreign_law_reason():
         case_reason="涉外民事法律適用法",
     )
     assert path.endswith("/一般案件/民事/2026-0072-測試-一審-涉外民事法律適用法")
+
+
+def test_case_creation_subfolders_come_from_shared_schema():
+    assert SUBFOLDERS == {category: list(folders) for category, folders in schema.CASE_SUBFOLDERS.items()}
+    assert legacy_folder_utils.SUBFOLDERS == SUBFOLDERS
+
+
+def test_case_creation_uses_canonical_judgment_folder_not_legacy_alias(tmp_path):
+    result = create_folder_structure(str(tmp_path / "case"), "法律扶助案件")
+
+    assert result["ok"] is True
+    assert schema.judgment_folder_name(10) in result["subfolders"]
+    assert schema.legacy_judgment_folder_name(10) not in result["subfolders"]
+    assert (tmp_path / "case" / schema.judgment_folder_name(10)).is_dir()
+    assert not (tmp_path / "case" / schema.legacy_judgment_folder_name(10)).exists()
+
+
+def test_all_schema_case_subfolders_keep_old_judgment_name_as_alias_only():
+    for folders in schema.CASE_SUBFOLDERS.values():
+        assert not any(schema.strip_number_prefix(name) == schema.LEGACY_JUDGMENT_FOLDER_LABEL for name in folders)
+        assert any(schema.strip_number_prefix(name) == schema.JUDGMENT_FOLDER_LABEL for name in folders)
+
+
+def test_closing_folder_names_are_schema_owned():
+    assert schema.closing_folder_names() == ("03_結案資料", "04_結案資料", "結案資料")
 
 
 def test_cloudstorage_homes_path_also_maps_to_smb_volume_candidate():

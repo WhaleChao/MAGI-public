@@ -35,17 +35,46 @@ def test_commercial_release_runs_public_isolation_audit():
     ]
 
 
+def test_commercial_release_runs_tool_confusion_guard():
+    matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
+    checks = {check["id"]: check for check in matrix["suites"]["commercial-release"]["checks"]}
+
+    assert checks["tool_confusion_guard"]["command"][:2] == [
+        "{python}",
+        "scripts/ops/tool_confusion_guard.py",
+    ]
+
+
 def test_ci_suite_includes_static_safety_guards():
     matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
     checks = {check["id"]: check for check in matrix["suites"]["ci"]["checks"]}
 
     assert checks["hardcoded_runtime_guard"]["command"] == ["{python}", "scripts/ci/check_hardcodes.py"]
     assert checks["shell_true_guard"]["command"] == ["{python}", "scripts/ci/check_shell_true.py"]
+    assert "--fail-on-health" not in checks["function_health_index"]["command"]
     assert checks["live_conflict_audit"]["command"][:3] == [
         "{python}",
         "scripts/ops/business_module_live_check.py",
         "--conflict-audit",
     ]
+
+
+def test_commercial_core_routes_writes_health_artifact():
+    matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
+    checks = {check["id"]: check for check in matrix["suites"]["commercial-release"]["checks"]}
+
+    command = checks["core_routes_heavy"]["command"]
+    assert "--json-out" in command
+    assert ".runtime/smoke_core_routes_release_latest.json" in command
+
+
+def test_commercial_release_runs_function_health_gate():
+    matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
+    checks = {check["id"]: check for check in matrix["suites"]["commercial-release"]["checks"]}
+
+    command = checks["function_health_gate"]["command"]
+    assert command[:2] == ["{python}", "scripts/ops/function_health_index.py"]
+    assert "--fail-on-health" in command
 
 
 def test_dry_run_suite_writes_all_checks(tmp_path: Path):

@@ -105,13 +105,39 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
         # 已經有明確 sub_topic 的直接返回
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
             return canonical
+        download_signal = any(
+            k in s
+            for k in [
+                "卷宗下載",
+                "下載完成",
+                "已下載",
+                "download",
+                "可下載判定",
+                "可下載通知",
+                "入口列表可下載",
+                "法院端可下載",
+                "待下載",
+                "歸檔",
+            ]
+        )
+        payment_zero_only = bool(
+            re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[：:\s]*0\s*(?:件|封)", s)
+        )
+        payment_positive_count = bool(
+            re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[^0-9]{0,12}[1-9]\d*\s*(?:件|封)", s)
+        )
+        payment_action_text = any(
+            k in s
+            for k in ["繳費單通知", "繳費單 pdf", "逾期未繳", "繳費憑證", "上傳繳費", "待繳費案件"]
+        )
         # 閱卷類：依動作細分
         if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄",
                                  "確認碼", "confirm", "待確認送出", "預覽"]):
             return "filereview_apply"
         if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment", "繳費單"]):
-            return "filereview_payment"
-        if any(k in s for k in ["下載完成", "已下載", "download", "歸檔"]):
+            if not (download_signal and payment_zero_only and not payment_positive_count and not payment_action_text):
+                return "filereview_payment"
+        if download_signal:
             return "filereview_download"
         if any(k in s for k in ["信箱檢查完成", "閱卷信箱"]):
             return "filereview_download"
@@ -240,6 +266,21 @@ def _is_unknown_business_topic(topic: str) -> bool:
     if not t or t == "general" or t in _FALLBACK_CHAIN:
         return False
     return t.startswith(_BUSINESS_TOPIC_PREFIXES)
+
+
+def _is_noop_completion_notification(message: str) -> bool:
+    try:
+        from skills.ops.red_phone import _is_noop_completion_notification as _red_phone_noop
+        return bool(_red_phone_noop(message))
+    except Exception:
+        s = " ".join(str(message or "").strip().split())
+        if not s:
+            return False
+        if any(k in s.lower() for k in ("失敗", "錯誤", "異常", "invalid_grant", "need_interactive_oauth")):
+            return False
+        if re.search(r"[1-9]\d*\s*(?:件|封|份|案|個|筆|部|次)", s):
+            return False
+        return any(k in s for k in ("檢查完成", "掃描完成", "判定完成", "沒有新", "無新", "無需處理"))
 
 
 # ───────── Channel Map 載入/儲存 ─────────
@@ -510,6 +551,8 @@ def resolve_discord_channel(
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
     cmap = _load_channel_map()
+    if _is_noop_completion_notification(message):
+        return sub_topic, "__SILENT__"
     if _is_unknown_business_topic(sub_topic):
         logger.warning("Unknown business notification topic '%s'; suppressing general fallback.", sub_topic)
         return sub_topic, "__SILENT__"

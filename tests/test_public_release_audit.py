@@ -65,3 +65,29 @@ def test_public_release_audit_blocks_tracked_runtime_paths():
         "skills/pdf-namer/db_rules_cache.json",
         "static/knowledge_lint_latest.json",
     }
+
+
+def test_public_release_audit_fallback_ignores_agent_runtime_state(tmp_path):
+    from scripts.public_release_audit import _walk_release_files
+
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "bookmark_batch_state.json").write_text("private nas marker", encoding="utf-8")
+    (tmp_path / ".claude" / "worktrees").mkdir(parents=True)
+    (tmp_path / ".claude" / "worktrees" / "scratch.py").write_text("private nas marker", encoding="utf-8")
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+
+    assert _walk_release_files(tmp_path) == ["README.md"]
+
+
+def test_public_release_audit_default_root_prefers_source_checkout(monkeypatch, tmp_path):
+    import scripts.public_release_audit as audit
+
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    runtime_root.mkdir()
+    (source_root / ".git").mkdir(parents=True)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", runtime_root)
+    monkeypatch.setenv("MAGI_PUBLIC_SOURCE_ROOT_DIR", str(source_root))
+
+    assert audit.default_audit_root() == source_root.resolve()

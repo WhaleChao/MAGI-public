@@ -25,15 +25,14 @@ if str(ROOT) not in os.sys.path:
     os.sys.path.insert(0, str(ROOT))
 
 from api.case_path_mapper import preferred_case_roots
-from skills.bridge.shared_utils.judgment_folder_names import (
-    JUDGMENT_FOLDER_LABEL,
-    LEGACY_JUDGMENT_FOLDER_LABEL,
-    judgment_folder_name,
-    legacy_judgment_folder_name,
+from api.osc.case_folder_schema import (
+    JUDGMENT_FOLDER_REPAIR_PREFIXES,
+    canonical_name_for_legacy_judgment_folder,
+    legacy_judgment_folder_names,
 )
 
 DEFAULT_REPORT = ROOT / ".runtime" / "judgment_folder_rename_latest.json"
-LEGACY_PREFIXES = (3, 4, 7, 8, 9, 10)
+LEGACY_PREFIXES = JUDGMENT_FOLDER_REPAIR_PREFIXES
 
 
 def _md5(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -48,13 +47,7 @@ def _md5(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 
 def canonical_name_for_legacy(name: str) -> str:
-    text = str(name or "").strip()
-    if text == LEGACY_JUDGMENT_FOLDER_LABEL:
-        return JUDGMENT_FOLDER_LABEL
-    for prefix in LEGACY_PREFIXES:
-        if text == legacy_judgment_folder_name(prefix):
-            return judgment_folder_name(prefix)
-    return ""
+    return canonical_name_for_legacy_judgment_folder(name, prefixes=LEGACY_PREFIXES)
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -173,8 +166,7 @@ def rename_folder(path: Path, *, apply: bool) -> dict[str, Any]:
 
 
 def find_legacy_judgment_folders(roots: list[Path]) -> list[Path]:
-    legacy_names = {LEGACY_JUDGMENT_FOLDER_LABEL}
-    legacy_names.update(legacy_judgment_folder_name(prefix) for prefix in LEGACY_PREFIXES)
+    legacy_names = set(legacy_judgment_folder_names(LEGACY_PREFIXES, include_plain=True))
     found: list[Path] = []
     for root in roots:
         if not root.exists():

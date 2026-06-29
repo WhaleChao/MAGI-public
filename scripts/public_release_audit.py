@@ -21,6 +21,41 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _is_git_worktree(root: Path) -> bool:
+    return (root / ".git").exists()
+
+
+def default_audit_root() -> Path:
+    """Pick the public-release source tree, not an installed private runtime.
+
+    Installed MAGI runtime trees intentionally contain private caches and
+    usually do not include .git.  In that situation, prefer the real source
+    checkout when it is available; release zips without .git still scan
+    themselves through the fallback walker.
+    """
+
+    for env_name in ("MAGI_PUBLIC_SOURCE_ROOT_DIR", "MAGI_SOURCE_ROOT_DIR"):
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser().resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    if _is_git_worktree(REPO_ROOT):
+        return REPO_ROOT
+
+    for candidate in (
+        Path.home() / "Desktop" / "MAGI_v2",
+        Path.home() / "Library" / "Application Support" / "MAGI" / "source" / "MAGI_v2",
+    ):
+        candidate = candidate.resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    return REPO_ROOT
+
 BLOCKED_TRACKED_PREFIXES = (
     ".claude/",
     ".claire/",
@@ -132,10 +167,12 @@ def _walk_release_files(repo_root: Path) -> list[str]:
 
     ignored_parts = {
         ".git",
+        ".claude",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
         ".venv",
+        ".agent",
         "venv",
         "__pycache__",
         "dist",
@@ -251,12 +288,14 @@ def summarize(findings: list[Finding]) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scan tracked files before public release.")
+    parser.add_argument("--root", default="", help="source root to audit; defaults to the public source checkout")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument("--strict", action="store_true", help="treat warnings as failures")
     parser.add_argument("--public-isolation", action="store_true", help="also block private legal-source, mailbox, and NAS markers")
     args = parser.parse_args(argv)
 
-    findings = scan_tracked_files(public_isolation=args.public_isolation)
+    audit_root = Path(args.root).expanduser().resolve() if args.root else default_audit_root()
+    findings = scan_tracked_files(repo_root=audit_root, public_isolation=args.public_isolation)
     if args.strict:
         findings = [
             Finding(f.path, f.line, f.kind, "error" if f.severity == "warning" else f.severity, f.detail)

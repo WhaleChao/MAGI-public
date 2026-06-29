@@ -112,6 +112,16 @@ def test_active_source_for_closed_path_prefers_smb_residue(monkeypatch, tmp_path
     assert mod._active_source_for(row) == str(smb)
 
 
+def test_default_archive_roots_include_magi_lumi_mount(monkeypatch, tmp_path):
+    from scripts.ops import slow_archive_closed_cases as mod
+
+    monkeypatch.setattr(mod.Path, "home", lambda: tmp_path)
+
+    roots = mod._default_archive_roots()
+
+    assert tmp_path / ".magi_mounts" / "lumi" / "lumi" / "03_工作資料" / "10_結案" in roots
+
+
 def test_run_rsync_sets_io_timeout(monkeypatch, tmp_path):
     from scripts.ops import slow_archive_closed_cases as mod
 

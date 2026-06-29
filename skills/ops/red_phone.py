@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, List, Optional, Union
 import json
 import logging
+import re
 import time
 import uuid
 import hashlib
@@ -1012,12 +1013,40 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
         return "translation"
     if any(k in s for k in ["摘要", "summary", "summarize", "重點整理"]):
         return "summary"
+    file_review_download_signal = any(
+        k in s
+        for k in [
+            "卷宗下載",
+            "下載完成",
+            "已下載",
+            "download",
+            "可下載判定",
+            "可下載通知",
+            "入口列表可下載",
+            "法院端可下載",
+            "待下載",
+        ]
+    )
+    payment_zero_only = bool(
+        re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[：:\s]*0\s*(?:件|封)", s)
+    )
+    payment_positive_count = bool(
+        re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[^0-9]{0,12}[1-9]\d*\s*(?:件|封)", s)
+    )
+    payment_action_text = any(
+        k in s
+        for k in ["繳費單通知", "繳費單 pdf", "逾期未繳", "繳費憑證", "上傳繳費", "待繳費案件"]
+    )
     if any(k in s for k in ["繳費", "payment"]):
-        return "filereview_payment"
+        if not (file_review_download_signal and payment_zero_only and not payment_positive_count and not payment_action_text):
+            return "filereview_payment"
+    if file_review_download_signal:
+        return "filereview_download"
     if any(k in s for k in ["閱卷", "電子卷", "file_review", "file-review", "docket", "可下載", "卷宗", "卷期", "卷下來"]):
         # 閱卷通知優先查繳費
         if any(k in s for k in ["繳費單", "待繳費", "逾期未繳"]):
-            return "filereview_payment"
+            if not (payment_zero_only and not payment_positive_count and not payment_action_text):
+                return "filereview_payment"
         return "filereview"
     if any(k in s for k in ["歸檔", "filing", "pdf_namer", "casper 歸檔"]):
         return "filing"
@@ -1037,14 +1066,169 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
     return "general"
 
 
+def _effective_notification_topic(
+    message: str,
+    source: str = "",
+    severity: str = "",
+    topic_key: str = "",
+) -> tuple[str, str, str]:
+    """Return (inferred_topic, requested_topic, effective_topic)."""
+    inferred = _canonical_topic_key(_infer_topic_key(message, source, severity))
+    requested = _canonical_topic_key(topic_key)
+    effective = requested or inferred
+    if requested in {"laf", "filereview"} and inferred.startswith(requested + "_"):
+        effective = inferred
+    return inferred, requested, effective
+
+
+def _notification_source_class(source: str = "", topic_key: str = "") -> str:
+    topic = _canonical_topic_key(topic_key)
+    src = re.sub(r"[^a-z0-9_:-]+", "_", str(source or "").strip().lower()).strip("_")
+    if topic in {"check", "alert", "nightly", "judicial_api"} or src in {
+        "business_module_live_check",
+        "nightly_regression",
+        "mock_test",
+        "nightly_health_report",
+        "weekend_resummary",
+        "nightly_distill_gemma",
+    }:
+        return "system"
+    if topic.startswith("filereview") or src.startswith(("file_review", "filereview")):
+        return "file_review"
+    if topic.startswith("laf") or src.startswith("laf"):
+        return "laf"
+    if topic in {"transcript", "verbatim", "summary", "translation", "filing", "judgment", "market"}:
+        return topic
+    return src or topic or "direct"
+
+
+def _normalize_notification_body_for_dedup(message: str) -> str:
+    body = " ".join(str(message or "").strip().split())
+    if not body:
+        return ""
+    body = re.sub(r"\b20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\b", "<timestamp>", body)
+    body = re.sub(r"\b\d{8}_\d{6}_[0-9a-f]{6,}\b", "<job_id>", body, flags=re.IGNORECASE)
+    body = re.sub(r"\brp_\d{8}_\d{6}_[0-9a-f]{6,}\b", "<outbox_id>", body, flags=re.IGNORECASE)
+    return body
+
+
+def classify_notification_event(
+    message: str,
+    *,
+    source: str = "",
+    severity: str = "warning",
+    topic_key: str = "",
+) -> dict[str, str]:
+    """Classify a notification into stable topic/source/dedup buckets."""
+    inferred, requested, effective = _effective_notification_topic(
+        message,
+        source=source,
+        severity=severity,
+        topic_key=topic_key,
+    )
+    source_class = _notification_source_class(source, effective)
+    body = _normalize_notification_body_for_dedup(message)
+    digest = hashlib.sha256("\n".join([source_class, effective, body]).encode("utf-8", "ignore")).hexdigest()
+    return {
+        "source": str(source or "direct"),
+        "source_class": source_class,
+        "inferred_topic": inferred,
+        "requested_topic": requested,
+        "topic_key": effective,
+        "dedup_key": f"{source_class}:{effective}:{digest}",
+        "dedup_hash": digest,
+    }
+
+
+_NO_GENERAL_TG_FALLBACK_TOPICS = {
+    "filereview_payment",
+    "filereview_download",
+    "filereview_apply",
+    "laf_dispatch",
+    "laf_go_live",
+    "laf_closing",
+    "laf_fee",
+    "laf_inquiry",
+    "laf_condition",
+    "laf_progress",
+    "transcript",
+}
+
+
+_NOOP_COMPLETION_MARKERS = (
+    "檢查完成",
+    "掃描完成",
+    "判定完成",
+    "巡檢完成",
+    "健康檢查",
+    "狀態掃描完成",
+    "目前無新通知",
+    "無新通知",
+    "沒有新資訊",
+    "沒有新資料",
+    "沒有新",
+    "查無筆錄",
+    "無待下載",
+    "無待繳費",
+    "無需處理",
+    "全部已處理",
+)
+_ACTIONABLE_ERROR_MARKERS = (
+    "探測失敗",
+    "登入失敗",
+    "下載失敗",
+    "上傳失敗",
+    "發送失敗",
+    "授權失敗",
+    "錯誤",
+    "異常",
+    "invalid_grant",
+    "need_interactive_oauth",
+)
+_COUNT_RE = re.compile(r"([0-9]+)\s*(件|封|份|案|個|筆|部|次)")
+
+
+def _has_positive_action_count(message: str) -> bool:
+    s = str(message or "")
+    for match in _COUNT_RE.finditer(s):
+        try:
+            count = int(match.group(1))
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        window = s[max(0, match.start() - 18): min(len(s), match.end() + 18)]
+        if any(k in window for k in ("略過", "已歸檔", "已下載略過", "歷史/已完成", "原始")):
+            continue
+        return True
+    return False
+
+
+def _is_noop_completion_notification(message: str) -> bool:
+    """True when a periodic completion report has no actionable new items."""
+    s = " ".join(str(message or "").strip().split())
+    if not s:
+        return False
+    s_lower = s.lower()
+    if any(marker in s_lower for marker in _ACTIONABLE_ERROR_MARKERS):
+        return False
+    if _has_positive_action_count(s):
+        return False
+    has_completion_marker = any(marker in s for marker in _NOOP_COMPLETION_MARKERS)
+    has_zero_count = bool(_COUNT_RE.search(s))
+    if has_completion_marker and (has_zero_count or any(k in s for k in ("無新", "沒有新", "無需處理", "查無"))):
+        return True
+    if "0封" in s or "0件" in s or "0 份" in s or "0 案" in s:
+        return has_completion_marker
+    return False
+
+
 def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str = "") -> tuple[str, Optional[int]]:
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    key = event["topic_key"]
     tmap = _load_topic_map()
     if not tmap:
-        return "", None
-    inferred_key = _infer_topic_key(message, source, severity)
-    key = _canonical_topic_key(topic_key) if topic_key else inferred_key
-    if key in {"laf", "filereview"} and inferred_key.startswith(key + "_"):
-        key = inferred_key
+        return key, None
     if key in tmap:
         return key, int(tmap[key])
     # Fallback: filereview_payment → filereview, laf_dispatch → laf, judicial_api → judgment, etc.
@@ -1060,6 +1244,8 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
     fb = _TG_TOPIC_FALLBACK.get(key, "")
     if fb and fb in tmap:
         return key, int(tmap[fb])
+    if key in _NO_GENERAL_TG_FALLBACK_TOPICS:
+        return key, None
     if _is_unknown_business_topic_key(key):
         return key, None
     if "general" in tmap:
@@ -1090,11 +1276,15 @@ def _load_outbox() -> list[dict]:
     return []
 
 
-def _outbox_fingerprint(message: str, severity: str = "", topic_key: str = "") -> str:
-    topic = _canonical_topic_key(str(topic_key or "").strip())
+def _outbox_fingerprint(message: str, severity: str = "", topic_key: str = "", source: str = "") -> str:
     sev = str(severity or "warning").strip().lower()
-    body = " ".join(str(message or "").strip().split())
-    raw = "\n".join([sev, topic, body])
+    event = classify_notification_event(
+        message,
+        source=source,
+        severity=sev,
+        topic_key=topic_key,
+    )
+    raw = "\n".join([sev, event["dedup_key"]])
     return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()
 
 
@@ -1136,12 +1326,9 @@ def _enqueue_outbox(
 ) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
-    inferred_topic = _infer_topic_key(message, source, severity)
-    requested_topic = _canonical_topic_key(topic_key)
-    effective_topic = requested_topic or inferred_topic
-    if requested_topic in {"laf", "filereview"} and inferred_topic.startswith(requested_topic + "_"):
-        effective_topic = inferred_topic
-    fingerprint = _outbox_fingerprint(message, severity=severity, topic_key=effective_topic)
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    effective_topic = event["topic_key"]
+    fingerprint = _outbox_fingerprint(message, severity=severity, topic_key=effective_topic, source=source)
     outbox = _load_outbox()
     for existing in outbox:
         existing_fp = str(existing.get("fingerprint") or "")
@@ -1150,6 +1337,7 @@ def _enqueue_outbox(
                 str(existing.get("message") or ""),
                 severity=str(existing.get("severity") or ""),
                 topic_key=str(existing.get("topic_key") or ""),
+                source=str(existing.get("source") or ""),
             )
             existing["fingerprint"] = existing_fp
         if existing_fp == fingerprint:
@@ -1257,6 +1445,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
                 str(entry.get("message") or ""),
                 severity=str(entry.get("severity") or ""),
                 topic_key=str(entry.get("topic_key") or ""),
+                source=str(entry.get("source") or ""),
             )
             entry["fingerprint"] = fingerprint
         if fingerprint in seen_fingerprints:
@@ -1375,7 +1564,8 @@ def _mirror_to_discord(
         # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",
     }
-    _resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    _resolved_topic = event["topic_key"]
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
         return False
     # 法扶夜巡完整報告包含下載、缺檔、案號補填等內部維運資訊；
@@ -1384,33 +1574,11 @@ def _mirror_to_discord(
         return False
 
     # 🛑 靜默過濾：非「有新資訊」的定期報告不發 DC (TG 照發)
-    _s = (message or "").strip()
-    _CLEAN_PATTERNS = [
-        "所有法扶案件狀態正常，無需處理",
-        "查無筆錄",
-        "沒有新資訊",
-        "檢查完成",
-        "待繳費：0 件",
-        "待下載：0 件",
-        "可下載通知：0 封",
-        "待歸檔：0 份",
-    ]
-    _HAS_WARNING = any(p in _s for p in ("⚠️", "❌", "失敗", "錯誤", "異常", "逾期", "需處理"))
-    # 如果是「[INFO] 💰 繳費單檢查完成\n- 繳費相關信件：0 封 (已通知 0 封)\n- 入口列表待繳費：0 件」這種
-    # 且沒有實質數字變化（>0），則靜默
-    if (not _HAS_WARNING) and any(p in _s for p in _CLEAN_PATTERNS):
-        # 檢查是否有任何大於 0 的正則匹配（如「待歸檔：6 份」則不靜默）
-        # 這裡用簡易邏輯：如果訊息中有「：0」或「 0 」且沒有大於 0 的數字
-        _has_actual_count = False
-        import re as _re
-        for m in _re.finditer(r"([：\s])([1-9]\d*)\s*(?:件|封|份|案|部|個|次)", _s):
-            _has_actual_count = True
-            break
-        if not _has_actual_count:
-            return False
+    if _is_noop_completion_notification(message):
+        return False
     try:
         return _send_discord_bot_message(
-            message, severity, topic_key=topic_key, source=source
+            message, severity, topic_key=_resolved_topic, source=source
         )
     except Exception as e:
         logger.debug("[RED PHONE] DC mirror failed (non-fatal): %s", e)
@@ -1586,12 +1754,11 @@ def alert_admin(
     # --- Global Content Deduplication (24h) ---
     # We dedup based on the RAW message to avoid timestamp-driven variations.
     dedup_key = None
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
     try:
         from skills.ops.dedup_db import is_done, mark_done
-        import hashlib
-        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
         date_str = datetime.now().strftime("%Y%m%d")
-        dedup_key = f"{date_str}:{msg_hash}"
+        dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] alert_admin: Deduplicated identical message: %s", _preview_text(message))
@@ -1600,7 +1767,7 @@ def alert_admin(
                     "event": "deduplicated",
                     "source": source,
                     "severity": severity,
-                    "topic_key": _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity),
+                    "topic_key": event["topic_key"],
                     "preview": _preview_text(message),
                 }
             )
@@ -1616,7 +1783,7 @@ def alert_admin(
                 "outbox_id": "",
                 "outbox_flushed": 0,
                 "outbox_remaining": len(_load_outbox()),
-                "topic_key": _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity),
+                "topic_key": event["topic_key"],
                 "thread_id": 0,
             }
     except Exception as e:
@@ -1661,7 +1828,7 @@ def alert_admin(
         "transcript",           # 筆錄下載完成
         "market",               # 股市快報
     }
-    resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+    resolved_topic = event["topic_key"]
     line_ok = False
     should_line = resolved_topic in _LINE_IMPORTANT_TOPICS or severity == "critical"
     if not should_line:

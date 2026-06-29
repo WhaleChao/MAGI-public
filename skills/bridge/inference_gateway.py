@@ -121,6 +121,25 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _flask_heavy_opt_in() -> bool:
+    try:
+        from flask import g as _flask_g, has_app_context as _has_app_context
+        if _has_app_context():
+            return bool(getattr(_flask_g, "heavy_opt_in", False))
+    except Exception:
+        logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
+    return False
+
+
+def _detect_heavy_opt_in(prompt: str, *, explicit: bool = False) -> bool:
+    if explicit:
+        return True
+    if _flask_heavy_opt_in():
+        return True
+    has_prefix, _cleaned = split_heavy_prefix(prompt)
+    return bool(has_prefix)
+
+
 def _is_night() -> bool:
     h = datetime.datetime.now().hour
     if _NIGHT_START > _NIGHT_END:
@@ -171,14 +190,17 @@ def classify_intent(prompt: str, image_path: str = "", explicit_task_type: str =
     if explicit_task_type and explicit_task_type.strip():
         return explicit_task_type.strip()
 
+    _has_heavy_prefix, prompt_without_heavy = split_heavy_prefix(prompt)
+    prompt_for_intent = prompt_without_heavy if _has_heavy_prefix else str(prompt or "")
+
     # 2) If image provided → vision or captcha
     if image_path and str(image_path).strip():
-        p_lower = (prompt or "").lower()
+        p_lower = (prompt_for_intent or "").lower()
         if any(k in p_lower for k in ("captcha", "驗證碼", "digits", "characters")):
             return "captcha"
         return "vision"
 
-    text = str(prompt or "").strip()
+    text = str(prompt_for_intent or "").strip()
     if not text:
         return "general"
 
@@ -1053,11 +1075,14 @@ class InferenceGateway:
 
     def chat(self, prompt: str, task_type: str = "general", timeout: int = 90, model: str = "", **kwargs) -> dict:
         request_id = kwargs.pop("request_id", None) or uuid.uuid4().hex[:12]
+        request_heavy_opt_in = _detect_heavy_opt_in(prompt, explicit=bool(kwargs.get("heavy", False)))
         _t0 = time.monotonic()
         result = self._chat_inner(prompt, task_type=task_type, timeout=timeout, model=model, **kwargs)
         _dur_ms = int((time.monotonic() - _t0) * 1000)
         result["request_id"] = request_id
         result["duration_ms"] = _dur_ms
+        result["task_type"] = str(result.get("task_type") or task_type or "general")
+        result["heavy_opt_in"] = bool(result.get("heavy_opt_in") or request_heavy_opt_in or result.get("heavy_fast_path"))
         try:
             logger.info(
                 "inference_chat %s",
@@ -1094,12 +1119,7 @@ class InferenceGateway:
         # 3) prompt prefix: 終極防線 — 偵測 @heavy / @重型 前綴並自動剝除
         heavy_opt_in = bool(kwargs.get("heavy", False))
         if not heavy_opt_in:
-            try:
-                from flask import g as _flask_g, has_app_context as _has_app_context
-                if _has_app_context():
-                    heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
-            except Exception:
-                logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
+            heavy_opt_in = _flask_heavy_opt_in()
         _prompt_has_heavy_prefix, _prompt_without_heavy_prefix = split_heavy_prefix(prompt)
         if not heavy_opt_in and _prompt_has_heavy_prefix:
             heavy_opt_in = True
@@ -1301,15 +1321,7 @@ class InferenceGateway:
         nim_enabled = _env_bool("NVIDIA_NIM_ENABLE", False)
         nim_require_optin = _env_bool("NVIDIA_NIM_REQUIRE_OPTIN", True)
         nim_require_pii = _env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True)
-        heavy_opt_in = bool(kwargs.get("heavy", False))
-        # 也支援從 Flask request context 取 heavy flag（由 tools_api.py 設）
-        if not heavy_opt_in:
-            try:
-                from flask import g as _flask_g, has_app_context as _has_app_context
-                if _has_app_context():
-                    heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
-            except Exception:
-                logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
+        # heavy_opt_in was resolved once above from kwarg, Flask g, or prompt prefix.
 
         nim_allowed = (
             nim_enabled

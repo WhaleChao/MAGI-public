@@ -42,6 +42,16 @@ try:
 except ImportError:
     pass
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+JUDICIAL_API_PIPELINE_TIMEOUT_SEC = max(90, _env_int("MAGI_SMOKE_JUDICIAL_API_TIMEOUT_SEC", 150))
+
 # ── Result model ───────────────────────────────────────────────
 
 @dataclass
@@ -669,7 +679,7 @@ def test_judicial_api_pipeline_health():
     checker = MAGI_ROOT / "scripts" / "ops" / "check_judicial_api_pipeline.py"
     if not checker.exists():
         return False, "check_judicial_api_pipeline.py missing"
-    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=90)
+    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=JUDICIAL_API_PIPELINE_TIMEOUT_SEC)
     try:
         data = json.loads(proc.stdout)
     except Exception:

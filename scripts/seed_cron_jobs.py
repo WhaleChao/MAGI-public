@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -27,6 +28,14 @@ KNOWN_MAGI_ROOTS = (
 
 def qcmd(*parts: object) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def quote_repo_root_paths(command: str, repo_root: Path) -> str:
+    root_text = str(repo_root)
+    if " " not in root_text or root_text not in command:
+        return command
+    pattern = re.compile(rf"(?<!['\"]){re.escape(root_text)}(?:/[^'\"\s]+)*")
+    return pattern.sub(lambda match: shlex.quote(match.group(0)), command)
 
 
 def default_python_path(repo_root: Path = REPO_ROOT) -> Path:
@@ -1022,6 +1031,7 @@ def canonicalize_job_command(job: dict[str, Any], repo_root: Path) -> tuple[dict
     for old_root in KNOWN_MAGI_ROOTS:
         if old_root != root_text:
             new_command = new_command.replace(old_root, root_text)
+    new_command = quote_repo_root_paths(new_command, repo_root)
     if new_command == command:
         return job, False
     return {**job, "command": new_command}, True

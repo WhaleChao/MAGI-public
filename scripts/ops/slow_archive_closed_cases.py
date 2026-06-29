@@ -45,11 +45,23 @@ from api.osc.utils import (  # noqa: E402
 )
 from api.domains.case_file_operation_lock import acquire_case_file_operation_lock, release_case_file_operation_lock  # noqa: E402
 
-DEFAULT_ARCHIVE_ROOTS = (
-    Path("/Volumes/lumi/lumi/03_工作資料/10_結案"),
-    Path("/Volumes/lumi-1/lumi/03_工作資料/10_結案"),
-    Path("/Volumes/lumi-2/lumi/03_工作資料/10_結案"),
-)
+def _default_archive_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    env_root = os.environ.get("MAGI_SLOW_ARCHIVE_ROOT", "").strip()
+    if env_root:
+        roots.append(Path(env_root).expanduser())
+    roots.extend(
+        [
+            Path.home() / ".magi_mounts" / "lumi" / "lumi" / "03_工作資料" / "10_結案",
+            Path("/Volumes/lumi/lumi/03_工作資料/10_結案"),
+            Path("/Volumes/lumi-1/lumi/03_工作資料/10_結案"),
+            Path("/Volumes/lumi-2/lumi/03_工作資料/10_結案"),
+        ]
+    )
+    return tuple(dict.fromkeys(roots))
+
+
+DEFAULT_ARCHIVE_ROOTS = _default_archive_roots()
 RUNTIME_DIR = ROOT / ".runtime"
 LATEST_PATH = RUNTIME_DIR / "slow_archive_closed_cases_latest.json"
 HISTORY_PATH = RUNTIME_DIR / "slow_archive_closed_cases.jsonl"

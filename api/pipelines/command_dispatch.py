@@ -26,6 +26,19 @@ from api.runtime_paths import (
     get_skill_python,
     legacy_code_enabled,
 )
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 # Fallback registry — primary path uses orch._cmd_registry (set in Orchestrator.__init__)
 _cmd_registry = None
@@ -247,6 +260,15 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     Routes commands to Melchior or System Skills.
     Uses CommandRegistry for extensible dispatch, falls back to legacy if-elif.
     """
+    heavy_opt_in, message = split_heavy_prefix(message)
+    if heavy_opt_in:
+        try:
+            from flask import g as _flask_g, has_app_context as _has_app_context
+            if _has_app_context():
+                _flask_g.heavy_opt_in = True
+        except Exception:
+            logger.debug("command_dispatch: skipped Flask heavy flag outside request context", exc_info=True)
+
     msg_lower = message.lower()
     msg_stripped = _strip_cmd_prefix(msg_lower)
 
@@ -535,6 +557,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         return orch._run_inline_translation_command(user_id, message)
 
     if any(message.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]) or msg_lower.startswith("summarize ") or msg_lower.startswith("summary ") or any(msg_stripped.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]):
+        from api.pipelines.specialized_commands import run_inline_summary_command
+        return run_inline_summary_command(orch, message)
+
+    from api.pipelines.specialized_commands import looks_like_inline_summary_command
+    if looks_like_inline_summary_command(message):
         from api.pipelines.specialized_commands import run_inline_summary_command
         return run_inline_summary_command(orch, message)
 

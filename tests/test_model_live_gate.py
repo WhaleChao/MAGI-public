@@ -44,6 +44,9 @@ def test_day_gate_requires_primary_and_aux(monkeypatch):
     report = gate.build_report("day")
     assert report.ok is True
     assert report.degraded is False
+    assert report.next_actions == []
+    assert report.restart_hint == ""
+    assert report.profile_hint == ""
 
 
 def test_day_gate_fails_when_question_asks_for_day_but_26b_is_live(monkeypatch):
@@ -58,6 +61,27 @@ def test_day_gate_fails_when_question_asks_for_day_but_26b_is_live(monkeypatch):
     report = gate.build_report("day")
     assert report.ok is False
     assert any("8080 expected E4B" in item for item in report.failures)
+
+
+def test_day_gate_failure_includes_actionable_runtime_hints(monkeypatch):
+    probes = {
+        8080: _probe(8080, "", ok=False),
+        8081: _probe(8081, "modernbert-embed-4bit"),
+        8082: _probe(8082, "", ok=False),
+        8083: _probe(8083, "", ok=False),
+    }
+    monkeypatch.setattr(gate, "probe_port", lambda port, timeout=3.0: probes[port])
+    monkeypatch.setattr(gate, "active_profile", lambda: "night")
+
+    report = gate.build_report("day")
+
+    assert report.ok is False
+    assert any("8080 expected E4B" in item for item in report.failures)
+    assert any("config/bin/omlx_switch_model.sh auto" in item for item in report.next_actions)
+    assert any("8082/Phi-4" in item and "8083/SmolLM" in item for item in report.next_actions)
+    assert "8080 is unreachable" in report.restart_hint
+    assert "Expected profile=day" in report.profile_hint
+    assert "active_profile=night" in report.profile_hint
 
 
 def test_day_gate_treats_e4b_as_normal_primary(monkeypatch):

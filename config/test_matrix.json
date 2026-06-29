@@ -23,6 +23,7 @@
             "scripts/ops/audit_operational_hardening.py",
             "scripts/ops/smoke_test_full.py",
             "scripts/ops/run_test_suite.py",
+            "scripts/ops/function_health_index.py",
             "scripts/customer_install_wizard.py",
             "scripts/packaging/magi_install_launcher.py",
             "scripts/packaging/runtime_bootstrap.py",
@@ -78,6 +79,18 @@
           "timeout_sec": 45
         },
         {
+          "id": "function_health_index",
+          "name": "Function health index public-safe inventory",
+          "command": [
+            "{python}",
+            "scripts/ops/function_health_index.py",
+            "--compact",
+            "--json-out",
+            ".runtime/function_health_index_ci_latest.json"
+          ],
+          "timeout_sec": 30
+        },
+        {
           "id": "pytest_fast_gate",
           "name": "Fast pytest gate",
           "command": [
@@ -93,6 +106,7 @@
             "tests/test_intent_no_weather_for_reminder.py",
             "tests/test_runtime_report_contract.py",
             "tests/test_run_test_suite.py",
+            "tests/test_function_health_index.py",
             "tests/test_entrypoints.py",
             "tests/test_customer_install_wizard.py",
             "tests/test_commercial_readiness_live.py",
@@ -171,7 +185,7 @@
             "scripts/ops/check_judicial_api_pipeline.py",
             "--json"
           ],
-          "timeout_sec": 120,
+          "timeout_sec": 240,
           "ok_returncodes": [0, 10]
         },
         {
@@ -345,7 +359,20 @@
             "{python}",
             "scripts/ops/smoke_core_routes.py",
             "--with-network",
-            "--with-heavy"
+            "--with-heavy",
+            "--json-out",
+            ".runtime/smoke_core_routes_release_latest.json"
+          ],
+          "timeout_sec": 600
+        },
+        {
+          "id": "tool_confusion_guard",
+          "name": "Tool-confusion live guard",
+          "command": [
+            "{python}",
+            "scripts/ops/tool_confusion_guard.py",
+            "--json-out",
+            ".runtime/tool_confusion_guard_release_latest.json"
           ],
           "timeout_sec": 600
         },
@@ -368,6 +395,19 @@
             ".runtime/smoke_test_full_release_latest.json"
           ],
           "timeout_sec": 240
+        },
+        {
+          "id": "function_health_gate",
+          "name": "Function health live gate",
+          "command": [
+            "{python}",
+            "scripts/ops/function_health_index.py",
+            "--compact",
+            "--fail-on-health",
+            "--json-out",
+            ".runtime/function_health_index_release_latest.json"
+          ],
+          "timeout_sec": 60
         }
       ]
     }

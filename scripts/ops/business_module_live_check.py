@@ -29,6 +29,8 @@ DEFAULT_LIVE_RUNTIME_ROOT = Path("/Users/ai/Library/Application Support/MAGI/run
 PYTHON = os.environ.get("MAGI_SKILL_PYTHON") or str(REPO_ROOT / "venv" / "bin" / "python3")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
+DRIVE_SYNC_STATUS_SLA_HOURS = 24.0
+CALENDAR_TODO_STATUS_SLA_HOURS = 24.0
 
 _ACTIVE_SCAN_DIRS = ("api", "casper_ecosystem", "scripts", "skills")
 _SOURCE_SKIP_PARTS = {".git", ".pytest_cache", "__pycache__", "venv", "node_modules", "_bg_jobs"}
@@ -333,11 +335,66 @@ def _nas_mounts_live() -> dict[str, Any]:
         return {"name": "nas_mounts_live", "ok": False, "error": _redact_text(f"{type(exc).__name__}: {exc}")}
 
 
-def _drive_sync_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
-    path = REPO_ROOT / ".runtime" / "drive_sync" / "drive_case_sync_worker_status_latest.json"
+def _runtime_status_file(*parts: str) -> Path:
+    """Return the live-runtime status file when cron writes outside the source checkout."""
+    rel = Path(".runtime", *parts)
+    live_root = Path(os.environ.get("MAGI_LIVE_RUNTIME_ROOT") or DEFAULT_LIVE_RUNTIME_ROOT).expanduser()
+    live_path = live_root / rel
+    source_path = REPO_ROOT / rel
+    try:
+        if (
+            source_path.exists()
+            and live_path.exists()
+            and source_path.stat().st_mtime >= live_path.stat().st_mtime
+        ):
+            return source_path
+        if live_root.exists() and live_root.resolve() != REPO_ROOT.resolve() and live_path.exists():
+            return live_path
+    except Exception:
+        if source_path.exists():
+            return source_path
+        if live_path.exists():
+            return live_path
+    return source_path
+
+
+def _drive_sync_next_action(reasons: list[str], *, max_age_hours: float) -> str:
+    if "missing_drive_sync_status" in reasons:
+        return "Run scripts/drive_case_sync_worker.py once or check cron job_drive_case_sync_bidirectional/all_files."
+    if "running_without_live_pid" in reasons:
+        return "Inspect the Drive sync worker pid/lock, then rerun scripts/drive_case_sync_worker.py after clearing stale state."
+    if "stale_status" in reasons:
+        return f"Drive sync status is older than the {max_age_hours:g}h SLA; rerun scripts/drive_case_sync_worker.py and verify cron."
+    if "missing_ok_contract" in reasons:
+        return "Inspect the latest Drive sync worker status JSON/logs; worker must write ok/success or show an active live pid."
+    return ""
+
+
+def _calendar_todo_next_action(reasons: list[str], *, max_age_hours: float) -> str:
+    if "missing_osc_events_refresh_status" in reasons:
+        return "Run scripts/ops/osc_events_refresh.py once or check cron job_osc_events_refresh."
+    if "stale_status" in reasons:
+        return f"Calendar/todo refresh status is older than the {max_age_hours:g}h SLA; rerun scripts/ops/osc_events_refresh.py and verify cron."
+    if "calendar_audit_failed" in reasons or "calendar_import_failed" in reasons:
+        return "Inspect .runtime/osc_events_refresh_latest.json, then rerun scripts/ops/osc_events_refresh.py after fixing the reported calendar issue."
+    return ""
+
+
+def _drive_sync_status_live(max_age_hours: float = DRIVE_SYNC_STATUS_SLA_HOURS) -> dict[str, Any]:
+    path = _runtime_status_file("drive_sync", "drive_case_sync_worker_status_latest.json")
     data = _load_json_file(path, {})
     if not isinstance(data, dict) or not data:
-        return {"name": "drive_sync_status_live", "ok": False, "error": "missing_drive_sync_status"}
+        reasons = ["missing_drive_sync_status"]
+        return {
+            "name": "drive_sync_status_live",
+            "ok": False,
+            "error": "missing_drive_sync_status",
+            "parsed": {
+                "sla_hours": max_age_hours,
+                "reason": ",".join(reasons),
+                "next_action": _drive_sync_next_action(reasons, max_age_hours=max_age_hours),
+            },
+        }
     status = str(data.get("status") or "")
     pid = int(data.get("pid") or 0)
     pid_alive = _pid_alive(pid) if pid else False
@@ -364,34 +421,59 @@ def _drive_sync_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
             "pid": pid,
             "pid_alive": pid_alive,
             "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
+            "sla_hours": max_age_hours,
             "matched_case_folders": ((data.get("summary") or {}).get("matched_case_folders")),
             "active_running": active_running,
             "running_without_pid": running_without_pid,
             "reason": ",".join(reasons),
+            "next_action": _drive_sync_next_action(reasons, max_age_hours=max_age_hours),
         },
     }
 
 
-def _calendar_todo_status_live(max_age_hours: float = 24.0) -> dict[str, Any]:
-    path = REPO_ROOT / ".runtime" / "osc_events_refresh_latest.json"
+def _calendar_todo_status_live(max_age_hours: float = CALENDAR_TODO_STATUS_SLA_HOURS) -> dict[str, Any]:
+    path = _runtime_status_file("osc_events_refresh_latest.json")
     data = _load_json_file(path, {})
     if not isinstance(data, dict) or not data:
-        return {"name": "calendar_todo_status_live", "ok": False, "error": "missing_osc_events_refresh_status"}
+        reasons = ["missing_osc_events_refresh_status"]
+        return {
+            "name": "calendar_todo_status_live",
+            "ok": False,
+            "error": "missing_osc_events_refresh_status",
+            "parsed": {
+                "sla_hours": max_age_hours,
+                "reason": ",".join(reasons),
+                "next_action": _calendar_todo_next_action(reasons, max_age_hours=max_age_hours),
+            },
+        }
     age = _age_seconds(path)
     audit = data.get("calendar_audit") if isinstance(data.get("calendar_audit"), dict) else {}
     imported = data.get("calendar_import") if isinstance(data.get("calendar_import"), dict) else {}
-    ok = bool(audit.get("ok", True)) and bool(imported.get("ok", True)) and not (age is not None and age > max_age_hours * 3600)
+    audit_ok = bool(audit.get("ok", True))
+    import_ok = bool(imported.get("ok", True))
+    stale_age = age is not None and age > max_age_hours * 3600
+    reasons = []
+    if not audit_ok:
+        reasons.append("calendar_audit_failed")
+    if not import_ok:
+        reasons.append("calendar_import_failed")
+    if stale_age:
+        reasons.append("stale_status")
+    ok = audit_ok and import_ok and not stale_age
     return {
         "name": "calendar_todo_status_live",
         "ok": ok,
         "parsed": {
             "age_hours": round((age or 0) / 3600, 2) if age is not None else None,
-            "calendar_audit_ok": bool(audit.get("ok", True)),
-            "calendar_import_ok": bool(imported.get("ok", True)),
+            "sla_hours": max_age_hours,
+            "calendar_audit_ok": audit_ok,
+            "calendar_import_ok": import_ok,
             "checked_primary_events": ((audit.get("summary") or {}).get("checked_primary_events")),
             "checked_source_events": ((audit.get("summary") or {}).get("checked_source_events")),
             "imported": imported.get("imported"),
             "skipped": imported.get("skipped"),
+            "reason": ",".join(reasons),
+            "next_action": _calendar_todo_next_action(reasons, max_age_hours=max_age_hours),
         },
     }
 
@@ -581,7 +663,7 @@ def _audit_deprecated_auto_dispatch(root: Path) -> dict[str, Any]:
 
 
 _SCRIPT_RE = re.compile(
-    r"(?:^|[\s'\"])(?:/[^'\"\s]+?/MAGI_v2/)?"
+    r"(?:^|[\s'\"/])"
     r"((?:api|config|scripts|skills)/[^'\"\s]+?\.(?:py|sh))"
 )
 
@@ -751,7 +833,9 @@ def _laf_portal_live() -> dict[str, Any]:
     sys.path.insert(0, str(REPO_ROOT))
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     try:
-        import scripts.laf_nightly_audit as audit
+        audit = sys.modules.get("scripts.laf_nightly_audit")
+        if audit is None:
+            import scripts.laf_nightly_audit as audit
 
         result = audit.scan_portal_pending_drafts(db=None)
         error = _redact_text(result.get("error") or "")
@@ -809,6 +893,9 @@ def _summarize(results: list[dict[str, Any]]) -> str:
                 )
             elif parsed.get("errors"):
                 detail = str(parsed.get("errors"))[:120]
+            if not r.get("ok") and parsed.get("next_action"):
+                action = str(parsed.get("next_action"))[:180]
+                detail = f"{detail} / next: {action}" if detail else f"next: {action}"
         if not detail and r.get("error"):
             detail = str(r.get("error"))[:120]
         lines.append(f"{mark} {r.get('name')}: {detail}".rstrip())

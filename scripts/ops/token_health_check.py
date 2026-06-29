@@ -8,6 +8,7 @@ expiry timestamps, and status. Secret values are never printed or written.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import fcntl
 import json
@@ -28,6 +29,7 @@ if str(MAGI_ROOT) not in sys.path:
 DEFAULT_REPORT_PATH = MAGI_ROOT / ".runtime" / "token_health" / "token_health_latest.json"
 INVALID_GRANT_MARKERS = ("invalid_grant", "expired or revoked", "token has been revoked")
 TOKEN_LOCK_TIMEOUT_SEC = float(os.environ.get("MAGI_GOOGLE_TOKEN_LOCK_TIMEOUT_SEC", "30") or "30")
+UNVERIFIABLE_ACCOUNT_HINTS = {"", "primary"}
 
 
 @dataclass
@@ -132,6 +134,74 @@ def _normalize_scopes(raw: Any) -> set[str]:
     if isinstance(raw, list):
         return {str(part).strip() for part in raw if str(part).strip()}
     return set()
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        data = base64.urlsafe_b64decode((payload + padding).encode("ascii"))
+        decoded = json.loads(data.decode("utf-8"))
+    except Exception:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _token_account_metadata(data: dict[str, Any]) -> str:
+    for key in (
+        "account",
+        "account_email",
+        "email",
+        "user_email",
+        "login_hint",
+        "principal",
+        "subject",
+    ):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+
+    id_payload = _decode_jwt_payload(str(data.get("id_token") or ""))
+    for key in ("email", "preferred_username", "sub"):
+        value = str(id_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _account_hint_status(account_hint: str, token_account: str) -> tuple[bool | None, str]:
+    hint = str(account_hint or "").strip()
+    token_value = str(token_account or "").strip()
+    if hint.lower() in UNVERIFIABLE_ACCOUNT_HINTS:
+        return None, "not_configured" if not hint else "not_verifiable_primary_hint"
+    if not token_value:
+        return None, "not_verifiable_missing_token_account"
+    if hint.lower() == token_value.lower():
+        return True, "match"
+    return False, "mismatch"
+
+
+def _reauth_next_action(spec: GoogleTokenSpec, reason: str) -> str:
+    hint = f" with account {spec.account_hint}" if spec.account_hint else ""
+    credentials = f" using {spec.credentials_path}" if spec.credentials_path else ""
+    if reason == "missing_scope":
+        return f"Re-authorize{hint}{credentials} so the saved token includes the required scopes."
+    if reason == "account_mismatch":
+        return f"Re-authorize{hint}{credentials}; the saved token metadata points at a different account."
+    if reason == "missing_refresh_token":
+        return f"Re-authorize{hint}{credentials} with offline access/consent so a refresh_token is saved."
+    if reason == "invalid_grant":
+        return f"Re-authorize{hint}{credentials}; Google reports the saved grant is expired or revoked."
+    return f"Re-authorize{hint}{credentials} and replace the saved token file."
+
+
+def _refresh_next_action(spec: GoogleTokenSpec, *, refresh_token_present: bool) -> str:
+    if refresh_token_present:
+        return "Run scripts/ops/token_health_check.py --refresh or let scripts/ops/run_after_token_refresh.py refresh before the job."
+    return _reauth_next_action(spec, "missing_refresh_token")
 
 
 def _atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
@@ -242,16 +312,25 @@ def check_google_token(
         "ok": False,
         "status": "",
         "message": "",
+        "next_action": "",
         "expires_at": "",
         "expires_in_hours": None,
         "refresh_token_present": False,
         "scopes_ok": None,
+        "missing_scopes": [],
+        "account_from_token": "",
+        "account_hint_ok": None,
+        "account_check_status": "not_checked",
+        "account_mismatch": False,
+        "auth_required_reason": "",
         "refreshed": False,
     }
     if not token_path.exists():
         base["status"] = "missing_token" if spec.required else "skipped"
         base["ok"] = not spec.required
         base["message"] = "token file missing"
+        if spec.required:
+            base["next_action"] = _reauth_next_action(spec, "missing_token")
         return base
 
     try:
@@ -269,16 +348,27 @@ def check_google_token(
     now = datetime.now(timezone.utc)
     token_scopes = _normalize_scopes(data.get("scopes") or data.get("scope"))
     requested_scopes = set(spec.scopes or [])
+    missing_scopes = sorted(requested_scopes - token_scopes) if token_scopes else sorted(requested_scopes)
     if requested_scopes:
         if token_scopes:
             scopes_ok = requested_scopes.issubset(token_scopes)
         else:
             scopes_ok = bool(spec.allow_missing_scope_field)
+            if scopes_ok:
+                missing_scopes = []
     else:
         scopes_ok = True
+        missing_scopes = []
 
     base["refresh_token_present"] = bool(data.get("refresh_token"))
     base["scopes_ok"] = scopes_ok
+    base["missing_scopes"] = missing_scopes
+    token_account = _token_account_metadata(data)
+    account_hint_ok, account_check_status = _account_hint_status(spec.account_hint, token_account)
+    base["account_from_token"] = token_account
+    base["account_hint_ok"] = account_hint_ok
+    base["account_check_status"] = account_check_status
+    base["account_mismatch"] = account_hint_ok is False
     if expiry:
         expires_in = (expiry - now).total_seconds()
         base["expires_at"] = expiry.isoformat()
@@ -288,12 +378,31 @@ def check_google_token(
 
     if not scopes_ok:
         base["status"] = "missing_scope"
-        base["message"] = "saved token does not include the scopes this service now requires"
+        scope_text = ", ".join(missing_scopes[:4])
+        if len(missing_scopes) > 4:
+            scope_text += f", ... (+{len(missing_scopes) - 4})"
+        base["message"] = f"saved token is missing required scope(s): {scope_text or 'unknown'}"
+        base["next_action"] = _reauth_next_action(spec, "missing_scope")
+        return base
+
+    if account_hint_ok is False:
+        base["status"] = "account_mismatch"
+        base["message"] = "saved token account metadata does not match the expected account hint"
+        base["next_action"] = _reauth_next_action(spec, "account_mismatch")
+        base["auth_required_reason"] = "account_mismatch"
+        return base
+
+    if not base["refresh_token_present"]:
+        base["status"] = "auth_required"
+        base["message"] = "saved token is missing refresh_token, so unattended refresh will not work"
+        base["next_action"] = _reauth_next_action(spec, "missing_refresh_token")
+        base["auth_required_reason"] = "missing_refresh_token"
         return base
 
     if expires_in is None:
         base["status"] = "expiry_unknown"
         base["message"] = "token has no expiry metadata; re-auth is safer"
+        base["next_action"] = _reauth_next_action(spec, "expiry_unknown")
         return base
 
     needs_refresh = expires_in <= threshold_seconds
@@ -302,6 +411,8 @@ def check_google_token(
         if ok:
             data2, _ = _safe_token_metadata(token_path)
             expiry2 = _parse_expiry((data2 or {}).get("expiry")) if data2 else None
+            if isinstance(data2, dict):
+                base["refresh_token_present"] = bool(data2.get("refresh_token"))
             base["status"] = "refreshed"
             base["ok"] = True
             base["refreshed"] = True
@@ -312,19 +423,28 @@ def check_google_token(
             return base
         if detail in {"invalid_grant", "missing_refresh_token"}:
             base["status"] = "auth_required"
-            base["message"] = "Google OAuth grant must be renewed interactively"
+            base["auth_required_reason"] = detail
+            if detail == "missing_refresh_token":
+                base["message"] = "saved token is missing refresh_token, so unattended refresh will not work"
+                base["next_action"] = _reauth_next_action(spec, "missing_refresh_token")
+            else:
+                base["message"] = "Google OAuth grant must be renewed interactively"
+                base["next_action"] = _reauth_next_action(spec, "invalid_grant")
             return base
         base["status"] = "refresh_failed"
         base["message"] = detail
+        base["next_action"] = "Inspect Google OAuth dependency/network errors, then rerun scripts/ops/token_health_check.py --refresh."
         return base
 
     if expires_in <= 0:
         base["status"] = "expired"
         base["message"] = "token is expired; run with --refresh or re-authorize"
+        base["next_action"] = _refresh_next_action(spec, refresh_token_present=bool(base["refresh_token_present"]))
         return base
     if needs_refresh:
         base["status"] = "expiring_soon"
         base["message"] = "token is inside proactive refresh window"
+        base["next_action"] = _refresh_next_action(spec, refresh_token_present=bool(base["refresh_token_present"]))
         return base
 
     base["status"] = "ok"
@@ -516,14 +636,25 @@ def build_report(*, refresh: bool, threshold_days: float) -> dict[str, Any]:
     ]
     api_keys = [check_api_key(spec) for spec in _discover_api_keys()]
     checks = google + api_keys
+    failure_fields = (
+        "kind",
+        "name",
+        "status",
+        "message",
+        "next_action",
+        "path",
+        "refresh_token_present",
+        "scopes_ok",
+        "missing_scopes",
+        "account_hint",
+        "account_from_token",
+        "account_hint_ok",
+        "account_check_status",
+        "account_mismatch",
+        "auth_required_reason",
+    )
     failures = [
-        {
-            "kind": item.get("kind"),
-            "name": item.get("name"),
-            "status": item.get("status"),
-            "message": item.get("message"),
-            "path": item.get("path", ""),
-        }
+        {key: item.get(key, "" if key in {"path", "next_action"} else None) for key in failure_fields if key in item}
         for item in checks
         if not bool(item.get("ok"))
     ]

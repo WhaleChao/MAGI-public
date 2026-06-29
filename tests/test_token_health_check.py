@@ -72,6 +72,69 @@ def test_google_token_missing_scope_fails(tmp_path):
 
     assert result["ok"] is False
     assert result["status"] == "missing_scope"
+    assert result["scopes_ok"] is False
+    assert result["missing_scopes"] == ["scope-c"]
+    assert "Re-authorize" in result["next_action"]
+
+
+def test_google_token_missing_refresh_token_is_actionable_without_network(tmp_path):
+    token = tmp_path / "token.json"
+    _write_token(token, expiry=datetime.now(timezone.utc) + timedelta(days=30), refresh_token="")
+    spec = thc.GoogleTokenSpec(name="unit", token_path=token, scopes=["scope-a"])
+
+    result = thc.check_google_token(spec, refresh=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "auth_required"
+    assert result["refresh_token_present"] is False
+    assert result["auth_required_reason"] == "missing_refresh_token"
+    assert "refresh_token" in result["message"]
+    assert "offline access" in result["next_action"]
+
+
+def test_google_token_account_mismatch_is_actionable(tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text(
+        json.dumps(
+            {
+                "token": "access-token-secret",
+                "refresh_token": "refresh-token",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "expiry": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+                "scopes": ["scope-a"],
+                "account_email": "wrong@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    spec = thc.GoogleTokenSpec(name="unit", token_path=token, scopes=["scope-a"], account_hint="right@example.com")
+
+    result = thc.check_google_token(spec, refresh=False)
+
+    assert result["ok"] is False
+    assert result["status"] == "account_mismatch"
+    assert result["account_hint_ok"] is False
+    assert result["account_mismatch"] is True
+    assert result["account_from_token"] == "wrong@example.com"
+    assert "right@example.com" in result["next_action"]
+
+
+def test_token_report_failures_keep_oauth_diagnostics(tmp_path, monkeypatch):
+    token = tmp_path / "token.json"
+    _write_token(token, expiry=datetime.now(timezone.utc) + timedelta(days=30), scopes=["scope-a"])
+    spec = thc.GoogleTokenSpec(name="unit", token_path=token, scopes=["scope-a", "scope-c"])
+    monkeypatch.setattr(thc, "_discover_google_tokens", lambda: [spec])
+    monkeypatch.setattr(thc, "_discover_api_keys", lambda: [])
+
+    report = thc.build_report(refresh=False, threshold_days=7.0)
+
+    failure = report["failures"][0]
+    assert failure["name"] == "unit"
+    assert failure["refresh_token_present"] is True
+    assert failure["scopes_ok"] is False
+    assert failure["missing_scopes"] == ["scope-c"]
+    assert "next_action" in failure
 
 
 def test_optional_missing_google_token_is_skipped(tmp_path):
@@ -98,11 +161,22 @@ def test_api_key_required_env_reports_missing(monkeypatch):
     assert result["status"] == "missing_key"
 
 
-def test_run_after_token_refresh_blocks_when_refresh_fails(monkeypatch, tmp_path):
+def test_run_after_token_refresh_blocks_when_refresh_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         run_after_token_refresh.token_health_check,
         "build_report",
-        lambda **kwargs: {"ok": False, "failures": [{"name": "google_calendar", "status": "auth_required"}]},
+        lambda **kwargs: {
+            "ok": False,
+            "failures": [
+                {
+                    "name": "google_calendar",
+                    "status": "auth_required",
+                    "refresh_token_present": False,
+                    "scopes_ok": True,
+                    "next_action": "Re-authorize with account primary.",
+                }
+            ],
+        },
     )
     writes = []
     monkeypatch.setattr(
@@ -116,6 +190,9 @@ def test_run_after_token_refresh_blocks_when_refresh_fails(monkeypatch, tmp_path
 
     assert rc == 1
     assert writes
+    stderr = capsys.readouterr().err
+    assert "refresh_token_present=False" in stderr
+    assert "next_action=Re-authorize" in stderr
 
 
 def test_run_after_token_refresh_execs_with_env_prefix(monkeypatch):
@@ -143,6 +220,16 @@ def test_run_after_token_refresh_execs_with_env_prefix(monkeypatch):
     assert called["program"] == "python"
     assert called["command"] == ["python", "job.py"]
     assert called["env"]["MAGI_TEST_FLAG"] == "1"
+
+    called.clear()
+    try:
+        run_after_token_refresh.main(["--", "MAGI_TEST_FLAG=2", "python", "job.py"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert called["program"] == "python"
+    assert called["command"] == ["python", "job.py"]
+    assert called["env"]["MAGI_TEST_FLAG"] == "2"
 
 
 def test_google_token_file_lock_times_out_when_held(tmp_path):

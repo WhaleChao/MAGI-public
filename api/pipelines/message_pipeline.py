@@ -485,6 +485,9 @@ def _try_semantic_preflight(orch, message: str, user_id="", role="", platform=""
     to the normal command/state pipeline.
     """
     text = str(message or "").strip()
+    _has_heavy_prefix, text_without_heavy = split_heavy_prefix(text)
+    if _has_heavy_prefix:
+        text = text_without_heavy
     if not text:
         return ""
     decision = classify_intent_contract(text)
@@ -541,6 +544,10 @@ def _try_agentic_route(orch, message: str, user_id="", role="", platform="", dec
     if os.environ.get("MAGI_AGENTIC_ROUTER", "1").strip().lower() not in {"1", "true", "yes", "on"}:
         return ""
     text = str(message or "").strip()
+    _has_heavy_prefix, text_without_heavy = split_heavy_prefix(text)
+    if _has_heavy_prefix:
+        heavy = True
+        text = text_without_heavy
     if not text:
         return ""
     try:
@@ -790,6 +797,10 @@ def _tool_output_looks_failed(text: str) -> bool:
 
 def _try_tool_first_policy_route(orch, message: str, *, intent: str, user_id="", role="", platform="", heavy: bool = False) -> str:
     """Enforce required tool-first policy in the production message pipeline."""
+    _has_heavy_prefix, clean_message = split_heavy_prefix(message)
+    if _has_heavy_prefix:
+        heavy = True
+        message = clean_message
     try:
         from api.tools.policies import format_tool_failure_response
         from api.tools.tool_router import route_to_tool
@@ -1163,6 +1174,17 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         )
         orch._append_history(user_id, "assistant", reply)
         return reply
+
+    if not attachment:
+        try:
+            from api.pipelines.specialized_commands import looks_like_inline_summary_command
+
+            if looks_like_inline_summary_command(message) and not orch._looks_like_capability_question(message):
+                reply = orch._run_inline_summary_command(message)
+                orch._append_history(user_id, "assistant", reply)
+                return reply
+        except Exception as inline_summary_err:
+            logger.debug("Inline summary fast path skipped: %s", inline_summary_err)
 
     # Broad AI-agent route before read-only domain fast paths.
     # Legal/file/search shortcuts are useful for direct lookup, but analytical

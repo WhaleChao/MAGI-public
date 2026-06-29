@@ -39,6 +39,7 @@ class Case:
     message: str
     expect_substring: str | Sequence[str]
     warn_substring: str | Sequence[str] = ()
+    reject_substring: str | Sequence[str] = ()
     network: bool = False
     heavy: bool = False
     timeout_sec: int = 18
@@ -46,18 +47,35 @@ class Case:
 
 def _cases() -> list[Case]:
     return [
-        Case("translate_guide", "你會翻譯嗎？", ("我可以幫您翻譯", "翻譯結果", "能力詢問")),
-        Case("summary_guide", "你會摘要嗎？", ("我可以幫您做摘要", "摘要結果", "請提供您需要我分析", "能力詢問")),
+        Case(
+            "translate_guide",
+            "你會翻譯嗎？",
+            ("我可以幫您翻譯", "能力詢問"),
+            reject_substring=("翻譯結果", "google_gtx", "provider="),
+        ),
+        Case(
+            "summary_guide",
+            "你會摘要嗎？",
+            ("我可以幫您做摘要", "能力詢問"),
+            reject_substring=("摘要結果", "extractive_inline", "請提供您需要我分析", "尚未提供"),
+        ),
         Case("labor_guide", "請介紹勞基法試算功能", ("我可以幫您計算勞基法", "勞動基準法計算說明")),
         Case("labor_exec", "幫我算勞基法加班費 30000", "請提供月薪金額"),
-        Case("judgment_guide", "你會查判決嗎？", ("我可以幫您查判決", "能力詢問"), warn_substring=("missing API key", "unauthorized")),
+        Case(
+            "judgment_guide",
+            "你會查判決嗎？",
+            ("我可以幫您查判決", "能力詢問"),
+            warn_substring=("missing API key", "unauthorized"),
+            reject_substring=("判決搜尋完成", "收集筆數"),
+        ),
         Case("stock_guide", "你會追蹤股票嗎？", ("我可以幫您追蹤股票", "能力詢問")),
         Case("stock_list", "追蹤清單", "目前追蹤股票"),
-        Case("translate_exec", "請幫我翻譯 Hello world", ("你好世界", "您好世界"), heavy=True, timeout_sec=45),
+        Case("translate_exec", "@heavy 請幫我翻譯 Hello world", ("你好世界", "您好世界"), heavy=True, timeout_sec=45),
         Case(
             "summary_exec",
-            "請幫我摘要 這是一篇短文。第一點很重要。第二點也很重要。第三點是結論。",
-            "摘要結果",
+            "@heavy 請直接摘要以下待摘要內容，並以「摘要結果」開頭：\n\n【待摘要內容】這是一篇短文。第一點很重要。第二點也很重要。第三點是結論。",
+            "第一點很重要",
+            reject_substring=("尚未提供", "請貼上", "請提供待摘要"),
             heavy=True,
             timeout_sec=45,
         ),
@@ -91,6 +109,9 @@ def _normalize_tokens(value: str | Sequence[str]) -> tuple[str, ...]:
 
 def _classify_case_output(case: Case, text: str, *, timed_out: bool = False) -> str:
     if timed_out:
+        return "FAIL"
+    rejected = _normalize_tokens(case.reject_substring)
+    if any(token in text for token in rejected):
         return "FAIL"
     expected = _normalize_tokens(case.expect_substring)
     if any(token in text for token in expected):

@@ -16,6 +16,19 @@ import sys
 import time
 
 from api.help_text import HELP_ALIASES, build_help_text
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -630,8 +643,17 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
 def explain_routing(orch, message: str, role: str = "user") -> dict:
     """Explain which internal handler would be invoked for a given text message."""
     from api.routing import build_route_decision
+    from api.routing.intent_contract import (
+        KIND_AGENT_TASK,
+        KIND_CASUAL_CHAT,
+        KIND_EXPLICIT_COMMAND,
+        KIND_META_CAPABILITY,
+        KIND_TOOL_CAPABILITY,
+        classify_intent_contract,
+    )
 
-    msg = (message or "").strip()
+    heavy_opt_in, msg = split_heavy_prefix(message)
+    msg = (msg or "").strip()
     msg_lower = msg.lower()
 
     def _res(
@@ -639,11 +661,14 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         handler: str = "", *, confidence: float = 1.0,
         reason: str = "", candidates: list[dict] | None = None, intent: str = "",
     ) -> dict:
-        return build_route_decision(
+        decision = build_route_decision(
             action=action, matched=matched, requires_admin=requires_admin,
             handler=handler, confidence=confidence,
             reason=reason or matched, candidates=candidates, intent=intent,
         )
+        if heavy_opt_in:
+            decision["heavy_opt_in"] = True
+        return decision
 
     if ("codex" in msg_lower or "sidecar" in msg_lower or "分散式" in msg) and any(
         kw in msg_lower for kw in ["開啟", "啟用", "打開", "全開", "on", "enable", "關閉", "停用", "關掉", "off", "disable", "狀態", "status", "模式", "help", "幫助"]
@@ -654,6 +679,58 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
     if msg_lower in HELP_ALIASES:
         return _res(action="help_menu", matched="universal_help",
                      requires_admin=False, handler="api/orchestrator.py:_handle_command('/help')")
+
+    contract = classify_intent_contract(msg)
+    if contract.kind == KIND_EXPLICIT_COMMAND:
+        return _res(
+            action="command_handler",
+            matched="explicit_command_prefix",
+            requires_admin=False,
+            handler="api/orchestrator.py:_handle_command",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_META_CAPABILITY:
+        return _res(
+            action="meta_capability_reply",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_semantic_preflight",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_TOOL_CAPABILITY:
+        return _res(
+            action="tool_capability_reply",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_semantic_preflight",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CASUAL_CHAT:
+        return _res(
+            action="chat_handler",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/orchestrator.py:_handle_chat_async",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_AGENT_TASK:
+        return _res(
+            action="agentic_tool_route",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_agentic_route",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
 
     # Status: require MAGI/system context, not just bare "狀態" which hits case-status questions
     _STATUS_EXACT = {"狀態", "系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
@@ -739,6 +816,15 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
     若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
     """
+    heavy_opt_in, message = split_heavy_prefix(message)
+    if heavy_opt_in:
+        try:
+            from flask import g as _flask_g, has_app_context as _has_app_context
+            if _has_app_context():
+                _flask_g.heavy_opt_in = True
+        except Exception:
+            logger.debug("topic_fast_path: skipped Flask heavy flag outside request context", exc_info=True)
+
     todo_completion_reply = handle_osc_todo_completion_message(user_id, message, platform=platform, topic_key=topic_key)
     if todo_completion_reply:
         return todo_completion_reply

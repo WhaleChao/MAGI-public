@@ -95,12 +95,14 @@ def test_drive_sync_status_flags_stale_completed_status(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(live_check, "_age_seconds", lambda path: 49 * 3600)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda path: (live_check.DRIVE_SYNC_STATUS_SLA_HOURS + 1) * 3600)
 
     result = live_check._drive_sync_status_live()
 
     assert result["ok"] is False
     assert "stale_status" in result["parsed"]["reason"]
+    assert result["parsed"]["sla_hours"] == live_check.DRIVE_SYNC_STATUS_SLA_HOURS
+    assert "drive_case_sync_worker.py" in result["parsed"]["next_action"]
 
 
 def test_drive_sync_status_accepts_active_running_pid(tmp_path, monkeypatch):
@@ -140,6 +142,29 @@ def test_calendar_todo_status_accepts_recent_ok_report(tmp_path, monkeypatch):
     assert result["parsed"]["calendar_audit_ok"] is True
 
 
+def test_calendar_todo_status_flags_stale_report_with_sla_next_action(tmp_path, monkeypatch):
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir()
+    (runtime / "osc_events_refresh_latest.json").write_text(
+        json.dumps(
+            {
+                "calendar_audit": {"ok": True, "summary": {"checked_primary_events": 3}},
+                "calendar_import": {"ok": True, "imported": 1, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "_age_seconds", lambda path: (live_check.CALENDAR_TODO_STATUS_SLA_HOURS + 1) * 3600)
+
+    result = live_check._calendar_todo_status_live()
+
+    assert result["ok"] is False
+    assert "stale_status" in result["parsed"]["reason"]
+    assert result["parsed"]["sla_hours"] == live_check.CALENDAR_TODO_STATUS_SLA_HOURS
+    assert "osc_events_refresh.py" in result["parsed"]["next_action"]
+
+
 def test_run_requires_success_or_ok_contract(monkeypatch):
     monkeypatch.setattr(
         live_check.subprocess,
@@ -151,6 +176,20 @@ def test_run_requires_success_or_ok_contract(monkeypatch):
 
     assert result["ok"] is False
     assert result["contract_error"] == "missing_success_or_ok_contract"
+
+
+def test_command_script_keys_accepts_quoted_runtime_path_with_spaces():
+    command = (
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3' "
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/run_after_token_refresh.py' "
+        "-- '/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3' "
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/osc_events_refresh.py'"
+    )
+
+    assert live_check._command_script_keys(command) == {
+        "scripts/ops/run_after_token_refresh.py",
+        "scripts/ops/osc_events_refresh.py",
+    }
 
 
 def test_live_runtime_root_fingerprint_detects_cron_semantic_drift(tmp_path, monkeypatch):
