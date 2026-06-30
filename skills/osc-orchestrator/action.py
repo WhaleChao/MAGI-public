@@ -43,6 +43,30 @@ VENV_PY = str(get_skill_python())
 
 _LS_BIN = "/bin/ls"
 _TEST_BIN = "/bin/test"
+_CLOSED_CASE_STATUSES = {"已結案", "結案", "closed", "done"}
+
+
+def _is_closed_case_status(status: Any) -> bool:
+    text = str(status or "").strip()
+    if not text:
+        return False
+    return text.lower() in _CLOSED_CASE_STATUSES or "已結案" in text
+
+
+def _active_case_status_sql(alias: str = "c") -> str:
+    prefix = "".join(ch for ch in str(alias or "c") if ch.isalnum() or ch == "_") or "c"
+    col = f"{prefix}.status"
+    key = f"{prefix}.case_number"
+    return f"""
+        (
+          {key} IS NULL OR {col} IS NULL OR {col} = ''
+          OR (
+            LOWER({col}) NOT IN ('closed', 'done')
+            AND {col} NOT IN ('已結案', '結案')
+            AND {col} NOT LIKE '%已結案%'
+          )
+        )
+    """
 
 
 def _write_token_atomic(path: str | Path, text: str) -> None:
@@ -2201,11 +2225,11 @@ def _materialize_imported_calendar_mirrors(
 
     limit = max(1, min(int(limit or 100), 500))
     target_ids = {str(x or "").lower() for x in (target_calendar_ids or set()) if str(x or "").strip()}
-    out: Dict[str, Any] = {"inserted": 0, "skipped": 0, "skipped_target_calendar": 0, "skipped_unknown_source": 0, "items": []}
+    out: Dict[str, Any] = {"inserted": 0, "skipped": 0, "skipped_closed_case": 0, "skipped_target_calendar": 0, "skipped_unknown_source": 0, "items": []}
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            """
+            f"""
             SELECT
                 ct.id AS source_todo_id,
                 ct.case_number,
@@ -2214,7 +2238,8 @@ def _materialize_imported_calendar_mirrors(
                 ct.todo_date,
                 ct.todo_time,
                 ct.description,
-                ct.source_file
+                ct.source_file,
+                COALESCE(c.status, '') AS case_status
             FROM case_todos ct
             LEFT JOIN cases c
               ON c.case_number COLLATE utf8mb4_unicode_ci
@@ -2224,6 +2249,7 @@ def _materialize_imported_calendar_mirrors(
               AND ct.todo_date >= CURDATE()
               AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+              AND {_active_case_status_sql('c')}
               AND COALESCE(ct.case_number, '') <> ''
               AND NOT EXISTS (
                   SELECT 1
@@ -2258,6 +2284,9 @@ def _materialize_imported_calendar_mirrors(
         )
         rows = cur.fetchall() or []
         for row in rows:
+            if _is_closed_case_status((row or {}).get("case_status")):
+                out["skipped_closed_case"] += 1
+                continue
             source_file = str((row or {}).get("source_file") or "")
             if not source_file.startswith("gcal_import"):
                 out["skipped"] += 1
@@ -2863,7 +2892,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
             cur = conn.cursor(dictionary=True)
             try:
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         ct.id,
                         ct.case_number,
@@ -2874,6 +2903,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                         ct.description,
                         ct.source_file,
                         ct.google_calendar_id,
+                        COALESCE(c.status, '') AS case_status,
                         COALESCE(c.court_name, '') AS court_name,
                         COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
                     FROM case_todos ct
@@ -2887,6 +2917,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                       AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
                       AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
                       AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
+                      AND {_active_case_status_sql('c')}
                     ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                     LIMIT %s
                     """,
@@ -2914,6 +2945,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                                 ct.description,
                                 ct.source_file,
                                 ct.google_calendar_id,
+                                COALESCE(c.status, '') AS case_status,
                                 COALESCE(c.court_name, '') AS court_name,
                                 COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
                             FROM case_todos ct
@@ -2925,6 +2957,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                               AND ct.google_calendar_id <> ''
                               AND ct.todo_date IS NOT NULL
                               AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
+                              AND {_active_case_status_sql('c')}
                             ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                             """,
                             tuple(wanted_ids),
@@ -2938,6 +2971,8 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 cur.close()
         filtered_todos = []
         for row in todos or []:
+            if _is_closed_case_status((row or {}).get("case_status")):
+                continue
             try:
                 row_date = datetime.strptime(str(row.get("todo_date") or "")[:10], "%Y-%m-%d")
             except Exception:

@@ -320,6 +320,31 @@ def test_materialize_imported_calendar_mirror_rows():
     assert conn.inserts[0][6] == "gcal_mirror:whalelawyer@gmail.com"
 
 
+def test_materialize_imported_calendar_mirror_skips_closed_case():
+    mod = _load_action_module()
+    conn = _MirrorConn(
+        [
+            {
+                "source_todo_id": 5186,
+                "case_number": "2025-0007",
+                "client_name": "張偉銘",
+                "todo_type": "開庭",
+                "todo_date": "2026-07-06",
+                "todo_time": "16:10:00",
+                "description": "張偉銘開庭＠花蓮地院",
+                "source_file": "gcal_import:whalelawyer@gmail.com",
+                "case_status": "已結案",
+            }
+        ]
+    )
+
+    out = mod._materialize_imported_calendar_mirrors(conn, limit=10)
+
+    assert out["inserted"] == 0
+    assert out["skipped_closed_case"] == 1
+    assert conn.inserts == []
+
+
 def test_cleanup_duplicate_calendar_todos_treats_import_as_dedup_candidate():
     mod = _load_action_module()
     rows = [
@@ -1043,6 +1068,42 @@ def test_gcal_sync_skips_implausible_far_future_todo(monkeypatch):
     assert out.get("skipped_implausible") == 1
     assert out.get("inserted") == 0
     assert fake_service.events_api.insert_calls == []
+
+
+def test_gcal_sync_skips_closed_case_future_todo(monkeypatch):
+    mod = _load_action_module()
+    monkeypatch.setenv("MAGI_GCAL_DEDUP_ENABLED", "0")
+
+    fake_service = _FakeService(existing_event_id="")
+    monkeypatch.setattr(mod, "_build_google_calendar_service", lambda *a, **k: {"ok": True, "service": fake_service})
+
+    _patch_db_helpers(
+        monkeypatch,
+        todo_rows=[
+            {
+                "id": 5170,
+                "case_number": "2025-0007",
+                "client_name": "張偉銘",
+                "todo_type": "開庭",
+                "todo_date": (date.today() + timedelta(days=7)).isoformat(),
+                "todo_time": "16:10:00",
+                "description": "張偉銘開庭＠花蓮地院",
+                "source_file": "gcal_mirror:whalelawyer@gmail.com",
+                "case_status": "已結案",
+                "court_case_number": "114年度原訴字第24號",
+                "court_name": "臺灣花蓮地方法院",
+            }
+        ],
+        set_calls=[],
+    )
+
+    out = mod.task_gcal_sync({"limit": 10, "calendar_id": "primary", "time_zone": "Asia/Taipei"})
+
+    assert out.get("ok") is True
+    assert out.get("inserted") == 0
+    assert out.get("patched") == 0
+    assert fake_service.events_api.insert_calls == []
+    assert fake_service.events_api.patch_calls == []
 
 
 def test_gcal_sync_replaces_stale_existing_calendar_event(monkeypatch):

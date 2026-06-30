@@ -85,7 +85,7 @@ _VENV_PY = str(get_skill_python())
 try:
     _target_prefix = os.path.realpath(str(Path(_VENV_PY).expanduser().parent.parent))
     _current_prefix = os.path.realpath(sys.prefix)
-    if os.path.exists(_VENV_PY) and _current_prefix != _target_prefix:
+    if __name__ == "__main__" and os.path.exists(_VENV_PY) and _current_prefix != _target_prefix:
         os.execv(_VENV_PY, [_VENV_PY, __file__, *sys.argv[1:]])
 except Exception:
     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 79, exc_info=True)
