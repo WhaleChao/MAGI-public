@@ -5,14 +5,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from docx import Document
-from docx.enum.section import WD_SECTION_START
-from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
-
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -44,6 +36,44 @@ SLATE = "475569"
 PANEL = "F8FAFC"
 BORDER = "D8E2EF"
 WHITE = "FFFFFF"
+
+_DOCX_READY = False
+
+
+def _ensure_docx_dependency() -> None:
+    global _DOCX_READY
+    global Cm, Document, OxmlElement, Pt, RGBColor, WD_ALIGN_PARAGRAPH, WD_ALIGN_VERTICAL
+    global WD_SECTION_START, WD_TABLE_ALIGNMENT, qn
+    if _DOCX_READY:
+        return
+    try:
+        from docx import Document as _Document
+        from docx.enum.section import WD_SECTION_START as _WD_SECTION_START
+        from docx.enum.table import WD_ALIGN_VERTICAL as _WD_ALIGN_VERTICAL
+        from docx.enum.table import WD_TABLE_ALIGNMENT as _WD_TABLE_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement as _OxmlElement
+        from docx.oxml.ns import qn as _qn
+        from docx.shared import Cm as _Cm
+        from docx.shared import Pt as _Pt
+        from docx.shared import RGBColor as _RGBColor
+    except ImportError as exc:
+        raise RuntimeError(
+            "python-docx is required to generate the Word manual. "
+            "Install python-docx before running scripts/generate_verified_user_manual_docx.py."
+        ) from exc
+
+    Document = _Document
+    WD_SECTION_START = _WD_SECTION_START
+    WD_ALIGN_VERTICAL = _WD_ALIGN_VERTICAL
+    WD_TABLE_ALIGNMENT = _WD_TABLE_ALIGNMENT
+    WD_ALIGN_PARAGRAPH = _WD_ALIGN_PARAGRAPH
+    OxmlElement = _OxmlElement
+    qn = _qn
+    Cm = _Cm
+    Pt = _Pt
+    RGBColor = _RGBColor
+    _DOCX_READY = True
 
 
 def load_json(path: Path) -> dict:
@@ -185,6 +215,7 @@ def page_break(doc: Document) -> None:
 
 
 def setup_document() -> Document:
+    _ensure_docx_dependency()
     doc = Document()
     for section in doc.sections:
         section.top_margin = Cm(1.7)
@@ -511,6 +542,7 @@ TROUBLESHOOTING = [
 
 
 def build_manual() -> Path:
+    _ensure_docx_dependency()
     GUIDES.mkdir(parents=True, exist_ok=True)
     suite_rows, live_rows, business_rows = collect_evidence()
     snapshot = load_health_intelligence_snapshot()
