@@ -256,6 +256,7 @@ def test_gcal_imported_lawyer_visit_keeps_human_calendar_title():
 
     assert mod._classify_gcal_import_todo_type("謝易霖律見", "") == "律見"
     assert mod._classify_gcal_import_todo_type("[2025-0007] 張偉銘 - 準備程序", "") == "準備程序"
+    assert mod._classify_gcal_import_todo_type("劉亞箖案抗告末日", "") == "抗告"
 
     body = mod._todo_to_gcal_event(
         {

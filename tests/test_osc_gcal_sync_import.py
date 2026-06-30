@@ -130,6 +130,7 @@ def test_import_gcal_events_classifies_lawyer_visit(monkeypatch):
 
     assert module._classify_todo_type("謝易霖律見") == "律見"
     assert module._classify_todo_type("謝易霖", "律師接見") == "律見"
+    assert module._classify_todo_type("劉亞箖案抗告末日") == "抗告"
 
 
 def test_import_gcal_events_dry_run_counts_only_osc_owned_events(monkeypatch):

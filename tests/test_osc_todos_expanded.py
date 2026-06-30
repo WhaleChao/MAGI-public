@@ -324,12 +324,20 @@ def test_原版osc固定判決規則只在判決書資料夾產生上訴期限()
     assert [(t["type"], t["date"], t["time"]) for t in legacy_todos] == [("上訴", "2026-05-21", "")]
 
 
-def test_原版osc固定裁定規則非判決書資料夾不產生抗告期限():
+def test_普通程序裁定非判決書資料夾不產生抗告期限():
     todos = extract_todos_from_filename(
         "20260501 花蓮地方法院裁定（王大明）.pdf",
         "/tmp/case/09_法院通知或程序裁定/20260501 花蓮地方法院裁定（王大明）.pdf",
     )
     assert todos == []
+
+
+def test_法院通知資料夾終局裁定仍產生抗告期限():
+    todos = extract_todos_from_filename(
+        "20260617 宜蘭地方法院114年度消債更字第83號民事裁定（劉亞箖；主文：更生之聲請駁回、聲請程序費用由聲請人負擔）.pdf",
+        "/tmp/case/09_法院通知或程序裁定/20260617 宜蘭地方法院114年度消債更字第83號民事裁定（劉亞箖；主文：更生之聲請駁回、聲請程序費用由聲請人負擔）.pdf",
+    )
+    assert [(t["type"], t["date"], t["time"]) for t in todos] == [("抗告", "2026-06-29", "")]
 
 
 def test_原版osc固定消債字號需搭配裁定才產生異議期限():

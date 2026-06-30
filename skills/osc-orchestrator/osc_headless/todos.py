@@ -419,6 +419,41 @@ def _is_judgment_folder(file_path: str) -> bool:
     return path_has_judgment_folder(str(file_path or ""))
 
 
+def _is_court_notice_folder(file_path: str) -> bool:
+    parts = [p for p in str(file_path or "").replace("\\", "/").split("/") if p]
+    for part in parts:
+        clean = re.sub(r"^\d{1,2}[_\-\s]*", "", part.strip())
+        if clean in {"法院通知或程序裁定", "法院通知及程序裁定", "法院通知與程序裁定", "法院通知", "程序裁定"}:
+            return True
+    return False
+
+
+def _looks_like_final_disposition(filename: str, file_path: str = "") -> bool:
+    text = f"{filename or ''}\n{file_path or ''}"
+    if _is_judgment_folder(file_path):
+        return True
+    if not _is_court_notice_folder(file_path):
+        return False
+    if not any(word in text for word in ("裁定", "處分書", "支付命令", "判決")):
+        return False
+    final_markers = (
+        "主文",
+        "更生之聲請駁回",
+        "清算之聲請駁回",
+        "聲請駁回",
+        "駁回聲請",
+        "開始更生程序",
+        "開始清算程序",
+        "免責",
+        "不免責",
+        "認可更生方案",
+        "撤銷更生",
+        "終結",
+        "終止",
+    )
+    return any(marker in text for marker in final_markers)
+
+
 def _contains_exclusion(segment: str, pattern: str, todo_type: str) -> bool:
     if not any(phrase in segment for phrase in _EXCLUSION_PHRASES):
         return False
@@ -1099,7 +1134,7 @@ def extract_todos_from_filename(
             except (re.error, ValueError, IndexError):
                 continue
 
-    if not matched_types and _is_judgment_folder(file_path):
+    if not matched_types and _looks_like_final_disposition(filename, file_path):
         fixed_priority = {
             "司消債更字": 1,
             "司消債清字": 1,
@@ -1135,7 +1170,7 @@ def extract_todos_from_filename(
                     "deadline_type": todo_type,
                     "file": filename,
                     "source_file": filename,
-                    "source": "filename_fixed_judgment_folder",
+                    "source": "filename_fixed_final_disposition",
                     "date": adjusted.strftime("%Y-%m-%d"),
                     "datetime": adjusted,
                     "time": "",

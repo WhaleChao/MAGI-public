@@ -101,20 +101,7 @@ def _load_headless_date_helpers():
 
 
 def _open_case_status_sql(column: str = "status") -> str:
-    col = column if re.fullmatch(r"[A-Za-z0-9_`.]+", column or "") else "status"
-    return f"""
-        (
-          {col} IS NULL OR {col}=''
-          OR (
-            LOWER({col}) NOT IN ('closed', 'done')
-            AND {col} NOT IN ('已結案', '結案')
-            AND {col} NOT LIKE '%已結案%'
-            AND {col} NOT LIKE '%結案中%'
-            AND {col} NOT LIKE '%待報結%'
-            AND {col} NOT LIKE '%待送出%'
-          )
-        )
-    """
+    return _pdf_todo_case_status_sql(column)
 
 
 def _pdf_todo_case_status_sql(column: str = "status") -> str:
