@@ -33,6 +33,30 @@ def test_infer_case_identity_from_client_name(monkeypatch):
     assert mod._infer_case_identity("陳鏈棠面談＠全家宜蘭縣府店", "") == ("2026-0035", "陳鏈棠")
 
 
+def test_infer_case_identity_cache_does_not_filter_by_case_status(monkeypatch):
+    mod = _load_module()
+    mod._CASE_IDENTITY_CACHE = None
+    seen_sql = []
+
+    def fake_exec(sql, params=(), fetch="all"):
+        seen_sql.append(sql)
+        if "FROM cases" in sql and "WHERE case_number=%s" in sql:
+            return None, None
+        return [
+            {
+                "case_number": "2025-0007",
+                "client_name": "張偉銘",
+                "start_date": "2025-01-01",
+                "approval_date": None,
+            },
+        ], None
+
+    monkeypatch.setattr(mod, "_osc_exec_sql", fake_exec)
+
+    assert mod._infer_case_identity("張偉銘閱卷", "", "2026-06-11") == ("2025-0007", "張偉銘")
+    assert all("NOT IN ('已結案'" not in sql for sql in seen_sql)
+
+
 def test_infer_case_identity_does_not_attach_name_event_before_case_start(monkeypatch):
     mod = _load_module()
     mod._CASE_IDENTITY_CACHE = None

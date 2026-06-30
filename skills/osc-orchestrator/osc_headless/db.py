@@ -1101,7 +1101,6 @@ def list_unsynced_todos_with_case_info(
                 ct.todo_time,
                 ct.description,
                 ct.source_file,
-                COALESCE(c.status, '') AS case_status,
                 COALESCE(c.court_name, '') AS court_name,
                 COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
             FROM case_todos ct
@@ -1114,14 +1113,6 @@ def list_unsynced_todos_with_case_info(
               AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
               AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
-              AND (
-                c.case_number IS NULL OR c.status IS NULL OR c.status = ''
-                OR (
-                  LOWER(c.status) NOT IN ('closed', 'done')
-                  AND c.status NOT IN ('已結案', '結案')
-                  AND c.status NOT LIKE '%已結案%'
-                )
-              )
             ORDER BY ct.todo_date ASC, ct.id ASC
             LIMIT %s
             """,

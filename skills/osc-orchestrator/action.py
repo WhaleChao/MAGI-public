@@ -43,30 +43,6 @@ VENV_PY = str(get_skill_python())
 
 _LS_BIN = "/bin/ls"
 _TEST_BIN = "/bin/test"
-_CLOSED_CASE_STATUSES = {"已結案", "結案", "closed", "done"}
-
-
-def _is_closed_case_status(status: Any) -> bool:
-    text = str(status or "").strip()
-    if not text:
-        return False
-    return text.lower() in _CLOSED_CASE_STATUSES or "已結案" in text
-
-
-def _active_case_status_sql(alias: str = "c") -> str:
-    prefix = "".join(ch for ch in str(alias or "c") if ch.isalnum() or ch == "_") or "c"
-    col = f"{prefix}.status"
-    key = f"{prefix}.case_number"
-    return f"""
-        (
-          {key} IS NULL OR {col} IS NULL OR {col} = ''
-          OR (
-            LOWER({col}) NOT IN ('closed', 'done')
-            AND {col} NOT IN ('已結案', '結案')
-            AND {col} NOT LIKE '%已結案%'
-          )
-        )
-    """
 
 
 def _write_token_atomic(path: str | Path, text: str) -> None:
@@ -168,7 +144,6 @@ def _extract_case_number_from_path(path: str) -> str:
     return ""
 
 
-_GCAL_CLOSED_STATUSES = {"已結案", "結案", "closed", "Closed", "CLOSED"}
 _GCAL_HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
 _GCAL_DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"
 
@@ -228,6 +203,14 @@ def _gcal_date_before_case_start(event_date: str, row: dict[str, Any]) -> bool:
     return bool(start and event_date[:10] < start)
 
 
+def _gcal_final_closed_status(status: Any) -> bool:
+    text = str(status or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return lowered in {"closed", "done"} or text in {"已結案", "結案"} or "已結案" in text
+
+
 def _lookup_gcal_case_by_number(conn: Any, case_number: str) -> tuple[str, str]:
     case_number = str(case_number or "").strip()
     if not case_number:
@@ -260,11 +243,13 @@ def _lookup_gcal_case_by_number(conn: Any, case_number: str) -> tuple[str, str]:
 
 
 def _resolve_gcal_event_case_identity(conn: Any, summary: str, description: str = "", event_date: str = "") -> tuple[str, str]:
-    """Resolve a manually-entered Google Calendar event to a unique active case.
+    """Resolve a manually-entered Google Calendar event to a unique case.
 
-    This is deliberately conservative: if a name appears in multiple active
+    This is deliberately conservative: if a name appears in multiple
     cases and the event text does not contain a case/law-aid number or reason
     hint, MAGI leaves the calendar row unassigned instead of mixing procedures.
+    Non-final cases are preferred only as a tie-breaker; final closed cases are
+    still visible when the event text uniquely points to them.
     """
     text = f"{summary or ''}\n{description or ''}"
     norm_text = _gcal_norm_text(text)
@@ -281,7 +266,6 @@ def _resolve_gcal_event_case_identity(conn: Any, summary: str, description: str 
                 FROM cases
                 WHERE COALESCE(case_number, '') != ''
                   AND COALESCE(client_name, '') != ''
-                  AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed', 'CLOSED')
                 ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
                 LIMIT 2000
                 """
@@ -290,7 +274,7 @@ def _resolve_gcal_event_case_identity(conn: Any, summary: str, description: str 
         finally:
             cur.close()
     except Exception:
-        logging.getLogger(__name__).debug("gcal active case identity cache failed", exc_info=True)
+        logging.getLogger(__name__).debug("gcal case identity cache failed", exc_info=True)
         return "", ""
 
     scored: list[tuple[int, str, str]] = []
@@ -310,6 +294,8 @@ def _resolve_gcal_event_case_identity(conn: Any, summary: str, description: str 
         if best_token_len <= 0:
             continue
         score = 100 + best_token_len
+        if not _gcal_final_closed_status(row.get("status")):
+            score += 5
         for field in ("court_case_no", "court_case_number", "laf_case_no", "application_no", "case_number"):
             raw = str(row.get(field) or "").strip()
             if raw and _gcal_norm_text(raw) in norm_text:
@@ -2225,11 +2211,11 @@ def _materialize_imported_calendar_mirrors(
 
     limit = max(1, min(int(limit or 100), 500))
     target_ids = {str(x or "").lower() for x in (target_calendar_ids or set()) if str(x or "").strip()}
-    out: Dict[str, Any] = {"inserted": 0, "skipped": 0, "skipped_closed_case": 0, "skipped_target_calendar": 0, "skipped_unknown_source": 0, "items": []}
+    out: Dict[str, Any] = {"inserted": 0, "skipped": 0, "skipped_target_calendar": 0, "skipped_unknown_source": 0, "items": []}
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            f"""
+            """
             SELECT
                 ct.id AS source_todo_id,
                 ct.case_number,
@@ -2238,8 +2224,7 @@ def _materialize_imported_calendar_mirrors(
                 ct.todo_date,
                 ct.todo_time,
                 ct.description,
-                ct.source_file,
-                COALESCE(c.status, '') AS case_status
+                ct.source_file
             FROM case_todos ct
             LEFT JOIN cases c
               ON c.case_number COLLATE utf8mb4_unicode_ci
@@ -2249,7 +2234,6 @@ def _materialize_imported_calendar_mirrors(
               AND ct.todo_date >= CURDATE()
               AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
-              AND {_active_case_status_sql('c')}
               AND COALESCE(ct.case_number, '') <> ''
               AND NOT EXISTS (
                   SELECT 1
@@ -2277,6 +2261,18 @@ def _materialize_imported_calendar_mirrors(
                              AND o.source_file NOT LIKE 'gcal_mirror:%%'))
                   LIMIT 1
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM case_todos d
+                  WHERE d.case_number COLLATE utf8mb4_unicode_ci
+                        = ct.case_number COLLATE utf8mb4_unicode_ci
+                    AND COALESCE(d.todo_type, '') = COALESCE(ct.todo_type, '')
+                    AND d.todo_date = ct.todo_date
+                    AND COALESCE(d.todo_time, '') = COALESCE(ct.todo_time, '')
+                    AND COALESCE(d.status, '') = 'deleted'
+                    AND COALESCE(d.description, '') LIKE '[人工刪除：%%'
+                  LIMIT 1
+              )
             ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
             LIMIT %s
             """,
@@ -2284,9 +2280,6 @@ def _materialize_imported_calendar_mirrors(
         )
         rows = cur.fetchall() or []
         for row in rows:
-            if _is_closed_case_status((row or {}).get("case_status")):
-                out["skipped_closed_case"] += 1
-                continue
             source_file = str((row or {}).get("source_file") or "")
             if not source_file.startswith("gcal_import"):
                 out["skipped"] += 1
@@ -2892,7 +2885,7 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
             cur = conn.cursor(dictionary=True)
             try:
                 cur.execute(
-                    f"""
+                    """
                     SELECT
                         ct.id,
                         ct.case_number,
@@ -2903,7 +2896,6 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                         ct.description,
                         ct.source_file,
                         ct.google_calendar_id,
-                        COALESCE(c.status, '') AS case_status,
                         COALESCE(c.court_name, '') AS court_name,
                         COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
                     FROM case_todos ct
@@ -2917,7 +2909,6 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                       AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
                       AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
                       AND (ct.source_file IS NULL OR ct.source_file = '' OR ct.source_file NOT LIKE 'gcal_import%%')
-                      AND {_active_case_status_sql('c')}
                     ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                     LIMIT %s
                     """,
@@ -2945,7 +2936,6 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                                 ct.description,
                                 ct.source_file,
                                 ct.google_calendar_id,
-                                COALESCE(c.status, '') AS case_status,
                                 COALESCE(c.court_name, '') AS court_name,
                                 COALESCE(NULLIF(c.court_case_no, ''), c.court_case_number, '') AS court_case_number
                             FROM case_todos ct
@@ -2957,7 +2947,6 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                               AND ct.google_calendar_id <> ''
                               AND ct.todo_date IS NOT NULL
                               AND (ct.status IS NULL OR ct.status = '' OR ct.status IN ('pending', 'calendar_deduped'))
-                              AND {_active_case_status_sql('c')}
                             ORDER BY ct.todo_date ASC, ct.todo_time ASC, ct.id ASC
                             """,
                             tuple(wanted_ids),
@@ -2971,8 +2960,6 @@ def task_gcal_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
                 cur.close()
         filtered_todos = []
         for row in todos or []:
-            if _is_closed_case_status((row or {}).get("case_status")):
-                continue
             try:
                 row_date = datetime.strptime(str(row.get("todo_date") or "")[:10], "%Y-%m-%d")
             except Exception:
@@ -3998,6 +3985,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
     cancelled_marked = 0
     dedup_skipped_in_batch = 0
     db_dedup_skipped = 0
+    manual_delete_skipped = 0
     invalid_case_keys = 0
     historical_skipped = 0
     errors = []
@@ -4103,6 +4091,29 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         todo_type = _classify_gcal_import_todo_type(summary, description)
 
+        if case_number and start_date:
+            try:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM case_todos
+                    WHERE case_number=%s
+                      AND todo_type=%s
+                      AND todo_date=%s
+                      AND COALESCE(todo_time,'')=%s
+                      AND COALESCE(status, '') = 'deleted'
+                      AND COALESCE(description, '') LIKE '[人工刪除：%%'
+                    LIMIT 1
+                    """,
+                    (case_number, todo_type, start_date or None, start_time or ""),
+                )
+                if cur.fetchone():
+                    skipped += 1
+                    manual_delete_skipped += 1
+                    continue
+            except Exception:
+                logging.getLogger(__name__).debug("gcal_import manual delete tombstone check failed", exc_info=True)
+
         if dedup_enabled:
             try:
                 if case_number:
@@ -4183,6 +4194,7 @@ def task_gcal_import(payload: Dict[str, Any]) -> Dict[str, Any]:
         "dedup_enabled": bool(dedup_enabled),
         "dedup_skipped_in_batch": dedup_skipped_in_batch,
         "db_dedup_skipped": db_dedup_skipped,
+        "manual_delete_skipped": manual_delete_skipped,
         "invalid_case_keys": invalid_case_keys,
         "incremental": bool(incremental),
         "incremental_used": bool(incremental_used),

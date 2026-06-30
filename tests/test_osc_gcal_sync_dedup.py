@@ -160,10 +160,13 @@ class _MirrorConn:
     def __init__(self, rows):
         self.rows = rows
         self.inserts = []
+        self.cursors = []
         self.commits = 0
 
     def cursor(self, dictionary=False):
-        return _MirrorCursor(self.rows, self.inserts)
+        cur = _MirrorCursor(self.rows, self.inserts)
+        self.cursors.append(cur)
+        return cur
 
     def commit(self):
         self.commits += 1
@@ -320,7 +323,7 @@ def test_materialize_imported_calendar_mirror_rows():
     assert conn.inserts[0][6] == "gcal_mirror:whalelawyer@gmail.com"
 
 
-def test_materialize_imported_calendar_mirror_skips_closed_case():
+def test_materialize_imported_calendar_mirror_does_not_skip_by_case_status_only():
     mod = _load_action_module()
     conn = _MirrorConn(
         [
@@ -340,9 +343,19 @@ def test_materialize_imported_calendar_mirror_skips_closed_case():
 
     out = mod._materialize_imported_calendar_mirrors(conn, limit=10)
 
-    assert out["inserted"] == 0
-    assert out["skipped_closed_case"] == 1
-    assert conn.inserts == []
+    assert out["inserted"] == 1
+    assert conn.inserts[0][0] == "2025-0007"
+
+
+def test_materialize_imported_calendar_mirror_query_respects_manual_delete_tombstone():
+    mod = _load_action_module()
+    conn = _MirrorConn([])
+
+    mod._materialize_imported_calendar_mirrors(conn, limit=10)
+
+    sql = "\n".join(sql for cur in conn.cursors for sql, _params in cur.executed)
+    assert "COALESCE(d.status, '') = 'deleted'" in sql
+    assert "LIKE '[人工刪除：%%'" in sql
 
 
 def test_cleanup_duplicate_calendar_todos_treats_import_as_dedup_candidate():
@@ -1070,7 +1083,7 @@ def test_gcal_sync_skips_implausible_far_future_todo(monkeypatch):
     assert fake_service.events_api.insert_calls == []
 
 
-def test_gcal_sync_skips_closed_case_future_todo(monkeypatch):
+def test_gcal_sync_does_not_skip_by_case_status_only(monkeypatch):
     mod = _load_action_module()
     monkeypatch.setenv("MAGI_GCAL_DEDUP_ENABLED", "0")
 
@@ -1100,9 +1113,9 @@ def test_gcal_sync_skips_closed_case_future_todo(monkeypatch):
     out = mod.task_gcal_sync({"limit": 10, "calendar_id": "primary", "time_zone": "Asia/Taipei"})
 
     assert out.get("ok") is True
-    assert out.get("inserted") == 0
+    assert out.get("inserted") == 1
     assert out.get("patched") == 0
-    assert fake_service.events_api.insert_calls == []
+    assert fake_service.events_api.insert_calls
     assert fake_service.events_api.patch_calls == []
 
 
@@ -1236,6 +1249,106 @@ def test_gcal_import_resolves_manual_event_by_unique_client_name():
     assert mod._resolve_gcal_event_case_identity(Conn(), "賴麗卿案陳報末日", "", "2026-06-11") == (
         "2025-0064",
         "賴麗卿Sera Cang",
+    )
+
+
+def test_gcal_import_resolves_manual_event_without_filtering_by_case_status():
+    mod = _load_action_module()
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            if "FROM cases" in self.sql:
+                return [
+                    {
+                        "case_number": "2025-0007",
+                        "client_name": "張偉銘",
+                        "case_reason": "傷害致死",
+                        "case_type": "刑事",
+                        "case_category": "法律扶助案件",
+                        "court_case_no": "114年度原訴字第24號",
+                        "court_case_number": "114年度原訴字第24號",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "status": "已結案",
+                        "start_date": "2025-01-01",
+                        "approval_date": None,
+                    }
+                ]
+            return []
+
+        def close(self):
+            return None
+
+    class Conn:
+        def cursor(self, dictionary=False):
+            return Cursor()
+
+    assert mod._resolve_gcal_event_case_identity(Conn(), "張偉銘閱卷", "", "2026-06-11") == (
+        "2025-0007",
+        "張偉銘",
+    )
+
+
+def test_gcal_import_prefers_non_final_case_when_name_only_event_matches_closed_case_too():
+    mod = _load_action_module()
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            if "FROM cases" in self.sql:
+                return [
+                    {
+                        "case_number": "2025-0007",
+                        "client_name": "張偉銘",
+                        "case_reason": "傷害致死",
+                        "case_type": "刑事",
+                        "case_category": "法律扶助案件",
+                        "court_case_no": "",
+                        "court_case_number": "",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "status": "已結案",
+                        "start_date": "2025-01-01",
+                        "approval_date": None,
+                    },
+                    {
+                        "case_number": "2026-0100",
+                        "client_name": "張偉銘",
+                        "case_reason": "詐欺",
+                        "case_type": "刑事",
+                        "case_category": "一般案件",
+                        "court_case_no": "",
+                        "court_case_number": "",
+                        "laf_case_no": "",
+                        "application_no": "",
+                        "status": "進行中",
+                        "start_date": "2026-01-01",
+                        "approval_date": None,
+                    },
+                ]
+            return []
+
+        def close(self):
+            return None
+
+    class Conn:
+        def cursor(self, dictionary=False):
+            return Cursor()
+
+    assert mod._resolve_gcal_event_case_identity(Conn(), "張偉銘閱卷", "", "2026-06-11") == (
+        "2026-0100",
+        "張偉銘",
     )
 
 

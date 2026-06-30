@@ -349,8 +349,15 @@ def _load_case_identity_cache() -> list[dict[str, str]]:
             SELECT case_number, client_name, start_date, approval_date
             FROM cases
             WHERE COALESCE(client_name, '') != ''
-              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
-            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            ORDER BY
+              CASE
+                WHEN LOWER(COALESCE(status, '')) IN ('closed', 'done')
+                  OR COALESCE(status, '') IN ('已結案', '結案')
+                  OR COALESCE(status, '') LIKE '%已結案%'
+                THEN 1 ELSE 0
+              END,
+              CHAR_LENGTH(client_name) DESC,
+              case_number DESC
             LIMIT 1000
             """,
             fetch="all",
@@ -386,7 +393,6 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
                    case_category, legal_aid_status
             FROM cases
             WHERE COALESCE(client_name, '') != ''
-              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
               AND (
                     COALESCE(laf_case_no, '') != ''
                  OR COALESCE(application_no, '') REGEXP '^[0-9]{6,8}-[A-Za-z]-[0-9]{3}$'
@@ -395,7 +401,15 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
                  OR case_reason LIKE '%法律扶助%'
                  OR COALESCE(legal_aid_status, '') != ''
               )
-            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            ORDER BY
+              CASE
+                WHEN LOWER(COALESCE(status, '')) IN ('closed', 'done')
+                  OR COALESCE(status, '') IN ('已結案', '結案')
+                  OR COALESCE(status, '') LIKE '%已結案%'
+                THEN 1 ELSE 0
+              END,
+              CHAR_LENGTH(client_name) DESC,
+              case_number DESC
             LIMIT 1000
             """,
             fetch="all",
