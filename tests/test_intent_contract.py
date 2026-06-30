@@ -1,6 +1,8 @@
 from api.routing.intent_contract import (
     KIND_AGENT_TASK,
+    KIND_CANCEL_REQUEST,
     KIND_CASUAL_CHAT,
+    KIND_CORRECTION_REQUEST,
     KIND_EXPLICIT_TASK,
     KIND_HELP_COMMAND,
     KIND_META_CAPABILITY,
@@ -10,6 +12,7 @@ from api.routing.intent_contract import (
     KIND_UNKNOWN,
     classify_intent_contract,
     looks_like_agentic_request,
+    normalize_message_intent,
 )
 
 
@@ -75,6 +78,32 @@ def test_heavy_prefix_does_not_confuse_intent_contract():
     assert _kind("＠HEAVY你可以查天氣嗎？") == KIND_TOOL_CAPABILITY
     assert _kind("@重型：我只是想跟你聊聊天") == KIND_CASUAL_CHAT
     assert _kind("＠重型請幫我比較民法184條與相關判決見解") == KIND_AGENT_TASK
+
+
+def test_normalized_heavy_intent_tracks_route_without_polluting_text():
+    heavy = normalize_message_intent("@HEAVY 請幫我比較民法184條與相關判決見解")
+    assert heavy.heavy_opt_in is True
+    assert heavy.text == "請幫我比較民法184條與相關判決見解"
+    assert heavy.decision.kind == KIND_AGENT_TASK
+    assert heavy.route_intent == "QUERY"
+    assert heavy.heavy_route_requested is True
+
+    zh_heavy_chat = normalize_message_intent("@重型：我只是想跟你聊聊天")
+    assert zh_heavy_chat.heavy_opt_in is True
+    assert zh_heavy_chat.text == "我只是想跟你聊聊天"
+    assert zh_heavy_chat.decision.kind == KIND_CASUAL_CHAT
+    assert zh_heavy_chat.allow_tool_dispatch is False
+    assert zh_heavy_chat.heavy_route_requested is False
+
+
+def test_cancel_and_correction_are_explicit_contract_kinds():
+    cancel = classify_intent_contract("取消")
+    assert cancel.kind == KIND_CANCEL_REQUEST
+    assert cancel.reason == "explicit_cancel_request"
+
+    correction = classify_intent_contract("更正：正確是臺灣新北地方法院")
+    assert correction.kind == KIND_CORRECTION_REQUEST
+    assert correction.reason == "explicit_correction_request"
 
 
 def test_agentic_request_excludes_short_replies_and_write_workflows():

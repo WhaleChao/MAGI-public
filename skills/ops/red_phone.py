@@ -1102,6 +1102,105 @@ def _notification_source_class(source: str = "", topic_key: str = "") -> str:
     return src or topic or "direct"
 
 
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        v = str(value or "").strip()
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
+
+
+def _normalize_case_token(value: str) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    s = s.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    s = re.sub(r"[\s._,，、:：;；()（）【】\[\]《》<>]+", "", s)
+    s = s.replace("臺", "台")
+    for token in ("年度", "年", "字第", "字", "第", "號"):
+        s = s.replace(token, "")
+    s = re.sub(r"(?<=[^\d])0+(\d+)", r"\1", s)
+    return s
+
+
+_COURT_CASE_RE = re.compile(
+    r"\d{2,3}\s*(?:年度|年)?\s*[\u4e00-\u9fff]{1,10}\s*(?:字)?\s*(?:第)?\s*\d{1,6}\s*(?:號)?"
+)
+_LAF_CASE_RE = re.compile(r"\b\d{6,7}-[A-Za-z]-\d{3}\b")
+_INTERNAL_CASE_RE = re.compile(r"\b20\d{2}-\d{4}\b")
+_PDF_NAME_RE = re.compile(r"[\w\u4e00-\u9fff（）()【】《》「」『』\-_.]+\.pdf", re.IGNORECASE)
+
+
+def _extract_notification_identity_tokens(message: str) -> dict[str, list[str]]:
+    s = str(message or "")
+    court_cases = [_normalize_case_token(x.group(0)) for x in _COURT_CASE_RE.finditer(s)]
+    laf_cases = [x.group(0).upper() for x in _LAF_CASE_RE.finditer(s)]
+    internal_cases = [x.group(0) for x in _INTERNAL_CASE_RE.finditer(s)]
+    pdf_names = []
+    for match in _PDF_NAME_RE.finditer(s):
+        raw_name = re.sub(r"\s+", " ", match.group(0).strip()).lower()
+        raw_name = re.sub(r"^.*[\\/｜:：;；,，)）]", "", raw_name)
+        raw_name = raw_name.lstrip("-•· ")
+        if raw_name:
+            pdf_names.append(raw_name)
+    accounts = [
+        re.sub(r"\D+", "", x)
+        for x in re.findall(r"(?:銷帳編號|轉入帳號|繳費帳號|帳號)[^0-9]{0,10}([0-9]{6,})", s, flags=re.IGNORECASE)
+    ]
+    amounts = [
+        x.replace(",", "")
+        for x in re.findall(r"(?:NT\$|NTD|新臺幣|新台幣|應繳金額|應繳|金額|費用|\$)[^0-9]{0,8}([0-9][0-9,]*)", s, flags=re.IGNORECASE)
+    ]
+    return {
+        "court": _dedupe_keep_order([x for x in court_cases if x]),
+        "laf": _dedupe_keep_order(laf_cases),
+        "internal": _dedupe_keep_order(internal_cases),
+        "pdf": _dedupe_keep_order(pdf_names),
+        "account": _dedupe_keep_order([x for x in accounts if x]),
+        "amount": _dedupe_keep_order([x for x in amounts if x]),
+    }
+
+
+def _notification_event_signature(message: str, source_class: str, topic_key: str) -> str:
+    topic = _canonical_topic_key(topic_key)
+    tokens = _extract_notification_identity_tokens(message)
+
+    def join_tokens(names: list[str]) -> str:
+        parts: list[str] = []
+        for name in names:
+            values = tokens.get(name) or []
+            if values:
+                parts.append(f"{name}={','.join(sorted(values))}")
+        return "|".join(parts)
+
+    if _is_noop_completion_notification(message):
+        quiet_topic = topic or "general"
+        if quiet_topic.startswith("filereview"):
+            quiet_topic = "filereview"
+        return f"noop:{source_class}:{quiet_topic}"
+
+    if topic == "filereview_payment":
+        ident = join_tokens(["court", "laf", "internal", "account", "amount", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "filereview_download":
+        ident = join_tokens(["court", "laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "filereview_apply":
+        ident = join_tokens(["court", "laf", "internal"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "transcript":
+        ident = join_tokens(["court", "laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "laf_dispatch":
+        ident = join_tokens(["laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    return ""
+
+
 def _normalize_notification_body_for_dedup(message: str) -> str:
     body = " ".join(str(message or "").strip().split())
     if not body:
@@ -1128,7 +1227,9 @@ def classify_notification_event(
     )
     source_class = _notification_source_class(source, effective)
     body = _normalize_notification_body_for_dedup(message)
-    digest = hashlib.sha256("\n".join([source_class, effective, body]).encode("utf-8", "ignore")).hexdigest()
+    event_signature = _notification_event_signature(body, source_class, effective)
+    digest_basis = event_signature or f"body:{body}"
+    digest = hashlib.sha256("\n".join([source_class, effective, digest_basis]).encode("utf-8", "ignore")).hexdigest()
     return {
         "source": str(source or "direct"),
         "source_class": source_class,
@@ -1137,13 +1238,16 @@ def classify_notification_event(
         "topic_key": effective,
         "dedup_key": f"{source_class}:{effective}:{digest}",
         "dedup_hash": digest,
+        "event_signature": event_signature,
     }
 
 
 _NO_GENERAL_TG_FALLBACK_TOPICS = {
+    "filereview",
     "filereview_payment",
     "filereview_download",
     "filereview_apply",
+    "laf",
     "laf_dispatch",
     "laf_go_live",
     "laf_closing",
@@ -1197,8 +1301,14 @@ def _has_positive_action_count(message: str) -> bool:
             continue
         if count <= 0:
             continue
-        window = s[max(0, match.start() - 18): min(len(s), match.end() + 18)]
+        before = s[max(0, match.start() - 18): match.start()]
+        after = s[match.end(): min(len(s), match.end() + 18)]
+        window = before + match.group(0) + after
         if any(k in window for k in ("略過", "已歸檔", "已下載略過", "歷史/已完成", "原始")):
+            continue
+        if re.search(r"(?:已通知|已處理|已完成|掃描|巡檢|檢查|查無[^：:]{0,8}|無新|沒有新|總數|案件總數)[：:\s/（(]*$", before):
+            continue
+        if re.match(r"\s*(?:個月|列|row|rows|已通知|已處理|已完成|已略過|略過)", after, flags=re.IGNORECASE):
             continue
         return True
     return False
@@ -1221,6 +1331,44 @@ def _is_noop_completion_notification(message: str) -> bool:
     if "0封" in s or "0件" in s or "0 份" in s or "0 案" in s:
         return has_completion_marker
     return False
+
+
+def _quiet_suppression_status(
+    message: str,
+    *,
+    severity: str,
+    source: str,
+    topic_key: str,
+) -> Optional[dict]:
+    sev = str(severity or "info").strip().lower()
+    if sev == "critical":
+        return None
+    if not _is_noop_completion_notification(message):
+        return None
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    _append_delivery_log(
+        {
+            "event": "suppressed",
+            "reason": "noop_completion",
+            "source": source,
+            "severity": severity,
+            "topic_key": event["topic_key"],
+            "preview": _preview_text(message),
+        }
+    )
+    return {
+        "telegram": False,
+        "delivered": False,
+        "acked": 0,
+        "total": 0,
+        "queued": False,
+        "outbox_id": "",
+        "error": "",
+        "topic_key": event["topic_key"],
+        "thread_id": 0,
+        "suppressed": True,
+        "suppressed_reason": "noop_completion",
+    }
 
 
 def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str = "") -> tuple[str, Optional[int]]:
@@ -1593,6 +1741,15 @@ def send_telegram_push_with_status(
     topic_key: str = "",
     queue_on_fail: bool = True,
 ) -> dict:
+    quiet_status = _quiet_suppression_status(
+        message,
+        severity=severity,
+        source=source,
+        topic_key=topic_key,
+    )
+    if quiet_status is not None:
+        return quiet_status
+
     token, admin_ids = _get_telegram_config()
     resolved_topic, thread_id = _resolve_thread_id(message, source, severity, topic_key=topic_key)
     if not token or not admin_ids:
@@ -1706,14 +1863,14 @@ def send_telegram_push(message: str) -> bool:
         return False
 
     # --- Global Content Deduplication (24h) ---
+    dedup_key = ""
     try:
         from skills.ops.dedup_db import is_done, mark_done
-        import hashlib
         # 取訊息內容的雜湊，併入當前日期，確保每天至少可發送一次相同的內容（或是跨日重啟時去重）
         # 如果使用者想要更嚴格，可以只用 msg_hash
-        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+        event = classify_notification_event(message, source="direct", severity="warning")
         date_str = datetime.now().strftime("%Y%m%d")
-        dedup_key = f"{date_str}:{msg_hash}"
+        dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] Deduplicated identical message (already sent today): %s", _preview_text(message))
@@ -1728,10 +1885,11 @@ def send_telegram_push(message: str) -> bool:
     if status.get("telegram"):
         logger.info("[RED PHONE] Telegram alert sent successfully.")
         # 標記為已發送
-        try:
-            mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
-        except Exception:
-            pass
+        if dedup_key:
+            try:
+                mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
+            except Exception:
+                pass
     else:
         logger.warning("[RED PHONE] Telegram send failed; queued=%s outbox_id=%s", status.get("queued"), status.get("outbox_id"))
     

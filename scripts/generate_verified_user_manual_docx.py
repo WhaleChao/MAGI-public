@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -14,12 +15,19 @@ from docx.shared import Cm, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.ops import function_health_index  # noqa: E402
+
 GUIDES = ROOT / "docs" / "guides"
 ASSETS = GUIDES / "assets"
 RUNTIME = ROOT / ".runtime"
 
 VERSION = date(2026, 6, 26)
 OUT = GUIDES / f"MAGI_驗證版完整操作手冊_{VERSION.isoformat()}.docx"
+SNAPSHOT_PATH = RUNTIME / "magi_health_intelligence_snapshot_latest.json"
+MANUAL_MATERIAL_OUT = GUIDES / "MAGI_health_intelligence_manual_material.json"
 
 FONT_EAST_ASIA = "Microsoft JhengHei"
 FONT_LATIN = "Arial"
@@ -264,6 +272,111 @@ def collect_evidence() -> tuple[list[list[str]], list[list[str]], list[list[str]
     return suite_rows, live_rows, business_rows
 
 
+def load_health_intelligence_snapshot(path: Path = SNAPSHOT_PATH) -> dict:
+    if path.exists():
+        data = load_json(path)
+        if isinstance(data.get("core_functions"), list):
+            return data
+    report = function_health_index.build_index(root=ROOT, runtime_dir=RUNTIME, include_static=True)
+    snapshot = report.get("intelligence_snapshot") if isinstance(report, dict) else {}
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def _plain_status(status: str) -> str:
+    mapping = {
+        "verified_live": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+        "unit_covered_pending_live": "已有回歸測試覆蓋；正式上線前請再跑一次 LIVE 驗收。",
+        "stale_live_check": "最近 LIVE 證據偏舊；使用前先重新跑健康檢查。",
+        "needs_auth": "需要先處理授權或 token，否則相關操作可能無法完成。",
+        "needs_attention": "最近健康檢查有異常，建議先排除再使用。",
+        "unknown": "目前沒有足夠健康證據；手冊只能寫成待確認功能。",
+    }
+    return mapping.get(str(status or ""), "目前狀態需重新確認。")
+
+
+def _short_source(item: dict) -> str:
+    source = str(item.get("source") or "")
+    normalized = source.replace("\\", "/")
+    if "/.runtime/" in normalized:
+        source = ".runtime/" + normalized.split("/.runtime/", 1)[1]
+    elif normalized.startswith(str(ROOT).replace("\\", "/") + "/"):
+        source = normalized[len(str(ROOT).replace("\\", "/")) + 1 :]
+    check_id = str(item.get("check_id") or "")
+    if check_id:
+        return f"{source}#{check_id}" if source else check_id
+    return source
+
+
+def build_manual_material(snapshot: dict) -> dict:
+    functions = snapshot.get("core_functions") if isinstance(snapshot, dict) else []
+    sections = []
+    iterable_functions = functions if isinstance(functions, list) else []
+    for item in iterable_functions:
+        if not isinstance(item, dict):
+            continue
+        commands = [str(cmd) for cmd in item.get("manual_commands") or [] if str(cmd)]
+        entry_points = [str(entry) for entry in item.get("entry_points") or [] if str(entry)]
+        live = item.get("last_live_check") if isinstance(item.get("last_live_check"), dict) else {}
+        unit = item.get("last_unit_test") if isinstance(item.get("last_unit_test"), dict) else {}
+        token = item.get("token_status_hint") if isinstance(item.get("token_status_hint"), dict) else {}
+        sections.append(
+            {
+                "feature_id": item.get("id", ""),
+                "title": item.get("name", ""),
+                "manual_section_hint": item.get("manual_section_hint", ""),
+                "plain_intro": item.get("user_summary", ""),
+                "how_to_use": "入口：" + ("、".join(entry_points) if entry_points else "依實際部署入口") + "。",
+                "example_commands": commands,
+                "status_summary": _plain_status(str(item.get("status") or "")),
+                "token_auth_hint": str(token.get("hint") or ""),
+                "recent_health_hint": "；".join(
+                    part
+                    for part in [
+                        f"最近單元測試素材：{unit.get('source')}" if unit.get("source") else "",
+                        f"最近 LIVE 素材：{_short_source(live)}" if _short_source(live) else "",
+                    ]
+                    if part
+                ),
+            }
+        )
+    status_counts = {}
+    if isinstance(snapshot.get("summary"), dict):
+        status_counts = snapshot["summary"].get("status_counts") or {}
+    return {
+        "schema_version": 1,
+        "generated_at": snapshot.get("generated_at", ""),
+        "source_snapshot_schema_version": snapshot.get("schema_version"),
+        "status_counts": status_counts,
+        "sections": sections,
+    }
+
+
+def write_manual_material(material: dict, path: Path = MANUAL_MATERIAL_OUT) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(material, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def feature_rows_from_manual_material(material: dict) -> list[list[str]]:
+    rows = []
+    sections = material.get("sections") if isinstance(material, dict) else []
+    iterable_sections = sections if isinstance(sections, list) else []
+    for section in iterable_sections:
+        if not isinstance(section, dict):
+            continue
+        examples = section.get("example_commands") if isinstance(section.get("example_commands"), list) else []
+        rows.append(
+            [
+                str(section.get("title") or ""),
+                str(section.get("plain_intro") or ""),
+                "\n".join([str(section.get("how_to_use") or "")] + [str(example) for example in examples[:2] if str(example)]),
+                str(section.get("status_summary") or ""),
+                str(section.get("manual_section_hint") or ""),
+            ]
+        )
+    return rows
+
+
 FEATURE_ROWS = [
     ["自然語言入口與工具路由", "區分聊天、查詢、工具調用與系統健康命令；避免把行程查詢誤判成天氣。", "對話框、LINE/DC/TG/Webhook", "manual smoke route + no_weather_confusion", "PASS"],
     ["@heavy / @重型高品質模式", "翻譯、摘要、長 PDF 與法律文件可要求高品質讀取、對照、專有名詞保留。", "訊息前加 @heavy 或 @重型", "manual smoke route:@heavy 翻譯 PDF", "PASS"],
@@ -400,6 +513,10 @@ TROUBLESHOOTING = [
 def build_manual() -> Path:
     GUIDES.mkdir(parents=True, exist_ok=True)
     suite_rows, live_rows, business_rows = collect_evidence()
+    snapshot = load_health_intelligence_snapshot()
+    manual_material = build_manual_material(snapshot)
+    write_manual_material(manual_material)
+    feature_rows = feature_rows_from_manual_material(manual_material) or FEATURE_ROWS
 
     doc = setup_document()
 
@@ -437,8 +554,8 @@ def build_manual() -> Path:
     add_table(doc, ["驗收範圍", "結果", "時間", "證據檔", "狀態"], suite_rows, header_fill=GREEN, widths=[4.1, 2, 3.2, 5.1, 1.5])
 
     add_heading(doc, "2. 已驗證功能矩陣", 1)
-    add_para(doc, "這張表是手冊的功能邊界。後續章節的操作說明都對應到這些已驗證功能。")
-    add_table(doc, ["功能領域", "使用者能做什麼", "入口或指令", "驗收證據", "狀態"], FEATURE_ROWS, header_fill=BLUE, widths=[3.2, 5.2, 3.5, 4.2, 1.2])
+    add_para(doc, "這張表改用一般使用者看得懂的功能介紹語氣，並由最新 health/intelligence snapshot 補上目前狀態提示。")
+    add_table(doc, ["功能領域", "一般人可怎麼用", "入口或指令", "目前狀態", "手冊章節"], feature_rows, header_fill=BLUE, widths=[3.2, 5.0, 3.8, 3.5, 2.0])
 
     page_break(doc)
     add_heading(doc, "3. 操作章節", 1)

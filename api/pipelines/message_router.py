@@ -645,7 +645,9 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
     from api.routing import build_route_decision
     from api.routing.intent_contract import (
         KIND_AGENT_TASK,
+        KIND_CANCEL_REQUEST,
         KIND_CASUAL_CHAT,
+        KIND_CORRECTION_REQUEST,
         KIND_EXPLICIT_COMMAND,
         KIND_META_CAPABILITY,
         KIND_TOOL_CAPABILITY,
@@ -717,6 +719,26 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
             matched="intent_contract",
             requires_admin=False,
             handler="api/orchestrator.py:_handle_chat_async",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CANCEL_REQUEST:
+        return _res(
+            action="control_cancel",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:active_workflow_or_command_dispatch",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CORRECTION_REQUEST:
+        return _res(
+            action="correction_request",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:stateful_or_conversational_correction",
             confidence=contract.confidence,
             reason=contract.reason,
             intent=contract.kind,

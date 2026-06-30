@@ -714,11 +714,17 @@ The README no longer keeps a hand-maintained inventory of individual pytest modu
 # Production live validation on the target host
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 
+# Public-safe health/intelligence snapshot used by live acceptance and manuals
+./venv/bin/python scripts/ops/function_health_index.py --compact --json-out .runtime/function_health_index_latest.json --snapshot-out .runtime/magi_health_intelligence_snapshot_latest.json
+./venv/bin/python scripts/generate_verified_user_manual_docx.py
+
 # Public/commercial release gate
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 Release acceptance means `ci`, `smoke62`, and `production-live` pass on the appropriate machine; shared or commercial builds must also pass `commercial-release`. Keep JSON reports in `.runtime/` or attach them to release notes, and use NERV (`/dashboard/nerv` or `/nerv`) plus `magi status` for the final operator-facing health check.
+
+`function_health_index.py --snapshot-out` writes `.runtime/magi_health_intelligence_snapshot_latest.json`, where each core feature has `last_unit_test`, `last_live_check`, `token_status_hint`, `status`, and `manual_section_hint`. The verified manual generator reads that snapshot and also writes reader-friendly manual material to `docs/guides/MAGI_health_intelligence_manual_material.json`.
 
 Useful live checks while investigating a running host:
 

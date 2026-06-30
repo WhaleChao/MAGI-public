@@ -12,7 +12,7 @@ import re
 
 from api.help_text import HELP_ALIASES
 try:
-    from api.routing.command_prefixes import strip_heavy_prefix
+    from api.routing.command_prefixes import split_heavy_prefix, strip_heavy_prefix
 except Exception:
     _HEAVY_PREFIX_FALLBACK_RE = re.compile(
         r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
@@ -20,10 +20,13 @@ except Exception:
         re.IGNORECASE,
     )
 
-    def strip_heavy_prefix(message: str) -> str:  # type: ignore[no-redef]
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
         text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
         match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
-        return text[match.end():].strip() if match else text
+        return (True, text[match.end():].strip()) if match else (False, text)
+
+    def strip_heavy_prefix(message: str) -> str:  # type: ignore[no-redef]
+        return split_heavy_prefix(message)[1]
 
 
 KIND_EMPTY = "empty"
@@ -34,6 +37,8 @@ KIND_TOOL_CAPABILITY = "tool_capability"
 KIND_BUSY_STATUS = "busy_status"
 KIND_REALTIME_ACTION = "realtime_action"
 KIND_CASUAL_CHAT = "casual_chat"
+KIND_CANCEL_REQUEST = "cancel_request"
+KIND_CORRECTION_REQUEST = "correction_request"
 KIND_EXPLICIT_TASK = "explicit_task"
 KIND_AGENT_TASK = "agent_task"
 KIND_STATEFUL_REPLY = "stateful_reply"
@@ -49,6 +54,17 @@ class IntentDecision:
     execute_pre_llm: bool = False
     realtime_kind: str = ""
     tool_hint: str = ""
+
+
+@dataclass(frozen=True)
+class NormalizedIntent:
+    original: str
+    text: str
+    heavy_opt_in: bool
+    decision: IntentDecision
+    route_intent: str
+    allow_tool_dispatch: bool
+    heavy_route_requested: bool
 
 
 _TOOL_CAPABILITY_RE = re.compile(
@@ -75,6 +91,28 @@ _CASUAL_CHAT_RE = re.compile(
     r"^(?:你好|哈囉|嗨|早安|午安|晚安|在嗎|謝謝|謝啦|辛苦了)[。！!？?]?$|"
     r"(?:你|magi).{0,10}(?:可以聊天|會聊天|聽得懂|像人一樣聊|陪我聊天)"
     r")",
+    re.IGNORECASE,
+)
+_CANCEL_REQUEST_RE = re.compile(
+    r"^(?:"
+    r"取消|先取消|不用了|不要了|算了|先不要|不要送出|先不要送出|停止|停下|暫停|退出|中止|放棄|"
+    r"stop|cancel|abort|never mind|nevermind"
+    r")(?:[。.!！?？\s]*(?:這個|剛剛|剛才|上一個|前一個|流程|任務|操作|送出|指令|申請|動作|全部|all)?)?$",
+    re.IGNORECASE,
+)
+_CANCEL_TARGET_RE = re.compile(
+    r"^(?:取消|停止|關掉|關閉|中止|放棄).{1,40}(?:流程|任務|操作|送出|申請|提醒|通知|警報|指令)$",
+    re.IGNORECASE,
+)
+_CORRECTION_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"更正|修正|改成|改為|改一下|補充更正|我更正|我修正|我剛剛說錯|剛剛說錯|剛才說錯|"
+    r"上面說錯|前面說錯|正確是|應該是|correction"
+    r")\s*[:：,，、]?\s*\S",
+    re.IGNORECASE,
+)
+_CORRECTION_PAIR_RE = re.compile(
+    r"(?:不是|不對|有誤|錯了).{0,30}(?:正確是|應該是|改成|改為|而是)",
     re.IGNORECASE,
 )
 _GENERAL_CHAT_BOUNDARY_RE = re.compile(
@@ -158,6 +196,24 @@ _AGENTIC_ANALYSIS_INTENT_RE = re.compile(
 
 def compact_message(message: str) -> str:
     return re.sub(r"\s+", "", strip_heavy_prefix(message).strip().lower())
+
+
+def looks_like_cancel_request(message: str) -> bool:
+    text = strip_heavy_prefix(message).strip()
+    if not text or len(text) > 80:
+        return False
+    compact = compact_message(text)
+    return bool(_CANCEL_REQUEST_RE.fullmatch(compact) or _CANCEL_TARGET_RE.search(text))
+
+
+def looks_like_correction_request(message: str) -> bool:
+    text = strip_heavy_prefix(message).strip()
+    if not text or len(text) > 500:
+        return False
+    compact = compact_message(text)
+    if compact in {"不是任務", "不是查詢", "不是指令", "不要執行"}:
+        return False
+    return bool(_CORRECTION_PREFIX_RE.search(text) or _CORRECTION_PAIR_RE.search(compact))
 
 
 def looks_like_model_capability_query(message: str) -> bool:
@@ -290,6 +346,10 @@ def classify_intent_contract(message: str) -> IntentDecision:
         return IntentDecision(KIND_TOOL_CAPABILITY, 0.93, "tool_capability_question", bypass_state=True, execute_pre_llm=True)
     if looks_like_busy_meta_query(text):
         return IntentDecision(KIND_BUSY_STATUS, 0.94, "busy_or_runtime_meta_question", bypass_state=True, execute_pre_llm=True)
+    if looks_like_cancel_request(text):
+        return IntentDecision(KIND_CANCEL_REQUEST, 0.96, "explicit_cancel_request", bypass_state=False)
+    if looks_like_correction_request(text):
+        return IntentDecision(KIND_CORRECTION_REQUEST, 0.90, "explicit_correction_request", bypass_state=False)
 
     realtime_kind = classify_realtime_kind(text)
     if realtime_kind:
@@ -315,12 +375,54 @@ def classify_intent_contract(message: str) -> IntentDecision:
     return IntentDecision(KIND_UNKNOWN, 0.35, "no_deterministic_contract_match")
 
 
+def route_intent_for_decision(decision: IntentDecision) -> str:
+    """Map deterministic semantic lanes to the legacy CHAT/CMD/QUERY router."""
+    kind = str(getattr(decision, "kind", "") or "")
+    if kind in {KIND_HELP_COMMAND, KIND_EXPLICIT_COMMAND, KIND_EXPLICIT_TASK, KIND_CANCEL_REQUEST}:
+        return "CMD"
+    if kind in {KIND_REALTIME_ACTION, KIND_AGENT_TASK}:
+        return "QUERY"
+    return "CHAT"
+
+
+def normalize_message_intent(message: str) -> NormalizedIntent:
+    """Return a stable, side-effect-free routing view for a user message."""
+    original = str(message or "")
+    heavy_opt_in, text = split_heavy_prefix(original)
+    text = str(text or "").strip()
+    decision = classify_intent_contract(text)
+    route_intent = route_intent_for_decision(decision)
+    non_tool_kinds = {
+        KIND_EMPTY,
+        KIND_META_CAPABILITY,
+        KIND_TOOL_CAPABILITY,
+        KIND_BUSY_STATUS,
+        KIND_CASUAL_CHAT,
+        KIND_CANCEL_REQUEST,
+        KIND_CORRECTION_REQUEST,
+        KIND_STATEFUL_REPLY,
+        KIND_UNKNOWN,
+    }
+    allow_tool_dispatch = route_intent in {"CMD", "QUERY"} and decision.kind not in non_tool_kinds
+    heavy_route_requested = bool(heavy_opt_in and allow_tool_dispatch)
+    return NormalizedIntent(
+        original=original,
+        text=text,
+        heavy_opt_in=bool(heavy_opt_in),
+        decision=decision,
+        route_intent=route_intent,
+        allow_tool_dispatch=bool(allow_tool_dispatch),
+        heavy_route_requested=heavy_route_requested,
+    )
+
+
 def should_bypass_stateful_forms(message: str) -> bool:
     return classify_intent_contract(message).bypass_state
 
 
 __all__ = [
     "IntentDecision",
+    "NormalizedIntent",
     "KIND_EMPTY",
     "KIND_HELP_COMMAND",
     "KIND_EXPLICIT_COMMAND",
@@ -329,6 +431,8 @@ __all__ = [
     "KIND_BUSY_STATUS",
     "KIND_REALTIME_ACTION",
     "KIND_CASUAL_CHAT",
+    "KIND_CANCEL_REQUEST",
+    "KIND_CORRECTION_REQUEST",
     "KIND_EXPLICIT_TASK",
     "KIND_AGENT_TASK",
     "KIND_STATEFUL_REPLY",
@@ -337,10 +441,14 @@ __all__ = [
     "classify_realtime_kind",
     "compact_message",
     "looks_like_busy_meta_query",
+    "looks_like_cancel_request",
     "looks_like_casual_chat_boundary",
+    "looks_like_correction_request",
     "looks_like_model_capability_query",
     "looks_like_new_task_boundary",
     "looks_like_agentic_request",
     "looks_like_tool_capability_query",
+    "normalize_message_intent",
+    "route_intent_for_decision",
     "should_bypass_stateful_forms",
 ]

@@ -30,7 +30,12 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
-from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, is_judgment_folder_segment, path_has_judgment_folder
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    PDF_ARCHIVED_NAME_FOLDER_LABELS,
+    is_judgment_folder_segment,
+    path_has_judgment_folder,
+)
 from skills.bridge.shared_utils.case_number_utils import extract_case_number as _extract_case_number, RE_CASE_NUMBER
 from skills.bridge.shared_utils.court_utils import extract_court_name as _extract_court_name, RE_COURT_NAME
 
@@ -1530,13 +1535,7 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
     return result
 
 
-_ARCHIVED_NAME_FOLDERS = (
-    "法院通知或程序裁定",
-    JUDGMENT_FOLDER_LABEL,
-    "判決書",
-    "對方歷次書狀",
-    "對造歷次書狀",
-)
+_ARCHIVED_NAME_FOLDERS = PDF_ARCHIVED_NAME_FOLDER_LABELS
 
 _ENVELOPE_PRONE_FOLDERS = _ARCHIVED_NAME_FOLDERS
 _ENVELOPE_PRONE_LABELS = {"法院通知", "裁定", "判決", "書狀_對造"}
@@ -2639,8 +2638,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
         # Opus D-3: 真實函文常用「陳報」而非「陳述意見」（如「文到10日內陳報如說明」）
         (r"(?:應於|限於|於)?\s*文到\s*(\d+)\s*日內\s*(陳報)", "陳報"),
         (r"應於\s*(\d+)\s*日內\s*(陳報)", "陳報"),
-        (r"應於文到\s*(\d+)\s*日內繳納.+(規費|裁判費)", "繳費"),
-        (r"限\s*(\d+)\s*日內.+?繳納.+?(裁判費|規費)", "繳費"),
+        (r"應於\s*文到\s*(\d+)\s*日內\s*繳納.*?(規費|裁判費)", "繳費"),
+        (r"限\s*(\d+)\s*日內.+?繳納.*?(裁判費|規費)", "繳費"),
         (r"應於\s*(\d+)\s*日內.+(閱卷)", "閱卷期限"),
         (r"閱卷期限.+?(\d+)\s*日", None),
     ]
@@ -2671,6 +2670,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
                     fields["deadline_type"] = "補正"
                 elif "陳述意見" in act:
                     fields["deadline_type"] = "陳述意見"
+                elif "繳納" in act or "繳費" in act or "裁判費" in act or "規費" in act:
+                    fields["deadline_type"] = "繳費"
                 else:
                     fields["deadline_type"] = act[:4]
 
@@ -4297,7 +4298,7 @@ def _maybe_fast_text_name_result(
     _fast_deadline = _legal.get("deadline")
     _fast_deadline_type = _legal.get("deadline_type", "")
 
-    return _build_name_result(
+    result = _build_name_result(
         found_date=found_date,
         found_court=found_court,
         found_case_no=found_case_no,
@@ -4307,6 +4308,11 @@ def _maybe_fast_text_name_result(
         deadline=_fast_deadline,
         deadline_type=_fast_deadline_type,
     )
+    if _fast_deadline is not None:
+        result["deadline"] = _fast_deadline
+    if _fast_deadline_type:
+        result["deadline_type"] = _fast_deadline_type
+    return result
 
 
 def task_self_train(case_root: str = CASE_ROOT) -> str:

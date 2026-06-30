@@ -107,6 +107,7 @@
             "tests/test_runtime_report_contract.py",
             "tests/test_run_test_suite.py",
             "tests/test_function_health_index.py",
+            "tests/test_verified_manual_snapshot_material.py",
             "tests/test_entrypoints.py",
             "tests/test_customer_install_wizard.py",
             "tests/test_commercial_readiness_live.py",

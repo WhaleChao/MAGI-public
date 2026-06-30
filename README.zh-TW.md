@@ -683,11 +683,17 @@ README 不再維護手寫的 pytest 模組與測試數量清單。權威來源�
 # 目標主機 production live validation
 ./venv/bin/python scripts/ops/run_test_suite.py --suite production-live --json-out .runtime/production_live_latest.json
 
+# LIVE 驗收與手冊共用的 health/intelligence snapshot
+./venv/bin/python scripts/ops/function_health_index.py --compact --json-out .runtime/function_health_index_latest.json --snapshot-out .runtime/magi_health_intelligence_snapshot_latest.json
+./venv/bin/python scripts/generate_verified_user_manual_docx.py
+
 # 公開/商用 release gate
 ./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 Release acceptance 代表 `ci`、`smoke62`、`production-live` 在對應環境通過；共享或商用版本還必須通過 `commercial-release`。JSON 報告請保存在 `.runtime/` 或附於 release note，最後以 NERV（`/dashboard/nerv` 或 `/nerv`）加上 `magi status` 作操作者可見的健康確認。
+
+`function_health_index.py --snapshot-out` 會寫出 `.runtime/magi_health_intelligence_snapshot_latest.json`；每個核心功能都有 `last_unit_test`、`last_live_check`、`token_status_hint`、`status`、`manual_section_hint`。驗證版手冊產生器會讀這份 snapshot，並另外輸出一般人可讀的手冊素材 `docs/guides/MAGI_health_intelligence_manual_material.json`。
 
 排查執行中主機時常用的 live checks：
 

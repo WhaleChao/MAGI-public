@@ -80,6 +80,7 @@ from api.osc.draft_learning import (
     recent_draft_feedback,
     record_draft_feedback,
 )
+from api.osc.case_intelligence import build_case_intelligence_snapshot
 from api.osc.document_reuse import reuse_document as _osc_reuse_document
 from api.laf_case_classifier import clean_laf_case_reason
 from api.osc.saas_workbench import (
@@ -4007,6 +4008,42 @@ def osc_case_workbench_api(row_id):
             "pdf_generation_log": pdf_generation_log,
         }
     )
+
+
+def _osc_case_intelligence_folder_resolver(path: str) -> str:
+    normalized = _osc_norm_path(path)
+    return _osc_resolve_existing_local_path(normalized, prefer_dir=True) if normalized else ""
+
+
+@osc_bp.route("/api/osc/case-intelligence", methods=["GET"])
+@login_required
+def osc_case_intelligence_api():
+    snapshot = build_case_intelligence_snapshot(
+        _osc_exec,
+        row_id=(request.args.get("id") or request.args.get("row_id") or "").strip(),
+        case_number=(request.args.get("case_number") or "").strip(),
+        query=(request.args.get("q") or "").strip(),
+        limit=request.args.get("limit") or 20,
+        document_limit=request.args.get("document_limit") or 8,
+        calendar_limit=request.args.get("calendar_limit") or 8,
+        folder_resolver=_osc_case_intelligence_folder_resolver,
+    )
+    return jsonify(snapshot), (200 if snapshot.get("ok") else 500)
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/intelligence-snapshot", methods=["GET"])
+@login_required
+def osc_case_intelligence_for_case_api(row_id):
+    snapshot = build_case_intelligence_snapshot(
+        _osc_exec,
+        row_id=(row_id or "").strip(),
+        document_limit=request.args.get("document_limit") or 8,
+        calendar_limit=request.args.get("calendar_limit") or 8,
+        folder_resolver=_osc_case_intelligence_folder_resolver,
+    )
+    if snapshot.get("ok") and not snapshot.get("cases"):
+        return jsonify({**snapshot, "ok": False, "error": "case_not_found"}), 404
+    return jsonify(snapshot), (200 if snapshot.get("ok") else 500)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

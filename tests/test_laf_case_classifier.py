@@ -15,3 +15,9 @@ def test_normalize_laf_case_fields_removes_suspected_prefix_before_storage():
         "一審",
         "詐欺、洗錢防制法",
     )
+
+
+def test_bare_suspected_token_is_not_kept_as_case_reason():
+    assert clean_laf_case_reason("涉") == ""
+    assert clean_laf_case_reason("涉 案件資料") == ""
+    assert normalize_laf_case_fields("刑事", "一審", "涉", "") == ("刑事", "一審", "")

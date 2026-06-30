@@ -259,6 +259,21 @@ _BUSINESS_TOPIC_PREFIXES = (
     "filing_",
     "pdf_",
 )
+_NO_GENERAL_DC_FALLBACK_TOPICS = {
+    "filereview",
+    "filereview_payment",
+    "filereview_download",
+    "filereview_apply",
+    "laf",
+    "laf_dispatch",
+    "laf_go_live",
+    "laf_fee",
+    "laf_inquiry",
+    "laf_condition",
+    "laf_progress",
+    "laf_closing",
+    "transcript",
+}
 
 
 def _is_unknown_business_topic(topic: str) -> bool:
@@ -577,11 +592,16 @@ def resolve_discord_channel(
         return sub_topic, val
 
     for fb in _FALLBACK_CHAIN.get(sub_topic, []):
+        if fb == "general" and sub_topic in _NO_GENERAL_DC_FALLBACK_TOPICS:
+            continue
         if fb in cmap:
             val = cmap[fb]
             if val == "":
                 return sub_topic, "__SILENT__"
             return sub_topic, val
+
+    if sub_topic in _NO_GENERAL_DC_FALLBACK_TOPICS:
+        return sub_topic, "__SILENT__"
 
     return sub_topic, cmap.get("general", fallback_channel_id)
 

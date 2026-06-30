@@ -137,6 +137,21 @@ def telegram():
     assert report["skills"]["total"] == 3
     assert "action-only" in report["skills"]["missing_skill_md"]
     assert "doc-only" in report["skills"]["missing_action"]
+    assert set(report["contracts"]["failure_taxonomy"]["GeneralError"]) >= {
+        "auth_required",
+        "login_failed",
+        "path_missing",
+        "external_service",
+        "validation_failed",
+        "unknown",
+    }
+    translator_contract = next(
+        item for item in report["contracts"]["skills"] if item["name"] == "translator"
+    )
+    assert translator_contract["entrypoint"] == "skills/translator/action.py"
+    assert translator_contract["input_hints"]
+    assert translator_contract["failure_categories"]
+    assert translator_contract["live_check_hint"]
     assert any(item["id"] == "job_missing" for item in report["cron_jobs"]["missing_state"])
     assert any(item["id"] == "job_stale" for item in report["cron_jobs"]["stale"])
     assert any(item["path"] == ".runtime/job_ok_latest.json" for item in report["runtime_health"]["failed"])
@@ -150,6 +165,8 @@ def telegram():
         item["path"] == ".runtime/function_health_index_ci_latest.json"
         for item in report["runtime_health"]["expected"]
     )
+    assert report["intelligence_snapshot"]["schema_version"] == 1
+    assert report["intelligence_snapshot"]["summary"]["core_function_count"] >= 10
 
 
 def test_cli_writes_json_and_does_not_fail_without_fail_on_health(tmp_path: Path, capsys):
@@ -174,6 +191,81 @@ def test_cli_writes_json_and_does_not_fail_without_fail_on_health(tmp_path: Path
     assert printed["runtime_dir"] == ".runtime"
 
 
+def test_intelligence_snapshot_schema_uses_unit_live_and_token_evidence(tmp_path: Path):
+    _write_json(tmp_path / "config" / "test_matrix.json", {"suites": {"ci": {"checks": []}}})
+    _write(tmp_path / "tests" / "test_osc_events_refresh.py", "def test_calendar(): pass\n")
+    _write(tmp_path / "tests" / "test_function_health_index.py", "def test_health(): pass\n")
+    _write_json(
+        tmp_path / ".runtime" / "business_module_live_check_latest.json",
+        {
+            "ok": True,
+            "generated_at": NOW.isoformat(),
+            "results": [
+                {"name": "calendar_todo_status_live", "ok": True, "message": "calendar ready"},
+                {"name": "nas_mounts_live", "ok": True},
+            ],
+        },
+    )
+    _write_json(
+        tmp_path / ".runtime" / "token_health" / "token_health_latest.json",
+        {
+            "ok": True,
+            "generated_at": NOW.isoformat(),
+            "checks": [
+                {"name": "google_calendar", "kind": "google_oauth", "ok": True, "status": "ok"},
+                {"name": "google_drive_sync_readonly", "kind": "google_oauth", "ok": True, "status": "ok"},
+                {"name": "google_drive_sync_write", "kind": "google_oauth", "ok": True, "status": "ok"},
+            ],
+        },
+    )
+
+    report = index.build_index(
+        root=tmp_path,
+        matrix_path=tmp_path / "config" / "test_matrix.json",
+        runtime_dir=tmp_path / ".runtime",
+        now=NOW,
+        include_static=False,
+    )
+
+    snapshot = report["intelligence_snapshot"]
+    assert snapshot["schema_version"] == 1
+    assert snapshot["summary"]["core_function_count"] == len(index.CORE_FUNCTION_CONTRACTS)
+    for feature in snapshot["core_functions"]:
+        assert {"last_unit_test", "last_live_check", "token_status_hint", "status", "manual_section_hint"} <= set(feature)
+        assert feature["manual_section_hint"]
+
+    calendar = next(item for item in snapshot["core_functions"] if item["id"] == "calendar_todos")
+    assert calendar["last_unit_test"]["status"] == "covered"
+    assert calendar["last_live_check"]["status"] == "ok"
+    assert calendar["last_live_check"]["check_id"] == "calendar_todo_status_live"
+    assert calendar["token_status_hint"]["status"] == "ok"
+    assert calendar["status"] == "verified_live"
+
+
+def test_cli_writes_standalone_intelligence_snapshot(tmp_path: Path, capsys):
+    _write_json(tmp_path / "config" / "test_matrix.json", {"suites": {"ci": {"checks": []}}})
+    out = tmp_path / ".runtime" / "function_health_index_latest.json"
+    snapshot_out = tmp_path / ".runtime" / "magi_health_intelligence_snapshot_latest.json"
+
+    rc = index.main([
+        "--root",
+        str(tmp_path),
+        "--json-out",
+        str(out),
+        "--snapshot-out",
+        str(snapshot_out),
+        "--no-static",
+        "--compact",
+    ])
+
+    assert rc == 0
+    assert snapshot_out.exists()
+    payload = json.loads(snapshot_out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["core_functions"][0]["last_unit_test"]
+    assert json.loads(capsys.readouterr().out)["intelligence_snapshot"]["schema_version"] == 1
+
+
 def test_fail_on_health_returns_nonzero_for_missing_health(tmp_path: Path):
     _write_json(tmp_path / "config" / "test_matrix.json", {"suites": {"ci": {"checks": []}}})
 
@@ -186,3 +278,49 @@ def test_fail_on_health_returns_nonzero_for_missing_health(tmp_path: Path):
     ])
 
     assert rc == 1
+
+
+def test_contract_summary_contains_repo_core_skill_and_tool_contracts(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    report = index.build_index(
+        root=repo_root,
+        matrix_path=repo_root / "config" / "test_matrix.json",
+        runtime_dir=tmp_path / ".runtime",
+        now=NOW,
+        max_health_age_hours=0,
+        include_static=False,
+    )
+
+    skill_names = {item["name"] for item in report["contracts"]["skills"]}
+    direct_names = {item["name"] for item in report["contracts"]["direct_handlers"]}
+    api_tool_names = {item["name"] for item in report["contracts"]["api_tools"]}
+
+    assert {
+        "laf-orchestrator",
+        "file-review-orchestrator",
+        "transcript-downloader",
+        "pdf-namer",
+        "osc-orchestrator",
+    }.issubset(skill_names)
+    assert "web_search" in direct_names
+    assert {"search", "research", "fetch"}.issubset(api_tool_names)
+    assert report["contracts"]["summary"]["missing_core_contracts"] == []
+
+    core_contracts = [
+        item for item in report["contracts"]["skills"] if item["name"] in {
+            "laf-orchestrator",
+            "file-review-orchestrator",
+            "transcript-downloader",
+            "pdf-namer",
+            "osc-orchestrator",
+        }
+    ]
+    core_contracts += [item for item in report["contracts"]["direct_handlers"] if item["name"] == "web_search"]
+    core_contracts += [item for item in report["contracts"]["api_tools"] if item["name"] in {"search", "research", "fetch"}]
+
+    for contract in core_contracts:
+        assert contract["name"]
+        assert contract["entrypoint"]
+        assert contract["input_hints"]
+        assert contract["failure_categories"]
+        assert contract["live_check_hint"]

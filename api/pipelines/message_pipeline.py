@@ -19,7 +19,9 @@ from api.model_config import TEXT_PRIMARY_MODEL
 from api.routing.intent_contract import (
     KIND_AGENT_TASK,
     KIND_BUSY_STATUS,
+    KIND_CANCEL_REQUEST,
     KIND_CASUAL_CHAT,
+    KIND_CORRECTION_REQUEST,
     KIND_EXPLICIT_COMMAND,
     KIND_HELP_COMMAND,
     KIND_META_CAPABILITY,
@@ -32,6 +34,7 @@ from api.routing.intent_contract import (
     looks_like_model_capability_query as _contract_looks_like_model_capability_query,
     looks_like_new_task_boundary as _contract_looks_like_new_task_boundary,
     looks_like_tool_capability_query as _contract_looks_like_tool_capability_query,
+    normalize_message_intent,
 )
 try:
     from api.routing.command_prefixes import split_heavy_prefix
@@ -508,6 +511,8 @@ def _try_semantic_preflight(orch, message: str, user_id="", role="", platform=""
     except Exception:
         logger.debug("semantic preflight route trace failed", exc_info=True)
     if decision.kind in {KIND_HELP_COMMAND, KIND_EXPLICIT_COMMAND}:
+        return ""
+    if decision.kind in {KIND_CANCEL_REQUEST, KIND_CORRECTION_REQUEST}:
         return ""
     if decision.kind == KIND_AGENT_TASK:
         _clear_stateful_forms_for_semantic_bypass(orch, user_id, platform, text, decision.kind)
@@ -994,7 +999,8 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
 
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底（Plan A, 2026-04-19）
     # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 sanitize 統一轉半形
-    _heavy_opt_in, message = split_heavy_prefix(message)
+    _normalized_intent = normalize_message_intent(message)
+    _heavy_opt_in, message = _normalized_intent.heavy_opt_in, _normalized_intent.text
     if _heavy_opt_in:
         logger.info("message_pipeline: @heavy opt-in detected, will try NIM fallback if oMLX fails")
     try:

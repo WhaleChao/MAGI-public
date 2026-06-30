@@ -765,6 +765,27 @@ Download exported file.
 | 500 | Internal Server Error | Server error |
 | 503 | Service Unavailable | Service misconfiguration or dependency down |
 
+### GeneralError Categories
+
+Tool and skill contract summaries use the shared `GeneralError` categories below so callers can route failures without guessing from free text:
+
+| Category | Meaning |
+|----------|---------|
+| `auth_required` | OAuth/API token/session authorization must be created or refreshed |
+| `login_failed` | External portal login, captcha, or credential exchange failed |
+| `path_missing` | Required file, folder, mount, or artifact path is missing |
+| `external_service` | Browser, portal, Gmail/Google, database, NAS, or network dependency failed |
+| `validation_failed` | Input JSON, command arguments, required fields, or case identifiers are invalid |
+| `unknown` | Fallback when the failure cannot be classified safely |
+
+The machine-readable summary is emitted by:
+
+```bash
+python scripts/ops/function_health_index.py --json-out .runtime/function_health_index_latest.json
+```
+
+Relevant JSON paths: `contracts.failure_taxonomy.GeneralError`, `contracts.skills`, `contracts.direct_handlers`, `contracts.api_tools`, and `contracts.ops_entrypoints`.
+
 ### CSRF Error Response
 
 ```json

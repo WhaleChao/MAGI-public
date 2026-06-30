@@ -41,15 +41,16 @@ def test_google_token_ok_report_does_not_include_secret_values(tmp_path):
     assert "client-secret" not in serialized
 
 
-def test_google_token_expiring_soon_is_actionable_without_refresh(tmp_path):
+def test_google_token_expiring_soon_with_refresh_token_is_ok_without_manual_reauth(tmp_path):
     token = tmp_path / "token.json"
     _write_token(token, expiry=datetime.now(timezone.utc) + timedelta(hours=2))
     spec = thc.GoogleTokenSpec(name="unit", token_path=token, scopes=["scope-a"])
 
     result = thc.check_google_token(spec, refresh=False, threshold_seconds=7 * 24 * 3600)
 
-    assert result["ok"] is False
-    assert result["status"] == "expiring_soon"
+    assert result["ok"] is True
+    assert result["status"] == "refreshable_soon"
+    assert "No manual re-authorization needed" in result["next_action"]
 
 
 def test_google_token_expired_is_actionable_and_fails(tmp_path):

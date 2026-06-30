@@ -106,7 +106,7 @@ def _usable_secret(value: str) -> bool:
 
 
 def _safe_status_ok(status: str) -> bool:
-    return status in {"ok", "refreshed", "skipped"}
+    return status in {"ok", "refreshed", "refreshable_soon", "skipped"}
 
 
 def _parse_expiry(raw: Any) -> datetime | None:
@@ -442,9 +442,10 @@ def check_google_token(
         base["next_action"] = _refresh_next_action(spec, refresh_token_present=bool(base["refresh_token_present"]))
         return base
     if needs_refresh:
-        base["status"] = "expiring_soon"
-        base["message"] = "token is inside proactive refresh window"
-        base["next_action"] = _refresh_next_action(spec, refresh_token_present=bool(base["refresh_token_present"]))
+        base["status"] = "refreshable_soon"
+        base["ok"] = True
+        base["message"] = "token is inside proactive refresh window and can refresh unattended"
+        base["next_action"] = "No manual re-authorization needed; run with --refresh or let run_after_token_refresh refresh before the job."
         return base
 
     base["status"] = "ok"
