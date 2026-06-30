@@ -214,8 +214,8 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
         {
             "id": "job_file_review_check",
             "cron": "0 10,15 * * 1-5",
-            "command": qcmd(python_bin, repo_root / "skills" / "file-review-orchestrator" / "action.py", "--task", "download"),
-            "desc": "閱卷通知與下載檢查（平日 10:00, 15:00；下載前去重）",
+            "command": qcmd(python_bin, repo_root / "skills" / "file-review-orchestrator" / "action.py", "--task", "scheduled_check"),
+            "desc": "閱卷完整檢查（平日 10:00, 15:00；信箱/入口/繳費單/卷宗下載）",
             "channel_id": None,
             "last_run": None,
             "last_run_minute": None,

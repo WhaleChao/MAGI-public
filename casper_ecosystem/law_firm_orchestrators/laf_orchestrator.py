@@ -1562,7 +1562,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             for fn in dl_skipped_files[:5]:
                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
         elif download_result.get("retry_queued"):
-            notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會自動補查。")
+            logger.info("Review-result portal retry queued without new files: laf=%s case=%s", laf_number, case_number)
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result.get('error')}")
 
@@ -1575,7 +1575,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         should_notify = bool(
             dl_new_files
             or email_new_count
-            or download_result.get("retry_queued")
             or download_result.get("error")
         )
         notify_dedup_key = ""
@@ -1584,8 +1583,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if should_notify:
             msg_id = str(getattr(case_info, "message_id", "") or "").strip()
             state = "new"
-            if download_result.get("retry_queued"):
-                state = "retry"
             if download_result.get("error"):
                 state = "error"
             material = "|".join(
@@ -2031,11 +2028,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             for fn in dl_skipped_files[:5]:
                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
         elif download_result.get("retry_queued"):
-            notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會每 5 分鐘自動補查。")
+            logger.info("Go-live portal retry queued without new files: laf=%s case=%s", laf_number, case_number)
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result['error']}")
-        elif portal_existing_files:
-            notify_lines.append("官網附件: 本輪新增 0 份")
         if portal_existing_files:
             notify_lines.append(f"官網附件既有: {len(portal_existing_files)} 份（01_法扶資料）")
         notify_lines.append(f"開辦資料（02_開辦資料，已簽/已填）: 開辦通知 {opening_notice_count} 份、委任狀 {poa_count} 份")

@@ -587,8 +587,10 @@ class LAFNotifier:
             ) or {}
             self._last_tg_used_red_phone = True
             self._last_tg_mirrored_to_discord = bool(status.get("telegram"))
-            if bool(status.get("telegram")) or bool(status.get("queued")):
+            if bool(status.get("telegram")):
                 return True
+            if bool(status.get("queued")):
+                logger.warning("Telegram notification queued but not delivered yet (topic=%s outbox=%s)", topic_key, status.get("outbox_id") or "")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 400, exc_info=True)
 

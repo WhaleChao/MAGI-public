@@ -7,6 +7,7 @@ file-review-orchestrator -- 閱卷系統協調器
 
 Usage (CLI):
     python action.py --task 'apply {"court_code":"TPD","year":"114","case_type":"訴","case_number":"123"}'
+    python action.py --task 'scheduled_check'
     python action.py --task 'download'
     python action.py --task 'check_emails'
     python action.py --task 'help'
@@ -1000,11 +1001,11 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
             caption or os.path.basename(file_path), [file_path],
             topic_key=topic_key, source="file_review_orchestrator",
         )
-        if result is not False:
+        if _notification_file_result_ok(result):
             sent_any = True
             logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
         else:
-            logger.warning("LAFNotifier returned False for: %s", os.path.basename(file_path))
+            logger.warning("LAFNotifier file send did not confirm delivery for: %s result=%s", os.path.basename(file_path), result)
     except Exception as e:
         logger.warning("LAFNotifier send failed: %s", e)
         # TG fallback via red_phone
@@ -1066,18 +1067,21 @@ def _payment_delivery_state_path(download_folder: str) -> str:
 def _load_payment_delivery_state(download_folder: str) -> dict:
     path = _payment_delivery_state_path(download_folder)
     if not os.path.exists(path):
-        return {"version": 1, "sent_files": {}}
+        return {"version": 1, "sent_files": {}, "pending_files": {}}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f) or {}
         if not isinstance(data, dict):
             raise ValueError("state_not_dict")
     except Exception:
-        return {"version": 1, "sent_files": {}}
+        return {"version": 1, "sent_files": {}, "pending_files": {}}
     data.setdefault("version", 1)
     data.setdefault("sent_files", {})
+    data.setdefault("pending_files", {})
     if not isinstance(data.get("sent_files"), dict):
         data["sent_files"] = {}
+    if not isinstance(data.get("pending_files"), dict):
+        data["pending_files"] = {}
     return data
 
 
@@ -1125,8 +1129,52 @@ def _mark_payment_file_delivered(path: str, download_folder: str, caption: str =
         "sent_at": datetime.now().isoformat(),
         "size": os.path.getsize(path) if os.path.exists(path) else 0,
     }
+    pending_files = state.setdefault("pending_files", {})
+    if isinstance(pending_files, dict):
+        pending_files.pop(key, None)
     state["updated_at"] = datetime.now().isoformat()
     _save_payment_delivery_state(download_folder, state)
+
+
+def _mark_payment_file_delivery_failed(path: str, download_folder: str, caption: str = "", error: str = "") -> None:
+    key = _payment_file_delivery_key(path)
+    if not key:
+        return
+    state = _load_payment_delivery_state(download_folder)
+    pending_files = state.setdefault("pending_files", {})
+    previous = pending_files.get(key) if isinstance(pending_files, dict) else {}
+    attempts = 0
+    if isinstance(previous, dict):
+        try:
+            attempts = int(previous.get("attempts") or 0)
+        except Exception:
+            attempts = 0
+    if isinstance(pending_files, dict):
+        pending_files[key] = {
+            "path": os.path.realpath(path),
+            "name": os.path.basename(path),
+            "caption": caption,
+            "last_attempt_at": datetime.now().isoformat(),
+            "attempts": attempts + 1,
+            "size": os.path.getsize(path) if os.path.exists(path) else 0,
+            "last_error": str(error or "notify_file_returned_false")[:240],
+        }
+    state["updated_at"] = datetime.now().isoformat()
+    _save_payment_delivery_state(download_folder, state)
+
+
+def _notification_file_result_ok(result: object) -> bool:
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict):
+        for key in ("ok", "delivered", "telegram", "discord"):
+            if bool(result.get(key)):
+                return True
+        acked = result.get("acked")
+        if isinstance(acked, list) and acked:
+            return True
+        return False
+    return bool(result)
 
 
 def _send_payment_pdf_files(
@@ -1135,6 +1183,7 @@ def _send_payment_pdf_files(
     download_folder: str,
     caption_prefix: str,
     notify: bool = True,
+    captions_by_path: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Send valid, not-yet-delivered payment PDFs and persist delivery state."""
     unique: List[str] = []
@@ -1155,16 +1204,28 @@ def _send_payment_pdf_files(
         unique.append(path)
 
     sent = 0
+    failed = 0
+    skipped_notify = 0
     for idx, path in enumerate(unique, 1):
-        caption = f"{caption_prefix} ({idx}/{len(unique)}): {os.path.basename(path)}"
-        if _notify_file(path, caption=caption, flag=notify, topic_key="filereview_payment"):
+        label = (captions_by_path or {}).get(path) or os.path.basename(path)
+        caption = f"{caption_prefix} ({idx}/{len(unique)}): {label}"
+        if not notify:
+            skipped_notify += 1
+            continue
+        if _notification_file_result_ok(_notify_file(path, caption=caption, flag=True, topic_key="filereview_payment")):
             sent += 1
             _mark_payment_file_delivered(path, download_folder, caption=caption)
+        else:
+            failed += 1
+            _mark_payment_file_delivery_failed(path, download_folder, caption=caption)
     return {
         "eligible": len(unique),
         "sent": sent,
+        "failed": failed,
+        "skipped_notify": skipped_notify,
         "invalid": invalid,
         "already_sent": already_sent,
+        "pending": failed,
     }
 
 
@@ -2258,7 +2319,7 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
             # Collect PDF paths.  Existing files still need delivery if the
             # previous run downloaded them but failed to send the PDF.
             pdf_paths = []
-            case_labels = []
+            captions_by_path: Dict[str, str] = {}
             for r in results:
                 # 使用 all_paths 取得全部檔案，fallback 到 pdf_path
                 paths = r.get("all_paths") or []
@@ -2272,18 +2333,24 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
                         path for path in valid_paths
                         if not _payment_file_already_delivered(path, creds["download_folder"])
                     ]
+                party = r.get("party") or ""
+                case_no = r.get("case_number") or ""
+                label = f"{party}｜{case_no}" if (party or case_no) else ""
                 for path in paths:
                     if path in valid_paths:
                         pdf_paths.append(path)
-                party = r.get("party") or ""
-                case_no = r.get("case_number") or ""
-                if valid_paths:
-                    case_labels.append(f"{party}｜{case_no}")
+                        captions_by_path[path] = label or os.path.basename(path)
 
             if pdf_paths:
-                # Send via TG
                 summary_lines = [f"💰 繳費單 PDF 下載完成（{len(pdf_paths)} 件）："]
-                for i, label in enumerate(case_labels, 1):
+                display_labels: List[str] = []
+                seen_labels: Set[str] = set()
+                for path in pdf_paths:
+                    label = captions_by_path.get(path) or os.path.basename(path)
+                    if label and label not in seen_labels:
+                        seen_labels.add(label)
+                        display_labels.append(label)
+                for i, label in enumerate(display_labels, 1):
                     summary_lines.append(f"  {i}. {label}")
 
                 msg = "\n".join(summary_lines)
@@ -2291,17 +2358,26 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
                 # Each PDF caption is the user-facing notification. Do not send
                 # a separate summary first, or the same payment slip appears
                 # twice with different wording.
-                for i, pdf_path in enumerate(pdf_paths):
-                    label = case_labels[i] if i < len(case_labels) else os.path.basename(pdf_path)
-                    caption = f"💰 繳費單 PDF 下載完成 ({i+1}/{len(pdf_paths)}): {label}"
-                    if _notify_file(pdf_path, caption=caption, flag=notify, topic_key="filereview_payment"):
-                        _mark_payment_file_delivered(pdf_path, creds["download_folder"], caption=caption)
+                delivery = _send_payment_pdf_files(
+                    pdf_paths,
+                    download_folder=creds["download_folder"],
+                    caption_prefix="💰 繳費單 PDF 下載完成",
+                    notify=notify,
+                    captions_by_path=captions_by_path,
+                )
+                failed = int(delivery.get("failed") or 0)
+                sent = int(delivery.get("sent") or 0)
+                success = failed == 0
 
                 return {
-                    "success": True,
+                    "success": success,
                     "count": len(pdf_paths),
                     "pdf_paths": pdf_paths,
-                    "cases": case_labels,
+                    "cases": display_labels,
+                    "delivery": delivery,
+                    "sent": sent,
+                    "failed": failed,
+                    "error": "payment_pdf_delivery_failed" if failed else "",
                     "message": msg,
                 }
             else:
@@ -2322,6 +2398,48 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
         logger.error("Download payment slips failed: %s", error_msg)
         _notify("❌ 繳費單下載失敗: " + error_msg, notify)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
+
+
+def cmd_scheduled_check(notify: bool = True) -> dict:
+    """Cron entrypoint for the complete file-review pipeline.
+
+    The old cron invoked only ``download``, which covered review-volume download
+    but not the payment/Gmail/portal scan.  Keep one explicit entrypoint so the
+    scheduled job and health checks exercise the same path.
+    """
+    steps: Dict[str, dict] = {}
+
+    email_result = cmd_check_emails(notify=notify, notify_empty=False)
+    steps["check_emails"] = email_result
+
+    try:
+        max_days = int(os.environ.get("MAGI_FILE_REVIEW_PAYMENT_SLIP_MAX_DAYS", "14") or "14")
+    except Exception:
+        max_days = 14
+    max_days = max(1, min(max_days, 60))
+    payment_result = cmd_download_payment_slips(max_days=max_days, notify=notify)
+    steps["download_payment_slips"] = payment_result
+
+    download_result = cmd_download_background(case_number="", notify=notify)
+    steps["download"] = download_result
+
+    failed_steps = [
+        name
+        for name, result in steps.items()
+        if isinstance(result, dict) and result.get("success") is False
+    ]
+    ok = not failed_steps
+    message = (
+        "閱卷排程完整檢查完成"
+        if ok
+        else "閱卷排程完整檢查有步驟失敗：" + "、".join(failed_steps)
+    )
+    return {
+        "success": ok,
+        "message": message,
+        "failed_steps": failed_steps,
+        "steps": steps,
+    }
 
 
 def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "",
@@ -5876,6 +5994,7 @@ def main() -> int:
                 "紙本閱卷 <法院> <案號> <當事人> <MMDD時段> ...（如 0407下午 0408上午）",
                 "下載閱卷",
                 "下載閱卷 <案號>",
+                "排程閱卷檢查",
                 "下載繳費單",
                 "上傳繳費憑證",
                 "批次上傳繳費憑證",
@@ -6017,6 +6136,17 @@ def main() -> int:
             metadata={"max_days": int(payload.get("max_days", 14) or 14)},
             step_name="payment_slip_scan",
             detail=f"max_days={int(payload.get('max_days', 14) or 14)}",
+        )
+        return _ok(r)
+
+    if task.startswith("scheduled_check") or task in ("排程閱卷檢查", "閱卷排程檢查"):
+        payload = _load_jsonish(task[len("scheduled_check"):].strip()) if task.startswith("scheduled_check") else {}
+        r = _run_with_flow(
+            "scheduled_check",
+            lambda flow_id: cmd_scheduled_check(notify=_boolish(payload.get("notify"), True)),
+            metadata={"source": "cron"},
+            step_name="scheduled_file_review_check",
+            detail="check_emails + download_payment_slips + download",
         )
         return _ok(r)
 

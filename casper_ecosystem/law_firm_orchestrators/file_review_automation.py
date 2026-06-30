@@ -12669,6 +12669,10 @@ class FileReviewManager:
             if info.application_no and info.application_no != info.laf_case_no:
                 msg += f"\n申請編號: {info.application_no}"
 
+            if (os.environ.get("MAGI_FILE_REVIEW_SUPPRESS_NOTIFY", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                self.log(f"  ℹ️ MAGI_FILE_REVIEW_SUPPRESS_NOTIFY=1，略過繳費通知送出: {court_case_no}")
+                return False
+
             any_ok = False
 
             # ── 附件優先：有 PDF 時，附件 caption 就是主通知，避免純文字與 PDF 通知各送一次。 ──
@@ -12720,9 +12724,11 @@ class FileReviewManager:
                         topic_key="filereview_payment",
                         queue_on_fail=True,
                     ) or {}
-                    if bool(st.get("telegram")) or bool(st.get("queued")):
+                    if bool(st.get("telegram")) or bool(st.get("delivered")):
                         any_ok = True
                         self.log(f"  ✅ red_phone 繳費通知已送達: {court_case_no}")
+                    elif bool(st.get("queued")):
+                        self.log(f"  ⚠️ red_phone 繳費通知僅排入補送佇列，暫不標記已通知: {court_case_no}")
                     else:
                         self.log(f"  ⚠️ red_phone 送達失敗: {st.get('error', '')[:80]}")
                 except Exception as rp_e:
@@ -12770,6 +12776,7 @@ class FileReviewManager:
             已下載的檔案路徑列表
         """
         downloaded_files = []
+        downloaded_seen = set()
         
         if not self.gmail_service:
             return downloaded_files
@@ -12827,12 +12834,51 @@ class FileReviewManager:
                     self.log(f"  ⚠️ 無法取得附件資料: {filename}")
                     continue
                 
-                # 儲存到下載資料夾
+                # 儲存到下載資料夾；同一封信被多個 Gmail query 命中時，
+                # 以內容 hash 重用既有附件，避免同一份繳費單被加時間戳下載多次。
                 file_path = os.path.join(self.download_folder, filename)
+                file_hash = hashlib.sha256(file_data).hexdigest()
+
+                def _same_payload(path: str) -> bool:
+                    try:
+                        if not os.path.isfile(path):
+                            return False
+                        h = hashlib.sha256()
+                        with open(path, "rb") as existing_f:
+                            for chunk in iter(lambda: existing_f.read(1024 * 1024), b""):
+                                h.update(chunk)
+                        return h.hexdigest() == file_hash
+                    except Exception:
+                        return False
+
+                if _same_payload(file_path):
+                    if file_path not in downloaded_seen:
+                        downloaded_files.append(file_path)
+                        downloaded_seen.add(file_path)
+                    self.log(f"  ⏭️ 附件已存在且內容相同，重用: {os.path.basename(file_path)}")
+                    continue
+
+                base, ext = os.path.splitext(filename)
+                try:
+                    for existing_name in os.listdir(self.download_folder):
+                        if not existing_name.startswith(base) or not existing_name.lower().endswith(ext.lower()):
+                            continue
+                        existing_path = os.path.join(self.download_folder, existing_name)
+                        if _same_payload(existing_path):
+                            if existing_path not in downloaded_seen:
+                                downloaded_files.append(existing_path)
+                                downloaded_seen.add(existing_path)
+                            self.log(f"  ⏭️ 附件已有同內容副本，重用: {existing_name}")
+                            break
+                    else:
+                        existing_path = ""
+                except Exception:
+                    existing_path = ""
+                if existing_path:
+                    continue
                 
                 # 如果檔案已存在，加上時間戳
                 if os.path.exists(file_path):
-                    base, ext = os.path.splitext(filename)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"{base}_{timestamp}{ext}"
                     file_path = os.path.join(self.download_folder, filename)
@@ -12840,7 +12886,9 @@ class FileReviewManager:
                 with open(file_path, 'wb') as f:
                     f.write(file_data)
                 
-                downloaded_files.append(file_path)
+                if file_path not in downloaded_seen:
+                    downloaded_files.append(file_path)
+                    downloaded_seen.add(file_path)
                 self.log(f"  ✅ 已下載附件: {filename}")
                 
         except Exception as e:
@@ -12969,7 +13017,9 @@ class FileReviewManager:
 
             # A. 繳費單通知
             query_payment = f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限) after:{check_date}{_excl_laf}{_excl_completion}"
-            r_pay = self._scan_and_process_emails(query_payment, "payment")
+            seen_message_ids: set = set()
+
+            r_pay = self._scan_and_process_emails(query_payment, "payment", seen_message_ids=seen_message_ids)
             summary["payment_hits"] += r_pay.get("hits", 0)
             summary["payment_notified"] += r_pay.get("notified", 0)
             summary["pickup_hits"] += r_pay.get("pickup_hits", 0)
@@ -12977,14 +13027,14 @@ class FileReviewManager:
 
             # B. 下載通知
             query_download = f"(法院 完成 線上 交付 核閱 通知 OR 線上下載 OR 交付核閱 OR 核閱通知) after:{check_date}{_excl_laf}"
-            r_dl = self._scan_and_process_emails(query_download, "download")
+            r_dl = self._scan_and_process_emails(query_download, "download", seen_message_ids=seen_message_ids)
             summary["download_hits"] += r_dl.get("hits", 0)
             summary["pickup_hits"] += r_dl.get("pickup_hits", 0)
             summary["errors"].extend(r_dl.get("errors", []))
 
             # C. 備援掃描（主旨格式改版/插空白時）
             query_auto = f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統) after:{check_date}{_excl_laf}{_excl_completion}"
-            r_auto = self._scan_and_process_emails(query_auto, "auto")
+            r_auto = self._scan_and_process_emails(query_auto, "auto", seen_message_ids=seen_message_ids)
             summary["payment_hits"] += r_auto.get("payment_hits", 0)
             summary["payment_notified"] += r_auto.get("payment_notified", 0)
             summary["download_hits"] += r_auto.get("download_hits", 0)
@@ -12999,7 +13049,7 @@ class FileReviewManager:
 
         return summary
 
-    def _scan_and_process_emails(self, query: str, type: str) -> dict:
+    def _scan_and_process_emails(self, query: str, type: str, seen_message_ids: Optional[set] = None) -> dict:
         """掃描並處理特定類型的郵件，回傳統計。"""
         # 統計：hits=命中數, notified=成功通知數
         # auto 模式可能同時產出 payment 和 download，用複合 key 回傳
@@ -13015,6 +13065,11 @@ class FileReviewManager:
                 msg_id = msg['id']
                 if msg_id in self.processed_emails:
                     continue
+                if seen_message_ids is not None:
+                    if msg_id in seen_message_ids:
+                        self.log(f"  ⏭️ 本輪已處理過信件 [{msg_id}]，略過重複 query 命中")
+                        continue
+                    seen_message_ids.add(msg_id)
 
                 # 取得信件詳細內容
                 message = self.gmail_service.users().messages().get(userId='me', id=msg_id).execute()

@@ -49,6 +49,18 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 
 
 # ── Lazy module-level helpers (mirrors orchestrator.py top-level) ──
 
+def _delivery_result_ok(result):
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict):
+        for key in ("ok", "delivered", "telegram", "discord"):
+            if bool(result.get(key)):
+                return True
+        acked = result.get("acked")
+        return isinstance(acked, list) and bool(acked)
+    return bool(result)
+
+
 def _lazy_brain(fn_name):
     def _wrapper(*a, **kw):
         import skills.brain_manager.action as _bm
@@ -1654,13 +1666,21 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     _laf_topic = "laf_go_live" if action == "go_live" else ("laf_closing" if action == "closing" else "laf")
                                     _plat = str(platform_name or "").strip().lower()
                                     if _plat == "telegram":
-                                        send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        _screenshot_sent = _delivery_result_ok(
+                                            send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        )
                                     elif _plat == "discord":
-                                        send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        _screenshot_sent = _delivery_result_ok(
+                                            send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        )
                                     else:
-                                        send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
-                                        send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
-                                    _screenshot_sent = True  # 避免 notification_callback 重複發送
+                                        _tg_ok = _delivery_result_ok(
+                                            send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        )
+                                        _dc_ok = _delivery_result_ok(
+                                            send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        )
+                                        _screenshot_sent = bool(_tg_ok or _dc_ok)
                                 except Exception as _img_err:
                                     logger.warning("LAF screenshot send failed: %s", _img_err)
                             # 回寫 DB：closing 成功 → legal_aid_status = "已結案，待送出"

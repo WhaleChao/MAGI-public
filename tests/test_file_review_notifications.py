@@ -665,6 +665,95 @@ def test_download_notice_email_is_not_processed_until_download_archive(tmp_path)
     assert not (tmp_path / "processed_emails.json").exists()
 
 
+def test_process_emails_dedupes_same_message_across_queries(tmp_path, monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    class _Exec:
+        def __init__(self, data):
+            self.data = data
+
+        def execute(self):
+            return self.data
+
+    class _Messages:
+        def __init__(self, message):
+            self.message = message
+
+        def list(self, **kwargs):
+            return _Exec({"messages": [{"id": "msg-payment"}]})
+
+        def get(self, **kwargs):
+            return _Exec(self.message)
+
+    class _Users:
+        def __init__(self, message):
+            self.message = message
+
+        def messages(self):
+            return _Messages(self.message)
+
+    class _Gmail:
+        def __init__(self, message):
+            self.message = message
+
+        def users(self):
+            return _Users(self.message)
+
+    body = "法院回覆閱卷聲請結果通知（含繳費單）。案號：115年度原交易字第21號。繳費期限：2026/07/01。附件：繳費單。"
+    message = {
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "法院回覆閱卷聲請結果通知（含繳費單）"},
+                {"name": "From", "value": "noreply@judicial.gov.tw"},
+            ],
+            "body": {"data": base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii")},
+        }
+    }
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    mgr.gmail_service = _Gmail(message)
+    downloads = []
+    monkeypatch.setattr(
+        mgr,
+        "_download_email_attachments",
+        lambda msg_id, message=None: downloads.append(msg_id) or [str(tmp_path / "payment.pdf")],
+    )
+    monkeypatch.setattr(mgr, "notify_payment_needed", lambda info: False)
+
+    result = mgr.process_emails()
+
+    assert result["payment_hits"] == 1
+    assert downloads == ["msg-payment"]
+    assert "msg-payment" not in mgr.processed_emails
+
+
+def test_download_email_attachments_reuses_same_payload_file(tmp_path):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import FileReviewManager
+
+    payload = b"%PDF-1.4\nsame payment slip\n"
+    message = {
+        "payload": {
+            "parts": [
+                {
+                    "filename": "259420307417.pdf",
+                    "mimeType": "application/octet-stream",
+                    "body": {
+                        "data": base64.urlsafe_b64encode(payload).decode("ascii"),
+                    },
+                }
+            ]
+        }
+    }
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    mgr.gmail_service = object()
+
+    first = mgr._download_email_attachments("msg-payment", message)
+    second = mgr._download_email_attachments("msg-payment", message)
+
+    assert first == second
+    assert first == [str(tmp_path / "259420307417.pdf")]
+    assert sorted(p.name for p in tmp_path.glob("259420307417*.pdf")) == ["259420307417.pdf"]
+
+
 def test_portal_notify_state_can_record_zero_pending_without_notification(tmp_path):
     module = _load_action_module()
     state_path = tmp_path / ".portal_notify_state.json"
@@ -814,11 +903,84 @@ def test_payment_slip_download_sends_files_without_duplicate_summary_text(tmp_pa
     assert kwargs["caption"].startswith("💰 繳費單 PDF 下載完成")
 
 
+def test_payment_pdf_delivery_failure_is_pending_not_delivered(tmp_path, monkeypatch):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_凡江_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr(module, "_notify_file", lambda *args, **kwargs: {"ok": False, "errors": ["tg_down"]})
+
+    result = module._send_payment_pdf_files(
+        [str(pdf)],
+        download_folder=str(tmp_path),
+        caption_prefix="💰 繳費單 PDF 下載完成",
+        notify=True,
+    )
+
+    assert result["sent"] == 0
+    assert result["failed"] == 1
+    assert module._payment_file_already_delivered(str(pdf), str(tmp_path)) is False
+    state = json.loads((tmp_path / ".payment_pdf_delivery_state.json").read_text(encoding="utf-8"))
+    assert state["sent_files"] == {}
+    assert len(state["pending_files"]) == 1
+    pending = next(iter(state["pending_files"].values()))
+    assert pending["attempts"] == 1
+    assert pending["last_error"] == "notify_file_returned_false"
+
+
+def test_notify_file_rejects_false_status_dict_and_uses_fallback(tmp_path, monkeypatch):
+    module = _load_action_module()
+    pdf = tmp_path / "繳費單_凡江_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    fallback_calls = []
+
+    class FakeNotifier:
+        def notify_admin_with_files(self, *_args, **_kwargs):
+            return {"ok": False, "delivered": False}
+
+    fake_line_notifier = types.SimpleNamespace(LAFNotifier=lambda: FakeNotifier())
+    fake_red_phone = types.SimpleNamespace(
+        send_file_admin=lambda *_args, **_kwargs: {"ok": False, "errors": ["tg_down"]},
+        send_discord_bot_file=lambda *args, **kwargs: fallback_calls.append((args, kwargs)) or True,
+    )
+    monkeypatch.setitem(sys.modules, "line_notifier", fake_line_notifier)
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake_red_phone)
+
+    assert module._notify_file(str(pdf), caption="test", topic_key="filereview_payment") is True
+    assert len(fallback_calls) == 1
+
+
+def test_scheduled_check_runs_payment_scan_before_download(monkeypatch):
+    module = _load_action_module()
+    calls = []
+
+    monkeypatch.setattr(module, "cmd_check_emails", lambda **kwargs: calls.append("check_emails") or {"success": True})
+    monkeypatch.setattr(
+        module,
+        "cmd_download_payment_slips",
+        lambda **kwargs: calls.append("download_payment_slips") or {"success": True, "delivery": {"sent": 0, "failed": 0}},
+    )
+    monkeypatch.setattr(module, "cmd_download_background", lambda **kwargs: calls.append("download") or {"success": True, "queued": True})
+
+    result = module.cmd_scheduled_check(notify=True)
+
+    assert result["success"] is True
+    assert calls == ["check_emails", "download_payment_slips", "download"]
+
+
 def test_file_review_check_summaries_are_quiet_cron_only():
     source = MODULE_PATH.read_text(encoding="utf-8")
 
     assert '_notify(section_msg, True, topic_key="quiet_cron")' in source
     assert "effective_topic = section_topic" not in source
+
+
+def test_file_review_cron_uses_complete_scheduled_check():
+    source = (MODULE_PATH.parent.parent.parent / "scripts" / "seed_cron_jobs.py").read_text(encoding="utf-8")
+
+    assert '"id": "job_file_review_check"' in source
+    assert '"scheduled_check"' in source
+    assert '"--task", "download")' not in source
 
 
 def _roc_compact(days_from_now: int = 3) -> str:
@@ -1006,6 +1168,84 @@ def test_notify_payment_needed_without_pdf_is_not_delivery(tmp_path):
         payment_deadline="",
         files=[],
     )
+
+    assert mgr.notify_payment_needed(info) is False
+
+
+def test_notify_payment_needed_does_not_treat_queued_text_as_delivered(tmp_path, monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import (
+        FileReviewInfo,
+        FileReviewManager,
+    )
+
+    pdf = tmp_path / "繳費單_凡江_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    info = FileReviewInfo(
+        client_name="凡江",
+        court="臺灣花蓮地方法院",
+        court_case_no="115年度原交易字第21號",
+        status="待繳費",
+        payment_deadline="2026-07-01",
+        files=[str(pdf)],
+    )
+
+    class FakeNotifier:
+        def notify_admin_with_files(self, *_args, **_kwargs):
+            return False
+
+    fake_line_notifier = types.SimpleNamespace(LAFNotifier=lambda: FakeNotifier())
+    fake_red_phone = types.SimpleNamespace(
+        send_telegram_push_with_status=lambda *_args, **_kwargs: {
+            "telegram": False,
+            "delivered": False,
+            "queued": True,
+            "outbox_id": "queued-1",
+        }
+    )
+    monkeypatch.setitem(sys.modules, "line_notifier", fake_line_notifier)
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake_red_phone)
+
+    assert mgr.notify_payment_needed(info) is False
+
+
+def test_notify_payment_needed_respects_suppress_notify(tmp_path, monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import (
+        FileReviewInfo,
+        FileReviewManager,
+    )
+
+    pdf = tmp_path / "繳費單_凡江_115.原交易.000021.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    info = FileReviewInfo(
+        client_name="凡江",
+        court="臺灣花蓮地方法院",
+        court_case_no="115年度原交易字第21號",
+        status="待繳費",
+        payment_deadline="2026-07-01",
+        files=[str(pdf)],
+    )
+
+    class FakeNotifier:
+        def notify_admin_with_files(self, *_args, **_kwargs):
+            raise AssertionError("suppressed notification should not send files")
+
+        def notify_admin(self, *_args, **_kwargs):
+            raise AssertionError("suppressed notification should not send text")
+
+    fake_line_notifier = types.SimpleNamespace(LAFNotifier=lambda: FakeNotifier())
+    fake_red_phone = types.SimpleNamespace(
+        send_telegram_push_with_status=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("suppressed notification should not use red_phone")
+        ),
+        send_discord_bot_file=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("suppressed notification should not use Discord fallback")
+        ),
+    )
+    monkeypatch.setenv("MAGI_FILE_REVIEW_SUPPRESS_NOTIFY", "1")
+    monkeypatch.setitem(sys.modules, "line_notifier", fake_line_notifier)
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake_red_phone)
 
     assert mgr.notify_payment_needed(info) is False
 
