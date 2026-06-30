@@ -746,6 +746,13 @@ def _dedupe_expected(paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _observed_issue(item: dict[str, Any]) -> dict[str, Any]:
+    issue = {"path": item["path"], "reason": item["reason"], "contract": item["contract"]}
+    if item.get("age_hours") is not None:
+        issue["age_hours"] = item.get("age_hours")
+    return issue
+
+
 def build_index(
     *,
     root: Path = MAGI_ROOT,
@@ -802,11 +809,21 @@ def build_index(
         if item["status"] == "stale" and item["path"] in expected_paths
     ]
     observed_failed = [
-        {"path": item["path"], "reason": item["reason"], "contract": item["contract"]}
+        _observed_issue(item)
         for item in health_files
-        if item["status"] == "failed" and item["path"] not in expected_paths
+        if item["status"] == "failed"
+        and item["path"] not in expected_paths
+        and (item.get("age_hours") is None or float(item.get("age_hours") or 0) <= max_health_age_hours)
     ]
-    observed_stale = [
+    archived_observed_failed = [
+        _observed_issue(item)
+        for item in health_files
+        if item["status"] == "failed"
+        and item["path"] not in expected_paths
+        and item.get("age_hours") is not None
+        and float(item.get("age_hours") or 0) > max_health_age_hours
+    ]
+    archived_observed_stale = [
         {"path": item["path"], "age_hours": item["age_hours"], "reason": item["reason"]}
         for item in health_files
         if item["status"] == "stale" and item["path"] not in expected_paths
@@ -850,7 +867,8 @@ def build_index(
             "stale_health_count": len(stale),
             "missing_health_count": len(missing),
             "observed_failed_health_count": len(observed_failed),
-            "observed_stale_health_count": len(observed_stale),
+            "observed_stale_health_count": 0,
+            "archived_runtime_artifact_count": len(archived_observed_failed) + len(archived_observed_stale),
         },
         "api_routes": api_routes,
         "skills": skills,
@@ -864,7 +882,13 @@ def build_index(
             "stale": stale,
             "missing": missing,
             "observed_failed": observed_failed,
-            "observed_stale": observed_stale,
+            "observed_stale": [],
+            "artifact_hygiene": {
+                "archived_observed_failed_count": len(archived_observed_failed),
+                "archived_observed_stale_count": len(archived_observed_stale),
+                "archived_observed_failed": archived_observed_failed[:30],
+                "archived_observed_stale": archived_observed_stale[:30],
+            },
         },
         "health": {
             "ok": health_ok,

@@ -140,7 +140,11 @@ def telegram():
     assert any(item["id"] == "job_missing" for item in report["cron_jobs"]["missing_state"])
     assert any(item["id"] == "job_stale" for item in report["cron_jobs"]["stale"])
     assert any(item["path"] == ".runtime/job_ok_latest.json" for item in report["runtime_health"]["failed"])
-    assert any(item["path"] == ".runtime/old_latest.json" for item in report["runtime_health"]["observed_stale"])
+    assert report["summary"]["observed_stale_health_count"] == 0
+    assert any(
+        item["path"] == ".runtime/old_latest.json"
+        for item in report["runtime_health"]["artifact_hygiene"]["archived_observed_stale"]
+    )
     assert any(item["path"] == ".runtime/missing_check_latest.json" for item in report["runtime_health"]["missing"])
     assert not any(
         item["path"] == ".runtime/function_health_index_ci_latest.json"
