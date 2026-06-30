@@ -854,9 +854,19 @@ def _format_transcript_batch_note(results: dict, sync_status: Dict[str, Any]) ->
 
 
 def _transcript_notify_topic(results: dict, summary: dict) -> str:
-    if bool((results or {}).get("batched")):
-        return "transcript"
     return "transcript" if int((summary or {}).get("downloaded_count") or 0) > 0 else "quiet_cron"
+
+
+def _should_notify_transcript_success(summary: dict, *, md5_warning: str = "") -> bool:
+    if int((summary or {}).get("downloaded_count") or 0) > 0:
+        return True
+    if int((summary or {}).get("downloaded_cases_count") or 0) > 0:
+        return True
+    if int((summary or {}).get("failed_cases_count") or 0) > 0:
+        return True
+    if str(md5_warning or "").strip():
+        return True
+    return False
 
 
 def _write_transcript_sync_report(results: dict, summary: dict, message: str) -> str:
@@ -1920,9 +1930,18 @@ def cmd_sync(
                 msg += f"\n⚠️ {md5_warning}"
             report_path = _write_transcript_sync_report(results, summary, msg)
             topic_key = _transcript_notify_topic(results, summary)
-            _notify(msg, notify, topic_key=topic_key)
-            _mark_notify_step(flow_id, notify=notify, detail=msg)
-            out = {"success": True, "message": msg, "transcript_sync_report": report_path, "notify_topic": topic_key}
+            should_notify = _should_notify_transcript_success(summary, md5_warning=md5_warning)
+            if notify and should_notify:
+                _notify(msg, True, topic_key=topic_key)
+            _mark_notify_step(flow_id, notify=notify and should_notify, detail=msg)
+            out = {
+                "success": True,
+                "message": msg,
+                "transcript_sync_report": report_path,
+                "notify_topic": topic_key,
+                "notified": bool(notify and should_notify),
+                "notify_suppressed_reason": "" if should_notify else "no_new_transcripts",
+            }
             out.update(summary)
             _eventlog("transcript:sync:done", ok=True, payload=out)
             return out

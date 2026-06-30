@@ -154,6 +154,56 @@ ddddocr = None
 _global_transcript_lock = threading.Lock()
 _global_transcript_operation_in_progress = False
 
+
+_TRANSCRIPT_PARSE_EMPTY_MARKERS = {
+    "",
+    "-",
+    "--",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "n.a.",
+    "unknown",
+    "未知",
+    "無",
+    "無法判讀",
+    "無法辨識",
+    "未提供",
+}
+
+
+def _clean_transcript_parse_value(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip()
+
+
+def _valid_transcript_record_date(value: Any) -> bool:
+    text = _clean_transcript_parse_value(value)
+    if text.lower() in _TRANSCRIPT_PARSE_EMPTY_MARKERS:
+        return False
+    if not re.fullmatch(r"\d{8}", text):
+        return False
+    if text == "00000000":
+        return False
+    try:
+        parsed = datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return False
+    return 2020 <= parsed.year <= 2200
+
+
+def _valid_transcript_record_type(value: Any) -> bool:
+    text = _clean_transcript_parse_value(value)
+    if text.lower() in _TRANSCRIPT_PARSE_EMPTY_MARKERS:
+        return False
+    return "筆錄" in text
+
+
+def _record_parse_ready_for_filename(parse_result: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(parse_result, dict):
+        return False
+    return _valid_transcript_record_date(parse_result.get("date")) and _valid_transcript_record_type(parse_result.get("type"))
+
 # ==============================================================================
 # 資料結構
 # ==============================================================================
@@ -3602,6 +3652,10 @@ class CourtRecordDownloader:
         record_type = parse_result.get('type', '筆錄')
         period = parse_result.get('period', '')
         time_str = parse_result.get('time', '')  # 新增: 開庭時間 (格式: 0930)
+
+        if not _record_parse_ready_for_filename(parse_result):
+            self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {original_filename}")
+            return original_filename
         
         # 確保有日期
         if not date_str:
@@ -3731,7 +3785,11 @@ class CourtRecordDownloader:
                 
                 # ★★★ 解析 PDF 並重新命名 ★★★
                 parse_result = self._parse_record_pdf(temp_dest)
-                new_filename = self._generate_record_filename(parse_result, original_filename)
+                if _record_parse_ready_for_filename(parse_result):
+                    new_filename = self._generate_record_filename(parse_result, original_filename)
+                else:
+                    self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {os.path.basename(temp_dest)}")
+                    new_filename = os.path.basename(temp_dest)
                 final_dest = os.path.join(transcript_folder, new_filename)
                 
                 # 處理最終檔名衝突
@@ -4035,7 +4093,7 @@ class CourtRecordDownloader:
                                     continue
 
                                 parse_result = self._parse_record_pdf(full_path)
-                                if parse_result.get('date') and parse_result.get('type'):
+                                if _record_parse_ready_for_filename(parse_result):
                                     # 2. Generate canonical name
                                     new_name = self._generate_record_filename(parse_result, fname)
 
@@ -4237,7 +4295,7 @@ class CourtRecordDownloader:
 
                         # 解析 PDF
                         parse_result = self._parse_record_pdf(full_path)
-                        if not parse_result.get('date') or not parse_result.get('type'):
+                        if not _record_parse_ready_for_filename(parse_result):
                             continue
                         
                         # 生成標準檔名
@@ -4581,7 +4639,11 @@ class TranscriptAutoDownloader:
             
             # 5. 解析 PDF 並重新命名
             parse_result = self._parse_record_pdf(temp_dest)
-            new_filename = self._generate_record_filename(parse_result, original_filename)
+            if _record_parse_ready_for_filename(parse_result):
+                new_filename = self._generate_record_filename(parse_result, original_filename)
+            else:
+                self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {os.path.basename(temp_dest)}")
+                new_filename = os.path.basename(temp_dest)
             final_dest = os.path.join(transcript_folder, new_filename)
             
             # 處理最終檔名衝突
@@ -4844,6 +4906,10 @@ class TranscriptAutoDownloader:
         
         # DEBUG: Check for double time bug
         self.log(f"    [FilenameGen] Date={date_str}, Type={record_type}, Period={period}")
+
+        if not _record_parse_ready_for_filename(parse_result):
+            self.log(f"    ⚠️ 筆錄解析結果不足，保留原檔名: {original_filename}")
+            return original_filename
         
         if not date_str:
             # ★★★ BUG FIX: 不再使用下載日期！改用辨識標記 ★★★
@@ -5065,7 +5131,7 @@ class TranscriptAutoDownloader:
 
                     # 直接解析 PDF（會自動使用 Gemini fallback）
                     parse_result = self._parse_record_pdf(full_path)
-                    if not parse_result.get('date') or not parse_result.get('type'):
+                    if not _record_parse_ready_for_filename(parse_result):
                         # 正則和 Gemini 都失敗，跳過
                         continue
                     
@@ -5250,7 +5316,7 @@ class TranscriptAutoDownloader:
                     try:
                         # 解析 PDF
                         parse_result = temp_downloader._parse_record_pdf(full_path)
-                        if not parse_result.get('date') or not parse_result.get('type'):
+                        if not _record_parse_ready_for_filename(parse_result):
                             continue
                         
                         # ★ 檢查是否已經被改名過（非原始下載格式）
