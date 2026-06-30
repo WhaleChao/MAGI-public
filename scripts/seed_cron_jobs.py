@@ -383,8 +383,11 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                     repo_root,
                     python_bin,
                     qcmd(
+                        python_bin,
+                        run_with_env,
                         "MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=8",
                         "MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=20",
+                        "--",
                         python_bin,
                         repo_root / "scripts" / "drive_case_sync_worker.py",
                         "--direct-all-cases",

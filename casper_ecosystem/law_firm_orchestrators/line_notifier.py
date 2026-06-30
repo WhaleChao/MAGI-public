@@ -130,6 +130,8 @@ class LAFNotifier:
     def __init__(self, env_path: str = None, config_path: str = None):
         self._env = _load_env(Path(env_path) if env_path else ENV_PATH)
         self._config = _load_config(Path(config_path) if config_path else CONFIG_PATH)
+        self._last_tg_used_red_phone = False
+        self._last_tg_mirrored_to_discord = False
 
         # LINE
         self.line_token = self._env.get("MAGI_LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -196,12 +198,17 @@ class LAFNotifier:
         """
         safe_text = _guard_text(text, platform="TELEGRAM")
         tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
-        # DC 為次要通道：失敗不影響主回傳，但會 log；DC 文案不需 TG-specific guard
+        # red_phone already mirrors successful Telegram text notifications to
+        # Discord. Only use the legacy direct Discord path when that mirror did
+        # not happen, otherwise LAF text notices appear twice in Discord.
         dc_ok = False
-        try:
-            dc_ok = self._push_discord(text, topic_key=topic_key)
-        except Exception as _dce:
-            logger.error("Discord push exception (non-fatal): %s", _dce)
+        if self._last_tg_mirrored_to_discord:
+            dc_ok = True
+        else:
+            try:
+                dc_ok = self._push_discord(text, topic_key=topic_key)
+            except Exception as _dce:
+                logger.error("Discord push exception (non-fatal): %s", _dce)
         if tg_ok or dc_ok:
             if not tg_ok:
                 logger.warning("notify_admin: TG failed but DC sent (topic=%s)", topic_key)
@@ -266,10 +273,13 @@ class LAFNotifier:
             # No files — send text only to both channels
             if safe_text:
                 tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
-                try:
-                    dc_ok = self._push_discord(safe_text, topic_key=topic_key)
-                except Exception as _dce:
-                    logger.error("Discord push exception (non-fatal): %s", _dce)
+                if self._last_tg_mirrored_to_discord:
+                    dc_ok = True
+                else:
+                    try:
+                        dc_ok = self._push_discord(safe_text, topic_key=topic_key)
+                    except Exception as _dce:
+                        logger.error("Discord push exception (non-fatal): %s", _dce)
 
         if tg_ok or dc_ok:
             if not tg_ok:
@@ -563,6 +573,8 @@ class LAFNotifier:
 
     def _push_telegram(self, text: str, *, topic_key: str = "", source: str = "laf_notifier") -> bool:
         """Send message via Telegram Bot API."""
+        self._last_tg_used_red_phone = False
+        self._last_tg_mirrored_to_discord = False
         try:
             from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
 
@@ -573,6 +585,8 @@ class LAFNotifier:
                 topic_key=topic_key,
                 queue_on_fail=True,
             ) or {}
+            self._last_tg_used_red_phone = True
+            self._last_tg_mirrored_to_discord = bool(status.get("telegram"))
             if bool(status.get("telegram")) or bool(status.get("queued")):
                 return True
         except Exception:

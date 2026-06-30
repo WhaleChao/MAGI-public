@@ -152,6 +152,135 @@ def test_laf_orchestrator_routes_staff_material_without_go_live():
     assert orch._resolve_email_route(dispatch, dispatch.notification_type) == "dispatch"
 
 
+def test_review_result_download_suppresses_zero_new_file_notice(monkeypatch):
+    from casper_ecosystem.law_firm_orchestrators import laf_orchestrator
+    from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
+
+    class FakeDB:
+        def fetch_one(self, *_args, **_kwargs):
+            return {
+                "case_number": "2025-0089",
+                "client_name": "古惠茹",
+                "case_type": "消費者債務清理",
+                "case_reason": "消費者債務清理事件",
+                "folder_path": "/tmp/case",
+                "legal_aid_status": "",
+            }
+
+    class FakeNotifier:
+        def __init__(self):
+            self.messages = []
+
+        def notify_admin(self, message, **kwargs):
+            self.messages.append((message, kwargs))
+            return True
+
+    orch = LAFOrchestrator.__new__(LAFOrchestrator)
+    orch.dry_run = False
+    orch.laf_config = {"auto_create_case": True}
+    orch._notifier = FakeNotifier()
+    orch._db = FakeDB()
+    orch._resolve_case_folder_for_laf = lambda *_args, **_kwargs: "/tmp/case"
+    orch._archive_case_email_snapshot = lambda *_args, **_kwargs: ""
+    orch._download_case_email_attachments = lambda *_args, **_kwargs: {
+        "ok": True,
+        "downloaded_count": 0,
+        "new_count": 0,
+        "skipped_existing_count": 0,
+    }
+    orch._download_case_files = lambda *_args, **_kwargs: {
+        "downloaded_count": 1,
+        "archive": {"new_files": [], "skipped_existing": ["/tmp/case/old.pdf"]},
+    }
+    orch._log_event = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(laf_orchestrator, "_eventlog", lambda *args, **kwargs: None)
+
+    case_info = SimpleNamespace(
+        notification_type="審查結果通知",
+        subject="【法扶原住民族法律服務中心審查結果通知】古惠茹-1141023-W-001-消費者債務清理事件",
+        snippet="",
+        body="",
+        laf_case_number="1141023-W-001",
+        client_name="古惠茹",
+        case_type="消費者債務清理",
+        case_reason="消費者債務清理事件",
+        message_id="gmail-1141023-W-001",
+    )
+
+    orch.handle_review_result_download(case_info)
+
+    assert orch._notifier.messages == []
+
+
+def test_review_result_download_notifies_when_new_portal_files(monkeypatch, tmp_path):
+    from casper_ecosystem.law_firm_orchestrators import laf_orchestrator
+    from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
+    from skills.ops import dedup_db
+
+    class FakeDB:
+        def fetch_one(self, *_args, **_kwargs):
+            return {
+                "case_number": "2025-0089",
+                "client_name": "古惠茹",
+                "case_type": "消費者債務清理",
+                "case_reason": "消費者債務清理事件",
+                "folder_path": str(tmp_path),
+                "legal_aid_status": "",
+            }
+
+    class FakeNotifier:
+        def __init__(self):
+            self.messages = []
+
+        def notify_admin(self, message, **kwargs):
+            self.messages.append((message, kwargs))
+            return True
+
+    marked = []
+    monkeypatch.setattr(dedup_db, "is_done", lambda category, key: False)
+    monkeypatch.setattr(dedup_db, "mark_done", lambda category, key, metadata=None: marked.append((category, key, metadata)) or True)
+    monkeypatch.setattr(laf_orchestrator, "_eventlog", lambda *args, **kwargs: None)
+
+    orch = LAFOrchestrator.__new__(LAFOrchestrator)
+    orch.dry_run = False
+    orch.laf_config = {"auto_create_case": True}
+    orch._notifier = FakeNotifier()
+    orch._db = FakeDB()
+    orch._resolve_case_folder_for_laf = lambda *_args, **_kwargs: str(tmp_path)
+    orch._archive_case_email_snapshot = lambda *_args, **_kwargs: ""
+    orch._download_case_email_attachments = lambda *_args, **_kwargs: {
+        "ok": True,
+        "downloaded_count": 0,
+        "new_count": 0,
+        "skipped_existing_count": 0,
+    }
+    new_file = tmp_path / "審查結果.pdf"
+    orch._download_case_files = lambda *_args, **_kwargs: {
+        "downloaded_count": 1,
+        "archive": {"new_files": [str(new_file)], "skipped_existing": []},
+    }
+    orch._log_event = lambda *_args, **_kwargs: None
+
+    case_info = SimpleNamespace(
+        notification_type="審查結果通知",
+        subject="【法扶原住民族法律服務中心審查結果通知】古惠茹-1141023-W-001-消費者債務清理事件",
+        snippet="",
+        body="",
+        laf_case_number="1141023-W-001",
+        client_name="古惠茹",
+        case_type="消費者債務清理",
+        case_reason="消費者債務清理事件",
+        message_id="gmail-1141023-W-001",
+    )
+
+    orch.handle_review_result_download(case_info)
+
+    assert len(orch._notifier.messages) == 1
+    assert "官網附件: 新增 1 份" in orch._notifier.messages[0][0]
+    assert orch._notifier.messages[0][1]["topic_key"] == "laf_closing"
+    assert marked and marked[0][0] == "laf_review_result_notice"
+
+
 def test_laf_parser_keeps_branch_staff_material_out_of_dispatch():
     from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFCaseTypeParser
     from skills.legal.laf import LAFCaseTypeParser as LegacyLAFCaseTypeParser

@@ -669,6 +669,17 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "--download-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
     assert "--upload-limit 240" in by_id["job_drive_case_sync_all_files"]["command"]
     assert "--max-download-bytes 3000000000" in by_id["job_drive_case_sync_all_files"]["command"]
+    from api.platforms.safe_process import parse_cron_command
+
+    all_files_argv = parse_cron_command(by_id["job_drive_case_sync_all_files"]["command"])
+    token_gate_idx = next(
+        idx for idx, arg in enumerate(all_files_argv) if str(arg).endswith("run_after_token_refresh.py")
+    )
+    token_gate_separator_idx = all_files_argv.index("--", token_gate_idx)
+    assert all_files_argv[token_gate_separator_idx + 1] == str(tmp_path / "venv" / "bin" / "python3")
+    assert all_files_argv[token_gate_separator_idx + 2].endswith("run_with_env.py")
+    assert all_files_argv[token_gate_separator_idx + 3] == "MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=8"
+    assert all_files_argv[token_gate_separator_idx + 4] == "MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=20"
     assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
     assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
     assert by_id["job_nas_recycle_heavy_cleanup"]["cron"] == "20 4 * * *"

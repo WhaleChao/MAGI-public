@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import hashlib
 from datetime import datetime, timedelta
 import logging
 import argparse
@@ -1547,10 +1548,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if subject:
             notify_lines.append(f"主旨: {subject}")
 
-        if download_result.get("downloaded_count"):
-            dl_archive = download_result.get("archive", {})
-            dl_new_files = dl_archive.get("new_files") or []
-            dl_skipped_files = dl_archive.get("skipped_existing") or []
+        dl_archive = download_result.get("archive", {}) if isinstance(download_result, dict) else {}
+        dl_new_files = dl_archive.get("new_files") or []
+        dl_skipped_files = dl_archive.get("skipped_existing") or []
+        email_new_count = int(email_attachment_result.get("new_count") or 0)
+        email_skipped_count = int(email_attachment_result.get("skipped_existing_count") or 0)
+        if download_result.get("downloaded_count") and dl_new_files:
             notify_lines.append(f"官網附件: 新增 {len(dl_new_files)} 份")
             if dl_skipped_files:
                 notify_lines.append(f"官網附件去重: 略過 {len(dl_skipped_files)} 份")
@@ -1562,18 +1565,80 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會自動補查。")
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result.get('error')}")
-        else:
-            notify_lines.append("ℹ️ 官網附件本輪未下載到新檔案。")
 
-        if email_attachment_result.get("downloaded_count"):
-            notify_lines.append(f"專員來信附件: 新增 {int(email_attachment_result.get('new_count') or 0)} 份")
-            skipped_email = int(email_attachment_result.get("skipped_existing_count") or 0)
-            if skipped_email:
-                notify_lines.append(f"專員來信附件去重: 略過 {skipped_email} 份")
+        if email_attachment_result.get("downloaded_count") and email_new_count:
+            notify_lines.append(f"專員來信附件: 新增 {email_new_count} 份")
+            if email_skipped_count:
+                notify_lines.append(f"專員來信附件去重: 略過 {email_skipped_count} 份")
 
         notify_msg = "\n".join(notify_lines)
-        if not self.dry_run:
-            self.notifier.notify_admin(notify_msg, topic_key="laf_closing")
+        should_notify = bool(
+            dl_new_files
+            or email_new_count
+            or download_result.get("retry_queued")
+            or download_result.get("error")
+        )
+        notify_dedup_key = ""
+        notify_dedup_metadata = {}
+        notify_mark_done = None
+        if should_notify:
+            msg_id = str(getattr(case_info, "message_id", "") or "").strip()
+            state = "new"
+            if download_result.get("retry_queued"):
+                state = "retry"
+            if download_result.get("error"):
+                state = "error"
+            material = "|".join(
+                [
+                    laf_number,
+                    msg_id,
+                    state,
+                    str(len(dl_new_files)),
+                    str(email_new_count),
+                    str(download_result.get("error") or "")[:160],
+                    *[os.path.basename(str(fn)) for fn in dl_new_files[:20]],
+                ]
+            )
+            notify_dedup_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            try:
+                from skills.ops.dedup_db import is_done as _dd_is_done, mark_done as _dd_mark_done
+
+                if _dd_is_done("laf_review_result_notice", notify_dedup_key):
+                    should_notify = False
+                else:
+                    notify_mark_done = _dd_mark_done
+                    notify_dedup_metadata = {
+                        "laf_case_no": laf_number,
+                        "case_number": case_number,
+                        "client_name": client_name,
+                        "message_id": msg_id,
+                        "state": state,
+                        "portal_new": len(dl_new_files),
+                        "email_new": email_new_count,
+                        "subject": subject[:220],
+                    }
+            except Exception as dedup_error:
+                logger.debug("Review-result notice dedup skipped (%s): %s", laf_number, dedup_error)
+        notified = False
+        if not self.dry_run and should_notify:
+            notify_ok = self.notifier.notify_admin(notify_msg, topic_key="laf_closing")
+            notified = bool(notify_ok)
+            if notify_ok and notify_mark_done and notify_dedup_key:
+                try:
+                    notify_mark_done("laf_review_result_notice", notify_dedup_key, metadata=notify_dedup_metadata)
+                except Exception as mark_error:
+                    logger.debug("Review-result notice dedup mark failed (%s): %s", laf_number, mark_error)
+        elif not self.dry_run:
+            logger.info(
+                "🔕 Review-result notification suppressed: laf=%s case=%s portal_new=%s email_new=%s retry=%s error=%s dedup=%s",
+                laf_number,
+                case_number,
+                len(dl_new_files),
+                email_new_count,
+                bool(download_result.get("retry_queued")),
+                bool(download_result.get("error")),
+                bool(notify_dedup_key),
+            )
 
         self._log_event(
             laf_number,
@@ -1584,8 +1649,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "case_number": case_number,
                 "client_name": client_name,
                 "downloaded_count": int(download_result.get("downloaded_count") or 0),
+                "portal_new_count": len(dl_new_files),
+                "email_new_count": email_new_count,
                 "retry_queued": bool(download_result.get("retry_queued")),
                 "error": str(download_result.get("error") or ""),
+                "notified": notified,
             },
             "success",
         )
