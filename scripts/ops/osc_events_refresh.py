@@ -31,7 +31,7 @@ PDF_SCAN_CACHE_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cache.json"
 PDF_SCAN_CURSOR_PATH = ROOT / ".runtime" / "pdf_calendar_scan_cursor.json"
 PDF_SCAN_RULE_VERSION = os.environ.get(
     "OSC_PDF_CALENDAR_RULE_VERSION",
-    "2026-06-20-full-filename-osc-holidays",
+    "2026-06-30-final-doc-closing-status-sweep",
 )
 HISTORY_CUTOFF_ENV = "OSC_EVENTS_REFRESH_HISTORY_CUTOFF_DATE"
 DEFAULT_HISTORY_CUTOFF_DATE = "2026-01-01"

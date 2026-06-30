@@ -117,6 +117,26 @@ def _open_case_status_sql(column: str = "status") -> str:
     """
 
 
+def _pdf_todo_case_status_sql(column: str = "status") -> str:
+    """Case filter for court-PDF deadline scans.
+
+    "結案中", "待報結", and "待送出" still need PDF deadline coverage:
+    judgments/rulings commonly arrive during closing prep, and missing an
+    appeal/objection all-day event is worse than scanning one extra case row.
+    """
+    col = column if re.fullmatch(r"[A-Za-z0-9_`.]+", column or "") else "status"
+    return f"""
+        (
+          {col} IS NULL OR {col}=''
+          OR (
+            LOWER({col}) NOT IN ('closed', 'done')
+            AND {col} NOT IN ('已結案', '結案')
+            AND {col} NOT LIKE '%已結案%'
+          )
+        )
+    """
+
+
 def _pdf_text_date_context(path: Path) -> tuple[datetime, int]:
     extract_doc_date, extract_base_year = _load_headless_date_helpers()
     doc_date = extract_doc_date(path.name, str(path))
@@ -1275,7 +1295,7 @@ def _count_all_case_pdf_case_rows() -> int:
         SELECT COUNT(*) AS count
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
-          AND """ + _open_case_status_sql("status") + """
+          AND """ + _pdf_todo_case_status_sql("status") + """
         """,
         fetch="one",
     )
@@ -1322,7 +1342,7 @@ def _iter_indexed_case_pdf_candidates(
         SELECT case_number, client_name, folder_path, status
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
-          AND """ + _open_case_status_sql("status") + """
+          AND """ + _pdf_todo_case_status_sql("status") + """
         """,
         fetch="all",
     )
@@ -1443,7 +1463,7 @@ def _iter_all_case_pdf_targets(
         SELECT case_number, client_name, folder_path
         FROM cases
         WHERE folder_path IS NOT NULL AND folder_path!=''
-          AND """ + _open_case_status_sql("status") + """
+          AND """ + _pdf_todo_case_status_sql("status") + """
         ORDER BY updated_at DESC, created_date DESC, case_number DESC
         LIMIT %s OFFSET %s
         """,
@@ -1461,7 +1481,7 @@ def _iter_all_case_pdf_targets(
                 SELECT case_number, client_name, folder_path
                 FROM cases
                 WHERE folder_path IS NOT NULL AND folder_path!=''
-                  AND """ + _open_case_status_sql("status") + """
+                  AND """ + _pdf_todo_case_status_sql("status") + """
                 ORDER BY updated_at DESC, created_date DESC, case_number DESC
                 LIMIT %s
                 """,
@@ -1504,9 +1524,6 @@ def _iter_all_case_pdf_targets(
 
     if filename_only:
         candidates.extend(_iter_indexed_case_pdf_candidates(candidate_cap, existing_sources=existing_sources))
-        if len(candidates) >= candidate_cap:
-            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-            return [(pdf, case_number, client_name) for _p, _h, _m, _n, pdf, case_number, client_name in candidates[:max_items]]
     candidate_path_keys: set[str] = set()
     for _processed_rank, _hint_rank, _mtime, _name, pdf, _case_number, _client_name in candidates:
         candidate_path_keys.add(str(pdf))
@@ -1592,6 +1609,104 @@ def _iter_all_case_pdf_targets(
         # todo refresh and prevent newer files from being reached.
         yield from _pdfs_shallow_timeout(root, is_case_root=is_case_root)
 
+    def _candidate_processed_rank(case_number: str, pdf: Path) -> int:
+        source_text = str(pdf)
+        return 1 if (
+            (case_number, source_text) in existing_sources
+            or (case_number, pdf.name) in existing_sources
+        ) else 0
+
+    def _append_pdf_candidate(pdf: Path, case_number: str, client_name: str, *, priority_final_doc: bool = False) -> None:
+        if pdf.name.startswith(".") or pdf.name.startswith("~$"):
+            return
+        if not _is_pdf_calendar_candidate_path(pdf):
+            return
+        resolved_pdf = _pdf_resolve_timeout(pdf)
+        path_keys = {str(pdf), str(resolved_pdf)}
+        if any(key in candidate_path_keys for key in path_keys):
+            return
+        processed_rank = _candidate_processed_rank(case_number, pdf)
+        if priority_final_doc and processed_rank == 0:
+            processed_rank = -1
+        hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
+        candidates.append((processed_rank, hint_rank, -_pdf_mtime_timeout(pdf), pdf.name, resolved_pdf, case_number, client_name))
+        candidate_path_keys.update(path_keys)
+
+    def _case_judgment_roots(folder: Path) -> list[Path]:
+        roots: list[Path] = []
+        for name in wanted_dir_names:
+            if not path_has_judgment_folder(name):
+                continue
+            child = folder / name
+            try:
+                if child.is_dir():
+                    roots.append(child)
+            except OSError:
+                continue
+
+        def _scan_children() -> list[Path]:
+            out: list[Path] = []
+            for child in folder.iterdir():
+                try:
+                    if child.is_dir() and path_has_judgment_folder(child.name):
+                        out.append(child)
+                except OSError:
+                    continue
+            return out
+
+        roots.extend(_run_path_probe(_scan_children, timeout_sec=4.0, fallback=[]) or [])
+        return list(dict.fromkeys(roots))
+
+    def _append_priority_final_doc_candidates() -> None:
+        priority_limit = max(0, min(2000, int(os.environ.get("OSC_PDF_CALENDAR_FINAL_DOC_PRIORITY_CASE_LIMIT", "500") or "500")))
+        if priority_limit <= 0:
+            return
+        try:
+            priority_rows, _ = _osc_exec(
+                """
+                SELECT case_number, client_name, folder_path, status
+                FROM cases
+                WHERE folder_path IS NOT NULL AND folder_path!=''
+                  AND case_number IS NOT NULL AND case_number!='' AND case_number!='0000-0000'
+                  AND """ + _pdf_todo_case_status_sql("status") + """
+                ORDER BY updated_at DESC, created_date DESC, case_number DESC
+                LIMIT %s
+                """,
+                (priority_limit,),
+                fetch="all",
+            )
+        except Exception:
+            logging.getLogger(__name__).warning("priority final-doc pdf candidate scan failed", exc_info=True)
+            return
+
+        priority_candidate_cap = candidate_cap + max(50, priority_limit)
+        for row in priority_rows or []:
+            if len(candidates) >= priority_candidate_cap:
+                break
+            raw_folder = str((row or {}).get("folder_path") or "").strip()
+            folder: Path | None = None
+            for candidate in local_case_path_candidates(raw_folder):
+                cand = Path(candidate).expanduser()
+                if _is_dir_accessible(str(cand)):
+                    folder = cand
+                    break
+            if folder is None:
+                continue
+            case_number = str((row or {}).get("case_number") or "")
+            client_name = str((row or {}).get("client_name") or "")
+            for root in _case_judgment_roots(folder):
+                for pdf in _iter_relevant_pdfs(root, is_case_root=False):
+                    _append_pdf_candidate(pdf, case_number, client_name, priority_final_doc=True)
+                    if len(candidates) >= priority_candidate_cap:
+                        break
+                if len(candidates) >= priority_candidate_cap:
+                    break
+
+    _append_priority_final_doc_candidates()
+    if filename_only and len(candidates) >= candidate_cap:
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        return [(pdf, case_number, client_name) for _p, _h, _m, _n, pdf, case_number, client_name in candidates[:max_items]]
+
     row_entries: list[tuple[dict[str, Any], bool]] = []
     seen_rows: set[tuple[str, str]] = set()
 
@@ -1645,8 +1760,7 @@ def _iter_all_case_pdf_targets(
                 path_keys = {str(pdf), str(resolved_pdf)}
                 if any(key in candidate_path_keys for key in path_keys):
                     continue
-                source_text = str(pdf)
-                processed_rank = 1 if ((case_number, source_text) in existing_sources or (case_number, pdf.name) in existing_sources) else 0
+                processed_rank = _candidate_processed_rank(case_number, pdf)
                 hint_rank = 0 if _PDF_TODO_HINT_RE.search(pdf.name) else 1
                 candidates.append((processed_rank, hint_rank, -mtime, pdf.name, resolved_pdf, case_number, str(row.get("client_name") or "")))
                 candidate_path_keys.update(path_keys)

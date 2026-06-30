@@ -722,7 +722,7 @@ def test_all_case_pdf_targets_recent_sweep_reaches_fresh_pdf_outside_cursor_batc
     assert (fresh_pdf.resolve(), "2026-0002", "新案") in targets
 
 
-def test_all_case_pdf_targets_excludes_closing_and_closed_statuses(tmp_path, monkeypatch):
+def test_all_case_pdf_targets_keeps_closing_prep_statuses_for_final_doc_deadlines(tmp_path, monkeypatch):
     from api.blueprints import osc_pdf
 
     seen_sql = []
@@ -743,9 +743,71 @@ def test_all_case_pdf_targets_excludes_closing_and_closed_statuses(tmp_path, mon
     assert osc_pdf._iter_all_case_pdf_targets(limit=5) == []
     joined = "\n".join(seen_sql)
     assert "NOT LIKE '%已結案%'" in joined
-    assert "NOT LIKE '%結案中%'" in joined
-    assert "NOT LIKE '%待報結%'" in joined
-    assert "NOT LIKE '%待送出%'" in joined
+    assert "NOT LIKE '%結案中%'" not in joined
+    assert "NOT LIKE '%待報結%'" not in joined
+    assert "NOT LIKE '%待送出%'" not in joined
+
+
+def test_all_case_pdf_targets_includes_closing_case_judgment_folder(tmp_path, monkeypatch):
+    from api.blueprints import osc_pdf
+
+    case_dir = tmp_path / "01_案件" / "法扶案件" / "刑事" / "2026-0050-林建豐-一審-過失傷害"
+    judgment_dir = case_dir / "10_判決書或終局裁定及處分"
+    judgment_dir.mkdir(parents=True)
+    judgment_pdf = judgment_dir / "20260623 臺東地方法院115年度原交簡字第10號刑事簡易判決（林建豐）.pdf"
+    judgment_pdf.write_bytes(b"%PDF-1.4\n")
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_todos" in sql:
+            return [], {}
+        if "FROM document_index" in sql:
+            return [], {}
+        if "FROM cases" in sql:
+            return [
+                {
+                    "case_number": "2026-0050",
+                    "client_name": "林建豐",
+                    "folder_path": str(case_dir),
+                    "status": "結案中",
+                }
+            ], {}
+        return [], {}
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", fake_exec)
+    monkeypatch.setattr("api.case_path_mapper.local_case_path_candidates", lambda p: [str(case_dir)])
+
+    targets = osc_pdf._iter_all_case_pdf_targets(limit=10)
+
+    assert targets == [(judgment_pdf.resolve(), "2026-0050", "林建豐")]
+
+    filename_targets = osc_pdf._iter_all_case_pdf_targets(limit=10, filename_only=True)
+
+    assert (judgment_pdf.resolve(), "2026-0050", "林建豐") in filename_targets
+
+
+def test_pdf_calendar_scan_preview_detects_judgment_folder_appeal_all_day(client, tmp_path, monkeypatch):
+    judgment_dir = tmp_path / "2026-0050-林建豐-一審-過失傷害" / "10_判決書或終局裁定及處分"
+    judgment_dir.mkdir(parents=True)
+    path = judgment_dir / "20260623 臺東地方法院115年度原交簡字第10號刑事簡易判決（林建豐；主文：犯過失傷害罪）.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr("api.blueprints.osc_pdf._osc_exec", lambda *a, **k: (None if k.get("fetch") == "one" else [], {}))
+    r = client.post(
+        "/api/osc/pdf/calendar-scan",
+        json={"file_path": str(path), "case_number": "2026-0050", "client_name": "林建豐", "write": False},
+    )
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    todo = body["items"][0]["todos"][0]
+    assert todo["type"] == "上訴"
+    assert todo["date"] == "2026-07-13"
+    assert todo["time"] == ""
+    event = body["items"][0]["events"][0]
+    assert event["is_all_day"] == 1
+    assert event["start_date"] == "2026-07-13"
+    assert event["end_date"] == "2026-07-14"
 
 
 def test_all_case_pdf_targets_prioritizes_unprocessed_recent_pdfs(tmp_path, monkeypatch):

@@ -436,7 +436,7 @@ def _cleanup_file_once(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 350, exc_info=True)
+        return
     except OSError:
         logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 352, exc_info=True)
 
