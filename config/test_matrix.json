@@ -258,7 +258,9 @@
         "name": "LAF/file-review/transcript live check",
         "command": [
             "{python}",
-            "scripts/ops/business_module_live_check.py"
+            "scripts/ops/business_module_live_check.py",
+            "--json-out",
+            ".runtime/business_module_live_check_latest.json"
           ],
           "timeout_sec": 900,
           "env": {

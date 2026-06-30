@@ -151,6 +151,11 @@ class BackgroundLock:
             try:
                 current = read_json(self.meta_path)
                 if int(current.get("pid") or 0) == os.getpid():
+                    with contextlib.suppress(Exception):
+                        self._fh.seek(0)
+                        self._fh.truncate()
+                        self._fh.flush()
+                        os.fsync(self._fh.fileno())
                     with contextlib.suppress(FileNotFoundError):
                         self.meta_path.unlink()
             finally:

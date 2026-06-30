@@ -131,6 +131,46 @@ def load_worker_status() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _load_worker_status_file(kind: str = "") -> dict:
+    path = worker_status_path(kind)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _terminal_status_for_current_process(kind: str = "") -> dict:
+    """Return a final status already written by this worker, if one exists."""
+    candidates = []
+    if kind:
+        candidates.append(_load_worker_status_file(kind))
+    candidates.append(load_worker_status())
+    current_pid = os.getpid()
+    for status in candidates:
+        if not isinstance(status, dict) or not status:
+            continue
+        try:
+            pid = int(status.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid != current_pid or not status.get("finished_at"):
+            continue
+        status_text = str(status.get("status") or "").strip().lower()
+        if not status_text or "running" in status_text or status_text in {"interrupted", "timeout"}:
+            continue
+        return status
+    return {}
+
+
+def _terminal_status_exit_code(status: dict) -> int:
+    if bool(status.get("ok")) and not bool(status.get("action_required")):
+        return 0
+    return 1
+
+
 def _pid_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -191,6 +231,15 @@ def _termination_status(signum: int) -> dict:
 
 def _install_termination_status_handler() -> None:
     def _handle(signum, _frame):
+        ctx = dict(_CURRENT_RUN_CONTEXT or {})
+        kind = str(ctx.get("worker_kind") or "")
+        terminal_status = _terminal_status_for_current_process(kind)
+        if terminal_status:
+            try:
+                release_case_file_operation_lock()
+            finally:
+                _release_worker_lock()
+            raise SystemExit(_terminal_status_exit_code(terminal_status))
         status = _termination_status(int(signum))
         kind = str(status.get("worker_kind") or "")
         try:

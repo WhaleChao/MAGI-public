@@ -55,19 +55,33 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int) -> None:
+def _drive_status_is_terminal_completion(status: dict[str, Any], *, kind: str, child_pid: int = 0) -> bool:
+    if not isinstance(status, dict) or not status:
+        return False
+    candidates = [status]
+    by_kind = status.get("status_by_kind")
+    if isinstance(by_kind, dict) and isinstance(by_kind.get(kind), dict):
+        candidates.insert(0, by_kind[kind])
+    for candidate in candidates:
+        try:
+            pid = int(candidate.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if child_pid and pid and pid != child_pid:
+            continue
+        status_text = str(candidate.get("status") or "").strip().lower()
+        if not candidate.get("finished_at"):
+            continue
+        if not status_text or "running" in status_text or status_text in {"interrupted", "timeout"}:
+            continue
+        return True
+    return False
+
+
+def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int, *, child_pid: int = 0) -> None:
     if not job_id.startswith("job_drive_case_sync"):
         return
     kind = "all_files" if "all_files" in job_id else ("priority" if "bidirectional" in job_id else "inventory")
-    status = {
-        "ok": False,
-        "status": "timeout",
-        "action_required": False,
-        "worker_kind": kind,
-        "message": f"outer_guard_timeout:{timeout_sec}s",
-        "finished_at": _iso_now(),
-        "next_step": "外層 watchdog 已中止卡住的 Drive/NAS 同步；下次排程會重試近期待辦案件。",
-    }
     drive_dir = runtime_dir.root() / "drive_sync"
     status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
     try:
@@ -76,6 +90,18 @@ def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int) -> None:
             previous = {}
     except Exception:
         previous = {}
+    if _drive_status_is_terminal_completion(previous, kind=kind, child_pid=child_pid):
+        return
+    status = {
+        "ok": False,
+        "status": "timeout",
+        "action_required": False,
+        "pid": int(child_pid or 0),
+        "worker_kind": kind,
+        "message": f"outer_guard_timeout:{timeout_sec}s",
+        "finished_at": _iso_now(),
+        "next_step": "外層 watchdog 已中止卡住的 Drive/NAS 同步；下次排程會重試近期待辦案件。",
+    }
     status_by_kind = previous.get("status_by_kind")
     if not isinstance(status_by_kind, dict):
         status_by_kind = {}
@@ -228,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
         returncode = 124
-        _mark_drive_sync_guard_timeout(args.job_id, int(args.timeout_sec or 0))
+        _mark_drive_sync_guard_timeout(args.job_id, int(args.timeout_sec or 0), child_pid=proc.pid)
     event["returncode"] = int(returncode)
     _append_event(event)
     return int(returncode)

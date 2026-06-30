@@ -68,6 +68,16 @@ def test_commercial_core_routes_writes_health_artifact():
     assert ".runtime/smoke_core_routes_release_latest.json" in command
 
 
+def test_production_live_business_modules_writes_canonical_health_artifact():
+    matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
+    checks = {check["id"]: check for check in matrix["suites"]["production-live"]["checks"]}
+
+    command = checks["business_modules_live"]["command"]
+    assert command[:2] == ["{python}", "scripts/ops/business_module_live_check.py"]
+    assert "--json-out" in command
+    assert ".runtime/business_module_live_check_latest.json" in command
+
+
 def test_commercial_release_runs_function_health_gate():
     matrix = run_test_suite.load_matrix(run_test_suite.DEFAULT_MATRIX)
     checks = {check["id"]: check for check in matrix["suites"]["commercial-release"]["checks"]}

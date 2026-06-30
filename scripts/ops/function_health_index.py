@@ -36,6 +36,14 @@ _SCRIPT_RE = re.compile(
 _JSON_OUT_FLAGS = {"--json-out", "--output-json", "--report-json"}
 _FAILED_STATUS = {"error", "failed", "fail", "down", "not_ready", "unhealthy"}
 _OK_STATUS = {"ok", "ready", "live", "success", "passed", "healthy", "skipped"}
+_SKILL_INTERNAL_ALIASES = {
+    "iron_dome": "iron-dome",
+    "osc_orchestrator": "osc-orchestrator",
+}
+_SKILL_ACTION_OPTIONAL = {
+    "ops/database",
+    "ops/sunrise_protocol",
+}
 
 
 def _utc_now() -> datetime:
@@ -297,6 +305,15 @@ def _skill_frontmatter(path: Path) -> dict[str, str]:
     return out
 
 
+def _skill_canonical(folder: str) -> str:
+    top, _, rest = folder.partition("/")
+    top = _SKILL_INTERNAL_ALIASES.get(top, top)
+    canonical = top.replace("_", "-")
+    if rest:
+        return f"{canonical}/{rest.replace('_', '-')}"
+    return canonical
+
+
 def discover_skills(root: Path) -> dict[str, Any]:
     skills_root = root / "skills"
     entries: list[dict[str, Any]] = []
@@ -306,6 +323,8 @@ def discover_skills(root: Path) -> dict[str, Any]:
             "total": 0,
             "with_skill_md": 0,
             "with_action": 0,
+            "internal_alias_count": 0,
+            "action_optional_count": 0,
             "missing_skill_md": [],
             "missing_action": [],
             "duplicate_canonical": [],
@@ -323,16 +342,21 @@ def discover_skills(root: Path) -> dict[str, Any]:
         if not skill_md.exists() and not action_py.exists():
             continue
         folder = _rel(path, skills_root)
+        top_folder = Path(folder).parts[0] if folder else ""
+        if top_folder in _SKILL_INTERNAL_ALIASES:
+            continue
         meta = _skill_frontmatter(skill_md) if skill_md.exists() else {}
         name = meta.get("name") or path.name
+        action_optional = folder in _SKILL_ACTION_OPTIONAL
         entries.append(
             {
                 "folder": folder,
                 "name": name,
-                "canonical": folder.replace("_", "-"),
+                "canonical": _skill_canonical(folder),
                 "description": meta.get("description", ""),
                 "has_skill_md": skill_md.exists(),
                 "has_action": action_py.exists(),
+                "action_optional": action_optional,
                 "python_files": len(list(path.glob("*.py"))),
             }
         )
@@ -346,12 +370,18 @@ def discover_skills(root: Path) -> dict[str, Any]:
             duplicate_canonical.append({"canonical": canonical, "folders": sorted(folders)})
 
     missing_skill_md = sorted(entry["folder"] for entry in entries if not entry["has_skill_md"])
-    missing_action = sorted(entry["folder"] for entry in entries if not entry["has_action"])
+    missing_action = sorted(
+        entry["folder"]
+        for entry in entries
+        if not entry["has_action"] and not entry.get("action_optional")
+    )
     return {
         "present": True,
         "total": len(entries),
         "with_skill_md": sum(1 for entry in entries if entry["has_skill_md"]),
         "with_action": sum(1 for entry in entries if entry["has_action"]),
+        "internal_alias_count": sum(1 for name in _SKILL_INTERNAL_ALIASES if (skills_root / name).exists()),
+        "action_optional_count": sum(1 for entry in entries if entry.get("action_optional")),
         "missing_skill_md": missing_skill_md,
         "missing_action": missing_action,
         "duplicate_canonical": duplicate_canonical,

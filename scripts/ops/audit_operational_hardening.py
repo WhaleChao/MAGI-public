@@ -399,6 +399,7 @@ def audit_stale_runtime_locks() -> dict[str, Any]:
     stale: list[dict[str, Any]] = []
     active: list[dict[str, Any]] = []
     malformed: list[dict[str, Any]] = []
+    orphaned_anchors: list[dict[str, Any]] = []
     for lock_dir in roots:
         if not lock_dir.exists():
             continue
@@ -408,13 +409,27 @@ def audit_stale_runtime_locks() -> dict[str, Any]:
                 continue
             seen.add(key)
             meta_path = Path(str(path) + ".json")
+            raw = path.read_text(encoding="utf-8", errors="replace")
             if not meta_path.exists():
                 # BackgroundLock removes the sidecar metadata on clean release
                 # but intentionally may leave the flock file itself behind.
-                # Without metadata, the file is only a reusable lock anchor, not
-                # evidence of a running or stale owner.
+                # Without sidecar metadata, the file is only a reusable lock
+                # anchor.  Older BackgroundLock releases left the previous JSON
+                # owner in the lock body; surface that as cleanup noise without
+                # failing the hardening gate.
+                body = _load_json(path, {})
+                if isinstance(body, dict) and body.get("pid"):
+                    orphaned_anchors.append(
+                        {
+                            "path": str(path),
+                            "domain": body.get("domain") or path.stem,
+                            "owner": body.get("owner") or "",
+                            "pid": int(body.get("pid") or 0),
+                            "started_at": body.get("started_at") or "",
+                            "reason": "owner_json_without_sidecar",
+                        }
+                    )
                 continue
-            raw = path.read_text(encoding="utf-8", errors="replace")
             data = _load_json(meta_path, {}) or _load_json(path, {})
             if not isinstance(data, dict):
                 malformed.append({"path": str(path), "sample": raw[:200]})
@@ -436,9 +451,11 @@ def audit_stale_runtime_locks() -> dict[str, Any]:
         "active_count": len(active),
         "stale_count": len(stale),
         "malformed_count": len(malformed),
+        "orphaned_anchor_count": len(orphaned_anchors),
         "active": active[:30],
         "stale": stale[:30],
         "malformed": malformed[:10],
+        "orphaned_anchors": orphaned_anchors[:30],
         "requirement": "Runtime lock files must point to a live PID or be cleaned by the next owner.",
     }
 

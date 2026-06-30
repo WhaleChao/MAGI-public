@@ -238,3 +238,23 @@ def test_live_runtime_root_fingerprint_detects_cron_semantic_drift(tmp_path, mon
 
     assert result["ok"] is False
     assert result["parsed"]["cron_mismatches"][0]["id"] == "job_osc_events_refresh"
+
+
+def test_main_json_writes_default_business_health_latest(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(live_check, "audit_live_conflicts", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(live_check, "_live_runtime_root_live", lambda: {"name": "live_runtime_root_fingerprint", "ok": True})
+    monkeypatch.setattr(live_check, "_token_health_live", lambda: {"name": "token_health_refresh", "ok": True})
+    monkeypatch.setattr(live_check, "_nas_mounts_live", lambda: {"name": "nas_mounts_live", "ok": True})
+    monkeypatch.setattr(live_check, "_drive_sync_status_live", lambda: {"name": "drive_sync_status_live", "ok": True})
+    monkeypatch.setattr(live_check, "_calendar_todo_status_live", lambda: {"name": "calendar_todo_status_live", "ok": True})
+    monkeypatch.setattr(live_check, "_run", lambda name, *_args, **_kwargs: {"name": name, "ok": True})
+
+    rc = live_check.main(["--json", "--skip-conflict-audit", "--skip-laf-live"])
+
+    assert rc == 0
+    report_path = tmp_path / ".runtime" / "business_module_live_check_latest.json"
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert "business_module_live_check_latest.json" in json.loads(capsys.readouterr().out)["json_out"]

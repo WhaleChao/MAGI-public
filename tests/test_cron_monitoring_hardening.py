@@ -188,6 +188,25 @@ def test_operational_audit_flags_stale_runtime_lock(tmp_path, monkeypatch):
     assert report["stale_count"] == 1
 
 
+def test_operational_audit_treats_lock_body_without_sidecar_as_orphaned_anchor(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "demo.lock").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks()
+
+    assert report["ok"] is True
+    assert report["stale_count"] == 0
+    assert report["orphaned_anchor_count"] == 1
+
+
 def test_operational_audit_requires_laf_gmail_fallback_json_out(tmp_path, monkeypatch):
     import scripts.ops.audit_operational_hardening as audit
 

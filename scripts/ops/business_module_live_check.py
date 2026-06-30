@@ -31,6 +31,7 @@ if not Path(PYTHON).exists():
     PYTHON = sys.executable
 DRIVE_SYNC_STATUS_SLA_HOURS = 24.0
 CALENDAR_TODO_STATUS_SLA_HOURS = 24.0
+DEFAULT_LIVE_REPORT = Path(".runtime/business_module_live_check_latest.json")
 
 _ACTIVE_SCAN_DIRS = ("api", "casper_ecosystem", "scripts", "skills")
 _SOURCE_SKIP_PARTS = {".git", ".pytest_cache", "__pycache__", "venv", "node_modules", "_bg_jobs"}
@@ -783,7 +784,7 @@ def live_validation_commands(py: str | None = None) -> dict[str, list[str]]:
             "scripts/ops/business_module_live_check.py",
             "--json",
             "--json-out",
-            ".runtime/business_module_live_latest.json",
+            str(DEFAULT_LIVE_REPORT),
         ],
         "conflict_audit": [
             py,
@@ -931,6 +932,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_report_path(raw: str | None, *, default: Path | None = None) -> Path | None:
+    value = raw.strip() if isinstance(raw, str) else ""
+    if value:
+        out_path = Path(value)
+    elif default is not None:
+        out_path = default
+    else:
+        return None
+    if not out_path.is_absolute():
+        out_path = REPO_ROOT / out_path
+    return out_path
+
+
+def _write_report(path: Path | None, payload: dict[str, Any]) -> str:
+    if path is None:
+        return ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    return str(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.print_live_commands:
@@ -940,12 +962,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.conflict_audit:
         payload = audit_live_conflicts(REPO_ROOT, strict=bool(args.strict_conflicts))
-        if args.json_out:
-            out_path = Path(args.json_out)
-            if not out_path.is_absolute():
-                out_path = REPO_ROOT / out_path
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        out_path = _resolve_report_path(args.json_out)
+        if out_path:
+            _write_report(out_path, payload)
             payload["json_out"] = str(out_path)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if payload.get("ok") else 1
@@ -991,12 +1010,9 @@ def main(argv: list[str] | None = None) -> int:
         results.insert(1, _laf_portal_live())
     ok = all(bool(r.get("ok")) for r in results)
     out = {"ok": ok, "success": ok, "results": results, "message": _summarize(results), "commands": live_validation_commands()}
-    if args.json_out:
-        out_path = Path(args.json_out)
-        if not out_path.is_absolute():
-            out_path = REPO_ROOT / out_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    out_path = _resolve_report_path(args.json_out, default=DEFAULT_LIVE_REPORT)
+    if out_path:
+        _write_report(out_path, out)
         out["json_out"] = str(out_path)
     _notify(out["message"])
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))

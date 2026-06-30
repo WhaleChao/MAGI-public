@@ -128,3 +128,46 @@ def test_guarded_run_timeout_kills_child_process_group(monkeypatch, tmp_path):
 
     assert rc == 124
     assert not marker.exists()
+
+
+def test_drive_timeout_marker_does_not_overwrite_completed_same_pid_status(monkeypatch, tmp_path):
+    drive_dir = tmp_path / "drive_sync"
+    drive_dir.mkdir()
+    status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "ok",
+                "pid": 4321,
+                "finished_at": "2026-06-30T08:13:23+08:00",
+                "status_by_kind": {
+                    "all_files": {
+                        "ok": True,
+                        "status": "ok",
+                        "pid": 4321,
+                        "finished_at": "2026-06-30T08:13:23+08:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+
+    guarded._mark_drive_sync_guard_timeout("job_drive_case_sync_all_files", 3600, child_pid=4321)
+
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+
+
+def test_drive_timeout_marker_writes_timeout_when_no_terminal_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+
+    guarded._mark_drive_sync_guard_timeout("job_drive_case_sync_all_files", 3600, child_pid=4321)
+
+    status_path = tmp_path / "drive_sync" / "drive_case_sync_worker_status_latest.json"
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "timeout"
+    assert payload["pid"] == 4321

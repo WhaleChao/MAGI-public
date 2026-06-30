@@ -163,3 +163,39 @@ def test_termination_status_marks_interrupted_with_offsets():
     assert status["signal"] == 15
     assert status["matched_case_offset"] == 24
     assert status["all_case_total"] == 207
+
+
+def test_terminal_status_for_current_process_preserves_completed_worker_state(tmp_path, monkeypatch):
+    worker = load_worker_module()
+    monkeypatch.setattr(worker, "runtime_dir", lambda: tmp_path)
+    worker.save_worker_status(
+        {
+            "ok": True,
+            "status": "ok",
+            "pid": os.getpid(),
+            "finished_at": "2026-06-30T08:13:23+08:00",
+            "summary": {"matched_case_folders": 23},
+        },
+        kind="all_files",
+    )
+
+    status = worker._terminal_status_for_current_process("all_files")
+
+    assert status["status"] == "ok"
+    assert worker._terminal_status_exit_code(status) == 0
+
+
+def test_terminal_status_for_current_process_ignores_interrupted_state(tmp_path, monkeypatch):
+    worker = load_worker_module()
+    monkeypatch.setattr(worker, "runtime_dir", lambda: tmp_path)
+    worker.save_worker_status(
+        {
+            "ok": False,
+            "status": "interrupted",
+            "pid": os.getpid(),
+            "finished_at": "2026-06-30T08:13:23+08:00",
+        },
+        kind="all_files",
+    )
+
+    assert worker._terminal_status_for_current_process("all_files") == {}

@@ -479,7 +479,7 @@ def live_validation_commands(py: str | None = None) -> dict[str, list[str]]:
             "scripts/ops/business_module_live_check.py",
             "--json",
             "--json-out",
-            ".runtime/business_module_live_latest.json",
+            ".runtime/business_module_live_check_latest.json",
         ],
         "conflict_audit": [
             py,

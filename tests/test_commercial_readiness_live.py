@@ -177,5 +177,6 @@ def test_live_validation_commands_include_required_probe_paths():
 
     assert commands["production_live"][:4] == ["python3", "scripts/ops/run_test_suite.py", "--suite", "production-live"]
     assert commands["business_modules"][:2] == ["python3", "scripts/ops/business_module_live_check.py"]
+    assert commands["business_modules"][-2:] == ["--json-out", ".runtime/business_module_live_check_latest.json"]
     assert commands["conflict_audit"][:3] == ["python3", "scripts/ops/business_module_live_check.py", "--conflict-audit"]
     assert commands["manual_probe"] == ["curl", "-fsS", "http://127.0.0.1:${MAGI_SERVER_PORT:-5002}/health"]
