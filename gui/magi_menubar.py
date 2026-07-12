@@ -1328,10 +1328,10 @@ if _HAS_APPKIT:
             self._rounded(10, 10, width - 20, height - 20, 16, fill=self._color("071217", 0.98), stroke=self._color("3D5963", 0.95), line_width=1.5)
             self._rounded(24, 24, width - 48, height - 48, 10, fill=self._color("06191D", 0.92), stroke=self._color("1F8F86", 0.42), line_width=1.1)
 
-            for i, color in enumerate((amber, amber, self._color("FF5F5F"), self._color("FF5F5F"))):
+            for i, color in enumerate((cyan, cyan, green, green)):
                 self._rounded(42 + i * 16, 42, 10, 5, 2, fill=color)
             for i in range(6):
-                self._rounded(width - 124 + i * 13, 42, 8, 5, 2, fill=amber if i < 5 else self._color("FF5F5F"))
+                self._rounded(width - 124 + i * 13, 42, 8, 5, 2, fill=cyan if i < 5 else green)
 
             overall = _overall_state(cache)
             overall_label = OVERALL_WAITING_TEXT if overall == "waiting" else _label_for_state(overall, OPERATIONAL_TEXT)
