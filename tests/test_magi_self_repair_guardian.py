@@ -25,6 +25,25 @@ def test_guardian_does_not_feed_back_its_previous_artifact():
     assert [issue["evidence"]["path"] for issue in issues] == [".runtime/other_latest.json"]
 
 
+def test_guardian_keeps_observed_health_failures_informational():
+    issues = guardian._collect_health_issues(
+        {
+            "runtime_health": {
+                "observed_failed": [
+                    {
+                        "path": ".runtime/manual_probe_latest.json",
+                        "reason": "ok=false",
+                    }
+                ]
+            }
+        }
+    )
+
+    assert len(issues) == 1
+    assert issues[0]["severity"] == "info"
+    assert guardian._open_issue(issues[0]) is False
+
+
 def test_guardian_ignores_only_its_own_previous_cron_failure():
     own = guardian._collect_doctor_issues(
         {"checks": [{"name": "cron_state_failures", "status": "fail", "detail": "job_magi_self_repair_guardian:success=False rc=1"}]}
@@ -37,7 +56,7 @@ def test_guardian_ignores_only_its_own_previous_cron_failure():
     assert [issue["id"] for issue in mixed] == ["doctor:cron_state_failures"]
 
 
-def test_guardian_audit_reports_tmp_residue_without_deleting(tmp_path: Path):
+def test_guardian_observes_unowned_tmp_residue_without_failing_or_deleting(tmp_path: Path):
     tmp_dir = tmp_path / "tmp"
     tmp_dir.mkdir()
     residue = tmp_dir / "magi_old_report.json"
@@ -55,12 +74,13 @@ def test_guardian_audit_reports_tmp_residue_without_deleting(tmp_path: Path):
         tmp_min_age_minutes=1,
     )
 
-    assert report["ok"] is False
+    assert report["ok"] is True
     assert residue.exists()
     assert report["summary"]["safe_auto_repair_available_count"] == 0
-    assert report["summary"]["human_required_count"] == 1
-    assert report["issues"][0]["id"] == "tmp:magi_unowned_residue"
-    assert report["actions"][0]["status"] == "requires_human"
+    assert report["summary"]["human_required_count"] == 0
+    assert report["issues"][0]["id"] == "tmp:magi_unowned_observed"
+    assert report["issues"][0]["severity"] == "info"
+    assert report["actions"] == []
 
 
 def test_guardian_repair_safe_deletes_only_stale_magi_tmp_artifacts(tmp_path: Path):
@@ -144,8 +164,10 @@ def test_guardian_repair_safe_never_deletes_unowned_directories(tmp_path: Path):
     )
 
     assert residue_dir.exists()
+    assert report["ok"] is True
     assert report["summary"]["applied_action_count"] == 0
-    assert report["requires_human"][0]["id"] == "tmp:magi_unowned_residue"
+    assert report["requires_human"] == []
+    assert report["issues"][0]["id"] == "tmp:magi_unowned_observed"
 
 
 def test_guardian_requires_human_for_laf_upload_staging_without_sentinel(tmp_path: Path):

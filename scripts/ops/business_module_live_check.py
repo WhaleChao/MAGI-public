@@ -1235,15 +1235,23 @@ def _notify(text: str) -> dict[str, Any]:
         if isinstance(response, dict):
             queued_value = response.get("queued", False)
             queued = queued_value if type(queued_value) is bool else False
-            delivery_value = response.get("ok", response.get("sent", queued))
+            delivery_value = response.get(
+                "delivered",
+                response.get("telegram", response.get("ok", response.get("sent", queued))),
+            )
             delivered = delivery_value if type(delivery_value) is bool else False
             delivery = str(response.get("delivery") or ("queued" if queued else ("sent" if delivered else "failed")))
-            return {
+            result = {
                 "requested": True,
                 "ok": delivered or queued,
                 "delivery": delivery,
                 "queued": queued,
             }
+            if response.get("error"):
+                result["error"] = _redact_text(str(response.get("error")))
+            if response.get("outbox_id"):
+                result["outbox_id"] = _redact_text(str(response.get("outbox_id")))
+            return result
         delivered = bool(response)
         return {
             "requested": True,
@@ -1385,6 +1393,8 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "name": "notification_delivery",
                 "ok": False,
+                "severity": "warning",
+                "business_impact": False,
                 "error": str(notification.get("error") or "notification_delivery_failed"),
                 "parsed": {
                     "delivery": notification.get("delivery"),
@@ -1392,11 +1402,11 @@ def main(argv: list[str] | None = None) -> int:
                 },
             }
         )
-        ok = False
         message = _summarize(results)
     out = {
         "ok": ok,
         "success": ok,
+        "notification_ok": bool(notification.get("ok")),
         "results": results,
         "message": message,
         "commands": live_validation_commands(),

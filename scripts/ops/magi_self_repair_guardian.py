@@ -102,7 +102,7 @@ def _managed_laf_tmp_candidates(*, parent: Path, tmp_root: Path, now_ts: float) 
     try:
         children = sorted(parent.iterdir())
     except Exception as exc:
-        return [{"path": str(parent), "age_minutes": None, "kind": "unknown", "eligible": False, "requires_human": True, "reason": f"scan failed: {exc}"}]
+        return [{"path": str(parent), "age_minutes": None, "kind": "unknown", "scope": "managed_laf_staging", "eligible": False, "requires_human": True, "reason": f"scan failed: {exc}"}]
     for child in children:
         age_minutes = _candidate_age_minutes(child, now_ts=now_ts)
         if parent.name == _LAF_UPLOAD_STAGING_DIR and _laf_upload_staging_child(child, tmp_root):
@@ -117,6 +117,7 @@ def _managed_laf_tmp_candidates(*, parent: Path, tmp_root: Path, now_ts: float) 
                     "path": str(child),
                     "age_minutes": age_minutes,
                     "kind": "managed_laf_upload_staging",
+                    "scope": "managed_laf_staging",
                     "owned": owned,
                     "eligible": eligible,
                     # Legacy run directories have no proof of MAGI ownership.  They
@@ -147,6 +148,7 @@ def _managed_laf_tmp_candidates(*, parent: Path, tmp_root: Path, now_ts: float) 
                     "path": str(child),
                     "age_minutes": age_minutes,
                     "kind": "managed_laf_pdftotext",
+                    "scope": "managed_laf_staging",
                     "owned": True,
                     "eligible": eligible,
                     "requires_human": False,
@@ -159,6 +161,7 @@ def _managed_laf_tmp_candidates(*, parent: Path, tmp_root: Path, now_ts: float) 
                 "path": str(child),
                 "age_minutes": age_minutes,
                 "kind": "unknown",
+                "scope": "managed_laf_staging",
                 "owned": False,
                 "eligible": False,
                 "requires_human": True,
@@ -261,7 +264,7 @@ def _collect_health_issues(report: dict[str, Any]) -> list[dict[str, Any]]:
         ("failed", "error", "failed health artifact"),
         ("missing", "error", "missing expected health artifact"),
         ("stale", "warning", "stale expected health artifact"),
-        ("observed_failed", "warning", "observed failed health artifact"),
+        ("observed_failed", "info", "observed failed health artifact"),
         ("observed_stale", "info", "observed stale health artifact"),
     )
     for key, severity, label in specs:
@@ -354,7 +357,16 @@ def _tmp_candidates(*, tmp_dir: Path, now: datetime, min_age_minutes: float) -> 
 
 def _collect_tmp_issues(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     eligible = [item for item in candidates if item.get("eligible")]
-    needs_human = [item for item in candidates if item.get("requires_human")]
+    needs_human = [
+        item
+        for item in candidates
+        if item.get("requires_human") and item.get("scope") == "managed_laf_staging"
+    ]
+    observed_unowned = [
+        item
+        for item in candidates
+        if item.get("requires_human") and item.get("scope") != "managed_laf_staging"
+    ]
     issues: list[dict[str, Any]] = []
     if eligible:
         issues.append(
@@ -382,6 +394,19 @@ def _collect_tmp_issues(candidates: list[dict[str, Any]]) -> list[dict[str, Any]
                 summary=f"{len(needs_human)} stale /tmp MAGI artifact(s) require ownership review",
                 evidence={"candidates": needs_human[:50], "candidate_count": len(needs_human)},
                 recommendation="Inspect these unowned or directory artifacts before deleting them manually.",
+            )
+        )
+    if observed_unowned:
+        issues.append(
+            _issue(
+                issue_id="tmp:magi_unowned_observed",
+                source="tmp_scan",
+                category="safe_runtime_cleanup",
+                severity="info",
+                status="observed",
+                summary=f"Observed {len(observed_unowned)} unowned /tmp artifact(s) outside MAGI-managed staging",
+                evidence={"candidates": observed_unowned[:50], "candidate_count": len(observed_unowned)},
+                recommendation="No action required. MAGI will not delete temporary artifacts it does not own.",
             )
         )
     return issues

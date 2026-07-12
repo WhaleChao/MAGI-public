@@ -559,7 +559,25 @@ def test_notify_reports_queued_delivery(monkeypatch):
     assert result == {"requested": True, "ok": True, "delivery": "queued", "queued": True}
 
 
-def test_notification_failure_is_written_as_business_failure(tmp_path, monkeypatch):
+def test_notify_accepts_red_phone_delivered_shape(monkeypatch):
+    monkeypatch.setenv("MAGI_BUSINESS_LIVE_CHECK_NOTIFY", "1")
+    import sys
+
+    fake = SimpleNamespace(
+        send_telegram_push_with_status=lambda *_args, **_kwargs: {
+            "telegram": True,
+            "delivered": True,
+            "queued": False,
+        }
+    )
+    monkeypatch.setitem(sys.modules, "skills.ops.red_phone", fake)
+
+    result = live_check._notify("健康檢查")
+
+    assert result == {"requested": True, "ok": True, "delivery": "sent", "queued": False}
+
+
+def test_notification_failure_is_recorded_without_failing_business_health(tmp_path, monkeypatch):
     monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(live_check, "audit_live_conflicts", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(live_check, "_live_runtime_root_live", lambda: {"name": "live_runtime_root_fingerprint", "ok": True})
@@ -574,7 +592,10 @@ def test_notification_failure_is_written_as_business_failure(tmp_path, monkeypat
     rc = live_check.main(["--skip-conflict-audit"])
 
     payload = json.loads((tmp_path / ".runtime" / "business_module_live_check_latest.json").read_text(encoding="utf-8"))
-    assert rc == 1
-    assert payload["ok"] is False
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["notification_ok"] is False
     assert payload["notification"]["delivery"] == "failed"
-    assert any(item["name"] == "notification_delivery" and item["ok"] is False for item in payload["results"])
+    notification = next(item for item in payload["results"] if item["name"] == "notification_delivery")
+    assert notification["ok"] is False
+    assert notification["business_impact"] is False
