@@ -403,7 +403,9 @@ def _parse_dt(value: Any) -> datetime | None:
             # cron_state.json is written by the local scheduler without an
             # offset.  Treat those values as host-local time before comparing
             # them with UTC artifact mtimes.
-            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo or timezone.utc)
+            local_now = datetime.now()
+            local_tz = local_now.tzinfo or local_now.astimezone().tzinfo or timezone.utc
+            dt = dt.replace(tzinfo=local_tz)
         return dt.astimezone(timezone.utc)
     except Exception:
         return None

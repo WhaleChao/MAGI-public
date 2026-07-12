@@ -380,7 +380,9 @@ def _parse_dt(value: Any) -> datetime | None:
                 # Scheduler state timestamps are intentionally local-time
                 # values.  Normalise them to UTC only after assigning the
                 # host's local offset.
-                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo or timezone.utc)
+                local_now = datetime.now()
+                local_tz = local_now.tzinfo or local_now.astimezone().tzinfo or timezone.utc
+                dt = dt.replace(tzinfo=local_tz)
             return dt.astimezone(timezone.utc)
         except ValueError:
             pass
