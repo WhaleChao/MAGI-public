@@ -146,6 +146,81 @@ def _update_cron_state(job_id: str, payload: Dict[str, Any]) -> bool:
     return True
 
 
+def mark_job_result_from_evidence(
+    job_id: str,
+    *,
+    evidence_at: datetime,
+    success: bool,
+    returncode: int = 0,
+    error: str = "",
+    provenance: str = "",
+    expected_error: str = "",
+) -> bool:
+    """Record an independently verified result without overriding newer work.
+
+    Long-running jobs use this when their own durable state proves completion,
+    even if the scheduler process restarted before collecting the child result.
+    The evidence must be at or after the current dispatch timestamp.
+    """
+    jid = str(job_id or "").strip()
+    if not jid or not isinstance(evidence_at, datetime):
+        return False
+
+    if not _use_runtime_dir():
+        return False
+    state_path = _cron_state_path()
+    if state_path is None:
+        return False
+
+    timestamp = evidence_at.isoformat()
+    payload: Dict[str, Any] = {
+        "last_complete_at": timestamp,
+        "last_result_at": timestamp,
+        "last_success": bool(success),
+        "returncode": int(returncode),
+        "timed_out": False,
+        "last_returncode": int(returncode),
+        "last_timed_out": False,
+        "last_error": "" if success else _tail_text(error, 1200),
+    }
+    if success:
+        payload["last_success_at"] = timestamp
+    else:
+        payload["last_failure_at"] = timestamp
+    if provenance:
+        payload["result_evidence"] = _tail_text(provenance, 160)
+
+    with _file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+            if not isinstance(state, dict):
+                return False
+        except Exception:
+            return False
+        current = dict(state.get(jid) or {})
+        if expected_error and str(current.get("last_error") or "") != expected_error:
+            return False
+        try:
+            dispatched_at = datetime.fromisoformat(
+                str(current.get("last_dispatch_at") or current.get("last_run") or "").replace("Z", "+00:00")
+            )
+        except Exception:
+            return False
+
+        comparable_evidence = evidence_at
+        if dispatched_at.tzinfo is not None and comparable_evidence.tzinfo is None:
+            comparable_evidence = comparable_evidence.astimezone()
+        elif dispatched_at.tzinfo is None and comparable_evidence.tzinfo is not None:
+            comparable_evidence = comparable_evidence.replace(tzinfo=None)
+        if comparable_evidence < dispatched_at:
+            return False
+
+        current.update(payload)
+        state[jid] = current
+        _atomic_write_json(state_path, state)
+    return True
+
+
 _SENSITIVE_JSON_FIELD_RE = re.compile(
     r'(?i)(["\'](?:client_name|party|applicant|recipient|case_number|court_case_no|court_case_number|folder_path|local_path|path|email|phone|token|password|secret|api[_-]?key)["\']\s*:\s*)["\'][^"\'\r\n]*["\']'
 )

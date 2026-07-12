@@ -175,3 +175,23 @@ def test_cli_writes_compact_json_and_strict_exit_code(tmp_path, capsys):
     assert written_report["summary"]["warning_count"] == 1
 
     assert gate.main(["--root", str(tmp_path), "--capabilities", str(catalog), "--strict"]) == 1
+
+
+def test_public_report_can_mirror_into_an_installed_runtime(tmp_path):
+    gate = _load_gate()
+    source_root = tmp_path / "source"
+    live_root = tmp_path / "live"
+    source_root.mkdir()
+    live_root.mkdir()
+    output = source_root / ".runtime" / "agent_readiness_live_latest.json"
+    report = {"ok": True, "summary": {"ready_count": 37}}
+
+    mirrored = gate.mirror_live_report(
+        report,
+        output,
+        source_root=source_root,
+        live_root=live_root,
+    )
+
+    assert mirrored == live_root / ".runtime" / output.name
+    assert json.loads(mirrored.read_text(encoding="utf-8")) == report

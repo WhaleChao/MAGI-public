@@ -36,6 +36,7 @@ import re
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path.home() / "Desktop/MAGI")))
@@ -187,6 +188,72 @@ def _save_state(state: dict) -> None:
     tmp.replace(STATE_PATH)
 
 
+def _completed_run_evidence(state: dict, day: str) -> datetime | None:
+    """Return durable completion time for a fully processed daily batch."""
+    stats = (state.get("stats") or {}).get(day) or {}
+    if stats.get("stopped_by") != "complete":
+        return None
+    candidates: list[datetime] = []
+    completed_at = str(stats.get("completed_at") or "").strip()
+    if completed_at:
+        try:
+            candidates.append(datetime.fromisoformat(completed_at.replace("Z", "+00:00")))
+        except ValueError:
+            pass
+    for value in (state.get("nim_done") or {}).values():
+        if not isinstance(value, dict):
+            continue
+        observed = str(value.get("at") or "").strip()
+        if not observed.startswith(day):
+            continue
+        try:
+            candidates.append(datetime.fromisoformat(observed.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    return max(candidates) if candidates else None
+
+
+def _record_scheduler_success(
+    evidence_at: datetime,
+    *,
+    recover_missing_completion: bool = False,
+) -> bool:
+    """Publish job-owned completion evidence into the scheduler state."""
+    try:
+        from skills.ops.cron_scheduler import mark_job_result_from_evidence
+
+        return mark_job_result_from_evidence(
+            "job_weekend_resummary",
+            evidence_at=evidence_at,
+            success=True,
+            returncode=0,
+            provenance="weekend_resummary:completed_batch",
+            expected_error=(
+                "scheduler_completion_missing_after_timeout"
+                if recover_missing_completion
+                else ""
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Unable to publish scheduler completion evidence: %s", exc)
+        return False
+
+
+def reconcile_scheduler_state(day: str | None = None) -> bool:
+    """Recover a false scheduler timeout from the job's durable daily state."""
+    observed_day = day or datetime.now().strftime("%Y-%m-%d")
+    evidence_at = _completed_run_evidence(_load_state(), observed_day)
+    if evidence_at is None:
+        logger.error("No completed resummary evidence for %s", observed_day)
+        return False
+    recovered = _record_scheduler_success(evidence_at, recover_missing_completion=True)
+    if recovered:
+        logger.info("Recovered scheduler result from completed batch at %s", evidence_at.isoformat())
+    else:
+        logger.error("Scheduler state did not match recoverable completion evidence")
+    return recovered
+
+
 # ── 案由提取 ──────────────────────────────────────────────────────────
 def _extract_case_reason_from_text(text: str) -> str:
     """從判決全文提取案由。"""
@@ -332,7 +399,12 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="限制筆數（0=不限）")
     parser.add_argument("--dry-run", action="store_true", help="模擬模式")
     parser.add_argument("--delay", type=float, default=INTER_REQUEST_DELAY, help="請求間隔秒數")
+    parser.add_argument("--reconcile-cron-state", action="store_true", help="依完成紀錄修復遺失的排程結果")
+    parser.add_argument("--evidence-date", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.reconcile_cron_state:
+        return 0 if reconcile_scheduler_state(args.evidence_date or None) else 1
 
     # PID Lock
     if not _acquire_lock():
@@ -349,7 +421,6 @@ def main():
                                                str(max(50, NIM_DAILY_BUDGET - 200))))
 
     # RunAtLoad 守衛：非手動啟動時，只在有未完成工作時才繼續
-    from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     weekday = datetime.now().weekday()  # 0=Mon, 5=Sat, 6=Sun
     today_stats = state.get("stats", {}).get(today, {})
@@ -386,6 +457,8 @@ def main():
 
     if not entries:
         logger.info("Nothing to do")
+        if not args.dry_run:
+            _record_scheduler_success(datetime.now())
         return 0
 
     logger.info("Starting NIM re-summary of %d judgments (budget_cap=%d)",
@@ -522,16 +595,21 @@ def main():
 
     # 最終儲存
     state["nim_done"] = nim_done
+    completed_at = datetime.now()
+    stopped_by = "shutdown" if _shutdown_requested else (
+        "max_fails" if consecutive_fails >= MAX_CONSECUTIVE_FAILS else "complete"
+    )
     state["stats"][time.strftime("%Y-%m-%d")] = {
         "total": len(entries),
         "success": success_count,
         "fail": fail_count,
         "distill": distill_count,
-        "stopped_by": "shutdown" if _shutdown_requested else (
-            "max_fails" if consecutive_fails >= MAX_CONSECUTIVE_FAILS else "complete"
-        ),
+        "stopped_by": stopped_by,
+        "completed_at": completed_at.isoformat(),
     }
     _save_state(state)
+    if stopped_by == "complete" and not args.dry_run:
+        _record_scheduler_success(completed_at)
 
     elapsed_min = (time.time() - start_time) / 60
     report = (

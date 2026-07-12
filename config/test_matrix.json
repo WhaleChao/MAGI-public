@@ -100,6 +100,7 @@
             "{python}",
             "scripts/ops/agent_readiness_gate.py",
             "--strict",
+            "--mirror-live-runtime",
             "--json-out",
             ".runtime/agent_readiness_ci_latest.json"
           ],
@@ -356,6 +357,7 @@
             "{python}",
             "scripts/ops/agent_readiness_gate.py",
             "--strict",
+            "--mirror-live-runtime",
             "--json-out",
             ".runtime/agent_readiness_live_latest.json"
           ],
@@ -470,6 +472,7 @@
             "{python}",
             "scripts/ops/agent_readiness_gate.py",
             "--strict",
+            "--mirror-live-runtime",
             "--json-out",
             ".runtime/agent_readiness_release_latest.json"
           ],

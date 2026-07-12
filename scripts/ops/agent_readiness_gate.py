@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CAPABILITIES = MAGI_ROOT / "config" / "agent_capabilities.json"
+DEFAULT_LIVE_RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "MAGI" / "runtime" / "MAGI_v2"
 ALLOWED_SIDE_EFFECTS = {
     "read_only",
     "external_read",
@@ -260,11 +261,32 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def mirror_live_report(
+    report: dict[str, Any],
+    output_path: Path,
+    *,
+    source_root: Path,
+    live_root: Path | None = None,
+) -> Path | None:
+    """Mirror public-safe gate evidence into an installed runtime when present."""
+    destination_root = Path(
+        live_root
+        or os.environ.get("MAGI_LIVE_RUNTIME_ROOT")
+        or DEFAULT_LIVE_RUNTIME_ROOT
+    ).expanduser()
+    if not destination_root.exists() or destination_root.resolve() == source_root.resolve():
+        return None
+    destination = destination_root / ".runtime" / output_path.name
+    _write_json(destination, report)
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate MAGI public agent capability readiness contracts.")
     parser.add_argument("--capabilities", default=str(DEFAULT_CAPABILITIES), help="Capability catalog JSON path.")
     parser.add_argument("--root", default=str(MAGI_ROOT), help="Repository root used to validate tool references.")
     parser.add_argument("--json-out", default="", help="Optional compact JSON report path.")
+    parser.add_argument("--mirror-live-runtime", action="store_true", help="Mirror public-safe evidence into an installed live runtime when present.")
     parser.add_argument("--strict", action="store_true", help="Treat low-risk contract warnings as failures.")
     args = parser.parse_args(argv)
 
@@ -279,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         if not output_path.is_absolute():
             output_path = root / output_path
         _write_json(output_path, report)
+        if args.mirror_live_runtime:
+            mirror_live_report(report, output_path, source_root=root)
     print(json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
     return 0 if report["ok"] else 1
 
