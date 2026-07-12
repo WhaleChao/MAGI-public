@@ -23,14 +23,13 @@ import sys
 import tempfile
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
-_EXPORTS_DIR = os.environ.get(
-    "MAGI_EXPORTS_DIR",
-    str(_MAGI_ROOT / "static" / "exports"),
-)
+_DEFAULT_EXPORTS_DIR = _MAGI_ROOT / "static" / "exports"
+_EXPORTS_DIR = os.environ.get("MAGI_EXPORTS_DIR", str(_DEFAULT_EXPORTS_DIR))
 
 # Reuse public URL logic from export_text
 try:
@@ -64,6 +63,70 @@ def _find_node_path() -> str:
     return ""
 
 
+def _exports_dir() -> Path:
+    return Path(os.environ.get("MAGI_EXPORTS_DIR", str(_DEFAULT_EXPORTS_DIR))).expanduser().resolve(strict=False)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_generated_filename(prefix: str) -> str:
+    safe_prefix = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in str(prefix or "export"))
+    safe_prefix = safe_prefix.strip("._-") or "export"
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    token = uuid.uuid4().hex[:8]
+    return f"{safe_prefix}_{stamp}_{token}.docx"
+
+
+def _resolve_export_docx_path(filename: str) -> tuple[Path, str]:
+    name = str(filename or "").strip()
+    if not name:
+        raise ValueError("empty filename")
+    candidate = Path(name)
+    if candidate.is_absolute() or candidate.name != name or "\\" in name or ".." in candidate.parts:
+        raise ValueError("filename must be a plain .docx basename")
+    if candidate.suffix.lower() != ".docx":
+        raise ValueError("filename must end with .docx")
+    exports_dir = _exports_dir()
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    out_path = (exports_dir / candidate.name).resolve(strict=False)
+    if not _is_relative_to(out_path, exports_dir):
+        raise ValueError("resolved DOCX path escapes exports directory")
+    return out_path, candidate.name
+
+
+def _validate_docx_file(path: Path) -> dict:
+    if not path.exists():
+        return {"ok": False, "error": "docx file not created"}
+    if path.stat().st_size < 512:
+        return {"ok": False, "error": f"docx file too small:{path.stat().st_size}"}
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+            for required in ("[Content_Types].xml", "word/document.xml"):
+                if required not in names:
+                    return {"ok": False, "error": f"docx missing zip entry:{required}"}
+            bad = zf.testzip()
+            if bad:
+                return {"ok": False, "error": f"docx corrupt zip entry:{bad}"}
+    except zipfile.BadZipFile as exc:
+        return {"ok": False, "error": f"docx bad zip:{exc}"}
+    try:
+        from docx import Document
+
+        doc = Document(str(path))
+        text_chars = sum(len(p.text or "") for p in doc.paragraphs)
+        table_rows = sum(len(table.rows) for table in doc.tables)
+    except Exception as exc:
+        return {"ok": False, "error": f"docx readback failed:{exc}"}
+    return {"ok": True, "text_chars": text_chars, "table_rows": table_rows}
+
+
 def export_bilingual_docx(
     pages: List[Dict[str, Any]],
     *,
@@ -91,14 +154,13 @@ def export_bilingual_docx(
     if not pages:
         return {"success": False, "error": "empty pages"}
 
-    Path(_EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
-
     if not filename:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        token = uuid.uuid4().hex[:8]
-        filename = f"{prefix}_{stamp}_{token}.docx"
+        filename = _safe_generated_filename(prefix)
 
-    out_path = os.path.join(_EXPORTS_DIR, filename)
+    try:
+        out_path, filename = _resolve_export_docx_path(filename)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
 
     # Write page data to temp JSON
     data = {
@@ -107,13 +169,15 @@ def export_bilingual_docx(
         "subtitle": subtitle or "",
         "header_text": header_text or "",
         "pages": pages,
-        "out_path": out_path,
+        "out_path": str(out_path),
+        "filename": filename,
+        "exports_dir": str(_exports_dir()),
         "hide_page_column": bool(hide_page_column),
     }
     if col_labels:
         data["col_labels"] = col_labels
 
-    return _run_docx_generator(data, out_path, filename)
+    return _run_docx_generator(data, str(out_path), filename)
 
 
 def export_transcript_docx(
@@ -138,24 +202,25 @@ def export_transcript_docx(
     if not segments:
         return {"success": False, "error": "empty segments"}
 
-    Path(_EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
-
     if not filename:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        token = uuid.uuid4().hex[:8]
-        filename = f"{prefix}_{stamp}_{token}.docx"
+        filename = _safe_generated_filename(prefix)
 
-    out_path = os.path.join(_EXPORTS_DIR, filename)
+    try:
+        out_path, filename = _resolve_export_docx_path(filename)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
 
     data = {
         "mode": "transcript",
         "title": title or "",
         "case_info": case_info or "",
         "segments": segments,
-        "out_path": out_path,
+        "out_path": str(out_path),
+        "filename": filename,
+        "exports_dir": str(_exports_dir()),
     }
 
-    return _run_docx_generator(data, out_path, filename)
+    return _run_docx_generator(data, str(out_path), filename)
 
 
 def export_summary_docx(
@@ -178,23 +243,24 @@ def export_summary_docx(
     if not sections:
         return {"success": False, "error": "empty sections"}
 
-    Path(_EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
-
     if not filename:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        token = uuid.uuid4().hex[:8]
-        filename = f"{prefix}_{stamp}_{token}.docx"
+        filename = _safe_generated_filename(prefix)
 
-    out_path = os.path.join(_EXPORTS_DIR, filename)
+    try:
+        out_path, filename = _resolve_export_docx_path(filename)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
 
     data = {
         "mode": "summary",
         "title": title or "",
         "sections": sections,
-        "out_path": out_path,
+        "out_path": str(out_path),
+        "filename": filename,
+        "exports_dir": str(_exports_dir()),
     }
 
-    return _run_docx_generator(data, out_path, filename)
+    return _run_docx_generator(data, str(out_path), filename)
 
 
 def _run_docx_generator(data: dict, out_path: str, filename: str) -> dict:
@@ -227,8 +293,9 @@ def _run_docx_generator(data: dict, out_path: str, filename: str) -> dict:
                 "error": f"docx generator failed (rc={cp.returncode}): {(cp.stderr or '')[:300]}",
             }
 
-        if not os.path.exists(out_path):
-            return {"success": False, "error": "docx file not created"}
+        validation = _validate_docx_file(Path(out_path))
+        if not validation.get("ok"):
+            return {"success": False, "error": str(validation.get("error") or "docx validation failed")}
 
         base = _load_public_base_url()
         url = (base.rstrip("/") + f"/static/exports/{filename}") if base else ""
@@ -239,6 +306,7 @@ def _run_docx_generator(data: dict, out_path: str, filename: str) -> dict:
             "filename": filename,
             "url": url,
             "format": "docx",
+            "validation": validation,
         }
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "docx generator timeout"}

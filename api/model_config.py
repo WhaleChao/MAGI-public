@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable
+import re
+from typing import Iterable, Optional
 
 
 DEFAULT_TEXT_MODEL = "gemma-4-e4b-it-4bit"
@@ -9,10 +10,43 @@ DEFAULT_VISION_MODEL = "gemma-4-e4b-it-4bit"
 DEFAULT_OCR_MODEL = "macos-vision"
 DEFAULT_EMBED_MODEL = "modernbert-embed-4bit"
 
+_DISALLOWED_MODEL_MARKERS = (
+    "qwen",
+    "deepseek",
+    "kimi",
+    "minimax",
+    "baichuan",
+    "moonshot",
+    "internlm",
+    "chatglm",
+    "sensetime",
+)
+
+
+def is_disallowed_model(name: Optional[str]) -> bool:
+    """Return True for models excluded by MAGI's non-China model policy."""
+    text = str(name or "").strip().lower()
+    if not text:
+        return False
+    if any(marker in text for marker in _DISALLOWED_MODEL_MARKERS):
+        return True
+    if re.search(r"(^|[-_/.:])glm($|[-_/.:0-9a-z])", text):
+        return True
+    if re.search(r"(^|[-_/.:])yi($|[-_/.:0-9a-z])", text):
+        return True
+    return False
+
 
 def _clean(value: Optional[str], fallback: str = "") -> str:
     text = str(value or "").strip()
     return text or fallback
+
+
+def _clean_model(value: Optional[str], fallback: str = "") -> str:
+    candidate = _clean(value, fallback)
+    if is_disallowed_model(candidate):
+        return fallback
+    return candidate
 
 
 TEXT_PRIMARY_MODEL = _clean(
@@ -21,17 +55,19 @@ TEXT_PRIMARY_MODEL = _clean(
     or os.environ.get("CASPER_LOCAL_MODEL"),
     DEFAULT_TEXT_MODEL,
 )
-TEXT_REVIEW_MODEL = _clean(os.environ.get("MAGI_TW_REVIEW_MODEL"), TEXT_PRIMARY_MODEL)
-GENERAL_MODEL = _clean(os.environ.get("MAGI_OMLX_GENERAL_MODEL"), TEXT_PRIMARY_MODEL)
-SUMMARY_MODEL = _clean(os.environ.get("MAGI_OMLX_SUMMARY_MODEL"), TEXT_PRIMARY_MODEL)
-CODE_MODEL = _clean(os.environ.get("MAGI_OMLX_CODE_MODEL"), TEXT_PRIMARY_MODEL)
-TEXT_HEAVY_MODEL = _clean(os.environ.get("MAGI_TEXT_HEAVY_MODEL"), "gemma-4-26b-a4b-it-4bit")
-TEXT_VERIFY_MODEL_PHI4 = _clean(os.environ.get("MAGI_TEXT_VERIFY_MODEL_PHI4"), "Phi-4-mini-instruct-4bit")
-TEXT_VERIFY_MODEL_SMOL = _clean(os.environ.get("MAGI_TEXT_VERIFY_MODEL_SMOL"), "SmolLM3-3B-Instruct-4bit")
-VISION_MODEL = _clean(os.environ.get("MAGI_OMLX_VISION_MODEL"), DEFAULT_VISION_MODEL)
+if is_disallowed_model(TEXT_PRIMARY_MODEL):
+    TEXT_PRIMARY_MODEL = DEFAULT_TEXT_MODEL
+TEXT_REVIEW_MODEL = _clean_model(os.environ.get("MAGI_TW_REVIEW_MODEL"), TEXT_PRIMARY_MODEL)
+GENERAL_MODEL = _clean_model(os.environ.get("MAGI_OMLX_GENERAL_MODEL"), TEXT_PRIMARY_MODEL)
+SUMMARY_MODEL = _clean_model(os.environ.get("MAGI_OMLX_SUMMARY_MODEL"), TEXT_PRIMARY_MODEL)
+CODE_MODEL = _clean_model(os.environ.get("MAGI_OMLX_CODE_MODEL"), TEXT_PRIMARY_MODEL)
+TEXT_HEAVY_MODEL = _clean_model(os.environ.get("MAGI_TEXT_HEAVY_MODEL"), "gemma-4-26b-a4b-it-4bit")
+TEXT_VERIFY_MODEL_PHI4 = _clean_model(os.environ.get("MAGI_TEXT_VERIFY_MODEL_PHI4"), "Phi-4-mini-instruct-4bit")
+TEXT_VERIFY_MODEL_SMOL = _clean_model(os.environ.get("MAGI_TEXT_VERIFY_MODEL_SMOL"), "SmolLM3-3B-Instruct-4bit")
+VISION_MODEL = _clean_model(os.environ.get("MAGI_OMLX_VISION_MODEL"), DEFAULT_VISION_MODEL)
 OCR_MODEL = _clean(os.environ.get("MAGI_OMLX_OCR_MODEL"), DEFAULT_OCR_MODEL)
-EMBED_MODEL = _clean(os.environ.get("MAGI_OMLX_EMBED_MODEL"), DEFAULT_EMBED_MODEL)
-DEFAULT_MODEL_ALIAS = _clean(os.environ.get("MAGI_DEFAULT_MODEL"), TEXT_PRIMARY_MODEL)
+EMBED_MODEL = _clean_model(os.environ.get("MAGI_OMLX_EMBED_MODEL"), DEFAULT_EMBED_MODEL)
+DEFAULT_MODEL_ALIAS = _clean_model(os.environ.get("MAGI_DEFAULT_MODEL"), TEXT_PRIMARY_MODEL)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -112,9 +148,15 @@ def is_text_model_alias(name: Optional[str]) -> bool:
 def resolve_text_model(name: Optional[str] = None, *, available: Iterable[str] | None = None) -> str:
     requested = str(name or "").strip()
     candidate = TEXT_PRIMARY_MODEL if is_text_model_alias(requested) else requested or TEXT_PRIMARY_MODEL
+    if is_disallowed_model(candidate):
+        candidate = TEXT_PRIMARY_MODEL
     if available is None:
         return candidate
-    models = [str(model).strip() for model in available if str(model).strip()]
+    models = [
+        str(model).strip()
+        for model in available
+        if str(model).strip() and not is_disallowed_model(str(model).strip())
+    ]
     if not models:
         return candidate
     if candidate in models:
@@ -135,4 +177,7 @@ def default_local_chat_models() -> list[str]:
 
 
 def default_local_vision_models() -> list[str]:
-    return [VISION_MODEL]
+    # This is the installer/onboarding default, not the currently selected
+    # runtime override. Keep it stable so text-heavy models such as 26B are not
+    # accidentally advertised as the safe local OCR/vision default.
+    return [DEFAULT_VISION_MODEL]

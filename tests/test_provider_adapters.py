@@ -40,7 +40,7 @@ def test_ollama_provider_builds_payload_and_healthcheck(monkeypatch):
     resp.status_code = 200
     resp.text = "ok"
     resp.raise_for_status.return_value = None
-    resp.json.return_value = {"models": [{"name": "llama3"}, {"name": "qwen"}]}
+    resp.json.return_value = {"models": [{"name": "llama3"}, {"name": "mistral"}]}
     provider.session = MagicMock(get=MagicMock(return_value=resp))
 
     health = provider.health_check(path="/api/tags")

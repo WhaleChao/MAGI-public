@@ -5,6 +5,8 @@ Database config/connection, JSON/path/folder helpers, file reading,
 skill execution, parsing/normalization, and core helper functions.
 """
 
+from __future__ import annotations
+
 import difflib
 import json
 import logging
@@ -13,19 +15,26 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
+import threading
 import urllib.error
 import urllib.request
 import html as ihtml
 from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
-import mysql.connector
-import mysql.connector.pooling
+try:
+    from flask_login import current_user
+except Exception:
+    class _NoUser:
+        is_authenticated = False
+        username = None
 
-from flask_login import current_user
+    current_user = _NoUser()
 
-from api.runtime_paths import get_config_path, get_orch_dir
+from api.runtime_paths import get_config_path, get_magi_root_dir, get_orch_dir
 from api.case_path_mapper import (
     local_synology_path_candidates,
     default_synology_share_roots,
@@ -40,6 +49,21 @@ except Exception:
     _normalize_output_text = None
 
 logger = logging.getLogger(__name__)
+
+
+if TYPE_CHECKING:
+    import mysql.connector.pooling  # pragma: no cover - typing only
+    import mysql.connector  # pragma: no cover - typing only
+
+
+def _load_mysql():
+    """Lazy-load mysql.connector only when DB helpers are actually used."""
+    try:
+        import mysql.connector
+        import mysql.connector.pooling
+        return mysql.connector, mysql.connector.pooling
+    except Exception as exc:
+        raise RuntimeError("OSC DB features require mysql package") from exc
 
 
 def _load_local_dotenv() -> None:
@@ -264,7 +288,8 @@ def _get_pool():
         for cfg in _osc_web_db_candidates():
             try:
                 _pool_seq += 1
-                pool = mysql.connector.pooling.MySQLConnectionPool(
+                mysql_connector, mysql_pooling = _load_mysql()
+                pool = mysql_pooling.MySQLConnectionPool(
                     pool_name=f"osc_pool_{_pool_seq}",
                     pool_size=5,
                     pool_reset_session=True,
@@ -305,22 +330,26 @@ def _osc_web_connect():
         pool, cfg = _get_pool()
         conn = pool.get_connection()
         return conn, cfg
-    except mysql.connector.errors.PoolError:
-        # Pool exhausted – fall back to a direct connection using the same cfg
-        _, cfg = _get_pool()
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            port=int(cfg["port"]),
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            autocommit=False,
-            charset="utf8mb4",
-            collation="utf8mb4_unicode_ci",
-            connection_timeout=5,
-        )
-        return conn, cfg
-    except Exception:
+    except Exception as exc:
+        try:
+            mysql_connector, _ = _load_mysql()
+            if getattr(getattr(mysql_connector, "errors", object()), "PoolError", None) and isinstance(exc, mysql_connector.errors.PoolError):
+                # Pool exhausted – fall back to a direct connection using same cfg
+                _, cfg = _get_pool()
+                conn = mysql_connector.connect(
+                    host=cfg["host"],
+                    port=int(cfg["port"]),
+                    user=cfg["user"],
+                    password=cfg["password"],
+                    database=cfg["database"],
+                    autocommit=False,
+                    charset="utf8mb4",
+                    collation="utf8mb4_unicode_ci",
+                    connection_timeout=5,
+                )
+                return conn, cfg
+        except Exception:
+            pass
         # Pool creation or connection failed – reset and try fresh
         _reset_pool()
         # 讓 failover 模組動態更新 env，確保候選列表反映最新狀態
@@ -332,7 +361,8 @@ def _osc_web_connect():
         last_err = None
         for cfg in _osc_web_db_candidates():
             try:
-                conn = mysql.connector.connect(
+                mysql_connector, _ = _load_mysql()
+                conn = mysql_connector.connect(
                     host=cfg["host"],
                     port=int(cfg["port"]),
                     user=cfg["user"],
@@ -453,18 +483,119 @@ def _osc_norm_path(path_str: str) -> str:
     return s2
 
 
+def _osc_live_mount_path_candidates(path_str: str) -> list[str]:
+    norm = _osc_norm_path(path_str).replace("\\", "/").rstrip("/")
+    if not norm:
+        return []
+    candidates: list[str] = []
+
+    active_prefixes = [
+        _osc_canonical_active_share_posix().rstrip("/") + "/01_案件/",
+        f"Z:/{_OSC_NAS_HOME_USER}/01_案件/",
+        "Z:/home/01_案件/",
+    ]
+    for prefix in active_prefixes:
+        if norm.lower().startswith(prefix.lower()):
+            rel = norm[len(prefix):].lstrip("/")
+            candidates.extend([
+                str(Path.home() / ".magi_mounts" / "homes" / _OSC_NAS_HOME_USER / "01_案件" / rel),
+                f"/Volumes/homes/{_OSC_NAS_HOME_USER}/01_案件/{rel}",
+            ])
+
+    for alias in _osc_closed_share_aliases():
+        for prefix in [
+            f"Y:/{alias}/03_工作資料/10_結案/",
+            f"/Volumes/{alias}/{alias}/03_工作資料/10_結案/",
+        ]:
+            if not norm.lower().startswith(prefix.lower()):
+                continue
+            rel = norm[len(prefix):].lstrip("/")
+            candidates.append(str(Path.home() / ".magi_mounts" / alias / alias / "03_工作資料" / "10_結案" / rel))
+            for closed_alias in _osc_closed_share_aliases():
+                candidates.append(f"/Volumes/{closed_alias}/{closed_alias}/03_工作資料/10_結案/{rel}")
+    return [p for p in candidates if p]
+
+
+def _osc_preferred_smb_local_candidates(path_str: str) -> list[str]:
+    """Return live SMB/mount candidates first; tests and runtime may monkeypatch this."""
+    return _osc_live_mount_path_candidates(path_str)
+
+
+def _osc_prioritize_nas_path_candidates(candidates: list[str]) -> list[str]:
+    def priority(path: str) -> tuple[int, str]:
+        norm = str(path or "").replace("\\", "/")
+        if "/.magi_mounts/" in norm:
+            return (0, norm)
+        if norm.startswith("/Volumes/"):
+            return (1, norm)
+        if "/Library/CloudStorage/SynologyDrive" in norm or "/SynologyDrive/" in norm:
+            return (3, norm)
+        if norm.startswith("/Users/"):
+            return (2, norm)
+        return (4, norm)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in candidates:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            unique.append(text)
+    return sorted(unique, key=priority)
+
+
 def _osc_local_path_candidates(path_str: str) -> list[str]:
     """
-    Convert legacy Windows/NAS paths into local synced Synology paths on macOS.
+    Convert legacy Windows/NAS paths into local paths.
+
+    OSC web browsing should prefer live NAS mounts over Synology Drive
+    CloudStorage placeholders, because File Provider paths can block for tens
+    of seconds before falling back.
     """
-    return local_synology_path_candidates(_osc_norm_path(path_str))
+    norm = _osc_norm_path(path_str)
+    candidates = _osc_preferred_smb_local_candidates(norm) + local_synology_path_candidates(norm)
+    return _osc_prioritize_nas_path_candidates(candidates)
 
 
 def _osc_allowed_local_roots() -> list[str]:
+    def _project_root_markers(root: Path) -> bool:
+        try:
+            if not root.is_dir():
+                return False
+        except Exception:
+            return False
+        return bool((root / "api" / "server.py").exists() and (root / "templates").is_dir())
+
+    def _project_root_candidates() -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        try:
+            paths = [Path.cwd()]
+            paths.extend(list(Path.cwd().parents)[:6])
+        except Exception:
+            paths = []
+        for path in paths:
+            try:
+                real_path = path.resolve()
+            except Exception:
+                continue
+            key = str(real_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if _project_root_markers(real_path):
+                candidates.append(real_path)
+        return candidates
+
     magi_root = Path(__file__).resolve().parents[2]
+    magi_root_dir = get_magi_root_dir()
     template_roots = [
         os.environ.get("MAGI_OSC_TEMPLATE_FOLDER", ""),
         str(Path.home() / "Desktop" / "0000-0000-範本-消費者債務清理"),
+    ]
+    file_manager_test_roots = [
+        os.environ.get("PAPERCLIP_FILEMANAGER_TEST_BASE", ""),
+        "/tmp/paperclip_filemanager_test_base",
     ]
     closed_alias_roots: list[str] = []
     for share_name in _osc_closed_share_aliases():
@@ -476,11 +607,31 @@ def _osc_allowed_local_roots() -> list[str]:
             f"/Volumes/{share_name}-1/{share_name}",
             f"/Volumes/{share_name}-2/{share_name}",
         ])
-    roots = default_synology_share_roots(include_closed=False) + [
-        str(magi_root / "exports"),
-        str(magi_root / "static" / "exports"),
+    magi_mount_roots = []
+    magi_mount_home_roots = [
+        Path.home() / ".magi_mounts" / "homes" / _OSC_NAS_HOME_USER,
+    ]
+    for share_name in _osc_closed_share_aliases():
+        magi_mount_home_roots.append(Path.home() / ".magi_mounts" / share_name / share_name)
+    magi_mount_roots.extend(str(p) for p in magi_mount_home_roots)
+    project_roots = [magi_root]
+    if magi_root_dir:
+        project_roots.append(magi_root_dir)
+    project_roots.extend(_project_root_candidates())
+    roots = default_synology_share_roots(include_closed=True)
+    for project_root in project_roots:
+        if not project_root:
+            continue
+        roots.extend([
+            str(project_root / "exports"),
+            str(project_root / "static" / "exports"),
+        ])
+    roots.extend([
         f"/Volumes/homes/{_OSC_NAS_HOME_USER}",
-    ] + closed_alias_roots + [p for p in template_roots if str(p or "").strip()]
+    ])
+    roots += closed_alias_roots + magi_mount_roots + [
+        p for p in (template_roots + file_manager_test_roots) if str(p or "").strip()
+    ]
     out = []
     for root in roots:
         rp = os.path.realpath(root)
@@ -494,7 +645,6 @@ def _osc_stat_quick(path_str: str, timeout: float = 1.5):
     p = str(path_str or "")
     if not p.startswith("/Volumes/"):
         return os.stat(p)
-    import threading
     result = {"stat": None, "error": None}
 
     def _run():
@@ -511,6 +661,81 @@ def _osc_stat_quick(path_str: str, timeout: float = 1.5):
     if result["error"] is not None:
         raise result["error"]
     return result["stat"]
+
+
+def _osc_path_needs_fs_timeout(path_str: str) -> bool:
+    """True for NAS/File Provider paths that may hang inside direct filesystem calls."""
+    norm = str(path_str or "").replace("\\", "/")
+    return (
+        norm.startswith("/Volumes/")
+        or "/.magi_mounts/" in norm
+        or "/Library/CloudStorage/SynologyDrive" in norm
+        or "/SynologyDrive/" in norm
+    )
+
+
+def _osc_finder_list_folder(path_str: str) -> list[str] | None:
+    """Best-effort macOS Finder/Spotlight hook placeholder.
+
+    Kept as a named seam because tests and operators may disable it. Returning
+    None means the normal subprocess fallback should be used.
+    """
+    return None
+
+
+def _osc_listdir_via_subprocess(path_str: str, timeout: float = 7.0) -> list[str]:
+    code = "import json, os, sys\nprint(json.dumps(os.listdir(sys.argv[1]), ensure_ascii=False))"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(path_str)],
+            capture_output=True,
+            text=True,
+            timeout=max(float(timeout), 0.1),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir timeout: {path_str}") from exc
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise OSError(stderr.splitlines()[-1] if stderr else "listdir subprocess failed")
+    raw = (result.stdout or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"listdir subprocess parse failed: {exc}") from exc
+    if not isinstance(data, list):
+        raise OSError("listdir subprocess returned non-list")
+    return [str(x) for x in data]
+
+
+def _osc_listdir_quick(path_str: str, timeout: float = 1.5) -> list[str]:
+    """List a folder with a timeout guard for stale NAS/File Provider paths."""
+    p = str(path_str or "")
+    if not _osc_path_needs_fs_timeout(p):
+        return os.listdir(p)
+    finder = _osc_finder_list_folder(p)
+    if finder is not None:
+        return [str(x) for x in finder]
+    result: dict[str, object] = {"names": None, "error": None}
+
+    def _run() -> None:
+        try:
+            result["names"] = os.listdir(p)
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(max(float(timeout), 0.01))
+    if thread.is_alive():
+        return _osc_listdir_via_subprocess(p, timeout=max(7.0, float(timeout) * 2))
+    if result["error"] is not None:
+        raise result["error"]  # type: ignore[misc]
+    names = result["names"]
+    if isinstance(names, list):
+        return [str(x) for x in names]
+    return []
 
 
 def _osc_exists_quick(path_str: str) -> bool:
@@ -533,6 +758,84 @@ def _osc_isfile_quick(path_str: str) -> bool:
         return bool(_osc_stat_quick(path_str).st_mode & 0o100000)
     except Exception:
         return False
+
+
+def _osc_path_needs_fs_timeout(path_str: str) -> bool:
+    """Detect mounts that are usually safer to query through subprocess/timeouts."""
+    path = str(path_str or "").replace("\\", "/")
+    if not path:
+        return False
+    lowered = path.lower()
+    return (
+        "/.magi_mounts/" in lowered
+        or lowered.startswith("/volumes/")
+        or "/synologydrive" in lowered
+        or "/library/cloudstorage/synologydrive" in lowered
+    )
+
+
+def _osc_finder_list_folder(path: str, timeout: float = 0.5) -> list[str] | None:
+    """Legacy helper hook for finder/folder listing extension points.
+
+    Returns None when caller should use os.listdir fallback.
+    """
+    if not _osc_path_needs_fs_timeout(path):
+        return None
+    return None
+
+
+def _osc_listdir_with_timeout_subprocess(path: str, timeout: float) -> list[str]:
+    code = "import os,sys,json\nprint(json.dumps(os.listdir(sys.argv[1]), ensure_ascii=False))"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir timed out: {timeout}s") from exc
+    if result.returncode != 0:
+        message = (result.stderr or "listdir failed").strip().splitlines()[-1] if (result.stderr or "listdir failed") else "listdir failed"
+        err_no = 0
+        m = re.search(r"Errno\s+(\d+)", message)
+        if m:
+            try:
+                err_no = int(m.group(1))
+            except Exception:
+                err_no = 0
+        if err_no:
+            raise OSError(err_no, message)
+        raise OSError(message)
+    output = (result.stdout or "").strip()
+    if not output:
+        return []
+    try:
+        payload = json.loads(output)
+    except Exception as exc:
+        raise OSError(f"listdir parse failed: {exc}") from exc
+    if not isinstance(payload, list):
+        raise OSError("listdir helper returned non-list")
+    return [str(item) for item in payload]
+
+
+def _osc_listdir_quick(path: str, timeout: float = 0.25) -> list[str]:
+    """Quick directory scan with timeout-aware fallback.
+
+    Legacy-compatible helper used by tests and older callers.
+    """
+    target = str(path or "")
+    if not target:
+        return []
+    if _osc_finder_list_folder(target) is not None:
+        found = _osc_finder_list_folder(target)
+        return list(found) if found is not None else []
+    if _osc_path_needs_fs_timeout(target):
+        try:
+            return _osc_listdir_with_timeout_subprocess(target, timeout=timeout)
+        except (OSError, TimeoutError):
+            pass
+    return list(os.listdir(target))
 
 
 def _osc_is_safe_local_path(path_str: str, *, allow_missing: bool = False) -> bool:
@@ -579,6 +882,89 @@ def _osc_relpath_under(base_path: str, target_path: str) -> str:
     if rel in {".", ""}:
         return ""
     return rel.replace("\\", "/")
+
+
+_OSC_PATH_REFERENCE_COLUMNS = (
+    ("cases", "folder_path"),
+    ("document_index", "file_path"),
+    ("case_documents", "file_path"),
+    ("case_todos", "source_file"),
+    ("legal_insights", "source_file"),
+    ("court_judgments", "source_file"),
+)
+
+
+def _osc_replace_path_prefix_references(old_path: str, new_path: str, *, exec_fn=None) -> dict:
+    """Replace known OSC path prefixes after a filesystem rename.
+
+    Paths may be stored either as canonical Windows/NAS paths or as local macOS
+    Synology paths. The caller should pass the concrete old/new pair it knows;
+    this helper also tries the canonical mapping so document indexes and todo
+    source paths do not keep pointing at the renamed folder.
+    """
+    old_raw = str(old_path or "").strip()
+    new_raw = str(new_path or "").strip()
+    if not old_raw or not new_raw or old_raw == new_raw:
+        return {"updated": 0, "attempted": 0, "errors": []}
+
+    pairs: list[tuple[str, str]] = []
+
+    def _add_pair(old_value: str, new_value: str) -> None:
+        old_value = str(old_value or "").strip().rstrip("/\\")
+        new_value = str(new_value or "").strip().rstrip("/\\")
+        if old_value and new_value and old_value != new_value and (old_value, new_value) not in pairs:
+            pairs.append((old_value, new_value))
+
+    _add_pair(old_raw, new_raw)
+    try:
+        _add_pair(translate_local_path_to_canonical(old_raw), translate_local_path_to_canonical(new_raw))
+    except Exception:
+        logger.debug("silent-catch canonical path pair for rename", exc_info=True)
+    try:
+        _add_pair(_osc_norm_path(old_raw), _osc_norm_path(new_raw))
+    except Exception:
+        logger.debug("silent-catch normalized path pair for rename", exc_info=True)
+
+    exec_fn = exec_fn or _osc_exec
+    updated = 0
+    attempted = 0
+    errors: list[str] = []
+    for old_value, new_value in pairs:
+        old_len = len(old_value)
+        for table, column in _OSC_PATH_REFERENCE_COLUMNS:
+            attempted += 1
+            sql = f"""
+                UPDATE `{table}`
+                   SET `{column}` = CONCAT(%s, SUBSTRING(`{column}`, %s))
+                 WHERE `{column}` = %s
+                    OR (
+                        LEFT(`{column}`, %s) = %s
+                        AND (
+                            SUBSTRING(`{column}`, %s, 1) = '/'
+                            OR SUBSTRING(`{column}`, %s, 1) = CHAR(92)
+                        )
+                    )
+            """
+            params = (new_value, old_len + 1, old_value, old_len, old_value, old_len + 1, old_len + 1)
+            try:
+                result, _ = exec_fn(sql, params, fetch="none")
+                if isinstance(result, dict):
+                    updated += int(result.get("rowcount") or 0)
+            except Exception as exc:
+                # Some installs may not have every optional table/column yet.
+                msg = str(exc)
+                if (
+                    "Unknown column" in msg
+                    or "doesn't exist" in msg
+                    or "does not exist" in msg
+                    or "no such table" in msg.lower()
+                    or "no such column" in msg.lower()
+                ):
+                    logger.debug("silent-catch missing optional path reference %s.%s", table, column, exc_info=True)
+                    continue
+                errors.append(f"{table}.{column}: {exc}")
+                logger.debug("silent-catch replace path reference %s.%s", table, column, exc_info=True)
+    return {"updated": updated, "attempted": attempted, "errors": errors[:8]}
 
 
 def _osc_human_size(size: int) -> str:
@@ -1866,18 +2252,18 @@ def _osc_log_activity(action: str, entity_type: str = "", entity_id: str = "", d
 
 def _osc_accounting_window(today: Optional[date] = None) -> tuple[date, date]:
     today = today or date.today()
-    if today.day <= 25:
-        end_date = date(today.year, today.month, 25)
+    if today.day <= 24:
+        end_date = date(today.year, today.month, 24)
         if today.month == 1:
-            start_date = date(today.year - 1, 12, 26)
+            start_date = date(today.year - 1, 12, 25)
         else:
-            start_date = date(today.year, today.month - 1, 26)
+            start_date = date(today.year, today.month - 1, 25)
     else:
-        start_date = date(today.year, today.month, 26)
+        start_date = date(today.year, today.month, 25)
         if today.month == 12:
-            end_date = date(today.year + 1, 1, 25)
+            end_date = date(today.year + 1, 1, 24)
         else:
-            end_date = date(today.year, today.month + 1, 25)
+            end_date = date(today.year, today.month + 1, 24)
     return start_date, end_date
 
 

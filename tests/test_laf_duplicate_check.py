@@ -165,3 +165,41 @@ def test_E_notes_same_client_is_dup():
     result = orch._check_duplicate("1140601-C-001", "王大明", "民事", "借貸")
     assert result is not None
     assert result["id"] == 400
+
+
+def test_F_actual_db_manager_same_client_same_reason_different_laf_no_dup():
+    """同一當事人同案由但法扶案號不同，仍應建立新案，不可併入舊結案。"""
+    from casper_ecosystem.law_firm_orchestrators.legalbridge_core import DatabaseManager
+
+    existing = {
+        "id": "old-case",
+        "case_number": "2025-0133",
+        "legal_aid_number": "1141223-E-021",
+        "laf_case_no": "1141223-E-021",
+        "application_no": "1141223-E-021",
+        "client_name": "吳志炳",
+        "case_type": "刑事",
+        "case_category": "法律扶助案件",
+        "case_reason": "公共危險",
+        "notes": "法扶案號: 1141223-E-021",
+    }
+    db = object.__new__(DatabaseManager)
+
+    def fake_execute(sql, params=None, fetch=None):
+        sql_norm = " ".join(str(sql).split())
+        if "WHERE legal_aid_number = %s" in sql_norm:
+            return None
+        if "WHERE notes LIKE %s" in sql_norm:
+            return None
+        if "AND case_type = %s" in sql_norm and fetch == "all":
+            return [existing]
+        return None
+
+    db.execute = fake_execute
+    result = db.check_laf_case_exists(
+        "1150527-E-024",
+        client_name="吳志炳",
+        case_type="刑事",
+        case_reason="公共危險",
+    )
+    assert result is None

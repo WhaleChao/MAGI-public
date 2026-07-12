@@ -5,11 +5,17 @@ set -euo pipefail
 
 MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG="$MAGI_ROOT/logs/cloudflared.log"
+
+if [ -f "$MAGI_ROOT/.env" ]; then
+  set -a
+  source "$MAGI_ROOT/.env" 2>/dev/null || true
+  set +a
+fi
+
 LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
-LOCAL_PORT="${1:-${MAGI_SERVER_PORT:-5002}}"
+LOCAL_PORT="${1:-${MAGI_WEBHOOK_PROXY_PORT:-${MAGI_TAILSCALE_PORT:-18790}}}"
 
 if [ -z "$LINE_TOKEN" ]; then
-  source "$MAGI_ROOT/.env" 2>/dev/null || true
   LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
 fi
 

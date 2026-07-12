@@ -1,4 +1,48 @@
 /* tabs/accounting.js – Transactions + expense defaults + recurring + quotations */
+function accountingLocalISODate(d) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+}
+
+function accountingLocalISOMonth(d) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${yyyy}-${mm}`;
+}
+
+function accountingToday() {
+    return accountingLocalISODate(new Date());
+}
+
+function accountingAmountClass(type, amount) {
+    const t = String(type || "");
+    const n = Number(amount || 0);
+    if (t.includes("支出") || n < 0) return "amount-expense";
+    if (t.includes("收入") || n > 0) return "amount-income";
+    return "";
+}
+
+const TX_PRESETS = {
+    "laf-income": { type: "收入", category: "法扶酬金", sub_type: "酬金", description: "法扶案件酬金" },
+    "case-income": { type: "收入", category: "一般案件", sub_type: "委任費", description: "案件收入" },
+    "office-expense": { type: "支出", category: "文具耗材", sub_type: "辦公支出", description: "辦公支出" },
+    "payroll-expense": { type: "支出", category: "薪資", sub_type: "人事費", description: "薪資" },
+    "fee-expense": { type: "支出", category: "郵資", sub_type: "郵資 / 規費", description: "郵資或規費" },
+};
+
+function setTransactionPreset(key) {
+    const preset = TX_PRESETS[key] || {};
+    const dateEl = document.getElementById("tx_date");
+    if (dateEl && !dateEl.value) dateEl.value = accountingToday();
+    ["type", "category", "sub_type", "description"].forEach(field => {
+        const el = document.getElementById(`tx_${field}`);
+        if (el && preset[field]) el.value = preset[field];
+    });
+    document.getElementById("tx_amount")?.focus();
+}
+
 async function loadTransactions() {
     const q = encodeURIComponent((document.getElementById("accountingQ").value || "").trim());
     const caseNumber = encodeURIComponent((document.getElementById("accountingCaseNumber").value || "").trim());
@@ -7,6 +51,14 @@ async function loadTransactions() {
     const data = await api(`/api/osc/accounting/transactions?limit=500&q=${q}&case_number=${caseNumber}&start_date=${startDate}&end_date=${endDate}`);
     state.transactions = data.items || [];
     renderTransactions();
+}
+
+function downloadAccountingTransactionsXlsx() {
+    const q = encodeURIComponent((document.getElementById("accountingQ").value || "").trim());
+    const caseNumber = encodeURIComponent((document.getElementById("accountingCaseNumber").value || "").trim());
+    const startDate = encodeURIComponent((document.getElementById("accountingStartDate").value || "").trim());
+    const endDate = encodeURIComponent((document.getElementById("accountingEndDate").value || "").trim());
+    window.open(`/api/osc/accounting/transactions/xlsx?limit=5000&q=${q}&case_number=${caseNumber}&start_date=${startDate}&end_date=${endDate}`, "_blank", "noopener");
 }
 
 function renderTransactions() {
@@ -22,7 +74,7 @@ function renderTransactions() {
             <td>${esc(r.type)} / ${esc(r.sub_type || "")}</td>
             <td>${esc(r.category)}</td>
             <td>${esc(r.description)}</td>
-            <td>${fmtAmount(r.amount)}</td>
+            <td class="${accountingAmountClass(r.type, r.amount)}">${fmtAmount(r.amount)}</td>
             <td class="actions">
                 <button class="btn" data-act="tx-edit" data-id="${Number(r.id)}">編輯</button>
                 <button class="btn danger" data-act="tx-del" data-id="${Number(r.id)}">刪除</button>
@@ -54,7 +106,7 @@ async function loadAccountingSummary() {
 function accountingImportMonthValue() {
     const el = document.getElementById("accountingImportMonth");
     if (!el) return "";
-    if (!el.value) el.value = new Date().toISOString().slice(0, 7);
+    if (!el.value) el.value = accountingLocalISOMonth(new Date());
     return el.value;
 }
 
@@ -68,7 +120,7 @@ function renderAccountingImportResult(data) {
     const rows = [
         ["可匯入", data.importable_count || 0],
         ["已匯入過", data.duplicate_count || 0],
-        ["DB 已有相同紀錄", data.existing_count || 0],
+        ["MAGI 已有相同紀錄", data.existing_count || 0],
         ["固定支出已跳過", data.fixed_expense_skip_count || 0],
         ["固定支出金額不一致", data.fixed_expense_conflict_count || 0],
     ];
@@ -88,11 +140,20 @@ function renderAccountingImportResult(data) {
         <div class="muted" style="margin-top:10px;">
             對帳樣本：${sample.map(x => `${esc(x.date || "")} ${esc(x.category || "")} ${esc(x.description || "")}`).join("；")}
         </div>` : "";
+    const source = data.source || {};
+    const sheetStats = data.sheet_stats || {};
+    const sourceText = source.label
+        ? `來源：${source.kind === "office_excel" ? "Google 雲端 Excel" : "Google 試算表"}「${source.label}」`
+        : "來源：尚未回傳分頁資訊";
+    const dateFilterText = source.selected_by_month
+        ? "已依 XLSX 分頁月份匯入；交易日期只作帳務日期，不決定歸屬月份。"
+        : "使用交易日期月份過濾。";
     box.innerHTML = `
         <div class="stat-grid">
             ${rows.map(([k, v]) => `<div class="stat-card"><div class="k">${esc(k)}</div><div class="v">${fmtAmount(v)}</div></div>`).join("")}
         </div>
         <div class="muted" style="margin-top:10px;">月份：${esc(data.month || accountingImportMonthValue())}；${data.dry_run ? "目前是預覽，尚未寫入。" : "已完成匯入與對帳。"}</div>
+        <div class="muted" style="margin-top:6px;">${esc(sourceText)}；${esc(dateFilterText)} 解析 ${fmtAmount(sheetStats.parsed || 0)} 筆，因交易日期不屬於目標月份而跳過 ${fmtAmount(sheetStats.skipped_outside_month || 0)} 筆。</div>
         ${conflictHtml}
         ${sampleHtml}
     `;
@@ -106,11 +167,86 @@ async function previewAccountingImport() {
 
 async function runAccountingImport() {
     const month = accountingImportMonthValue();
-    if (!confirm(`確定匯入 ${month} 的同事帳務表？固定支出會跳過，不會重複入帳。`)) return;
+    if (!await showConfirm("MAGI說", `確定匯入 ${month} 的同事帳務表？固定支出會跳過，不會重複入帳。`)) return;
     const data = await api(`/api/osc/accounting/import/google-sheet`, "POST", { month, commit: true });
     renderAccountingImportResult(data);
     await loadTransactions();
     await loadMeta();
+}
+
+function accountingBonusMonthValue() {
+    const el = document.getElementById("accountingBonusMonth");
+    if (!el) return "";
+    if (!el.value) el.value = accountingLocalISOMonth(new Date());
+    return el.value;
+}
+
+function renderAccountingBonusResult(data) {
+    const box = document.getElementById("accountingBonusResult");
+    if (!box) return;
+    const statusLabels = {
+        waiting_laf_fee: "等待本期法扶消債酬金入帳",
+        ready: "可登載",
+        posted: "已登載",
+        no_surplus_after_laf_bonus: "法扶獎金後無餘額",
+        not_settlement_window: "非結算期間",
+    };
+    const rows = [
+        ["結算期間", `${data.period_start || "-"} ~ ${data.period_end || "-"}`],
+        ["法扶消債酬金計算範圍", `${data.fee_basis_start || data.period_start || "-"} ~ ${data.fee_basis_end || data.period_end || "-"}，排除先前已計獎交易`],
+        ["狀態", statusLabels[data.status] || data.status || "-"],
+        ["法扶消債酬金收入", fmtAmount(data.legal_aid_debt_fee_total || 0)],
+        ["法扶酬金獎金", fmtAmount(data.legal_aid_bonus_amount || 0)],
+        ["本期帳務收入", fmtAmount(data.period_income_total_before_bonus ?? data.income_total_before_bonus ?? 0)],
+        ["本期前尚未計獎法扶消債酬金", fmtAmount(data.unsettled_laf_fee_income_before_period || 0)],
+        ["獎金前收入", fmtAmount(data.income_total_before_bonus || 0)],
+        ["獎金前支出", fmtAmount(data.expense_total_before_bonus || 0)],
+        ["法扶獎金後餘額", fmtAmount(data.balance_after_laf_bonus || 0)],
+        ["案件獎金池", fmtAmount(data.case_bonus_pool || 0)],
+        ["員工案件獎金", fmtAmount(data.case_bonus_employee_amount || 0)],
+        ["本月支出總額", fmtAmount(data.final_expense_total || 0)],
+        ["本月結餘", fmtAmount(data.final_balance || 0)],
+    ];
+    const feeRows = data.source_fee_rows || [];
+    const importRows = data.import_results || [];
+    const note = data.notes ? `<div class="notice warn" style="margin-top:10px;">${esc(data.notes)}</div>` : "";
+    const xlsx = data.xlsx_path ? `<div class="muted" style="margin-top:8px;">XLSX 報表：${esc(data.xlsx_path)}</div>` : "";
+    box.innerHTML = `
+        <div class="stat-grid">
+            ${rows.map(([k, v]) => `<div class="stat-card"><div class="k">${esc(k)}</div><div class="v" style="font-size:15px;">${esc(v)}</div></div>`).join("")}
+        </div>
+        <div class="muted" style="margin-top:10px;">月份：${esc(data.month || accountingBonusMonthValue())}；${data.dry_run ? "目前是預覽，尚未寫入。" : "已正式登載或更新月結紀錄。"}</div>
+        ${xlsx}
+        ${note}
+        <div class="soft-block" style="margin-top:10px;">
+            <strong>法扶消債酬金明細（${feeRows.length} 筆）</strong>
+            <div class="muted">${feeRows.length ? feeRows.map(x => `${esc(x.date)}｜${esc(x.case_number || "")}｜${esc(x.client_name || "")}｜${fmtAmount(x.amount || 0)}`).join("；") : "本期尚未找到法扶消債酬金收入。"}</div>
+        </div>
+        <div class="soft-block" style="margin-top:10px;">
+            <strong>帳務匯入紀錄</strong>
+            <div class="muted">${importRows.length ? importRows.map(x => `${esc(x.month || "")}：${x.ok ? "成功" : "失敗"}（可匯入 ${x.importable_count || 0}、已匯入 ${x.duplicate_count || 0}、MAGI 已有 ${x.existing_count || 0}）`).join("；") : "本次未重新匯入 Google 帳務。"}</div>
+        </div>
+    `;
+}
+
+async function previewAccountingBonus() {
+    const month = encodeURIComponent(accountingBonusMonthValue());
+    const data = await api(`/api/osc/accounting/monthly-bonus?month=${month}&refresh_import=1`);
+    renderAccountingBonusResult(data);
+}
+
+async function runAccountingBonus() {
+    const month = accountingBonusMonthValue();
+    if (!await showConfirm("MAGI說", `確定正式登載或更新 ${month} 的月結獎金？MAGI 會先重新匯入帳務並避免重複入帳。`)) return;
+    const data = await api(`/api/osc/accounting/monthly-bonus`, "POST", { month, commit: true, refresh_import: true });
+    renderAccountingBonusResult(data);
+    await loadTransactions();
+    await loadMeta();
+}
+
+function downloadAccountingBonusXlsx() {
+    const month = encodeURIComponent(accountingBonusMonthValue());
+    window.open(`/api/osc/accounting/monthly-bonus/xlsx?month=${month}`, "_blank", "noopener");
 }
 
 async function applyAccountingPeriod() {
@@ -118,16 +254,15 @@ async function applyAccountingPeriod() {
     const y = now.getFullYear();
     const m = now.getMonth(); // 0-based
     let start, end;
-    if (now.getDate() >= 26) {
-        start = new Date(y, m, 26);
-        end = new Date(y, m + 1, 25);
+    if (now.getDate() >= 25) {
+        start = new Date(y, m, 25);
+        end = new Date(y, m + 1, 24);
     } else {
-        start = new Date(y, m - 1, 26);
-        end = new Date(y, m, 25);
+        start = new Date(y, m - 1, 25);
+        end = new Date(y, m, 24);
     }
-    const toISO = d => d.toISOString().slice(0, 10);
-    document.getElementById("accountingStartDate").value = toISO(start);
-    document.getElementById("accountingEndDate").value = toISO(end);
+    document.getElementById("accountingStartDate").value = accountingLocalISODate(start);
+    document.getElementById("accountingEndDate").value = accountingLocalISODate(end);
     await loadTransactions();
 }
 
@@ -138,7 +273,7 @@ async function editTransaction(id) {
 }
 
 async function delTransaction(id) {
-    if (!confirm(`確定刪除帳務紀錄 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除帳務紀錄 ${id}？`)) return;
     await api(`/api/osc/accounting/transactions/${id}`, "DELETE");
     await loadTransactions();
 }
@@ -154,10 +289,14 @@ async function saveTransaction() {
         amount: p.tx_amount,
         description: p.tx_description,
     };
-    if (!body.case_id) return alert("請輸入案件編號");
+    if (!body.date) return showAlert("MAGI說", "請選擇日期");
+    if (!body.type) return showAlert("MAGI說", "請選擇收入或支出");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
+    if (body.amount === "" || Number.isNaN(Number(body.amount)) || Number(body.amount) < 0) return showAlert("MAGI說", "金額請填 0 以上的數字");
     if ((p.tx_id || "").trim()) await api(`/api/osc/accounting/transactions/${Number(p.tx_id)}`, "PUT", body);
     else await api(`/api/osc/accounting/transactions`, "POST", body);
     clearFields(["tx_id", "tx_case_id", "tx_date", "tx_type", "tx_sub_type", "tx_category", "tx_amount", "tx_description"]);
+    showToast("帳務已儲存。", "ok");
     await loadTransactions();
     await loadMeta();
 }
@@ -201,7 +340,7 @@ async function saveExpenseDefault() {
         default_description: (document.getElementById("txDefDescription").value || "").trim(),
     };
     const id = (document.getElementById("txDefId").value || "").trim();
-    if (!body.category) return alert("請輸入分類");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
     if (id) await api(`/api/osc/accounting/defaults/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/accounting/defaults`, "POST", body);
     ["txDefId", "txDefCategory", "txDefAmount", "txDefDescription"].forEach(x => {
@@ -212,7 +351,7 @@ async function saveExpenseDefault() {
 }
 
 async function delExpenseDefault(id) {
-    if (!confirm(`確定刪除預設帳務項目 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除預設帳務項目 ${id}？`)) return;
     await api(`/api/osc/accounting/defaults/${Number(id)}`, "DELETE");
     await loadExpenseDefaults();
     await loadMeta();
@@ -234,10 +373,10 @@ async function loadRecurringExpenses() {
         <td>${esc(r.category)}</td>
         <td>${esc(r.sub_type || "")}</td>
         <td>${esc(r.description || "")}</td>
-        <td>${fmtAmount(r.amount)}</td>
+        <td class="${accountingAmountClass("支出", r.amount)}">${fmtAmount(r.amount)}</td>
         <td>${esc(r.day_of_month || "")}</td>
         <td>${esc(r.start_date || "")} ~ ${esc(r.end_date || "")}</td>
-        <td>${esc(r.is_active)}</td>
+        <td>${Number(r.is_active) ? "啟用" : "停用"}</td>
         <td>${esc(r.last_generated_month || "")}</td>
         <td class="actions">
             <button class="btn" data-act="tx-rec-edit" data-id="${Number(r.id)}">編輯</button>
@@ -275,30 +414,34 @@ async function saveRecurringExpense() {
         last_generated_month: (document.getElementById("txRecurringLastMonth").value || "").trim(),
     };
     const id = (document.getElementById("txRecurringId").value || "").trim();
-    if (!body.category) return alert("請輸入分類");
+    if (!body.category) return showAlert("MAGI說", "請輸入分類");
+    if (!body.amount || Number(body.amount) < 0) return showAlert("MAGI說", "請輸入固定支出金額");
+    if (!body.day_of_month || Number(body.day_of_month) < 1 || Number(body.day_of_month) > 31) return showAlert("MAGI說", "每月日請填 1 到 31");
     if (id) await api(`/api/osc/accounting/recurring/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/accounting/recurring`, "POST", body);
     ["txRecurringId", "txRecurringCategory", "txRecurringSubType", "txRecurringDescription", "txRecurringAmount", "txRecurringDay", "txRecurringStartDate", "txRecurringEndDate", "txRecurringActive", "txRecurringLastMonth"].forEach(x => {
         const el = document.getElementById(x); if (el) el.value = "";
     });
+    const active = document.getElementById("txRecurringActive");
+    if (active) active.value = "1";
     await loadRecurringExpenses();
     await loadMeta();
 }
 
 async function syncRecurringGenerated() {
     const id = (document.getElementById("txRecurringId").value || "").trim();
-    if (!id) return alert("請先選擇一筆固定支出");
+    if (!id) return showAlert("MAGI說", "請先選擇一筆固定支出");
     const amount = (document.getElementById("txRecurringAmount").value || "0").trim();
     const description = (document.getElementById("txRecurringDescription").value || "").trim();
-    if (!confirm(`確定同步今年已產生的「${description || id}」固定支出金額？`)) return;
+    if (!await showConfirm("MAGI說", `確定同步今年已產生的「${description || id}」固定支出金額？`)) return;
     const data = await api(`/api/osc/accounting/recurring/${Number(id)}/sync-generated`, "POST", { amount });
-    alert(`已同步 ${data.updated_count || 0} 筆固定支出紀錄`);
+    showAlert("MAGI說", `已同步 ${data.updated_count || 0} 筆固定支出紀錄`);
     await loadTransactions();
     await loadAccountingSummary();
 }
 
 async function delRecurringExpense(id) {
-    if (!confirm(`確定刪除固定支出 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除固定支出 ${id}？`)) return;
     await api(`/api/osc/accounting/recurring/${Number(id)}`, "DELETE");
     await loadRecurringExpenses();
     await loadMeta();
@@ -312,13 +455,13 @@ const QT_PRESETS = {
 };
 
 function qtToday() {
-    return new Date().toISOString().slice(0, 10);
+    return accountingLocalISODate(new Date());
 }
 
 function qtDateAfter(days) {
     const d = new Date();
     d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+    return accountingLocalISODate(d);
 }
 
 function qtStatusLabel(status) {
@@ -475,9 +618,9 @@ function resetQuotationTemplateForm() {
 function applySelectedQuotationTemplate() {
     const select = document.getElementById("qtTemplateSelect");
     const id = select ? select.value : "";
-    if (!id) return alert("請先選擇模板");
+    if (!id) return showAlert("MAGI說", "請先選擇模板");
     const tpl = (state.quotationTemplates || []).find(x => String(x.id) === String(id));
-    if (!tpl) return alert("找不到模板，請重新整理模板");
+    if (!tpl) return showAlert("MAGI說", "找不到模板，請重新整理模板");
     const items = parseQuotationItems(tpl.items);
     renderQuotationItems(items.length ? items : [QT_PRESETS.consult], "qt");
     const projectEl = document.getElementById("qt_project_name");
@@ -488,7 +631,7 @@ function applySelectedQuotationTemplate() {
 
 function downloadCurrentQuotationPdf() {
     const id = (document.getElementById("qt_id")?.value || "").trim();
-    if (!id) return alert("請先儲存報價單，再下載 PDF");
+    if (!id) return showAlert("MAGI說", "請先儲存報價單，再下載 PDF");
     window.open(`/api/osc/quotations/${encodeURIComponent(id)}/export-pdf`, "_blank", "noopener");
 }
 
@@ -553,8 +696,8 @@ async function saveQuotation() {
         items: JSON.stringify(collectQuotationItems("qt")),
         extended_data: p.qt_extended_data || "{}",
     };
-    if (!body.client_name || !body.project_name) return alert("請輸入當事人與專案名稱");
-    if (!collectQuotationItems("qt").length) return alert("請至少新增一個服務項目");
+    if (!body.client_name || !body.project_name) return showAlert("MAGI說", "請輸入當事人與專案名稱");
+    if (!collectQuotationItems("qt").length) return showAlert("MAGI說", "請至少新增一個服務項目");
     if ((body.id || "").trim()) await api(`/api/osc/quotations/${encodeURIComponent(body.id)}`, "PUT", body);
     else await api(`/api/osc/quotations`, "POST", body);
     resetQuotationForm();
@@ -563,7 +706,7 @@ async function saveQuotation() {
 }
 
 async function delQuotation(id) {
-    if (!confirm(`確定刪除報價單 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除報價單 ${id}？`)) return;
     await api(`/api/osc/quotations/${encodeURIComponent(id)}`, "DELETE");
     await loadQuotations();
     await loadMeta();
@@ -621,8 +764,8 @@ async function saveQuotationTemplate() {
         items: JSON.stringify(collectQuotationItems("qtTpl")),
         notes: (document.getElementById("qtTplNotes").value || "").trim(),
     };
-    if (!body.name) return alert("請輸入模板名稱");
-    if (!collectQuotationItems("qtTpl").length) return alert("請至少新增一個模板項目");
+    if (!body.name) return showAlert("MAGI說", "請輸入模板名稱");
+    if (!collectQuotationItems("qtTpl").length) return showAlert("MAGI說", "請至少新增一個模板項目");
     if (id) await api(`/api/osc/quotation-templates/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/quotation-templates`, "POST", body);
     resetQuotationTemplateForm();
@@ -631,7 +774,7 @@ async function saveQuotationTemplate() {
 }
 
 async function delQuotationTemplate(id) {
-    if (!confirm(`確定刪除報價模板 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除報價模板 ${id}？`)) return;
     await api(`/api/osc/quotation-templates/${Number(id)}`, "DELETE");
     await loadQuotationTemplates();
     await loadMeta();

@@ -9,15 +9,18 @@ def _read(rel: str) -> str:
 
 
 def test_go_live_nightly_does_not_update_db_on_generic_portal_draft_failed():
-    for rel in [
-        "scripts/laf_nightly_audit.py",
-        "casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py",
-    ]:
-        src = _read(rel)
-        assert 'elif err == "portal_draft_failed" and db and case.get("id")' not in src
-        assert "不自動更新 DB" in src
-        assert "MAGI_LAF_AUTO_GO_LIVE_PREFILL" in src
-        assert "go_live_has_no_draft" in src
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
+    assert 'elif err == "portal_draft_failed" and db and case.get("id")' not in src
+    assert "不自動更新 DB" in src
+    assert "MAGI_LAF_AUTO_GO_LIVE_PREFILL" in src
+    assert "go_live_has_no_draft" in src
+
+
+def test_laf_closing_nightly_auto_draft_is_opt_in_only():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
+    assert "MAGI_LAF_AUTO_CLOSING_DRAFT" in src
+    assert "auto_closing_draft_disabled" in src
+    assert "報結自動暫存預設關閉" in src
 
 
 def test_go_live_never_uses_draft_failure_wording():
@@ -59,7 +62,7 @@ def test_autopilot_zero_max_cases_remains_unlimited():
 
 
 def test_production_laf_nightly_scans_case_status_drafts():
-    src = _read("scripts/laf_nightly_audit.py")
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_nightly_audit.py")
     assert '"case_status_drafts": []' in src
     assert 'portal.get("case_status", [])' in src
     assert "portal_pending_case_status_drafts" in src
@@ -72,8 +75,75 @@ def test_closing_batch_uses_permanent_dedup_after_draft():
     assert "DATE_SUB(NOW()" not in block
 
 
+def test_auto_closing_candidates_do_not_include_in_progress_statuses():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _get_pending_closing_draft_cases", 1)[1].split("def run_closing_drafts", 1)[0]
+    assert "'進行中', '已開辦'" not in block
+    assert "'待報結', '已結案，待報結'" in block
+
+
+def test_auto_closing_status_write_has_current_status_guard():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("if fields.get(\"_auto_closing_draft\")", 1)[1].split("try:", 1)[0]
+    assert "SELECT legal_aid_status FROM cases" in block
+    assert '"待報結", "已結案，待報結"' in block
+    assert "Auto closing draft skipped DB status write" in block
+
+
 def test_condition_batch_uses_permanent_dedup_after_draft():
     src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
     block = src.split("def _was_condition_drafted_recently", 1)[1].split("def _get_pending_condition_cases", 1)[0]
     assert "永久 dedup" in block
     assert "DATE_SUB(NOW()" not in block
+
+
+def test_closing_failure_returns_structured_portal_error():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("# closing", 1)[1].split("def execute_portal_action_submit", 1)[0]
+    assert 'result["error"] = "portal_draft_failed"' in block
+    assert 'result["detail"] = str(getattr(self, "_last_portal_error"' in block
+    assert '"closing_portal_save_failed"' in block
+
+
+def test_closing_automation_records_failure_diagnostics():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_automation_v2.py")
+    assert "self.last_portal_error = \"\"" in src
+    assert "def _set_portal_error" in src
+    assert "closing_page1_ajax_save_failed" in src
+    assert "closing_save_unclear" in src
+    assert "responseText" in src
+
+
+def test_portal_workflows_use_laf_automation_v2_not_legacy_downloader():
+    src = _read("casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py")
+    block = src.split("def _get_automation", 1)[1].split("def close", 1)[0]
+    assert "laf_automation_v2 import LAFWebAutomation" in block
+    assert "skills.legal.laf import LAFWebAutomation" not in block
+
+
+def test_legacy_laf_import_path_points_to_unified_v2_class():
+    from skills.legal.laf import LAFWebAutomation
+
+    assert LAFWebAutomation.__module__ == "casper_ecosystem.law_firm_orchestrators.laf_automation_v2"
+    assert hasattr(LAFWebAutomation, "save_closing_report_draft")
+    assert hasattr(LAFWebAutomation, "download_case_files")
+
+
+def test_casper_laf_handler_is_compat_wrapper_for_api_rules():
+    from api.handlers import laf_handler as api_handler
+    from casper_ecosystem.law_firm_orchestrators import laf_handler as compat_handler
+
+    assert compat_handler.parse_laf_report_payload is api_handler.parse_laf_report_payload
+    assert compat_handler._STATUS_MAP is api_handler._STATUS_MAP
+    assert compat_handler._STATUS_MAP["報結"] == "已結案"
+
+
+def test_laf_dispatch_never_reports_bare_unknown_for_portal_failures():
+    from api.pipelines.command_dispatch import _laf_failure_code_and_detail
+
+    err, detail = _laf_failure_code_and_detail(
+        {"ok": False, "action": "closing", "preview": {"png": "/tmp/closing.png"}},
+        action="closing",
+    )
+    assert err == "portal_draft_failed"
+    assert "closing.png" in detail

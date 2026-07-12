@@ -18,6 +18,7 @@ const state = {
     quotations: [],
     quotationTemplates: [],
     insights: [],
+    raziel: { status: null, lastResult: null },
     draft: {
         meta: null,
         cases: [],
@@ -32,6 +33,13 @@ const state = {
         feedback: [],
         feedbackSummary: null,
     },
+    documentReuse: {
+        cases: [],
+        selectedCaseId: "",
+        documents: [],
+        selectedDocument: null,
+        lastResult: null,
+    },
     saas: {
         overview: null,
         conflict: null,
@@ -42,6 +50,8 @@ const state = {
     adminSettings: [],
     adminCaseReasons: [],
     adminCourts: [],
+    caseLawyerOptions: [],
+    caseLawyerOptionsLoaded: false,
     caseCourtOptions: [],
     caseCourtOptionsLoaded: false,
     adminBranches: [],
@@ -60,6 +70,7 @@ const state = {
     caseStatusScope: "all",
     wb: { mode: null, id: null, data: null },
     folderUpload: null,
+    caseSort: { col: "case_number", dir: -1, type: "string" },
     sort: { col: null, dir: 1, type: "string" },
     lafSort: { col: "case_number", dir: 1, type: "string" }
 };

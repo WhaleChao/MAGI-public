@@ -35,7 +35,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", "/Users/ai/Desktop/MAGI_v2")).resolve()
+MAGI_ROOT = Path(
+    os.environ.get("MAGI_ROOT_DIR")
+    or os.environ.get("MAGI_ROOT")
+    or str(Path(__file__).resolve().parents[2])
+).resolve()
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 

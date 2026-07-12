@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import sys
+import types
+
 from skills.ops import red_phone
 
 
@@ -126,6 +130,20 @@ def test_laf_general_telegram_fallback_does_not_use_laf_business_topic(monkeypat
     assert thread_id == 999
 
 
+def test_unknown_business_topic_does_not_use_telegram_general_thread(monkeypatch):
+    monkeypatch.setattr(red_phone, "_load_topic_map", lambda: {"general": 999})
+
+    topic, thread_id = red_phone._resolve_thread_id(
+        "未知法扶業務通知",
+        "unit",
+        "warning",
+        topic_key="laf_unknown",
+    )
+
+    assert topic == "laf_unknown"
+    assert thread_id is None
+
+
 def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     outbox_path = tmp_path / "outbox.json"
     monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
@@ -140,3 +158,99 @@ def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     data = __import__("json").loads(outbox_path.read_text("utf-8"))
     assert data[0]["id"] == entry_id
     assert data[0]["topic_key"] == "check"
+
+
+def test_outbox_deduplicates_same_pending_message(tmp_path, monkeypatch):
+    outbox_path = tmp_path / "outbox.json"
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    message = "📧 法扶派案通知\n分會: 花蓮\n當事人: 王惠薰\n法扶案號: 1150529-E-005"
+
+    first_id = red_phone._enqueue_outbox(message, severity="info", source="laf_notifier", topic_key="laf")
+    second_id = red_phone._enqueue_outbox(message, severity="info", source="laf_notifier", topic_key="laf")
+
+    data = __import__("json").loads(outbox_path.read_text("utf-8"))
+    assert second_id == first_id
+    assert len(data) == 1
+    assert data[0]["topic_key"] == "laf_dispatch"
+    assert data[0]["fingerprint"]
+
+
+def test_outbox_flush_drops_stale_info_without_resending(tmp_path, monkeypatch):
+    outbox_path = tmp_path / "outbox.json"
+    delivery_path = tmp_path / "delivery.jsonl"
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_DELIVERY_LOG", str(delivery_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC", 60.0)
+
+    old_entry = {
+        "id": "old_laf_dispatch",
+        "created_at": "2026-06-23T10:20:25",
+        "updated_at": "2026-06-23T10:20:25",
+        "severity": "info",
+        "source": "laf_notifier",
+        "topic_key": "laf_dispatch",
+        "message": "📧 法扶派案通知\n當事人: 王惠薰\n法扶案號: 1150529-E-005",
+        "attempts": 0,
+        "next_retry_at": 0,
+        "last_error": "temporary",
+    }
+    outbox_path.write_text(__import__("json").dumps([old_entry], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(red_phone.time, "time", lambda: __import__("datetime").datetime(2026, 6, 23, 23, 24, 0).timestamp())
+    calls = []
+    monkeypatch.setattr(red_phone, "send_telegram_push_with_status", lambda *a, **k: calls.append((a, k)) or {"telegram": True})
+
+    result = red_phone._flush_outbox(max_items=8)
+
+    assert result["checked"] == 0
+    assert result["recovered"] == 0
+    assert result["remaining"] == 0
+    assert calls == []
+    assert __import__("json").loads(outbox_path.read_text("utf-8")) == []
+
+
+def test_alert_admin_dedup_does_not_report_fake_delivery(tmp_path, monkeypatch):
+    delivery_path = tmp_path / "delivery.jsonl"
+    outbox_path = tmp_path / "outbox.json"
+    monkeypatch.setattr(red_phone, "RED_PHONE_DELIVERY_LOG", str(delivery_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.dedup_db",
+        types.SimpleNamespace(
+            is_done=lambda category, key: True,
+            mark_done=lambda *args, **kwargs: None,
+        ),
+    )
+
+    result = red_phone.alert_admin("同一則警報", severity="info", source="unit", topic_key="check")
+
+    assert result["deduplicated"] is True
+    assert result["telegram"] is False
+    assert result["line"] is False
+    assert result["discord"] is False
+    assert result["delivered"] is False
+    entries = [json.loads(line) for line in delivery_path.read_text(encoding="utf-8").splitlines()]
+    assert entries[-1]["event"] == "deduplicated"
+
+
+def test_send_telegram_push_dedup_returns_false(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.dedup_db",
+        types.SimpleNamespace(
+            is_done=lambda category, key: True,
+            mark_done=lambda *args, **kwargs: None,
+        ),
+    )
+
+    assert red_phone.send_telegram_push("同一則警報") is False
+
+
+def test_discord_silent_route_is_not_delivery_success(monkeypatch):
+    from api import discord_channel_router as router
+
+    monkeypatch.setattr(red_phone, "DISCORD_BOT_TOKEN", "token")
+    monkeypatch.setattr(red_phone, "_get_discord_channel_id_fallback", lambda: "123")
+    monkeypatch.setattr(router, "resolve_discord_channel", lambda *args, **kwargs: ("laf_unknown", "__SILENT__"))
+
+    assert red_phone._send_discord_bot_message("未知法扶業務通知", "warning", topic_key="laf_unknown") is False

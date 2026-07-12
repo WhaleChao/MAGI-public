@@ -5,7 +5,7 @@ import os
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 _PUBLIC_FIRM_NAME = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
-_PUBLIC_LAWYER_NAME = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
+_PUBLIC_LAWYER_NAME = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "")
 
 try:
     from docx import Document

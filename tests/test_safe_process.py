@@ -25,6 +25,10 @@ def test_argv_head_whitelisted_python3():
     assert r.returncode == 0 and "ok" in r.stdout
 
 
+def test_versioned_python3_executable_is_whitelisted():
+    assert sp._PYTHON_EXECUTABLE_RE.fullmatch("python3.14")
+
+
 def test_argv_head_rejected_bash():
     with pytest.raises(PermissionError):
         sp.run(["bash", "-c", "echo x"])
@@ -119,6 +123,105 @@ def test_sigkill_after_grace():
     assert r.timed_out is True and r.killed is True
 
 
+def test_timeout_kills_child_process_group(tmp_path):
+    marker = tmp_path / "child-survived.txt"
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        f"\"import pathlib,time; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
+        "time.sleep(30)"
+    )
+
+    r = sp.run(["python3", "-c", code], timeout_sec=0.5)
+    time.sleep(3.5)
+
+    assert r.timed_out is True
+    assert not marker.exists()
+
+
+def test_timeout_kills_nested_new_session_descendant(tmp_path):
+    """resource_guarded_run-style descendants must not escape the outer timeout."""
+    marker = tmp_path / "nested-session-child-survived.txt"
+    nested_code = (
+        "import pathlib,time; "
+        "time.sleep(3); "
+        f"pathlib.Path({str(marker)!r}).write_text('alive')"
+    )
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        f"{nested_code!r}], start_new_session=True); "
+        "time.sleep(30)"
+    )
+
+    r = sp.run(["python3", "-c", code], timeout_sec=0.5)
+    time.sleep(3.5)
+
+    assert r.timed_out is True
+    assert not marker.exists()
+
+
+def test_timeout_retries_reap_after_sigkill_communicate_timeout(monkeypatch):
+    class FakeProcess:
+        pid = 4321
+        returncode = -9
+
+        def __init__(self):
+            self.calls = 0
+
+        def communicate(self, timeout):
+            self.calls += 1
+            if self.calls <= 3:
+                raise sp.subprocess.TimeoutExpired(["python3"], timeout, output=b"out", stderr=b"err")
+            return b"out", b"err"
+
+    proc = FakeProcess()
+    monkeypatch.setattr(sp.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(sp, "_owned_process_snapshot", lambda _pid: ({4321}, {4321: 4321}))
+    monkeypatch.setattr(sp.os, "killpg", lambda *_args, **_kwargs: None)
+
+    result = sp.run(["python3", "-c", "pass"], timeout_sec=0.01)
+
+    assert result.timed_out is True
+    assert result.killed is True
+    assert proc.calls == 4
+
+
+def test_timeout_unreapable_after_sigkill_raises_cleanup_failure(monkeypatch):
+    class FakeProcess:
+        pid = 4321
+        returncode = None
+
+        def communicate(self, timeout):
+            raise sp.subprocess.TimeoutExpired(["python3"], timeout)
+
+    monkeypatch.setattr(sp.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(sp, "_owned_process_snapshot", lambda _pid: ({4321}, {4321: 4321}))
+    monkeypatch.setattr(sp.os, "killpg", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(sp._SafeProcessCleanupError, match="could not be reaped"):
+        sp.run(["python3", "-c", "pass"], timeout_sec=0.01)
+
+
+def test_start_callback_failure_reaps_owned_child(monkeypatch):
+    class FakeProcess:
+        pid = 4321
+        returncode = -9
+
+        def communicate(self, timeout):
+            return b"", b""
+
+    signals = []
+    monkeypatch.setattr(sp.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(sp, "_owned_process_snapshot", lambda _pid: ({4321}, {4321: 4321}))
+    monkeypatch.setattr(sp.os, "killpg", lambda *args: signals.append(args))
+
+    with pytest.raises(sp._SafeProcessCleanupError, match="start callback failed; child was reaped"):
+        sp.run(["python3", "-c", "pass"], _on_started=lambda _pid: (_ for _ in ()).throw(RuntimeError("state failed")))
+
+    assert signals == [(4321, sp.signal.SIGKILL)]
+
+
 # --- stdout / stderr cap -----------------------------------------------
 
 def test_stdout_truncated_at_1mb():
@@ -155,6 +258,37 @@ def test_launchctl_op_whitelist():
 def test_parse_cron_simple():
     assert sp.parse_cron_command("python3 script.py --flag x") == [
         "python3", "script.py", "--flag", "x"
+    ]
+
+
+def test_parse_cron_repairs_unquoted_application_support_runtime_path():
+    command = (
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3 "
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/token_health_check.py "
+        "--refresh"
+    )
+
+    assert sp.parse_cron_command(command) == [
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3",
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/token_health_check.py",
+        "--refresh",
+    ]
+
+
+def test_parse_cron_accepts_quoted_application_support_runtime_path():
+    command = (
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3' "
+        "'/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/resource_guarded_run.py' "
+        "--job-id job_drive_case_sync_all_files -- python3 scripts/drive_case_sync_worker.py"
+    )
+
+    argv = sp.parse_cron_command(command)
+
+    assert argv[:4] == [
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/venv/bin/python3",
+        "/Users/ai/Library/Application Support/MAGI/runtime/MAGI_v2/scripts/ops/resource_guarded_run.py",
+        "--job-id",
+        "job_drive_case_sync_all_files",
     ]
 
 

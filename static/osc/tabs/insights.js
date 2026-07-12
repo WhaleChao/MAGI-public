@@ -24,7 +24,7 @@ function renderInsights() {
             actions.push(`<button class="btn" data-act="insight-fetch" data-id="${esc(r.id)}">從來源補抓</button>`);
         }
         if (hasUrl) {
-            actions.push(`<a class="btn ghost" target="_blank" href="${esc(r.url)}">來源</a>`);
+            actions.push(`<button class="btn ghost" data-act="insight-source" data-id="${esc(r.id)}">來源</button>`);
         }
         return `
         <tr>
@@ -78,7 +78,7 @@ async function toggleInsight(id) {
         try {
             await hydrateInsightByDetail(id);
         } catch (e) {
-            alert(`讀取見解庫內容失敗，先顯示列表現有內容：${e.message}`);
+            showAlert("MAGI說", `讀取見解庫內容失敗，先顯示列表現有內容：${e.message}`);
         }
     }
     const tr = document.getElementById(`insightRow_${id}`);
@@ -89,13 +89,43 @@ async function toggleInsight(id) {
 async function copyInsight(id) {
     const item = state.insights.find(x => String(x.id) === String(id));
     const text = (item?.full_text || item?.summary || "").trim();
-    if (!text) return alert("沒有可複製內容");
+    if (!text) return showAlert("MAGI說", "沒有可複製內容");
     try {
         await navigator.clipboard.writeText(text);
         showToast("見解全文已複製到剪貼簿。", "ok");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
+}
+
+async function openInsightSource(id) {
+    const idx = state.insights.findIndex(x => String(x.id) === String(id));
+    if (idx < 0) return;
+    let item = state.insights[idx];
+    try {
+        await hydrateInsightByDetail(id);
+        item = state.insights[idx] || item;
+    } catch (e) {
+        showToast(`本機全文讀取失敗：${e.message || e}`, "warn", 4200);
+    }
+    const full = (item.full_text || item.summary || "").trim();
+    const url = (item.url || "").trim();
+    if (full) {
+        const meta = [
+            item.case_number ? `案號：${item.case_number}` : "",
+            item.title ? `標題：${item.title}` : "",
+            item.source ? `來源：${item.source}` : "",
+            url ? `外部來源：${url}` : "",
+        ].filter(Boolean).join("\n");
+        showWebReplyDialog("MAGI說｜實務見解來源", `${meta}\n\n${full}`.trim());
+        return;
+    }
+    if (url) {
+        showAlert("MAGI說", "本機目前沒有這筆裁判全文，MAGI 會開啟外部來源；若遇到非服務時間，請改用「從來源補抓」或稍後再試。");
+        window.open(url, "_blank", "noopener");
+        return;
+    }
+    showAlert("MAGI說", "這筆見解沒有本機全文，也沒有外部來源網址。");
 }
 
 async function fetchInsightFullById(id, opts = {}) {
@@ -109,7 +139,7 @@ async function fetchInsightFullById(id, opts = {}) {
         case_reason: (item.case_reason || "").trim(),
     };
     if (!body.url && !body.case_number && !body.title) {
-        if (!silent) alert("這筆見解沒有來源網址、標題或案號，無法從來源網站補抓。");
+        if (!silent) showAlert("MAGI說", "這筆見解沒有來源網址、標題或案號，無法從來源網站補抓。");
         return;
     }
     const data = await api("/api/osc/insights/fetch-full", "POST", body);
@@ -132,7 +162,7 @@ async function fetchInsightFullManual() {
         case_reason: (document.getElementById("insight_case_reason").value || "").trim(),
     };
     if (!body.url && !body.case_number && !body.title) {
-        return alert("請至少輸入來源網址、標題或案件編號");
+        return showAlert("MAGI說", "請至少輸入來源網址、標題或案件編號");
     }
     const data = await api("/api/osc/insights/fetch-full", "POST", body);
     await loadInsights();
@@ -148,7 +178,7 @@ async function saveInsight() {
         case_reason: (document.getElementById("insight_case_reason").value || "").trim(),
         insight_text: (document.getElementById("insight_text").value || "").trim(),
     };
-    if (!body.insight_text) return alert("請輸入見解全文");
+    if (!body.insight_text) return showAlert("MAGI說", "請輸入見解全文");
     await api("/api/osc/insights", "POST", body);
     document.getElementById("insight_text").value = "";
     await loadInsights();

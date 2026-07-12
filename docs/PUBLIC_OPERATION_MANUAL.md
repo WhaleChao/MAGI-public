@@ -1,12 +1,12 @@
 # MAGI 公開版操作手冊
 
-版本：2026-05-14
+版本：2026-07-02
 適用對象：外部客戶、試用者、導入顧問、維運人員
 適用版本：MAGI Public
 
 本手冊說明公開版 MAGI 的安裝、設定、日常使用、維運、資料保護與驗收方式。公開版不包含任何原作者的私人案件資料、私人 NAS 路徑、私人帳號、私有實務見解來源或金鑰。使用者應在自己的電腦、資料庫、檔案空間與通訊服務中完成設定。
 
-一般使用者每日操作請先閱讀 [MAGI 一般使用者手冊](USER_GUIDE.md)；若要交付文件，請優先使用 [一般使用者圖文操作手冊 DOCX](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 或 [PDF](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)，另保留 [一般使用者完整操作手冊 DOCX](guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx) 作為純文字詳版。本文件偏向公開版導入、設定與維運。
+一般使用者每日操作請先閱讀 [MAGI 一般使用者完整操作手冊 DOCX](guides/MAGI_一般使用者完整操作手冊_2026-06-26.docx)。若需要 Markdown 版，可參考 [MAGI 一般使用者手冊](USER_GUIDE.md)；[超詳細操作手冊](guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx) 與 [圖文操作手冊](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 保留作為舊連結相容。本文件偏向公開版導入、設定與維運。
 
 ## 目錄
 
@@ -125,9 +125,13 @@ python3 scripts/magi_doctor.py --json
 
 瀏覽器開啟：
 
+- 新手入口：`http://127.0.0.1:5002/start`
+- 新手儀表板：`http://127.0.0.1:5002/dashboard/beginner`
 - 主頁：`http://127.0.0.1:5002/`
 - 健康狀態：`http://127.0.0.1:5002/health`
 - NERV 狀態頁：`http://127.0.0.1:5002/dashboard/nerv`
+
+一般使用者或第一次導入時，優先開 `/start`。NERV 是維運狀態頁，適合交付、故障排除與正式上線檢查，不應當作新手首頁。
 
 健康狀態應至少確認：
 
@@ -139,22 +143,23 @@ python3 scripts/magi_doctor.py --json
 - 檔案儲存位置可讀寫。
 - 日常稽核最近有更新。
 
-`/openclaw` 是已退役舊入口，公開版預期會回 404。請使用 MAGI 主頁與 `/magi-adjust`。
+`/openclaw` 是已退役舊入口，公開版預期會回 404。請使用 `/start`、MAGI 主頁與 `/magi-adjust`。
 
 ## 5. 首次設定
 
 第一次登入後，請依序完成：
 
-1. 設定管理員帳號與密碼。
-2. 設定資料庫連線。
-3. 設定案件檔案根目錄。
-4. 設定模型服務。
-5. 設定 OCR 模式。
-6. 設定 Google Calendar 或其他行事曆來源。
-7. 設定通訊頻道。
-8. 執行健康檢查。
-9. 執行公開版隔離稽核。
-10. 執行商用上線檢核。
+1. 從 `/start` 或 `/dashboard/beginner` 確認目前可用功能與待設定項目。
+2. 設定管理員帳號與密碼。
+3. 設定資料庫連線。
+4. 設定案件檔案根目錄。
+5. 設定模型服務。
+6. 設定 OCR 模式。
+7. 設定 Google Calendar 或其他行事曆來源。
+8. 設定通訊頻道。
+9. 執行健康檢查。
+10. 執行公開版隔離稽核。
+11. 執行商用上線檢核。
 
 `.env` 只應留在本機，請勿提交。若要交付給客戶，請提供 `.env.example` 或安裝精靈，不要提供真實 `.env`。
 
@@ -202,7 +207,7 @@ MAGI 主頁提供主要功能入口：
 管理者可用測試命令確認工具調用：
 
 ```bash
-python3 scripts/ops/commercial_readiness_live.py --strict-public
+python3 scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 ## 8. 案件管理
@@ -423,6 +428,7 @@ MAGI 支援兩類待辦：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 若只是測試公開安裝性，且沒有私有 DB：
@@ -439,7 +445,9 @@ python3 scripts/public_release_audit.py --public-isolation --strict --skip-db
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 檢核內容應包含：
@@ -447,6 +455,7 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 - 安裝精靈可完成。
 - MAGI daemon 可啟動。
 - 主頁可開啟。
+- `/start` 或 `/dashboard/beginner` 可開啟，且清楚標示功能就緒狀態。
 - `/health` 正常。
 - 資料庫正常。
 - 推論服務正常。
@@ -507,13 +516,17 @@ http://127.0.0.1:5002/health
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/magi_doctor.py --json
 python3 scripts/public_release_audit.py --public-isolation --strict
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 常用路由：
 
 ```text
 /                       MAGI 主頁
+/start                  新手入口
+/dashboard/beginner     新手儀表板
 /health                 健康狀態
 /dashboard/nerv         NERV 狀態頁
 /magi-adjust            MAGI 調整頁

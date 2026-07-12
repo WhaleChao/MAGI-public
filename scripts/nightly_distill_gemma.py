@@ -298,6 +298,16 @@ def safe_start_omlx() -> bool:
     return True
 
 
+def prepare_online_training() -> None:
+    """Mark training active without taking the production inference endpoint offline."""
+    _write_training_lock()
+    logger.info("Keeping oMLX 8080 online during LoRA training")
+
+
+def finish_online_training() -> None:
+    _clear_training_lock()
+
+
 # ── 手動部署入口（--deploy <version>）───────────────────────────────
 def deploy_model(version: str) -> int:
     """手動部署：切換 oMLX symlink 並跑 post-deploy test。"""
@@ -504,10 +514,9 @@ def main() -> int:
         _notify(f"Gemma 蒸餾：過濾後訓練資料不足 ({split['train']})")
         return 0
 
-    # 4. 停 oMLX
-    _check_timeout("stop_omlx")
-    logger.info("Stopping oMLX for training...")
-    safe_stop_omlx()
+    # 4. 訓練與正式推理並行。資源守門已在前面完成；不可為離線訓練中斷 8080。
+    _check_timeout("prepare_training")
+    prepare_online_training()
 
     version = None
     train_result = {}
@@ -584,10 +593,8 @@ def main() -> int:
             logger.warning("merged_path not found, skip pending_deploy.json")
 
     finally:
-        # 6. 重啟 oMLX（無論成功失敗都重啟）
-        _check_timeout("restart_omlx")
-        logger.info("Restarting oMLX...")
-        safe_start_omlx()
+        # 6. 訓練不再停止正式推理，只需解除訓練鎖。
+        finish_online_training()
 
     # 7. 清理舊 adapters
     cleanup_old_adapters()

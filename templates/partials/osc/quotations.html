@@ -20,7 +20,6 @@
                                 <option value="已確認">已確認</option>
                                 <option value="已收款">已收款</option>
                                 <option value="未成交">未成交</option>
-                                <option value="draft">draft</option>
                             </select>
                         </div>
                         <div class="field">
@@ -37,7 +36,7 @@
                     <h4>一、基本資料</h4>
                     <div class="field-grid cols-4">
                         <div class="field muted-field">
-                            <label for="qt_id">報價單 ID</label>
+                            <label for="qt_id">報價單編號</label>
                             <input id="qt_id" placeholder="留空自動產生" readonly>
                         </div>
                         <div class="field">
@@ -79,11 +78,11 @@
                         </div>
                         <div class="field">
                             <label for="qt_date">日期</label>
-                            <input id="qt_date" type="date" placeholder="date">
+                            <input id="qt_date" type="date">
                         </div>
                         <div class="field">
                             <label for="qt_expiry">有效期限</label>
-                            <input id="qt_expiry" type="date" placeholder="expiry">
+                            <input id="qt_expiry" type="date">
                         </div>
                     </div>
                 </div>
@@ -92,7 +91,7 @@
                     <div class="section-head">
                         <div>
                             <h4>二、服務項目</h4>
-                            <div class="section-note">不用填 JSON。每列填服務內容與金額，系統會轉成原 OSC 報價單格式。</div>
+                            <div class="section-note">不用填原始格式。每列填服務內容與金額，系統會轉成原 OSC 報價單格式。</div>
                         </div>
                         <div class="inline-actions">
                             <select id="qtTemplateSelect" title="套用報價模板">
@@ -164,7 +163,7 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>ID</th>
+                                <th>報價單編號</th>
                                 <th>當事人</th>
                                 <th>專案</th>
                                 <th>日期</th>
@@ -200,8 +199,8 @@
                 </div>
                 <div class="field-grid cols-4" style="margin-top:10px;">
                     <div class="field muted-field">
-                        <label for="qtTplId">ID</label>
-                        <input id="qtTplId" placeholder="更新時使用" readonly>
+                        <label for="qtTplId">編輯編號</label>
+                        <input id="qtTplId" placeholder="新增時留空" readonly>
                     </div>
                     <div class="field">
                         <label for="qtTplName">名稱</label>
@@ -216,7 +215,7 @@
                     </div>
                     <div class="field">
                         <label for="qtTplDescription">說明</label>
-                        <input id="qtTplDescription" placeholder="description">
+                        <input id="qtTplDescription" placeholder="模板用途說明">
                     </div>
                 </div>
                 <div class="toolbar">
@@ -243,7 +242,7 @@
                 </div>
                 <div class="field" style="margin-top:10px;">
                     <label for="qtTplNotes">備註</label>
-                    <textarea id="qtTplNotes" placeholder="notes"></textarea>
+                    <textarea id="qtTplNotes" placeholder="模板備註"></textarea>
                 </div>
                 <textarea id="qtTplItems" hidden></textarea>
                 <div class="toolbar">
@@ -254,7 +253,7 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>ID</th>
+                                <th>編輯編號</th>
                                 <th>名稱</th>
                                 <th>預設</th>
                                 <th>說明</th>

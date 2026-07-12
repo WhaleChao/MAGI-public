@@ -92,6 +92,39 @@ def test_inline_summary_strips_polite_prefix_and_colon():
     assert "繁體中文" in reply
 
 
+def test_inline_summary_extracts_explicit_content_marker():
+    class _SummaryOrch(_FakeOrch):
+        def _detect_summary_length(self, message):
+            return "medium"
+
+        def _summarize_text_resilient(self, text, summary_length="medium"):
+            raise AssertionError("short explicit content should use deterministic extractive summary")
+
+    reply = specialized_commands.run_inline_summary_command(
+        _SummaryOrch(),
+        "請直接摘要以下待摘要內容，並以「摘要結果」開頭：\n\n【待摘要內容】這是一篇短文。第一點很重要。第二點也很重要。第三點是結論。",
+    )
+
+    assert "extractive_inline" in reply
+    assert "第一點很重要" in reply
+    assert "第二點也很重要" in reply
+    assert "第三點是結論" in reply
+    assert "待摘要內容" not in reply
+
+
+def test_looks_like_inline_summary_command_accepts_polite_direct_summary():
+    assert specialized_commands.looks_like_inline_summary_command(
+        "請直接摘要以下內容：這是一篇短文。"
+    )
+    assert specialized_commands.looks_like_inline_summary_command(
+        "請直接摘要以下待摘要內容：這是一篇短文。"
+    )
+    assert not specialized_commands.looks_like_inline_summary_command(
+        "請翻譯以下內容：【待摘要內容】This is a short text."
+    )
+    assert not specialized_commands.looks_like_inline_summary_command("研究摘要 通譯")
+
+
 def test_inline_summary_capability_question_returns_guide():
     class _SummaryOrch(_FakeOrch):
         def _detect_summary_length(self, message):

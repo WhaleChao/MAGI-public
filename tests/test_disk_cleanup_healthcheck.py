@@ -150,6 +150,21 @@ def test_omlx_cache_dry_run_no_delete(sandbox, monkeypatch):
     assert stale.exists()
 
 
+def test_omlx_cache_removes_stale_external_ssd_cache(sandbox, monkeypatch):
+    external_root = sandbox["tmp"] / "MAGI" / "omlx_paged_cache"
+    cache = external_root / "cache-e4b"
+    stale = cache / "old"
+    _touch_with_atime(stale, 10 * 86400)
+    monkeypatch.setattr(dc, "OMLX_EXTERNAL_CACHE_ROOT", external_root, raising=True)
+    monkeypatch.setattr(dc, "OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE", True, raising=True)
+
+    actions = dc.cleanup_omlx_cache(dry_run=False)
+
+    assert not stale.exists()
+    info = next(a for a in actions if Path(a["cache"]) == cache)
+    assert info["deleted_files"] == 1
+
+
 def test_omlx_cache_apply_respects_safety_cap(sandbox, monkeypatch):
     cache = sandbox["home"] / ".omlx" / "cache-e4b"
     stale = cache / "old"
@@ -196,6 +211,192 @@ def test_omlx_cache_hard_cap_keeps_newly_written_files(sandbox, monkeypatch):
     assert fresh.exists()
     info = next(a for a in actions if a["cache"].endswith("cache-26b"))
     assert info["deleted_files"] == 0
+
+
+def test_rejected_distill_cleanup_removes_unlinked_failed_merged_model(sandbox, monkeypatch):
+    distill = sandbox["home"] / ".omlx" / "training" / "gemma-distill"
+    merged = distill / "merged" / "Gemma-gemma-distill-v004"
+    merged.mkdir(parents=True)
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    (merged / "model.safetensors").write_bytes(b"x" * 1024)
+    (distill / "pending_deploy.json").write_text(
+        json.dumps({
+            "version": "gemma-distill-v004",
+            "status": "rejected",
+            "deploy_allowed": False,
+            "merged_path": str(merged),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_LOW_WATER_GB", 70, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 20.0)
+
+    actions = dc.cleanup_rejected_distill_models(dry_run=False)
+
+    assert not merged.exists()
+    assert actions[0]["deleted_dirs"] == 1
+
+
+def test_rejected_distill_cleanup_preserves_deployed_symlink_target(sandbox, monkeypatch):
+    distill = sandbox["home"] / ".omlx" / "training" / "gemma-distill"
+    merged = distill / "merged" / "Gemma-gemma-distill-v004"
+    merged.mkdir(parents=True)
+    (merged / "config.json").write_text("{}", encoding="utf-8")
+    (merged / "model.safetensors").write_bytes(b"x" * 1024)
+    link_root = sandbox["home"] / ".omlx" / "models-text"
+    link_root.mkdir(parents=True)
+    (link_root / "gemma-distill-v004").symlink_to(merged)
+    (distill / "pending_deploy.json").write_text(
+        json.dumps({"version": "gemma-distill-v004", "status": "rejected", "deploy_allowed": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "DISTILL_REJECTED_LOW_WATER_GB", 70, raising=True)
+    monkeypatch.setattr(dc, "_disk_free_gb", lambda path=dc.MAGI_ROOT: 20.0)
+
+    actions = dc.cleanup_rejected_distill_models(dry_run=False)
+
+    assert merged.exists()
+    assert actions[0]["deleted_dirs"] == 0
+
+
+# ---------- Synology Drive empty case shells ----------------------------
+
+def test_cleanup_empty_synology_case_shells_removes_only_empty_case_roots(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    empty_closed_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    empty_active_case = root / "一般案件" / "民事" / "2026-0101-新案-一審-給付"
+    real_case = root / "一般案件" / "民事" / "2026-0100-保留-一審-給付"
+    non_case = root / "一般案件" / "民事" / "範本"
+    (empty_closed_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_closed_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    (empty_active_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_active_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    (real_case / "02_我方歷次書狀").mkdir(parents=True)
+    (real_case / "02_我方歷次書狀" / "書狀.pdf").write_bytes(b"pdf")
+    non_case.mkdir(parents=True)
+    old = time.time() - 24 * 3600
+    for p in (empty_closed_case, empty_active_case, real_case, non_case):
+        os.utime(p, (old, old))
+
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
+
+    assert not empty_closed_case.exists()
+    assert empty_active_case.exists()
+    assert real_case.exists()
+    assert non_case.exists()
+    assert actions[0]["deleted_dirs"] == 1
+
+
+def test_cleanup_empty_synology_case_shells_dry_run_preserves(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    empty_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    empty_case.mkdir(parents=True)
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=True)
+
+    assert empty_case.exists()
+    assert actions[0]["candidate_dirs"] == 1
+
+
+def test_cleanup_empty_synology_case_shells_removes_closed_shells_without_age_delay(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    closed_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    recent_open_case = root / "一般案件" / "民事" / "2026-0100-保留-一審-給付"
+    closed_case.mkdir(parents=True)
+    recent_open_case.mkdir(parents=True)
+
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 24, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
+
+    assert not closed_case.exists()
+    assert recent_open_case.exists()
+    assert actions[0]["deleted_dirs"] == 1
+
+
+def test_cleanup_empty_synology_case_shells_ignores_legacy_delete_guard(sandbox, monkeypatch):
+    root = sandbox["tmp"] / "SynologyDrive-homes" / "01_案件"
+    empty_case = root / "一般案件" / "民事" / "2026-0099-測試-一審-給付"
+    (empty_case / "02_我方歷次書狀").mkdir(parents=True)
+    (empty_case / "02_我方歷次書狀" / ".gitkeep").write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", str(root))
+    monkeypatch.setenv("MAGI_NO_DELETE", "1")
+    monkeypatch.setenv("MAGI_DB_NO_DELETE", "1")
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", 0, raising=True)
+    monkeypatch.setattr(dc, "_closed_case_numbers_for_shell_cleanup", lambda: {"2026-0099"})
+    orig_unlink = os.unlink
+
+    def guarded_unlink(path, *args, **kwargs):
+        if os.environ.get("MAGI_NO_DELETE") == "1" and "01_案件" in str(path):
+            raise PermissionError(f"legacy guard blocked {path}")
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(dc.os, "unlink", guarded_unlink)
+
+    actions = dc.cleanup_empty_synology_case_shells(dry_run=False)
+
+    assert not empty_case.exists()
+    assert actions[0]["deleted_dirs"] == 1
+    assert os.environ.get("MAGI_NO_DELETE") == "1"
+    assert os.environ.get("MAGI_DB_NO_DELETE") == "1"
+
+
+def test_remove_tree_robust_tolerates_vanishing_metadata_file(tmp_path, monkeypatch):
+    root = tmp_path / "01_案件" / "2026-0099-測試"
+    root.mkdir(parents=True)
+    ghost = root / "._.DS_Store"
+    ghost.write_bytes(b"")
+    orig_unlink = os.unlink
+
+    def flaky_unlink(path, *args, **kwargs):
+        if str(path).endswith("._.DS_Store"):
+            orig_unlink(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(dc.os, "unlink", flaky_unlink)
+
+    dc._remove_tree_robust(root)
+
+    assert not root.exists()
+
+
+def test_synology_empty_case_roots_default_to_smb_and_skip_file_provider(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL", False, raising=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
+
+    roots = [str(p) for p in dc._synology_drive_active_roots()]
+
+    assert "/Volumes/homes/lumi63181107/01_案件" in roots
+    assert str(tmp_path / ".magi_mounts/homes/lumi63181107/01_案件") in roots
+    assert str(tmp_path / "Library/CloudStorage/SynologyDrive-homes/01_案件") not in roots
+
+
+def test_synology_empty_case_roots_can_include_local_views(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", raising=False)
+    monkeypatch.setattr(dc, "SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL", True, raising=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MAGI_NAS_HOME_USER", "lumi63181107")
+
+    roots = [str(p) for p in dc._synology_drive_active_roots()]
+
+    assert str(tmp_path / "Library/CloudStorage/SynologyDrive-homes/01_案件") in roots
+    assert str(tmp_path / "SynologyDrive/homes/01_案件") in roots
+    assert str(tmp_path / "SynologyDrive/01_案件") in roots
+    assert "/Volumes/homes/lumi63181107/01_案件" in roots
 
 
 # ---------- cleanup_tmp ------------------------------------------------
@@ -382,6 +583,7 @@ def test_main_apply_arg_overrides_env_dry_run(sandbox, monkeypatch):
     calls = []
     monkeypatch.setattr(dc, "cleanup_metrics", lambda dry_run: calls.append(dry_run) or [])
     monkeypatch.setattr(dc, "cleanup_omlx_cache", lambda dry_run: [])
+    monkeypatch.setattr(dc, "cleanup_rejected_distill_models", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_tmp", lambda dry_run: [{"candidate_count": 0}])
     monkeypatch.setattr(dc, "cleanup_db_backups", lambda dry_run: [])
     monkeypatch.setattr(dc, "cleanup_build_artifacts", lambda dry_run: [])

@@ -78,6 +78,20 @@ def draw_text_box(
         y += size + line_gap
 
 
+def draw_centered_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box: tuple[int, int, int, int],
+    size: int,
+    fill: str = INK,
+) -> None:
+    text_font = font(size)
+    bbox = draw.textbbox((0, 0), text, font=text_font)
+    x = box[0] + (box[2] - box[0] - (bbox[2] - bbox[0])) / 2
+    y = box[1] + (box[3] - box[1] - (bbox[3] - bbox[1])) / 2
+    draw.text((x, y), text, font=text_font, fill="#" + fill)
+
+
 def save_image(path: Path, image: Image.Image) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, "PNG")
@@ -132,35 +146,52 @@ def make_cover(path: Path) -> Path:
 
 
 def make_module_map(path: Path) -> Path:
-    img = Image.new("RGB", (1500, 760), "#FFFFFF")
+    img = Image.new("RGB", (1600, 980), "#F8FAFC")
     draw = ImageDraw.Draw(img)
-    draw_round_rect(draw, (380, 55, 1120, 205), fill="E0F2FE", outline="7DD3FC", radius=34)
-    draw.text((632, 88), "MAGI", font=font(60), fill="#" + BLUE)
-    draw.text((522, 158), "案件資料核心：不重複建資料、不混同案件", font=font(30), fill="#" + INK)
+    draw.text((70, 48), "MAGI 彩色功能心智圖", font=font(54), fill="#" + INK)
+    draw.text((72, 112), "按使用情境分色：入口、案件、文件、產出、法扶法院、研究、營運、健康安全。", font=font(27), fill="#" + MUTED)
 
-    modules = [
-        ("案件管理", "人工狀態優先", 95, 265, BLUE),
-        ("檔案與 OCR", "預覽 / 分享 / 命名", 515, 265, GREEN),
-        ("AI 交付", "摘要 / 翻譯 / 逐字稿", 935, 265, PURPLE),
-        ("法扶、閱卷、筆錄", "開辦 / 回報 / 去重", 95, 465, AMBER),
-        ("法律資料", "法條 / 判決 / 實務見解", 515, 465, "2563EB"),
-        ("健康維運", "模型 / DB / NAS / 外網", 935, 465, RED),
+    center = (610, 365, 990, 555)
+    draw_round_rect(draw, (center[0] + 8, center[1] + 10, center[2] + 8, center[3] + 10), fill="CBD5E1", outline="CBD5E1", radius=42)
+    draw_round_rect(draw, center, fill="0F172A", outline="38BDF8", radius=42, width=4)
+    draw_centered_text(draw, "MAGI", (center[0], center[1] + 18, center[2], center[1] + 88), 62, "FFFFFF")
+    draw_centered_text(draw, "案件資料核心", (center[0], center[1] + 92, center[2], center[1] + 140), 30, "BAE6FD")
+    draw_centered_text(draw, "查得到才回答；正式動作先確認", (center[0], center[1] + 137, center[2], center[3] - 20), 25, "E2E8F0")
+
+    cards = [
+        ("日常入口", "Web / LINE\nDiscord / Telegram\n自然語言交辦", (70, 195, 390, 365), "06B6D4", "ECFEFF"),
+        ("案件工作", "新建案件\n案件資料夾\n庭期與待辦", (455, 150, 775, 320), BLUE, "EFF6FF"),
+        ("文件處理", "OCR / PDF 命名\nPDF 書籤\n摘要與逐字稿", (825, 150, 1145, 320), GREEN, "F0FDF4"),
+        ("法律產出", "書狀草擬\n委任與收據\n契約與存證信函", (1210, 195, 1530, 365), PURPLE, "F5F3FF"),
+        ("法扶與法院", "法扶開辦報結\n閱卷繳費下載\n筆錄歸檔", (70, 580, 390, 750), AMBER, "FFFBEB"),
+        ("法律研究", "判決與法條\n實務見解庫\n通譯研究", (455, 640, 775, 810), "0F766E", "ECFDF5"),
+        ("營運管理", "帳務與報價\nCalendar / Drive\nNAS 同步", (825, 640, 1145, 810), RED, "FFF1F2"),
+        ("健康安全", "夜間巡檢\nCI / LIVE 驗收\n危險操作確認", (1210, 580, 1530, 750), "475569", "F1F5F9"),
     ]
-    for x1, y1, x2, y2 in [(285, 220, 285, 250), (705, 220, 705, 250), (1125, 220, 1125, 250)]:
-        draw.line((x1, y1, x2, y2), fill="#" + BORDER, width=5)
-    for title, desc, x, y, color in modules:
-        draw_round_rect(draw, (x, y, x + 370, y + 150), fill="F8FAFC", outline=color, radius=26)
-        title_font = font(35 if len(title) <= 6 else 31)
-        bbox = draw.textbbox((0, 0), title, font=title_font)
-        title_w = bbox[2] - bbox[0]
-        draw.text((x + (370 - title_w) / 2, y + 32), title, font=title_font, fill="#" + color)
-        desc_font = font(25)
-        bbox = draw.textbbox((0, 0), desc, font=desc_font)
-        desc_w = bbox[2] - bbox[0]
-        draw.text((x + (370 - desc_w) / 2, y + 92), desc, font=desc_font, fill="#" + MUTED)
+    cx = (center[0] + center[2]) // 2
+    cy = (center[1] + center[3]) // 2
+    for title, body, box, color, fill in cards:
+        bx = (box[0] + box[2]) // 2
+        by = (box[1] + box[3]) // 2
+        draw.line((cx, cy, bx, by), fill="#" + color, width=6)
+    draw_round_rect(draw, (center[0] + 8, center[1] + 10, center[2] + 8, center[3] + 10), fill="CBD5E1", outline="CBD5E1", radius=42)
+    draw_round_rect(draw, center, fill="0F172A", outline="38BDF8", radius=42, width=4)
+    draw_centered_text(draw, "MAGI", (center[0], center[1] + 18, center[2], center[1] + 88), 62, "FFFFFF")
+    draw_centered_text(draw, "案件資料核心", (center[0], center[1] + 92, center[2], center[1] + 140), 30, "BAE6FD")
+    draw_centered_text(draw, "查得到才回答；正式動作先確認", (center[0], center[1] + 137, center[2], center[3] - 20), 25, "E2E8F0")
+    for title, body, box, color, fill in cards:
+        draw_round_rect(draw, (box[0] + 6, box[1] + 8, box[2] + 6, box[3] + 8), fill="E2E8F0", outline="E2E8F0", radius=28)
+        draw_round_rect(draw, box, fill=fill, outline=color, radius=28, width=4)
+        draw_round_rect(draw, (box[0] + 18, box[1] + 18, box[2] - 18, box[1] + 62), fill=color, outline=color, radius=16)
+        draw_centered_text(draw, title, (box[0] + 18, box[1] + 18, box[2] - 18, box[1] + 62), 28, "FFFFFF")
+        y = box[1] + 78
+        for line in body.splitlines():
+            draw.ellipse((box[0] + 28, y + 7, box[0] + 40, y + 19), fill="#" + color)
+            draw.text((box[0] + 52, y), line, font=font(21), fill="#" + INK)
+            y += 29
 
-    draw_round_rect(draw, (95, 670, 1405, 720), fill="F8FAFC", outline=BORDER, radius=18)
-    draw.text((122, 682), "原則：問行程查行事曆；問案件查案件資料；問判決查法律資料；查不到就回報查不到，不用模型猜。", font=font(25), fill="#" + INK)
+    draw_round_rect(draw, (94, 875, 1506, 930), fill="FFFFFF", outline=BORDER, radius=18)
+    draw.text((122, 890), "閱讀方式：從中心往外看。顏色代表功能領域，同一顏色內的任務通常會共享資料、通知與驗收規則。", font=font(25), fill="#" + INK)
     return save_image(path, img)
 
 
@@ -612,7 +643,7 @@ def build_manual() -> None:
             [
                 ["法院通知", "排除信封頁、辨識法院、案號、期限、文件類型。", "請把這份法院通知命名並建立待辦。"],
                 ["程序裁定", "辨識是否為結案依據或程序文件。", "請判斷這份裁定是否可作結案文件。"],
-                ["判決書", "命名、摘要、入庫、建立可引用段落。", "請摘要判決理由並保留頁碼。"],
+                ["判決書或終局裁定及處分", "命名、摘要、入庫、建立可引用段落。", "請摘要判決理由並保留頁碼。"],
                 ["對方書狀", "歸檔到對方歷次書狀並摘要主張。", "請整理對方書狀的主張與反駁方向。"],
                 ["掃描不清", "標示 OCR 品質不足，請人工複核。", "請 OCR 並標示不確定文字。"],
             ],
@@ -657,7 +688,7 @@ def build_manual() -> None:
             [
                 ["法扶", "新派案、開辦、應備事項、進度回報、結案。", "同名不同案不可混搬；開辦不應有暫存舊流程混淆。"],
                 ["消債應備事項", "依 OSC 邏輯列出當事人待補資料。", "所得清單每年 5 月後按可申請年度自動推進。"],
-                ["進度回報", "逾期案件完整列出，回覆已回報後冷卻 60 天。", "只把進度回報送到正確頻道。"],
+                ["進度回報", "逾期案件完整列出，回覆已回報後冷卻 90 天。", "只把進度回報送到正確頻道。"],
                 ["閱卷", "檢查可下載、到院閱卷、下載與歸檔。", "已下載或已歸檔不重複通知；只有繳費單不算閱卷次數。"],
                 ["筆錄", "下載、命名、歸檔與通知。", "通知只列有下載到檔案的案件，不列一長串 0 份。"],
             ],
@@ -707,13 +738,13 @@ def build_manual() -> None:
                 "python3 scripts/magi_doctor.py --json",
                 "python3 scripts/public_release_audit.py --public-isolation --strict --json",
                 "./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62",
-                "./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public",
+                "./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json",
             ],
         )
         callout(
             doc,
             "商用部署最低標準",
-            "公開版要通過 public isolation、乾淨公開版安裝檢查、secret audit、ci、smoke62 與商用 readiness。私有版要確認模型、DB、NAS、OCR、外網、通知、備份與資料清理都正常。",
+            "公開版要通過 public isolation、乾淨公開版安裝檢查、secret audit、ci、smoke62 與 commercial-release。私有版要確認模型、DB、NAS、OCR、外網、通知、備份與資料清理都正常。",
             fill="F0FDF4",
             accent=GREEN,
         )
@@ -777,7 +808,7 @@ def build_manual() -> None:
                 ["範本", "開啟書狀範本資料夾。", "範本清單、預覽、下載、分享連結。"],
                 ["法扶狀態", "查 1150421-W-004 法扶狀態。", "開辦、進度、附件、結案狀態。"],
                 ["消債應備", "產生這件消債待補資料文字。", "可複製給當事人的待補清單。"],
-                ["進度回報", "羅伊辰已回報。", "冷卻 60 天並建立下次提醒。"],
+                ["進度回報", "羅伊辰已回報。", "冷卻 90 天並建立下次提醒。"],
                 ["閱卷", "檢查這件是否有新閱卷資料。", "只列真正新資料，已歸檔不重複通知。"],
                 ["筆錄", "下載這件的新筆錄。", "新筆錄檔案與歸檔位置。"],
                 ["法律資料", "查民法第184條與相關判決。", "法條、裁判來源、引用片段。"],
@@ -787,7 +818,7 @@ def build_manual() -> None:
                 ["健康", "MAGI 系統狀態。", "主狀態、DB、模型、OCR、NAS、外網。"],
                 ["外網", "檢查外網為什麼連不上。", "本機健康、通道、憑證與服務狀態。"],
                 ["公版檢查", "執行公開版隔離檢查。", "0 errors / 0 warnings 或待修項。"],
-                ["商用檢查", "跑完整 smoke62 與 commercial readiness。", "通過/失敗摘要與報告路徑。"],
+                ["商用檢查", "跑完整 smoke62 與 commercial-release。", "通過/失敗摘要與報告路徑。"],
             ],
         )
 
@@ -982,7 +1013,7 @@ def build_pdf(assets: dict[str, Path]) -> None:
                 "python3 scripts/magi_doctor.py --json",
                 "python3 scripts/public_release_audit.py --public-isolation --strict --json",
                 "./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62",
-                "./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public",
+                "./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json",
             ],
             styles,
         ),

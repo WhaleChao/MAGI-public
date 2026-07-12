@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from flask import Flask
-from flask_login import LoginManager
+from flask_login import LoginManager, UserMixin, login_user
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -113,6 +113,9 @@ class TestGcalStatus:
         data = rv.get_json()
         assert data["ok"] is True
         assert data["connected"] is False
+        assert data["healthy"] is False
+        assert data["reason"] == "skipped"
+        assert data["token_health"]["status"] == "skipped"
 
     def test_status_when_connected(self, client, tmp_token):
         """When token.json exists and creds are valid, connected=true."""
@@ -125,8 +128,20 @@ class TestGcalStatus:
             rv = client.get("/api/osc/gcal/status")
         assert rv.status_code == 200
         data = rv.get_json()
+        assert data["ok"] is True
         assert data["connected"] is True
+        assert data["healthy"] is True
+        assert data["reason"] == "ok"
+        assert data["token_health"]["status"] == "ok"
         assert data["import_calendar_ids"] == "primary, team-calendar@example.com"
+
+    def test_status_does_not_rewrite_token_file(self, client, tmp_token):
+        before = tmp_token.read_text(encoding="utf-8")
+        with patch("api.blueprints.osc_gcal.TOKEN_PATH", tmp_token):
+            rv = client.get("/api/osc/gcal/status")
+
+        assert rv.status_code == 200
+        assert tmp_token.read_text(encoding="utf-8") == before
 
 
 class TestGcalAuthStart:
@@ -205,29 +220,44 @@ class TestGcalSync:
         mock_service.events.return_value = mock_events
         mock_events.insert.return_value.execute.return_value = {"id": "gcal_event_999"}
 
-        def fake_run_sync(dry_run=False):
+        def fake_run_sync(payload=None):
             # When dry_run, we should NOT call insert
-            if not dry_run:
+            if not (payload or {}).get("dry_run"):
                 mock_events.insert(calendarId="primary", body={}).execute()
-            return {"pushed": 3, "skipped": 0, "errors": []}
+            return {"ok": True, "dry_run": bool((payload or {}).get("dry_run")), "inserted": 0, "patched": 0, "failed": 0}
 
         with (
             patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
-            patch("api.blueprints.osc_gcal.run_sync", fake_run_sync, create=True),
+            patch("api.blueprints.osc_gcal._run_current_gcal_sync", fake_run_sync),
         ):
-            # Patch the import inside the endpoint
-            with patch.dict("sys.modules", {"gcal_sync": MagicMock(run_sync=fake_run_sync)}):
-                # Directly patch the blueprint module's sync
-                import api.blueprints.osc_gcal as gcal_mod
+            rv = client.post("/api/osc/gcal/sync", json={"dry_run": True})
 
-                original = gcal_mod.__dict__.get("_load_creds")
-                with patch.object(gcal_mod, "_load_creds", return_value=creds):
-                    # Test dry_run path doesn't call insert
-                    rv = client.post("/api/osc/gcal/sync", json={"dry_run": True})
-
-        # Status might be 500 if run_sync import fails in test env, that's OK
-        # Main assertion: insert was NOT called in dry_run=True scenario
+        assert rv.status_code == 200
         assert mock_events.insert.call_count == 0
+
+    def test_sync_defaults_to_dry_run_without_apply(self, client, monkeypatch):
+        creds = _make_valid_creds()
+        seen = {}
+
+        def fake_run_sync(payload=None):
+            seen["payload"] = dict(payload or {})
+            return {"ok": True, "inserted": 0, "patched": 0, "failed": 0}
+
+        monkeypatch.delenv("MAGI_GCAL_SYNC_APPLY", raising=False)
+        with (
+            patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
+            patch("api.blueprints.osc_gcal._run_current_gcal_sync", fake_run_sync),
+        ):
+            rv = client.post("/api/osc/gcal/sync", json={"repair_existing": True, "mirror_imported": True})
+
+        assert rv.status_code == 200
+        data = rv.get_json()
+        assert data["dry_run"] is True
+        assert data["apply"] is False
+        assert data["safety"] == "apply_required_for_writes"
+        assert seen["payload"]["dry_run"] is True
+        assert seen["payload"]["repair_existing"] is False
+        assert seen["payload"]["mirror_imported"] is False
 
     def test_sync_handles_api_error(self, client):
         """If GCal API raises HttpError, errors are collected and no crash."""
@@ -240,17 +270,49 @@ class TestGcalSync:
         except Exception:
             http_err = Exception("Simulated GCal API error")
 
-        def fake_run_sync_with_error(dry_run=False):
-            return {"pushed": 0, "skipped": 0, "errors": [f"Simulated: {http_err}"]}
+        def fake_run_sync_with_error(payload=None):
+            return {"ok": False, "error": f"Simulated: {http_err}"}
 
-        with patch("api.blueprints.osc_gcal._load_creds", return_value=creds):
-            # Test that a sync with errors returns ok=True with errors list
-            import api.blueprints.osc_gcal as gcal_mod
-            with patch.object(gcal_mod, "_load_creds", return_value=creds):
-                # Simulate endpoint calling run_sync that returns errors
-                rv = client.post("/api/osc/gcal/sync", json={})
-                # Even if sync fails internally (import error in test env), no crash
-                assert rv.status_code in (200, 400, 500)
-                data = rv.get_json()
-                assert data is not None
-                assert "ok" in data
+        with (
+            patch("api.blueprints.osc_gcal._load_creds", return_value=creds),
+            patch("api.blueprints.osc_gcal._run_current_gcal_sync", fake_run_sync_with_error),
+        ):
+            rv = client.post("/api/osc/gcal/sync", json={})
+
+        assert rv.status_code == 500
+        data = rv.get_json()
+        assert data is not None
+        assert data["ok"] is False
+
+
+def test_gcal_sync_requires_operator_when_login_enabled():
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = False
+    app.secret_key = "test_secret"
+    lm = LoginManager()
+    lm.init_app(app)
+
+    class Viewer(UserMixin):
+        id = "viewer"
+        role = "viewer"
+
+    @lm.user_loader
+    def _load_user(_user_id):
+        return Viewer()
+
+    @app.route("/login")
+    def _login():
+        login_user(Viewer())
+        return "ok"
+
+    from api.blueprints.osc_gcal import osc_gcal_bp
+
+    app.register_blueprint(osc_gcal_bp)
+    client = app.test_client()
+    client.get("/login")
+
+    rv = client.post("/api/osc/gcal/sync", json={"apply": True})
+
+    assert rv.status_code == 403
+    assert rv.get_json()["error"] == "forbidden"

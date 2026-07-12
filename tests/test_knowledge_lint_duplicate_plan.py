@@ -247,6 +247,86 @@ def test_check_duplicate_vectors_includes_cleanup_plan(monkeypatch):
     assert result["cleanup_gate"]["status"] == "pending_apply"
 
 
+def test_judgment_summary_quality_detector_flags_bad_summaries():
+    mod = _load_module()
+
+    assert mod._is_low_quality_judgment_summary("")[1] == "empty"
+    assert mod._is_low_quality_judgment_summary("(摘要失敗，前 20 行預覽)\n原文")[1] == "preview_or_degraded_marker"
+    assert mod._is_low_quality_judgment_summary("（降級摘要）模型逾時，改採預覽內容")[1] == "preview_or_degraded_marker"
+    assert mod._is_low_quality_judgment_summary("你是一位精確的法律助理。判決內文：...")[1] == "prompt_leak"
+    assert mod._is_low_quality_judgment_summary("## 實務見解\n無。")[1] == "substantive_body_too_short"
+
+    ok, reason = mod._is_low_quality_judgment_summary(
+        "## 實務見解\n本院認為，當事人提出之證據應依卷內資料綜合判斷，"
+        "如其主張與客觀證據不符，法院得不予採信。"
+    )
+    assert ok is False
+    assert reason == ""
+
+
+def test_insight_quality_detector_flags_degraded_summary_marker():
+    mod = _load_module()
+
+    ok, reason = mod._is_low_quality_insight("（降級摘要）模型逾時，改採預覽內容", False)
+
+    assert ok is True
+    assert reason == "degraded_marker"
+
+
+def test_check_judgment_summary_quality_includes_court_and_archive(monkeypatch):
+    mod = _load_module()
+
+    class _Cursor:
+        def __init__(self):
+            self.counts = [
+                {"c": 3}, {"c": 1}, {"c": 1}, {"c": 1}, {"c": 0}, {"c": 1},  # court
+                {"c": 4}, {"c": 0}, {"c": 1}, {"c": 0}, {"c": 1}, {"c": 1}, {"c": 2},  # archive
+            ]
+            self.samples = [
+                [{"id": 10, "jid": "J1", "is_degraded": 0, "reason": "preview_or_degraded_marker"}],
+                [{"id": 20, "source_jid": "A1", "is_degraded": 1, "reason": "degraded_flag"}],
+            ]
+            self.current = None
+
+        def execute(self, sql):
+            if "LEFT(" in sql and " AS sample" in sql:
+                self.current = self.samples.pop(0)
+            else:
+                self.current = self.counts.pop(0)
+
+        def fetchone(self):
+            return self.current
+
+        def fetchall(self):
+            return self.current
+
+        def close(self):
+            return None
+
+    class _Conn:
+        def __init__(self):
+            self.cursor_obj = _Cursor()
+
+        def cursor(self, dictionary=False):
+            assert dictionary is True
+            return self.cursor_obj
+
+        def close(self):
+            return None
+
+    conn = _Conn()
+    monkeypatch.setattr(mod, "_db_connect", lambda _name: conn)
+
+    result = mod.check_judgment_summary_quality()
+
+    assert result["status"] == "warn"
+    assert result["total_issue_count"] == 8
+    assert result["missing_summary_count"] == 1
+    assert result["tables"]["court_judgments"]["quality_issue_count"] == 3
+    assert result["tables"]["judgment_archive"]["quality_issue_count"] == 5
+    assert result["tables"]["judgment_archive"]["samples"][0]["source_jid"] == "A1"
+
+
 def test_cleanup_duplicate_vectors_dry_run_does_not_mutate_fixture(monkeypatch, tmp_path):
     mod = _load_module()
     conn = _FixtureConn()

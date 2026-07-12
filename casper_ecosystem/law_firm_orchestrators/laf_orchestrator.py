@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import hashlib
 from datetime import datetime, timedelta
 import logging
 import argparse
@@ -53,7 +54,17 @@ if str(MAGI_DIR) not in sys.path:
     sys.path.insert(0, str(MAGI_DIR))
 
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
-from api.case_path_mapper import canonical_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, default_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.laf_go_live_rules import (
+    go_live_missing_labels,
+    go_live_notice_files,
+    go_live_proof_files,
+    is_go_live_ready,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_aliases, judgment_folder_name
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 CODE_DIR = get_orch_dir()
@@ -64,6 +75,9 @@ _PORTAL_RETRY_MAX_TRIES = int(os.environ.get("MAGI_LAF_PORTAL_MAX_RETRIES", "168
 # Portal retry loop 間隔（獨立於 Gmail check interval，預設 3600 秒 = 1 小時）
 # 避免和 Gmail 5 分鐘輪詢共用同一個 interval 導致 2.5 小時內打爆上限
 _PORTAL_RETRY_LOOP_INTERVAL = int(os.environ.get("MAGI_LAF_PORTAL_RETRY_INTERVAL", "3600") or "3600")
+# A portal browser can occasionally stop answering without raising an error.
+# Keep the server recoverable instead of leaving the retry lock held forever.
+_PORTAL_RETRY_CYCLE_TIMEOUT = int(os.environ.get("MAGI_LAF_PORTAL_RETRY_CYCLE_TIMEOUT", "1800") or "1800")
 CONDITION_MANUAL_DONE_PATH = CODE_DIR / "_laf_condition_manual_done.json"
 CONFIG_PATH = get_config_path("config.json")
 
@@ -72,6 +86,20 @@ ensure_path_on_sys_path(SKILLS_DIR / "legal")
 ensure_path_on_sys_path(SKILLS_DIR / "osc-orchestrator")
 
 logger = logging.getLogger("laf_orchestrator")
+
+_LAF_UPLOAD_STAGING_SENTINEL = ".magi-self-repair-owned"
+_LAF_UPLOAD_STAGING_SENTINEL_TEXT = "magi-self-repair-owned-v1"
+
+
+def _create_laf_upload_staging_dir(path: str) -> str:
+    """Create a managed upload staging directory with a cleanup ownership proof."""
+    staging = Path(path)
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / _LAF_UPLOAD_STAGING_SENTINEL).write_text(
+        _LAF_UPLOAD_STAGING_SENTINEL_TEXT + "\n",
+        encoding="utf-8",
+    )
+    return str(staging)
 
 # -------------------------------------------------------------------
 # Event log (MemBridge / local JSONL) - best-effort
@@ -85,6 +113,43 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
     except Exception:
         return
 
+
+def _safe_listdir(path: str, *, timeout_sec: float = 2.0) -> list[str]:
+    """List a NAS/Synology Drive directory without letting stale mounts block LAF."""
+    out: dict[str, list[str]] = {"items": []}
+
+    def _runner() -> None:
+        try:
+            out["items"] = list(os.listdir(path))
+        except Exception:
+            out["items"] = []
+
+    t = threading.Thread(target=_runner, daemon=True, name="laf-safe-listdir")
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        logger.warning("LAF safe listdir timeout after %.1fs: %s", timeout_sec, path)
+        return []
+    return out.get("items") or []
+
+
+def _safe_getmtime(path: str, *, timeout_sec: float = 1.5) -> float:
+    out: dict[str, float] = {"value": 0.0}
+
+    def _runner() -> None:
+        try:
+            out["value"] = float(os.path.getmtime(path))
+        except Exception:
+            out["value"] = 0.0
+
+    t = threading.Thread(target=_runner, daemon=True, name="laf-safe-getmtime")
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        logger.warning("LAF safe getmtime timeout after %.1fs: %s", timeout_sec, path)
+        return 0.0
+    return float(out.get("value") or 0.0)
+
 # -------------------------------------------------------------------
 # Lazy imports (avoid import-time failures on missing deps)
 # -------------------------------------------------------------------
@@ -97,6 +162,37 @@ _notifier = None
 _folder_builder = None
 _portal_retry_thread = None
 _portal_retry_state_lock = threading.Lock()
+
+
+class _PortalRetryCycleTimeout(TimeoutError):
+    """Raised only when the retry watchdog, rather than the portal, expires."""
+
+
+class _DryRunNotifier:
+    """Absorb every notification emitted while an orchestrator dry-run is active."""
+
+    def _suppress(self, method: str, *args, **kwargs) -> bool:
+        topic_key = str(kwargs.get("topic_key") or "-")
+        logger.info("[DRY RUN] Notification suppressed (%s, topic=%s)", method, topic_key)
+        return True
+
+    def notify_admin(self, *args, **kwargs) -> bool:
+        return self._suppress("notify_admin", *args, **kwargs)
+
+    def notify_admin_with_files(self, *args, **kwargs) -> bool:
+        return self._suppress("notify_admin_with_files", *args, **kwargs)
+
+    def send_closing_confirmation(self, *args, **kwargs) -> bool:
+        return self._suppress("send_closing_confirmation", *args, **kwargs)
+
+    def __getattr__(self, method: str):
+        if method.startswith("_"):
+            raise AttributeError(method)
+
+        def _suppressed(*args, **kwargs) -> bool:
+            return self._suppress(method, *args, **kwargs)
+
+        return _suppressed
 
 
 def _get_config() -> dict:
@@ -263,6 +359,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         self._portal_retry_state_path = MAGI_DIR / ".agent" / "laf_pending_portal_downloads.json"
         self._portal_retry_lock_path = MAGI_DIR / ".agent" / "laf_pending_portal_downloads.lock"
         self._portal_seed_skip_path = MAGI_DIR / ".agent" / "laf_seed_permanently_skipped.json"
+        self._portal_retry_heartbeat_path = MAGI_DIR / "static" / "laf_portal_retry_state.json"
 
     @property
     def db(self):
@@ -273,7 +370,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     @property
     def notifier(self):
         if self._notifier is None:
-            self._notifier = _get_notifier()
+            # A dry-run may traverse validation branches which normally alert a
+            # human. Keep its result observable in logs, but never deliver it.
+            self._notifier = _DryRunNotifier() if self.dry_run else _get_notifier()
         return self._notifier
 
     @property
@@ -379,8 +478,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # 注意：portal retry loop 使用獨立的 _PORTAL_RETRY_LOOP_INTERVAL（預設 3600s = 1 小時）
             # 而不是 Gmail check interval（300s = 5 分鐘），避免頻繁重試快速打爆 30 次上限
             try:
-                self._seed_pending_portal_retries_from_case_inventory(limit=80)
-                self._retry_pending_portal_downloads(max_items=6)
                 self._ensure_pending_portal_retry_loop(interval_seconds=_PORTAL_RETRY_LOOP_INTERVAL)
             except Exception as e:
                 logger.warning("Portal retry setup failed (non-fatal): %s", e)
@@ -449,6 +546,35 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(path)
 
+    def _write_portal_retry_heartbeat(
+        self,
+        *,
+        status: str,
+        interval_sec: int,
+        pending_count: int | None = None,
+        processed_count: int | None = None,
+        error_type: str = "",
+    ) -> None:
+        path = self._portal_retry_heartbeat_path
+        payload = {
+            "ok": status not in {"error", "stopped"},
+            "status": status,
+            "enabled": True,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "interval_sec": max(60, int(interval_sec or 300)),
+            "thread": "laf-portal-retry-loop",
+            "pending_count": pending_count,
+            "processed_count": processed_count,
+            "error_type": str(error_type or "")[:80],
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        except Exception:
+            logger.debug("Unable to write LAF portal retry heartbeat", exc_info=True)
+
     def _acquire_pending_portal_retry_lock(self) -> bool:
         try:
             self._portal_retry_lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,7 +596,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self._portal_retry_lock_path.unlink()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 472, exc_info=True)
                 # Retry once
                 try:
                     fd = os.open(str(self._portal_retry_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -478,7 +604,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         handle.write(f"{os.getpid()}\n{datetime.now().isoformat()}\n")
                     return True
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 480, exc_info=True)
             return False
         except Exception as e:
             logger.warning("Failed to acquire portal retry lock: %s", e)
@@ -507,6 +633,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             except Exception as e:
                 logger.warning("Resolve case folder by laf number failed (%s): %s", laf_case_no, e)
         return self._to_local_case_folder(str(fallback or ""))
+
+    @staticmethod
+    def _portal_retry_item_is_pending(item: dict) -> bool:
+        status = str(item.get("status") or "pending_retry").strip().lower()
+        if status in {"", "pending_retry"}:
+            return True
+        return status == "manual_review" and str(item.get("last_error") or "") == "missing_local_case_folder"
 
     @staticmethod
     def _is_legacy_closed_archive_path(path_value: str) -> bool:
@@ -633,7 +766,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             result["error"] = "missing_case_folder"
             return result
         try:
-            from laf_automation_v2 import OSCCaseCreator
+            from skills.legal.laf import OSCCaseCreator
 
             archiver = OSCCaseCreator(
                 db_manager=self.db,
@@ -756,26 +889,63 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _loop(owner: "LAFOrchestrator", every_sec: int) -> None:
             logger.info("🔁 LAF portal retry loop started (every %ss)", every_sec)
             _eventlog("laf:portal:retry:loop_start", ok=True, payload={"interval_sec": every_sec})
+            owner._write_portal_retry_heartbeat(status="starting", interval_sec=every_sec)
             _consecutive_fails = 0
             _admin_notified = False
+            try:
+                owner._seed_pending_portal_retries_from_case_inventory(limit=80)
+            except Exception as e:
+                logger.warning("Portal retry background seed failed (non-fatal): %s", e)
             while True:  # daemon=True ensures cleanup on process exit; no explicit shutdown needed
                 try:
-                    owner._retry_pending_portal_downloads(max_items=6)
+                    result = owner._run_pending_portal_retry_cycle_with_watchdog(
+                        max_items=6,
+                        interval_sec=every_sec,
+                        timeout_sec=_PORTAL_RETRY_CYCLE_TIMEOUT,
+                    )
                     _consecutive_fails = 0
                     _admin_notified = False
+                    owner._write_portal_retry_heartbeat(
+                        status="ok",
+                        interval_sec=every_sec,
+                        pending_count=int(result.get("scanned") or result.get("pending") or 0) if isinstance(result, dict) else None,
+                        processed_count=int(result.get("processed") or 0) if isinstance(result, dict) else None,
+                    )
                 except Exception as e:
                     _consecutive_fails += 1
                     logger.error("Pending portal retry loop failed (consecutive=%d): %s", _consecutive_fails, e)
+                    owner._write_portal_retry_heartbeat(
+                        status="error",
+                        interval_sec=every_sec,
+                        error_type=type(e).__name__,
+                    )
+                    if isinstance(e, _PortalRetryCycleTimeout):
+                        logger.critical("LAF portal retry cycle timed out; restarting MAGI for recovery")
+                        try:
+                            owner.notifier.notify_admin(
+                                "LAF 附件重試逾時，MAGI 將自動重啟後繼續處理。",
+                                topic_key="laf_dispatch",
+                            )
+                        except Exception:
+                            logger.warning("Unable to notify portal retry timeout", exc_info=True)
+                        owner._restart_after_portal_retry_timeout()
+                        return
                     if _consecutive_fails >= 10 and not _admin_notified:
                         _admin_notified = True
                         try:
                             from api.discord_channel_router import send as _dc_send
                             _dc_send("admin", f"🚨 LAF portal retry loop 連續 {_consecutive_fails} 次失敗，請檢查: {str(e)[:200]}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 774, exc_info=True)
                 # Exponential backoff on failures, capped at 1 hour
                 _sleep = min(every_sec * (2 ** min(_consecutive_fails, 4)), 3600) if _consecutive_fails else every_sec
-                time.sleep(_sleep)
+                remaining = max(60, int(_sleep))
+                while remaining > 0:
+                    step = min(60, remaining)
+                    time.sleep(step)
+                    remaining -= step
+                    if not _consecutive_fails:
+                        owner._write_portal_retry_heartbeat(status="idle", interval_sec=every_sec)
 
         _portal_retry_thread = threading.Thread(
             target=_loop,
@@ -784,6 +954,49 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             name="laf-portal-retry-loop",
         )
         _portal_retry_thread.start()
+
+    def _run_pending_portal_retry_cycle_with_watchdog(
+        self,
+        *,
+        max_items: int,
+        interval_sec: int,
+        timeout_sec: int,
+    ) -> dict:
+        """Run one retry cycle while keeping its heartbeat observable."""
+        outcome: dict = {}
+        finished = threading.Event()
+
+        def _run() -> None:
+            try:
+                outcome["result"] = self._retry_pending_portal_downloads(max_items=max_items)
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                finished.set()
+
+        worker = threading.Thread(
+            target=_run,
+            daemon=True,
+            name="laf-portal-retry-cycle",
+        )
+        worker.start()
+        deadline = time.monotonic() + max(1, int(timeout_sec or 1))
+        self._write_portal_retry_heartbeat(status="running", interval_sec=interval_sec)
+
+        while not finished.wait(timeout=min(60, max(0.1, deadline - time.monotonic()))):
+            self._write_portal_retry_heartbeat(status="running", interval_sec=interval_sec)
+            if time.monotonic() >= deadline:
+                raise _PortalRetryCycleTimeout(f"portal retry cycle exceeded {int(timeout_sec)} seconds")
+
+        error = outcome.get("error")
+        if error is not None:
+            raise error
+        result = outcome.get("result")
+        return result if isinstance(result, dict) else {"ok": False, "error": "invalid_retry_result"}
+
+    def _restart_after_portal_retry_timeout(self) -> None:
+        """Exit so the launch supervisor can recreate all browser threads cleanly."""
+        os._exit(75)
 
     def _seed_pending_portal_retries_from_case_inventory(self, limit: int = 80) -> dict:
         if self.dry_run or not self.db:
@@ -849,10 +1062,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             # 讓 _resolve_case_folder_with_fallback() 找到真實目錄。
             if folder_path and '消費者債務清理程序' in folder_path:
                 folder_path = folder_path.replace('消費者債務清理程序', case_reason)
-            local_folder = self._to_local_case_folder(folder_path)
-            docs = self._scan_case_folder_docs(local_folder)
             status_norm = status_value.strip().lower()
             is_closed = status_norm in {"已結案", "closed", "completed", "archived"}
+            local_folder = self._to_local_case_folder(folder_path)
+            docs = self._scan_case_folder_docs(
+                local_folder,
+                action="closing" if is_closed else "go_live",
+            )
             if is_closed and self._is_legacy_closed_archive_path(folder_path) and (not local_folder or not os.path.isdir(local_folder)):
                 _eventlog(
                     "laf:portal:retry:seed_skipped",
@@ -892,7 +1108,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         if _age_hours > 90 * 24:
                             continue
                     except (ValueError, TypeError):
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 897, exc_info=True)
                 needs_queue = (not docs.get("opening_notice_files")) and (not docs.get("poa_files"))
                 queue_reason = "startup_backfill_missing_opening_docs"
             if not needs_queue:
@@ -923,7 +1139,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             dict(item)
             for item in items.values()
             if str(item.get("laf_case_number") or "").strip()
-            and str(item.get("status") or "pending_retry").strip().lower() in ("pending_retry", "")
+            and self._portal_retry_item_is_pending(item)
         ]
         if not pending_items:
             return {"ok": True, "scanned": 0, "processed": 0, "items": []}
@@ -942,7 +1158,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 ),
             )[: max(1, int(max_items or 1))]
 
-            automation = self._get_automation()
+            # Playwright sync objects are thread-bound and can become stale after
+            # a long idle period. Retry cycles therefore own a fresh session.
+            automation = self._get_automation(fresh=True)
             try:
                 if not automation.login():
                     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -979,6 +1197,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     updated = dict(item)
                     raw_case_folder = str(updated.get("case_folder") or "").strip()
                     local_case_folder = self._to_local_case_folder(raw_case_folder)
+                    if not local_case_folder or not os.path.isdir(local_case_folder):
+                        local_case_folder = self._resolve_case_folder_for_laf(laf_case_no, fallback=raw_case_folder)
                     if local_case_folder:
                         updated["case_folder"] = local_case_folder
                     if (
@@ -1118,7 +1338,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
                             # 只在有新增檔案時才附上開辦通知/委任狀統計
                             if new_count:
-                                docs = self._scan_case_folder_docs(str(result.get("case_folder") or ""))
+                                docs = self._scan_case_folder_docs(str(result.get("case_folder") or ""), action="go_live")
                                 notify_lines.append(f"開辦通知: {len(docs.get('opening_notice_files') or [])} 份")
                                 notify_lines.append(f"委任狀: {len(docs.get('poa_files') or [])} 份")
                             self.notifier.notify_admin("\n".join(notify_lines), topic_key="laf_dispatch")
@@ -1149,8 +1369,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         )
                         processed.append({"laf_case_number": laf_case_no, "downloaded_count": 0, "queued": True, "error": str(e)})
             finally:
-                # Keep the shared portal session alive; close() owns cleanup.
-                pass
+                try:
+                    automation.close()
+                except Exception:
+                    logger.warning("Unable to close LAF retry browser session", exc_info=True)
         finally:
             self._release_pending_portal_retry_lock()
 
@@ -1213,10 +1435,20 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         has_review_notice = any(k in merged for k in ("審核結果通知", "審查結果通知", "審查通知"))
         has_report_notice = bool(re.search(r"回報[（(](?:結案|附條件)[)）]", merged))
         has_fee_keywords = ("酬金" in merged) or ("領款單" in merged)
+        is_staff_material = ntype in {"staff_material", "專員來信", "原民中心案件資料", "中心案件資料"}
+        is_indigenous_material = (
+            has_laf_case_no
+            and "原民中心" in merged
+            and "寄送" in merged
+            and "案件資料" in merged
+            and "派案通知" not in merged
+        )
 
         # 審核/審查結果與回報(結案|附條件) 通知，應直接觸發官網附件下載流程
         if has_laf_case_no and (has_review_notice or has_report_notice or has_fee_keywords):
             return "result_download"
+        if is_staff_material or is_indigenous_material:
+            return "staff_material"
 
         if ntype in ("dispatch", "派案", "派案通知"):
             return "dispatch"
@@ -1254,33 +1486,165 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         route = self._resolve_email_route(case_info, notification_type)
         logger.info("  Route: %s", route)
 
-        if route == "result_download":
-            self.handle_review_result_download(case_info)
-        elif route == "dispatch":
-            self.handle_go_live(case_info)
-        elif route == "withdrawal":
-            self.handle_withdrawal(case_info)
-        elif route == "inquiry":
-            self.handle_inquiry(case_info)
-        elif route == "fee":
-            self.handle_fee_payment(case_info)
-        elif route == "progress":
-            self.handle_progress_report(case_info)
-        else:
-            # 嘗試 progress 關鍵字偵測（進度/案件 同時出現）
+        def _callback_result(handler_result, resolved_route: str):
+            if isinstance(handler_result, dict):
+                result = dict(handler_result)
+                result.setdefault("route", resolved_route)
+                result.setdefault("ok", not bool(result.get("error")))
+                return result
+            return {"ok": True, "route": resolved_route}
+
+        try:
+            handler_result = None
+            if route == "result_download":
+                handler_result = self.handle_review_result_download(case_info)
+            elif route == "dispatch":
+                handler_result = self.handle_go_live(case_info)
+            elif route == "staff_material":
+                handler_result = self.handle_staff_material(case_info)
+            elif route == "withdrawal":
+                handler_result = self.handle_withdrawal(case_info)
+            elif route == "inquiry":
+                handler_result = self.handle_inquiry(case_info)
+            elif route == "fee":
+                handler_result = self.handle_fee_payment(case_info)
+            elif route == "progress":
+                handler_result = self.handle_progress_report(case_info)
+            else:
+                # 嘗試 progress 關鍵字偵測（進度/案件 同時出現）
+                try:
+                    from skills.legal.laf import _classify_progress_email, _PROGRESS_PRIORITY_TYPES
+                    subject = getattr(case_info, 'subject', '')
+                    snippet = getattr(case_info, 'snippet', '')
+                    if (notification_type not in _PROGRESS_PRIORITY_TYPES
+                            and _classify_progress_email(subject, snippet)):
+                        logger.info("📋 Progress email detected: %s", client_name)
+                        handler_result = self.handle_progress_report(case_info)
+                        return _callback_result(handler_result, "progress")
+                except Exception as _pe:
+                    logger.debug("progress detect skip: %s", _pe)
+                # Unknown mail must not silently become a new case.  This prevents
+                # staff/reference messages from accidentally triggering go-live.
+                logger.warning("⚠️ Unknown LAF email route; archived/ignored without go-live: %s", getattr(case_info, "subject", "")[:160])
+                _eventlog(
+                    "laf:email:unknown_route",
+                    ok=False,
+                    payload={
+                        "notification_type": str(notification_type or ""),
+                        "subject": str(getattr(case_info, "subject", "") or "")[:220],
+                    },
+                    tags={"laf_case_no": laf_number, "client_name": client_name},
+                )
+                return {"ok": True, "route": "unknown", "ignored": True}
+            return _callback_result(handler_result, route)
+        except Exception as exc:
+            logger.exception("LAF email callback failed: route=%s laf=%s client=%s", route, laf_number, client_name)
+            _eventlog(
+                "laf:email:callback_failed",
+                ok=False,
+                payload={
+                    "route": route,
+                    "notification_type": str(notification_type or ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "subject": str(getattr(case_info, "subject", "") or "")[:220],
+                },
+                tags={"laf_case_no": laf_number, "client_name": client_name},
+            )
+            return {"ok": False, "route": route, "error": f"{type(exc).__name__}: {exc}"}
+
+    def handle_staff_material(self, case_info):
+        """Archive LAF staff/center material without treating it as formal dispatch."""
+        subject = str(getattr(case_info, "subject", "") or "").strip()
+        laf_number = self._extract_laf_case_number_from_text(
+            str(getattr(case_info, "laf_case_number", "") or "").strip(),
+            subject,
+            str(getattr(case_info, "snippet", "") or ""),
+            str(getattr(case_info, "body", "") or ""),
+        )
+        client_name = str(getattr(case_info, "client_name", "") or "").strip()
+        case_type = str(getattr(case_info, "case_type", "") or "").strip()
+        case_stage = str(getattr(case_info, "case_stage", "") or "").strip()
+        case_reason = str(getattr(case_info, "case_reason", "") or "").strip()
+
+        db_case = {}
+        if laf_number and self.db:
             try:
-                from skills.legal.laf import _classify_progress_email, _PROGRESS_PRIORITY_TYPES
-                subject = getattr(case_info, 'subject', '')
-                snippet = getattr(case_info, 'snippet', '')
-                if (notification_type not in _PROGRESS_PRIORITY_TYPES
-                        and _classify_progress_email(subject, snippet)):
-                    logger.info("📋 Progress email detected: %s", client_name)
-                    self.handle_progress_report(case_info)
-                    return
-            except Exception as _pe:
-                logger.debug("progress detect skip: %s", _pe)
-            # Default: treat as new case dispatch
-            self.handle_go_live(case_info)
+                db_case = self.db.fetch_one(
+                    "SELECT `case_number`, `client_name`, `case_type`, `case_stage`, `case_reason`, `folder_path` "
+                    "FROM `cases` WHERE `legal_aid_number` = %s ORDER BY `id` DESC LIMIT 1",
+                    (laf_number,),
+                    as_dict=True,
+                ) or {}
+            except Exception as e:
+                logger.warning("Staff-material DB lookup failed (%s): %s", laf_number, e)
+
+        if db_case and self.db:
+            updates = {}
+            if case_type and case_type not in {"民事", "待確認"} and case_type != str(db_case.get("case_type") or ""):
+                updates["case_type"] = case_type
+            if case_stage and case_stage not in {"一審", "待確認"} and case_stage != str(db_case.get("case_stage") or ""):
+                updates["case_stage"] = case_stage
+            if case_reason and case_reason != "待確認" and case_reason != str(db_case.get("case_reason") or ""):
+                updates["case_reason"] = case_reason
+            if client_name and not str(db_case.get("client_name") or "").strip():
+                updates["client_name"] = client_name
+            if updates:
+                try:
+                    assignments = ", ".join(f"`{key}`=%s" for key in updates)
+                    params = list(updates.values()) + [laf_number]
+                    self.db.execute(
+                        f"UPDATE `cases` SET {assignments}, `updated_at`=NOW() WHERE `legal_aid_number`=%s",
+                        tuple(params),
+                    )
+                    logger.info("📝 Staff material updated DB for %s: %s", laf_number, ", ".join(updates))
+                except Exception as e:
+                    logger.warning("Staff-material DB update failed (%s): %s", laf_number, e)
+
+        case_folder = self._resolve_case_folder_for_laf(
+            laf_number,
+            fallback=str(db_case.get("folder_path") or ""),
+        )
+        snapshot = ""
+        attachment_result = {"ok": False, "new_count": 0, "downloaded_count": 0, "error": ""}
+        if case_folder and os.path.isdir(case_folder):
+            try:
+                snapshot = self._archive_case_email_snapshot(case_info, case_folder)
+            except Exception as e:
+                logger.warning("Staff-material snapshot failed (%s): %s", laf_number, e)
+            try:
+                attachment_result = self._download_case_email_attachments(case_info, case_folder)
+            except Exception as e:
+                attachment_result = {"ok": False, "new_count": 0, "downloaded_count": 0, "error": str(e)}
+                logger.warning("Staff-material attachment archive failed (%s): %s", laf_number, e)
+
+            if self.notifier and int(attachment_result.get("new_count") or 0) > 0:
+                self.notifier.notify_admin(
+                    "📎 法扶補充資料已歸檔\n"
+                    f"案號：{laf_number or '-'}\n"
+                    f"當事人：{client_name or db_case.get('client_name') or '-'}\n"
+                    f"新增附件：{attachment_result.get('new_count', 0)} 份\n"
+                    "（此信不是正式派案通知，未啟動開辦流程）",
+                    topic_key="laf_general",
+                )
+        else:
+            logger.info(
+                "ℹ️ Staff material has no existing case folder yet; waiting formal dispatch: %s %s",
+                laf_number,
+                subject[:120],
+            )
+
+        _eventlog(
+            "laf:email:staff_material",
+            ok=bool(case_folder),
+            payload={
+                "subject": subject[:220],
+                "case_folder": os.path.basename(case_folder.rstrip("/\\")) if case_folder else "",
+                "snapshot": snapshot,
+                "attachments": attachment_result,
+                "db_matched": bool(db_case),
+            },
+            tags={"laf_case_no": laf_number, "client_name": client_name},
+        )
 
     def handle_review_result_download(self, case_info):
         """Handle review/result notifications that should trigger portal attachment download."""
@@ -1298,8 +1662,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         if not laf_number:
             logger.warning("⚠️ Review-result email missing LAF number, fallback to go-live: %s", subject[:160])
-            self.handle_go_live(case_info)
-            return
+            return self.handle_go_live(case_info) or {"ok": True, "route": "dispatch_fallback", "reason": "missing_laf_number"}
 
         db_case = {}
         if self.db:
@@ -1316,8 +1679,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not db_case:
             # 相容少數「審核結果通知」其實是初次派案的分會格式
             logger.info("ℹ️ Review-result email has no existing DB case, fallback to go-live: %s", laf_number)
-            self.handle_go_live(case_info)
-            return
+            return self.handle_go_live(case_info) or {"ok": True, "route": "dispatch_fallback", "reason": "missing_existing_case"}
 
         case_number = str(db_case.get("case_number") or "").strip()
         client_name = client_name or str(db_case.get("client_name") or "").strip()
@@ -1381,10 +1743,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if subject:
             notify_lines.append(f"主旨: {subject}")
 
-        if download_result.get("downloaded_count"):
-            dl_archive = download_result.get("archive", {})
-            dl_new_files = dl_archive.get("new_files") or []
-            dl_skipped_files = dl_archive.get("skipped_existing") or []
+        dl_archive = download_result.get("archive", {}) if isinstance(download_result, dict) else {}
+        dl_new_files = dl_archive.get("new_files") or []
+        dl_skipped_files = dl_archive.get("skipped_existing") or []
+        email_new_count = int(email_attachment_result.get("new_count") or 0)
+        email_skipped_count = int(email_attachment_result.get("skipped_existing_count") or 0)
+        if download_result.get("downloaded_count") and dl_new_files:
             notify_lines.append(f"官網附件: 新增 {len(dl_new_files)} 份")
             if dl_skipped_files:
                 notify_lines.append(f"官網附件去重: 略過 {len(dl_skipped_files)} 份")
@@ -1393,21 +1757,80 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             for fn in dl_skipped_files[:5]:
                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
         elif download_result.get("retry_queued"):
-            notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會自動補查。")
+            logger.info("Review-result portal retry queued without new files: laf=%s case=%s", laf_number, case_number)
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result.get('error')}")
-        else:
-            notify_lines.append("ℹ️ 官網附件本輪未下載到新檔案。")
 
-        if email_attachment_result.get("downloaded_count"):
-            notify_lines.append(f"專員來信附件: 新增 {int(email_attachment_result.get('new_count') or 0)} 份")
-            skipped_email = int(email_attachment_result.get("skipped_existing_count") or 0)
-            if skipped_email:
-                notify_lines.append(f"專員來信附件去重: 略過 {skipped_email} 份")
+        if email_attachment_result.get("downloaded_count") and email_new_count:
+            notify_lines.append(f"專員來信附件: 新增 {email_new_count} 份")
+            if email_skipped_count:
+                notify_lines.append(f"專員來信附件去重: 略過 {email_skipped_count} 份")
 
         notify_msg = "\n".join(notify_lines)
-        if not self.dry_run:
-            self.notifier.notify_admin(notify_msg, topic_key="laf_closing")
+        should_notify = bool(
+            dl_new_files
+            or email_new_count
+            or download_result.get("error")
+        )
+        notify_dedup_key = ""
+        notify_dedup_metadata = {}
+        notify_mark_done = None
+        if should_notify:
+            msg_id = str(getattr(case_info, "message_id", "") or "").strip()
+            state = "new"
+            if download_result.get("error"):
+                state = "error"
+            material = "|".join(
+                [
+                    laf_number,
+                    msg_id,
+                    state,
+                    str(len(dl_new_files)),
+                    str(email_new_count),
+                    str(download_result.get("error") or "")[:160],
+                    *[os.path.basename(str(fn)) for fn in dl_new_files[:20]],
+                ]
+            )
+            notify_dedup_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            try:
+                from skills.ops.dedup_db import is_done as _dd_is_done, mark_done as _dd_mark_done
+
+                if _dd_is_done("laf_review_result_notice", notify_dedup_key):
+                    should_notify = False
+                else:
+                    notify_mark_done = _dd_mark_done
+                    notify_dedup_metadata = {
+                        "laf_case_no": laf_number,
+                        "case_number": case_number,
+                        "client_name": client_name,
+                        "message_id": msg_id,
+                        "state": state,
+                        "portal_new": len(dl_new_files),
+                        "email_new": email_new_count,
+                        "subject": subject[:220],
+                    }
+            except Exception as dedup_error:
+                logger.debug("Review-result notice dedup skipped (%s): %s", laf_number, dedup_error)
+        notified = False
+        if not self.dry_run and should_notify:
+            notify_ok = self.notifier.notify_admin(notify_msg, topic_key="laf_closing")
+            notified = bool(notify_ok)
+            if notify_ok and notify_mark_done and notify_dedup_key:
+                try:
+                    notify_mark_done("laf_review_result_notice", notify_dedup_key, metadata=notify_dedup_metadata)
+                except Exception as mark_error:
+                    logger.debug("Review-result notice dedup mark failed (%s): %s", laf_number, mark_error)
+        elif not self.dry_run:
+            logger.info(
+                "🔕 Review-result notification suppressed: laf=%s case=%s portal_new=%s email_new=%s retry=%s error=%s dedup=%s",
+                laf_number,
+                case_number,
+                len(dl_new_files),
+                email_new_count,
+                bool(download_result.get("retry_queued")),
+                bool(download_result.get("error")),
+                bool(notify_dedup_key),
+            )
 
         self._log_event(
             laf_number,
@@ -1418,8 +1841,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 "case_number": case_number,
                 "client_name": client_name,
                 "downloaded_count": int(download_result.get("downloaded_count") or 0),
+                "portal_new_count": len(dl_new_files),
+                "email_new_count": email_new_count,
                 "retry_queued": bool(download_result.get("retry_queued")),
                 "error": str(download_result.get("error") or ""),
+                "notified": notified,
             },
             "success",
         )
@@ -1433,6 +1859,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             },
             tags={"laf_case_no": laf_number, "client_name": client_name},
         )
+        return {
+            "ok": not bool(download_result.get("error")),
+            "route": "result_download",
+            "laf_case_number": laf_number,
+            "case_number": case_number,
+            "client_name": client_name,
+            "downloaded_count": int(download_result.get("downloaded_count") or 0),
+            "portal_new_count": len(dl_new_files),
+            "email_new_count": email_new_count,
+            "retry_queued": bool(download_result.get("retry_queued")),
+            "download_error": str(download_result.get("error") or ""),
+            "notified": notified,
+        }
 
     # In-memory dedup for go_live to prevent duplicate notifications when
     # multiple emails arrive for the same case (e.g., 派案通知 + 附加檔案).
@@ -1551,7 +1990,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             if _refreshed:
                                 db_path = self._to_local_case_folder(str(_refreshed.get("folder_path") or "")) or db_path
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1556, exc_info=True)
             except Exception as _rec_e:
                 logger.warning("Placeholder reconcile failed: %s", _rec_e)
         else:
@@ -1641,8 +2080,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 case_number=case_number,
             )
 
-        # Vision Step: Extract Start Date from downloaded files
-        # 全案件掃描（供二階段、結案等使用），但開辦判斷只認 02_開辦資料 內的檔案
+        # Vision Step: Extract Start Date from prepared go-live files.
+        # 01_法扶資料保存官網下載的空白表件；只有 02_開辦資料的已簽/已填文件
+        # 可以作為開辦上傳依據，避免把空白委任狀誤認為已可開辦。
         extracted_date = None
         poa_submit_date = None
         open_doc = None
@@ -1651,12 +2091,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         go_live_docs = self._empty_docs_map()
         if not self.dry_run and db_path:
             try:
-                docs = self._scan_case_folder_docs(db_path)
-                local_root = self._to_local_case_folder(db_path) or db_path
-                go_live_dir = os.path.join(local_root, "02_開辦資料")
-                go_live_docs = self._scan_case_folder_docs(go_live_dir) if os.path.isdir(go_live_dir) else self._empty_docs_map()
+                docs = self._scan_case_folder_docs(db_path, action="go_live")
+                go_live_docs, go_live_scan_scope = self._scan_go_live_docs(db_path)
+                if go_live_scan_scope:
+                    logger.info("  🔎 開辦文件掃描範圍：%s", go_live_scan_scope)
                 open_doc = (go_live_docs.get("opening_notice_files") or [None])[0]
-                poa_doc = (go_live_docs.get("poa_files") or [None])[0]
+                poa_doc = (go_live_proof_files(go_live_docs) or [None])[0]
                 if open_doc:
                     extracted_date = self._extract_best_date_from_doc(open_doc)
                 if poa_doc:
@@ -1664,13 +2104,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if extracted_date:
                     logger.info("  🎯 開辦通知日期：%s", extracted_date)
                 if poa_submit_date:
-                    logger.info("  🎯 委任狀遞出日期：%s", poa_submit_date)
+                    logger.info("  🎯 遞狀證明日期：%s", poa_submit_date)
             except Exception as e:
                 logger.error(f"  ❌ Vision extraction failed: {e}")
 
         _is_consumer_debt = self._is_consumer_debt_case_folder(db_path or "")
         # 消債案件只需開辦通知書；一般案件需要開辦通知書 + 遞狀證明（委任狀/書狀存底/回執）
-        docs_ready_for_go_live = bool(open_doc) if _is_consumer_debt else bool(open_doc and poa_doc)
+        docs_ready_for_go_live = is_go_live_ready(go_live_docs, is_consumer_debt=_is_consumer_debt)
 
         # Step 4.5: 偵測遞狀日期 + 自動填寫開辦表單（預覽，不送出）
         submission_info: dict = {}
@@ -1756,16 +2196,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             else:
                 missing_parts = []
                 if not open_doc:
-                    missing_parts.append("開辦通知")
-                if not poa_doc:
-                    missing_parts.append("委任狀")
-                go_live_reminder = f"⚠️ 尚缺{'、'.join(missing_parts)}，請補齊後手動開辦。"
+                    missing_parts.append("開辦通知/接案通知/回報單")
+                if not _is_consumer_debt and not go_live_proof_files(go_live_docs):
+                    missing_parts.append("委任狀或書狀存底/回執")
+                go_live_reminder = (
+                    f"⚠️ 尚缺 02_開辦資料 的已簽/已填{'、'.join(missing_parts)}，"
+                    "請補齊後手動開辦；01_法扶資料的官網空白表件不視為可開辦文件。"
+                )
             logger.info("  📋 Go-live reminder: %s", go_live_reminder)
 
         # Step 5: Notify (text + opening notice image for confirmation)
         # 通知計數以 02_開辦資料 為準
         opening_notice_count = len(go_live_docs.get("opening_notice_files") or [])
         poa_count = len(go_live_docs.get("poa_files") or [])
+        proof_count = len(go_live_proof_files(go_live_docs))
+        portal_existing_files = self._existing_laf_portal_attachment_files(db_path)
         folder_label = os.path.basename(str(db_path or "").rstrip("/\\")) if db_path else ""
         _is_existing = existing is not None
         notify_lines = [
@@ -1783,7 +2228,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             dl_skipped_files = dl_archive.get("skipped_existing") or []
             dl_new_count = len(dl_new_files)
             dl_skipped_count = len(dl_skipped_files)
-            notify_lines.append(f"官網附件: 新增 {dl_new_count} 份")
+            notify_lines.append(f"官網附件: 本輪新增 {dl_new_count} 份")
             if dl_skipped_count:
                 notify_lines.append(f"官網附件去重: 略過 {dl_skipped_count} 份")
             for fn in dl_new_files[:10]:
@@ -1791,10 +2236,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             for fn in dl_skipped_files[:5]:
                 notify_lines.append(f"  ⏭️ {os.path.basename(fn)}")
         elif download_result.get("retry_queued"):
-            notify_lines.append("⏳ 官網下載區本輪尚未列出附件，系統會每 5 分鐘自動補查。")
+            logger.info("Go-live portal retry queued without new files: laf=%s case=%s", laf_number, case_number)
         elif download_result.get("error"):
             notify_lines.append(f"⚠️ 官網附件下載失敗: {download_result['error']}")
-        notify_lines.append(f"開辦資料: 開辦通知 {opening_notice_count} 份、委任狀 {poa_count} 份")
+        if portal_existing_files:
+            notify_lines.append(f"官網附件既有: {len(portal_existing_files)} 份（01_法扶資料）")
+        notify_lines.append(f"開辦資料（02_開辦資料，已簽/已填）: 開辦通知 {opening_notice_count} 份、委任狀 {poa_count} 份")
         if email_attachment_result.get("downloaded_count"):
             notify_lines.append(f"專員來信附件: 新增 {int(email_attachment_result.get('new_count') or 0)} 份")
             skipped_email = int(email_attachment_result.get("skipped_existing_count") or 0)
@@ -1819,15 +2266,93 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             confirm_files.append(poa_doc)
         # 路由：尚未真正開辦（缺開辦通知 + 委任狀）→ laf_dispatch（派案頻道）；
         # 已具備可開辦條件 → laf_go_live（開辦頻道）
-        _topic_route = "laf_go_live" if (opening_notice_count > 0 or poa_count > 0) else "laf_dispatch"
-        if confirm_files:
+        _topic_route = "laf_go_live" if (opening_notice_count > 0 or proof_count > 0) else "laf_dispatch"
+        should_send_go_live_notice = True
+        notice_dedup_key = ""
+        notice_dedup_metadata = {}
+        notice_mark_done = None
+        dl_archive_for_notice = download_result.get("archive", {}) if isinstance(download_result, dict) else {}
+        dl_new_for_notice = dl_archive_for_notice.get("new_files") or []
+        email_new_for_notice = int(email_attachment_result.get("new_count") or 0)
+        unchanged_existing_notice = bool(
+            _is_existing
+            and not dl_new_for_notice
+            and email_new_for_notice <= 0
+            and not download_result.get("error")
+            and not go_live_prefill_ok
+        )
+        if unchanged_existing_notice:
+            material = json.dumps(
+                {
+                    "laf": laf_number,
+                    "case": case_number,
+                    "client": client_name,
+                    "case_type": case_type,
+                    "case_reason": case_reason,
+                    "folder": folder_label,
+                    "portal_existing": len(portal_existing_files),
+                    "opening_notice_count": opening_notice_count,
+                    "poa_count": poa_count,
+                    "proof_count": proof_count,
+                    "reminder": go_live_reminder,
+                    "topic": _topic_route,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            notice_dedup_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
             try:
-                self.notifier.notify_admin_with_files(notify_msg, confirm_files, topic_key=_topic_route)
+                from skills.ops.dedup_db import is_done as _dd_is_done, mark_done as _dd_mark_done
+
+                if _dd_is_done("laf_go_live_existing_status_notice", notice_dedup_key):
+                    should_send_go_live_notice = False
+                else:
+                    notice_mark_done = _dd_mark_done
+                    notice_dedup_metadata = {
+                        "laf_case_no": laf_number,
+                        "case_number": case_number,
+                        "client_name": client_name,
+                        "case_type": case_type,
+                        "case_reason": case_reason,
+                        "folder": folder_label,
+                        "portal_existing": len(portal_existing_files),
+                        "opening_notice_count": opening_notice_count,
+                        "poa_count": poa_count,
+                        "proof_count": proof_count,
+                        "topic": _topic_route,
+                    }
+            except Exception as dedup_error:
+                logger.debug("Go-live existing-case notice dedup skipped (%s): %s", laf_number, dedup_error)
+
+        notify_ok = False
+        if should_send_go_live_notice and confirm_files:
+            try:
+                notify_result = self.notifier.notify_admin_with_files(notify_msg, confirm_files, topic_key=_topic_route)
+                notify_ok = True if notify_result is None else bool(notify_result)
             except Exception as nf_e:
                 logger.warning("Failed to send go_live confirmation files: %s", nf_e)
-                self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
+                notify_result = self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
+                notify_ok = True if notify_result is None else bool(notify_result)
+        elif should_send_go_live_notice:
+            notify_result = self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
+            notify_ok = True if notify_result is None else bool(notify_result)
         else:
-            self.notifier.notify_admin(notify_msg, topic_key=_topic_route)
+            logger.info(
+                "🔕 Go-live existing-case notification suppressed: laf=%s case=%s folder=%s topic=%s",
+                laf_number,
+                case_number,
+                folder_label,
+                _topic_route,
+            )
+        if notify_ok and notice_mark_done and notice_dedup_key:
+            try:
+                notice_mark_done(
+                    "laf_go_live_existing_status_notice",
+                    notice_dedup_key,
+                    metadata=notice_dedup_metadata,
+                )
+            except Exception as mark_error:
+                logger.debug("Go-live existing-case notice dedup mark failed (%s): %s", laf_number, mark_error)
 
         self._log_event(laf_number, "go_live", {
             "client_name": client_name,
@@ -2075,7 +2600,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                 # 修正既有 bug（2026-04-18 commit 0eb584fd 寫錯）：notify→notify_admin, topic→topic_key
                                 self.notifier.notify_admin(_reminder, topic_key='laf_progress')
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2081, exc_info=True)
                         return
                 except Exception as _g2e:
                     logger.debug("progress Gate 2 check failed: %s", _g2e)
@@ -2095,7 +2620,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2101, exc_info=True)
             return
 
         # 2. NAS folder
@@ -2117,7 +2642,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2123, exc_info=True)
             return
 
         # 3. 揀選 PDF
@@ -2138,7 +2663,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2144, exc_info=True)
             return
 
         # 4. Phase 1 draft — spawn laf_orchestrator.py --mode portal-draft directly.
@@ -2212,7 +2737,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 try:
                     self.notifier.notify_admin(_fail_msg)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2218, exc_info=True)
             return
 
         # 5. Register confirm_token and notify laf_progress channel
@@ -2528,12 +3053,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _r:
                     _folder_str = str(_r.get("folder_path") or "").replace("\\", "/")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2534, exc_info=True)
         _is_criminal_case = "/刑事/" in _folder_str
         # 資料夾名稱含「-偵查-」才是偵查階段（如 2026-0002-[當事人S]-偵查-過失致死）
         _is_investigation = "-偵查-" in _folder_str
 
-        docs = self._scan_case_folder_docs(folder_path) if folder_path else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(folder_path, action="closing") if folder_path else self._empty_docs_map()
         if folder_path and not docs.get("closing_basis_files"):
             if _is_investigation:
                 # 偵查案件：結案依據可能是不起訴處分書、偵結報告等，不強制要求
@@ -2542,7 +3067,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 logger.warning("  ⚠️ 無法產生結案報告：%s 缺少結案基礎文件 (%s)", case_number, folder_path)
                 self.notifier.notify_admin(
                     f"⚠️ 無法產生結案報告：\n案號：{case_number}\n當事人：{client_name}\n"
-                    "原因：`10_判決書` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書/確定證明書」檔案；強制執行案件可放入執行命令。"
+                    f"原因：`{judgment_folder_name(10)}` 資料夾中找不到「起訴書/判決/裁定/不起訴處分書/確定證明書」檔案；強制執行案件可放入執行命令。"
                 )
                 return
         # 註：不再檢查 office_receipt_files（收文章/回執）。
@@ -2721,9 +3246,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     # LAF 案號與內部案號不同，嘗試用 DB 查出內部案號
                     try:
                         db_row = self._query_db(
-                            "SELECT case_number, client_name FROM cases "
-                            "WHERE laf_case_number = %s LIMIT 1",
-                            (case_number,),
+                            "SELECT `case_number`, `client_name` FROM `cases` "
+                            "WHERE `legal_aid_number` = %s OR `laf_case_no` = %s OR `application_no` = %s "
+                            "OR `notes` LIKE %s LIMIT 1",
+                            (case_number, case_number, case_number, f"%{case_number}%"),
                         )
                         if db_row:
                             internal_no = str(db_row[0].get("case_number") or "").strip()
@@ -2765,8 +3291,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return True
 
         # Execute portal automation (save draft only).
+        self._last_portal_error = ""
+        self._last_portal_artifact = {}
+        automation = None
         try:
-            from laf_automation_v2 import _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -2786,7 +3315,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     upload_files=resolved_uploads,
                 )
                 if not ok:
-                    raise RuntimeError("portal draft save failed")
+                    _portal_error = str(getattr(automation, "last_portal_error", "") or "").strip()
+                    if not _portal_error:
+                        _portal_error = "portal draft save failed"
+                    raw_art = getattr(automation, "last_debug_artifact", {}) or {}
+                    upload_res = getattr(automation, "last_upload_result", {}) or {}
+                    art = {}
+                    if isinstance(raw_art, dict) and raw_art:
+                        art = dict(raw_art)
+                    if upload_res:
+                        art["upload_result"] = upload_res
+                    self._last_portal_artifact = art
+                    raise RuntimeError(_portal_error)
                 raw_art = getattr(automation, "last_debug_artifact", {}) or {}
                 upload_res = getattr(automation, "last_upload_result", {}) or {}
                 art = {}
@@ -2816,6 +3356,18 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 pass
         except Exception as e:
             # Do not silently pass. Report to admin and mark an error event.
+            self._last_portal_error = str(e)
+            try:
+                if automation is not None:
+                    raw_art = getattr(automation, "last_debug_artifact", {}) or {}
+                    upload_res = getattr(automation, "last_upload_result", {}) or {}
+                    art = dict(raw_art) if isinstance(raw_art, dict) else {}
+                    if upload_res:
+                        art["upload_result"] = upload_res
+                    if art:
+                        self._last_portal_artifact = art
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2989, exc_info=True)
             if not suppress_notify:
                 try:
                     self.notifier.notify_admin(f"❌ 報結暫存失敗 — {case_number}\n原因：{e}", topic_key="laf_closing")
@@ -2919,7 +3471,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s for %s (%s)", workflow_label, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from laf_automation_v2 import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3016,7 +3568,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         logger.info("🌐 Executing portal %s submit for %s (%s)", wf, client_name or "-", case_number or "-")
         self._last_portal_artifact = {}
         try:
-            from laf_automation_v2 import LAFWebAutomation, _export_file_to_static
+            from skills.legal.laf import _export_file_to_static
 
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
@@ -3064,10 +3616,16 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         )
         return True
 
-    def _get_automation(self):
-        """Get or create shared LAFWebAutomation instance."""
-        from laf_automation_v2 import LAFWebAutomation
-        if self._automation:
+    def _get_automation(self, *, fresh: bool = False):
+        """Get or create the v2 shared LAFWebAutomation instance.
+
+        Portal workflows such as closing/go_live/condition require methods that
+        do not exist in the legacy ``skills.legal.laf.LAFWebAutomation`` class.
+        Always use the v2 automation here so report closing cannot silently fall
+        back to the old downloader-only implementation.
+        """
+        from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import LAFWebAutomation
+        if self._automation and not fresh:
             # TODO: Add health check or expiry?
             # For now, rely on .login() inside scripts to check cookie validity.
             return self._automation
@@ -3079,7 +3637,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         base_url = (self.laf_config.get("base_url", "") or "").strip()
         browser_profile_dir = self.laf_config.get("browser_profile_dir", "")
         
-        self._automation = LAFWebAutomation(
+        automation = LAFWebAutomation(
             username=username,
             password=password,
             download_folder=download_folder,
@@ -3089,6 +3647,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             mock_mode=False,
             browser_profile_dir=browser_profile_dir,
         )
+        if fresh:
+            return automation
+        self._automation = automation
         return self._automation
 
     def close(self):
@@ -3200,7 +3761,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _query_candidates(where_sql: str, params: tuple) -> List[dict]:
             try:
                 q = (
-                    "SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, `folder_path`, `legal_aid_status` "
+                    "SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, "
+                    "`laf_case_no`, `application_no`, `notes`, `folder_path`, `legal_aid_status` "
                     "FROM `cases` "
                     f"WHERE {where_sql} "
                     "ORDER BY `id` DESC LIMIT 200"
@@ -3216,7 +3778,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         def _merge_row(row: dict, signal: str) -> None:
             cno = str(row.get("case_number") or "").strip()
             cname = str(row.get("client_name") or "").strip()
-            laf_no = str(row.get("legal_aid_number") or "").strip()
+            laf_no = (
+                str(row.get("legal_aid_number") or "").strip()
+                or str(row.get("laf_case_no") or "").strip()
+                or str(row.get("application_no") or "").strip()
+            )
+            if not laf_no:
+                laf_no = self._extract_laf_case_number_from_text(str(row.get("notes") or "").strip())
             fpath = str(row.get("folder_path") or "").strip()
             laf_status = str(row.get("legal_aid_status") or "").strip()
             cfolder = self._to_local_case_folder(fpath)
@@ -3239,7 +3807,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             c["_signals"].add(signal)
 
         if req_laf:
-            for r in _query_candidates("TRIM(`legal_aid_number`) = %s", (out["laf_case_number"],)):
+            for r in _query_candidates(
+                "TRIM(COALESCE(`legal_aid_number`, '')) = %s "
+                "OR TRIM(COALESCE(`laf_case_no`, '')) = %s "
+                "OR TRIM(COALESCE(`application_no`, '')) = %s "
+                "OR COALESCE(`notes`, '') LIKE %s",
+                (out["laf_case_number"], out["laf_case_number"], out["laf_case_number"], f"%{out['laf_case_number']}%"),
+            ):
                 _merge_row(r, "laf_case_number")
         if req_case:
             for r in _query_candidates("TRIM(`case_number`) = %s", (out["case_number"],)):
@@ -3479,6 +4053,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         else:
             out["confidence"] = "low"
 
+        if out["laf_case_number"] and str(top.get("id") or "").strip():
+            self._update_legal_aid_number(str(top.get("id") or "").strip(), out["laf_case_number"])
+
         if (not out["case_folder"]) and (out["client_name"] or out["laf_case_number"]):
             fallback = self._fallback_find_case_folders(
                 client_name=out["client_name"],
@@ -3525,11 +4102,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     @staticmethod
     def _laf_case_roots() -> List[str]:
-        candidates = [
-            os.path.join(root, "法扶案件")
-            for root in preferred_case_roots(include_closed=False)
-        ]
-        return [p for p in candidates if os.path.isdir(p)]
+        roots: List[str] = []
+        for root in list(preferred_case_roots(include_closed=True)) + list(default_case_roots(include_closed=True)):
+            p = os.path.join(root, "法扶案件")
+            if p not in roots and _is_dir_accessible(p):
+                roots.append(p)
+        return roots
 
     def _fallback_find_case_folder(self, client_name: str = "", laf_case_number: str = "") -> str:
         candidates = self._fallback_find_case_folders(client_name=client_name, laf_case_number=laf_case_number, limit=1)
@@ -3541,17 +4119,33 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         roots = self._laf_case_roots()
         if not roots:
             return []
+        try:
+            scan_budget_sec = max(1.0, float(os.environ.get("MAGI_LAF_FALLBACK_SCAN_BUDGET_SEC", "5") or "5"))
+        except Exception:
+            scan_budget_sec = 5.0
+        deadline = time.monotonic() + scan_budget_sec
+
+        def _budget_exhausted() -> bool:
+            return time.monotonic() >= deadline
+
         scored: List[tuple[int, float, str]] = []
         loose_candidates: List[str] = []
         for root in roots:
+            if _budget_exhausted():
+                logger.warning("LAF fallback folder scan stopped by %.1fs budget before root: %s", scan_budget_sec, root)
+                break
             try:
-                for cat in os.listdir(root):
+                for cat in _safe_listdir(root):
+                    if _budget_exhausted():
+                        break
                     cat_path = os.path.join(root, cat)
-                    if not os.path.isdir(cat_path):
+                    if not _is_dir_accessible(cat_path):
                         continue
-                    for d in os.listdir(cat_path):
+                    for d in _safe_listdir(cat_path):
+                        if _budget_exhausted():
+                            break
                         case_path = os.path.join(cat_path, d)
-                        if not os.path.isdir(case_path):
+                        if not _is_dir_accessible(case_path):
                             continue
                         if not self._is_case_folder_name(d):
                             continue
@@ -3568,8 +4162,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             try:
                                 found = False
                                 for _check_dir in [case_path, os.path.join(case_path, "01_法扶資料")]:
-                                    if os.path.isdir(_check_dir):
-                                        if any(laf_no in f for f in os.listdir(_check_dir)):
+                                    if _is_dir_accessible(_check_dir):
+                                        if any(laf_no in f for f in _safe_listdir(_check_dir)):
                                             found = True
                                             break
                                 if found:
@@ -3577,13 +4171,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2648, exc_info=True)
                         if score > 0:
-                            try:
-                                mtime = os.path.getmtime(case_path)
-                            except Exception:
-                                mtime = 0.0
+                            mtime = _safe_getmtime(case_path)
                             scored.append((score, float(mtime), case_path))
                         else:
-                            loose_candidates.append(case_path)
+                            if len(loose_candidates) < max(20, int(limit or 1) * 4):
+                                loose_candidates.append(case_path)
             except Exception:
                 continue
         if scored:
@@ -3595,8 +4187,36 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # Precision-first default: do not auto-pick "most recent" folder unless explicitly enabled.
         if not self.allow_loose_case_folder_fallback:
             return []
-        loose_candidates = sorted(loose_candidates, key=lambda p: os.path.getmtime(p), reverse=True)
+        loose_candidates = sorted(loose_candidates, key=lambda p: _safe_getmtime(p), reverse=True)
         return loose_candidates[: max(1, int(limit or 1))]
+
+    @staticmethod
+    def _same_case_folder_path_candidates(folder: str) -> List[str]:
+        """Map a known case folder path to all active/closed case roots."""
+        text = str(folder or "").strip().replace("\\", "/")
+        if not text:
+            return []
+        rels: List[str] = []
+        for marker in ("/01_案件/", "/03_工作資料/10_結案/"):
+            if marker in text:
+                rel = text.split(marker, 1)[1].strip("/")
+                if rel and rel not in rels:
+                    rels.append(rel)
+        if "/法扶案件/" in text:
+            rel = "法扶案件/" + text.split("/法扶案件/", 1)[1].strip("/")
+            if rel and rel not in rels:
+                rels.append(rel)
+        if not rels:
+            return []
+
+        out: List[str] = []
+        roots = list(preferred_case_roots(include_closed=True)) + list(default_case_roots(include_closed=True))
+        for root in roots:
+            for rel in rels:
+                cand = os.path.join(str(root).rstrip("/"), rel)
+                if cand not in out and _is_dir_accessible(cand):
+                    out.append(cand)
+        return out
 
     def _pick_case_folder_for_action(
         self,
@@ -3612,18 +4232,36 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         action = (action or "").strip().lower()
         needs = {
-            "go_live": lambda d: bool(d["opening_notice_files"] and d["poa_files"]),
+            "go_live": lambda d: is_go_live_ready(d, is_consumer_debt=False),
             "condition": lambda d: bool(d["mediation_failure_files"]),
             "fee": lambda d: bool(d["pink_receipt_files"]),
             "withdrawal": lambda d: bool(self._get_withdrawal_pdf_candidates(d)),
+            "closing": lambda d: bool(d.get("closing_basis_files") or d.get("mediation_success_files")),
         }
         wanted = needs.get(action, lambda _d: True)
 
         candidates: List[str] = []
         if current_folder and os.path.isdir(current_folder):
             candidates.append(current_folder)
-        # Only do expensive NAS directory scan if DB didn't give us a folder
-        if not candidates:
+        if action == "closing" and current_folder:
+            for p in self._same_case_folder_path_candidates(current_folder):
+                if p not in candidates:
+                    candidates.append(p)
+        prechecked: set[str] = set()
+        prechecked_first_docs = None
+        prechecked_first_folder = ""
+        if action == "closing" and candidates:
+            for p in list(candidates):
+                prechecked.add(p)
+                docs = self._scan_case_folder_docs(p, action=action)
+                if prechecked_first_docs is None:
+                    prechecked_first_docs = docs
+                    prechecked_first_folder = p
+                if wanted(docs):
+                    return p, docs
+        # Closing must also probe archives when the DB folder is stale or has
+        # already been moved to 10_結案.
+        if not candidates or action == "closing":
             for p in self._fallback_find_case_folders(client_name=client_name, laf_case_number=laf_case_number, limit=5):
                 if p not in candidates:
                     candidates.append(p)
@@ -3639,13 +4277,21 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         first_docs = None
         first_folder = ""
-        for p in candidates:
-            docs = self._scan_case_folder_docs(p)
+        for p in [p for p in candidates if p not in prechecked]:
+            if action == "go_live":
+                docs, _ = self._scan_go_live_docs(p)
+            else:
+                docs = self._scan_case_folder_docs(p, action=action)
             if first_docs is None:
                 first_docs = docs
                 first_folder = p
-            if wanted(docs):
+            if action == "go_live":
+                if is_go_live_ready(docs, is_consumer_debt=self._is_consumer_debt_case_folder(p)):
+                    return p, docs
+            elif wanted(docs):
                 return p, docs
+        if first_docs is None and prechecked_first_docs is not None:
+            return prechecked_first_folder, prechecked_first_docs
         return first_folder, (first_docs or {
             "opening_notice_files": [],
             "poa_files": [],
@@ -3659,10 +4305,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not root or not os.path.isdir(root):
             return ""
         pat = re.compile(r"(\d{6,8}-[A-Za-z]-\d{3})")
-        # Search filenames first.
+        # Search shallow filenames first.  Avoid os.walk here: large LAF cases
+        # may have tens of thousands of review/evidence files.
         try:
-            for b, _d, fs in os.walk(root):
-                for fn in fs:
+            for check_dir in [root, os.path.join(root, "01_法扶資料")]:
+                if not os.path.isdir(check_dir):
+                    continue
+                for fn in sorted(os.listdir(check_dir))[:300]:
                     m = pat.search(fn)
                     if m:
                         return m.group(1)
@@ -3817,24 +4466,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if os.path.isdir(sub_path):
                     # 子資料夾（YYYYMMDD 書狀名稱），找裡面的存底 PDF
                     for fn in sorted(os.listdir(sub_path)):
-                        if fn.lower().endswith(".pdf") and "存底" in fn:
-                            pleading_candidates.append(os.path.join(sub_path, fn))
-                elif sub.lower().endswith(".pdf") and "存底" in sub:
+                        full = os.path.join(sub_path, fn)
+                        if fn.lower().endswith(".pdf") and is_stored_pleading_proof(fn, full_path=full, subdir="04_我方歷次書狀"):
+                            pleading_candidates.append(full)
+                elif sub.lower().endswith(".pdf") and is_stored_pleading_proof(sub, full_path=sub_path, subdir="04_我方歷次書狀"):
                     pleading_candidates.append(sub_path)
-            # 只取第一份（最早的書狀）
-            if not pleading_candidates and os.path.isdir(pleading_dir):
-                # 沒有存底，就找第一份 PDF
-                for sub in sorted(os.listdir(pleading_dir)):
-                    sub_path = os.path.join(pleading_dir, sub)
-                    if os.path.isdir(sub_path):
-                        for fn in sorted(os.listdir(sub_path)):
-                            if fn.lower().endswith(".pdf"):
-                                pleading_candidates.append(os.path.join(sub_path, fn))
-                                break
-                    elif sub.lower().endswith(".pdf"):
-                        pleading_candidates.append(sub_path)
-                    if pleading_candidates:
-                        break
 
         for pl_path in pleading_candidates[:1]:
             date_iso, src = _try_filename_then_vision(pl_path)
@@ -3997,10 +4633,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # ── 開辦通知書（所有案件都需要）──
         notice_candidates = []
-        _notice_kw = ("開辦通知", "接案通知", "准予扶助", "開辦資料")
+        _notice_kw = ("開辦通知", "接案通知", "准予扶助", "開辦資料", "回報單", "開辦回報")
         if os.path.isdir(go_live_dir):
             for fn in os.listdir(go_live_dir):
-                if fn.lower().endswith(".pdf") and any(k in fn for k in _notice_kw):
+                if fn.lower().endswith(".pdf") and (
+                    any(k in fn for k in _notice_kw)
+                    or is_opening_notice_filename(fn, full_path=os.path.join(go_live_dir, fn), subdir="02_開辦資料")
+                ):
                     notice_candidates.append(os.path.join(go_live_dir, fn))
         notice_candidates.sort(reverse=True)
 
@@ -4029,15 +4668,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 sub_path = os.path.join(pleading_dir, sub)
                 if os.path.isdir(sub_path):
                     for fn in sorted(os.listdir(sub_path)):
-                        if fn.lower().endswith(".pdf") and "存底" in fn:
-                            proof_file = os.path.join(sub_path, fn)
+                        full = os.path.join(sub_path, fn)
+                        if fn.lower().endswith(".pdf") and is_stored_pleading_proof(fn, full_path=full, subdir="04_我方歷次書狀"):
+                            proof_file = full
                             break
-                    if not proof_file:
-                        for fn in sorted(os.listdir(sub_path)):
-                            if fn.lower().endswith(".pdf"):
-                                proof_file = os.path.join(sub_path, fn)
-                                break
-                elif sub.lower().endswith(".pdf") and "存底" in sub:
+                elif sub.lower().endswith(".pdf") and is_stored_pleading_proof(sub, full_path=sub_path, subdir="04_我方歷次書狀"):
                     proof_file = sub_path
                 if proof_file:
                     break
@@ -4063,33 +4698,74 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     # ── END 開辦自動化 ───────────────────────────────────────────
 
-    def _scan_case_folder_docs(self, case_folder: str) -> dict:
+    def _scan_case_folder_docs(self, case_folder: str, action: str = "") -> dict:
         # 使用 mixin 的完整版文件分類：
         # 含 closing_fee_files / change_review_notice_files 等鍵值，
         # 供 portal retry seed 與結案流程正確判斷是否已抓到酬金領款單。
-        return super()._scan_case_folder_docs(case_folder)
+        return super()._scan_case_folder_docs(case_folder, action=action)
 
     def _scan_go_live_docs(self, case_folder: str) -> tuple[dict, str]:
-        """Scan go-live source folders.
+        """Scan prepared go-live source folder.
 
-        Newer LAF portal downloads often land opening notices and POAs in
-        01_法扶資料.  The legacy portal draft path only looked at 02_開辦資料,
-        which made nightly audit and actual draft execution disagree.
+        01_法扶資料保存 portal 下載的空白表件；不可當成已簽/已填的開辦資料。
         """
         base = self._to_local_case_folder(case_folder) or case_folder
         docs = self._empty_docs_map()
-        scanned_dirs: list[str] = []
-        for subdir in ("02_開辦資料", "01_法扶資料"):
-            scan_dir = os.path.join(base, subdir)
+        scan_dirs = [
+            ("02_開辦資料", os.path.join(base, "02_開辦資料")),
+            ("04_我方歷次書狀", os.path.join(base, "04_我方歷次書狀")),
+            ("11_回執", os.path.join(base, "11_回執")),
+        ]
+        scanned: list[str] = []
+        for label, scan_dir in scan_dirs:
             if not os.path.isdir(scan_dir):
                 continue
-            scanned_dirs.append(scan_dir)
-            part = self._scan_case_folder_docs(scan_dir)
+            scanned.append(label)
+            part = self._scan_case_folder_docs(scan_dir, action="go_live")
             for key, value in (part or {}).items():
                 if isinstance(value, list):
                     docs.setdefault(key, [])
                     docs[key].extend(x for x in value if x not in docs[key])
-        return docs, " + ".join(scanned_dirs) if scanned_dirs else os.path.join(base, "02_開辦資料")
+        return docs, "、".join(scanned) if scanned else os.path.join(base, "02_開辦資料")
+
+    def _existing_laf_portal_attachment_files(self, case_folder: str) -> list[str]:
+        """Return existing official portal attachments under 01_法扶資料.
+
+        These are downloaded/reference forms from the LAF portal.  They are
+        intentionally counted separately from 02_開辦資料 because blank portal
+        forms must not make a case look ready for go-live.
+        """
+        base = self._to_local_case_folder(case_folder) or translate_case_path_to_local(case_folder, require_existing=True) or case_folder
+        laf_dir = os.path.join(base, "01_法扶資料")
+        if not os.path.isdir(laf_dir):
+            return []
+        official_keywords = (
+            "扶助律師接案通知書",
+            "接案通知書",
+            "委任狀",
+            "法律扶助申請書",
+            "案件概述單",
+            "資力詢問表",
+            "審查表",
+            "准予扶助證明書",
+            "預付酬金領款單",
+            "結案回報書",
+            "結案審查通知書",
+            "結案酬金領款單",
+        )
+        out: list[str] = []
+        for fn in _safe_listdir(laf_dir):
+            if not fn or fn.startswith("."):
+                continue
+            full = os.path.join(laf_dir, fn)
+            if not os.path.isfile(full):
+                continue
+            lower = fn.lower()
+            if lower.endswith(".zip") or lower.endswith(".txt"):
+                continue
+            if any(keyword in fn for keyword in official_keywords):
+                out.append(full)
+        return sorted(out)
 
     def _dump_missing_docs_diagnostics(
         self,
@@ -4114,7 +4790,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         try:
             os.makedirs(runtime_dir, exist_ok=True)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4134, exc_info=True)
         diag_path = os.path.join(runtime_dir, "laf_go_live_missing_diagnostics.jsonl")
         # 取實際 listdir 結果（含每個檔案的 size + mtime）
         listdir_entries = []
@@ -4146,28 +4822,31 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "missing": list(missing or []),
             "scanner_opening_notice": list(gl_docs.get("opening_notice_files") or []),
             "scanner_poa": list(gl_docs.get("poa_files") or []),
+            "scanner_opening_proof": list(gl_docs.get("opening_proof_files") or []),
+            "scanner_stored_pleading": list(gl_docs.get("stored_pleading_files") or []),
             "raw_listdir": listdir_entries,
         }
         try:
             with open(diag_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4172, exc_info=True)
         try:
             logger.warning(
                 "[LAF go_live missing_required_docs] mode=%s missing=%s gl_dir=%s entries=%d",
                 mode, missing, gl_dir, len(listdir_entries),
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4179, exc_info=True)
 
     @staticmethod
     def _classify_doc_file(fn: str, full_path: str, out: dict) -> None:
         """Classify a single document file into the appropriate category."""
-        if any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書")):
+        if is_opening_notice_filename(fn, full_path=full_path):
             out["opening_notice_files"].append(full_path)
         if "委任狀" in fn:
             out["poa_files"].append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
         if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
             out["mediation_failure_files"].append(full_path)
         if any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
@@ -4207,7 +4886,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         回傳 (satisfied: bool, reason_str: str)。
 
         觸發類型對應規則：
-          - go_live / opening / backfill → 需要開辦通知書 OR 委任狀（任一即可）
+          - go_live / opening / backfill → 需要已填開辦通知/回報單，或委任狀/書狀存底/回執
           - review_result / 審核結果 / 回報 → 需要酬金/領款單/審查結果類文件
           - closing / 結案 / 酬金 / fee → 需要結案通知書或酬金明細
           - archive_failed / portal_check_failed → 不預檢（強制 portal 重試）
@@ -4223,7 +4902,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 審核結果/回報類：不能用開辦文件抵掉，需看到結案酬金或審查結果類文件。
         if any(k in t for k in ("review_result", "result_download", "審核", "審查", "回報")):
-            docs = self._scan_case_folder_docs(folder)
+            docs = self._scan_case_folder_docs(folder, action="closing")
             if len(docs.get("closing_fee_files") or []) > 0:
                 return True, "nas_has_closing_fee"
             if len(docs.get("change_review_notice_files") or []) > 0:
@@ -4233,13 +4912,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return True, "nas_has_closing_docs"
             return False, ""
 
-        # 開辦類：有開辦通知書 OR 委任狀之一即滿足
+        # 開辦類：只看準備資料夾，不以 01_法扶資料的官網空白表件抵掉。
         if any(k in t for k in ("go_live", "opening", "backfill")):
-            docs = self._scan_case_folder_docs(folder)
-            if len(docs.get("opening_notice_files") or []) > 0:
-                return True, "nas_has_opening_notice"
-            if len(docs.get("poa_files") or []) > 0:
-                return True, "nas_has_poa"
+            docs, _scan_scope = self._scan_go_live_docs(folder)
+            is_consumer_debt = self._is_consumer_debt_case_folder(folder)
+            if is_go_live_ready(docs, is_consumer_debt=is_consumer_debt):
+                if len(docs.get("opening_notice_files") or []) > 0:
+                    return True, "nas_has_opening_notice"
+                if len(go_live_proof_files(docs)) > 0:
+                    return True, "nas_has_opening_proof"
             return False, ""
 
         # 結案類：有結案通知書或酬金明細
@@ -4287,7 +4968,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     )
                     return cand
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4307, exc_info=True)
         return ""
 
     def _to_pdf_for_portal(self, src_path: str, out_dir: str) -> str:
@@ -4306,6 +4987,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         dst_pdf = out_root / f"{stem}.pdf"
 
         if ext == ".pdf":
+            if str(os.environ.get("MAGI_LAF_COPY_PDF_UPLOADS", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+                return src
             try:
                 if os.path.abspath(src) != str(dst_pdf):
                     try:
@@ -4395,7 +5078,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         """
         Collect upload files for progress/closing workflows:
         - 04_我方歷次書狀 (recursive): convert all files to PDF
-        - 10_判決書 (recursive): include all PDFs
+        - 10_判決書或終局裁定及處分 (recursive): include all PDFs
         """
         root = (case_folder or "").strip()
         result = {
@@ -4405,39 +5088,236 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "pleading_source_files": [],
             "judgment_pdf_files": [],
             "procedural_ruling_pdf_files": [],
+            "mediation_success_pdf_files": [],
             "pdf_files": [],
             "converted": [],
             "failed": [],
             "staging_dir": "",
+            "large_case_guard": {},
         }
         if not root or (not os.path.isdir(root)):
             result["error"] = "missing_case_folder"
             return result
 
         plead_root = os.path.join(root, "04_我方歷次書狀")
-        judgment_root = os.path.join(root, "10_判決書")
-        court_notice_root = os.path.join(root, "09_法院通知或程序裁定")
+        judgment_roots = [os.path.join(root, name) for name in judgment_folder_aliases(10)]
+        transcript_root = os.path.join(root, "08_筆錄")
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_laf = re.sub(r"[^\w\-]+", "_", (laf_case_no or "").strip()) or "unknown"
         safe_act = re.sub(r"[^\w\-]+", "_", (action or "").strip()) or "workflow"
-        staging_dir = os.path.join(tempfile.gettempdir(), "magi_laf_upload_pdf", f"{run_id}_{safe_laf}_{safe_act}")
-        os.makedirs(staging_dir, exist_ok=True)
+        staging_dir = _create_laf_upload_staging_dir(
+            os.path.join(tempfile.gettempdir(), "magi_laf_upload_pdf", f"{run_id}_{safe_laf}_{safe_act}")
+        )
         result["staging_dir"] = staging_dir
 
-        # 非書狀的附件/證據關鍵字（這些檔案不應上傳到報結頁）
-        _attachment_keywords = [
+        # 非書狀的附件/證據關鍵字。注意「調查證據聲請狀」本身是書狀，
+        # 不能因為檔名含「證據」就被排除。
+        _hard_attachment_keywords = [
+            "筆錄", "譯文", "節文", "詰問", "卷證索引",
+        ]
+        _soft_attachment_keywords = [
             "聲證", "證據", "附件", "債權人清冊", "財產及收入", "財產收入",
             "財產狀況", "收入狀況", "戶籍謄本", "診斷書", "薪資",
             "勞保", "國保", "稅務", "所得", "信用報告", "對話",
         ]
+
+        def _looks_like_pleading_filename(fn: str) -> bool:
+            name = str(fn or "")
+            if not name:
+                return False
+            if "狀" in name:
+                return True
+            return any(k in name for k in ("答辯", "抗告", "上訴", "陳報", "準備", "辯護意旨", "補正"))
+
+        def _is_non_pleading_attachment(fn: str) -> bool:
+            name = str(fn or "")
+            if any(k in name for k in _hard_attachment_keywords):
+                return True
+            if any(k in name for k in _soft_attachment_keywords) and not _looks_like_pleading_filename(name):
+                return True
+            return False
+
+        max_walk_dirs = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_DIRS", "240") or "240"))
+        max_files_per_dir = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_SCAN_MAX_FILES_PER_DIR", "250") or "250"))
+        max_judgment_files = max(1, int(os.environ.get("MAGI_LAF_UPLOAD_MAX_JUDGMENT_FILES", "120") or "120"))
+        max_upload_mb = max(1.0, float(os.environ.get("MAGI_LAF_PORTAL_MAX_UPLOAD_MB", "8") or "8"))
+        max_upload_bytes = int(max_upload_mb * 1024 * 1024)
+        _skip_walk_dir_keywords = (
+            "@eaDir", "__MACOSX", ".sync", ".SynologyWorkingDirectory",
+            "06_閱卷", "閱卷資料", "05_證據", "證據資料",
+        )
+
+        def _iter_upload_dirs(base_dir: str):
+            """Yield base + one-level child dirs only for large-case NAS safety."""
+            if not os.path.isdir(base_dir):
+                return
+            yielded = 0
+            yield base_dir
+            yielded += 1
+            try:
+                names = sorted(os.listdir(base_dir))
+            except OSError:
+                return
+            for name in names:
+                if yielded >= max_walk_dirs:
+                    result["large_case_guard"]["dir_limit"] = max_walk_dirs
+                    break
+                if name.startswith(".") or any(k in name for k in _skip_walk_dir_keywords):
+                    continue
+                child = os.path.join(base_dir, name)
+                try:
+                    if os.path.isdir(child):
+                        yield child
+                        yielded += 1
+                except OSError:
+                    continue
+
+        def _fits_portal_upload_limit(src: str) -> bool:
+            try:
+                return os.path.getsize(src) <= max_upload_bytes
+            except OSError:
+                return True
+
+        def _find_final_word_near(src: str) -> str:
+            """Find a nearby final/clean Word file to upload when PDF cannot be used."""
+            base_dir = os.path.dirname(str(src or ""))
+            if not base_dir or not os.path.isdir(base_dir):
+                return ""
+            try:
+                items = os.listdir(base_dir)
+            except OSError:
+                return ""
+            candidates = []
+            for fn in items[:max_files_per_dir]:
+                if fn.startswith(".") or fn.startswith("~"):
+                    continue
+                ext = Path(fn).suffix.lower()
+                if ext not in (".docx", ".doc", ".odt"):
+                    continue
+                if not any(k in fn for k in ("定稿", "清稿", "final", "Final", "FINAL")):
+                    continue
+                full = os.path.join(base_dir, fn)
+                if os.path.isfile(full):
+                    priority = 0
+                    if "清稿" in fn:
+                        priority += 30
+                    if "定稿" in fn:
+                        priority += 20
+                    if "final" in fn.lower():
+                        priority += 10
+                    try:
+                        mtime = os.path.getmtime(full)
+                    except OSError:
+                        mtime = 0
+                    candidates.append((priority, mtime, fn, full))
+            if not candidates:
+                return ""
+            candidates.sort(reverse=True)
+            return candidates[0][3]
+
+        def _make_portal_sized_pdf(src: str, label: str = "") -> str:
+            """Create a compressed temp PDF for portal upload without touching the original file."""
+            if not src or not os.path.isfile(src):
+                return ""
+            if _fits_portal_upload_limit(src):
+                return src
+            if str(os.environ.get("MAGI_LAF_COMPRESS_OVERSIZE_PDFS", "1")).strip().lower() not in {"1", "true", "yes", "on"}:
+                return ""
+            stem = Path(src).stem
+            safe_stem = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", stem)[:80] or "document"
+            out = os.path.join(staging_dir, f"{safe_stem}.portal.pdf")
+            gs = shutil.which("gs") or "/opt/homebrew/bin/gs"
+            if os.path.exists(gs):
+                compression_timeout = max(15, int(os.environ.get("MAGI_LAF_PDF_COMPRESS_TIMEOUT_SEC", "20") or "20"))
+                for setting in ("/ebook", "/screen"):
+                    try:
+                        cmd = [
+                            gs,
+                            "-q",
+                            "-dNOPAUSE",
+                            "-dBATCH",
+                            "-dSAFER",
+                            "-sDEVICE=pdfwrite",
+                            "-dCompatibilityLevel=1.4",
+                            f"-dPDFSETTINGS={setting}",
+                            "-dDetectDuplicateImages=true",
+                            "-dCompressFonts=true",
+                            "-dSubsetFonts=true",
+                            f"-sOutputFile={out}",
+                            src,
+                        ]
+                        subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=compression_timeout)
+                        if os.path.exists(out) and _fits_portal_upload_limit(out):
+                            result["large_case_guard"].setdefault("compressed_oversize_files", 0)
+                            result["large_case_guard"]["compressed_oversize_files"] += 1
+                            return out
+                    except Exception as e:
+                        logger.debug("PDF compression failed (%s, %s): %s", src, setting, e)
+            qpdf_enabled = str(os.environ.get("MAGI_LAF_TRY_QPDF_OVERSIZE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            qpdf = shutil.which("qpdf") or "/opt/homebrew/bin/qpdf"
+            if qpdf_enabled and os.path.exists(qpdf):
+                try:
+                    qout = os.path.join(staging_dir, f"{safe_stem}.linearized.pdf")
+                    qpdf_timeout = max(10, int(os.environ.get("MAGI_LAF_QPDF_TIMEOUT_SEC", "20") or "20"))
+                    subprocess.run([qpdf, "--linearize", src, qout], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=qpdf_timeout)
+                    if os.path.exists(qout) and _fits_portal_upload_limit(qout):
+                        result["large_case_guard"].setdefault("compressed_oversize_files", 0)
+                        result["large_case_guard"]["compressed_oversize_files"] += 1
+                        return qout
+                except Exception as e:
+                    logger.debug("qpdf linearize failed (%s): %s", src, e)
+            return ""
+
+        max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
+        include_closing_pleadings = str(
+            os.environ.get("MAGI_LAF_CLOSING_INCLUDE_PLEADINGS", "1")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if (action or "").strip().lower() == "closing" and not include_closing_pleadings:
+            docs = self._scan_case_folder_docs(root, action="closing")
+            raw_basis_pdfs = [
+                p for p in self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
+                if str(p or "").lower().endswith(".pdf")
+            ]
+            raw_basis_pdfs.extend(
+                p for p in sorted(set(docs.get("mediation_success_files") or []))
+                if str(p or "").lower().endswith(".pdf") and p not in raw_basis_pdfs
+            )
+            basis_pdfs = []
+            for p in raw_basis_pdfs:
+                uploadable = _make_portal_sized_pdf(p, "closing_basis")
+                if uploadable:
+                    basis_pdfs.append(uploadable)
+                    if uploadable != p:
+                        result["converted"].append({"source": p, "pdf": uploadable, "fallback": "compressed_oversize_pdf"})
+                else:
+                    result["failed"].append({
+                        "source": p,
+                        "error": f"oversize_skipped>{max_upload_mb:g}MB",
+                    })
+            result["judgment_pdf_files"] = basis_pdfs
+            result["pleading_source_files"] = []
+            result["procedural_ruling_pdf_files"] = []
+            result["pdf_files"] = basis_pdfs[: max(1, max_files)]
+            result["ok"] = bool(result["pdf_files"])
+            result["large_case_guard"]["closing_basis_only"] = True
+            if result["failed"]:
+                result["large_case_guard"]["skipped_oversize_files"] = len(result["failed"])
+                result["large_case_guard"]["portal_max_upload_mb"] = max_upload_mb
+            if not result["ok"]:
+                result["error"] = "no_pdf_generated"
+            return result
 
         pleading_files: List[str] = []
         if os.path.isdir(plead_root):
             # 每個子資料夾獨立篩選：
             # 1. 有「存底」或「留底」PDF → 只上傳那份
             # 2. 沒有 → 轉換最新的 WORD 檔（依 v2>v1、清稿>草稿、修改時間判斷）
-            for base, _dirs, files in os.walk(plead_root):
-                sorted_files = sorted(files)
+            for base in _iter_upload_dirs(plead_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                sorted_files = sorted(files)[:max_files_per_dir]
 
                 # 先篩出非隱藏、非附件/證據的檔案
                 candidates = []
@@ -4447,7 +5327,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     full = os.path.join(base, fn)
                     if not os.path.isfile(full):
                         continue
-                    if any(kw in fn for kw in _attachment_keywords):
+                    if _is_non_pleading_attachment(fn):
                         logger.debug("  跳過非書狀（附件/證據）: %s", fn)
                         continue
                     candidates.append((fn, full))
@@ -4485,11 +5365,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         vm = _re.search(r'v(\d+)', fn)
                         if vm:
                             priority = max(priority, int(vm.group(1)))
-                        try:
-                            mtime = os.path.getmtime(full)
-                        except OSError:
-                            mtime = 0
-                        return (priority, mtime)
+                        return (priority, fn)
 
                     best_word = max(word_files, key=_word_version_key)
                     pleading_files.append(best_word[1])
@@ -4503,70 +5379,143 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 ]
                 if plain_pdfs:
                     # 取最新的一份
-                    best_pdf = max(plain_pdfs, key=lambda x: os.path.getmtime(x[1]) if os.path.exists(x[1]) else 0)
+                    best_pdf = max(plain_pdfs, key=lambda x: x[0])
                     pleading_files.append(best_pdf[1])
                     logger.debug("  選取最新書狀 PDF: %s", best_pdf[0])
         result["pleading_source_files"] = pleading_files
 
         judgment_pdfs: List[str] = []
-        if os.path.isdir(judgment_root):
-            for base, _dirs, files in os.walk(judgment_root):
-                for fn in sorted(files):
+        for judgment_root in judgment_roots:
+            if not os.path.isdir(judgment_root):
+                continue
+            for base in _iter_upload_dirs(judgment_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                for fn in sorted(files)[:max_files_per_dir]:
                     if fn.startswith("."):
                         continue
                     full = os.path.join(base, fn)
                     if os.path.isfile(full) and fn.lower().endswith(".pdf"):
                         judgment_pdfs.append(full)
+                        if len(judgment_pdfs) >= max_judgment_files:
+                            result["large_case_guard"]["judgment_file_limit"] = max_judgment_files
+                            break
+                if len(judgment_pdfs) >= max_judgment_files:
+                    break
+            if len(judgment_pdfs) >= max_judgment_files:
+                break
         result["judgment_pdf_files"] = judgment_pdfs
 
+        # Closing basis uploads come from the final-doc folder only.  Court
+        # notices/procedural rulings in 09 stay as case history and should be
+        # moved/copied to the judgment folder if they are truly final.
         procedural_ruling_pdfs: List[str] = []
-        is_consumer_debt_closing = (
-            (action or "").strip().lower() == "closing"
-            and ("消費者債務清理" in root or "消債" in root)
-        )
-        if is_consumer_debt_closing and os.path.isdir(court_notice_root):
-            for base, _dirs, files in os.walk(court_notice_root):
-                for fn in sorted(files):
+        result["procedural_ruling_pdf_files"] = procedural_ruling_pdfs
+
+        mediation_success_pdfs: List[str] = []
+        if (action or "").strip().lower() == "closing" and os.path.isdir(transcript_root):
+            for base in _iter_upload_dirs(transcript_root):
+                try:
+                    files = os.listdir(base)
+                except OSError:
+                    continue
+                for fn in sorted(files)[:max_files_per_dir]:
                     if fn.startswith(".") or fn.startswith("~"):
                         continue
                     if not fn.lower().endswith(".pdf"):
                         continue
-                    if not any(k in fn for k in ("裁定", "確定證明書", "執行命令", "調解筆錄", "和解筆錄")):
+                    if "不成立" in fn:
+                        continue
+                    if not any(k in fn for k in ("調解筆錄", "調解成立", "和解筆錄", "和解成立", "調解書")):
                         continue
                     full = os.path.join(base, fn)
                     if os.path.isfile(full):
-                        procedural_ruling_pdfs.append(full)
-        result["procedural_ruling_pdf_files"] = procedural_ruling_pdfs
+                        mediation_success_pdfs.append(full)
+        result["mediation_success_pdf_files"] = mediation_success_pdfs
 
         out_pdf: List[str] = []
         converted: List[dict] = []
         failed: List[dict] = []
         dedup = set()
-        max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_SOURCE_FILES", "400") or "400")
 
         for src in pleading_files[: max(1, max_files)]:
+            src_ext = Path(src).suffix.lower()
+            if src_ext == ".pdf" and not _fits_portal_upload_limit(src):
+                fallback_word = _find_final_word_near(src)
+                if fallback_word:
+                    if fallback_word not in dedup:
+                        out_pdf.append(fallback_word)
+                        dedup.add(fallback_word)
+                        converted.append({
+                            "source": src,
+                            "pdf": fallback_word,
+                            "fallback": "oversize_pdf_to_final_word",
+                        })
+                    continue
+                failed.append({"source": src, "error": f"oversize_skipped>{max_upload_mb:g}MB"})
+                continue
             pdf = self._to_pdf_for_portal(src, staging_dir)
             if pdf and (pdf not in dedup):
                 out_pdf.append(pdf)
                 dedup.add(pdf)
                 converted.append({"source": src, "pdf": pdf})
             elif not pdf:
-                failed.append({"source": src, "error": "convert_failed"})
+                if src_ext in (".docx", ".doc", ".odt") and (
+                    "定稿" in os.path.basename(src)
+                    or "清稿" in os.path.basename(src)
+                    or "final" in os.path.basename(src).lower()
+                ):
+                    out_pdf.append(src)
+                    dedup.add(src)
+                    converted.append({"source": src, "pdf": src, "fallback": "word_upload"})
+                else:
+                    fallback_word = _find_final_word_near(src)
+                    if fallback_word and fallback_word not in dedup:
+                        out_pdf.append(fallback_word)
+                        dedup.add(fallback_word)
+                        converted.append({
+                            "source": src,
+                            "pdf": fallback_word,
+                            "fallback": "convert_failed_to_final_word",
+                        })
+                    else:
+                        failed.append({"source": src, "error": "convert_failed"})
 
-        for src_pdf in (judgment_pdfs + procedural_ruling_pdfs)[: max(1, max_files)]:
+        non_pleading_name_dedup: set[str] = set()
+        for src_pdf in (judgment_pdfs + procedural_ruling_pdfs + mediation_success_pdfs)[: max(1, max_files)]:
             try:
-                dst = os.path.join(staging_dir, os.path.basename(src_pdf))
-                if os.path.abspath(src_pdf) != os.path.abspath(dst):
-                    try:
-                        shutil.copy2(src_pdf, dst)
-                    except OSError:
-                        # Fallback: buffered copy for NAS files with stale FD
-                        with open(src_pdf, "rb") as fin, open(dst, "wb") as fout:
-                            while True:
-                                chunk = fin.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                fout.write(chunk)
+                name_key = os.path.basename(str(src_pdf or "")).casefold()
+                if name_key and name_key in non_pleading_name_dedup:
+                    continue
+                if name_key:
+                    non_pleading_name_dedup.add(name_key)
+                if not _fits_portal_upload_limit(src_pdf):
+                    compressed_pdf = _make_portal_sized_pdf(src_pdf, "judgment")
+                    if compressed_pdf:
+                        if compressed_pdf not in dedup:
+                            out_pdf.append(compressed_pdf)
+                            dedup.add(compressed_pdf)
+                            converted.append({"source": src_pdf, "pdf": compressed_pdf, "fallback": "compressed_oversize_pdf"})
+                        continue
+                    failed.append({"source": src_pdf, "error": f"oversize_skipped>{max_upload_mb:g}MB"})
+                    continue
+                if str(os.environ.get("MAGI_LAF_COPY_PDF_UPLOADS", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+                    dst = os.path.join(staging_dir, os.path.basename(src_pdf))
+                    if os.path.abspath(src_pdf) != os.path.abspath(dst):
+                        try:
+                            shutil.copy2(src_pdf, dst)
+                        except OSError:
+                            # Fallback: buffered copy for NAS files with stale FD
+                            with open(src_pdf, "rb") as fin, open(dst, "wb") as fout:
+                                while True:
+                                    chunk = fin.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    fout.write(chunk)
+                    else:
+                        dst = src_pdf
                 else:
                     dst = src_pdf
                 if dst not in dedup:
@@ -4599,8 +5548,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         safe_laf = re.sub(r"[^\w\-]+", "_", (laf_case_no or "").strip()) or "unknown"
         safe_act = re.sub(r"[^\w\-]+", "_", (action or "").strip()) or "workflow"
         safe_label = re.sub(r"[^\w\-]+", "_", (label or "").strip()) or "selected"
-        staging_dir = os.path.join(tempfile.gettempdir(), "magi_laf_upload_pdf", f"{run_id}_{safe_laf}_{safe_act}_{safe_label}")
-        os.makedirs(staging_dir, exist_ok=True)
+        staging_dir = _create_laf_upload_staging_dir(
+            os.path.join(tempfile.gettempdir(), "magi_laf_upload_pdf", f"{run_id}_{safe_laf}_{safe_act}_{safe_label}")
+        )
 
         result = {
             "ok": False,
@@ -4670,7 +5620,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         osc_no = (identity.get("case_number") or "").strip()
         cname = (identity.get("client_name") or "").strip()
         case_folder = (identity.get("case_folder") or "").strip()
-        docs = self._scan_case_folder_docs(case_folder) if case_folder else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(case_folder, action=act) if case_folder else self._empty_docs_map()
 
         if act not in {"go_live", "inquiry", "fee", "condition", "withdrawal", "closing", "progress"}:
             return {"ok": False, "error": f"unknown_action:{act}"}
@@ -4679,7 +5629,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if act != "closing" and (not laf_no and not cname):
             return {"ok": False, "error": "missing_target", "action": act, "identity": identity}
 
-        if act in {"go_live", "condition", "fee"}:
+        if act in {"go_live", "condition", "fee", "closing"}:
             picked_folder, picked_docs = self._pick_case_folder_for_action(
                 action=act,
                 current_folder=case_folder,
@@ -4704,15 +5654,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return {"ok": False, "error": "missing_case_folder", "action": act, "identity": identity}
             _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
             _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
-            # 消債案件只需開辦通知書（簽名即可）；一般案件需要開辦通知書 + 委任狀
+            # 消債案件只需開辦通知書/回報單；一般案件需要開辦通知/回報單 + 遞狀證明
             _need_poa = not _is_consumer_debt
-            if not _gl_docs["opening_notice_files"] or (_need_poa and not _gl_docs["poa_files"]):
-                missing = []
-                if not _gl_docs["opening_notice_files"]:
-                    missing.append("開辦通知書/接案通知書")
-                if _need_poa and not _gl_docs["poa_files"]:
-                    missing.append("委任狀")
-                hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
+            if not is_go_live_ready(_gl_docs, is_consumer_debt=_is_consumer_debt):
+                missing = go_live_missing_labels(_gl_docs, is_consumer_debt=_is_consumer_debt)
+                hint = "請將已填/已簽開辦通知書或回報單放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知或回報單放入 02_開辦資料，並備妥委任狀、我方歷次書狀存底或回執；01_法扶資料的官網空白表件不算"
                 self._dump_missing_docs_diagnostics(
                     mode="portal_draft",
                     case_folder=case_folder,
@@ -4730,8 +5676,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     "hint": hint,
                     "docs": _gl_docs,
                 }
-            open_doc = _gl_docs["opening_notice_files"][0]
-            poa_doc = _gl_docs["poa_files"][0] if _gl_docs["poa_files"] else ""
+            open_doc = go_live_notice_files(_gl_docs)[0]
+            poa_doc = go_live_proof_files(_gl_docs)[0] if go_live_proof_files(_gl_docs) else ""
             open_date = self._extract_best_date_from_doc(open_doc)
             poa_date = self._extract_best_date_from_doc(poa_doc) if poa_doc else ""
             if not open_date or (_need_poa and not poa_date):
@@ -4739,7 +5685,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if not open_date:
                     missing_dates.append("開辦通知書日期")
                 if _need_poa and not poa_date:
-                    missing_dates.append("委任狀遞出日期")
+                    missing_dates.append("委任狀或書狀存底/回執日期")
                 return {
                     "ok": False,
                     "error": "missing_required_dates",
@@ -5023,7 +5969,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     result["noop"] = True
                     result["message"] = "portal_already_has_draft_in_progress"
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5228, exc_info=True)
             if not ok:
                 result["error"] = "portal_draft_failed"
                 result["detail"] = str(getattr(self, "_last_portal_error", "") or "")
@@ -5048,7 +5994,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 automation = self._get_automation()
                 detected_zero_fields = list(getattr(automation, 'last_zero_fields', []) or [])
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5253, exc_info=True)
             result = {
                 "ok": bool(ok),
                 "action": act,
@@ -5186,19 +6132,30 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 }
             override_basis_files = normalized_override_files
 
-        basis_files = override_basis_files or list(docs.get("closing_basis_files") or [])
+        basis_files = override_basis_files or self._sort_closing_basis_files(list(docs.get("closing_basis_files") or []))
+        if not basis_files and docs.get("mediation_success_files"):
+            basis_files = list(docs.get("mediation_success_files") or [])
+        misfiled_basis_files = self._sort_closing_basis_files(list(docs.get("misfiled_closing_basis_files") or []))
         # 結案只檢查結案依據文件；強制執行案件可用執行命令作為結案依據。
         # 收文章/回執是「開辦」才需要的內部驗證。
         missing = []
         if not basis_files:
             missing.append("結案依據文件（起訴書/判決/裁定/不起訴處分書/確定證明書；強制執行案件可用執行命令）")
         if missing:
+            hint = ""
+            if misfiled_basis_files:
+                hint = (
+                    "發現疑似可報結的終局文件放在 08/09_法院通知或程序裁定；"
+                    "法扶報結只使用 10_判決書或終局裁定及處分，請先將該檔整理/複製到 10 資料夾後再重試。"
+                )
             return {
                 "ok": False,
                 "error": "missing_required_docs",
                 "action": act,
                 "identity": identity,
                 "missing": missing,
+                "hint": hint,
+                "misfiled_closing_basis_files": misfiled_basis_files,
                 "docs": docs,
             }
 
@@ -5360,11 +6317,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     _has_real_files = True
                                     break
                             except OSError:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5565, exc_info=True)
                             if _has_real_files:
                                 _review_count_from_folder += 1
                     except OSError:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5569, exc_info=True)
                     if _review_count_from_folder > 0:
                         _review_dir_used = _review_dir_name
                         break
@@ -5444,24 +6401,63 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             try:
                 _upd_case = identity.get("case_number") or ""
                 if _upd_case and self.db:
-                    self.db.execute_write(
-                        "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
-                        ("已結案，待送出", "已結案，待送出", _upd_case)
-                    )
-                    logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
+                    _skip_status_write = False
+                    if fields.get("_auto_closing_draft"):
+                        _cur = self.db.fetch_one(
+                            "SELECT legal_aid_status FROM cases WHERE case_number = %s LIMIT 1",
+                            (_upd_case,),
+                            as_dict=True,
+                        ) or {}
+                        _cur_status = str(_cur.get("legal_aid_status") or "").strip()
+                        if _cur_status not in {"待報結", "已結案，待報結"}:
+                            logger.warning(
+                                "  🔒 Auto closing draft skipped DB status write: %s current=%s",
+                                _upd_case,
+                                _cur_status,
+                            )
+                            _skip_status_write = True
+                    if not _skip_status_write:
+                        try:
+                            self.db.execute_write(
+                                """
+                                UPDATE cases
+                                SET legal_aid_status = %s,
+                                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                                WHERE case_number = %s
+                                """,
+                                ("已結案，待送出", "結案中", _upd_case)
+                            )
+                        except Exception as inner:
+                            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                                raise
+                            self.db.execute_write(
+                                "UPDATE cases SET legal_aid_status = %s, status = %s WHERE case_number = %s",
+                                ("已結案，待送出", "結案中", _upd_case)
+                            )
+                        logger.info("  📝 DB status 更新: %s → 已結案，待送出", _upd_case)
             except Exception as _db_err:
                 logger.warning("  ⚠️ DB status 更新失敗: %s", _db_err)
-        return {
+        result = {
             "ok": bool(ok),
             "action": act,
             "identity": identity,
             "fields": fields,
             "counts": counts,
             "zero_reasons": zero_reasons,
-            "basis_files": override_basis_files or list(docs.get("closing_basis_files") or []),
+            "basis_files": list(basis_files or []),
+            "misfiled_closing_basis_files": misfiled_basis_files,
             "upload_bundle": upload_bundle,
             "preview": self._last_portal_artifact,
         }
+        if misfiled_basis_files:
+            result["warnings"] = [
+                "發現疑似可報結終局文件仍在 08/09_法院通知或程序裁定；報結已只使用 10_判決書或終局裁定及處分，請整理歸檔。"
+            ]
+        if not ok:
+            result["error"] = "portal_draft_failed"
+            result["detail"] = str(getattr(self, "_last_portal_error", "") or "closing_portal_save_failed")
+            result["portal_error"] = result["detail"]
+        return result
 
     def execute_portal_action_submit(
         self,
@@ -5529,7 +6525,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         laf_no = (identity.get("laf_case_number") or "").strip()
         cname = (identity.get("client_name") or "").strip()
         case_folder = (identity.get("case_folder") or "").strip()
-        docs = self._scan_case_folder_docs(case_folder) if case_folder else self._empty_docs_map()
+        docs = self._scan_case_folder_docs(case_folder, action=act) if case_folder else self._empty_docs_map()
         if not laf_no and not cname:
             return {"ok": False, "error": "missing_target", "action": act, "identity": identity}
         if not case_folder:
@@ -5537,13 +6533,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _gl_docs, _gl_dir = self._scan_go_live_docs(case_folder)
         _is_consumer_debt = self._is_consumer_debt_case_folder(case_folder)
         _need_poa = not _is_consumer_debt
-        if not _gl_docs["opening_notice_files"] or (_need_poa and not _gl_docs["poa_files"]):
-            missing = []
-            if not _gl_docs["opening_notice_files"]:
-                missing.append("開辦通知書/接案通知書")
-            if _need_poa and not _gl_docs["poa_files"]:
-                missing.append("委任狀")
-            hint = "請將開辦通知書放入 01_法扶資料或 02_開辦資料" if _is_consumer_debt else "請將開辦通知與委任狀放入 01_法扶資料或 02_開辦資料"
+        if not is_go_live_ready(_gl_docs, is_consumer_debt=_is_consumer_debt):
+            missing = go_live_missing_labels(_gl_docs, is_consumer_debt=_is_consumer_debt)
+            hint = "請將已填/已簽開辦通知書或回報單放入 02_開辦資料；01_法扶資料的官網空白表件不算" if _is_consumer_debt else "請將已填/已簽開辦通知或回報單放入 02_開辦資料，並備妥委任狀、我方歷次書狀存底或回執；01_法扶資料的官網空白表件不算"
             self._dump_missing_docs_diagnostics(
                 mode="portal_submit",
                 case_folder=case_folder,
@@ -5554,8 +6546,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             )
             return {"ok": False, "error": "missing_required_docs", "action": act, "identity": identity, "missing": missing, "hint": hint}
 
-        open_doc = _gl_docs["opening_notice_files"][0]
-        poa_doc = _gl_docs["poa_files"][0] if _gl_docs["poa_files"] else ""
+        open_doc = go_live_notice_files(_gl_docs)[0]
+        poa_doc = go_live_proof_files(_gl_docs)[0] if go_live_proof_files(_gl_docs) else ""
         open_date = self._extract_best_date_from_doc(open_doc)
         poa_date = self._extract_best_date_from_doc(poa_doc) if poa_doc else ""
         if not open_date or (_need_poa and not poa_date):
@@ -5563,14 +6555,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             if not open_date:
                 missing_dates.append("開辦通知書日期")
             if _need_poa and not poa_date:
-                missing_dates.append("委任狀遞出日期")
+                missing_dates.append("委任狀或書狀存底/回執日期")
             return {"ok": False, "error": "missing_required_dates", "action": act, "identity": identity, "missing": missing_dates}
 
         fields = dict(fields or {})
         fields.setdefault("sel_result", "1")
         # 統一用語：消債/訴訟代理一律寫「首次實質討論案情」（= 開辦通知書日）
         _open_roc_sub = self._iso_to_roc(open_date) if open_date else ""
-        _poa_roc_sub = self._iso_to_roc(poa_date) if poa_date else ""
         if _is_consumer_debt:
             fields.setdefault(
                 "remark",
@@ -5578,14 +6569,24 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 else f"已首次實質討論案情（開辦日期 {open_date}）。",
             )
         else:
-            if _open_roc_sub and _poa_roc_sub:
-                _r = f"已於民國{_open_roc_sub}首次實質討論案情。已於民國{_poa_roc_sub}遞送委任狀至法院。"
-            elif _open_roc_sub:
-                _r = f"已於民國{_open_roc_sub}首次實質討論案情。"
-            elif _poa_roc_sub:
-                _r = f"已於民國{_poa_roc_sub}遞送委任狀至法院。"
-            else:
-                _r = f"CASPER 開辦資料判讀：開辦日期 {open_date}；委任狀遞出日期 {poa_date}。"
+            submission_info = self._detect_poa_submission_info(case_folder)
+            if not submission_info.get("date_roc") and poa_date:
+                submission_info = {
+                    "date_roc": self._iso_to_roc(poa_date),
+                    "date_iso": poa_date,
+                    "source": "filename",
+                    "source_file": poa_doc,
+                    "source_doc_type": "書狀" if "04_我方歷次書狀" in str(poa_doc) else "委任狀",
+                    "confidence": "medium",
+                }
+            _r = self._compose_go_live_remark(
+                submission_info,
+                cname,
+                is_consumer_debt=False,
+                open_doc_date=open_date or "",
+            )
+            if not _r:
+                _r = f"已於民國{_open_roc_sub}首次實質討論案情。" if _open_roc_sub else "已首次實質討論案情。"
             fields.setdefault("remark", _r)
         # 找出要上傳的檔案
         go_live_upload = self._find_go_live_upload_files(case_folder, is_consumer_debt=_is_consumer_debt)
@@ -5620,6 +6621,11 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     @staticmethod
     def _norm_token(v: str) -> str:
         s = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", str(v or "").strip()).lower()
+        try:
+            from api.case_display import normalize_person_name
+            s = normalize_person_name(s)
+        except Exception:
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5842, exc_info=True)
         for orig, repl in LAFOrchestrator._VARIANT_MAP.items():
             s = s.replace(orig, repl)
         return s
@@ -5788,7 +6794,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if not root or not os.path.isdir(root):
             return []
         try:
-            docs = self._scan_case_folder_docs(root)
+            docs = self._scan_case_folder_docs(root, action="condition")
             out: List[str] = []
             for p in (docs.get("mediation_failure_files") or []):
                 norm = str(p).replace("\\", "/")
@@ -6033,8 +7039,8 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
     def _get_pending_closing_draft_cases(self, max_cases: int = 0) -> List[dict]:
         """
         Find LAF cases ready for auto closing draft:
-        - legal_aid_status in (進行中, 已開辦, 待報結, 已結案，待報結)
-        - 10_判決書 has files
+        - legal_aid_status is already in a closing-report state
+        - unified closing scanner finds terminal closing-basis files
         - Not already drafted recently
         """
         if not self.db:
@@ -6046,7 +7052,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 FROM `cases`
                 WHERE `case_category` = '法律扶助案件'
                   AND (`legal_aid_number` IS NOT NULL AND TRIM(`legal_aid_number`) <> '')
-                  AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('進行中', '已開辦', '待報結', '已結案，待報結')
+                  AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
                 ORDER BY `id` DESC
                 LIMIT 200
             """
@@ -6065,39 +7071,26 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             folder = self._to_local_case_folder(r.get("folder_path") or "")
             if not laf_no or not folder or not os.path.isdir(folder):
                 continue
-            # Must have judgment files
-            judg_dir = os.path.join(folder, "10_判決書")
-            if not os.path.isdir(judg_dir):
-                continue
-            try:
-                has_file = any(not fn.startswith(".") for fn in os.listdir(judg_dir))
-            except OSError:
-                continue
-            if not has_file:
-                continue
             # Dedup
             if self._was_closing_drafted_recently(laf_no, days=30):
                 continue
             if osc_no and self._was_closing_drafted_recently(osc_no, days=30):
                 continue
-            # Collect judgment PDFs as closing_basis_files
-            basis = []
-            allowed_ext = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-            try:
-                judg_files = sorted(os.listdir(judg_dir))
-            except OSError:
+
+            case_reason = (r.get("case_reason") or "").strip()
+            docs = self._scan_case_folder_docs(folder, action="closing")
+            basis = self._sort_closing_basis_files([
+                p for p in list(docs.get("closing_basis_files") or [])
+                if self._is_auto_closing_basis_candidate(p, case_reason=case_reason, folder_path=folder)
+            ])
+            if not basis:
                 continue
-            for fn in judg_files:
-                if fn.startswith("."):
-                    continue
-                if Path(fn).suffix.lower() in allowed_ext:
-                    basis.append(os.path.join(judg_dir, fn))
             out.append({
                 "osc_case_number": osc_no,
                 "laf_case_number": laf_no,
                 "client_name": client,
                 "folder_path": folder,
-                "case_reason": (r.get("case_reason") or "").strip(),
+                "case_reason": case_reason,
                 "closing_basis_files": basis,
             })
             if max_cases > 0 and len(out) >= int(max_cases):
@@ -6106,7 +7099,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     def run_closing_drafts(self, max_cases: int = 0) -> dict:
         """
-        自動找「10_判決書已到位」的進行中法扶案件，
+        自動找「已進入待報結狀態」且判決書或終局裁定及處分資料夾已有嚴格終局文件的法扶案件，
         呼叫既有 execute_portal_action_draft(action=closing) 暫存。
         僅暫存，不送出。
         """
@@ -6132,7 +7125,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 case_number=osc_no,
                 client_name=client,
                 reason="",  # 留空：若有 0 次數欄位，會走 need_reason_for_low_counts 通知流程
-                fields={"closing_basis_files": basis},
+                fields={"closing_basis_files": basis, "_auto_closing_draft": True},
             )
             ok = bool(r.get("ok"))
             results.append({
@@ -6192,7 +7185,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     missing_folder += 1
                     continue
 
-                docs = self._scan_case_folder_docs(folder)
+                docs = self._scan_case_folder_docs(folder, action="condition")
                 med_files = list(docs.get("mediation_failure_files") or [])
                 if not med_files:
                     continue
@@ -6281,8 +7274,6 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return True
 
         try:
-            from laf_automation_v2 import LAFWebAutomation
-
             username = os.environ.get("MAGI_LAF_USERNAME") or self.laf_config.get("username", "")
             password = os.environ.get("MAGI_LAF_PASSWORD") or self.laf_config.get("password", "")
             download_folder = self.laf_config.get("download_folder", "./laf_downloads")
@@ -6573,16 +7564,23 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         counts["court_dates"] = []
         counts["review_dates"] = []
         _assign_day = ""
+        _is_criminal_laf_case = False
         if self.db and case_number:
             try:
                 _case_row = self.db.fetch_one(
-                    "SELECT start_date, approval_date FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
+                    "SELECT start_date, approval_date, case_type, case_category, legal_aid_number, folder_path "
+                    "FROM cases WHERE case_number = %s OR legal_aid_number = %s LIMIT 1",
                     (case_number, case_number),
                     as_dict=True,
                 )
                 _assign_raw = (_case_row or {}).get("start_date") or (_case_row or {}).get("approval_date")
                 if _assign_raw:
                     _assign_day = str(_assign_raw)[:10]
+                _case_text = " ".join(
+                    str((_case_row or {}).get(k) or "")
+                    for k in ("case_type", "case_category", "legal_aid_number", "folder_path")
+                )
+                _is_criminal_laf_case = ("刑事" in _case_text) and ("法扶" in _case_text or bool((_case_row or {}).get("legal_aid_number")))
             except Exception:
                 _assign_day = ""
         _todo_start_sql = " AND (`todo_date` IS NULL OR `todo_date` >= %s)" if _assign_day else ""
@@ -6618,15 +7616,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         OR `todo_type` LIKE '%%會面%%'
                         OR `todo_type` LIKE '%%面談%%'
                         OR `todo_type` LIKE '%%開會%%'
-                        OR `todo_type` LIKE '%%視訊%%'
                         OR `description` LIKE '%%會議%%'
                         OR `description` LIKE '%%會面%%'
                         OR `description` LIKE '%%面談%%'
                         OR `description` LIKE '%%開會%%'
-                        OR `description` LIKE '%%視訊%%'
                    )
                    AND COALESCE(`description`, '') NOT LIKE '%%U會議%%'
                    AND COALESCE(`description`, '') NOT LIKE '%%Ｕ會議%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%視訊會議%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%視訊會議%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%律見%%'
+                   AND COALESCE(`todo_type`, '') NOT LIKE '%%律師接見%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%律見%%'
+                   AND COALESCE(`description`, '') NOT LIKE '%%律師接見%%'
                    AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
                 tuple(_todo_meeting_params),
             )
@@ -6663,7 +7665,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                    WHERE `case_number` = %s
                    {_todo_start_sql}
                    AND (`todo_type` LIKE '%%律見%%' OR `todo_type` LIKE '%%律師接見%%'
-                        OR `todo_type` LIKE '%%接見%%')
+                        OR `todo_type` LIKE '%%接見%%'
+                        OR `description` LIKE '%%律見%%' OR `description` LIKE '%%律師接見%%'
+                        OR (
+                            `description` LIKE '%%接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%禁止接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%限制接見%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%接見、通信%%'
+                            AND COALESCE(`description`, '') NOT LIKE '%%接見通信%%'
+                        ))
                    AND (`status` = 'completed' OR `source_file` LIKE 'gcal_import%%')
                    AND (`todo_date` IS NULL OR `todo_date` <= CURDATE())
                    AND COALESCE(`status`, '') NOT IN ('cancelled', 'canceled', '取消')""",
@@ -6751,7 +7761,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         # 當計數為 0 時，從 calendar_events 表補數字（和 OSC 的 GCal 統計邏輯一致）
         # 只查派案日期之後的事件
-        _zero_keys = [k for k in ("meeting_count", "contact_count", "court_count", "review_count")
+        _zero_keys = [k for k in ("meeting_count", "contact_count", "inq_count", "court_count", "review_count")
                       if int(counts.get(k, 0) or 0) == 0]
         if _zero_keys and self.db and client_name:
             try:
@@ -6793,14 +7803,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _events:
                     # 用 OSC 相同的關鍵字分類
                     _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-                    _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
+                    _meet_kw = ["會議", "來所", "碰面", "面談", "開會", "交資料"]
                     _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
                     _review_kw = ["閱卷", "影卷", "調卷"]
                     _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
                     _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
+                    _c_court = 0; _c_meet = 0; _c_tel = 0; _c_inq = 0; _c_review = 0; _c_mediation = 0
                     _court_dates_cal = []; _review_dates_cal = []
+                    _seen_inq_slots: set = set()
                     _seen_mediation_slots: set = set()
                     for row in _events:
                         if isinstance(row, dict):
@@ -6829,6 +7840,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                             _c_review += 1
                             if start_date:
                                 _review_dates_cal.append(start_date)
+                        elif self._is_laf_inquiry_text(s, criminal_laf=_is_criminal_laf_case):
+                            _slot = str(start_date or "")[:16] if start_date else s[:80]
+                            if _slot and _slot not in _seen_inq_slots:
+                                _c_inq += 1
+                                _seen_inq_slots.add(_slot)
+                        elif "視訊會議" in s:
+                            continue
                         elif any(k in s for k in _meet_kw):
                             _c_meet += 1
                         elif any(k in s for k in _tel_kw):
@@ -6843,6 +7861,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     if _c_tel > int(counts.get("contact_count", 0) or 0):
                         counts["contact_count"] = _c_tel
                         logger.info("  📅 Calendar 補 contact_count: %d", _c_tel)
+                    if _c_inq > int(counts.get("inq_count", 0) or 0):
+                        counts["inq_count"] = _c_inq
+                        logger.info("  📅 Calendar 補 inq_count: %d", _c_inq)
                     if _c_court > int(counts.get("court_count", 0) or 0):
                         counts["court_count"] = _c_court
                         if not counts["court_dates"]:
@@ -6863,8 +7884,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         # 傳全部 keys 讓 _gcal_fallback_counts 自己判斷是否 > 目前值
         if client_name:
             try:
-                _all_keys = ["meeting_count", "contact_count", "court_count", "review_count", "mediation_contact_count"]
-                self._gcal_fallback_counts(counts, _all_keys, case_number, client_name)
+                _all_keys = ["meeting_count", "contact_count", "inq_count", "court_count", "review_count", "mediation_contact_count"]
+                self._gcal_fallback_counts(
+                    counts,
+                    _all_keys,
+                    case_number,
+                    client_name,
+                    criminal_laf_case=_is_criminal_laf_case,
+                )
             except Exception as e:
                 logger.warning("GCal API fallback for zero counts failed: %s", e)
 
@@ -6902,12 +7929,12 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                         _has_real_files = True
                                         break
                                 except OSError:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7161, exc_info=True)
                                 if _has_real_files:
                                     _review_count_from_folder += 1
                                     _review_dates_from_folder.append(str(_sub)[:10])
                         except OSError:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7166, exc_info=True)
                         if _review_count_from_folder > 0:
                             _review_dir_used = _review_dir_name
                             break
@@ -6921,7 +7948,28 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
         return counts
 
-    def _gcal_fallback_counts(self, counts: dict, zero_keys: list, case_number: str, client_name: str) -> None:
+    @staticmethod
+    def _is_laf_inquiry_text(text: str, criminal_laf: bool = False) -> bool:
+        """Return True when text describes an actual lawyer detention visit."""
+        s = str(text or "")
+        if not s:
+            return False
+        if "律見" in s or "律師接見" in s:
+            return True
+        if "接見" not in s:
+            return False
+        # Court rulings often say "禁止接見、通信"; those are not visits.
+        blocked = ("禁止接見", "限制接見", "接見、通信", "接見通信")
+        return not any(k in s for k in blocked)
+
+    def _gcal_fallback_counts(
+        self,
+        counts: dict,
+        zero_keys: list,
+        case_number: str,
+        client_name: str,
+        criminal_laf_case: bool = False,
+    ) -> None:
         """Query Google Calendar API directly when DB has no matching events."""
         import re as _re
         from datetime import datetime, timedelta, timezone
@@ -7033,13 +8081,13 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     len(events), _cn_only, len(cal_ids), _raw_total, _raw_total - len(events))
 
         _court_kw = ["開庭", "言詞辯論", "準備程序", "調解", "調解庭", "訊問", "詢問庭", "審理", "審理程序", "審查庭", "免責庭", "協商程序", "調查", "調查程序"]
-        _meet_kw = ["會議", "來所", "碰面", "視訊", "面談", "開會", "交資料", "律見", "接見", "律師接見"]
+        _meet_kw = ["會議", "來所", "碰面", "面談", "開會", "交資料"]
         _tel_kw = ["電話", "電話聯繫", "通話", "電聯", "聯繫", "聯絡"]
         _review_kw = ["閱卷", "影卷", "調卷"]
         _mediation_kw = ["調解", "調解庭", "和解", "調和解"]
         _excl_kw = ["聲請改期", "改期", "取消", "不出席", "不到庭", "宣判", "宣示判決", "法扶開辦末日", "法扶上訴", "法扶再議", "停班", "停課", "放假", "颱風", "天然災害", "U會議", "Ｕ會議"]
 
-        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_review = 0; _c_mediation = 0
+        _c_court = 0; _c_meet = 0; _c_tel = 0; _c_inq = 0; _c_review = 0; _c_mediation = 0
         _court_dates_gcal = []; _review_dates_gcal = []
         # 同日同類事件只算一次（不同日曆用不同 summary 的情形常見，例如
         # 「王淑婷審理」vs「[2025-0024] 王淑婷 - 審理程序」同是 2026-03-12 一場庭）
@@ -7047,6 +8095,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         _seen_review_dates: set = set()
         _seen_meet_slots: set = set()
         _seen_tel_slots: set = set()
+        _seen_inq_slots: set = set()
         _seen_mediation_slots: set = set()
         for ev in events:
             summary = ev.get("summary", "")
@@ -7077,6 +8126,15 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 if _dk:
                     _seen_review_dates.add(_dk)
                     _review_dates_gcal.append(_dk)
+            elif self._is_laf_inquiry_text(summary, criminal_laf=criminal_laf_case):
+                _slot = (start or "")[:16] if start else _dk
+                if _slot and _slot in _seen_inq_slots:
+                    continue
+                _c_inq += 1
+                if _slot:
+                    _seen_inq_slots.add(_slot)
+            elif "視訊會議" in summary:
+                continue
             elif any(k in summary for k in _meet_kw):
                 _slot = (start or "")[:16] if start else _dk
                 if _slot and _slot in _seen_meet_slots:
@@ -7100,6 +8158,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if "contact_count" in zero_keys and _c_tel > int(counts.get("contact_count", 0) or 0):
             counts["contact_count"] = _c_tel
             logger.info("  📅 GCal API 補 contact_count: %d", _c_tel)
+        if "inq_count" in zero_keys and _c_inq > int(counts.get("inq_count", 0) or 0):
+            counts["inq_count"] = _c_inq
+            logger.info("  📅 GCal API 補 inq_count: %d", _c_inq)
         if "court_count" in zero_keys and _c_court > int(counts.get("court_count", 0) or 0):
             counts["court_count"] = _c_court
             # 以 GCal 的實際日期覆蓋（更完整）
@@ -7219,13 +8280,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return None
 
     def _update_legal_aid_number(self, case_id, laf_number):
-        """Update legal_aid_number for an existing case."""
+        """Backfill structured LAF identifiers for an existing case."""
         if self.dry_run or not self.db:
             return
         try:
             self.db.execute_write(
-                "UPDATE `cases` SET `legal_aid_number` = %s WHERE `id` = %s",
-                (laf_number, case_id)
+                "UPDATE `cases` SET "
+                "`legal_aid_number` = CASE WHEN `legal_aid_number` IS NULL OR `legal_aid_number` = '' THEN %s ELSE `legal_aid_number` END, "
+                "`laf_case_no` = CASE WHEN `laf_case_no` IS NULL OR `laf_case_no` = '' THEN %s ELSE `laf_case_no` END, "
+                "`application_no` = CASE WHEN `application_no` IS NULL OR `application_no` = '' THEN %s ELSE `application_no` END "
+                "WHERE `id` = %s",
+                (laf_number, laf_number, laf_number, case_id)
             )
         except Exception as e:
             logger.error("Update LAF number failed: %s", e)
@@ -7331,7 +8396,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     f"請關閉相關應用後手動 rename。"
                                 )
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7628, exc_info=True)
                         else:
                             try:
                                 os.rename(old_local, new_local)
@@ -7365,7 +8430,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                     f"📁 資料夾: {new_basename}"
                 )
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7662, exc_info=True)
         return True
 
     def _generate_case_number(self) -> str:
@@ -7432,8 +8497,14 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         if branch:
             notes += f"分會: {branch}\n"
 
-        # 承辦律師：公開版使用設定或範例值，正式環境請在設定檔覆寫。
-        default_lawyer = os.environ.get('MAGI_PUBLIC_LAWYER_NAME', '範例律師')
+        default_lawyer = normalize_case_lawyer(
+            "",
+            allow_default=True,
+            case_type=case_type,
+            case_reason=case_reason,
+            case_category="法律扶助案件",
+            settings_getter=db_settings_getter(getattr(self, "db", None)),
+        )
 
         try:
             self.db.execute_write(
@@ -7615,7 +8686,7 @@ def _acquire_portal_lock(wait_sec: int = 900):
     """取得 LAF portal 全域檔案鎖；同時間只允許一個 portal-draft/submit 跑。
 
     等待上限 wait_sec 秒（預設 900s 與 portal-draft subprocess timeout 對齊）；
-    超時則回傳 (None, False) 由 caller 決定要不要 fail-open。
+    超時則回傳 (None, False)，由 caller 中止本次 portal 操作。
     """
     global _PORTAL_LOCK_FD
     try:
@@ -7630,10 +8701,13 @@ def _acquire_portal_lock(wait_sec: int = 900):
     try:
         os.makedirs(_lock_dir, exist_ok=True)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7927, exc_info=True)
     _lock_path = os.path.join(_lock_dir, "laf_portal.lock")
     try:
-        fd = open(_lock_path, 'w')
+        # Do not open with "w": that truncates the owner record before the
+        # process actually owns the fcntl lock, making portal hangs impossible
+        # to diagnose after a daemon restart.  We overwrite only after LOCK_EX.
+        fd = open(_lock_path, 'a+')
     except Exception as e:
         logger.warning("Cannot open portal lock file %s: %s", _lock_path, e)
         return None, True
@@ -7649,19 +8723,32 @@ def _acquire_portal_lock(wait_sec: int = 900):
                 fd.write(f"{os.getpid()} {datetime.now().isoformat()}\n")
                 fd.flush()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7946, exc_info=True)
             _PORTAL_LOCK_FD = fd
             return fd, True
         except BlockingIOError:
             if not announced:
-                logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
+                owner = ""
+                try:
+                    fd.seek(0)
+                    owner = (fd.read() or "").strip()
+                except Exception:
+                    owner = ""
+                if owner:
+                    logger.info(
+                        "⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds；鎖持有者：%s）",
+                        int(wait_sec),
+                        owner[:120],
+                    )
+                else:
+                    logger.info("⏳ 另一個 LAF portal 操作正在執行，本程序排隊等候（最久 %ds）", int(wait_sec))
                 announced = True
             time.sleep(2)
-    logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），fail-open 繼續執行（可能會與他程序衝突）", wait_sec)
+    logger.warning("⚠️ 等候 LAF portal 鎖超時（%ds），中止本次 portal 操作，避免並發衝突", wait_sec)
     try:
         fd.close()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7958, exc_info=True)
     return None, False
 
 
@@ -7675,11 +8762,11 @@ def _release_portal_lock():
         import fcntl as _fcntl
         _fcntl.flock(fd.fileno(), _fcntl.LOCK_UN)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7972, exc_info=True)
     try:
         fd.close()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7976, exc_info=True)
 
 
 def main():
@@ -7803,7 +8890,14 @@ def main():
                 _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
         # 取互斥鎖，避免與另一個 portal-draft/submit 並發搶 LAF session
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        _, lock_ok = _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        if not lock_ok:
+            _print_result_with_sentinel({
+                "ok": False,
+                "error": "laf_portal_lock_timeout",
+                "message": "法扶官網目前仍有其他操作佔用，已中止本次草稿建立以避免並發衝突。請稍後重試。",
+            })
+            return
         try:
             result = orchestrator.execute_portal_action_draft(
                 action=args.action,
@@ -7821,7 +8915,7 @@ def main():
         try:
             orchestrator.close()
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8118, exc_info=True)
         import sys as _sys; _sys.stdout.flush(); os._exit(0)
 
     elif args.mode == "portal-submit":
@@ -7834,7 +8928,14 @@ def main():
             except Exception as e:
                 _print_result_with_sentinel({"ok": False, "error": f"invalid_fields_json: {e}"})
                 return
-        _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        _, lock_ok = _acquire_portal_lock(wait_sec=int(os.environ.get("MAGI_LAF_PORTAL_LOCK_WAIT_SEC", "2400")))
+        if not lock_ok:
+            _print_result_with_sentinel({
+                "ok": False,
+                "error": "laf_portal_lock_timeout",
+                "message": "法扶官網目前仍有其他操作佔用，已中止本次送出以避免並發衝突。請稍後重試。",
+            })
+            return
         try:
             result = orchestrator.execute_portal_action_submit(
                 action=args.action,
@@ -7879,7 +8980,7 @@ def main():
                         }, ensure_ascii=False))
                     else:
                         try:
-                            from laf_automation_v2 import LAFCaseInfo  # type: ignore
+                            from skills.legal.laf import LAFCaseInfo  # type: ignore
                         except Exception:
                             from skills.legal.laf import LAFCaseInfo  # type: ignore
                         case_info = LAFCaseInfo(
@@ -7894,7 +8995,7 @@ def main():
                         try:
                             orchestrator._go_live_dedup.discard(laf_no)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8191, exc_info=True)
                         logger.info("🔁 Redo go-live 開始: %s (%s) %s",
                                     row.get("case_number"), laf_no, row.get("client_name"))
                         orchestrator.handle_go_live(case_info)
@@ -7935,6 +9036,7 @@ for _name in (
     "_dedupe_sorted",
     "_is_consumer_debt_case_folder",
     "_is_consumer_debt_terminal_doc",
+    "_is_procedural_nonclosing_doc",
     "_is_fee_related_receipt_doc",
     "_filter_receipt_evidence_files",
     "_closing_basis_sort_key",

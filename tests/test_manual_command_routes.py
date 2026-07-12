@@ -20,3 +20,21 @@ def test_illustrated_manual_command_routes():
         req = classify_tool_requirement(prompt)
         assert req.level == "required", prompt
         assert req.tool_hint == expected_tool, prompt
+
+
+def test_tool_first_gate_respects_chat_cancel_and_correction_boundaries():
+    chat = classify_tool_requirement("我只是想跟你聊聊天，不要查資料庫")
+    assert chat.level == "none"
+
+    capability = classify_tool_requirement("你可以查天氣嗎？")
+    assert capability.level == "none"
+
+    cancel = classify_tool_requirement("取消")
+    assert cancel.level == "none"
+
+    correction = classify_tool_requirement("更正：正確是臺灣新北地方法院")
+    assert correction.level == "none"
+
+    explicit_tool = classify_tool_requirement("查 2026-0001 的案件狀態。")
+    assert explicit_tool.level == "required"
+    assert explicit_tool.tool_hint == "case_query"

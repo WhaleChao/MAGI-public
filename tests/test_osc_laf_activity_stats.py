@@ -57,7 +57,7 @@ def test_laf_income_tax_year_pair_switches_in_may():
 def test_case_workbench_excludes_pre_start_name_only_gcal_rows():
     src = Path("api/blueprints/osc_cases.py").read_text(encoding="utf-8")
 
-    assert "source_file LIKE 'gcal_import%%'" in src
+    assert "calendar_todo_source_sql()" in src
     assert "AND todo_date < %s" in src
     assert "AND description NOT LIKE %s" in src
     assert "assigned_todo_clause" in src

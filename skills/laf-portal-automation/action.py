@@ -140,11 +140,17 @@ def execute_workflow(workflow: str, person: str, dry_run: bool = True) -> Dict:
     orch_path = _P(__file__).resolve().parents[2] / "skills" / "laf-orchestrator" / "action.py"
     if not orch_path.exists():
         return {"ok": False, "error": f"laf-orchestrator not found: {orch_path}"}
-    cmd = [sys.executable, str(orch_path), "--mode", workflow]
+    cmd = [
+        sys.executable,
+        str(orch_path),
+        "--task",
+        workflow,
+        "--mode",
+        "draft" if dry_run else "submit",
+        "--no-notify",
+    ]
     if person:
         cmd += ["--client", person]
-    if dry_run:
-        cmd += ["--dry-run"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         return {"ok": r.returncode == 0, "stdout": r.stdout[-2000:], "stderr": r.stderr[-500:], "rc": r.returncode}

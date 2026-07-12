@@ -88,7 +88,11 @@ class ProviderAdapter(ABC):
 
     def resolve_model(self, model: str = "") -> str:
         env_model = self._env(self.model_env)
-        return (model or env_model or self.default_model).strip()
+        return self.validate_model((model or env_model or self.default_model).strip())
+
+    def validate_model(self, model: str) -> str:
+        """Return a provider-approved model name or raise for policy violations."""
+        return str(model or "").strip()
 
     def build_url(self, path: str) -> str:
         base = self.base_url.rstrip("/")
@@ -159,7 +163,7 @@ class ProviderAdapter(ABC):
 class OpenAICompatibleProvider(ProviderAdapter):
     def build_chat_payload(self, messages: Iterable[dict[str, Any]] | str, **kwargs) -> dict[str, Any]:
         payload = {
-            "model": (kwargs.pop("model", "") or self.model or self.default_model).strip(),
+            "model": self.validate_model((kwargs.pop("model", "") or self.model or self.default_model).strip()),
             "messages": self._normalize_messages(messages),
             "stream": bool(kwargs.pop("stream", False)),
         }

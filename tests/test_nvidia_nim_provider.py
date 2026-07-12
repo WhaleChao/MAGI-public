@@ -3,7 +3,7 @@
 覆蓋：
 1. 白名單正反測試（Meta/Mistral/Gemma 通過；DeepSeek/Qwen/MiniMax 等中國模型攔截）
 2. Adapter 註冊進 provider registry
-3. 預設模型為 Llama-3.3-70B
+3. 預設模型為 live 驗證通過的 Super 120B；歷史 405B 設定仍會被 nim_heavy 映射
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from providers.nvidia_nim import NvidiaNimProvider
 
 
 class TestNvidiaNimAllowList:
-    def test_eol_llama_405b_blocked(self):
-        assert NvidiaNimProvider.is_model_allowed("meta/llama-3.1-405b-instruct") is False
+    def test_llama_405b_target_allowed(self):
+        assert NvidiaNimProvider.is_model_allowed("meta/llama-3.1-405b-instruct") is True
 
     def test_llama_70b_allowed(self):
         assert NvidiaNimProvider.is_model_allowed("meta/llama-3.3-70b-instruct") is True
@@ -28,6 +28,13 @@ class TestNvidiaNimAllowList:
 
     def test_nvidia_nemotron_llama_allowed(self):
         assert NvidiaNimProvider.is_model_allowed("nvidia/llama-3.1-nemotron-70b-instruct") is True
+
+    def test_nvidia_large_fallback_allowed(self):
+        assert NvidiaNimProvider.is_model_allowed("nvidia/nemotron-3-super-120b-a12b") is True
+
+    def test_new_nvidia_candidates_allowed_for_manual_observation(self):
+        assert NvidiaNimProvider.is_model_allowed("nvidia/nemotron-3-ultra-550b-a55b") is True
+        assert NvidiaNimProvider.is_model_allowed("nvidia/llama-3.3-nemotron-super-49b-v1") is True
 
     @pytest.mark.parametrize("banned", [
         "deepseek/deepseek-r1",
@@ -62,10 +69,20 @@ class TestNvidiaNimRegistration:
         assert "nvidia_nim" in registry
         assert isinstance(registry["nvidia_nim"], NvidiaNimProvider)
 
-    def test_default_model_is_llama_33_70b(self):
+    def test_default_model_is_super_120b_target(self):
         adapter = NvidiaNimProvider()
-        assert adapter.default_model == "meta/llama-3.3-70b-instruct"
+        assert adapter.default_model == "nvidia/nemotron-3-super-120b-a12b"
 
     def test_base_url_default(self):
         adapter = NvidiaNimProvider()
         assert "integrate.api.nvidia.com" in adapter.default_base_url
+
+    def test_env_model_is_enforced_at_resolve_time(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_NIM_MODEL", "deepseek/deepseek-r1")
+        with pytest.raises(ValueError, match="nvidia_nim_model_not_allowed"):
+            NvidiaNimProvider()
+
+    def test_payload_model_override_is_enforced(self):
+        adapter = NvidiaNimProvider(model="nvidia/nemotron-3-super-120b-a12b")
+        with pytest.raises(ValueError, match="nvidia_nim_model_not_allowed"):
+            adapter.build_chat_payload("hello", model="qwen/qwen-2.5-72b-instruct")

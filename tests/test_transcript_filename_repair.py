@@ -28,6 +28,37 @@ def test_00000000_transcript_is_not_treated_as_final_name():
     assert downloader._is_original_download_filename("20240618 言詞辯論筆錄(下午0400).pdf") is False
 
 
+def test_transcript_filename_generation_rejects_unusable_parse_values(tmp_path):
+    mod = _load_module()
+    downloader = mod.CourtRecordDownloader(username="", password="", headless=True, download_folder=str(tmp_path))
+
+    assert mod._record_parse_ready_for_filename({"date": "N/A", "type": "N/A", "period": "N/A"}) is False
+    assert mod._record_parse_ready_for_filename({"date": "00000000", "type": "調解程序筆錄"}) is False
+    assert mod._record_parse_ready_for_filename({"date": "20260230", "type": "調解程序筆錄"}) is False
+    assert mod._record_parse_ready_for_filename({"date": "20260618", "type": "調解"}) is False
+    assert (
+        downloader._generate_record_filename(
+            {"date": "N/A", "type": "N/A", "period": "N/A", "time": "N/A"},
+            "raw-download.pdf",
+        )
+        == "raw-download.pdf"
+    )
+
+
+def test_transcript_filename_generation_accepts_valid_parse_result(tmp_path):
+    mod = _load_module()
+    downloader = mod.CourtRecordDownloader(username="", password="", headless=True, download_folder=str(tmp_path))
+
+    assert mod._record_parse_ready_for_filename({"date": "20260618", "type": "調解程序筆錄"}) is True
+    assert (
+        downloader._generate_record_filename(
+            {"date": "20260618", "type": "調解程序筆錄", "period": "上午", "time": "0930"},
+            "raw-download.pdf",
+        )
+        == "20260618 調解程序筆錄(上午0930).pdf"
+    )
+
+
 def test_repair_standard_collision_does_not_parse_pdf(tmp_path):
     repair = _load_repair_module()
 

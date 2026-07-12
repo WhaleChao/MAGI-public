@@ -1,6 +1,6 @@
 # MAGI 一般使用者手冊
 
-版本：2026-05-18
+版本：2026-05-19
 適用對象：一般使用者、事務協作者、導入顧問
 適用版本：MAGI 公開版與私有版
 
@@ -74,9 +74,13 @@ MAGI 的回答如果沒有資料來源或工具回傳，就應該說明「查不
 常見入口如下，實際網址請以你的安裝者提供的設定為準：
 
 ```text
+http://127.0.0.1:5002/start
+http://127.0.0.1:5002/dashboard/beginner
 http://127.0.0.1:5002/
 http://127.0.0.1:5002/health
 ```
+
+第一次使用請優先開 `/start`。它會帶你到新手儀表板，用比較少的技術名詞說明目前可用功能、需要設定的項目，以及今天可以先做哪些事。`/health` 與 NERV 則主要給管理者確認服務狀態。
 
 若系統有對外連線設定，可能會提供 Tailscale、Cloudflare 或其他遠端網址。外網打不開時，先確認本機 `/health` 是否正常，再檢查遠端通道。
 
@@ -931,14 +935,14 @@ MAGI 可以透過 LINE、Discord、Telegram 或其他管道通知。通知應分
 
 ```text
 幫 2025-0121 高弘軒新增 6 月 1 日下午 4 點調解。
-把黃彩庭進度回報 60 天後提醒。
+把黃彩庭進度回報 90 天後提醒。
 ```
 
 輸出：建立成功訊息、事件時間、行事曆名稱與案件對應。
 
 注意事項：
 
-- 法扶進度回報冷卻提醒應依設定，例如 60 天。
+- 法扶進度回報冷卻提醒應依設定；目前文件基準為 90 天。
 - 不應重複建立同一事件。
 
 ### 25.3 OSC 建立待辦
@@ -1558,7 +1562,7 @@ MAGI 可以透過 LINE、Discord、Telegram 或其他管道通知。通知應分
 
 注意事項：
 
-- 冷卻期間應依設定，例如 60 天。
+- 冷卻期間應依設定；目前文件基準為 90 天。
 - 只需把進度回報送到指定通知頻道，不應把整份巡檢報告送到業務頻道。
 
 ### 30.5 法扶活動計數
@@ -1589,7 +1593,7 @@ MAGI 可以透過 LINE、Discord、Telegram 或其他管道通知。通知應分
 
 - 已結案資料夾仍要能在網頁開啟。
 - 同名不同程序不可一起搬。
-- 強制執行案件可用判決書資料夾內的執行命令作為結案依據。
+- 強制執行案件可用「判決書或終局裁定及處分」資料夾內的執行命令作為結案依據；舊「判決書」資料夾仍相容讀取。
 - 清算案件可能需上傳歷次程序裁定。
 
 ### 30.7 法扶撤回、延長、費用、條件回報
@@ -1781,6 +1785,8 @@ MAGI 可以透過 LINE、Discord、Telegram 或其他管道通知。通知應分
 系統狀態
 健康檢查
 ```
+
+瀏覽器也可開 `/start` 或 `/dashboard/beginner` 看新手版摘要；需要排查服務時，再看 `/health` 或 NERV。
 
 注意事項：
 
@@ -2072,7 +2078,7 @@ python3 scripts/magi_doctor.py --json
 檢查李秀英案件是否已開辦。
 產生這件消債案件的待補資料文字。
 檢查這件法扶案件能否結案。
-這件已回報，請 60 天後再提醒。
+這件已回報，請 90 天後再提醒。
 把 2026-0048 標示為已結案。
 ```
 
@@ -2110,7 +2116,7 @@ python3 scripts/magi_doctor.py --json
 ```bash
 ./venv/bin/python scripts/ops/run_test_suite.py --suite ci
 ./venv/bin/python scripts/ops/run_test_suite.py --suite smoke62
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 公開版推送前的隔離檢查：
@@ -2123,6 +2129,8 @@ python3 scripts/public_release_audit.py --public-isolation --strict --json
 
 | 用途 | 常見網址 |
 | --- | --- |
+| 新手入口 | `http://127.0.0.1:5002/start` |
+| 新手儀表板 | `http://127.0.0.1:5002/dashboard/beginner` |
 | MAGI 首頁 | `http://127.0.0.1:5002/` |
 | 健康狀態 | `http://127.0.0.1:5002/health` |
 | NERV 狀態頁 | `http://127.0.0.1:5002/dashboard/nerv` |

@@ -47,6 +47,8 @@ try:
 except Exception:
     validate_bookmark = None
 
+from scripts.ops.pdf_mutation_lock import pdf_in_place_mutation_lock
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 文件類型定義 — 依辨識優先順序排列
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -63,6 +65,7 @@ def _p(pattern: str, label: str, level: int = 1):
 _p(r"(?:刑事|民事|家事|少年|消債).*卷宗", "卷宗封面", 1)
 
 # ── 筆錄類（最常翻找） ──
+_p(r"(?:準備程序暨)?補充理由(?:書|狀)|準備程序書|準備程序暨補充理由書", "補充理由狀", 1)
 _p(r"審判(?:筆錄|程序筆錄)", "審判筆錄", 1)
 _p(r"準備程序筆錄", "準備程序筆錄", 1)
 _p(r"(?:訊問|讯问)筆錄", "訊問筆錄", 1)
@@ -151,6 +154,16 @@ KNOWN_DOC_LABELS = {label for _, label, _ in DOC_PATTERNS}
 SINGLE_DOC_FILENAME_HINT_RE = re.compile(
     r"(?:同意書|證明書|委任|上訴理由狀|聲明上訴|答辯狀|陳報狀|聲請狀|信件|回執|收據)"
 )
+FILENAME_BOOKMARK_FALLBACK_RE = re.compile(
+    r"(?:"
+    r"P\d+\s*[-~－—]\s*\d+|"
+    r"(?:卷|卷宗)\s*\d+|卷[一二三四五六七八九十]+|"
+    r"DOC_\d+|"
+    r"手機|群組|對話|聯絡人|LINE|mission|"
+    r"限閱|遮隱|調查卷|閱卷資料|光碟|錄音|錄影|監視器|照片|相片"
+    r")",
+    re.IGNORECASE,
+)
 _STRONG_DOC_SIGNAL_PATTERNS = [
     ("判決", re.compile(r"(?:刑事|民事|家事)?判決(?:書)?|主文")),
     ("裁定", re.compile(r"(?:刑事|民事|家事)?裁定(?:書)?")),
@@ -169,6 +182,76 @@ _AGENCY_SIGNAL_PATTERNS = [
     ("警察", re.compile(r"(?:警察局|分局|派出所|刑事警察)")),
 ]
 _PAGE_BREAK_SIGNAL_RE = re.compile(r"(?:第\s*\d+\s*頁|共\s*\d+\s*頁|收文章|發文字號|案號)")
+_STANDALONE_TRANSCRIPT_PATH_RE = re.compile(r"(?:^|[/\\])(?:0?\d+_)?筆錄(?:[/\\]|$)|筆錄", re.IGNORECASE)
+_CONTINUATION_HEADER_RE = re.compile(
+    r"^\s*[\(（【\[]?\s*(?:"
+    r"續\s*(?:上|前)(?:頁|I|1)?|"
+    r"續\s*上\s*頁|"
+    r"接\s*上\s*頁|"
+    r"承\s*上|"
+    r"讀\s*上\s*頁"
+    r")",
+    re.IGNORECASE,
+)
+_OCR_CONTINUATION_HEADER_RE = re.compile(
+    r"^[\s:：,，.。;；\\(（【\\[]*.{0,4}上\s*頁[\)）】\\]]?",
+    re.IGNORECASE,
+)
+_EVIDENCE_TABLE_HEADER_RE = re.compile(
+    r"(?:檢證|辯證|證物|證據)\s*編號.{0,30}證據\s*名稱|"
+    r"證據\s*名稱.{0,30}待證\s*事實|"
+    r"證據\s*能力.{0,30}調查\s*方式|"
+    r"調查\s*方法\s*及\s*理由.{0,30}檢方\s*意見"
+)
+_TRANSCRIPT_INTERNAL_REFERENCE_RE = re.compile(
+    r"(?:法官問|檢察官(?:答|稱)|被告答|辯護人答|通譯答).{0,180}"
+    r"(?:所附下列證據|逐一提示|告以要旨|有何意見|請辯護人回答|同意有證據能力)|"
+    r"(?:被告答|辯護人答).{0,40}(?:請辯護人回答|沒有意見|同意有證據能力)"
+)
+_DOC_REFERENCE_TERMS_RE = (
+    r"判決(?:書)?|裁定(?:書)?|起訴書|追加起訴書|不起訴處分書|緩起訴處分書|"
+    r"聲請簡易判決處刑書|答辯(?:狀|書)|陳報(?:狀|書)|聲請(?:狀|書)|"
+    r"上訴(?:狀|書|理由)|抗告(?:狀|書|理由)|補充(?:理由|上訴|告訴)(?:狀|書)|"
+    r"(?:審判|準備程序|言詞辯論|訊問|調查|勘驗).{0,3}筆錄|"
+    r"鑑定(?:報告|書|意見)|法醫(?:報告|鑑定)|解剖(?:報告|鑑定)|"
+    r"診斷(?:證明|書)|相驗屍體證明書|扣押物品(?:目錄表|清單)|"
+    r"搜索扣押(?:筆錄|紀錄)|勘(?:查|察|驗)(?:報告|紀錄)|前案紀錄表"
+)
+_BODY_DOC_REFERENCE_RE = re.compile(
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+    rf".{{0,90}}(?:{_DOC_REFERENCE_TERMS_RE})|"
+    rf"(?:{_DOC_REFERENCE_TERMS_RE}).{{0,90}}"
+    rf"(?:證據|附件|附表|目錄|清單|卷附|卷內|提出|檢附|引用|參酌|調查|提示|"
+    rf"所附|所載|記載|主張|抗辯|證明|待證|詳如|如附件|如附表|前開|上開|"
+    rf"起訴意旨|上訴意旨|原審|本院|檢察官|辯護人|法官問|被告答)"
+)
+_TITLE_BEFORE_TABLE_RE = re.compile(
+    r"(?:"
+    r"判決(?:書)?|裁定(?:書)?|起訴書|不起訴處分書|緩起訴處分書|"
+    r"準備程序暨補充理由書|準備程序書|補充理由(?:書|狀)|"
+    r"答辯(?:狀|書)|陳報(?:狀|書)|聲請(?:狀|書)|"
+    r"(?:審判|準備程序|言詞辯論|訊問|調查|勘驗).{0,3}筆錄|"
+    r"鑑定(?:報告|書|意見)|診斷(?:證明|書)|相驗屍體證明書|"
+    r"前案紀錄表|傳票|送達證書"
+    r")"
+)
+def _build_court_watermark_line_re() -> re.Pattern[str]:
+    parts = [
+        r"司法院線上閱卷系統作業平台",
+        r"\d{2,3}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}",
+    ]
+    private_names = os.environ.get("MAGI_BOOKMARKER_WATERMARK_NAMES", "")
+    for raw in re.split(r"[,，;；\n]+", private_names):
+        name = raw.strip()
+        if name:
+            parts.append(re.escape(name))
+    return re.compile(r"(?:" + "|".join(parts) + r")")
+
+
+_COURT_WATERMARK_LINE_RE = _build_court_watermark_line_re()
+_BOUNDARY_SCAN_CHARS = int(os.environ.get("MAGI_BOOKMARKER_BOUNDARY_SCAN_CHARS", "650") or "650")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 日期偵測
@@ -183,16 +266,76 @@ RE_ROC_DATE = re.compile(
 RE_AD_DATE = re.compile(
     r"(20[12]\d)\s*[年\.\-/]\s*([01]?\d)\s*[月\.\-/]\s*([0-3]?\d)\s*[日]?"
 )
+RE_ROC_DATE_CANDIDATE = re.compile(
+    r"((?:中華\s*民\s*[國囯]|民\s*[國囯])?\s*)"
+    r"((?:1[01]\d|[89]\d|[12]\d))\s*"
+    r"(?:[0０〇O○o]?\s*\d{1,2}\s*)?"
+    r"[年\.\-/]\s*([01]?\d)\s*[月\.\-/]\s*([0-3]?\d)\s*[日]?",
+    re.IGNORECASE,
+)
+_DATE_NOISE_CONTEXT_RE = re.compile(
+    r"出生|出生年月|生\)|生）|男\s*\d|女\s*\d|歲|國民身分證|身分證|統一編號|"
+    r"申請編號|本會申請編號|收文章|司法院線上閱卷|閱卷系統|日起|不再蓋委任狀章|律師辦理狀況"
+)
+_DATE_AUTHORITY_CONTEXT_RE = re.compile(
+    r"中華\s*民\s*[國囯]|民\s*[國囯]|發文日期|裁判日期|宣判日期|作成日期|"
+    r"訊問程序|準備程序|審判程序|言詞辯論|調查程序|調解程序"
+)
 
 
 def _extract_roc_date(text: str) -> Optional[str]:
-    """Extract first ROC date, return 'RRR.MM.DD' or None."""
-    m = RE_ROC_DATE.search(text)
+    """Extract the most likely document date, return 'RRR.MM.DD' or None."""
+    raw = str(text or "")
+    candidates: list[tuple[int, int, str]] = []
+    for m in RE_ROC_DATE_CANDIDATE.finditer(raw):
+        prefix, y_raw, mo, d = m.group(1), m.group(2), m.group(3), m.group(4)
+        try:
+            y = int(y_raw)
+            month = int(mo)
+            day = int(d)
+        except Exception:
+            continue
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        context = raw[max(0, m.start() - 80): min(len(raw), m.end() + 80)]
+        noise_context = raw[max(0, m.start() - 60): min(len(raw), m.end() + 30)]
+        compact_context = re.sub(r"\s+", "", context)
+        compact_noise_context = re.sub(r"\s+", "", noise_context)
+        if y < 80:
+            if not (10 <= y <= 30 and re.search(r"民\s*[國囯]|中華\s*民", prefix + context)):
+                continue
+            y += 100
+        if not (80 <= y <= 130):
+            continue
+        score = 20
+        if _DATE_AUTHORITY_CONTEXT_RE.search(compact_context):
+            score += 70
+        if _DATE_NOISE_CONTEXT_RE.search(compact_noise_context):
+            score -= 160
+        if m.start() < 1200:
+            score += 25
+        if m.start() < 400:
+            score += 20
+        # In court transcript OCR, line numbers sometimes appear between the
+        # year and "年"; an authority context keeps this candidate reliable.
+        if int(y_raw) < 80 and y >= 110:
+            score += 20
+        candidates.append((score, m.start(), f"{y}.{str(month).zfill(2)}.{str(day).zfill(2)}"))
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        if candidates[0][0] > -20:
+            return candidates[0][2]
+
+    # Legacy fallback for short strings such as unit tests.
+    m = RE_ROC_DATE.search(raw)
     if m:
         y, mo, d = m.group(1), m.group(2), m.group(3)
-        return f"{y}.{mo.zfill(2)}.{d.zfill(2)}"
+        context = raw[max(0, m.start() - 50): min(len(raw), m.end() + 50)]
+        if not _DATE_NOISE_CONTEXT_RE.search(re.sub(r"\s+", "", context)):
+            return f"{y}.{mo.zfill(2)}.{d.zfill(2)}"
     # Try AD date → convert to ROC
-    m2 = RE_AD_DATE.search(text)
+    m2 = RE_AD_DATE.search(raw)
     if m2:
         y = int(m2.group(1)) - 1911
         if 80 <= y <= 200:
@@ -341,6 +484,80 @@ def _normalize_doc_type(raw_label: Optional[str], context_text: str = "") -> Opt
     return None
 
 
+def _boundary_region(text: str, *, limit: int | None = None) -> str:
+    """Return the portion that can prove this page starts a new document.
+
+    Older logic scanned the first 2,000 chars, which let evidence lists inside
+    pleadings, indictments, or transcripts create false bookmarks such as
+    "鑑定報告".  A bookmark must be anchored in the page's own header/title area,
+    not in a table row that merely cites another document.
+    """
+    raw = str(text or "")
+    limit = max(240, int(limit or _BOUNDARY_SCAN_CHARS))
+    lines: list[str] = []
+    for line in raw.splitlines():
+        cleaned = re.sub(r"\s+", " ", line or "").strip()
+        if not cleaned:
+            continue
+        if _COURT_WATERMARK_LINE_RE.search(cleaned):
+            continue
+        lines.append(cleaned)
+        if len(" ".join(lines)) >= limit:
+            break
+        if len(lines) >= 10:
+            break
+    region = "\n".join(lines).strip()
+    if not region:
+        region = raw[:limit]
+    return region[:limit]
+
+
+def _is_reference_only_page(text: str) -> bool:
+    """Detect pages where document names are evidence references, not titles."""
+    region = _boundary_region(text, limit=900)
+    if _looks_like_continuation_header(region):
+        return True
+    first_line = next((line.strip() for line in region.splitlines() if line.strip()), region[:90])
+    first_title_proven = bool(_TITLE_BEFORE_TABLE_RE.search(first_line[:140]))
+    if _TRANSCRIPT_INTERNAL_REFERENCE_RE.search(region) and not _TITLE_BEFORE_TABLE_RE.search(first_line[:90]):
+        return True
+    if _BODY_DOC_REFERENCE_RE.search(region) and not first_title_proven:
+        return True
+    compact = re.sub(r"\s+", "", region)
+    table_match = _EVIDENCE_TABLE_HEADER_RE.search(region)
+    compact_table_match = _EVIDENCE_TABLE_HEADER_RE.search(compact) if not table_match else None
+    if table_match or compact_table_match:
+        idx = table_match.start() if table_match else 180
+        before_table = region[:idx]
+        if _TITLE_BEFORE_TABLE_RE.search(before_table[:260]):
+            return False
+        return True
+    return False
+
+
+def _looks_like_continuation_header(region: str) -> bool:
+    """Handle normal and OCR-distorted continuation headers."""
+    text = str(region or "")
+    if _CONTINUATION_HEADER_RE.search(text):
+        return True
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    compact = re.sub(r"\s+", "", first_line)
+    if not compact:
+        return False
+    if _OCR_CONTINUATION_HEADER_RE.search(first_line) and "上頁" in compact[:10]:
+        return True
+    if "上頁" in compact[:8] and len(compact) <= 12 and not _TITLE_BEFORE_TABLE_RE.search(compact):
+        return True
+    return False
+
+
+def _is_standalone_transcript_pdf(pdf_path: str) -> bool:
+    normalized = str(pdf_path or "").replace("\\", "/")
+    if "/06_閱卷資料/" in normalized or "/05_閱卷資料/" in normalized:
+        return False
+    return bool(_STANDALONE_TRANSCRIPT_PATH_RE.search(normalized))
+
+
 def _classify_no_boundary_case(
     pdf_path: str,
     page_count: int,
@@ -370,7 +587,16 @@ def _classify_no_boundary_case(
     if page_count <= 12 and SINGLE_DOC_FILENAME_HINT_RE.search(stem):
         return "legitimate_single_doc", "filename_single_doc_hint"
 
+    if FILENAME_BOOKMARK_FALLBACK_RE.search(stem):
+        return "filename_bookmark_fallback", "filename_volume_or_evidence_chunk"
+
     return "empty_failure", "no_boundary_without_single_doc_signal"
+
+
+def _single_doc_bookmark_title(pdf: Path, fallback: str = "") -> str:
+    stem = re.sub(r"\s+", " ", (fallback or pdf.stem or "文件")).strip()
+    stem = re.sub(r"[_\-. ]*(?:ocr|OCR|bookmarked|已書籤)$", "", stem).strip()
+    return stem[:120] or "文件"
 
 
 def _audit_no_boundary_multidoc_signals(
@@ -435,6 +661,48 @@ def _audit_no_boundary_multidoc_signals(
     }
 
 
+def _normalize_toc_hierarchy(toc: list[list]) -> list[list]:
+    """Make generated bookmarks acceptable to PyMuPDF's strict hierarchy rules."""
+    normalized: list[list] = []
+    prev_level = 0
+    for entry in toc:
+        if len(entry) < 3:
+            continue
+        raw_level, title, page = entry[:3]
+        try:
+            level = max(1, int(raw_level))
+        except Exception:
+            level = 1
+        if not normalized:
+            level = 1
+        elif level > prev_level + 1:
+            level = prev_level + 1
+        normalized.append([level, str(title), int(page)])
+        prev_level = level
+    return normalized
+
+
+def _existing_toc_needs_rebuild(toc: list[list]) -> bool:
+    """Detect stale TOCs generated with old noisy date rules."""
+    if not toc:
+        return False
+    date_counts: dict[str, int] = {}
+    dated = 0
+    for entry in toc:
+        if len(entry) < 2:
+            continue
+        title = str(entry[1] or "").strip()
+        m = re.match(r"^(\d{2,3}\.\d{2}\.\d{2})\s+", title)
+        if not m:
+            continue
+        dated += 1
+        date_counts[m.group(1)] = date_counts.get(m.group(1), 0) + 1
+    if not date_counts:
+        return False
+    most_common = max(date_counts.values())
+    return most_common >= max(8, int(max(1, dated) * 0.35))
+
+
 def _detect_doc_type(
     text: str,
     in_prior_record: bool = False,
@@ -448,16 +716,23 @@ def _detect_doc_type(
     Falls back to shared doc_type_detector Vision path when regex fails
     (MAGI_BOOKMARKER_VISION_FALLBACK=1 by default).
     """
-    header = text[:2000]
+    full_header = text[:2000]
+    header = _boundary_region(text)
 
     # Inside 前案紀錄表 section — don't match standalone doc types
     if in_prior_record:
-        if _is_prior_record_page(header):
+        if _is_prior_record_page(full_header):
             return None, 0  # continuation of same 前案紀錄表, skip
         # If it's no longer a prior record page, we've exited — fall through
 
+    if _is_reference_only_page(text):
+        return None, 0
+
+    compact_header = re.sub(r"\s+", "", header)
     for pattern, label, level in DOC_PATTERNS:
-        if pattern.search(header):
+        if pattern.search(header) or pattern.search(compact_header):
+            if label == "卷宗封面" and "卷宗影本" in compact_header and "卷宗封面" not in compact_header:
+                continue
             normalized = _normalize_doc_type(label, header)
             return normalized or label, level
 
@@ -501,12 +776,58 @@ def _ocr_page(page) -> str:
 # 核心：掃描 + 建立書籤
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _is_in_place_output(pdf_path: str, output_path: Optional[str] = None) -> bool:
+    if not output_path:
+        return True
+    try:
+        return Path(output_path).expanduser().resolve() == Path(pdf_path).expanduser().resolve()
+    except Exception:
+        return os.path.abspath(output_path) == os.path.abspath(pdf_path)
+
+
 def scan_and_bookmark(
     pdf_path: str,
     output_path: Optional[str] = None,
     dry_run: bool = False,
     default_name: str = "",
     min_text_len: int = 30,
+    rebuild_existing: bool = False,
+) -> dict:
+    if (
+        os.path.exists(pdf_path)
+        and not dry_run
+        and _is_in_place_output(pdf_path, output_path)
+    ):
+        with pdf_in_place_mutation_lock(
+            owner="pdf-bookmarker.scan_and_bookmark",
+            pdf_path=pdf_path,
+            blocking=True,
+        ):
+            return _scan_and_bookmark_impl(
+                pdf_path,
+                output_path=output_path,
+                dry_run=dry_run,
+                default_name=default_name,
+                min_text_len=min_text_len,
+                rebuild_existing=rebuild_existing,
+            )
+    return _scan_and_bookmark_impl(
+        pdf_path,
+        output_path=output_path,
+        dry_run=dry_run,
+        default_name=default_name,
+        min_text_len=min_text_len,
+        rebuild_existing=rebuild_existing,
+    )
+
+
+def _scan_and_bookmark_impl(
+    pdf_path: str,
+    output_path: Optional[str] = None,
+    dry_run: bool = False,
+    default_name: str = "",
+    min_text_len: int = 30,
+    rebuild_existing: bool = False,
 ) -> dict:
     """
     Scan PDF and generate bookmarks.
@@ -528,6 +849,7 @@ def scan_and_bookmark(
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 304, exc_info=True)
 
     existing_toc = doc.get_toc() or []
+    effective_rebuild_existing = rebuild_existing or _existing_toc_needs_rebuild(existing_toc)
     toc: list[list] = []
     page_count = doc.page_count
 
@@ -544,6 +866,8 @@ def scan_and_bookmark(
     _GROUPABLE_TYPES = {"送達證書", "傳票", "提票", "報到單", "收發文"}
 
     logger.info(f"掃描 {Path(pdf_path).name}（{page_count} 頁，現有書籤 {len(existing_toc)} 個）...")
+    if effective_rebuild_existing and existing_toc and not rebuild_existing:
+        logger.info("  既有書籤疑似含重複噪音日期，將自動重建。")
 
     page_texts = []
     meaningful_counts = []
@@ -573,6 +897,48 @@ def scan_and_bookmark(
             pass
     except Exception:
         logger.debug("Failed to write OLA stats", exc_info=True)
+
+    if _is_standalone_transcript_pdf(pdf_path):
+        first_text = page_texts[0] if page_texts else ""
+        doc_type, _level = _detect_doc_type(first_text, in_prior_record=False)
+        roc_date = _extract_roc_date(first_text)
+        name = _extract_party(first_text, default_name)
+        parts = []
+        if roc_date:
+            parts.append(roc_date)
+        parts.append(doc_type or "筆錄")
+        if name:
+            parts.append(name)
+        label = " ".join(parts) or _single_doc_bookmark_title(Path(pdf_path))
+        if callable(validate_bookmark):
+            ok, warns = validate_bookmark(label)
+            if not ok:
+                logger.warning("bookmark format guard: %s → %s", label, warns)
+        toc = [[1, label, 1]]
+        if not dry_run:
+            doc.set_toc(toc)
+            out = output_path or pdf_path
+            if out == pdf_path:
+                temp = pdf_path + ".tmp.pdf"
+                doc.save(temp, garbage=4, deflate=True)
+                doc.close()
+                os.replace(temp, pdf_path)
+            else:
+                doc.save(out, garbage=4, deflate=True)
+                doc.close()
+            logger.info(f"完成：1 個筆錄書籤 → {Path(out).name}")
+        else:
+            doc.close()
+            logger.info("Dry run：1 個筆錄書籤")
+        return {
+            "success": True,
+            "bookmarks": 1,
+            "toc": toc,
+            "generated_toc": toc,
+            "classification": "standalone_transcript",
+            "classification_reason": "path_or_filename_transcript_single_doc",
+            "message": "成功建立 1 個筆錄書籤",
+        }
 
     def _flush_group():
         """Flush accumulated consecutive same-type bookmarks into one grouped entry."""
@@ -711,10 +1077,37 @@ def scan_and_bookmark(
             detected_doc_types=detected_doc_types,
             page_texts=page_texts,
         )
-        doc.close()
         msg = f"未偵測到文件邊界，無法產生書籤（{Path(pdf_path).name}）"
         if classification == "legitimate_single_doc":
             msg = f"{msg}；判定為單一文件（{reason}）"
+        elif classification == "filename_bookmark_fallback":
+            msg = f"{msg}；判定可用檔名建立 page-1 書籤（{reason}）"
+        if classification in {"legitimate_single_doc", "filename_bookmark_fallback"}:
+            label = _single_doc_bookmark_title(Path(pdf_path), default_name)
+            toc = [[1, label, 1]]
+            if not dry_run:
+                doc.set_toc(toc)
+                out = output_path or pdf_path
+                if out == pdf_path:
+                    temp = pdf_path + ".tmp.pdf"
+                    doc.save(temp, garbage=4, deflate=True)
+                    doc.close()
+                    os.replace(temp, pdf_path)
+                else:
+                    doc.save(out, garbage=4, deflate=True)
+                    doc.close()
+            else:
+                doc.close()
+            return {
+                "success": True,
+                "bookmarks": 1,
+                "toc": toc,
+                "generated_toc": toc,
+                "classification": classification,
+                "classification_reason": reason,
+                "message": f"{msg}；已建立 page-1 書籤",
+            }
+        doc.close()
         logger.warning(msg)
         return {
             "success": False,
@@ -727,12 +1120,13 @@ def scan_and_bookmark(
         }
 
     # Merge with existing TOC if any (keep existing, append new non-overlapping)
-    if existing_toc:
+    if existing_toc and not effective_rebuild_existing:
         existing_pages = {entry[2] for entry in existing_toc}
         new_entries = [e for e in toc if e[2] not in existing_pages]
         merged = existing_toc + new_entries
         merged.sort(key=lambda x: x[2])
         toc = merged
+    toc = _normalize_toc_hierarchy(toc)
 
     if not dry_run:
         doc.set_toc(toc)
@@ -765,7 +1159,7 @@ def scan_and_bookmark(
 # 批次處理
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def batch_process(folder: str, recursive: bool = True, dry_run: bool = False) -> str:
+def batch_process(folder: str, recursive: bool = True, dry_run: bool = False, rebuild_existing: bool = False) -> str:
     """Process all PDFs in a folder."""
     folder_path = Path(folder)
     if not folder_path.is_dir():
@@ -791,11 +1185,12 @@ def batch_process(folder: str, recursive: bool = True, dry_run: bool = False) ->
             page_count = doc.page_count
             doc.close()
 
-            if len(existing) >= max(3, page_count // 15):
+            stale_existing = _existing_toc_needs_rebuild(existing)
+            if (not rebuild_existing) and (not stale_existing) and len(existing) >= max(3, page_count // 15):
                 skipped += 1
                 continue
 
-            result = scan_and_bookmark(str(pdf), dry_run=dry_run)
+            result = scan_and_bookmark(str(pdf), dry_run=dry_run, rebuild_existing=(rebuild_existing or stale_existing))
             if result["success"]:
                 total += 1
                 total_bookmarks += result["bookmarks"]
@@ -923,6 +1318,7 @@ def main():
     parser.add_argument("--output", help="輸出路徑（預設覆寫原檔）")
     parser.add_argument("--case-name", default="", help="當事人姓名（輔助辨識）")
     parser.add_argument("--dry-run", action="store_true", help="只顯示不寫入")
+    parser.add_argument("--rebuild-existing", action="store_true", help="重建既有書籤；用於清除舊規則誤標")
     parser.add_argument("--no-recursive", action="store_true", help="batch 時不遞迴")
     args = parser.parse_args()
 
@@ -935,6 +1331,7 @@ def main():
             output_path=args.output,
             dry_run=args.dry_run,
             default_name=args.case_name,
+            rebuild_existing=args.rebuild_existing,
         )
         print(result["message"])
         if args.dry_run and result["toc"]:
@@ -947,7 +1344,12 @@ def main():
         if not args.path:
             print("ERROR: --path is required")
             return 1
-        print(batch_process(args.path, recursive=not args.no_recursive, dry_run=args.dry_run))
+        print(batch_process(
+            args.path,
+            recursive=not args.no_recursive,
+            dry_run=args.dry_run,
+            rebuild_existing=args.rebuild_existing,
+        ))
         return 0
 
     elif args.task == "show":
@@ -960,7 +1362,12 @@ def main():
     elif args.task == "test":
         # Run on a sample file
         if args.path:
-            result = scan_and_bookmark(args.path, dry_run=True)
+            result = scan_and_bookmark(
+                args.path,
+                dry_run=True,
+                default_name=args.case_name,
+                rebuild_existing=args.rebuild_existing,
+            )
             print(result["message"])
             if result["toc"]:
                 for level, title, pg in result["toc"]:

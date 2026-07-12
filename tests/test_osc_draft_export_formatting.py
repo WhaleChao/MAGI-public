@@ -35,6 +35,7 @@ def test_export_form_docx_uses_pleading_layout(tmp_path, monkeypatch):
     from api import startup
 
     monkeypatch.setattr(startup, "EXPORTS_DIR", str(tmp_path))
+    monkeypatch.setenv("MAGI_PLEADING_STYLE_SCAN_NAS", "0")
     text = """```text
 # 民事準備書狀
 案號：113年度訴字第100號　股別：義股
@@ -56,8 +57,9 @@ def test_export_form_docx_uses_pleading_layout(tmp_path, monkeypatch):
     paragraphs = [p for p in doc.paragraphs if p.text.strip()]
     assert paragraphs[0].text == "民事準備書狀"
     assert paragraphs[0].alignment == 1  # CENTER
-    assert round(doc.sections[0].left_margin.cm, 1) == 1.8
-    assert round(doc.sections[0].right_margin.cm, 1) == 1.8
+    assert round(doc.sections[0].top_margin.cm, 1) == 2.5
+    assert round(doc.sections[0].left_margin.cm, 1) == 3.2
+    assert round(doc.sections[0].right_margin.cm, 1) == 3.2
     assert doc.tables
     table_text = "\n".join(cell.text for row in doc.tables[0].rows for cell in row.cells)
     assert "案號" in table_text
@@ -141,3 +143,17 @@ def test_export_osc_form_files_prefers_pdf_converted_from_docx(tmp_path, monkeyp
     assert result["success"] is True
     assert result["export_pdf"]["renderer"] == "libreoffice"
     assert result["export_pdf"]["source_docx"] == str(docx_path)
+
+
+def test_export_file_meta_falls_back_to_relative_download_url(tmp_path, monkeypatch):
+    from api import startup
+
+    out = tmp_path / "example.docx"
+    out.write_bytes(b"docx")
+
+    monkeypatch.setattr(startup, "_load_public_base_url", lambda: "")
+
+    meta = startup._export_file_meta(str(out))
+
+    assert meta["success"] is True
+    assert meta["url"].startswith("/api/osc/files/content?path=")

@@ -9,6 +9,10 @@ import os
 from contextlib import contextmanager
 from typing import Any, Dict, Generator, Optional
 
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+install_mysql_cext_blocker()
+patch_mysql_connector_for_stability()
 import mysql.connector
 
 

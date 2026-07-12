@@ -18,7 +18,7 @@ _trigger = _mod._trigger_osc_sync_if_applicable
 
 
 def test_quick_filter_skips_when_no_deadline_in_filename():
-    """檔名無「N日內XX」→ _trigger_osc_sync_if_applicable 不呼叫 sync"""
+    """檔名無 OSC 待辦線索 → _trigger_osc_sync_if_applicable 不呼叫 sync"""
     called = []
 
     def _fake_sync(path):
@@ -63,6 +63,36 @@ def test_quick_filter_triggers_when_deadline_present():
             )
 
     assert len(called) == 1, "含期限的檔名應觸發 sync"
+
+
+def test_quick_filter_triggers_when_hearing_present():
+    """檔名含開庭/調解等原 OSC 期日線索 → 也會呼叫 sync"""
+    called = []
+
+    import importlib.util as _ilu
+
+    _real_spec = _ilu.spec_from_file_location
+
+    def _patched_spec(name, path, *args, **kwargs):
+        if "smart_filer" in (name or ""):
+            spec = MagicMock()
+
+            def exec_mod(mod):
+                mod.sync_osc_todos_for_path = lambda p: called.append(p) or {"success": True}
+
+            spec.loader.exec_module = exec_mod
+            return spec
+        return _real_spec(name, path, *args, **kwargs)
+
+    with patch.dict(os.environ, {"PDF_NAMER_OSC_TODO_SYNC": "1"}):
+        with patch("importlib.util.spec_from_file_location", side_effect=_patched_spec):
+            _trigger(
+                "/Volumes/homes/lumi63181107/01_案件/一般案件/刑事/2026-0034-陳建華/"
+                "20260514 臺東地方檢察署115年度偵字第9號開庭通知（陳建華；訂115年5月27日早上10時40分開庭）.pdf",
+                {},
+            )
+
+    assert len(called) == 1, "含期日的法院通知檔名應觸發 sync"
 
 
 def test_feature_flag_off_skips_trigger():

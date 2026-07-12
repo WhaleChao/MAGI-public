@@ -36,6 +36,39 @@ python action.py --task show --path "/path/to/volume.pdf"
 python action.py --task batch --path "/path/to/06_閱卷資料/"
 ```
 
+## 批次流程守則
+
+週末與夜間批次由 `scripts/weekend_bookmark_batch.py` 控制，分成三個明確階段，避免大卷宗或掃描檔拖垮 MAGI：
+
+1. Stage 1 regex：只做可預期的文字邊界偵測，預設關閉 Vision fallback。
+2. OCR follow-up：文字層不足、只有浮水印或大型掃描卷宗，寫入 `~/.magi_nas_ocr_queue.db`，由 OCR worker 離峰處理。
+3. Stage 2 vision：只針對小量仍無法判斷的文件補漏，不在 Stage 1 中逐頁呼叫推論服務。
+
+常用批次參數：
+
+```bash
+python scripts/weekend_bookmark_batch.py \
+  --stage regex \
+  --single-doc-fastpath \
+  --skip-large-non-ocr \
+  --defer-large-ocr-pages 350 \
+  --file-timeout-sec 90 \
+  --write-followup-plan \
+  --enqueue-ocr-followups
+```
+
+輸出檢查：
+
+- `.runtime/bookmark_followup_plan_latest.json`：所有無邊界、需 OCR、逾時或待人工複核檔案的下一步。
+- `~/.magi_nas_ocr_queue.db`：OCR worker 的待處理佇列。
+- 報表中的 `no_boundary` 應趨近 0；真正掃描檔應顯示為 `ocr_then_bookmark`，不能靜默卡住。
+
+排程：
+
+- `job_nightly_bookmark_regex`：每日 02:15 建書籤並排 OCR follow-up。
+- `job_weekend_bookmark`：週六 03:15 跑完整 regex + OCR follow-up + vision 補漏。
+- `job_nas_pdf_ocr_worker_offpeak`：01:45、03:45、05:45、22:45 每次處理 1 份 OCR，資源不足會自動略過。
+
 ## 書籤格式
 
 ```
@@ -84,6 +117,8 @@ python action.py --task batch --path "/path/to/06_閱卷資料/"
 | Flag | 預設 | 說明 |
 |------|------|------|
 | `MAGI_BOOKMARKER_VISION_FALLBACK` | `1`（已開啟） | DOC_PATTERNS 全未命中時呼叫 `doc_type_detector`，信心 ≥ 0.60 採用 |
+
+註：上表是單檔 `action.py` 的預設。`weekend_bookmark_batch.py` 的 Stage 1 會預設覆寫為 `MAGI_BOOKMARKER_VISION_FALLBACK=0`，確保批次任務不會因大型卷宗逐頁呼叫推論服務而卡死。
 
 ### 相關檔案
 

@@ -301,6 +301,7 @@ def _transcript_postprocess(text: str) -> str:
         "品質閘門": "品質閘門",
         "法符": "法扶",
         "閲卷": "閱卷",
+        "申請調查證據": "聲請調查證據",
     }
     for src, dst in replacements.items():
         s = s.replace(src, dst)

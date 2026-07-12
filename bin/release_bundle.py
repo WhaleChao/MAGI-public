@@ -39,7 +39,6 @@ SAFE_ROOT_FILES = (
 
 SAFE_GENERIC_DIRS = (
     "api",
-    "bin",
     "docs",
     "migrations",
     "scripts",
@@ -49,8 +48,18 @@ SAFE_GENERIC_DIRS = (
 
 SAFE_SPECIAL_DIRS = (
     "casper_ecosystem",
+    "bin",
     "json",
     "static",
+)
+
+SAFE_BIN_FILES = (
+    "__init__.py",
+    "_runtime.py",
+    "check.py",
+    "cli.py",
+    "release_bundle.py",
+    "start.py",
 )
 
 SANITIZED_JSON_EXAMPLES = {
@@ -182,18 +191,29 @@ GLOBAL_EXCLUDED_FILE_PREFIXES = (
 )
 
 GLOBAL_EXCLUDED_FILE_SUFFIXES = (
+    ".a",
+    ".app",
+    ".bin",
     ".db",
     ".db-shm",
     ".db-wal",
+    ".dmg",
+    ".dll",
+    ".dylib",
+    ".exe",
     ".invalid_20260216_170511",
     ".lock",
     ".log",
+    ".o",
+    ".pkg",
     ".pickle",
     ".pid",
     ".pyc",
     ".pyo",
+    ".so",
     ".sqlite",
     ".sqlite3",
+    ".zip",
 )
 
 GLOBAL_EXCLUDED_FILE_CONTAINS = (
@@ -383,6 +403,18 @@ def _copy_generic_tree(source_root: Path, bundle_root: Path, top_level_name: str
             _copy_file(src_file, dst_file, copied=copied)
 
 
+def _copy_bin_tree(source_root: Path, bundle_root: Path, *, copied: list[int]) -> None:
+    src_root = source_root / "bin"
+    if not src_root.is_dir():
+        return
+    dst_root = bundle_root / "bin"
+    for filename in SAFE_BIN_FILES:
+        rel = PurePosixPath("bin") / filename
+        src_file = src_root / filename
+        if src_file.is_file() and not _should_skip_file(rel):
+            _copy_file(src_file, dst_root / filename, copied=copied)
+
+
 def _copy_static_tree(source_root: Path, bundle_root: Path, *, copied: list[int]) -> None:
     src_root = source_root / "static"
     if not src_root.is_dir():
@@ -471,6 +503,7 @@ def _write_manifest(bundle_root: Path, *, version: str, files_copied: int, gener
             "safe_root_files": list(SAFE_ROOT_FILES),
             "safe_generic_dirs": list(SAFE_GENERIC_DIRS),
             "safe_special_dirs": list(SAFE_SPECIAL_DIRS),
+            "safe_bin_files": list(SAFE_BIN_FILES),
         },
     }
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -524,6 +557,7 @@ def build_release_bundle(
     for dirname in SAFE_GENERIC_DIRS:
         _copy_generic_tree(source_root, bundle_root, dirname, copied=copied)
 
+    _copy_bin_tree(source_root, bundle_root, copied=copied)
     _copy_casper_ecosystem(source_root, bundle_root, copied=copied)
     _copy_json_tree(source_root, bundle_root, copied=copied, generated_files=generated_files)
     _copy_static_tree(source_root, bundle_root, copied=copied)

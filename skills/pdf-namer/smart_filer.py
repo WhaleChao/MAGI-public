@@ -33,6 +33,15 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    LEGACY_JUDGMENT_FOLDER_LABEL,
+    judgment_folder_matches,
+    is_judgment_folder_segment,
+    sort_judgment_folders_first,
+    strip_number_prefix,
+)
+
 from api.runtime_paths import ensure_orch_on_sys_path, get_orch_dir
 from api.case_path_mapper import (
     default_scan_roots,
@@ -60,6 +69,15 @@ SCAN_NONAME  = os.path.join(SCAN_ROOT, "04_程式無法命名區")
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_PATH = os.path.join(SKILL_DIR, "_case_index.json")
 FILING_LOG_PATH = os.path.join(SKILL_DIR, "_filing_log.json")
+_LISTDIR_TIMEOUT_SEC = float(os.environ.get("PDF_NAMER_CASE_INDEX_LISTDIR_TIMEOUT_SEC", "8") or "8")
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
 
 # Filing confidence threshold — anything below goes to failure zone
 # Load threshold from nightly training auto-adjustment (closed feedback loop)
@@ -78,6 +96,25 @@ OSC_ORCH_PY = os.environ.get("MAGI_SKILL_PYTHON", f"{_MAGI_ROOT}/venv/bin/python
 
 CODE_DIR = str(get_orch_dir())
 
+
+def _safe_listdir(path: str, *, timeout_sec: float = _LISTDIR_TIMEOUT_SEC) -> List[str]:
+    """Bound directory listing so stale NAS/CloudStorage folders cannot hang case indexing."""
+    if not path or not os.path.isdir(path):
+        return []
+    try:
+        result = subprocess.run(
+            ["/bin/ls", "-1", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(1, timeout_sec),
+        )
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line]
+    except Exception:
+        return []
+
 def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
     """
     Best-effort：將歸檔/命名/比對結果寫入向量記憶，便於日後對話查詢/追溯。
@@ -94,7 +131,7 @@ def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] 
 DOC_TYPE_TO_SUBFOLDER = {
     # pdf-namer doc_type → subfolder name keyword (matches XX_ prefix stripped)
     # ── 法院裁判 ──
-    "判決":     "判決書",
+    "判決":     JUDGMENT_FOLDER_LABEL,
     "支付命令": "法院通知或程序裁定",
     "裁定":     "法院通知或程序裁定",
     # ── 法院通知 ──
@@ -110,7 +147,8 @@ DOC_TYPE_TO_SUBFOLDER = {
     "傳票":     "法院通知或程序裁定",
     # ── 檢察機關 ──
     "起訴書":   "法院通知或程序裁定",
-    "不起訴處分書": "法院通知或程序裁定",
+    "不起訴處分書": JUDGMENT_FOLDER_LABEL,
+    "緩起訴處分書": JUDGMENT_FOLDER_LABEL,
     "聲請簡易判決處刑書": "法院通知或程序裁定",
     # ── 書狀 ──
     "書狀_我方": "我方歷次書狀",
@@ -156,10 +194,100 @@ DOC_TYPE_TO_SUBFOLDER = {
     "契約":     "回執",
 }
 
+_TERMINAL_RULING_MARKERS = (
+    "終局裁定",
+    "免責裁定",
+    "不免責裁定",
+    "復權裁定",
+    "清算程序終結",
+    "清算程序終止",
+    "更生之聲請駁回",
+    "更生聲請駁回",
+    "清算之聲請駁回",
+    "清算聲請駁回",
+    "聲請駁回裁定",
+    "抗告駁回裁定",
+    "上訴駁回裁定",
+)
+
+_TERMINAL_DISPOSITION_MARKERS = (
+    "不起訴處分",
+    "緩起訴處分",
+    "再議駁回處分",
+    "撤銷緩起訴處分",
+)
+
+
+def _doc_type_targets_judgment_folder(doc_type: str) -> bool:
+    compact = re.sub(r"\s+", "", str(doc_type or ""))
+    if not compact:
+        return False
+    if "判決" in compact:
+        return True
+    if any(marker in compact for marker in _TERMINAL_RULING_MARKERS):
+        return True
+    if any(marker in compact for marker in _TERMINAL_DISPOSITION_MARKERS):
+        return True
+    return False
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  CASE INDEX
 # ════════════════════════════════════════════════════════════════════════════
+
+def _canonicalize_case_index_subfolders(entry: Dict) -> Dict:
+    """Normalize cached legacy judgment folder names without mutating callers."""
+    out = dict(entry or {})
+    normalized = []
+    seen = set()
+    for raw in list(out.get("subfolders") or []):
+        name = str(raw or "")
+        clean = strip_number_prefix(name)
+        if clean == LEGACY_JUDGMENT_FOLDER_LABEL:
+            m = re.match(r"^(\d+)_", name)
+            name = f"{int(m.group(1)):02d}_{JUDGMENT_FOLDER_LABEL}" if m else JUDGMENT_FOLDER_LABEL
+        if name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    out["subfolders"] = normalized
+    return out
+
+
+def _canonicalize_case_index(index: List[Dict]) -> List[Dict]:
+    return [
+        _canonicalize_case_index_subfolders(entry)
+        for entry in (index or [])
+        if not _is_synthetic_case_index_entry(entry)
+    ]
+
+
+def _is_synthetic_case_text(text: str, *, require_case_like: bool = False) -> bool:
+    raw = str(text or "").strip()
+    lowered = raw.lower()
+    if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+        return True
+    if require_case_like and not _CASE_FOLDER_RE.match(raw):
+        return False
+    return any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS)
+
+
+def _is_synthetic_case_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    return any(_is_synthetic_case_text(part, require_case_like=True) for part in parts)
+
+
+def _is_synthetic_case_index_entry(entry: Dict) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    parties = " ".join(str(x) for x in (entry.get("parties") or []))
+    return (
+        _is_synthetic_case_text(str(entry.get("folder_name") or ""), require_case_like=True)
+        or _is_synthetic_case_text(str(entry.get("case_id") or ""))
+        or _is_synthetic_case_path(str(entry.get("path") or ""))
+        or _is_synthetic_case_text(parties)
+    )
+
 
 def build_case_index(force_rebuild: bool = False) -> List[Dict]:
     """
@@ -170,33 +298,36 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
         age = time.time() - os.path.getmtime(INDEX_PATH)
         if age < 3600:  # Cache valid for 1 hour
             with open(INDEX_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return _canonicalize_case_index(json.load(f))
 
     index = []
     if not os.path.isdir(CASE_ROOT):
         logger.warning(f"案件根目錄不存在: {CASE_ROOT}")
         return index
 
-    for case_type in os.listdir(CASE_ROOT):
+    for case_type in _safe_listdir(CASE_ROOT):
         type_path = os.path.join(CASE_ROOT, case_type)
         if not os.path.isdir(type_path) or case_type.startswith("."):
             continue
 
-        for domain in os.listdir(type_path):
+        for domain in _safe_listdir(type_path):
             domain_path = os.path.join(type_path, domain)
             if not os.path.isdir(domain_path) or domain.startswith("."):
                 continue
 
-            for case_folder in os.listdir(domain_path):
+            for case_folder in _safe_listdir(domain_path):
                 case_path = os.path.join(domain_path, case_folder)
                 if not os.path.isdir(case_path) or case_folder.startswith("."):
+                    continue
+                if _is_synthetic_case_text(case_folder, require_case_like=True) or _is_synthetic_case_path(case_path):
+                    logger.info("Skip synthetic/test case folder from pdf-namer index: %s", case_path)
                     continue
 
                 parsed = _parse_case_folder(case_folder)
 
                 # List subfolders
                 subfolders = []
-                for sf in os.listdir(case_path):
+                for sf in _safe_listdir(case_path):
                     sf_path = os.path.join(case_path, sf)
                     if os.path.isdir(sf_path) and not sf.startswith("."):
                         subfolders.append(sf)
@@ -212,7 +343,7 @@ def build_case_index(force_rebuild: bool = False) -> List[Dict]:
                     "seq": parsed["seq"],
                     "stage": parsed["stage"],
                     "reason": parsed["reason"],
-                    "subfolders": subfolders,
+                    "subfolders": _canonicalize_case_index_subfolders({"subfolders": subfolders})["subfolders"],
                 }
                 index.append(entry)
 
@@ -467,8 +598,13 @@ def _find_subfolder(case: Dict, doc_type: str) -> str:
     """
     target_keyword = ""
 
+    # Terminal judgments/rulings/dispositions override stale DB rules that used
+    # to send every 裁定/處分 into the procedural notice folder.
+    if _doc_type_targets_judgment_folder(doc_type):
+        target_keyword = JUDGMENT_FOLDER_LABEL
+
     # Tier 1: Look up archive_destination_type from MariaDB doc_rules
-    if doc_type:
+    if doc_type and not target_keyword:
         try:
             from training_loader import get_template_for_doc_type
             rule = get_template_for_doc_type(doc_type)
@@ -484,10 +620,14 @@ def _find_subfolder(case: Dict, doc_type: str) -> str:
     if not target_keyword:
         return ""
 
-    for sf in case.get("subfolders", []):
+    subfolders = list(case.get("subfolders", []))
+    if is_judgment_folder_segment(target_keyword):
+        subfolders = sort_judgment_folders_first(subfolders)
+
+    for sf in subfolders:
         # Strip number prefix (e.g., "09_法院通知或程序裁定" → "法院通知或程序裁定")
-        clean = re.sub(r'^\d+_', '', sf)
-        if target_keyword in clean or clean in target_keyword:
+        clean = strip_number_prefix(sf)
+        if judgment_folder_matches(target_keyword, clean):
             return sf
     return ""
 
@@ -852,6 +992,24 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
         return
     if not os.path.exists(OSC_ORCH_PATH):
         return
+    try:
+        from scripts.ops.background_task_locks import OSC_REFRESH_LOCK_NAME, acquire_lock
+    except Exception:
+        osc_sync_lock = None
+    else:
+        osc_sync_lock = acquire_lock(
+            OSC_REFRESH_LOCK_NAME,
+            owner="pdf_namer_best_effort_osc_sync",
+            kind="best_effort",
+            blocking=False,
+        )
+        if not osc_sync_lock.acquired:
+            logger.info(
+                "OSC todo/GCal best-effort sync skipped; refresh lock held by %s pid=%s",
+                (osc_sync_lock.active_owner or {}).get("owner") or "?",
+                (osc_sync_lock.active_owner or {}).get("pid") or "?",
+            )
+            return
 
     case_folder_name = ((match or {}).get("case_info") or {}).get("folder_name") or ""
     m = re.search(r"(\d{4}-\d{4})", case_folder_name)
@@ -919,6 +1077,9 @@ def _best_effort_sync_osc_todos(filed_path: str, match: Dict, analysis: Dict) ->
 
     except Exception as e:
         logger.warning(f"OSC 待辦/日曆同步呼叫失敗: {e}")
+    finally:
+        if osc_sync_lock is not None:
+            osc_sync_lock.release()
 
 
 def _push_discord_pdf_filing(case_folder_name: str, file_name: str) -> None:

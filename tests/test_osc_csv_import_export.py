@@ -64,6 +64,7 @@ def test_cases_import_route_registered(app):
     rules = [str(r) for r in app.url_map.iter_rules()]
     assert "/api/osc/cases/import-csv" in rules
     assert "/api/osc/cases/export-csv" in rules
+    assert "/api/osc/cases/export-xlsx" in rules
     assert "/api/osc/clients/import-csv" in rules
     assert "/api/osc/clients/export-csv" in rules
 
@@ -171,6 +172,35 @@ def test_cases_import_blank_case_number_uses_osc_number(client):
     assert not params[1].startswith("web-csv-")
 
 
+def test_cases_import_strips_suspected_marker_from_reason(client):
+    csv_bytes = _make_csv(
+        [{"案件編號": "2026-0071", "當事人": "李滿金", "案由": "涉詐欺、洗錢防制法", "狀態": "進行中"}],
+        fieldnames=["案件編號", "當事人", "案由", "狀態"],
+    )
+    inserted = {}
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        sql_upper = sql.strip().upper()
+        if "SELECT ID FROM CASES WHERE CASE_NUMBER" in sql_upper:
+            return (None, None)
+        if "INSERT INTO CASES" in sql_upper:
+            inserted["params"] = params
+            return ({"affectedRows": 1}, None)
+        return (None, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        data = {"file": (io.BytesIO(csv_bytes), "cases.csv", "text/csv")}
+        r = client.post(
+            "/api/osc/cases/import-csv",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    assert r.get_json()["imported"] == 1
+    assert inserted["params"][7] == "詐欺、洗錢防制法"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 5. Cases export — returns CSV with correct content type
 # ──────────────────────────────────────────────────────────────────────────────
@@ -202,6 +232,32 @@ def test_cases_export_returns_csv(client):
     content = r.data.decode("utf-8-sig")
     assert "當事人" in content
     assert "陳大文" in content
+
+
+def test_cases_export_returns_xlsx_sorted_by_case_number(client):
+    from openpyxl import load_workbook
+
+    captured = []
+    fake_rows = [
+        {"case_number": "C-002", "client_name": "乙", "case_type": "民事", "status": "進行中"},
+        {"case_number": "C-001", "client_name": "甲", "case_type": "刑事", "status": "已結案"},
+    ]
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        captured.append(sql)
+        return (fake_rows, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases/export-xlsx")
+
+    assert r.status_code == 200
+    assert "spreadsheet" in r.content_type.lower()
+    wb = load_workbook(io.BytesIO(r.data))
+    ws = wb.active
+    assert ws.title == "案件資料"
+    assert ws["A1"].value == "案件編號"
+    assert ws["A2"].value == "C-002"
+    assert any("ORDER BY case_number ASC" in " ".join(sql.split()) for sql in captured)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -246,6 +302,39 @@ def test_clients_import_skips_duplicates(client):
     assert body["ok"] is True
     assert body["imported"] == 1
     assert body["skipped"] == 1
+
+
+def test_clients_import_uses_original_osc_client_id_sequence(client):
+    csv_bytes = _make_csv(
+        [{"姓名": "王五", "電話": "0912345678"}],
+        fieldnames=["姓名", "電話"],
+    )
+    inserted = {}
+
+    def fake_exec(sql, params=(), fetch="all", **kw):
+        sql_upper = sql.strip().upper()
+        if "SELECT ID FROM CLIENTS WHERE NAME" in sql_upper:
+            return (None, None)
+        if "SELECT ID FROM CLIENTS WHERE ID LIKE" in sql_upper:
+            return ([{"id": "C0160"}, {"id": "C775F05FA"}, {"id": "C7023687"}], None)
+        if "INSERT INTO CLIENTS" in sql_upper:
+            inserted["params"] = params
+            return ({"affectedRows": 1}, None)
+        return (None, None)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), patch(
+        "api.blueprints.osc_cases.generate_next_client_id",
+        return_value="C0161",
+    ):
+        data = {"file": (io.BytesIO(csv_bytes), "clients.csv", "text/csv")}
+        r = client.post(
+            "/api/osc/clients/import-csv",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+    assert r.status_code == 200
+    assert inserted["params"][0] == "C0161"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

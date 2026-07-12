@@ -8,6 +8,11 @@ def test_create_base_app_applies_cookie_hardening(monkeypatch):
 
     monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
     monkeypatch.delenv("MAGI_FORCE_HTTPS", raising=False)
+    monkeypatch.delenv("MAGI_SECURE_COOKIES", raising=False)
+    monkeypatch.delenv("MAGI_DEPLOYMENT_MODE", raising=False)
+    monkeypatch.delenv("MAGI_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("MAGI_BASE_URL", raising=False)
+    monkeypatch.delenv("MAGI_EXTERNAL_BASE_URL", raising=False)
 
     app = app_factory.create_base_app()
 
@@ -38,6 +43,26 @@ def test_create_base_app_requires_secret(monkeypatch):
         app_factory.create_base_app()
 
 
+def test_create_base_app_blocks_sensitive_static_files(monkeypatch):
+    from api import app_factory
+
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+    app = app_factory.create_base_app()
+    client = app.test_client()
+
+    assert app_factory._is_sensitive_static_request("/static/exports/report.pdf") is True
+    assert app_factory._is_sensitive_static_request("/static/exports") is True
+    assert app_factory._is_sensitive_static_request("/static/process_guardian_state.json") is True
+    assert app_factory._is_sensitive_static_request("/static/file_review_auto_state.json") is True
+    assert app_factory._is_sensitive_static_request("/static/osc/osc-utils.js") is False
+
+    blocked = client.get("/static/file_review_auto_state.json")
+    allowed = client.get("/static/osc/osc-utils.js")
+
+    assert blocked.status_code == 404
+    assert allowed.status_code == 200
+
+
 def test_init_login_manager_sets_login_view(monkeypatch):
     from api import app_factory
 
@@ -61,8 +86,11 @@ def test_register_core_blueprints_exposes_dashboard_routes(monkeypatch):
     assert "/dashboard" in routes
     assert "/dashboard/nerv" in routes
     assert "/magi-adjust" in routes
+    assert "/research/judgment-classifier" in routes
     assert "/golem" in routes
     assert "/api/golem/status" in routes
+    assert "/api/osc/raziel/status" in routes
+    assert "/api/osc/raziel/delivery" in routes
     assert "/intel" in routes
     assert "/openclaw" not in routes
 
@@ -80,11 +108,22 @@ def test_server_registers_runtime_blueprint_routes():
     assert "/api/osc/chat" in routes
     assert "/api/osc/poll" in routes
     assert "/api/osc/judgments_legacy" in routes
+    assert "/api/osc/raziel/status" in routes
     assert "/dashboard/nerv/api/health" in routes
     assert "/api/system-test" in routes
     assert "/api/self-repair" in routes
     assert "/api/nerv/skills" in routes
     assert "/api/status" in routes
     assert "/api/live-log" in routes
+    assert "/livez" in routes
+    assert "/readyz" in routes
     assert "/health" in routes
     assert "/api/transcribe" in routes
+
+
+def test_root_route_redirects_to_dashboard(monkeypatch):
+    from api import server
+
+    response = server.app.test_client().get("/")
+    assert response.status_code in {301, 302}
+    assert "/dashboard" in response.headers.get("Location", "")

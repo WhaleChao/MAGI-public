@@ -1,6 +1,11 @@
 from api.osc.accounting_sheet_import import (
     AccountingSheetRow,
+    DEFAULT_ACCOUNT_HINT,
+    _default_credentials_path,
+    _default_token_path,
+    _persist_google_credentials,
     fixed_expense_overlap_details,
+    is_revoked_google_token_error,
     month_window,
     parse_date,
     parse_sheet_values,
@@ -14,6 +19,37 @@ def test_month_window_current_and_previous():
     assert key == "2026-05"
     assert start.isoformat() == "2026-05-01"
     assert end.isoformat() == "2026-05-31"
+
+
+def test_revoked_google_token_error_detection():
+    assert is_revoked_google_token_error(Exception("invalid_grant: Token has been expired or revoked."))
+    assert not is_revoked_google_token_error(Exception("quota exceeded"))
+
+
+def test_accounting_google_env_paths_are_isolated(monkeypatch):
+    monkeypatch.delenv("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN", raising=False)
+    monkeypatch.setenv("MAGI_GOOGLE_CREDENTIALS_PATH", "/shared/google_credentials.json")
+    monkeypatch.setenv("MAGI_GOOGLE_SHEETS_TOKEN", "/shared/sheets_token.json")
+    assert str(_default_credentials_path()) == "/shared/google_credentials.json"
+    assert str(_default_token_path()) == "/shared/sheets_token.json"
+
+    monkeypatch.setenv("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH", "/accounting/credentials.json")
+    monkeypatch.setenv("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN", "/accounting/token.json")
+    assert str(_default_credentials_path()) == "/accounting/credentials.json"
+    assert str(_default_token_path()) == "/accounting/token.json"
+
+
+def test_accounting_google_token_persist_is_atomic_and_private(tmp_path):
+    class FakeCreds:
+        def to_json(self):
+            return '{"token":"new","refresh_token":"keep"}'
+
+    token_path = tmp_path / "nested" / "token.json"
+    _persist_google_credentials(token_path, FakeCreds())
+
+    assert token_path.read_text(encoding="utf-8") == '{"token":"new","refresh_token":"keep"}'
+    assert oct(token_path.stat().st_mode & 0o777) == "0o600"
 
 
 def test_parse_date_accepts_roc_year():
@@ -75,7 +111,7 @@ def test_accounting_import_api_preview(monkeypatch):
     def fake_run_import(**kwargs):
         assert kwargs["month"] == "2026-05"
         assert kwargs["dry_run"] is True
-        assert kwargs["account_hint"] == "primary"
+        assert kwargs["account_hint"] == DEFAULT_ACCOUNT_HINT
         return {"ok": True, "month": "2026-05", "importable_count": 1}
 
     monkeypatch.setattr("api.osc.accounting_sheet_import.run_import", fake_run_import)
@@ -103,6 +139,54 @@ def test_parse_colleague_month_sheet_multiple_sections():
     assert rows[1].description == "掛號｜郵局"
 
 
+def test_parse_colleague_month_sheet_loose_fixed_layout():
+    values = [
+        ["每月收支清單"],
+        ["2026年", "五月", "", "", ""],
+        ["類別", "", "", "", ""],
+        ["一般案件", "", "", "", ""],
+        ["總額", "", "", "", ""],
+        ["法扶案件", "2026-05-20 00:00:00", "1141216-E-014 林里", "預付酬金", 6000],
+        ["", "2026-05-20 00:00:00", "1150303-I-004 林亮宏", "預付酬金", 4000],
+        ["雜支", "2026-05-05 00:00:00", "法扶分會、地檢署、地方法院等木章", "", 1200],
+    ]
+    rows, stats = parse_sheet_values(values, month="2026-05")
+    assert stats["header_rows"] == [3]
+    assert len(rows) == 3
+    assert rows[0].type == "收入"
+    assert rows[0].category == "法扶案件"
+    assert rows[0].case_ref == "1141216-E-014"
+    assert rows[1].type == "收入"
+    assert rows[1].category == "法扶案件"
+    assert rows[2].type == "支出"
+    assert rows[2].category == "雜支"
+
+
+def test_parse_selected_month_sheet_uses_worksheet_month_as_accounting_month():
+    values = [
+        ["每月收支清單\n2026年", "六月", "", "", ""],
+        ["類別", "時間", "姓名", "備註", "收入"],
+        ["一般案件", "2026-05-29 00:00:00", "謝易霖", "委任費", 50000],
+        ["", "2026-06-01 00:00:00", "胡盺茹", "諮詢費用", 3000],
+    ]
+    rows, stats = parse_sheet_values(values, month="2026-06")
+    assert [r.description for r in rows] == ["胡盺茹｜諮詢費用"]
+    assert stats["skipped_outside_month"] == 1
+
+    rows, stats = parse_sheet_values(values, month="2026-06", filter_by_transaction_month=False)
+    assert [r.description for r in rows] == ["謝易霖｜委任費", "胡盺茹｜諮詢費用"]
+    assert stats["skipped_outside_month"] == 0
+    assert stats["date_filter_enabled"] is False
+
+
+def test_sheet_title_matches_month_requires_target_year():
+    from api.osc.accounting_sheet_import import sheet_title_matches_month
+
+    assert sheet_title_matches_month("2026年6月", "2026-06")
+    assert sheet_title_matches_month("2026年06月（本所）", "2026-06")
+    assert not sheet_title_matches_month("2025年6月", "2026-06")
+
+
 def test_fixed_expense_overlap_skips_payroll(monkeypatch):
     from api.osc.accounting_sheet_import import AccountingSheetRow, is_fixed_expense_overlap
 
@@ -124,6 +208,65 @@ def test_fixed_expense_overlap_skips_payroll(monkeypatch):
         description="主持律師薪資",
     )
     assert is_fixed_expense_overlap(row) is True
+
+
+def test_resolve_accounting_case_ref_returns_none_for_unknown_laf_no(monkeypatch):
+    from api.osc.accounting_sheet_import import resolve_accounting_case_ref
+
+    def fake_helpers():
+        def fake_exec(sql, params=(), fetch="none"):
+            return None, {}
+
+        return fake_exec, lambda ref: ref
+
+    monkeypatch.setattr("api.osc.accounting_sheet_import._get_osc_helpers", fake_helpers)
+    assert resolve_accounting_case_ref("1150519-E-014") is None
+
+
+def test_import_rows_rolls_back_when_ledger_insert_fails(monkeypatch):
+    from api.osc.accounting_sheet_import import import_rows
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        normalized = " ".join(str(sql).split()).upper()
+        calls.append(normalized)
+        if normalized.startswith("SELECT FINGERPRINT"):
+            return None, {}
+        if normalized.startswith("SELECT ID FROM CASE_TRANSACTIONS"):
+            return None, {}
+        if normalized.startswith("INSERT INTO CASE_TRANSACTIONS"):
+            return {"lastrowid": 42}, {}
+        if normalized.startswith("INSERT INTO ACCOUNTING_IMPORT_RECORDS"):
+            raise RuntimeError("ledger failed")
+        return {}, {}
+
+    monkeypatch.setattr(
+        "api.osc.accounting_sheet_import._get_osc_helpers",
+        lambda: (fake_exec, lambda ref: ref),
+    )
+    monkeypatch.setattr("api.osc.accounting_sheet_import.fixed_expense_overlap_details", lambda row: None)
+    monkeypatch.setattr("api.osc.accounting_sheet_import.resolve_accounting_case_ref", lambda ref: None)
+    row = AccountingSheetRow(
+        source_row=2,
+        date="2026-05-01",
+        type="收入",
+        amount=1000,
+        category="委任費",
+        description="測試",
+        fingerprint="f" * 64,
+    )
+
+    try:
+        import_rows([row], month="2026-05", dry_run=False)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected ledger failure")
+
+    assert "START TRANSACTION" in calls
+    assert "ROLLBACK" in calls
+    assert "COMMIT" not in calls
 
 
 def test_fixed_expense_overlap_reports_amount_conflict(monkeypatch):

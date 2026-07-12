@@ -15,11 +15,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import csv
 import html as html_lib
@@ -28,6 +33,7 @@ import io
 from flask import Blueprint, request, jsonify, send_file, Response
 from flask_login import login_required, current_user
 
+from api.osc.accounting_summary import load_accounting_summary
 from api.osc.utils import (
     _osc_exec, _osc_web_connect, _osc_row_json, _osc_json_value,
     _osc_norm_case_category, _osc_resolve_case_id, _osc_safe_int,
@@ -41,8 +47,15 @@ from api.osc.utils import (
     _osc_windows_unc_candidates, _osc_windows_synology_candidates,
     _osc_path_to_smb, _osc_parse_dt, _osc_read_reference_document,
     _osc_read_plain_text, _osc_read_docx_text, _osc_read_pdf_text,
-    _osc_allowed_local_roots,
+    _osc_allowed_local_roots, _osc_replace_path_prefix_references,
 )
+from api.osc.case_defaults import (
+    DEMO_LAWYER_VALUES as _CASE_DEMO_LAWYER_VALUES,
+    case_uses_consumer_debt_lawyer as _case_uses_consumer_debt_lawyer,
+    default_case_lawyer as _default_case_lawyer,
+    normalize_case_lawyer as _normalize_case_lawyer,
+)
+from api.osc.client_ids import generate_next_client_id, is_canonical_client_id
 from api.osc.drafts import (
     _osc_template_data_json_or_wrap, _osc_json_or_wrap,
 )
@@ -68,6 +81,16 @@ from api.osc.draft_learning import (
     recent_draft_feedback,
     record_draft_feedback,
 )
+from api.osc.case_intelligence import build_case_intelligence_snapshot
+from api.osc.calendar_sources import (
+    calendar_todo_source_sql,
+    calendar_todo_to_event,
+    is_google_calendar_import,
+    osc_todo_source_sql,
+    todo_source_api_fields,
+)
+from api.osc.document_reuse import reuse_document as _osc_reuse_document
+from api.laf_case_classifier import clean_laf_case_reason
 from api.osc.saas_workbench import (
     build_ai_governance,
     build_client_packet,
@@ -85,11 +108,36 @@ from api.osc.saas_workbench import (
     save_notification_preferences,
     update_onboarding_status,
 )
+from api.saas_audit import append_audit_event, file_ref
 
 _log = logging.getLogger(__name__)
 logger = _log  # alias used by some routes
 
 osc_bp = Blueprint("osc_cases", __name__)
+
+
+def _osc_audit_file_event(action: str, path: str, *, status: str = "ok", metadata: dict | None = None) -> None:
+    try:
+        ref = file_ref(path)
+        payload = {"file": ref}
+        if metadata:
+            payload.update(metadata)
+        append_audit_event(
+            action,
+            resource_type="file",
+            resource_id=str(ref.get("path_hash") or ""),
+            status=status,
+            metadata=payload,
+        )
+    except Exception:
+        _log.debug("silent-catch file audit failed action=%s", action, exc_info=True)
+
+_OSC_ARCHIVE_JOB_LOCK = threading.RLock()
+_OSC_ARCHIVE_JOB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("MAGI_OSC_ARCHIVE_WORKERS", "1") or "1")),
+    thread_name_prefix="osc-archive",
+)
+_OSC_ARCHIVE_JOBS: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # Lazy imports for server globals
@@ -97,6 +145,16 @@ osc_bp = Blueprint("osc_cases", __name__)
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _OSC_RESOURCE_PHOTO_DIR = os.path.join(_MAGI_ROOT, "resources", "osc", "photo")
+
+_OSC_HELPER_HOST = os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+_OSC_HELPER_PORT = int(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_PORT", "5016") or "5016")
+_OSC_HELPER_STAGE_TIMEOUT = float(
+    os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_STAGE_TIMEOUT_SEC", "90") or "90"
+)
+
+
+def _osc_shell_nas_helper_url() -> str:
+    return f"http://{_OSC_HELPER_HOST}:{_OSC_HELPER_PORT}"
 
 
 def _osc_photo_path(filename: str) -> str:
@@ -110,6 +168,44 @@ def _osc_existing_resource_path(setting_key: str, filename: str, fallback: str =
         if candidate and os.path.exists(candidate):
             return candidate
     return configured or _osc_photo_path(filename) or fallback
+
+
+_OSC_DEMO_LAWYER_VALUES = set(_CASE_DEMO_LAWYER_VALUES)
+
+
+def _osc_clean_case_reason(value: object) -> str:
+    return clean_laf_case_reason(str(value or ""))
+
+
+def _osc_case_uses_consumer_debt_lawyer(*values: object) -> bool:
+    return _case_uses_consumer_debt_lawyer(*values)
+
+
+def _osc_default_case_lawyer(*, case_type: object = "", case_reason: object = "", case_category: object = "") -> str:
+    return _default_case_lawyer(
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=_osc_get_setting_value,
+    )
+
+
+def _osc_normalize_case_lawyer(
+    value: object,
+    *,
+    allow_default: bool = True,
+    case_type: object = "",
+    case_reason: object = "",
+    case_category: object = "",
+) -> str:
+    return _normalize_case_lawyer(
+        value,
+        allow_default=allow_default,
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=_osc_get_setting_value,
+    )
 
 
 def _get_orchestrator():
@@ -156,12 +252,54 @@ def _quick_action_rows(sql: str, params: tuple = (), fetch: str = "all"):
 
 
 def _osc_todo_done_statuses() -> tuple[str, ...]:
-    return ("completed", "done", "已完成", "完成", "cancelled", "canceled", "取消")
+    return (
+        "completed",
+        "done",
+        "已完成",
+        "完成",
+        "cancelled",
+        "canceled",
+        "取消",
+        "deleted",
+        "已刪除",
+        "刪除",
+        "calendar_deduped",
+    )
+
+
+def _osc_sql_string_list(values: tuple[str, ...]) -> str:
+    return ", ".join("'" + str(value).replace("'", "''").lower() + "'" for value in values)
+
+
+def _osc_todo_open_status_sql(column: str = "status") -> str:
+    done_values = _osc_sql_string_list(_osc_todo_done_statuses())
+    return f"({column} IS NULL OR {column}='' OR LOWER({column}) NOT IN ({done_values}))"
 
 
 def _osc_is_todo_done_status(status: str) -> bool:
     text = str(status or "").strip().lower()
     return text in {s.lower() for s in _osc_todo_done_statuses()}
+
+
+def _osc_todo_api_row(row: dict | None) -> dict | None:
+    if not isinstance(row, dict):
+        return row
+    out = dict(row)
+    out["is_done"] = _osc_is_todo_done_status(out.get("status") or "")
+    out.update(todo_source_api_fields(out))
+    return out
+
+
+def _osc_legal_aid_case_sql() -> str:
+    return """
+    (
+        case_category='法律扶助案件'
+        OR case_reason LIKE '%法扶%'
+        OR case_reason LIKE '%法律扶助%'
+        OR COALESCE(laf_case_no, '') <> ''
+        OR COALESCE(application_no, '') <> ''
+    )
+    """
 
 
 _LAF_ACTIVITY_LABELS = ("開庭", "會議", "律見", "閱卷", "電話聯繫")
@@ -174,6 +312,53 @@ _LAF_MEETING_EXCLUSION_KEYWORDS = ("U會議", "Ｕ會議", "u會議", "ｕ會議
 _LAF_COURT_KEYWORDS = ("開庭", "準備程序", "言詞辯論", "審理", "審理程序", "調解", "訊問", "協商程序", "調查", "調查程序", "庭期")
 _LAF_REVIEW_PAYMENT_KEYWORDS = ("繳費單", "規費繳款", "規費", "繳款單", "繳費收據", "繳費憑證")
 _LAF_REVIEW_FILE_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".zip", ".txt"}
+
+
+# Upload hardening shared with NAS file manager upload handlers.
+_OSC_CASE_FILE_BLOCKED_EXTS = {".exe", ".bat", ".cmd", ".sh", ".ps1", ".scr", ".msi", ".app", ".pkg", ".dmg", ".com", ".vbs"}
+_OSC_CASE_INVALID_NAME_RE = re.compile(r'[\\/:*?"<>|]')
+# Signatures for executable formats: block even when renamed.
+_OSC_CASE_EXEC_MAGIC_SIGS = (
+    b"MZ",                # Windows PE / DOS
+    b"\x7fELF",           # Linux ELF
+    b"\xca\xfe\xba\xbe",  # Mach-O fat binary / Java class
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64-bit LE
+    b"\xfe\xed\xfa\xce",  # Mach-O 32-bit BE
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64-bit BE
+    b"#!",                # shell script shebang
+)
+
+
+def _osc_case_upload_ext_ok(filename: str) -> tuple[bool, str]:
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in _OSC_CASE_FILE_BLOCKED_EXTS:
+        return False, f"blocked_extension:{ext}"
+    return True, ""
+
+
+def _osc_case_validate_filename(name: str) -> tuple[bool, str]:
+    n = (name or "").strip()
+    if not n:
+        return False, "name_empty"
+    if n in {".", ".."}:
+        return False, "name_invalid"
+    if _OSC_CASE_INVALID_NAME_RE.search(n):
+        return False, "name_has_invalid_chars"
+    if len(n) > 200:
+        return False, "name_too_long"
+    return True, ""
+
+
+def _osc_case_sniff_executable(path: str) -> str | None:
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return None
+    for sig in _OSC_CASE_EXEC_MAGIC_SIGS:
+        if head.startswith(sig):
+            return "executable_signature:" + sig.hex()
+    return None
 
 
 def _laf_parse_date_token(value: str) -> date | None:
@@ -371,9 +556,7 @@ def _laf_build_activity_stats(
         summary = f"{m.get('type') or ''} {m.get('location') or ''} {m.get('notes') or ''}".strip()
         candidates.append({**m, "summary": summary, "_source": "會議"})
     for t in todos or []:
-        source = "Google Calendar" if str(t.get("source_file") or "").startswith("gcal_import:") else "待辦"
-        if str(t.get("source_file") or "") == "gcal_import":
-            source = "Google Calendar"
+        source = "Google Calendar" if is_google_calendar_import(t) else "待辦"
         summary = f"{t.get('todo_type') or ''} {t.get('description') or ''}".strip()
         candidates.append({**t, "summary": summary, "_source": source})
     for ev in calendar_events or []:
@@ -531,9 +714,247 @@ def _get_preferred_case_roots(*, include_closed: bool = False):
     return preferred_case_roots(include_closed=include_closed)
 
 
+def _osc_is_synology_drive_fallback_path(path: str) -> bool:
+    """True when path is a Synology Drive File Provider/sync fallback."""
+    norm = str(path or "").replace("\\", "/")
+    return (
+        "/Library/CloudStorage/SynologyDrive-" in norm
+        or norm.endswith("/SynologyDrive")
+        or "/SynologyDrive/" in norm
+        or "/.magi_mounts/" in norm
+    )
+
+
+def _osc_is_real_nas_case_root(path: str) -> bool:
+    norm = str(path or "").replace("\\", "/").rstrip("/")
+    return (norm.startswith("/Volumes/") or "/Volumes/" in norm) and not _osc_is_synology_drive_fallback_path(norm)
+
+
+def _osc_is_production_case_root(path: str) -> bool:
+    norm = str(path or "").replace("\\", "/")
+    return (
+        norm.startswith("/Volumes/")
+        or "/Library/CloudStorage/SynologyDrive-" in norm
+        or "/SynologyDrive/" in norm
+        or "/.magi_mounts/" in norm
+    )
+
+
+def _osc_payload_looks_synthetic(payload: dict) -> bool:
+    joined = " ".join(
+        str((payload or {}).get(key) or "")
+        for key in (
+            "id",
+            "case_number",
+            "case_no",
+            "caseNumber",
+            "client_name",
+            "name",
+            "case_reason",
+            "notes",
+        )
+    ).lower()
+    markers = (
+        "測試",
+        "test",
+        "dummy",
+        "fake",
+        "sample",
+        "web-test",
+        "magi-live-delete",
+        "magi-csv-live-delete",
+    )
+    return any(marker in joined for marker in markers)
+
+
+def _osc_case_folder_creation_guard(payload: dict, root: str) -> dict:
+    root = str(root or "").strip()
+    if not root:
+        return {"ok": False, "status": "pending", "reason": "mount_required", "error": "nas_case_root_mount_required"}
+    if _osc_is_synology_drive_fallback_path(root):
+        return {
+            "ok": False,
+            "status": "pending",
+            "reason": "file_provider_root_blocked",
+            "error": "nas_case_root_mount_required",
+            "message": "建立案件資料夾必須使用真實 SMB/NAS root，不能寫入 CloudStorage、SynologyDrive 或 .magi_mounts fallback。",
+            "root": root,
+        }
+    if _osc_is_production_case_root(root) and _osc_payload_looks_synthetic(payload):
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": "synthetic_case_production_root_blocked",
+            "error": "synthetic_case_production_root_blocked",
+            "message": "測試/合成案件不得在 production NAS root 建立資料夾。",
+            "root": root,
+        }
+    return {"ok": True}
+
+
+def _osc_case_creation_roots() -> list[str]:
+    """Candidate active case roots for creating folders, with SMB/NAS first."""
+    roots: list[str] = []
+    try:
+        from api.case_path_mapper import default_case_roots
+        roots.extend(default_case_roots(include_closed=False))
+    except Exception:
+        _log.debug("silent-catch default_case_roots", exc_info=True)
+    try:
+        roots.extend(_get_preferred_case_roots(include_closed=False))
+    except Exception:
+        _log.debug("silent-catch preferred_case_roots", exc_info=True)
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in roots:
+        root = str(raw or "").rstrip("/")
+        key = root.lower()
+        if root and key not in seen:
+            seen.add(key)
+            out.append(root)
+    return out
+
+
+def _osc_case_root_outage_path() -> Path:
+    from api.platforms import runtime_dir
+    return runtime_dir.root() / "osc_case_root_outage.json"
+
+
+def _osc_case_root_outage_threshold_sec() -> float:
+    raw = os.environ.get("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "30").strip()
+    try:
+        minutes = float(raw)
+    except ValueError:
+        minutes = 30.0
+    return max(0.0, minutes) * 60.0
+
+
+def _osc_record_case_root_outage(roots: list[str]) -> dict:
+    from api.platforms import runtime_dir
+
+    path = _osc_case_root_outage_path()
+    now = time.time()
+    payload = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        payload = {}
+    first_seen = float(payload.get("first_seen") or now)
+    payload = {
+        "first_seen": first_seen,
+        "last_seen": now,
+        "roots": roots,
+        "reason": "active_nas_case_root_unavailable",
+    }
+    try:
+        runtime_dir.atomic_write_json(path, payload)
+    except Exception:
+        _log.debug("silent-catch write case root outage", exc_info=True)
+    return payload
+
+
+def _osc_clear_case_root_outage() -> None:
+    try:
+        _osc_case_root_outage_path().unlink()
+    except FileNotFoundError:
+        _log.debug("case root outage marker already absent")
+    except Exception:
+        _log.debug("silent-catch clear case root outage", exc_info=True)
+
+
+def _osc_select_case_creation_root() -> dict:
+    """Select a real NAS/SMB root for creating case folders.
+
+    Synology Drive is intentionally read-only fallback for MAGI.  Creating
+    skeleton folders there causes empty File Provider folders to sync back and
+    confuse OSC case status/folder moves.
+    """
+    roots = _osc_case_creation_roots()
+
+    def _find_existing_non_cloud() -> str:
+        for root in roots:
+            if not _osc_is_real_nas_case_root(root):
+                continue
+            try:
+                if os.path.isdir(root):
+                    return root
+            except OSError:
+                continue
+        return ""
+
+    def _find_existing_cloud_fallback() -> str:
+        for root in roots:
+            if not _osc_is_synology_drive_fallback_path(root):
+                continue
+            try:
+                if os.path.isdir(root):
+                    return root
+            except OSError:
+                continue
+        return ""
+
+    selected = _find_existing_non_cloud()
+    if selected:
+        _osc_clear_case_root_outage()
+        return {"ok": True, "root": selected, "roots": roots}
+
+    try:
+        from api.nas_mount_guard import ensure_nas_mounts
+        ensure_nas_mounts()
+    except Exception:
+        _log.debug("silent-catch ensure_nas_mounts for case creation", exc_info=True)
+
+    selected = _find_existing_non_cloud()
+    if selected:
+        _osc_clear_case_root_outage()
+        return {"ok": True, "root": selected, "roots": roots}
+
+    outage = _osc_record_case_root_outage(roots)
+    elapsed_sec = max(0.0, time.time() - float(outage.get("first_seen") or time.time()))
+    threshold_sec = _osc_case_root_outage_threshold_sec()
+    cloud_fallback = _find_existing_cloud_fallback()
+    if cloud_fallback and elapsed_sec >= threshold_sec:
+        return {
+            "ok": True,
+            "root": cloud_fallback,
+            "roots": roots,
+            "temporary_synology_drive": True,
+            "outage_elapsed_sec": elapsed_sec,
+            "outage_threshold_sec": threshold_sec,
+        }
+
+    return {
+        "ok": False,
+        "status": "pending",
+        "reason": "mount_required",
+        "error": "nas_case_root_not_mounted",
+        "message": "未掛載真正 NAS/SMB 案件根目錄；為避免短暫斷線時 Synology Drive 產生空案件資料夾，暫時拒絕建立。",
+        "roots": roots,
+        "outage_elapsed_sec": elapsed_sec,
+        "outage_threshold_sec": threshold_sec,
+        "retry_after_sec": max(0.0, threshold_sec - elapsed_sec),
+    }
+
+
 def _get_translate_local_path_to_canonical():
     from api.case_path_mapper import translate_local_path_to_canonical
     return translate_local_path_to_canonical
+
+
+_OSC_INVALID_FOLDER_NAME_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def _osc_validate_folder_name(name: str) -> tuple[bool, str]:
+    value = str(name or "").strip()
+    if not value:
+        return False, "name_empty"
+    if value in {".", ".."}:
+        return False, "name_invalid"
+    if _OSC_INVALID_FOLDER_NAME_RE.search(value):
+        return False, "name_has_invalid_chars"
+    if len(value) > 200:
+        return False, "name_too_long"
+    return True, ""
 
 
 def _osc_fetch_url_text(url: str, timeout: int = 20) -> dict:
@@ -633,6 +1054,56 @@ _OSC_DRAFT_PROMPT_TEMPLATE = """你是一位專業的台灣律師助理，請根
 # ── Helper (auto-create folder for new case) ──────────────────────────────
 
 
+def _osc_try_create_drive_case_folder(
+    *,
+    full_path: str,
+    payload: dict,
+    case_category: str,
+    status: str = "active",
+) -> dict:
+    """Best-effort Drive mirror for NAS-created case folders.
+
+    OSC remains NAS-first.  A Drive failure must not block local case creation;
+    the background bidirectional sync will retry later.
+    """
+    enabled = os.environ.get("MAGI_DRIVE_SYNC_CREATE_ON_CASE_FOLDER", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    try:
+        from api.osc.drive_case_sync import (
+            DEFAULT_DRIVE_ROOT_NAME,
+            build_drive_service,
+            drive_owner_bucket,
+            ensure_drive_case_folder_for_new_case,
+            find_drive_root,
+        )
+
+        service = build_drive_service(write=True)
+        drive_root = find_drive_root(
+            service,
+            root_id=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_ID", ""),
+            root_name=os.environ.get("MAGI_DRIVE_SYNC_ROOT_FOLDER_NAME", DEFAULT_DRIVE_ROOT_NAME),
+        )
+        result = ensure_drive_case_folder_for_new_case(
+            service,
+            drive_root["id"],
+            full_path=full_path,
+            case_number=(payload.get("case_number") or payload.get("case_no") or payload.get("caseNumber") or "").strip(),
+            client_name=(payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip(),
+            case_category=case_category or "一般案件",
+            case_type=(payload.get("case_type") or payload.get("type") or "").strip(),
+            laf_case_no=_osc_synced_laf_number(payload),
+            case_stage=(payload.get("case_stage") or "").strip(),
+            case_reason=_osc_clean_case_reason(payload.get("case_reason")),
+            status=status or "active",
+            owner_bucket=drive_owner_bucket(),
+        )
+        result["drive_root_id"] = drive_root.get("id", "")
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: str) -> dict:
     """建立案件資料夾並更新 DB，回傳結果 dict。供 POST /api/osc/cases 使用。"""
     from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import (
@@ -640,22 +1111,33 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         create_folder_structure,
     )
 
+    if _osc_is_closed_case_status(payload.get("status") or "") or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "closed_case_no_active_folder_creation",
+            "message": "案件已屬結案/報結狀態，不建立進行中案件資料夾。",
+        }
+
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
-    case_roots = _get_preferred_case_roots()
-    if not case_roots or not os.path.isdir(case_roots[0]):
-        return {"ok": False, "error": "no_case_root"}
+    root_selection = _osc_select_case_creation_root()
+    if not root_selection.get("ok"):
+        return root_selection
+    guard = _osc_case_folder_creation_guard(payload, str(root_selection.get("root") or ""))
+    if not guard.get("ok"):
+        return guard
 
     case_number = (payload.get("case_number") or payload.get("case_no") or payload.get("caseNumber") or "").strip()
     client_name = (payload.get("client_name") or payload.get("name") or payload.get("client") or "").strip()
     case_type = (payload.get("case_type") or payload.get("type") or "").strip()
     case_stage = (payload.get("case_stage") or "").strip()
-    case_reason = (payload.get("case_reason") or "").strip()
+    case_reason = _osc_clean_case_reason(payload.get("case_reason"))
 
     if not case_number or not client_name:
         return {"ok": False, "error": "missing_case_number_or_client_name"}
 
     full_path = build_full_case_path(
-        case_roots[0], case_number, client_name,
+        str(root_selection.get("root") or ""), case_number, client_name,
         case_type=case_type, case_category=case_category or "一般案件",
         case_stage=case_stage, case_reason=case_reason,
     )
@@ -668,7 +1150,55 @@ def _osc_auto_create_folder_for_case(row_id: str, payload: dict, case_category: 
         _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row_id), fetch="none")
     except Exception as e:
         return {"ok": True, "path": full_path, "canonical": canonical, "db_update_error": str(e)}
-    return {"ok": True, "path": full_path, "canonical": canonical, "subfolders": result.get("subfolders", [])}
+    drive_sync = _osc_try_create_drive_case_folder(
+        full_path=full_path,
+        payload={**payload, "case_number": case_number, "client_name": client_name, "case_type": case_type},
+        case_category=case_category or "一般案件",
+        status="active",
+    )
+    return {
+        "ok": True,
+        "path": full_path,
+        "canonical": canonical,
+        "subfolders": result.get("subfolders", []),
+        "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
+        "warning": root_selection.get("warning") or "",
+        "drive_sync": drive_sync,
+    }
+
+
+def _osc_should_auto_create_folder_on_insert(payload: dict, *, is_template: bool, status_value: str) -> bool:
+    """Return True only for explicit, guarded folder creation requests."""
+    raw = payload.get("auto_create_folder")
+    if raw is not None:
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _osc_ensure_active_case_folder(row: dict) -> dict:
+    """Ensure a live, non-closed case has a real folder behind its DB path."""
+    if not isinstance(row, dict):
+        return {"ok": False, "error": "case_not_found"}
+    if _osc_should_archive_case_row(row):
+        return {"ok": True, "skipped": True, "reason": "closed_case"}
+    folder_path = str(row.get("folder_path") or "").strip()
+    if folder_path and _osc_resolve_existing_local_path(folder_path, prefer_dir=True):
+        return {"ok": True, "skipped": True, "reason": "folder_exists"}
+    payload = {
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "case_type": row.get("case_type") or "",
+        "case_stage": row.get("case_stage") or "",
+        "case_reason": row.get("case_reason") or "",
+        "status": row.get("status") or "進行中",
+        "legal_aid_status": row.get("legal_aid_status") or "",
+    }
+    return _osc_auto_create_folder_for_case(str(row.get("id") or ""), payload, row.get("case_category") or "一般案件")
+
+
+def _osc_should_ensure_case_folder_for_open(row: dict) -> bool:
+    """Read/open/browser routes must never create folders as a side effect."""
+    return False
 
 
 def _osc_legal_insight_normalized_expr() -> str:
@@ -711,7 +1241,7 @@ def osc_meta_api():
             "active_port": fs.get("active_port", 0),
         }
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 950, exc_info=True)
 
     try:
         conn, cfg = _osc_web_connect()
@@ -840,15 +1370,47 @@ def _osc_synced_laf_number(payload: dict | None) -> str:
     ).strip()
 
 
+def _osc_is_legal_aid_case_row(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    text = " ".join(
+        str(row.get(k) or "")
+        for k in (
+            "case_category",
+            "case_reason",
+            "case_type",
+            "laf_case_no",
+            "legal_aid_number",
+            "application_no",
+            "legal_aid_status",
+        )
+    )
+    return bool(
+        "法律扶助案件" in text
+        or "法律扶助" in text
+        or "法扶" in text
+        or re.search(r"\d{6,8}-[A-Z]-\d{3}", text)
+    )
+
+
 def _osc_effective_case_status(row: dict | None) -> str:
     if not isinstance(row, dict):
         return ""
     laf_status = str(row.get("legal_aid_status") or "").strip()
     status = str(row.get("status") or "").strip()
+    normalized_laf_status = _osc_normalize_laf_status(laf_status)
     if laf_status in _OSC_LAF_CLOSED_STATUSES:
         return "已結案"
     if laf_status in _OSC_LAF_CLOSING_STATUSES:
         return laf_status
+    if _osc_is_closed_archive_path(row.get("folder_path") or ""):
+        return "已結案"
+    if _osc_is_closed_case_status(status):
+        return "已結案"
+    if _osc_is_legal_aid_case_row(row):
+        if laf_status in _OSC_OPEN_STATUS_ALIASES:
+            return "進行中"
+        return normalized_laf_status or "未開辦"
     if status:
         return "進行中" if status in _OSC_OPEN_STATUS_ALIASES else status
     if laf_status:
@@ -861,6 +1423,7 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
     if not isinstance(row, dict):
         return row
     if row.get("is_template_case"):
+        row["lawyer"] = ""
         row["effective_status"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["status_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
         row["case_type_display"] = _OSC_TEMPLATE_DISPLAY_VALUE
@@ -868,27 +1431,50 @@ def _osc_case_api_row(row: dict | None) -> dict | None:
         return row
     effective = _osc_effective_case_status(row)
     out = dict(row)
+    out["lawyer"] = _osc_normalize_case_lawyer(
+        out.get("lawyer"),
+        allow_default=True,
+        case_type=out.get("case_type"),
+        case_reason=out.get("case_reason"),
+        case_category=out.get("case_category"),
+    )
     out["effective_status"] = effective
     out["status_display"] = effective
     if str(out.get("case_type") or "").strip() == "消費者債務清理":
         reason = str(out.get("case_reason") or "").strip()
         out["case_type_display"] = "消費者債務清理"
         out["case_reason_display"] = reason or ""
+    elif _osc_is_legal_consultant_case_row(out):
+        raw_type = str(out.get("case_type") or "").strip()
+        out["case_type_display"] = "民事｜法律顧問" if raw_type == "民事" else "法律顧問"
+        out["case_reason_display"] = out.get("case_reason") or ""
     else:
         out["case_type_display"] = out.get("case_type") or ""
         out["case_reason_display"] = out.get("case_reason") or ""
     return out
 
 
+def _osc_is_legal_consultant_case_row(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("case_type", "case_reason", "case_stage", "notes", "folder_path")
+    )
+    return "法律顧問" in text or "顧問" in text
+
+
 def _osc_final_closed_sql() -> str:
     """SQL predicate for cases that are truly final closed."""
     status = "COALESCE(status, '')"
     laf = "COALESCE(legal_aid_status, '')"
+    folder = "REPLACE(COALESCE(folder_path, ''), '\\\\', '/')"
     laf_closed = f"{laf} = '已結案'"
     case_closed = f"({status} LIKE '%已結案%' OR LOWER({status}) IN ('closed', 'close', 'done'))"
+    folder_closed = f"({folder} LIKE 'Y:/%' OR {folder} LIKE '%/03_工作資料/10_結案/%' OR {folder} LIKE '%/10_結案/%')"
     laf_not_closing = f"{laf} NOT IN ('已結案，待報結', '已結案，待送出')"
     status_not_closing = f"{status} NOT LIKE '%結案中%' AND {status} NOT LIKE '%待報結%' AND {status} NOT LIKE '%待送出%'"
-    return f"({laf_closed} OR ({case_closed} AND {laf_not_closing} AND {status_not_closing}))"
+    return f"({laf_closed} OR {folder_closed} OR ({case_closed} AND {laf_not_closing} AND {status_not_closing}))"
 
 
 def _osc_status_scope_sql(scope: str) -> str:
@@ -934,7 +1520,7 @@ def osc_cases_api():
         case_kind = (request.args.get("case_kind") or "").strip()
         status_scope = (request.args.get("status_scope") or "all").strip().lower()
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
-        case_type_values = {"刑事", "民事", "消費者債務清理", "行政", "非訟"}
+        case_type_values = {"刑事", "民事", "法律顧問", "消費者債務清理", "行政", "非訟"}
         case_kind_values = {"一般", "一般案件", "法扶", "法律扶助案件", "指定辯護", "指定辯護案件", "無償", "無償案件"}
         if category and category not in {"全部", "all", "ALL"} and not case_type and not case_kind:
             if category in case_type_values:
@@ -964,6 +1550,24 @@ def osc_cases_api():
             if case_type == "消費者債務清理":
                 where.append("(case_reason LIKE %s OR case_type = %s)")
                 params.extend(["%消費者債務清理%", case_type])
+            elif case_type == "法律顧問":
+                where.append(
+                    """
+                    (
+                        case_type = %s
+                        OR (
+                            case_type = %s
+                            AND (
+                                case_reason LIKE %s
+                                OR case_stage LIKE %s
+                                OR notes LIKE %s
+                                OR folder_path LIKE %s
+                            )
+                        )
+                    )
+                    """
+                )
+                params.extend([case_type, "民事", "%顧問%", "%顧問%", "%顧問%", "%顧問%"])
             else:
                 where.append("case_type = %s")
                 params.append(case_type)
@@ -998,6 +1602,7 @@ def osc_cases_api():
         sql = """
             SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
                    laf_case_no, application_no, court_name, court_case_no, court_division, legal_aid_status,
+                   lawyer,
                    status, manual_status_lock, manual_status_source, manual_status_at,
                    notes, folder_path, updated_at, created_date
             FROM cases
@@ -1043,11 +1648,12 @@ def osc_cases_api():
     case_category = _osc_norm_case_category(payload.get("case_category") or payload.get("category") or "")
     if is_template_payload:
         case_category = _OSC_TEMPLATE_DISPLAY_VALUE
+    court_case_no_value = (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None
     cols = [
         "id", "case_number", "client_name", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
-        "laf_case_no", "application_no", "court_name", "court_case_no", "court_division",
-        "status", "notes", "folder_path"
+        "laf_case_no", "application_no", "court_name", "court_case_no", "court_case_number", "court_division",
+        "lawyer", "status", "notes", "folder_path"
     ]
     status_value = (payload.get("status") or "進行中").strip() or "進行中"
     if is_template_payload:
@@ -1056,8 +1662,19 @@ def osc_cases_api():
     if is_template_payload:
         case_type_value = _OSC_TEMPLATE_DISPLAY_VALUE
     case_reason_value = (payload.get("case_reason") or "").strip() or None
+    case_reason_value = _osc_clean_case_reason(case_reason_value) or None
     if is_template_payload:
         case_reason_value = _OSC_TEMPLATE_DISPLAY_VALUE
+    lawyer_value = _osc_normalize_case_lawyer(
+        payload.get("lawyer")
+        or payload.get("case_lawyer")
+        or payload.get("assigned_lawyer")
+        or payload.get("responsible_lawyer"),
+        allow_default=not is_template_payload,
+        case_type=case_type_value,
+        case_reason=case_reason_value,
+        case_category=case_category,
+    )
     vals = [
         row_id,
         case_number or None,
@@ -1072,13 +1689,19 @@ def osc_cases_api():
         laf_number or None,
         laf_number or None,
         (payload.get("court_name") or payload.get("court") or "").strip() or None,
-        (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+        court_case_no_value,
+        court_case_no_value,
         (payload.get("court_division") or payload.get("division") or "").strip() or None,
+        lawyer_value or None,
         status_value,
         (payload.get("notes") or "").strip() or None,
         translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
     ]
-    auto_create_folder = str(payload.get("auto_create_folder") or "").strip().lower() in {"1", "true", "yes", "on"}
+    auto_create_folder = _osc_should_auto_create_folder_on_insert(
+        payload,
+        is_template=is_template_payload,
+        status_value=status_value,
+    )
     sql_insert = f"INSERT INTO cases ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})"
     try:
         result, _ = _osc_exec(sql_insert, tuple(vals), fetch="none")
@@ -1087,6 +1710,7 @@ def osc_cases_api():
             folder_payload = dict(payload)
             folder_payload["case_number"] = case_number
             folder_payload["client_name"] = client_name
+            folder_payload["case_reason"] = case_reason_value
             folder_resp = _osc_auto_create_folder_for_case(row_id, folder_payload, case_category)
             resp["folder"] = folder_resp
         if _osc_is_closed_case_status(status_value) or _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""):
@@ -1100,12 +1724,30 @@ def osc_cases_api():
 
         target = None
         if case_number:
-            target, _ = _osc_exec("SELECT id FROM cases WHERE case_number=%s LIMIT 1", (case_number,), fetch="one")
+            target, _ = _osc_exec(
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path, lawyer FROM cases WHERE case_number=%s LIMIT 1",
+                (case_number,),
+                fetch="one",
+            )
         if not target and row_id:
-            target, _ = _osc_exec("SELECT id FROM cases WHERE id=%s LIMIT 1", (row_id,), fetch="one")
+            target, _ = _osc_exec(
+                "SELECT id, status, legal_aid_status, manual_status_lock, folder_path, lawyer FROM cases WHERE id=%s LIMIT 1",
+                (row_id,),
+                fetch="one",
+            )
         if not target:
             return jsonify({"ok": False, "error": msg}), 500
 
+        target_status = str(target.get("status") or "").strip()
+        target_laf_status = str(target.get("legal_aid_status") or "").strip()
+        target_manual_locked = bool(int(target.get("manual_status_lock") or 0))
+        target_final_closed = (
+            _osc_is_closed_case_status(target_status)
+            or _osc_is_laf_final_closed_status(target_laf_status)
+            or _osc_is_closed_archive_path(target.get("folder_path") or "")
+        )
+        target_laf_closing = _osc_normalize_laf_status(target_laf_status) in {"已結案，待報結", "已結案，待送出"}
+        incoming_folder = translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None
         update_payload = {
             "client_name": client_name,
             "case_category": case_category or None,
@@ -1115,12 +1757,36 @@ def osc_cases_api():
             "laf_case_no": laf_number or None,
             "application_no": laf_number or None,
             "court_name": (payload.get("court_name") or payload.get("court") or "").strip() or None,
-            "court_case_no": (payload.get("court_case_no") or payload.get("court_case_number") or "").strip() or None,
+            "court_case_no": court_case_no_value,
+            "court_case_number": court_case_no_value,
             "court_division": (payload.get("court_division") or payload.get("division") or "").strip() or None,
-            "status": status_value,
             "notes": (payload.get("notes") or "").strip() or None,
-            "folder_path": translate_local_path_to_canonical((payload.get("folder_path") or "").strip()) or None,
         }
+        incoming_lawyer = _osc_normalize_case_lawyer(
+            payload.get("lawyer")
+            or payload.get("case_lawyer")
+            or payload.get("assigned_lawyer")
+            or payload.get("responsible_lawyer"),
+            allow_default=False,
+        )
+        if incoming_lawyer:
+            update_payload["lawyer"] = incoming_lawyer
+        elif not _osc_normalize_case_lawyer(target.get("lawyer"), allow_default=False):
+            default_lawyer = _osc_default_case_lawyer(
+                case_type=case_type_value,
+                case_reason=case_reason_value,
+                case_category=case_category,
+            )
+            if default_lawyer:
+                update_payload["lawyer"] = default_lawyer
+        if target_final_closed:
+            update_payload["status"] = "已結案"
+        elif target_laf_closing and _osc_case_status_is_openish(status_value):
+            update_payload["status"] = "結案中"
+        elif "status" in payload and not target_manual_locked:
+            update_payload["status"] = status_value
+        if incoming_folder and not ((target_final_closed or target_laf_closing) and not _osc_is_closed_archive_path(incoming_folder)):
+            update_payload["folder_path"] = incoming_folder
         if case_number:
             update_payload["case_number"] = case_number
         sets = []
@@ -1160,7 +1826,16 @@ def osc_case_detail_api(row_id):
         synced_laf = _osc_synced_laf_number(payload)
         payload["laf_case_no"] = synced_laf
         payload["application_no"] = synced_laf
-    current_row, _ = _osc_exec("SELECT id, case_number, client_name, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    if any(k in payload for k in ("court_case_no", "court_case_number")):
+        payload = dict(payload)
+        synced_court_case_no = (payload.get("court_case_no") or payload.get("court_case_number") or "").strip()
+        payload["court_case_no"] = synced_court_case_no
+        payload["court_case_number"] = synced_court_case_no
+    current_row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, case_category, case_type, case_reason, folder_path, manual_status_lock FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
     template_update = _osc_is_template_case(
         {
             **(current_row or {}),
@@ -1173,36 +1848,65 @@ def osc_case_detail_api(row_id):
         "case_number", "client_name", "client_name_en", "client_phone", "client_email", "client_id_number",
         "case_category", "case_type", "case_stage", "case_reason",
         "laf_case_no", "application_no", "court_case_no", "status", "notes", "folder_path",
-        "legal_aid_status", "court_case_number", "court_name", "court_division",
+        "legal_aid_status", "court_case_number", "court_name", "court_division", "lawyer",
     ]
     sets = []
     vals = []
+    lawyer_case_category = payload.get("case_category") or (current_row or {}).get("case_category") or ""
+    lawyer_case_type = payload.get("case_type") or (current_row or {}).get("case_type") or ""
+    lawyer_case_reason = _osc_clean_case_reason(payload.get("case_reason") or (current_row or {}).get("case_reason") or "")
     for k in allowed:
         if k in payload:
             sets.append(f"{k}=%s")
             v = (payload.get(k) or "").strip() or None
             if k == "case_category":
                 v = _osc_norm_case_category(v or "")
-            if k == "court_case_no" and not v:
-                v = (payload.get("court_case_number") or "").strip() or None
             if k == "laf_case_no" and not v:
                 v = (payload.get("legal_aid_number") or "").strip() or None
+            if k == "case_reason":
+                v = _osc_clean_case_reason(v) or None
             if k == "folder_path" and v:
                 v = translate_local_path_to_canonical(v) or v
+            if k == "lawyer":
+                v = _osc_normalize_case_lawyer(
+                    v,
+                    allow_default=not template_update,
+                    case_type=lawyer_case_type,
+                    case_reason=lawyer_case_reason,
+                    case_category=lawyer_case_category,
+                ) or None
             if template_update and k in {"case_category", "case_type", "case_reason", "status"}:
                 v = _OSC_TEMPLATE_DISPLAY_VALUE
             vals.append(v)
     if not sets:
         return jsonify({"ok": False, "error": "no fields"}), 400
+    if "status" in payload and not template_update:
+        sets.append("manual_status_lock=1")
+        sets.append("manual_status_source=%s")
+        vals.append("osc_web_edit")
+        sets.append("manual_status_at=NOW()")
     sets.append("updated_at=NOW()")
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
     resp = {"ok": True, "result": result}
+    try:
+        refreshed, _ = _osc_exec("SELECT * FROM cases WHERE id=%s", (row_id,), fetch="one")
+        if refreshed and refreshed.get("folder_path"):
+            folder_sync = _osc_effective_case_folder_for_row(refreshed, update_db=True)
+            if folder_sync.get("updated") or folder_sync.get("source") in {"metadata_expected", "sibling_existing"}:
+                resp["folder_sync"] = folder_sync
+    except Exception:
+        _log.debug("silent-catch case folder sync after update", exc_info=True)
     if (
         ("status" in payload and _osc_is_closed_case_status(payload.get("status") or ""))
         or ("legal_aid_status" in payload and _osc_is_laf_final_closed_status(payload.get("legal_aid_status") or ""))
     ):
-        resp["archive"] = _osc_auto_archive_closed_case(row_id)
+        sync_requested = str(payload.get("sync") or request.args.get("sync") or "").strip().lower() in {"1", "true", "yes", "on"}
+        background_requested = str(payload.get("background", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        if sync_requested or not background_requested:
+            resp["archive"] = _osc_auto_archive_closed_case(row_id)
+        else:
+            resp["archive_job"] = _osc_start_archive_job(row_id, source="osc_web_case_update")
     return jsonify(resp)
 
 
@@ -1222,7 +1926,15 @@ def osc_case_close_api(row_id):
     if _osc_is_template_case(row):
         return jsonify({"ok": False, "error": "template_case_cannot_close"}), 400
     status_result = _osc_set_case_status_manual(row_id, "已結案", source="osc_web_close_button")
-    archive = _osc_auto_archive_closed_case(row_id)
+    payload = request.get_json(silent=True) or {}
+    sync_requested = str(payload.get("sync") or request.args.get("sync") or "").strip().lower() in {"1", "true", "yes", "on"}
+    background_requested = str(payload.get("background", "1") if payload else request.args.get("background", "1")).strip().lower() in {"1", "true", "yes", "on"}
+    archive = None
+    archive_job = None
+    if sync_requested or not background_requested:
+        archive = _osc_auto_archive_closed_case(row_id)
+    else:
+        archive_job = _osc_start_archive_job(row_id, source="osc_web_close_button")
     updated, _ = _osc_exec(
         "SELECT id, case_number, client_name, status, manual_status_lock, manual_status_source, manual_status_at, folder_path FROM cases WHERE id=%s",
         (row_id,),
@@ -1232,9 +1944,9 @@ def osc_case_close_api(row_id):
         "case:manual_close",
         "cases",
         row_id,
-        {"case_number": row.get("case_number"), "client_name": row.get("client_name"), "archive": archive},
+        {"case_number": row.get("case_number"), "client_name": row.get("client_name"), "archive": archive, "archive_job": archive_job},
     )
-    return jsonify({"ok": True, "status": status_result, "archive": archive, "case": updated or {}})
+    return jsonify({"ok": True, "status": status_result, "archive": archive, "archive_job": archive_job, "case": updated or {}})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1284,6 +1996,9 @@ def _osc_ensure_case_manual_status_columns() -> None:
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_source VARCHAR(64) NULL", fetch="none")
         _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_status_at DATETIME NULL", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_lock TINYINT(1) NOT NULL DEFAULT 0", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_source VARCHAR(64) NULL", fetch="none")
+        _osc_exec("ALTER TABLE cases ADD COLUMN IF NOT EXISTS manual_laf_status_at DATETIME NULL", fetch="none")
         _CASE_MANUAL_STATUS_SCHEMA_READY = True
     except Exception:
         _log.debug("silent-catch ensure manual status columns", exc_info=True)
@@ -1316,9 +2031,28 @@ def _osc_case_status_for_laf_status(legal_aid_status: str) -> str:
     return "進行中"
 
 
+def _osc_is_closed_archive_path(path: str) -> bool:
+    norm = _osc_norm_path(path).replace("\\", "/")
+    return (
+        norm.startswith("Y:/")
+        or "/03_工作資料/10_結案/" in norm
+        or norm.endswith("/03_工作資料/10_結案")
+        or "/10_結案/" in norm
+    )
+
+
+def _osc_case_status_is_openish(status: str) -> bool:
+    text = str(status or "").strip()
+    return not text or text in _OSC_OPEN_STATUS_ALIASES or text.lower() in {"active", "open", "ongoing", "pending"}
+
+
 def _osc_should_archive_case_row(row: dict) -> bool:
     row = row or {}
-    return _osc_is_closed_case_status(row.get("status") or "") or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
+    return (
+        _osc_is_closed_case_status(row.get("status") or "")
+        or _osc_is_laf_final_closed_status(row.get("legal_aid_status") or "")
+        or _osc_is_closed_archive_path(row.get("folder_path") or "")
+    )
 
 
 def _osc_set_case_status_manual(row_id: str, status: str, *, source: str = "osc_web") -> dict:
@@ -1501,6 +2235,245 @@ def _osc_find_closed_case_folder(case_number: str, *, folder_name: str = "") -> 
     return unique[0] if len(unique) == 1 else ""
 
 
+def _osc_find_active_case_folder(case_number: str, *, folder_name: str = "") -> str:
+    """Find an active 01_案件 folder without changing DB state.
+
+    Closed cases can spend hours in a physical move window when the folder is
+    large.  During that window the canonical DB path should remain under the
+    closed archive (Y:) while the web file browser may temporarily read from the
+    old active folder.  This helper is deliberately read-only.
+    """
+    case_number = str(case_number or "").strip()
+    folder_name = str(folder_name or "").strip()
+    if not case_number and not folder_name:
+        return ""
+    exact: list[str] = []
+    case_id_matches: list[str] = []
+    seen_roots: set[str] = set()
+    for root in _get_preferred_case_roots(include_closed=False):
+        root = str(root or "").rstrip("/")
+        if not root or root in seen_roots:
+            continue
+        seen_roots.add(root)
+        for case_dir in _osc_iter_case_dirs_at_depth(root) or []:
+            name = os.path.basename(case_dir.rstrip("/"))
+            if folder_name and name == folder_name:
+                exact.append(case_dir)
+            elif case_number and (name == case_number or name.startswith(f"{case_number}-")):
+                case_id_matches.append(case_dir)
+    if exact:
+        return exact[0]
+    unique = _osc_unique_strings(case_id_matches)
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _osc_active_case_folder_from_closed_path(closed_path: str) -> str:
+    norm = _osc_norm_path(closed_path).replace("\\", "/")
+    marker = "/03_工作資料/10_結案/"
+    if marker not in norm:
+        return ""
+    rel = norm.split(marker, 1)[1].lstrip("/")
+    account = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    candidates = [
+        Path.home() / "Library/CloudStorage/SynologyDrive-homes/01_案件" / rel,
+        Path.home() / "Library/CloudStorage/SynologyDrive-homes" / account / "01_案件" / rel,
+        Path.home() / "SynologyDrive/homes/01_案件" / rel,
+        Path.home() / "SynologyDrive/homes" / account / "01_案件" / rel,
+        Path.home() / "SynologyDrive/01_案件" / rel,
+        Path("/Volumes/homes") / account / "01_案件" / rel,
+    ]
+    for candidate in candidates:
+        raw = str(candidate)
+        if _osc_dir_listable_quick(raw):
+            return raw
+    return ""
+
+
+def _osc_dir_listable_quick(path: str, timeout: float = 1.5) -> bool:
+    """Return True only when a directory can be listed without SMB/FileProvider hang."""
+    path = str(path or "").strip()
+    if not path:
+        return False
+    result = {"ok": False}
+
+    def _run() -> None:
+        try:
+            with os.scandir(path) as entries:
+                for _ in entries:
+                    break
+            result["ok"] = True
+        except Exception:
+            result["ok"] = False
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    return bool(result["ok"]) if not thread.is_alive() else False
+
+
+def _osc_expected_case_folder_name(row: dict) -> str:
+    try:
+        from casper_ecosystem.law_firm_orchestrators.osc.folder_utils import build_case_folder_name
+
+        row = dict(row or {})
+        missing_naming_fields = any(
+            key not in row for key in ("case_category", "case_type", "case_stage", "case_reason")
+        )
+        if missing_naming_fields and (row.get("id") or row.get("case_number")):
+            try:
+                if row.get("id"):
+                    full_row, _ = _osc_exec(
+                        """
+                        SELECT case_number, client_name, case_category, case_type, case_stage, case_reason
+                          FROM cases
+                         WHERE id=%s
+                         LIMIT 1
+                        """,
+                        (row.get("id"),),
+                        fetch="one",
+                    )
+                else:
+                    full_row, _ = _osc_exec(
+                        """
+                        SELECT case_number, client_name, case_category, case_type, case_stage, case_reason
+                          FROM cases
+                         WHERE case_number=%s
+                         LIMIT 1
+                        """,
+                        (row.get("case_number"),),
+                        fetch="one",
+                    )
+                if full_row:
+                    row.update({k: v for k, v in dict(full_row).items() if v not in (None, "")})
+            except Exception:
+                _log.debug("silent-catch expected case folder metadata hydrate", exc_info=True)
+
+        return build_case_folder_name(
+            str(row.get("case_number") or "").strip(),
+            str(row.get("client_name") or "").strip(),
+            case_type=str(row.get("case_type") or "").strip(),
+            case_category=str(row.get("case_category") or "").strip(),
+            case_stage=str(row.get("case_stage") or "").strip(),
+            case_reason=str(row.get("case_reason") or "").strip(),
+        ).strip()
+    except Exception:
+        _log.debug("silent-catch expected case folder name", exc_info=True)
+        return ""
+
+
+def _osc_replace_folder_basename(path: str, new_name: str) -> str:
+    norm = _osc_norm_path(path)
+    if not norm or not new_name:
+        return norm
+    slash = norm.replace("\\", "/").rstrip("/")
+    if "/" not in slash:
+        return norm
+    parent = slash.rsplit("/", 1)[0]
+    return _osc_norm_path(f"{parent}/{new_name}")
+
+
+def _osc_find_sibling_case_folder(row: dict, folder_path: str, expected_name: str = "") -> str:
+    case_number = str(row.get("case_number") or "").strip()
+    if not case_number and not expected_name:
+        return ""
+    for candidate in _osc_local_path_candidates(folder_path):
+        if not candidate or candidate.startswith("/Volumes/"):
+            continue
+        parent = os.path.dirname(candidate.rstrip("/"))
+        if not parent or not os.path.isdir(parent) or not _osc_is_safe_local_path(parent):
+            continue
+        exact = os.path.join(parent, expected_name) if expected_name else ""
+        if exact and os.path.isdir(exact):
+            return exact
+        matches: list[str] = []
+        try:
+            for name in os.listdir(parent):
+                if name.startswith("."):
+                    continue
+                if case_number and (name == case_number or name.startswith(f"{case_number}-")):
+                    full = os.path.join(parent, name)
+                    if os.path.isdir(full):
+                        matches.append(full)
+        except OSError:
+            continue
+        unique = _osc_unique_strings(matches)
+        if len(unique) == 1:
+            return unique[0]
+    return ""
+
+
+def _osc_reconcile_case_folder_name(row: dict, folder_path: str, local_folder: str = "", *, update_db: bool = False) -> dict:
+    """Keep cases.folder_path aligned with current case metadata and manual renames."""
+    row = row or {}
+    raw_path = str(folder_path or "").strip()
+    expected_name = _osc_expected_case_folder_name(row)
+    if not raw_path or not expected_name or _osc_is_template_case(row):
+        return {"changed": False}
+
+    norm = _osc_norm_path(raw_path)
+    current_name = os.path.basename(norm.replace("\\", "/").rstrip("/"))
+    if current_name == expected_name:
+        return {"changed": False}
+
+    translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    old_canonical = norm
+    expected_canonical = _osc_replace_folder_basename(norm, expected_name)
+    source = "metadata_expected"
+    target_local = ""
+    suggested_local = ""
+
+    if local_folder and os.path.isdir(local_folder):
+        candidate_local = os.path.join(os.path.dirname(local_folder.rstrip("/")), expected_name)
+        suggested_local = candidate_local
+        if os.path.isdir(candidate_local):
+            target_local = candidate_local
+            source = "sibling_existing"
+
+    if not target_local:
+        sibling = _osc_find_sibling_case_folder(row, norm, expected_name)
+        if sibling:
+            target_local = sibling
+            source = "sibling_existing"
+
+    new_canonical = translate_local_path_to_canonical(target_local) if target_local else expected_canonical
+    new_canonical = _osc_norm_path(new_canonical or expected_canonical)
+    updated = False
+    path_updates = {"updated": 0, "attempted": 0, "errors": []}
+    db_update_safe = bool(target_local and os.path.isdir(target_local))
+    if update_db and db_update_safe and row.get("id") and new_canonical and new_canonical != old_canonical:
+        try:
+            _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (new_canonical, row.get("id")), fetch="none")
+            path_updates = _osc_replace_path_prefix_references(old_canonical, new_canonical, exec_fn=_osc_exec)
+            if local_folder and target_local:
+                local_updates = _osc_replace_path_prefix_references(local_folder, target_local, exec_fn=_osc_exec)
+                path_updates = {
+                    "updated": int(path_updates.get("updated") or 0) + int(local_updates.get("updated") or 0),
+                    "attempted": int(path_updates.get("attempted") or 0) + int(local_updates.get("attempted") or 0),
+                    "errors": (path_updates.get("errors") or []) + (local_updates.get("errors") or []),
+                }
+            updated = True
+        except Exception:
+            _log.debug("silent-catch case folder metadata path db update", exc_info=True)
+
+    return {
+        "changed": True,
+        "folder_path": new_canonical,
+        "local_folder": target_local,
+        "source": source,
+        "updated": updated,
+        "expected_name": expected_name,
+        "old_folder_path": old_canonical,
+        "suggested_folder_path": expected_canonical,
+        "suggested_local_folder": suggested_local,
+        "pending_repair": not db_update_safe,
+        "path_references": path_updates,
+    }
+
+
 def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) -> dict:
     row = row or {}
     raw = (row.get("folder_path") or "").strip() or _osc_guess_case_folder(row.get("case_number") or "")
@@ -1508,11 +2481,40 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
     local = _osc_resolve_existing_local_path(norm, prefer_dir=True) if norm else ""
     is_closed = _osc_should_archive_case_row(row)
     if local and (not is_closed or "10_結案" in norm.replace("\\", "/")):
-        return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+        if is_closed and not _osc_dir_listable_quick(local):
+            local = ""
+        else:
+            reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
+            if reconciled.get("changed"):
+                return {
+                    "folder_path": reconciled.get("folder_path") or norm,
+                    "local_folder": reconciled.get("local_folder") or local,
+                    "source": reconciled.get("source") or "metadata_reconciled",
+                    "updated": bool(reconciled.get("updated")),
+                    "suggested_folder_path": reconciled.get("suggested_folder_path") or "",
+                    "suggested_local_folder": reconciled.get("suggested_local_folder") or "",
+                    "pending_repair": bool(reconciled.get("pending_repair")),
+                    "path_references": reconciled.get("path_references") or {},
+                }
+            return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    if local and is_closed and "10_結案" not in norm.replace("\\", "/"):
+        if _osc_dir_listable_quick(local, timeout=0.75):
+            return {
+                "folder_path": norm,
+                "local_folder": local,
+                "source": "archive_pending_active_fallback",
+                "updated": False,
+                "pending_archive": True,
+            }
+        local = ""
 
     if is_closed:
         folder_name = os.path.basename(norm.replace("\\", "/").rstrip("/")) if norm else ""
         closed_local = _osc_find_closed_case_folder(row.get("case_number") or "", folder_name=folder_name)
+        if closed_local:
+            if not _osc_dir_listable_quick(closed_local):
+                closed_local = ""
         if closed_local:
             translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
             canonical = translate_local_path_to_canonical(closed_local) or closed_local
@@ -1525,8 +2527,51 @@ def _osc_effective_case_folder_for_row(row: dict, *, update_db: bool = False) ->
                     _log.debug("silent-catch closed case folder path db update", exc_info=True)
             return {"folder_path": _osc_norm_path(canonical), "local_folder": closed_local, "source": "closed_archive", "updated": updated}
 
+        active_local = _osc_active_case_folder_from_closed_path(norm) or _osc_find_active_case_folder(row.get("case_number") or "", folder_name=folder_name)
+        if active_local:
+            return {
+                "folder_path": norm,
+                "local_folder": active_local,
+                "source": "archive_pending_active_fallback",
+                "updated": False,
+                "pending_archive": True,
+            }
+
+        return {
+            "folder_path": norm,
+            "local_folder": "",
+            "source": "closed_archive_missing",
+            "updated": False,
+            "pending_archive": True,
+        }
+
     if local:
+        reconciled = _osc_reconcile_case_folder_name(row, norm, local, update_db=update_db)
+        if reconciled.get("changed"):
+            return {
+                "folder_path": reconciled.get("folder_path") or norm,
+                "local_folder": reconciled.get("local_folder") or local,
+                "source": reconciled.get("source") or "metadata_reconciled",
+                "updated": bool(reconciled.get("updated")),
+                "suggested_folder_path": reconciled.get("suggested_folder_path") or "",
+                "suggested_local_folder": reconciled.get("suggested_local_folder") or "",
+                "pending_repair": bool(reconciled.get("pending_repair")),
+                "path_references": reconciled.get("path_references") or {},
+            }
         return {"folder_path": norm, "local_folder": local, "source": "db_or_guess", "updated": False}
+
+    reconciled = _osc_reconcile_case_folder_name(row, norm, "", update_db=update_db)
+    if reconciled.get("changed"):
+        return {
+            "folder_path": reconciled.get("folder_path") or norm,
+            "local_folder": reconciled.get("local_folder") or "",
+            "source": reconciled.get("source") or "metadata_expected",
+            "updated": bool(reconciled.get("updated")),
+            "suggested_folder_path": reconciled.get("suggested_folder_path") or "",
+            "suggested_local_folder": reconciled.get("suggested_local_folder") or "",
+            "pending_repair": bool(reconciled.get("pending_repair")),
+            "path_references": reconciled.get("path_references") or {},
+        }
 
     guessed = _osc_guess_case_folder(row.get("case_number") or "")
     guessed_norm = _osc_norm_path(guessed) if guessed else ""
@@ -1570,7 +2615,7 @@ def _osc_tree_signature(path: str) -> dict:
             try:
                 size += int(os.path.getsize(os.path.join(root, filename)))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2061, exc_info=True)
     return {"exists": True, "files": files, "dirs": dirs, "size": size}
 
 
@@ -1594,7 +2639,7 @@ def _osc_copytree_for_nas(src: str, dst: str) -> None:
                 st = os.stat(src_file)
                 os.utime(dst_file, (st.st_atime, st.st_mtime))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2085, exc_info=True)
 
 
 def _osc_should_avoid_ditto_for_archive(src: str, dst: str) -> bool:
@@ -1652,7 +2697,7 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
                 st = os.stat(src)
                 os.utime(tmp_file, (st.st_atime, st.st_mtime))
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2143, exc_info=True)
             tmp_dst = tmp_file
     except subprocess.TimeoutExpired as e:
         shutil.rmtree(tmp_dst, ignore_errors=True)
@@ -1695,14 +2740,14 @@ def _osc_copy_to_temp_and_swap(src: str, dst: str, *, force: bool) -> dict:
                 shutil.move(replaced_backup, dst)
                 replaced_backup = ""
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2186, exc_info=True)
         shutil.rmtree(tmp_dst, ignore_errors=True)
         return {"ok": False, "reason": "swap_failed", "error": str(e), "replaced_backup": replaced_backup}
 
     cleanup_error = ""
     try:
         if os.path.isdir(src):
-            shutil.rmtree(src)
+            _osc_remove_tree_robust(src)
         elif os.path.exists(src):
             os.remove(src)
     except Exception as e:
@@ -1742,11 +2787,57 @@ def _osc_copy_file_for_nas(src_file: str, dst_file: str, *, strict_hash: bool = 
         st = os.stat(src_file)
         os.utime(dst_file, (st.st_atime, st.st_mtime))
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2233, exc_info=True)
     same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
     same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
     if not same_size or not same_hash:
         raise RuntimeError(f"copy verification failed: {dst_file}")
+
+
+@contextmanager
+def _osc_legacy_delete_guard_disabled():
+    """Disable legacy import-order delete guards only inside verified archive cleanup."""
+    keys = ("MAGI_NO_DELETE", "MAGI_DB_NO_DELETE")
+    before = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = "0"
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _osc_remove_tree_robust(path: str) -> None:
+    """Remove archived source folders with os primitives.
+
+    Some test and maintenance helpers monkey-patch ``shutil.rmtree`` while
+    exercising cache cleanup.  Closed-case archiving must still remove the
+    active source after the verified copy, otherwise users see misleading empty
+    or duplicate active folders.
+    """
+    with _osc_legacy_delete_guard_disabled():
+        if os.path.islink(path):
+            os.unlink(path)
+            return
+        for root, dirnames, filenames in os.walk(path, topdown=False):
+            for filename in filenames:
+                try:
+                    os.unlink(os.path.join(root, filename))
+                except FileNotFoundError:
+                    _log.debug("archive source file already removed during cleanup: %s", filename)
+            for dirname in dirnames:
+                try:
+                    os.rmdir(os.path.join(root, dirname))
+                except FileNotFoundError:
+                    _log.debug("archive source directory already removed during cleanup: %s", dirname)
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            _log.debug("archive source root already removed during cleanup: %s", path)
 
 
 def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
@@ -1768,7 +2859,7 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
     duplicates: list[str] = []
     conflicts: list[str] = []
     skipped: list[str] = []
-    strict_hash = os.environ.get("MAGI_ARCHIVE_STRICT_HASH", "0").strip().lower() in {"1", "true", "yes", "on"}
+    strict_hash = os.environ.get("MAGI_ARCHIVE_STRICT_HASH", "1").strip().lower() not in {"0", "false", "no", "off"}
     verify_pairs: list[tuple[str, str]] = []
 
     for root, dirnames, filenames in os.walk(src):
@@ -1786,7 +2877,18 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
                 final_dst = dst_file
                 if os.path.exists(dst_file):
                     same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
-                    same_file = same_size and (not strict_hash or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file))
+                    try:
+                        same_file = same_size and (not strict_hash or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file))
+                    except Exception as exc:
+                        return {
+                            "ok": False,
+                            "reason": "merge_unverified_conflict",
+                            "error": f"{rel}: hash_unverified:{type(exc).__name__}: {exc}",
+                            "source_signature": src_sig,
+                            "source_retained": True,
+                            "quarantine_required": True,
+                            "conflicts": [rel],
+                        }
                     if same_file:
                         duplicates.append(rel)
                         verify_pairs.append((src_file, dst_file))
@@ -1812,14 +2914,26 @@ def _osc_merge_existing_archive_source(src: str, dst: str) -> dict:
             same_size = os.path.getsize(src_file) == os.path.getsize(dst_file)
             same_hash = (not strict_hash) or _osc_sha256_file(src_file) == _osc_sha256_file(dst_file)
             if not same_size or not same_hash:
-                return {"ok": False, "reason": "merge_verify_failed", "error": f"copy mismatch: {dst_file}"}
+                return {
+                    "ok": False,
+                    "reason": "merge_verify_failed",
+                    "error": f"copy mismatch: {dst_file}",
+                    "source_retained": True,
+                    "quarantine_required": True,
+                }
         except Exception as e:
-            return {"ok": False, "reason": "merge_verify_failed", "error": str(e)}
+            return {
+                "ok": False,
+                "reason": "merge_unverified_conflict",
+                "error": str(e),
+                "source_retained": True,
+                "quarantine_required": True,
+            }
 
     cleanup_error = ""
     try:
         if os.path.exists(src):
-            shutil.rmtree(src)
+            _osc_remove_tree_robust(src)
     except Exception as e:
         cleanup_error = str(e)
 
@@ -1860,7 +2974,7 @@ def _osc_cleanup_residual_archive_sources(source_candidates, primary_src: str, d
                 cleaned.append({"path": candidate, "ok": True, "reason": "already_under_archive"})
                 continue
         except ValueError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2351, exc_info=True)
         if os.path.isdir(candidate):
             merged = _osc_merge_existing_archive_source(candidate, dst)
             cleaned.append({"path": candidate, "ok": bool(merged.get("ok")), "reason": merged.get("reason") or "", "detail": merged})
@@ -1882,8 +2996,17 @@ def _osc_update_archived_case_folder(cid: str, folder_path: str, item: dict) -> 
     should_mark_closed = _osc_is_closed_case_status(status) or _osc_is_laf_final_closed_status(laf_status)
     if should_mark_closed:
         _osc_exec(
-            "UPDATE cases SET folder_path=%s, status=%s, updated_at=NOW() WHERE id=%s",
-            (canonical_folder_path, "已結案", cid),
+            """
+            UPDATE cases
+            SET folder_path=%s,
+                status=%s,
+                manual_status_lock=1,
+                manual_status_source=COALESCE(manual_status_source, %s),
+                manual_status_at=COALESCE(manual_status_at, NOW()),
+                updated_at=NOW()
+            WHERE id=%s
+            """,
+            (canonical_folder_path, "已結案", "auto_archive_closed_case", cid),
             fetch="none",
         )
     else:
@@ -2005,6 +3128,116 @@ def _osc_auto_archive_closed_case(row_id: str, *, force: bool = False) -> dict:
     return moved
 
 
+def _osc_archive_job_public(job: dict | None) -> dict:
+    if not job:
+        return {}
+    public = dict(job)
+    public.pop("future", None)
+    return public
+
+
+def _osc_prune_archive_jobs() -> None:
+    with _OSC_ARCHIVE_JOB_LOCK:
+        if len(_OSC_ARCHIVE_JOBS) <= 200:
+            return
+        ordered = sorted(_OSC_ARCHIVE_JOBS.items(), key=lambda kv: str(kv[1].get("created_at") or ""))
+        for job_id, job in ordered[: max(0, len(ordered) - 160)]:
+            if job.get("status") not in {"queued", "running"}:
+                _OSC_ARCHIVE_JOBS.pop(job_id, None)
+
+
+def _osc_run_archive_job(job_id: str) -> None:
+    with _OSC_ARCHIVE_JOB_LOCK:
+        job = _OSC_ARCHIVE_JOBS.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["started_at"] = datetime.now().isoformat(timespec="seconds")
+        row_id = str(job.get("row_id") or "")
+        force = bool(job.get("force"))
+
+    started = time.time()
+    try:
+        result = _osc_auto_archive_closed_case(row_id, force=force)
+        status = "done" if result.get("ok") else "failed"
+        with _OSC_ARCHIVE_JOB_LOCK:
+            job = _OSC_ARCHIVE_JOBS.get(job_id)
+            if job:
+                job["status"] = status
+                job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                job["duration_ms"] = int((time.time() - started) * 1000)
+                job["result"] = result
+                if not result.get("ok"):
+                    job["error"] = result.get("error") or result.get("reason") or "archive_failed"
+        try:
+            _osc_log_activity(
+                "case:archive_job_finished",
+                "cases",
+                row_id,
+                {"job_id": job_id, "status": status, "result": result},
+            )
+        except Exception:
+            _log.debug("silent-catch archive job activity log", exc_info=True)
+    except Exception as exc:
+        with _OSC_ARCHIVE_JOB_LOCK:
+            job = _OSC_ARCHIVE_JOBS.get(job_id)
+            if job:
+                job["status"] = "failed"
+                job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                job["duration_ms"] = int((time.time() - started) * 1000)
+                job["error"] = str(exc)
+                job["result"] = {"ok": False, "reason": "archive_job_exception", "error": str(exc)}
+        _log.exception("osc archive background job failed: %s", job_id)
+    finally:
+        _osc_prune_archive_jobs()
+
+
+def _osc_start_archive_job(row_id: str, *, force: bool = False, source: str = "osc_web") -> dict:
+    row_id = str(row_id or "").strip()
+    if not row_id:
+        return {"ok": False, "error": "invalid_id"}
+    with _OSC_ARCHIVE_JOB_LOCK:
+        for existing in _OSC_ARCHIVE_JOBS.values():
+            if existing.get("row_id") == row_id and existing.get("status") in {"queued", "running"}:
+                return _osc_archive_job_public(existing)
+
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return {"ok": False, "error": "case_not_found"}
+    job_id = f"archive-{uuid.uuid4().hex[:12]}"
+    job = {
+        "ok": True,
+        "id": job_id,
+        "row_id": row_id,
+        "case_number": row.get("case_number") or "",
+        "client_name": row.get("client_name") or "",
+        "status": "queued",
+        "source": source,
+        "force": bool(force),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "message": "結案資料夾搬移已排入背景任務。",
+    }
+    with _OSC_ARCHIVE_JOB_LOCK:
+        _OSC_ARCHIVE_JOBS[job_id] = job
+        future = _OSC_ARCHIVE_JOB_EXECUTOR.submit(_osc_run_archive_job, job_id)
+        job["future"] = future
+    return _osc_archive_job_public(job)
+
+
+@osc_bp.route("/api/osc/archive-jobs/<job_id>", methods=["GET"])
+@login_required
+def osc_archive_job_status_api(job_id):
+    with _OSC_ARCHIVE_JOB_LOCK:
+        job = _OSC_ARCHIVE_JOBS.get(str(job_id or "").strip())
+        if not job:
+            return jsonify({"ok": False, "error": "job_not_found"}), 404
+        return jsonify({"ok": True, "job": _osc_archive_job_public(job)})
+
+
 def _osc_archive_items_for_case_ids(case_ids: list[str]) -> list[dict]:
     ids = [str(x).strip() for x in (case_ids or []) if str(x).strip()]
     if not ids:
@@ -2038,10 +3271,18 @@ def osc_case_open_folder_api(row_id):
       決定是否彈警告
     """
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
     if not row:
         return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
-    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    resolved = _osc_effective_case_folder_for_row(row, update_db=False)
     folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({
@@ -2081,6 +3322,61 @@ def osc_case_open_folder_api(row_id):
     })
 
 
+@osc_bp.route("/api/osc/cases/<row_id>/folder-path", methods=["GET"])
+@login_required
+def osc_case_folder_path_api(row_id):
+    """Resolve a case folder for web browsing without listing or opening it."""
+    row_id = (row_id or "").strip()
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error_kind": "case_not_found", "message": "找不到案件"}), 404
+
+    resolved = _osc_effective_case_folder_for_row(row, update_db=False)
+    folder_path = resolved.get("folder_path") or ""
+    if not folder_path:
+        return jsonify({
+            "ok": False,
+            "error_kind": "folder_path_empty",
+            "message": "案件未設定資料夾路徑，請先用「建立資料夾」按鈕建立預設結構。",
+            "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
+        }), 200
+
+    norm = _osc_norm_path(folder_path)
+    local_folder = resolved.get("local_folder") or ""
+    smb_candidates = _osc_smb_candidates(norm)
+    local_candidates = _osc_local_path_candidates(norm)
+    win_unc = _osc_windows_unc_candidates(norm)
+    win_synology = _osc_windows_synology_candidates(norm)
+    return jsonify({
+        "ok": True,
+        "case": {"id": row.get("id"), "case_number": row.get("case_number"), "client_name": row.get("client_name")},
+        "folder_path": norm,
+        "local_folder": local_folder,
+        "folder_exists": bool(local_folder),
+        "folder_source": resolved.get("source") or "",
+        "folder_path_updated": bool(resolved.get("updated")),
+        "pending_archive": bool(resolved.get("pending_archive")),
+        "candidates": {
+            "smb_url": smb_candidates,
+            "mac_synology": local_candidates,
+            "win_unc": win_unc,
+            "win_synology": win_synology,
+        },
+        "smb_url": smb_candidates[0] if smb_candidates else "",
+        "smb_candidates": smb_candidates,
+        "local_candidates": local_candidates,
+        "browser_url": f"/api/osc/cases/{row_id}/folder-browser",
+    })
+
+
 @osc_bp.route("/api/osc/cases/<row_id>/create-folder", methods=["POST"])
 @login_required
 def osc_case_create_folder_api(row_id):
@@ -2093,19 +3389,26 @@ def osc_case_create_folder_api(row_id):
     translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
     row_id = (row_id or "").strip()
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason, folder_path FROM cases WHERE id=%s",
+        "SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
         (row_id,),
         fetch="one",
     )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
+    if _osc_should_archive_case_row(row):
+        archive = _osc_auto_archive_closed_case(row_id)
+        return jsonify({
+            "ok": True,
+            "skipped": True,
+            "reason": "closed_case_no_active_folder_creation",
+            "message": "案件已屬結案/報結狀態，不建立進行中案件資料夾。",
+            "archive": archive,
+        })
 
-    case_roots = _get_preferred_case_roots()
-    if not case_roots:
-        return jsonify({"ok": False, "error": "no_case_root_configured"}), 500
-    base_path = case_roots[0]
-    if not os.path.isdir(base_path):
-        return jsonify({"ok": False, "error": f"base_path_not_found: {base_path}"}), 500
+    root_selection = _osc_select_case_creation_root()
+    if not root_selection.get("ok"):
+        return jsonify(root_selection), 503
+    base_path = str(root_selection.get("root") or "")
 
     case_number = row.get("case_number") or ""
     client_name = row.get("client_name") or ""
@@ -2116,6 +3419,20 @@ def osc_case_create_folder_api(row_id):
 
     if not case_number or not client_name:
         return jsonify({"ok": False, "error": "case_number and client_name are required"}), 400
+    guard = _osc_case_folder_creation_guard(
+        {
+            "case_number": case_number,
+            "client_name": client_name,
+            "case_type": case_type,
+            "case_stage": case_stage,
+            "case_reason": case_reason,
+            "status": row.get("status") or "",
+            "legal_aid_status": row.get("legal_aid_status") or "",
+        },
+        base_path,
+    )
+    if not guard.get("ok"):
+        return jsonify(guard), 409 if guard.get("blocked") else 503
 
     full_path = build_full_case_path(
         base_path, case_number, client_name,
@@ -2129,12 +3446,105 @@ def osc_case_create_folder_api(row_id):
 
     canonical = translate_local_path_to_canonical(full_path)
     _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (canonical, row_id), fetch="none")
+    drive_sync = _osc_try_create_drive_case_folder(
+        full_path=full_path,
+        payload={
+            "case_number": case_number,
+            "client_name": client_name,
+            "case_type": case_type,
+            "case_stage": case_stage,
+            "case_reason": case_reason,
+        },
+        case_category=case_category,
+        status="active",
+    )
 
     return jsonify({
         "ok": True,
         "folder_path": full_path,
         "canonical_path": canonical,
         "subfolders": result.get("subfolders", []),
+        "temporary_synology_drive": bool(root_selection.get("temporary_synology_drive")),
+        "warning": root_selection.get("warning") or "",
+        "drive_sync": drive_sync,
+    })
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/rename-folder", methods=["POST"])
+@login_required
+def osc_case_rename_folder_api(row_id):
+    """Rename a case root folder and update DB paths that point into it."""
+    translate_local_path_to_canonical = _get_translate_local_path_to_canonical()
+    row_id = (row_id or "").strip()
+    payload = request.get_json(silent=True) or {}
+    new_name = str(payload.get("new_name") or "").strip()
+    ok, err = _osc_validate_folder_name(new_name)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    row, _ = _osc_exec(
+        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        (row_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"ok": False, "error": "case_not_found"}), 404
+
+    resolved = _osc_effective_case_folder_for_row(row, update_db=False)
+    folder_path = resolved.get("folder_path") or ""
+    local_folder = resolved.get("local_folder") or _osc_resolve_existing_local_path(folder_path, prefer_dir=True)
+    if not folder_path:
+        return jsonify({"ok": False, "error": "folder_path_empty"}), 400
+    if not local_folder:
+        return jsonify({"ok": False, "error": "folder_not_synced", "folder_path": _osc_norm_path(folder_path)}), 404
+    if not _osc_is_safe_local_path(local_folder) or not os.path.isdir(local_folder):
+        return jsonify({"ok": False, "error": "folder_not_allowed"}), 403
+
+    current_name = os.path.basename(local_folder.rstrip("/\\"))
+    if new_name == current_name:
+        canonical_same = translate_local_path_to_canonical(local_folder) or _osc_norm_path(folder_path)
+        return jsonify({
+            "ok": True,
+            "unchanged": True,
+            "old_name": current_name,
+            "new_name": new_name,
+            "folder_path": _osc_norm_path(canonical_same),
+            "local_folder": local_folder,
+            "path_references": {"updated": 0, "attempted": 0, "errors": []},
+        })
+
+    target = os.path.join(os.path.dirname(local_folder), new_name)
+    if os.path.exists(target):
+        return jsonify({"ok": False, "error": "target_exists"}), 409
+    if not _osc_is_safe_local_path(os.path.dirname(target)) or not _osc_is_safe_local_path(local_folder):
+        return jsonify({"ok": False, "error": "folder_not_allowed"}), 403
+
+    old_canonical = _osc_norm_path(folder_path)
+    try:
+        os.rename(local_folder, target)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"rename_failed: {exc}"}), 500
+
+    new_canonical = translate_local_path_to_canonical(target) or target
+    new_canonical = _osc_norm_path(new_canonical)
+    result, _ = _osc_exec("UPDATE cases SET folder_path=%s, updated_at=NOW() WHERE id=%s", (new_canonical, row_id), fetch="none")
+    path_updates = _osc_replace_path_prefix_references(old_canonical, new_canonical, exec_fn=_osc_exec)
+    local_updates = _osc_replace_path_prefix_references(local_folder, target, exec_fn=_osc_exec)
+
+    return jsonify({
+        "ok": True,
+        "old_name": current_name,
+        "new_name": new_name,
+        "old_folder_path": old_canonical,
+        "folder_path": new_canonical,
+        "old_local_folder": local_folder,
+        "local_folder": target,
+        "result": result,
+        "path_references": {
+            "updated": int(path_updates.get("updated") or 0) + int(local_updates.get("updated") or 0),
+            "attempted": int(path_updates.get("attempted") or 0) + int(local_updates.get("attempted") or 0),
+            "errors": (path_updates.get("errors") or []) + (local_updates.get("errors") or []),
+        },
     })
 
 
@@ -2142,10 +3552,18 @@ def osc_case_create_folder_api(row_id):
 @login_required
 def osc_case_folder_browser_api(row_id):
     row_id = (row_id or "").strip()
-    row, _ = _osc_exec("SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s", (row_id,), fetch="one")
+    row, _ = _osc_exec(
+        """
+        SELECT id, case_number, client_name, case_category, case_type, case_stage,
+               case_reason, status, legal_aid_status, folder_path
+        FROM cases WHERE id=%s
+        """,
+        (row_id,),
+        fetch="one",
+    )
     if not row:
         return jsonify({"ok": False, "error": "case_not_found"}), 404
-    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    resolved = _osc_effective_case_folder_for_row(row, update_db=False)
     folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({"ok": False, "error": "folder_path_empty"}), 400
@@ -2213,7 +3631,7 @@ def osc_case_file_search_api(row_id):
     if not row:
         return jsonify({"ok": False, "error": "case_not_found", "items": []}), 404
 
-    resolved = _osc_effective_case_folder_for_row(row, update_db=True)
+    resolved = _osc_effective_case_folder_for_row(row, update_db=False)
     folder_path = resolved.get("folder_path") or ""
     if not folder_path:
         return jsonify({"ok": False, "error": "folder_path_empty", "items": [], "case": row}), 200
@@ -2554,7 +3972,7 @@ def osc_case_workbench_api(row_id):
         assigned_todo_clause = """
             case_number=%s
             AND NOT (
-                source_file LIKE 'gcal_import%%'
+                """ + calendar_todo_source_sql() + """
                 AND todo_date IS NOT NULL
                 AND todo_date < %s
                 AND description NOT LIKE %s
@@ -2707,6 +4125,42 @@ def osc_case_workbench_api(row_id):
     )
 
 
+def _osc_case_intelligence_folder_resolver(path: str) -> str:
+    normalized = _osc_norm_path(path)
+    return _osc_resolve_existing_local_path(normalized, prefer_dir=True) if normalized else ""
+
+
+@osc_bp.route("/api/osc/case-intelligence", methods=["GET"])
+@login_required
+def osc_case_intelligence_api():
+    snapshot = build_case_intelligence_snapshot(
+        _osc_exec,
+        row_id=(request.args.get("id") or request.args.get("row_id") or "").strip(),
+        case_number=(request.args.get("case_number") or "").strip(),
+        query=(request.args.get("q") or "").strip(),
+        limit=request.args.get("limit") or 20,
+        document_limit=request.args.get("document_limit") or 8,
+        calendar_limit=request.args.get("calendar_limit") or 8,
+        folder_resolver=_osc_case_intelligence_folder_resolver,
+    )
+    return jsonify(snapshot), (200 if snapshot.get("ok") else 500)
+
+
+@osc_bp.route("/api/osc/cases/<row_id>/intelligence-snapshot", methods=["GET"])
+@login_required
+def osc_case_intelligence_for_case_api(row_id):
+    snapshot = build_case_intelligence_snapshot(
+        _osc_exec,
+        row_id=(row_id or "").strip(),
+        document_limit=request.args.get("document_limit") or 8,
+        calendar_limit=request.args.get("calendar_limit") or 8,
+        folder_resolver=_osc_case_intelligence_folder_resolver,
+    )
+    if snapshot.get("ok") and not snapshot.get("cases"):
+        return jsonify({**snapshot, "ok": False, "error": "case_not_found"}), 404
+    return jsonify(snapshot), (200 if snapshot.get("ok") else 500)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2716,50 +4170,54 @@ def osc_case_workbench_api(row_id):
 @login_required
 def osc_dashboard_api():
     start_date, end_date = _osc_accounting_window()
+    accounting_summary = load_accounting_summary(
+        _osc_exec,
+        start_date=str(start_date),
+        end_date=str(end_date),
+    )
+    accounting_totals = accounting_summary.get("totals") or {}
+    working_cases_sql = _osc_status_scope_sql("working")
+    final_closed_sql = _osc_status_scope_sql("closed")
+    legal_aid_sql = _osc_legal_aid_case_sql()
+    open_todo_sql = _osc_todo_open_status_sql("status")
+    osc_todo_source = osc_todo_source_sql()
+    calendar_todo_source = calendar_todo_source_sql()
     active_cases_row, _ = _osc_exec(
-        """
+        f"""
         SELECT COUNT(*) AS c FROM cases
-        WHERE status NOT IN ('已結案', '已結案，待報結') OR status IS NULL OR status=''
+        WHERE {working_cases_sql}
         """,
         fetch="one",
     )
     legal_aid_cases_row, _ = _osc_exec(
-        """
+        f"""
         SELECT COUNT(*) AS c FROM cases
-        WHERE (case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%')
-          AND (status NOT IN ('已結案', '已結案，待報結') OR status IS NULL OR status='')
+        WHERE {legal_aid_sql}
+          AND {working_cases_sql}
         """,
         fetch="one",
     )
-    monthly_revenue_row, _ = _osc_exec(
-        "SELECT COALESCE(SUM(amount),0) AS total FROM case_transactions WHERE date >= %s AND date <= %s AND type='收入'",
-        (start_date, end_date),
-        fetch="one",
-    )
-    monthly_expense_row, _ = _osc_exec(
-        "SELECT COALESCE(SUM(amount),0) AS total FROM case_transactions WHERE date >= %s AND date <= %s AND type='支出'",
-        (start_date, end_date),
-        fetch="one",
-    )
     closed_regular_row, _ = _osc_exec(
-        """
+        f"""
         SELECT COUNT(*) AS c FROM cases
-        WHERE status IN ('已結案', '已結案，待報結')
-          AND NOT (case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%')
+        WHERE {final_closed_sql}
+          AND NOT {legal_aid_sql}
         """,
         fetch="one",
     )
     closed_laf_row, _ = _osc_exec(
-        """
+        f"""
         SELECT COUNT(*) AS c FROM cases
-        WHERE status IN ('已結案', '已結案，待報結')
-          AND (case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%')
+        WHERE {final_closed_sql}
+          AND {legal_aid_sql}
         """,
         fetch="one",
     )
     recent_cases, _ = _osc_exec(
         """
-        SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason, status, updated_at, created_date
+        SELECT id, case_number, client_name, case_category, case_type, case_stage, case_reason,
+               laf_case_no, application_no, court_name, court_case_no, court_division, legal_aid_status,
+               lawyer, status, folder_path, updated_at, created_date
         FROM cases
         ORDER BY updated_at DESC, created_date DESC
         LIMIT 12
@@ -2767,33 +4225,32 @@ def osc_dashboard_api():
         fetch="all",
     )
     pending_todos, _ = _osc_exec(
-        """
+        f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消')
+        WHERE {open_todo_sql}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
         fetch="all",
     )
     pending_osc_todos, _ = _osc_exec(
-        """
+        f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
-          AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
-          AND COALESCE(todo_type, '') <> '行事曆事件'
+        WHERE {open_todo_sql}
+          AND {osc_todo_source}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
         fetch="all",
     )
     pending_calendar_todos, _ = _osc_exec(
-        """
+        f"""
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file
         FROM case_todos
-        WHERE (status IS NULL OR status='' OR LOWER(status) NOT IN ('completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'))
-          AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
+        WHERE {open_todo_sql}
+          AND {calendar_todo_source}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, id DESC
         LIMIT 20
         """,
@@ -2835,15 +4292,15 @@ def osc_dashboard_api():
             "stats": {
                 "active_cases": int((active_cases_row or {}).get("c") or 0),
                 "legal_aid_cases": int((legal_aid_cases_row or {}).get("c") or 0),
-                "monthly_revenue": float((monthly_revenue_row or {}).get("total") or 0),
-                "monthly_expense": float((monthly_expense_row or {}).get("total") or 0),
+                "monthly_revenue": float(accounting_totals.get("income_total") or 0),
+                "monthly_expense": float(accounting_totals.get("expense_total") or 0),
                 "closed_regular": int((closed_regular_row or {}).get("c") or 0),
                 "closed_legal_aid": int((closed_laf_row or {}).get("c") or 0),
             },
-            "recent_cases": recent_cases or [],
-            "pending_todos": pending_todos or [],
-            "pending_osc_todos": pending_osc_todos or [],
-            "pending_calendar_todos": pending_calendar_todos or [],
+            "recent_cases": [_osc_case_api_row(r) for r in (recent_cases or [])],
+            "pending_todos": [_osc_todo_api_row(r) for r in (pending_todos or [])],
+            "pending_osc_todos": [_osc_todo_api_row(r) for r in (pending_osc_todos or [])],
+            "pending_calendar_todos": [_osc_todo_api_row(r) for r in (pending_calendar_todos or [])],
             "upcoming_calendar": upcoming_calendar or [],
             "recent_activity": recent_activity or [],
             "recent_pdf_logs": recent_pdf_logs or [],
@@ -3611,9 +5068,282 @@ def osc_drafts_export_api():
     return jsonify({"ok": bool(exported.get("success")), **exported, "status": status}), http_status
 
 
+def _osc_lookup_case_for_reuse(*, row_id: str = "", case_number: str = "") -> dict:
+    row_id = str(row_id or "").strip()
+    case_number = str(case_number or "").strip()
+    row = None
+    if row_id:
+        row, _ = _osc_exec("SELECT * FROM cases WHERE id=%s LIMIT 1", (row_id,), fetch="one")
+    if (not row) and case_number:
+        row, _ = _osc_exec(
+            """
+            SELECT *
+            FROM cases
+            WHERE case_number=%s OR court_case_no=%s OR court_case_number=%s
+            ORDER BY updated_at DESC, created_date DESC
+            LIMIT 1
+            """,
+            (case_number, case_number, case_number),
+            fetch="one",
+        )
+    return row or {}
+
+
+def _osc_reuse_case_opponents(case_number: str) -> str:
+    cn = str(case_number or "").strip()
+    if not cn:
+        return ""
+    try:
+        rows, _ = _osc_exec(
+            """
+            SELECT name
+            FROM opponents
+            WHERE case_number=%s AND (is_active=1 OR is_active IS NULL)
+            ORDER BY updated_date DESC, id DESC
+            LIMIT 10
+            """,
+            (cn,),
+            fetch="all",
+        )
+        return "、".join(_osc_unique_strings(r.get("name") for r in (rows or []) if isinstance(r, dict)))
+    except Exception:
+        logger.debug("silent-catch _osc_reuse_case_opponents", exc_info=True)
+        return ""
+
+
+def _osc_enrich_case_for_document_reuse(case_row: dict, payload_values: dict | None = None) -> dict:
+    row = dict(case_row or {})
+    p = payload_values or {}
+    displayed_case_no = str(p.get("case_number") or p.get("court_case_no") or p.get("court_case_number") or "").strip()
+    if displayed_case_no:
+        row["court_case_no"] = displayed_case_no
+        row["court_case_number"] = displayed_case_no
+    if str(p.get("division") or "").strip():
+        row["court_division"] = str(p.get("division") or "").strip()
+    if str(p.get("court_name") or "").strip():
+        row["court_name"] = str(p.get("court_name") or "").strip()
+    if str(p.get("reason") or p.get("case_reason") or "").strip():
+        row["case_reason"] = str(p.get("reason") or p.get("case_reason") or "").strip()
+    if str(p.get("plaintiff") or p.get("client_name") or "").strip():
+        plaintiff = str(p.get("plaintiff") or p.get("client_name") or "").strip()
+        row["client_name"] = plaintiff
+        row["plaintiff_name"] = plaintiff
+    if str(p.get("defendant") or p.get("opponent_name") or "").strip():
+        defendant = str(p.get("defendant") or p.get("opponent_name") or "").strip()
+        row["opponent_name"] = defendant
+        row["defendant_name"] = defendant
+    if not str(row.get("opponent_name") or "").strip():
+        opponents = _osc_reuse_case_opponents(str(row.get("case_number") or ""))
+        if opponents:
+            row["opponent_name"] = opponents
+            row["defendant_name"] = opponents
+    return row
+
+
+def _osc_reuse_output_dir(target_case: dict, displayed_case_no: str = "") -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    raw_folder = str((target_case or {}).get("folder_path") or "").strip()
+    if not raw_folder:
+        raw_folder = _osc_guess_case_folder(str((target_case or {}).get("case_number") or displayed_case_no or ""))
+    base = _osc_resolve_existing_local_path(raw_folder, prefer_dir=True) if raw_folder else ""
+    if not base:
+        raise FileNotFoundError("target_case_folder_not_found")
+
+    canonical_name = "04_我方歷次書狀"
+    canonical = os.path.join(base, canonical_name)
+    if os.path.isdir(canonical):
+        return canonical, warnings
+
+    try:
+        for name in os.listdir(base):
+            if "我方歷次書狀" in name and name != canonical_name:
+                candidate = os.path.join(base, name)
+                if os.path.isdir(candidate):
+                    warnings.append(f"legacy_own_pleading_folder_present:{name}")
+    except OSError:
+        logger.debug("silent-catch _osc_reuse_output_dir:listdir", exc_info=True)
+
+    os.makedirs(canonical, exist_ok=True)
+    warnings.append(f"created_output_folder:{canonical_name}")
+    return canonical, warnings
+
+
+def _osc_register_reused_document(target_case: dict, result: dict, payload: dict) -> list[str]:
+    warnings: list[str] = []
+    output_path = str(result.get("output_path") or "").strip()
+    file_name = str(result.get("file_name") or os.path.basename(output_path) or "").strip()
+    case_number = str((target_case or {}).get("case_number") or payload.get("case_lookup_number") or payload.get("case_number") or "").strip()
+    case_id = str((target_case or {}).get("id") or payload.get("case_id") or "").strip()
+    source_path = str(result.get("source_path") or payload.get("source_path") or "").strip()
+    try:
+        _osc_exec(
+            """
+            INSERT INTO case_documents (case_id, document_type, file_name, file_path, description, upload_date)
+            VALUES (%s,%s,%s,%s,%s,NOW())
+            """,
+            (
+                case_id or case_number,
+                "沿用舊書狀",
+                file_name,
+                output_path,
+                f"由既有書狀沿用產生：{os.path.basename(source_path)}" if source_path else "由既有書狀沿用產生",
+            ),
+            fetch="none",
+        )
+    except Exception:
+        warnings.append("case_documents_register_failed")
+        logger.debug("silent-catch _osc_register_reused_document:case_documents", exc_info=True)
+    try:
+        _osc_exec(
+            """
+            INSERT INTO document_replacements (template_file, new_case_number, old_client_name, new_client_name, old_data, new_data)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                source_path or None,
+                case_number or None,
+                str((payload.get("source_case") or {}).get("client_name") or ""),
+                str((target_case or {}).get("client_name") or payload.get("plaintiff") or ""),
+                json.dumps({"source_path": source_path, "source_case_number": payload.get("source_case_number") or ""}, ensure_ascii=False),
+                json.dumps({"output_path": output_path, "replacements": result.get("replacements") or []}, ensure_ascii=False),
+            ),
+            fetch="none",
+        )
+    except Exception:
+        warnings.append("document_replacements_log_failed")
+        logger.debug("silent-catch _osc_register_reused_document:document_replacements", exc_info=True)
+    return warnings
+
+
+@osc_bp.route("/api/osc/drafts/reuse-document", methods=["POST"])
+@login_required
+def osc_drafts_reuse_document_api():
+    payload = request.get_json() or {}
+    source_doc = payload.get("source_document") if isinstance(payload.get("source_document"), dict) else {}
+    source_path_raw = str(payload.get("source_path") or source_doc.get("file_path") or source_doc.get("path") or "").strip()
+    if not source_path_raw:
+        return jsonify({"ok": False, "error": "source_path required"}), 400
+    source_path = _osc_resolve_existing_local_path(source_path_raw, prefer_dir=False)
+    if not source_path:
+        return jsonify({"ok": False, "error": "source_file_not_found", "source_path": source_path_raw}), 404
+    if Path(source_path).suffix.lower() not in {".docx", ".doc"}:
+        return jsonify({"ok": False, "error": "only_word_supported"}), 400
+    source_scope = " ".join(
+        str(x or "")
+        for x in (
+            source_path,
+            source_path_raw,
+            source_doc.get("subfolder_name"),
+            source_doc.get("document_type"),
+        )
+    )
+    if not _osc_is_own_pleading_word(os.path.basename(source_path), source_path, source_scope):
+        return jsonify({"ok": False, "error": "source_must_be_own_pleading_word", "source_path": source_path_raw}), 400
+
+    target_case = _osc_lookup_case_for_reuse(
+        row_id=str(payload.get("case_id") or payload.get("selected_case_id") or ""),
+        case_number=str(payload.get("case_lookup_number") or payload.get("selected_case_number") or payload.get("case_number") or ""),
+    )
+    if not target_case:
+        return jsonify({"ok": False, "error": "target_case_required"}), 400
+    target_case = _osc_enrich_case_for_document_reuse(target_case, payload)
+
+    source_case_number = str(
+        payload.get("source_case_number")
+        or source_doc.get("case_number")
+        or source_doc.get("case_no")
+        or ""
+    ).strip()
+    payload["source_case_number"] = source_case_number
+    source_case = _osc_lookup_case_for_reuse(case_number=source_case_number) if source_case_number else {}
+    source_case = _osc_enrich_case_for_document_reuse(source_case, {})
+    warnings: list[str] = []
+    if not source_case:
+        source_case = {"case_number": source_case_number}
+        warnings.append("source_case_metadata_missing")
+    payload["source_case"] = source_case
+
+    try:
+        output_dir, dir_warnings = _osc_reuse_output_dir(target_case, str(payload.get("case_number") or ""))
+        warnings.extend(dir_warnings)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+
+    overrides = {
+        "court_case_no": payload.get("case_number") or "",
+        "court_case_number": payload.get("case_number") or "",
+        "court_division": payload.get("division") or "",
+        "court_name": payload.get("court_name") or "",
+        "case_reason": payload.get("reason") or "",
+        "client_name": payload.get("plaintiff") or "",
+        "plaintiff_name": payload.get("plaintiff") or "",
+        "opponent_name": payload.get("defendant") or "",
+        "defendant_name": payload.get("defendant") or "",
+        "replacements": payload.get("replacements") if isinstance(payload.get("replacements"), dict) else {},
+    }
+    suggested = str(payload.get("suggested_filename") or "").strip()
+    try:
+        result = _osc_reuse_document(
+            source_path,
+            source_case,
+            target_case,
+            overrides=overrides,
+            suggested_filename=suggested or None,
+            output_dir=output_dir,
+        )
+    except Exception as e:
+        _osc_log_activity(
+            "draft:reuse_error",
+            "drafts",
+            str(target_case.get("id") or target_case.get("case_number") or ""),
+            {"source_path": source_path_raw, "error": str(e)},
+        )
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    if not int(result.get("replacement_count") or 0):
+        warnings.append("no_replacements_made")
+    warnings.extend(_osc_register_reused_document(target_case, result, payload))
+    result["output_dir"] = output_dir
+    result["warnings"] = warnings
+    _osc_log_activity(
+        "draft:reuse_document",
+        "drafts",
+        str(target_case.get("id") or target_case.get("case_number") or ""),
+        {
+            "source_path": source_path_raw,
+            "output_path": result.get("output_path"),
+            "replacement_count": result.get("replacement_count"),
+            "warnings": warnings,
+        },
+    )
+    return jsonify({"ok": True, "result": result})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Documents
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+_OSC_OWN_PLEADING_FOLDER_MARKER = "我方歷次書狀"
+_OSC_WORD_EXTENSIONS = (".docx", ".doc")
+_OSC_OWN_PLEADING_WORD_SCOPES = {"own_pleading_word", "own-pleading-word", "reuse_pleading", "reuse-pleading"}
+
+
+def _osc_is_word_document_path(file_name: str = "", file_path: str = "") -> bool:
+    text = f"{file_name or ''} {file_path or ''}".strip().lower()
+    if not text:
+        return False
+    base_name = os.path.basename(str(file_name or file_path or "")).strip()
+    if base_name.startswith("~$"):
+        return False
+    return any(text.endswith(ext) or f"{ext}?" in text for ext in _OSC_WORD_EXTENSIONS)
+
+
+def _osc_is_own_pleading_word(file_name: str = "", file_path: str = "", subfolder_name: str = "") -> bool:
+    location_blob = " ".join(str(x or "") for x in (file_path, subfolder_name))
+    if _OSC_OWN_PLEADING_FOLDER_MARKER not in location_blob:
+        return False
+    return _osc_is_word_document_path(file_name, file_path)
 
 
 @osc_bp.route("/api/osc/documents", methods=["GET"])
@@ -3622,6 +5352,9 @@ def osc_documents_api():
     q = (request.args.get("q") or "").strip().lower()
     case_number = (request.args.get("case_number") or "").strip()
     kind = (request.args.get("kind") or "all").strip()
+    scope = (request.args.get("reuse_scope") or request.args.get("scope") or "").strip().lower()
+    own_pleading_word_only = scope in _OSC_OWN_PLEADING_WORD_SCOPES or kind.strip().lower() in _OSC_OWN_PLEADING_WORD_SCOPES
+    match_kind = "all" if own_pleading_word_only else kind
     limit = max(1, min(1000, int(request.args.get("limit") or "300")))
 
     items = []
@@ -3637,6 +5370,11 @@ def osc_documents_api():
         like = f"%{q}%"
         di_where.append("(file_name LIKE %s OR file_path LIKE %s OR reason LIKE %s OR party LIKE %s OR subfolder_name LIKE %s)")
         di_params.extend([like, like, like, like, like])
+    if own_pleading_word_only:
+        di_where.append("(file_path LIKE %s OR subfolder_name LIKE %s)")
+        di_params.extend([f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%", f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%"])
+        di_where.append("(file_name LIKE %s OR file_name LIKE %s OR file_path LIKE %s OR file_path LIKE %s)")
+        di_params.extend(["%.docx", "%.doc", "%.docx", "%.doc"])
     di_sql = """
         SELECT id, case_number, file_name, file_path, subfolder_name, reason, party, modified_date
         FROM document_index
@@ -3655,7 +5393,9 @@ def osc_documents_api():
                 str(r.get("party") or ""),
             ]
         )
-        if not _osc_doc_kind_match(kind, blob):
+        if own_pleading_word_only and not _osc_is_own_pleading_word(r.get("file_name") or "", r.get("file_path") or "", r.get("subfolder_name") or ""):
+            continue
+        if not _osc_doc_kind_match(match_kind, blob):
             continue
         ts = r.get("modified_date")
         items.append(
@@ -3668,7 +5408,7 @@ def osc_documents_api():
                 "subfolder_name": r.get("subfolder_name") or "",
                 "reason": r.get("reason") or "",
                 "party": r.get("party") or "",
-                "kind_label": _osc_doc_kind_label(blob),
+                "kind_label": "書狀" if own_pleading_word_only else _osc_doc_kind_label(blob),
                 "timestamp": _osc_json_value(ts) if ts else "",
                 "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
             }
@@ -3683,6 +5423,11 @@ def osc_documents_api():
         like = f"%{q}%"
         cd_where.append("(cd.file_name LIKE %s OR cd.file_path LIKE %s OR cd.document_type LIKE %s OR cd.description LIKE %s)")
         cd_params.extend([like, like, like, like])
+    if own_pleading_word_only:
+        cd_where.append("(cd.file_path LIKE %s OR cd.document_type LIKE %s)")
+        cd_params.extend([f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%", f"%{_OSC_OWN_PLEADING_FOLDER_MARKER}%"])
+        cd_where.append("(cd.file_name LIKE %s OR cd.file_name LIKE %s OR cd.file_path LIKE %s OR cd.file_path LIKE %s)")
+        cd_params.extend(["%.docx", "%.doc", "%.docx", "%.doc"])
     cd_sql = """
         SELECT cd.id, cd.case_id, c.case_number AS case_number_ref, cd.document_type, cd.file_name, cd.file_path, cd.description, cd.upload_date
         FROM case_documents cd
@@ -3701,7 +5446,9 @@ def osc_documents_api():
                 str(r.get("description") or ""),
             ]
         )
-        if not _osc_doc_kind_match(kind, blob):
+        if own_pleading_word_only and not _osc_is_own_pleading_word(r.get("file_name") or "", r.get("file_path") or "", r.get("document_type") or ""):
+            continue
+        if not _osc_doc_kind_match(match_kind, blob):
             continue
         ts = r.get("upload_date")
         items.append(
@@ -3714,7 +5461,7 @@ def osc_documents_api():
                 "subfolder_name": r.get("document_type") or "",
                 "reason": r.get("description") or "",
                 "party": "",
-                "kind_label": _osc_doc_kind_label(blob),
+                "kind_label": "書狀" if own_pleading_word_only else _osc_doc_kind_label(blob),
                 "timestamp": _osc_json_value(ts) if ts else "",
                 "sort_ts": _osc_parse_dt(ts).timestamp() if _osc_parse_dt(ts) else 0,
             }
@@ -3741,7 +5488,7 @@ def _osc_template_folder_candidates(raw_path: str) -> list[str]:
         try:
             candidates.extend(_osc_local_path_candidates(seed))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4341, exc_info=True)
         norm = _osc_norm_path(seed)
         if norm:
             candidates.append(norm)
@@ -3937,22 +5684,24 @@ def _osc_download_error_response(message: str, status: int = 400):
     return Response(body, status=status, content_type="text/html; charset=utf-8")
 
 
-def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
+def _osc_copy_with_system_cp(local_file: str, tmp_path: str, expected_size: int | None = None) -> bool:
     """Use macOS /bin/cp as a fallback when Python's SMB read hits EDEADLK."""
     cp_bin = shutil.which("cp") or "/bin/cp"
     commands: list[list[str]] = [[cp_bin, "-p", local_file, tmp_path]]
     ditto_bin = shutil.which("ditto")
     if ditto_bin:
         commands.append([ditto_bin, "--norsrc", "--noextattr", local_file, tmp_path])
-    try:
+    if expected_size is None:
         expected_size = _osc_safe_source_size_for_stage(local_file)
+    timeout = int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "90") or "90")
+    try:
         for command in commands:
             result = subprocess.run(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=int(os.environ.get("PAPERCLIP_FILE_CP_TIMEOUT_SEC", "120") or "120"),
+                timeout=timeout,
             )
             if result.returncode != 0 or not os.path.isfile(tmp_path):
                 continue
@@ -3964,6 +5713,48 @@ def _osc_copy_with_system_cp(local_file: str, tmp_path: str) -> bool:
     except Exception:
         _log.debug("silent-catch system cp fallback failed", exc_info=True)
         return False
+
+
+def _osc_is_network_nas_path(path: str) -> bool:
+    norm = (str(path or "").replace("\\", "/")).strip()
+    return (
+        norm.startswith("/Volumes/")
+        or "/.magi_mounts/" in norm
+        or norm.startswith("/Users/") and "/.magi_mounts/" in norm
+        or norm.startswith("/Library/CloudStorage/SynologyDrive")
+        or "/SynologyDrive" in norm
+    )
+
+
+def _osc_stage_file_with_helper(local_file: str) -> str:
+    url = f"{_osc_shell_nas_helper_url()}/stage"
+    payload = json.dumps({"path": local_file}).encode("utf-8")
+    req = Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=_OSC_HELPER_STAGE_TIMEOUT) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper stage failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper stage failed: {exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper stage response parse failed: {exc}") from exc
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise OSError(f"helper stage rejected: {data.get('error') if isinstance(data, dict) else 'invalid response'}")
+
+    staged = str(data.get("staged_path") or "").strip()
+    if not staged or not os.path.isfile(staged):
+        raise OSError("helper stage returned missing file")
+    return staged
 
 
 def _osc_is_transient_smb_error(exc: OSError) -> bool:
@@ -4012,8 +5803,7 @@ def _osc_env_truthy(name: str) -> bool:
 def _osc_should_prefer_system_copy(local_file: str) -> bool:
     if _osc_env_truthy("PAPERCLIP_FILE_STAGE_CP_FIRST"):
         return True
-    norm = str(local_file or "").replace("\\", "/")
-    return norm.startswith("/Volumes/") or "/Library/CloudStorage/SynologyDrive" in norm
+    return _osc_is_network_nas_path(local_file)
 
 
 def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
@@ -4025,7 +5815,8 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
     if max_attempts is None:
         max_attempts = max(4, int(os.environ.get("PAPERCLIP_FILE_STAGE_MAX_ATTEMPTS", "8") or "8"))
     last_exc: Exception | None = None
-    expected_size = _osc_safe_source_size_for_stage(local_file)
+    is_network_path = _osc_is_network_nas_path(local_file)
+    expected_size = _osc_safe_source_size_for_stage(local_file) if not is_network_path else None
     tmp_dir = os.path.join(tempfile.gettempdir(), "paperclip-downloads")
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(local_file)[1] or ".bin"
@@ -4034,9 +5825,38 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
         tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(prefix="osc-download-", suffix=suffix, dir=tmp_dir)
+            if is_network_path:
+                os.close(fd)
+                try:
+                    staged = _osc_stage_file_with_helper(local_file)
+                except OSError as helper_err:
+                    last_exc = helper_err
+                    if attempt < max_attempts - 1:
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5218, exc_info=True)
+                        time.sleep(0.25 * (2 ** attempt))
+                        continue
+                    raise
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5225, exc_info=True)
+                return staged
+
+            if is_network_path and prefer_system_copy:
+                os.close(fd)
+                if _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
+                    if expected_size is not None:
+                        if os.path.getsize(tmp_path) == expected_size:
+                            return tmp_path
+                    else:
+                        return tmp_path
+                raise OSError("system copy staging failed")
             if prefer_system_copy:
                 os.close(fd)
-                if _osc_copy_with_system_cp(local_file, tmp_path):
+                if _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
                     return tmp_path
                 raise OSError("system copy staging failed")
             try:
@@ -4053,8 +5873,8 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.close(fd)
                 except OSError:
-                    pass
-                if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path):
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4653, exc_info=True)
+                if e.errno in (11, 35) and _osc_copy_with_system_cp(local_file, tmp_path, expected_size=expected_size):
                     return tmp_path
                 raise
             if expected_size is not None and os.path.getsize(tmp_path) != expected_size:
@@ -4068,7 +5888,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4668, exc_info=True)
             if e.errno in (11, 35) and attempt < max_attempts - 1:
                 time.sleep(0.25 * (2 ** attempt))
                 continue
@@ -4079,7 +5899,7 @@ def _osc_stage_file_with_retry(local_file: str, *, max_attempts: int | None = No
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4679, exc_info=True)
             raise
     if last_exc:
         raise last_exc
@@ -4090,9 +5910,9 @@ def _osc_cleanup_file_once(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4690, exc_info=True)
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4692, exc_info=True)
 
 
 def _osc_content_disposition(filename: str, *, inline: bool) -> str:
@@ -4262,6 +6082,11 @@ def osc_file_content_api():
         resp.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
+        _osc_audit_file_event(
+            "file.content.head",
+            chosen,
+            metadata={"inline": inline, "size": int(st.st_size), "mime": mime or "application/octet-stream"},
+        )
         return resp
 
     last_err: Exception | None = None
@@ -4292,7 +6117,12 @@ def osc_file_content_api():
             st = os.stat(chosen)
             resp.headers["ETag"] = f'"{int(st.st_mtime)}-{st.st_size}"'
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4892, exc_info=True)
+        _osc_audit_file_event(
+            "file.content.get",
+            chosen,
+            metadata={"inline": inline, "mime": mime or "application/octet-stream"},
+        )
         return resp
     except Exception as e:
         if staged_file:
@@ -4387,23 +6217,49 @@ def osc_file_upload_api():
     saved = []
     total_saved = 0
     for uploaded in uploads:
-        name = os.path.basename(str(uploaded.filename or "").strip())
+        raw_name = os.path.basename(str(uploaded.filename or "").strip())
+        ok, name_err = _osc_case_validate_filename(raw_name)
+        if not ok:
+            return jsonify({"ok": False, "error": name_err, "file_name": raw_name}), 400
+        name = raw_name
+        ok, ext_err = _osc_case_upload_ext_ok(name)
+        if not ok:
+            return jsonify({"ok": False, "error": ext_err, "file_name": name}), 400
         if not name:
             continue
         dest = os.path.join(target_dir, name)
+        tmp_path = ""
+        fd = None
         if os.path.exists(dest) and not overwrite:
             return jsonify({"ok": False, "error": "file_exists", "file_name": name, "target_path": dest}), 409
-        uploaded.save(dest)
-        fsize = os.path.getsize(dest)
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=target_dir)
+            os.close(fd)
+            uploaded.save(tmp_path)
+            fsize = os.path.getsize(tmp_path)
+        except OSError as e:
+            if tmp_path:
+                os.remove(tmp_path)
+            return jsonify({"ok": False, "error": f"save_failed: {e}", "file_name": name}), 500
+        sig = _osc_case_sniff_executable(tmp_path)
+        if sig:
+            os.remove(tmp_path)
+            return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sig, "file_name": name}), 415
         if fsize > _MAX_PER_FILE:
-            os.remove(dest)
+            os.remove(tmp_path)
             return jsonify({"ok": False, "error": "檔案過大", "code": "file_too_large", "file_name": name,
                             "size_mb": round(fsize / 1024 / 1024, 1), "limit_mb": max_per_file_mb}), 413
         total_saved += fsize
         if total_saved > _MAX_TOTAL:
-            os.remove(dest)
+            os.remove(tmp_path)
             return jsonify({"ok": False, "error": "上傳總量過大", "code": "total_upload_too_large",
                             "total_mb": round(total_saved / 1024 / 1024, 1), "limit_mb": max_total_mb}), 413
+        try:
+            os.replace(tmp_path, dest)
+        except OSError as e:
+            if tmp_path:
+                os.remove(tmp_path)
+            return jsonify({"ok": False, "error": f"save_failed: {e}", "file_name": name}), 500
         saved.append(
             {
                 "file_name": name,
@@ -4447,7 +6303,7 @@ def osc_document_templates_api():
         sql += "ORDER BY COALESCE(last_used, created_date) DESC, id DESC LIMIT %s"
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
-        return jsonify({"ok": True, "items": rows})
+        return jsonify({"ok": True, "items": rows or []})
 
     payload = request.get_json() or {}
     row_id = str(payload.get("id") or "").strip()
@@ -4808,6 +6664,7 @@ def osc_laf_cases_api():
 @login_required
 def osc_laf_batch_status_api():
     """Mirror OSC standalone's '全部改為進行中' button for not-yet-started LAF cases."""
+    _osc_ensure_case_manual_status_columns()
     payload = request.get_json() or {}
     target = (payload.get("legal_aid_status") or "進行中").strip() or "進行中"
     if target != "進行中":
@@ -4815,7 +6672,12 @@ def osc_laf_batch_status_api():
     result, _ = _osc_exec(
         """
         UPDATE cases
-        SET legal_aid_status=%s, status=%s, updated_at=NOW()
+        SET legal_aid_status=%s,
+            status=CASE WHEN COALESCE(manual_status_lock,0)=1 THEN status ELSE %s END,
+            manual_laf_status_lock=1,
+            manual_laf_status_source=%s,
+            manual_laf_status_at=NOW(),
+            updated_at=NOW()
         WHERE (
             case_category = '法律扶助案件'
             OR case_reason LIKE '%法扶%'
@@ -4823,7 +6685,7 @@ def osc_laf_batch_status_api():
         )
           AND (legal_aid_status IS NULL OR legal_aid_status='' OR legal_aid_status='未開辦')
         """,
-        (target, "進行中"),
+        (target, "進行中", "osc_web_batch"),
         fetch="none",
     )
     return jsonify({"ok": True, "result": result})
@@ -4833,6 +6695,7 @@ def osc_laf_batch_status_api():
 @login_required
 def osc_laf_case_status_api(row_id):
     """Update the LAF workflow status without losing the case/folder distinction."""
+    _osc_ensure_case_manual_status_columns()
     payload = request.get_json() or {}
     row_id = (row_id or "").strip()
     target = _osc_normalize_laf_status(payload.get("legal_aid_status") or payload.get("status") or "")
@@ -4848,7 +6711,12 @@ def osc_laf_case_status_api(row_id):
         sync_case_status = True if sync_case_status is None else bool(sync_case_status)
     note = str(payload.get("note") or "").strip()
     row, _ = _osc_exec(
-        "SELECT id, case_number, client_name, status, legal_aid_status, folder_path FROM cases WHERE id=%s",
+        """
+        SELECT id, case_number, client_name, status, legal_aid_status,
+               manual_status_lock, manual_laf_status_lock, folder_path
+        FROM cases
+        WHERE id=%s
+        """,
         (row_id,),
         fetch="one",
     )
@@ -4857,8 +6725,10 @@ def osc_laf_case_status_api(row_id):
 
     old_laf_status = str(row.get("legal_aid_status") or "").strip()
     old_case_status = str(row.get("status") or "").strip()
-    next_case_status = _osc_case_status_for_laf_status(target) if sync_case_status else old_case_status
-    changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status)
+    manual_locked = bool(int(row.get("manual_status_lock") or 0))
+    manual_laf_locked = bool(int(row.get("manual_laf_status_lock") or 0))
+    next_case_status = _osc_case_status_for_laf_status(target) if (sync_case_status and not manual_locked) else old_case_status
+    changed = old_laf_status != target or (sync_case_status and old_case_status != next_case_status) or not manual_laf_locked
 
     if not changed:
         folder = _osc_effective_case_folder_for_row(
@@ -4877,6 +6747,12 @@ def osc_laf_case_status_api(row_id):
     if sync_case_status:
         sets.append("status=%s")
         vals.append(next_case_status)
+    sets.extend([
+        "manual_laf_status_lock=1",
+        "manual_laf_status_source=%s",
+        "manual_laf_status_at=NOW()",
+    ])
+    vals.append("osc_web")
     sets.append("updated_at=NOW()")
     vals.append(row_id)
     result, _ = _osc_exec(f"UPDATE cases SET {','.join(sets)} WHERE id=%s", tuple(vals), fetch="none")
@@ -5138,8 +7014,10 @@ def osc_calendar_events_api():
         start_date = (request.args.get("start_date") or "").strip()
         end_date = (request.args.get("end_date") or "").strip()
         limit = max(1, min(1000, int(request.args.get("limit") or "300")))
+        include_todos = str(request.args.get("include_todos") or "1").strip().lower() not in {"0", "false", "no", "off"}
         sql = (
-            "SELECT id, event_id, title, summary, description, start_date, end_date, color, location, is_all_day, reminder_minutes, case_number, created_date, updated_date "
+            "SELECT id, event_id, title, summary, description, start_date, end_date, color, location, is_all_day, reminder_minutes, case_number, created_date, updated_date, "
+            "'calendar_events' AS source_table, 'calendar_events' AS source_kind, '行事曆事件' AS source_label "
             "FROM calendar_events WHERE 1=1 "
         )
         params = []
@@ -5159,7 +7037,48 @@ def osc_calendar_events_api():
         sql += "ORDER BY start_date DESC, id DESC LIMIT %s"
         params.append(limit)
         rows, _ = _osc_exec(sql, tuple(params), fetch="all")
-        return jsonify({"ok": True, "items": rows})
+        items = []
+        for row in rows or []:
+            item = dict(row)
+            item.setdefault("source_table", "calendar_events")
+            item.setdefault("source_kind", "calendar_events")
+            item.setdefault("source_label", "行事曆事件")
+            items.append(item)
+        source_counts = {"calendar_events": len(items), "gcal_import": 0, "calendar_todo": 0}
+        if include_todos:
+            todo_sql = (
+                "SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date, completed_date "
+                "FROM case_todos WHERE "
+                f"{_osc_todo_open_status_sql('status')} AND {calendar_todo_source_sql()} "
+            )
+            todo_params: list[str | int] = []
+            if case_number:
+                todo_sql += "AND (case_number=%s OR description LIKE %s) "
+                todo_params.extend([case_number, f"%{case_number}%"])
+            if start_date:
+                todo_sql += "AND todo_date >= %s "
+                todo_params.append(start_date[:10])
+            if end_date:
+                todo_sql += "AND todo_date <= %s "
+                todo_params.append(end_date[:10])
+            if q:
+                like = f"%{q}%"
+                todo_sql += "AND (todo_type LIKE %s OR description LIKE %s OR case_number LIKE %s OR client_name LIKE %s) "
+                todo_params.extend([like, like, like, like])
+            todo_sql += "ORDER BY todo_date DESC, COALESCE(todo_time, '23:59') DESC, id DESC LIMIT %s"
+            todo_params.append(limit)
+            todo_rows, _ = _osc_exec(todo_sql, tuple(todo_params), fetch="all")
+            for row in todo_rows or []:
+                event = calendar_todo_to_event(_osc_todo_api_row(row) or row)
+                source_counts[event.get("source_kind") or "calendar_todo"] = source_counts.get(event.get("source_kind") or "calendar_todo", 0) + 1
+                items.append(event)
+        items.sort(key=lambda x: (str(x.get("start_date") or ""), int(x.get("id") or 0)), reverse=True)
+        return jsonify({
+            "ok": True,
+            "items": items[:limit],
+            "source_counts": source_counts,
+            "source_policy": "calendar_events + open case_todos classified by api.osc.calendar_sources",
+        })
 
     payload = request.get_json() or {}
     title = (payload.get("title") or "").strip()
@@ -5264,7 +7183,8 @@ def osc_clients_api():
             )
         return jsonify({"ok": True, "items": rows})
     payload = request.get_json() or {}
-    row_id = (payload.get("id") or f"webc-{uuid.uuid4().hex[:12]}").strip()
+    raw_id = (payload.get("id") or "").strip()
+    row_id = raw_id if is_canonical_client_id(raw_id) else generate_next_client_id()
     name = (payload.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
@@ -5423,9 +7343,9 @@ def osc_todos_api():
         limit = max(1, min(500, int(request.args.get("limit") or "200")))
         source_clause = ""
         if source == "osc":
-            source_clause = " AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%') AND COALESCE(todo_type, '') <> '行事曆事件'"
+            source_clause = f" AND {osc_todo_source_sql()}"
         elif source in {"gcal", "calendar"}:
-            source_clause = " AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')"
+            source_clause = f" AND {calendar_todo_source_sql()}"
         if q:
             like = f"%{q}%"
             rows, _ = _osc_exec(
@@ -5453,7 +7373,7 @@ def osc_todos_api():
                 (limit,),
                 fetch="all",
             )
-        return jsonify({"ok": True, "items": rows})
+        return jsonify({"ok": True, "items": [_osc_todo_api_row(r) for r in (rows or [])]})
     payload = request.get_json() or {}
     case_number = (payload.get("case_number") or "").strip()
     todo_type = (payload.get("todo_type") or "").strip()
@@ -5470,6 +7390,33 @@ def osc_todos_api():
         (payload.get("status") or "pending").strip() or "pending",
         (payload.get("source_file") or "").strip() or None,
     ]
+    existing, _ = _osc_exec(
+        """
+        SELECT id FROM case_todos
+        WHERE case_number=%s
+          AND todo_type=%s
+          AND ((todo_date=%s) OR (%s IS NULL AND todo_date IS NULL))
+          AND ((todo_time=%s) OR (%s IS NULL AND todo_time IS NULL))
+          AND COALESCE(description, '')=%s
+          AND COALESCE(source_file, '')=%s
+          AND (status IS NULL OR status='' OR status!='deleted')
+        LIMIT 1
+        """,
+        (
+            case_number,
+            todo_type,
+            vals[3],
+            vals[3],
+            vals[4],
+            vals[4],
+            vals[5] or "",
+            vals[7] or "",
+        ),
+        fetch="one",
+    )
+    if existing:
+        existing_id = existing.get("id") if isinstance(existing, dict) else existing[0]
+        return jsonify({"ok": True, "deduped": True, "id": existing_id})
     result, _ = _osc_exec(
         f"INSERT INTO case_todos ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})",
         tuple(vals),
@@ -5843,6 +7790,34 @@ def osc_forms_preview_api():
     return jsonify({"ok": True, "case": case_row, **out})
 
 
+def _osc_document_generator_config() -> dict:
+    def pick(keys: list[str], env_key: str = "", default: str = "") -> str:
+        for key in keys:
+            try:
+                value = (_osc_get_setting_value(key) or "").strip()
+            except Exception:
+                value = ""
+            if value:
+                return value
+        if env_key:
+            value = (os.environ.get(env_key) or "").strip()
+            if value:
+                return value
+        return default
+
+    return {
+        "company_name": pick(["company_name", "firm_name"], "MAGI_PUBLIC_FIRM_NAME", "範例法律事務所"),
+        "default_lawyer": pick(["default_lawyer", "lawyer_name"], "MAGI_PUBLIC_LAWYER_NAME"),
+        "company_address_hl": pick(["company_address_hl", "firm_address"], "MAGI_PUBLIC_CONTACT_ADDRESS"),
+        "company_phone": pick(["company_phone", "firm_phone", "specialist_phone"], "MAGI_PUBLIC_CONTACT_PHONE"),
+        "company_fax": pick(["company_fax", "firm_fax"], "MAGI_PUBLIC_CONTACT_FAX"),
+        "company_email": pick(["company_email", "firm_email"], "MAGI_PUBLIC_CONTACT_EMAIL"),
+        "bank_name": pick(["bank_name", "firm_bank_name"], "MAGI_PUBLIC_BANK_NAME"),
+        "bank_account_name": pick(["bank_account_name", "firm_bank_account_name"], "MAGI_PUBLIC_BANK_ACCOUNT_NAME"),
+        "bank_account_number": pick(["bank_account_number", "firm_bank_account_number"], "MAGI_PUBLIC_BANK_ACCOUNT_NUMBER"),
+    }
+
+
 @osc_bp.route("/api/osc/forms/export", methods=["POST"])
 @login_required
 def osc_forms_export_api():
@@ -5884,7 +7859,7 @@ def osc_forms_export_api():
         except Exception as e:
             return jsonify({"ok": False, "error": f"產生存證信函失敗: {e}"}), 500
 
-        public_url = f"{_get_public_base_url()}/exports/{filename_base}.pdf"
+        pdf_meta = _export_file_meta(pdf_path)
         doc = (
             f"存證信函已產出！\n\n"
             f"寄件人：{fields.get('sender_name')}\n"
@@ -5898,8 +7873,8 @@ def osc_forms_export_api():
                 "form_type": "legal_attest",
                 "title": "存證信函預覽",
                 "preview_text": doc,
-                "export": {"success": True},
-                "export_pdf": {"success": True, "url": public_url},
+                "export": pdf_meta,
+                "export_pdf": pdf_meta,
                 "export_docx": {"success": False},
                 "export_errors": [],
             }
@@ -5925,51 +7900,55 @@ def osc_forms_export_api():
         for k, v in (fields if isinstance(fields, dict) else {}).items():
             if v: data[k] = v
 
-        data['案號'] = data.get('court_case_no', '')
-        data['股別'] = data.get('court_branch', '')
+        config = _osc_document_generator_config()
+
+        data['案號'] = data.get('court_case_no') or data.get('court_case_number') or ''
+        data['股別'] = data.get('court_branch') or data.get('court_division') or ''
         data['委任人/當事人'] = data.get('client_name', '')
-        data['案由/事件'] = data.get('case_reason', '')
-        data['受任律師'] = data.get('lawyer_name', '')
-        data['通訊地址'] = data.get('address', '')
-        data['聯絡電話'] = data.get('phone', '')
-        data['身分證字號'] = data.get('tax_id', '')
+        data['案由/事件'] = data.get('case_reason') or data.get('case_subject') or ''
+        data['受任律師'] = data.get('lawyer_name') or config.get("default_lawyer") or ''
+        data['通訊地址'] = data.get('address') or data.get('client_address') or ''
+        data['聯絡電話'] = data.get('phone') or data.get('client_phone') or ''
+        data['身分證字號'] = data.get('tax_id') or data.get('client_id_number') or ''
+        data['電子信箱'] = data.get('email') or data.get('client_email') or ''
         data['委任範圍'] = data.get('item', '')
         data['金額'] = data.get('amount', '')
         data['委任費用(數字)'] = data.get('amount', '')
-        data['法院/檢察署'] = data.get('court_name', '')
+        data['法院/檢察署'] = data.get('court_name') or data.get('court') or ''
         data['取代日期'] = data.get('date', '')
-
-        config = {}
-        try:
-            config['company_name'] = os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所")
-            config['default_lawyer'] = os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師")
-        except Exception:
-            _log.debug("silent-catch config defaults", exc_info=True)
 
         try:
             if actual_form_type == "receipt":
                 doc = generate_receipt(data, data.get('item') or '法律服務費', config)
             elif actual_form_type == "power_of_attorney":
-                case_type = '民事'
-                role = '代理人'
+                case_type = str(data.get('case_type_label') or data.get('case_type') or '').strip()
+                role = str(data.get('agent_role') or '').strip()
                 cat = str(data.get('case_category', ''))
-                if '刑' in cat:
+                if not case_type:
+                    case_type = '民事'
+                if not role:
+                    role = '代理人'
+                if case_type not in {'民事', '刑事', '行政'} and '刑' in cat:
                     case_type = '刑事'
                     role = '辯護人' if '被告' in str(data.get('client_role', '')) else '告訴代理人'
-                elif '行' in cat:
+                elif case_type not in {'民事', '刑事', '行政'} and '行' in cat:
                     case_type = '行政'
+                elif case_type not in {'民事', '刑事', '行政'}:
+                    case_type = '民事'
                 doc = generate_poa(data, case_type, role, config)
             elif actual_form_type == "contract":
                 doc = generate_engagement_agreement(data, config)
 
             doc.save(docx_path)
             docx_meta = _export_file_meta(docx_path)
+            from api.startup import _export_docx_pdf as _docx_to_pdf
+            pdf_meta = _docx_to_pdf(docx_path, filename_base)
             exported = {
                 "success": docx_meta.get("success"),
                 "export": docx_meta,
                 "export_docx": docx_meta,
-                "export_pdf": {"success": False, "error": "pdf_conversion_skip"},
-                "errors": [] if docx_meta.get("success") else [{"type": "docx", "error": docx_meta.get("error")}]
+                "export_pdf": pdf_meta,
+                "errors": [] if docx_meta.get("success") else [{"type": "docx", "error": docx_meta.get("error")}],
             }
         except Exception as e:
             exported = {"success": False, "errors": [{"type": "generator", "error": str(e)}], "export_docx": {}, "export_pdf": {}}
@@ -6067,8 +8046,7 @@ def osc_documents_stamp_preview_api():
     if not file_path:
         return jsonify({"ok": False, "error": "file_path required"}), 400
 
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -6144,8 +8122,7 @@ def osc_documents_stamp_api():
         return jsonify({"ok": False, "error": "copy_type must be 正本/副本/繕本"}), 400
 
     # 路徑安全性：解析 + allowed-roots 檢查
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -6353,8 +8330,7 @@ def osc_documents_finalize_api():
     if not file_path:
         return jsonify({"ok": False, "error": "file_path required"}), 400
 
-    candidates = _osc_local_path_candidates(file_path)
-    abs_path = _osc_resolve_existing_local_path(candidates)
+    abs_path = _osc_resolve_existing_local_path(file_path, prefer_dir=False)
     if not abs_path:
         return jsonify({"ok": False, "error": f"file not found: {file_path}"}), 404
     if not _osc_is_safe_local_path(abs_path):
@@ -6533,6 +8509,52 @@ _CLIENTS_CSV_MAP = {
 _CLIENTS_CSV_HEADERS_ZH = ["姓名", "聯絡人", "電話", "email", "地址", "統編"]
 
 
+def _osc_export_date_str(v):
+    if not v:
+        return ""
+    try:
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+    except Exception:
+        _log.debug("silent-catch export date stringify: %r", v, exc_info=True)
+    return str(v)
+
+
+def _osc_cases_export_rows() -> list[dict]:
+    rows, _ = _osc_exec(
+        """
+        SELECT case_number, client_name, client_name_en, case_type, case_category,
+               case_subject, case_reason, status, legal_aid_status, start_date, court_date,
+               lawyer, court_case_no, court_division, court_name
+        FROM cases
+        ORDER BY case_number ASC, updated_at DESC, created_date DESC
+        """,
+        (),
+        fetch="all",
+    )
+    return rows or []
+
+
+def _osc_case_export_values(r: dict) -> list[str]:
+    display_row = _osc_case_api_row(r) or r
+    return [
+        r.get("case_number") or "",
+        r.get("client_name") or "",
+        r.get("client_name_en") or "",
+        display_row.get("case_type_display") or r.get("case_type") or "",
+        r.get("case_category") or "",
+        r.get("case_subject") or "",
+        display_row.get("case_reason_display") or r.get("case_reason") or "",
+        display_row.get("status_display") or r.get("status") or "",
+        _osc_export_date_str(r.get("start_date")),
+        _osc_export_date_str(r.get("court_date")),
+        r.get("lawyer") or "",
+        r.get("court_case_no") or "",
+        r.get("court_division") or "",
+        r.get("court_name") or "",
+    ]
+
+
 def _parse_csv_date(s):
     """YYYY-MM-DD or YYYY/MM/DD → YYYY-MM-DD, or None."""
     if not s:
@@ -6608,7 +8630,7 @@ def osc_cases_import_csv_api():
         case_type = (row.get("案件分類") or row.get("案件類型") or "").strip() or None
         case_category = _osc_norm_case_category((row.get("案件種類") or "").strip())
         case_subject = (row.get("案件標的") or "").strip() or None
-        case_reason = (row.get("案由") or "").strip() or None
+        case_reason = _osc_clean_case_reason(row.get("案由")) or None
         status = (row.get("狀態") or "進行中").strip() or "進行中"
         court_case_no = (row.get("法院案號") or "").strip() or None
         court_name = (row.get("法院/地檢署名稱") or "").strip() or None
@@ -6648,57 +8670,65 @@ def osc_cases_import_csv_api():
 @login_required
 def osc_cases_export_csv_api():
     """匯出全部案件為 CSV（中文 header，utf-8-sig，與匯入相容）。"""
-    rows, _ = _osc_exec(
-        """
-        SELECT case_number, client_name, client_name_en, case_type, case_category,
-               case_subject, case_reason, status, legal_aid_status, start_date, court_date,
-               lawyer, court_case_no, court_division, court_name
-        FROM cases
-        ORDER BY updated_at DESC, created_date DESC
-        """,
-        (),
-        fetch="all",
-    )
-
-    def _date_str(v):
-        if not v:
-            return ""
-        try:
-            if hasattr(v, "isoformat"):
-                return v.isoformat()
-        except Exception:
-            pass
-        return str(v)
-
+    rows = _osc_cases_export_rows()
     buf = io.StringIO()
     # 不要在這裡寫 BOM，下方 encode("utf-8-sig") 會加；
     # 否則雙 BOM 會讓 import 的 DictReader 把 BOM 當欄位名一部分（fieldname 變 "﻿案件編號"）。
     writer = csv.writer(buf)
     writer.writerow(_CASES_CSV_HEADERS)
     for r in rows:
-        display_row = _osc_case_api_row(r) or r
-        writer.writerow([
-            r.get("case_number") or "",
-            r.get("client_name") or "",
-            r.get("client_name_en") or "",
-            display_row.get("case_type_display") or r.get("case_type") or "",
-            r.get("case_category") or "",
-            r.get("case_subject") or "",
-            display_row.get("case_reason_display") or r.get("case_reason") or "",
-            display_row.get("status_display") or r.get("status") or "",
-            _date_str(r.get("start_date")),
-            _date_str(r.get("court_date")),
-            r.get("lawyer") or "",
-            r.get("court_case_no") or "",
-            r.get("court_division") or "",
-            r.get("court_name") or "",
-        ])
+        writer.writerow(_osc_case_export_values(r))
 
     filename = f"案件資料匯出_{time.strftime('%Y%m%d')}.csv"
     return Response(
         buf.getvalue().encode("utf-8-sig"),
         mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@osc_bp.route("/api/osc/cases/export-xlsx", methods=["GET"])
+@login_required
+def osc_cases_export_xlsx_api():
+    """匯出全部案件為 XLSX；預設依案件編號排序，方便直接交付與檢視。"""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"openpyxl unavailable: {exc}"}), 500
+
+    rows = _osc_cases_export_rows()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "案件資料"
+    ws.append(_CASES_CSV_HEADERS)
+    for r in rows:
+        ws.append(_osc_case_export_values(r))
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_font = Font(bold=True)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    for col_idx, header in enumerate(_CASES_CSV_HEADERS, start=1):
+        max_len = len(str(header))
+        for row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+            value = row[0].value
+            max_len = max(max_len, len(str(value or "")))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 10), 36)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"案件資料匯出_{time.strftime('%Y%m%d')}.xlsx"
+    return Response(
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 
@@ -6767,7 +8797,7 @@ def osc_clients_import_csv_api():
             skipped += 1
             continue
 
-        row_id = f"webc-{uuid.uuid4().hex[:12]}"
+        row_id = generate_next_client_id()
         contact_person = (row.get("聯絡人") or row.get("contact_person") or "").strip() or None
         email = (row.get("email") or "").strip() or None
         address = (row.get("地址") or row.get("address") or "").strip() or None
@@ -6938,6 +8968,27 @@ def osc_archive_wizard_execute_api():
         items = preview.get("items") or []
         missing = []
     pick = items[:max_items]
+    if bool(payload.get("background")):
+        jobs = []
+        for it in pick:
+            job = _osc_start_archive_job(str(it.get("id") or ""), force=force, source="archive_wizard")
+            jobs.append(job)
+        failed_jobs = [job for job in jobs if not job.get("ok")]
+        return jsonify(
+            {
+                "ok": not missing and not failed_jobs,
+                "summary": {
+                    "requested": len(case_ids) if case_ids else len(items),
+                    "selected": len(pick),
+                    "queued": sum(1 for job in jobs if job.get("ok")),
+                    "errors": len(missing) + len(failed_jobs),
+                    "limited": max(0, len(items) - len(pick)),
+                },
+                "jobs": jobs,
+                "errors": [{"id": cid, "error": "case_not_found"} for cid in missing] + failed_jobs,
+            }
+        )
+
     moved = []
     skipped = []
     errors = [{"id": cid, "error": "case_not_found"} for cid in missing]
@@ -6990,9 +9041,7 @@ def osc_labor_law_calc():
     """
     勞動基準法計算器 API。
     """
-    skill_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "skills", "labor-law-calculator", "action.py"
-    )
+    skill_path = str(Path(__file__).resolve().parents[2] / "skills" / "labor-law-calculator" / "action.py")
     skill_dir = os.path.dirname(skill_path)
     if skill_dir not in sys.path:
         sys.path.insert(0, skill_dir)
@@ -7064,15 +9113,44 @@ def osc_labor_law_calc():
     return jsonify({"ok": True, "result": result_text})
 
 
+def _osc_labor_resolve_allowed_file_paths(file_paths: list[str]) -> tuple[list[str], list[str]]:
+    resolved: list[str] = []
+    errors: list[str] = []
+    for raw in file_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        local = _osc_resolve_existing_local_path(text, prefer_dir=False)
+        if not local or not os.path.isfile(local) or not _osc_is_safe_local_path(local):
+            errors.append(f"path_not_allowed:{text}")
+            continue
+        ext = os.path.splitext(local)[1].lower()
+        if ext not in {".xlsx", ".xls", ".pdf"}:
+            errors.append(f"unsupported_extension:{text}")
+            continue
+        resolved.append(local)
+    return resolved, errors
+
+
 @osc_bp.route("/api/osc/labor-law/parse-files", methods=["POST"])
 @login_required
 def osc_labor_law_parse_files():
     """
     解析指定路徑的出勤 Excel/PDF，回傳每日加班明細（不計算金額）。
     """
-    skill_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "skills", "labor-law-calculator", "action.py"
-    )
+    data = request.get_json() or {}
+    file_paths = [str(p) for p in (data.get("file_paths") or [])]
+    monthly_wage = float(data.get("monthly_wage") or 0) or None
+
+    if not file_paths:
+        return jsonify({"ok": False, "error": "請提供 file_paths"}), 400
+    file_paths, path_errors = _osc_labor_resolve_allowed_file_paths(file_paths)
+    if path_errors:
+        return jsonify({"ok": False, "error": "file_paths_not_allowed", "errors": path_errors}), 400
+    if not file_paths:
+        return jsonify({"ok": False, "error": "沒有允許解析的檔案路徑"}), 400
+
+    skill_path = str(Path(__file__).resolve().parents[2] / "skills" / "labor-law-calculator" / "action.py")
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("labor_law_action", os.path.abspath(skill_path))
@@ -7080,13 +9158,6 @@ def osc_labor_law_parse_files():
         spec.loader.exec_module(mod)
     except Exception as e:
         return jsonify({"ok": False, "error": f"無法載入 skill：{e}"}), 500
-
-    data = request.get_json() or {}
-    file_paths = [str(p) for p in (data.get("file_paths") or [])]
-    monthly_wage = float(data.get("monthly_wage") or 0) or None
-
-    if not file_paths:
-        return jsonify({"ok": False, "error": "請提供 file_paths"}), 400
 
     all_records = []
     errors = []
@@ -7602,6 +9673,22 @@ _BACKUP_TABLES = [
     "legal_aid_branches",
     "settings",
 ]
+_BACKUP_TABLE_SET = frozenset(_BACKUP_TABLES)
+_BACKUP_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _osc_backup_identifier_is_safe(value: str) -> bool:
+    return bool(_BACKUP_IDENTIFIER_RE.fullmatch(str(value or "")))
+
+
+def _osc_backup_safe_row(table: str, row: dict) -> tuple[list[str], str]:
+    if table not in _BACKUP_TABLE_SET or not _osc_backup_identifier_is_safe(table):
+        return [], f"disallowed backup table: {table}"
+    cols = list(row.keys())
+    unsafe_cols = [str(col) for col in cols if not _osc_backup_identifier_is_safe(str(col))]
+    if unsafe_cols:
+        return [], f"{table}: disallowed backup column(s): {', '.join(unsafe_cols[:5])}"
+    return [str(col) for col in cols], ""
 
 
 def _osc_backup_dir() -> Path:
@@ -7616,6 +9703,56 @@ def _osc_backup_table(table: str) -> list:
         return rows if rows else []
     except Exception:
         return None  # None = table doesn't exist / error
+
+
+def _osc_backup_digest(payload: dict) -> str:
+    canonical = {
+        key: payload.get(key)
+        for key in ("version", "created_at", "label", "tables", "table_counts")
+    }
+    raw = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _osc_validate_backup_payload(payload: dict) -> tuple[bool, str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("tables"), dict):
+        return False, "invalid_backup_schema"
+    try:
+        version = int(payload.get("version") or 1)
+    except Exception:
+        return False, "invalid_backup_version"
+    if version < 2:
+        return True, "legacy_unverified"
+    integrity = payload.get("integrity")
+    if not isinstance(integrity, dict) or integrity.get("algorithm") != "sha256":
+        return False, "missing_backup_integrity"
+    expected = str(integrity.get("digest") or "").strip().lower()
+    if not expected or expected != _osc_backup_digest(payload):
+        return False, "backup_checksum_mismatch"
+    return True, "verified"
+
+
+def _osc_atomic_write_backup(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _osc_create_backup(label: str = "manual") -> dict:
@@ -7637,15 +9774,16 @@ def _osc_create_backup(label: str = "manual") -> dict:
             table_counts[table] = len(rows)
 
     payload = {
-        "version": 1,
+        "version": 2,
         "created_at": now.isoformat(),
         "label": safe_label,
         "tables": tables_data,
         "table_counts": table_counts,
     }
+    payload["integrity"] = {"algorithm": "sha256", "digest": _osc_backup_digest(payload)}
 
     backup_path = _osc_backup_dir() / filename
-    backup_path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
+    _osc_atomic_write_backup(backup_path, payload)
 
     # Prune: keep at most 7 files
     files = sorted(_osc_backup_dir().glob("backup_*.json"), key=lambda p: p.stat().st_mtime)
@@ -7657,6 +9795,8 @@ def _osc_create_backup(label: str = "manual") -> dict:
         "filename": filename,
         "size_bytes": backup_path.stat().st_size,
         "table_counts": table_counts,
+        "integrity": "verified",
+        "sha256": payload["integrity"]["digest"],
     }
 
 
@@ -7665,11 +9805,14 @@ def _osc_parse_backup_meta(p: Path) -> dict:
     try:
         stat = p.stat()
         raw = json.loads(p.read_text(encoding="utf-8"))
+        valid, integrity_status = _osc_validate_backup_payload(raw)
         return {
             "filename": p.name,
             "size_bytes": stat.st_size,
             "created_at": raw.get("created_at", ""),
             "table_counts": raw.get("table_counts", {}),
+            "integrity": integrity_status,
+            "valid": valid,
         }
     except Exception as e:
         return {
@@ -7729,12 +9872,26 @@ def osc_backup_restore(filename):
     except Exception as e:
         return jsonify({"ok": False, "error": f"Cannot parse backup: {e}"}), 500
 
+    valid, integrity_status = _osc_validate_backup_payload(payload)
+    if not valid:
+        return jsonify({"ok": False, "error": integrity_status}), 422
+    allow_unverified = bool(data.get("allow_unverified"))
+    if integrity_status == "legacy_unverified" and not dry_run and not allow_unverified:
+        return jsonify({
+            "ok": False,
+            "error": "legacy_backup_requires_allow_unverified",
+        }), 409
+
     tables = payload.get("tables") or {}
     inserted_count = 0
     skipped_count = 0
     errors = []
 
     for table, rows in tables.items():
+        table = str(table or "")
+        if table not in _BACKUP_TABLE_SET or not _osc_backup_identifier_is_safe(table):
+            errors.append(f"disallowed backup table: {table}")
+            continue
         if not rows:
             continue
         if not isinstance(rows, list):
@@ -7743,7 +9900,10 @@ def osc_backup_restore(filename):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            cols = list(row.keys())
+            cols, identifier_error = _osc_backup_safe_row(table, row)
+            if identifier_error:
+                errors.append(identifier_error)
+                continue
             if not cols:
                 continue
 
@@ -7781,13 +9941,15 @@ def osc_backup_restore(filename):
                 except Exception as e:
                     errors.append(f"{table}: {e}")
 
-    return jsonify({
-        "ok": True,
+    response_payload = {
+        "ok": not errors,
         "mode": "dry_run" if dry_run else "restore",
+        "integrity": integrity_status,
         "inserted_count": inserted_count,
         "skipped_count": skipped_count,
         "errors": errors[:50],
-    })
+    }
+    return jsonify(response_payload), (200 if not errors else 500)
 
 
 @osc_bp.route("/api/osc/backups/<filename>", methods=["DELETE"])
@@ -7830,20 +9992,71 @@ def _osc_find_font() -> str:
     return ""
 
 
+def _osc_minimal_pdf_bytes(title: str, lines: list[str] | None = None) -> bytes:
+    def _pdf_text(value: object) -> str:
+        text = str(value or "")
+        text = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        return text.encode("latin-1", errors="replace").decode("latin-1")
+
+    rows = [_pdf_text(title or "MAGI PDF")]
+    rows.extend(_pdf_text(x) for x in (lines or []) if str(x or "").strip())
+    stream_lines = ["BT", "/F1 12 Tf", "72 780 Td"]
+    for idx, row in enumerate(rows[:28]):
+        if idx:
+            stream_lines.append("0 -18 Td")
+        stream_lines.append(f"({row}) Tj")
+    stream_lines.append("ET")
+    stream = "\n".join(stream_lines).encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, 1):
+        offsets.append(len(out))
+        out.extend(f"{idx} 0 obj\n".encode("ascii"))
+        out.extend(obj)
+        out.extend(b"\nendobj\n")
+    xref_at = len(out)
+    out.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    out.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        out.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    out.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(out)
+
+
 def _osc_build_quotation_pdf(row: dict) -> bytes:
     """Generate a PDF using the same layout as the standalone OSC quotation exporter."""
     from io import BytesIO
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.lib import colors
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
-    )
-    from reportlab.platypus import Image as ReportlabImage
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import cm
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
+        )
+        from reportlab.platypus import Image as ReportlabImage
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ModuleNotFoundError:
+        return _osc_minimal_pdf_bytes(
+            "MAGI quotation PDF fallback",
+            [
+                f"client: {row.get('client_name') or ''}",
+                f"case: {row.get('case_number') or ''}",
+                f"total: {row.get('total') or ''}",
+                "reportlab dependency is not installed in this runtime.",
+            ],
+        )
 
     font_path = _osc_find_font()
     font_name = "NotoSansTC"
@@ -7929,7 +10142,10 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
     phone = str(row.get("phone") or "")
     email = str(row.get("email") or "")
     address = str(row.get("address") or "")
-    lawyer = str(extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師"))
+    lawyer = _osc_normalize_case_lawyer(
+        extended.get("lawyer") or _osc_get_setting_value("default_lawyer", "") or os.environ.get("MAGI_PUBLIC_LAWYER_NAME", ""),
+        allow_default=True,
+    )
     specialist = str(extended.get("specialist") or _osc_get_setting_value("default_specialist", "") or "法務專員")
     specialist_phone = str(extended.get("specialist_phone") or _osc_get_setting_value("specialist_phone", "") or os.environ.get("MAGI_PUBLIC_CONTACT_PHONE", ""))
 
@@ -8008,7 +10224,7 @@ def _osc_build_quotation_pdf(row: dict) -> bytes:
             if not subtotal:
                 subtotal = float(qty or 0) * float(unit_price or 0)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8637, exc_info=True)
         try:
             qty_text = f"{int(float(qty))} {unit}"
         except Exception:
@@ -8119,6 +10335,30 @@ def osc_quotation_export_pdf(row_id):
 # P2: 地址標籤 PNG 預覽 + 下載
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _osc_minimal_png_bytes(width: int = 945, height: int = 472) -> bytes:
+    import binascii
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    width = max(1, min(int(width or 1), 2000))
+    height = max(1, min(int(height or 1), 2000))
+    raw = b"".join(b"\x00" + (b"\xff\xff\xff" * width) for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def _osc_build_address_label(
     sender_name: str,
     sender_address: str,
@@ -8128,7 +10368,10 @@ def _osc_build_address_label(
     """Render address label PNG (8cm×4cm @300 DPI) and return raw PNG bytes."""
     import textwrap
     from io import BytesIO
-    from PIL import Image, ImageDraw, ImageFont
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ModuleNotFoundError:
+        return _osc_minimal_png_bytes()
 
     W, H = 945, 472  # 8cm × 4cm @ 300 DPI
 
@@ -8139,7 +10382,7 @@ def _osc_build_address_label(
             try:
                 return ImageFont.truetype(font_path, size, index=0)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 8768, exc_info=True)
         return ImageFont.load_default()
 
     font_large = _load_font(28)

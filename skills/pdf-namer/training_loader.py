@@ -22,6 +22,7 @@ if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
 
 from api.runtime_paths import get_orch_dir
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
 
 # ── DB Config ──
 DB_NAME_DEFAULT = "law_firm_data"
@@ -41,6 +42,7 @@ _RULES_STATUS: Dict[str, object] = {
 TARGET_ARCHIVE_TYPES = [
     "法院通知或程序裁定",
     "對方歷次書狀",
+    JUDGMENT_FOLDER_LABEL,
     "判決書",
     "證據資料",
     "我方歷次書狀",
@@ -516,6 +518,7 @@ def _map_archive_to_category(archive_type: str) -> str:
     mapping = {
         "法院通知或程序裁定": "法院通知",
         "對方歷次書狀": "書狀_對造",
+        JUDGMENT_FOLDER_LABEL: "判決",
         "判決書": "判決",
         "證據資料": "證據",
         "我方歷次書狀": "書狀_我方",

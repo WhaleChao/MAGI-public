@@ -4,17 +4,18 @@ OCR 結果 image-hash LRU 磁碟快取。
 
 設計原則：
   - key = SHA-256(image_bytes)[:16]（16 字元 hex）
-  - value = OCRConsensusResult.to_dict() JSON（不含 entity 實際字串，只有 count）
+  - value = OCRConsensusResult metadata JSON（預設不含 OCR full text）
   - TTL = MAGI_OCR_CACHE_TTL_SEC（預設 604800 = 7 天）
   - 路徑 = api.platforms.runtime_dir.root() / "ocr" / "cache"
   - feature flag = MAGI_OCR_CACHE_ENABLE（預設 "1"）
+  - MAGI_OCR_CACHE_STORE_TEXT=1 才會把 selected_text/corrected_text 寫入 cache
   - 最大容量 = MAGI_OCR_CACHE_MAX_ENTRIES（預設 500）
   - 超過容量：以 mtime 最舊的先刪（lazy eviction on put）
   - 過期自動清理：讀到過期就刪（lazy expiry on get）
 
 業務紅線：
   - 只快取 legal 類型 OCR 結果；captcha 不快取
-  - 快取值不含 entities 實際字串（只有 to_dict() 的 counts）
+  - 快取值預設不含 OCR 全文或 entities 實際字串（只有 hash/length/count）
   - thread-safe：讀寫均持 _CACHE_LOCK
 
 Python 3.9 + 3.14 相容：使用 typing.Optional / Dict，不用 str|None / dict[str, Any]。
@@ -34,6 +35,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("ocr.cache")
 
 _CACHE_LOCK = threading.Lock()
+_TEXT_KEYS = ("selected_text", "corrected_text", "raw_text", "ocr_text")
 
 
 # ---------------------------------------------------------------------------
@@ -59,23 +61,64 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _store_text_enabled() -> bool:
+    return _env_bool("MAGI_OCR_CACHE_STORE_TEXT", False)
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _redact_sensitive_text_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    if _store_text_enabled():
+        return data
+    redacted = dict(data)
+    for key in _TEXT_KEYS:
+        if key not in redacted:
+            continue
+        value = str(redacted.get(key) or "")
+        if value:
+            redacted[f"{key}_chars"] = len(value)
+            redacted[f"{key}_sha256"] = _sha256_text(value)
+        else:
+            redacted.setdefault(f"{key}_chars", 0)
+            redacted.setdefault(f"{key}_sha256", "")
+        redacted[key] = ""
+    redacted["_text_redacted"] = True
+    return redacted
+
+
+def _chmod_private(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except Exception:
+        logger.debug("ocr.cache: chmod failed for %s", path, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # 快取目錄
 # ---------------------------------------------------------------------------
 
 def _cache_dir() -> Path:
     """回傳 OCR cache 目錄（由 RuntimeDir 管理）。"""
+    override_dir = os.environ.get("MAGI_OCR_CACHE_DIR", "").strip()
+    if override_dir:
+        d = Path(override_dir).expanduser().resolve(strict=False)
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_private(d, 0o700)
+        return d
     try:
         from api.platforms.runtime_dir import root as _runtime_root
         base = _runtime_root()
     except Exception:
-        # fallback：若 RuntimeDir 不可用（e.g. 離線測試），用 MAGI_RUNTIME_DIR 或預設路徑
+        # fallback：若 RuntimeDir 不可用（e.g. 離線測試），用 MAGI_RUNTIME_DIR 或 repo-local .runtime
         override = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
-        magi_root = os.environ.get("MAGI_ROOT", "/Users/ai/Desktop/MAGI_v2")
+        magi_root = os.environ.get("MAGI_ROOT", str(Path(__file__).resolve().parents[3]))
         base = Path(override) if override else Path(magi_root) / ".runtime"
 
     d = base / "ocr" / "cache"
     d.mkdir(parents=True, exist_ok=True)
+    _chmod_private(d, 0o700)
     return d
 
 
@@ -138,6 +181,7 @@ def get(image_bytes: bytes) -> Optional[Dict[str, Any]]:
         logger.debug("ocr.cache: hit %s (age=%.0fs)", key, age)
         # 回傳時去掉 _cached_at 內部欄位
         result = {k: v for k, v in data.items() if not k.startswith("_")}
+        result = _redact_sensitive_text_fields(result)
         return result
 
 
@@ -155,7 +199,7 @@ def put(image_bytes: bytes, result_dict: Dict[str, Any]) -> None:
     key = _image_hash(image_bytes)
     cache_path = _cache_dir() / f"{key}.json"
 
-    data = dict(result_dict)
+    data = _redact_sensitive_text_fields(dict(result_dict))
     data["_cached_at"] = time.time()
     data["_key"] = key
 
@@ -166,7 +210,9 @@ def put(image_bytes: bytes, result_dict: Dict[str, Any]) -> None:
                 json.dumps(data, ensure_ascii=False),
                 encoding="utf-8",
             )
+            _chmod_private(tmp_path, 0o600)
             tmp_path.replace(cache_path)
+            _chmod_private(cache_path, 0o600)
         except Exception as e:
             logger.warning("ocr.cache: failed to write cache entry %s: %s", key, e)
             return
@@ -253,8 +299,12 @@ def put_result(image_bytes: bytes, result) -> None:
         # 額外確認不含 entity 字串：移除 provider 詳細文字
         safe = {
             "success": d.get("success"),
-            "selected_text": result.selected_text,   # 保留文字（用於還原 OCR 結果）
-            "corrected_text": result.corrected_text,
+            "selected_text": result.selected_text if _store_text_enabled() else "",
+            "corrected_text": result.corrected_text if _store_text_enabled() else "",
+            "selected_text_chars": len(result.selected_text or ""),
+            "selected_text_sha256": _sha256_text(result.selected_text or "") if result.selected_text else "",
+            "corrected_text_chars": len(result.corrected_text or ""),
+            "corrected_text_sha256": _sha256_text(result.corrected_text or "") if result.corrected_text else "",
             "confidence": d.get("confidence"),
             "writable": d.get("writable"),
             "warnings": d.get("warnings", []),

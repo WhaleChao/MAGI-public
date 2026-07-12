@@ -11,11 +11,20 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(MAGI_ROOT))
+
+from scripts.ops.omlx_profile_policy import (  # noqa: E402
+    DAY_FALLBACK_MODEL_KEYWORD,
+    DAY_MODEL_KEYWORD,
+    NIGHT_FALLBACK_MODEL_KEYWORD,
+    NIGHT_MODEL_KEYWORD,
+    expected_profile_now as expected_omlx_profile_now,
+)
 
 
 @dataclass
@@ -37,12 +46,14 @@ class ModelGateReport:
     warnings: list[str] = field(default_factory=list)
     degraded: bool = False
     degraded_reason: str = ""
+    next_actions: list[str] = field(default_factory=list)
+    restart_hint: str = ""
+    profile_hint: str = ""
 
 
 def expected_profile_now() -> str:
-    now = datetime.now()
-    minutes = now.hour * 60 + now.minute
-    return "day" if 415 <= minutes < 1310 else "night"
+    profile, _keyword = expected_omlx_profile_now()
+    return profile
 
 
 def active_profile() -> str:
@@ -73,6 +84,79 @@ def _has_keyword(probe: EndpointProbe, keyword: str) -> bool:
     return probe.ok and keyword.lower() in probe.model_id.lower()
 
 
+def _append_unique(items: list[str], item: str) -> None:
+    if item and item not in items:
+        items.append(item)
+
+
+def _expected_keyword_for_profile(profile: str) -> str:
+    return DAY_MODEL_KEYWORD if profile == "day" else NIGHT_MODEL_KEYWORD
+
+
+def _failure_guidance(
+    *,
+    expected: str,
+    active: str,
+    by_port: dict[int, EndpointProbe],
+    failures: list[str],
+    require_aux: bool,
+) -> tuple[list[str], str, str]:
+    if not failures:
+        return [], "", ""
+
+    switch_script = "config/bin/omlx_switch_model.sh"
+    expected_keyword = _expected_keyword_for_profile(expected)
+    actions: list[str] = []
+    main = by_port[8080]
+
+    if not main.ok:
+        _append_unique(
+            actions,
+            f"Restore primary oMLX 8080 with `{switch_script} auto`; expected {expected} / {expected_keyword.upper()}.",
+        )
+    elif not _has_keyword(main, expected_keyword):
+        _append_unique(
+            actions,
+            f"Realign port 8080 with `{switch_script} {expected}`; it is serving {main.model_id or main.error or 'unknown'}.",
+        )
+
+    if any("active_profile" in item for item in failures):
+        _append_unique(
+            actions,
+            f"Rewrite ~/.omlx/active_profile via `{switch_script} auto` or `{switch_script} {expected}`.",
+        )
+
+    if expected == "day" and require_aux:
+        missing_aux = []
+        if not _has_keyword(by_port[8082], "phi"):
+            missing_aux.append("8082/Phi-4")
+        if not _has_keyword(by_port[8083], "smol"):
+            missing_aux.append("8083/SmolLM")
+        if missing_aux:
+            _append_unique(
+                actions,
+                f"Repair day auxiliary runtime(s) {', '.join(missing_aux)} with `{switch_script} day`.",
+            )
+
+    _append_unique(actions, "Rerun `scripts/ops/model_live_gate.py --expect auto --json` after repair.")
+
+    profile_hint = (
+        f"Expected profile={expected} ({expected_keyword.upper()} on 8080); "
+        f"active_profile={active or 'missing'}."
+    )
+    if not main.ok:
+        restart_hint = (
+            "8080 is unreachable. Restart the oMLX runtime with "
+            f"`{switch_script} auto`; if MAGI callers still show stale model state after 8080 is healthy, restart MAGI."
+        )
+    else:
+        restart_hint = (
+            "Model runtime is reachable but mismatched. Switch the oMLX profile first; restart MAGI only if callers keep "
+            "cached/stale routing state after the gate passes."
+        )
+    return actions, restart_hint, profile_hint
+
+
 def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGateReport:
     expected = expected_profile_now() if expect == "auto" else expect
     probes = [probe_port(port) for port in (8080, 8081, 8082, 8083)]
@@ -81,8 +165,18 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
     warnings: list[str] = []
 
     if expected == "day":
-        if not _has_keyword(by_port[8080], "e4b"):
-            failures.append(f"8080 expected E4B, got {by_port[8080].model_id or by_port[8080].error or 'down'}")
+        if _has_keyword(by_port[8080], DAY_MODEL_KEYWORD):
+            pass
+        elif _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
+            warnings.append(
+                f"8080 is day fallback {DAY_FALLBACK_MODEL_KEYWORD.upper()}, "
+                f"expected {DAY_MODEL_KEYWORD.upper()}"
+            )
+        else:
+            failures.append(
+                f"8080 expected {DAY_MODEL_KEYWORD.upper()}, "
+                f"got {by_port[8080].model_id or by_port[8080].error or 'down'}"
+            )
         if not _has_keyword(by_port[8081], "embed"):
             warnings.append(f"8081 embed not ready: {by_port[8081].model_id or by_port[8081].error or 'down'}")
         if require_aux:
@@ -95,23 +189,57 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
                 if not _has_keyword(by_port[port], keyword):
                     warnings.append(f"{port} auxiliary not ready")
     else:
-        if not _has_keyword(by_port[8080], "26b"):
-            failures.append(f"8080 expected 26B, got {by_port[8080].model_id or by_port[8080].error or 'down'}")
+        if _has_keyword(by_port[8080], NIGHT_MODEL_KEYWORD):
+            pass
+        elif _has_keyword(by_port[8080], NIGHT_FALLBACK_MODEL_KEYWORD):
+            warnings.append(
+                f"8080 is night fallback {NIGHT_FALLBACK_MODEL_KEYWORD.upper()}, "
+                f"expected {NIGHT_MODEL_KEYWORD.upper()}"
+            )
+        else:
+            failures.append(
+                f"8080 expected {NIGHT_MODEL_KEYWORD.upper()}, "
+                f"got {by_port[8080].model_id or by_port[8080].error or 'down'}"
+            )
         if by_port[8082].ok or by_port[8083].ok:
             warnings.append("night profile has auxiliary models still online")
 
     active = active_profile()
-    if active and active != expected and not (expected == "night" and active == "night-e4b-degraded"):
+    allowed_active = {expected}
+    if expected == "day":
+        allowed_active.add("day-e4b-degraded")
+    if expected == "night":
+        allowed_active.add("night-12b-degraded")
+        allowed_active.add("night-e4b-degraded")
+    if active and active not in allowed_active:
         failures.append(f"active_profile expected {expected}, got {active}")
 
     degraded = False
     degraded_reason = ""
+    if (
+        expected == "day"
+        and DAY_FALLBACK_MODEL_KEYWORD.lower() != DAY_MODEL_KEYWORD.lower()
+        and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD)
+    ):
+        degraded = True
+        degraded_reason = "day_fell_back_to_e4b"
     if expected == "day" and not failures and (not by_port[8082].ok or not by_port[8083].ok):
         degraded = True
-        degraded_reason = "day_auxiliary_missing"
-    if expected == "night" and _has_keyword(by_port[8080], "e4b"):
+        degraded_reason = degraded_reason or "day_auxiliary_missing"
+    if expected == "night" and _has_keyword(by_port[8080], NIGHT_FALLBACK_MODEL_KEYWORD):
+        degraded = True
+        degraded_reason = "night_fell_back_to_12b"
+    elif expected == "night" and _has_keyword(by_port[8080], DAY_FALLBACK_MODEL_KEYWORD):
         degraded = True
         degraded_reason = "night_fell_back_to_e4b"
+
+    next_actions, restart_hint, profile_hint = _failure_guidance(
+        expected=expected,
+        active=active,
+        by_port=by_port,
+        failures=failures,
+        require_aux=require_aux,
+    )
 
     return ModelGateReport(
         ok=not failures,
@@ -123,6 +251,9 @@ def build_report(expect: str = "auto", *, require_aux: bool = True) -> ModelGate
         warnings=warnings,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        next_actions=next_actions,
+        restart_hint=restart_hint,
+        profile_hint=profile_hint,
     )
 
 
@@ -140,6 +271,12 @@ def write_report(report: ModelGateReport, json_out: Path) -> None:
         lines.append("warnings: " + "; ".join(report.warnings))
     if report.failures:
         lines.append("failures: " + "; ".join(report.failures))
+    if report.profile_hint:
+        lines.append("profile_hint: " + report.profile_hint)
+    if report.restart_hint:
+        lines.append("restart_hint: " + report.restart_hint)
+    if report.next_actions:
+        lines.append("next_actions: " + "; ".join(report.next_actions))
     txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

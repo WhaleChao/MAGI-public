@@ -97,8 +97,9 @@ def main() -> int:
             return _ok({"success": False, "error": r.get("error", "casper_chat failed"), "route": r.get("route", "")})
         out = (r.get("response") or "").strip()
         if not out or len(out) < 20:
-            # Behave like the original refiner: fall back to raw if too short.
-            return _ok({"success": True, "note": "refined too short; returned raw_text", "output": raw})
+            if str(payload.get("allow_raw_fallback") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                return _ok({"success": True, "degraded": True, "note": "refined too short; returned raw_text", "output": raw})
+            return _ok({"success": False, "error": "refined output too short", "route": r.get("route", "")})
         return _ok({"success": True, "route": r.get("route", ""), "model": r.get("model", ""), "output": out})
 
     return _ok({"success": False, "error": f"unknown task: {task}"})

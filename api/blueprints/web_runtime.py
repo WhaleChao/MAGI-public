@@ -11,6 +11,7 @@ runtime objects injected from the main server bootstrap:
 
 from __future__ import annotations
 
+import logging
 import json
 import html
 import os
@@ -118,7 +119,7 @@ def _extract_chat_upload_text_for_task(path: Path, filename: str, task: str = ""
                     "pages": pages,
                 }
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 120, exc_info=True)
     return _extract_chat_upload_text(path, filename)
 
 
@@ -195,8 +196,25 @@ def _web_summary_length(instruction: str) -> str:
 
 
 def _web_heavy_opt_in(instruction: str) -> bool:
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        import re
+
+        fallback_re = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            match = fallback_re.match(text_inner)
+            return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
+
+    has_prefix, _ = split_heavy_prefix(instruction)
     text = str(instruction or "").lower().replace("＠", "@").lstrip()
-    return text.startswith("@heavy ") or text.startswith("@重型 ") or any(
+    return has_prefix or any(
         token in text for token in (" @heavy ", "\n@heavy ", "使用 heavy", "重型模型", "深度模式")
     )
 
@@ -346,6 +364,22 @@ def _run_direct_web_upload_text_task(
                 title=original_name or "檔案翻譯",
                 user_id=user_id,
             )
+            if not bilingual_artifact and suffix == ".pdf":
+                try:
+                    from api.domains.multimedia_flow import _try_rebuild_pdf_translation_delivery
+
+                    rebuilt_reply = _try_rebuild_pdf_translation_delivery(
+                        pdf_path=str(target),
+                        filename=original_name or Path(target).name,
+                        source_text=src_text,
+                        user_id=user_id,
+                    )
+                    rebuilt_path = _path_from_export_reply(rebuilt_reply)
+                    if rebuilt_path:
+                        bilingual_artifact = _artifact_dict(rebuilt_path, label="HEAVY 完整雙語對照 Word", fmt="docx")
+                        bilingual_reply = rebuilt_reply
+                except Exception:
+                    logging.getLogger(__name__).debug("PDF translation rebuild fallback skipped", exc_info=True)
             if bilingual_artifact:
                 notes.insert(0, "📄 已產出原文/翻譯雙語對照 Word 表格。")
             elif bilingual_reply:
@@ -854,7 +888,7 @@ def create_web_runtime_blueprint(
                     stats["last_ingest"] = str(_last)
                 _conn.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 856, exc_info=True)
         if stats["doc_count"] == 0 and stats["last_ingest"] is None:
             # Fallback: read from doc_vector_index.json (attachment tracker only)
             try:
@@ -900,7 +934,7 @@ def create_web_runtime_blueprint(
                 stats["faiss_vector_count"] = idx.total
                 stats["faiss_index_type"] = idx.index_type
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 902, exc_info=True)
         return jsonify(stats)
 
     @bp.route("/api/memory/recall", methods=["POST"])

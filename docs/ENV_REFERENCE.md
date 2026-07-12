@@ -35,6 +35,21 @@
 | `DB_NAME` | string | `magi_brain` | 資料庫名稱（預設 magi_brain） |
 | `FLASK_SECRET_KEY` | string | — | Flask session 加密金鑰。產生方式：`python3 -c "import secrets; print(secrets.token_hex(32))"` |
 
+### MariaDB Backup Replica / 備援同步
+
+私有版目前採「本機 MAGI 主 DB -> 遠端備份庫 replica」。正式套用前，請先用
+`scripts/ops/configure_mariadb_master_backup.py --check-only` 做 live 檢查。若是其他部署真的需要「遠端主庫 -> 本機 replica」，才使用 `configure_mariadb_replica.py`。
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MAGI_DB_MASTER_BACKUP_ENABLED` | bool | `0` | 是否啟用本機主 DB 對遠端備份庫的同步維運檢查 |
+| `MAGI_DB_MASTER_BACKUP_HOST` | string | — | 遠端備份庫應連入的本機 Tailscale IP |
+| `MAGI_DB_MASTER_BACKUP_DNS` | string | — | 遠端備份庫可使用的本機 MagicDNS |
+| `MAGI_DB_MASTER_BACKUP_PORT` | int | `3306` | 本機 MariaDB master port |
+| `MAGI_DB_MASTER_BACKUP_SERVER_ID` | int | `2` | 本機 master 的 MariaDB server-id |
+| `MAGI_DB_MASTER_BACKUP_REPL_USER` | string | `repl` | 本機提供給遠端備份庫的 replication 帳號 |
+| `MAGI_DB_MASTER_BACKUP_REPL_PASSWORD_FILE` | path | `.runtime/db_replication_credentials.local.json` | replication 密碼保存位置；不得提交 |
+
 ### Tier 2: Feature Enable Flags
 控制各通道與功能是否啟用。設為 `0` 時對應的 credentials 不需要填。
 
@@ -87,9 +102,17 @@
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `MAGI_MAIN_MODEL` | string | `llama3.1:8b` | 主要推理模型 |
-| `CASPER_LOCAL_MODEL` | string | `llama3.1:8b` | 本地推理模型 |
+| `MAGI_MAIN_MODEL` | string | `gemma-4-e4b-it-4bit` | 主要推理模型；若填入中國模型家族會自動退回安全預設 |
+| `CASPER_LOCAL_MODEL` | string | `gemma-4-e4b-it-4bit` | 本地推理模型 |
+| `MAGI_TEXT_PRIMARY_MODEL` | string | `gemma-4-e4b-it-4bit` | 白天穩定主模型 |
+| `MAGI_TEXT_HEAVY_MODEL` | string | `gemma-4-26b-a4b-it-4bit` | 高品質本地候選；必須通過智慧路由資源閘門才會使用 |
 | `CASPER_CLASSIFIER_MODEL` | string | `gemma-4-e4b-it-4bit` | 意圖分類模型 |
+| `MAGI_SMART_MODEL_ROUTER` | bool | `1` | 啟用智慧模型路由：依任務、目前上線模型與資源狀態選 E4B / 26B / @heavy |
+| `MAGI_ROUTER_26B_MIN_DISK_GB` | int | `70` | 26B-A4B 最低可用磁碟；低於門檻即退回 E4B |
+| `MAGI_ROUTER_26B_MIN_FREE_GB` | int | `8` | 26B-A4B 最低 free + inactive memory |
+| `MAGI_ROUTER_26B_MAX_SWAP_GB` | int | `20` | 26B-A4B 最高 swap 使用量 |
+| `MAGI_ROUTER_QUALITY_PROMPT_CHARS` | int | `6000` | 超過此長度的摘要 / 翻譯 / 法律分析視為高品質任務 |
+| `MAGI_ROUTER_26B_MAX_PROMPT_CHARS` | int | `60000` | 超過此長度不啟用 26B，避免 KV cache 造成 OOM |
 | `MAGI_ENABLE_MTP_DRAFT` | bool | `0` | 啟用 Gemma 4 MTP / speculative decoding draft 欄位（需 runtime 支援） |
 | `MAGI_E4B_DRAFT_MODEL` | string | `gemma-4-E4B-it-assistant-bf16` | E4B target 對應 assistant / draft model |
 | `MAGI_26B_DRAFT_MODEL` | string | `gemma-4-26B-A4B-it-assistant-bf16` | 26B A4B target 對應 assistant / draft model |
@@ -125,3 +148,31 @@
 | `MAGI_OPENDATALOADER_PDF_MAX_CHARS` | int | `24000` | 每份 PDF 從 OpenDataLoader 讀入 MAGI 的最大字元數 |
 | `MAGI_PDF_NAMER_OPENDATALOADER_MIN_SCORE` | float | `0.55` | PDF 命名採用 OpenDataLoader 結果的最低品質分數 |
 | `MAGI_PDF_NAMER_OPENDATALOADER_MIN_GAIN` | float | `0.08` | PDF 命名改用 OpenDataLoader 結果所需的最低品質增益 |
+| `MAGI_CHANDRA_OCR_ENABLE` | bool | `0` | 私用版專用 Chandra OCR fallback；僅在既有 OCR 低品質時嘗試 |
+| `MAGI_CHANDRA_PRIVATE_DEPLOYMENT` | bool | `0` | Chandra 私用版確認；未設定時即使 enable 也不會推論 |
+| `MAGI_CHANDRA_ACCEPT_MODEL_LICENSE` | bool | `0` | Chandra model license 確認；未設定時不會推論 |
+| `MAGI_CHANDRA_ACCEPT_QWEN_BACKEND` | bool | `0` | Chandra OCR 2 upstream 標示 `qwen3_5`/Qwen 3.5，私用版啟用前必須明確確認 |
+| `MAGI_CHANDRA_CLI` | path | auto | Chandra CLI 路徑；建議使用隔離 venv，不污染 MAGI 主環境 |
+| `MAGI_CHANDRA_OCR_METHOD` | `vllm`/`hf` | `vllm` | Chandra 後端；HF 另需 `MAGI_CHANDRA_ALLOW_HF=1`，避免誤下載大型模型 |
+| `MAGI_CHANDRA_VLLM_API_BASE` | URL | `http://127.0.0.1:8000/v1` | Chandra vLLM OpenAI-compatible endpoint |
+| `MAGI_CHANDRA_OCR_MIN_SCORE` | float | `0.45` | pdf-namer 既有 OCR 分數低於此值才呼叫 Chandra |
+
+### Tier 9: Legal Research / Judicial API Load
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MAGI_TWLEGALRAG_ENABLE` | bool | `1` | 啟用 Taiwan Legal RAG/TLR 全判決語義檢索 |
+| `MAGI_TWLEGALRAG_AUGMENT` | bool | `1` | 實務見解/判決搜尋結果不足時自動合併 TLR 結果 |
+| `MAGI_TWLEGALRAG_CACHE_HITS` | bool | `1` | 將 TLR 命中的裁判小量快取到本地 `court_judgments`，降低後續夜拉與重查 |
+| `MAGI_TWLEGALRAG_MAX_RESULTS` | int | `3` | 一般回答時最多合併的 TLR 裁判筆數 |
+| `MAGI_TWLEGALRAG_FULLTEXT_LIMIT` | int | `3` | 每次 TLR 查詢會讀取全文摘要的前 N 筆；正式實務見解只顯示有全文/高品質摘要的項目 |
+| `MAGI_SHOW_FAST_INSIGHT_CANDIDATES` | bool | `0` | 是否在實務見解頁顯示抽取式快篩候選；預設隱藏，避免誤當可引用見解 |
+| `MAGI_JUDICIAL_API_LOAD_MODE` | `tlr_smart`/`balanced`/`legacy` | `tlr_smart` | 司法院官方 API 負載策略；日常預設為 TLR 優先、小量增量 |
+| `MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS` | bool | `0` | `tlr_smart` 下巡檢 tick 不處理裁判 backlog；由晨間 cron 小量整理 |
+| `MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS` | int | `300` | `tlr_smart` 夜間官方 API 小量拉取上限 |
+| `MAGI_JUDICIAL_API_NIGHT_MAX_DAYS` | int | `2` | `tlr_smart` 夜間只補近幾日裁判 |
+| `MAGI_JUDICIAL_API_DAY_MAX_DOCS` | int | `60` | 白天整理 raw backlog 的單輪上限 |
+| `MAGI_JUDICIAL_API_DAY_SUMMARY_MAX` | int | `12` | 白天單輪摘要上限 |
+| `MAGI_JUDICIAL_API_DAY_SUMMARY_MODE` | string | `extractive` | 日常整理使用抽取摘要，避免 LLM 長時間佔用 |
+| `MAGI_JUDICIAL_API_DAY_SKIP_ASSETS` | bool | `1` | 日常整理不下載 PDF/附件，降低 NAS 與網路負載 |
+| `MAGI_JUDICIAL_API_DAY_VECTOR_INGEST` | bool | `0` | 日常整理不即時向量化；需要時交給低峰專用流程 |

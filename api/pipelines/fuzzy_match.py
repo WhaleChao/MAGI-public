@@ -109,7 +109,7 @@ try:
             if isinstance(_ext, dict):
                 _TYPO_MAP.update(_ext)
 except Exception:
-    pass
+    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 111, exc_info=True)
 
 # ─── Canonical command keywords (extracted from command_dispatch.py) ────────
 # Grouped by category.  Admin-only keywords are in _ADMIN_KEYWORDS below.

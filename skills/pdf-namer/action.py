@@ -30,6 +30,12 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    PDF_ARCHIVED_NAME_FOLDER_LABELS,
+    is_judgment_folder_segment,
+    path_has_judgment_folder,
+)
 from skills.bridge.shared_utils.case_number_utils import extract_case_number as _extract_case_number, RE_CASE_NUMBER
 from skills.bridge.shared_utils.court_utils import extract_court_name as _extract_court_name, RE_COURT_NAME
 
@@ -69,6 +75,25 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("pdf-namer")
+
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+
+
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
 
 JOB_DIR = Path(__file__).resolve().parent / "_bg_jobs"
 try:
@@ -230,6 +255,14 @@ _BATCH_ANALYSIS_CACHE = {}  # type: dict[str, dict] — Pre-computed by batch_an
 
 _DOC_TYPE_HINTS = [
     ("預付酬金領款單掛號郵件收件回執", "收據"),
+    ("扶助律師接案通知書", "扶助律師接案通知書"),
+    ("法律扶助申請書", "法律扶助申請書"),
+    ("准予扶助證明書", "准予扶助證明書"),
+    ("案件概述單", "案件概述單"),
+    ("資力詢問表", "資力詢問表"),
+    ("審查表", "審查表"),
+    ("委任狀", "委任狀"),
+    ("委任书", "委任狀"),
     ("預付酬金領款單", "收據"),
     ("領款單回執", "收據"),
     ("掛號郵件收件回執", "收據"),
@@ -389,7 +422,7 @@ def _category_from_subfolder(subfolder: str, filename: str = "") -> str:
         return "法扶表單"
     if "回執" in clean:
         return "收據"
-    if "判決書" in clean:
+    if is_judgment_folder_segment(clean):
         return "判決"
     if "證據資料" in clean:
         return "證據"
@@ -415,7 +448,10 @@ def build_filename_learning_rules(
     sample_count = 0
 
     if os.path.isdir(case_root):
-        for root, _, files in os.walk(case_root):
+        for root, dirs, files in os.walk(case_root):
+            dirs[:] = [d for d in dirs if not _is_synthetic_case_path(os.path.join(root, d))]
+            if _is_synthetic_case_path(root):
+                continue
             if sample_count >= max_samples:
                 break
             subfolder = os.path.basename(root)
@@ -1521,12 +1557,7 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
     return result
 
 
-_ARCHIVED_NAME_FOLDERS = (
-    "法院通知或程序裁定",
-    "判決書",
-    "對方歷次書狀",
-    "對造歷次書狀",
-)
+_ARCHIVED_NAME_FOLDERS = PDF_ARCHIVED_NAME_FOLDER_LABELS
 
 _ENVELOPE_PRONE_FOLDERS = _ARCHIVED_NAME_FOLDERS
 _ENVELOPE_PRONE_LABELS = {"法院通知", "裁定", "判決", "書狀_對造"}
@@ -1590,7 +1621,7 @@ def _learned_page_profile_for_path(pdf_path: str) -> dict:
 
 def _is_envelope_prone_path(pdf_path: str) -> bool:
     path_text = str(pdf_path or "")
-    if any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
+    if path_has_judgment_folder(path_text) or any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
         return True
     profile = _learned_page_profile_for_path(pdf_path)
     if profile:
@@ -1681,6 +1712,56 @@ def _maybe_preserve_archived_filename(pdf_path: str) -> Optional[dict]:
     return result
 
 
+def _maybe_path_hint_name_result(
+    pdf_path: str,
+    *,
+    case_name: str | None = None,
+    reason: str = "",
+) -> Optional[dict]:
+    """Last-resort naming from path/file metadata when OCR/vision returns empty."""
+    basename = os.path.basename(pdf_path or "")
+    if not basename.lower().endswith(".pdf"):
+        return None
+    stem = os.path.splitext(basename)[0]
+    found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
+    if not found_date:
+        return None
+    found_party = (
+        case_name
+        or _infer_party_from_case_folder_path(pdf_path)
+        or _extract_name_from_filename(basename)
+        or ""
+    )
+    found_type = _infer_doc_type_from_hints(basename) or _infer_doc_type_from_learning(stem) or ""
+    folder_category = _path_subfolder_category(pdf_path)
+    if not found_type and folder_category not in {"", "法扶表單", "證據", "閱卷"}:
+        found_type = folder_category
+    if not found_type:
+        found_type = "文件"
+    result = _build_name_result(
+        found_date=found_date,
+        found_type=found_type,
+        found_party=found_party,
+        date_method=f"{date_method}:path_hint" if date_method else "path_hint",
+        doc_subtype=found_type,
+    )
+    if reason:
+        result["fallback_reason"] = reason
+    result = _apply_naming_guards(
+        result,
+        source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[basename]),
+    )
+    if result.get("filename"):
+        logger.info(
+            "pdf-namer path-hint fallback used for %s (%s): %s",
+            pdf_path,
+            reason,
+            result["filename"],
+        )
+        return result
+    return None
+
+
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
     """Propose a filename following the standard convention:
     {YYYYMMDD} {法院全名}{案號}{文件類型}（{當事人}）.pdf
@@ -1696,6 +1777,12 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
+
+    def _fallback_or_empty(reason: str):
+        fallback = _maybe_path_hint_name_result(pdf_path, case_name=case_name, reason=reason)
+        if fallback:
+            return fallback if return_structured else fallback["filename"]
+        return empty_result if return_structured else None
 
     source_hint_parts = [case_name or ""]
     # ── Check batch cache (pre-computed by batch_ocr_pages + batch_analyze_texts) ──
@@ -1787,15 +1874,19 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
         if not found_date:
             found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-            logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+            logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
         if not found_date:
-            return empty_result if return_structured else None
+            return _fallback_or_empty("cached_missing_date")
 
         # Refine with learned rules
         if not found_type or found_type in ("其他", "文件"):
             lt = _infer_doc_type_from_learning(found_doc_subtype or found_type or "")
             if lt:
                 found_type = lt
+        if not found_type or found_type in ("其他", "文件"):
+            path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+            if path_type:
+                found_type = path_type
 
         result = _build_name_result(
             found_date=found_date, found_court=found_court,
@@ -1808,6 +1899,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             result,
             source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=source_hint_parts),
         )
+        if not result.get("filename"):
+            return _fallback_or_empty("cached_empty_filename")
         if return_structured:
             return result
         return result["filename"]
@@ -1938,7 +2031,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         content_text_native = ""
 
     if content_page is None:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_content_page")
 
     # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
@@ -1952,6 +2045,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
                 fast_result,
                 source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[fast_text]),
             )
+            if not fast_result.get("filename"):
+                return _fallback_or_empty("fast_text_empty_filename")
             return fast_result if return_structured else fast_result["filename"]
 
     # ── Step 2: Dual-page Vision OCR ──
@@ -2260,6 +2355,10 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         found_party = case_name
     elif not found_party:
         found_party = _infer_party_from_case_folder_path(pdf_path) or ""
+    if not found_type or found_type in ("其他", "文件"):
+        path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+        if path_type:
+            found_type = path_type
 
     if _path_subfolder_category(pdf_path) == "書狀_對造" or "檢察官" in (found_type or found_doc_subtype or ""):
         basename_for_fields = os.path.basename(pdf_path or "")
@@ -2317,9 +2416,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     if not found_date:
         found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-        logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+        logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
     if not found_date:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_date")
 
     # ── Step 5: Refine with learned rules + DB templates ──
     # The nightly training system has 2,075 samples and 226 rules — use them!
@@ -2412,6 +2511,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             snippets=[content_text_native, content_text, vision_info.get("summary", "")],
         ),
     )
+    if not result.get("filename"):
+        return _fallback_or_empty("empty_filename")
 
     if return_structured:
         return result
@@ -2559,8 +2660,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
         # Opus D-3: 真實函文常用「陳報」而非「陳述意見」（如「文到10日內陳報如說明」）
         (r"(?:應於|限於|於)?\s*文到\s*(\d+)\s*日內\s*(陳報)", "陳報"),
         (r"應於\s*(\d+)\s*日內\s*(陳報)", "陳報"),
-        (r"應於文到\s*(\d+)\s*日內繳納.+(規費|裁判費)", "繳費"),
-        (r"限\s*(\d+)\s*日內.+?繳納.+?(裁判費|規費)", "繳費"),
+        (r"應於\s*文到\s*(\d+)\s*日內\s*繳納.*?(規費|裁判費)", "繳費"),
+        (r"限\s*(\d+)\s*日內.+?繳納.*?(裁判費|規費)", "繳費"),
         (r"應於\s*(\d+)\s*日內.+(閱卷)", "閱卷期限"),
         (r"閱卷期限.+?(\d+)\s*日", None),
     ]
@@ -2591,6 +2692,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
                     fields["deadline_type"] = "補正"
                 elif "陳述意見" in act:
                     fields["deadline_type"] = "陳述意見"
+                elif "繳納" in act or "繳費" in act or "裁判費" in act or "規費" in act:
+                    fields["deadline_type"] = "繳費"
                 else:
                     fields["deadline_type"] = act[:4]
 
@@ -3295,8 +3398,59 @@ def _parse_naming_response(text: str) -> dict:
 
     return result
 
+def _filename_may_have_osc_todo(name: str, result: dict | None = None) -> bool:
+    """Return True when a renamed court PDF may create an OSC todo.
+
+    Original OSC rules are filename-first.  The quick trigger therefore must
+    include hearing/procedure terms, not only "N日內" deadline wording.
+    """
+    text = str(name or "")
+    result = result or {}
+    if any(str(result.get(key) or "").strip() for key in ("deadline", "deadline_type", "hearing_date", "hearing_time")):
+        return True
+    deadline_actions = (
+        "補正",
+        "補提",
+        "補陳",
+        "陳報",
+        "陳述意見",
+        "表示意見",
+        "提出資料",
+        "具狀",
+        "上訴",
+        "抗告",
+        "繳納",
+        "繳費",
+        "裁判費",
+        "規費",
+        "閱卷",
+        "末日",
+    )
+    if re.search(r"(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)\s*(?:內|内)?", text) and any(term in text for term in deadline_actions):
+        return True
+    if re.search(r"(?:文到|送達|收受).{0,12}(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)", text) and any(term in text for term in deadline_actions):
+        return True
+    hearing_terms = (
+        "開庭",
+        "庭期",
+        "期日",
+        "調解",
+        "調查",
+        "審理",
+        "準備程序",
+        "言詞辯論",
+        "辯論",
+        "訊問",
+        "協商",
+        "宣判",
+    )
+    if any(term in text for term in hearing_terms) and re.search(r"(?:\d{6,8}|[一二三四五六七八九十百]+年|\d{2,3}年|\d{1,2}月\d{1,2}日)", text):
+        return True
+    return False
+
+
 def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
-    """快速 regex 預檢檔名 bracket 是否含期限，命中才呼 OSC sync。
+    """快速 regex 預檢檔名是否可能有 OSC 待辦，命中才呼 OSC sync。
 
     避免每次 rename 都 spawn subprocess（45s timeout × 兩次）。
     """
@@ -3304,7 +3458,7 @@ def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
         return
 
     name = os.path.basename(new_path)
-    if not re.search(r"\d+日內(補正|上訴|陳述意見|繳納|繳費|閱卷)", name):
+    if not _filename_may_have_osc_todo(name, result):
         return
 
     try:
@@ -3798,6 +3952,19 @@ def _fallback_date_from_filename_or_mtime(pdf_path: str) -> Tuple[Optional[str],
     m = re.match(r"^(20\d{6})", bn)
     if m:
         return m.group(1), "filename_prefix_fallback"
+    compact_roc_dates: list[str] = []
+    for m_roc in re.finditer(r"(?<!\d)(1\d{6})(?!\d)", bn):
+        raw = m_roc.group(1)
+        try:
+            roc_year = int(raw[:3])
+            month = int(raw[3:5])
+            day = int(raw[5:7])
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                compact_roc_dates.append(f"{roc_year + 1911:04d}{month:02d}{day:02d}")
+        except ValueError:
+            continue
+    if compact_roc_dates:
+        return compact_roc_dates[-1], "filename_roc_compact_fallback"
     try:
         return datetime.fromtimestamp(os.path.getmtime(pdf_path)).strftime("%Y%m%d"), "file_mtime_fallback"
     except Exception:
@@ -3887,7 +4054,7 @@ def _build_name_result(
         try:
             year = int(found_date[:4])
             if year < 2000 or year > 2030:
-                logger.warning("Rejecting implausible date %s (year %d)", found_date, year)
+                logger.info("Rejecting implausible date %s (year %d)", found_date, year)
                 found_date = None
         except ValueError:
             found_date = None
@@ -4153,7 +4320,7 @@ def _maybe_fast_text_name_result(
     _fast_deadline = _legal.get("deadline")
     _fast_deadline_type = _legal.get("deadline_type", "")
 
-    return _build_name_result(
+    result = _build_name_result(
         found_date=found_date,
         found_court=found_court,
         found_case_no=found_case_no,
@@ -4163,6 +4330,11 @@ def _maybe_fast_text_name_result(
         deadline=_fast_deadline,
         deadline_type=_fast_deadline_type,
     )
+    if _fast_deadline is not None:
+        result["deadline"] = _fast_deadline
+    if _fast_deadline_type:
+        result["deadline_type"] = _fast_deadline_type
+    return result
 
 
 def task_self_train(case_root: str = CASE_ROOT) -> str:

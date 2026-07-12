@@ -1,45 +1,145 @@
 #!/bin/bash
-# oMLX 模型切換腳本 — 日間（三模型）/ 離峰（26B 單模型）
+# oMLX 模型切換腳本 — 日間（4B + 輔助模型）/ 離峰（26B 優先，12B fallback）
 # 建立時間：2026-04-14
 # 2026-04-19 強化：flock 互斥鎖 / 記憶體下修 / port-closed wait / preflight / heartbeat
 set -euo pipefail
 
 MODE="${1:-day}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAGI_ROOT_DIR="${MAGI_ROOT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+probe_model_id_at_port() {
+    local port="$1"
+    curl -sf --max-time 3 "http://127.0.0.1:${port}/v1/models" 2>/dev/null | \
+        python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+}
+
+DAY_PRIMARY_MODEL_KEYWORD="${MAGI_DAY_MODEL_KEYWORD:-e4b}"
+DAY_FALLBACK_MODEL_KEYWORD="${MAGI_DAY_FALLBACK_MODEL_KEYWORD:-e4b}"
+NIGHT_PRIMARY_MODEL_KEYWORD="${MAGI_NIGHT_MODEL_KEYWORD:-26b}"
+NIGHT_FALLBACK_MODEL_KEYWORD="${MAGI_NIGHT_FALLBACK_MODEL_KEYWORD:-12b}"
+ACTIVE_PROFILE_FILE="${HOME}/.omlx/active_profile"
+DAY_FALLBACK_STAMP_FILE="${HOME}/.omlx/day_fallback_stamp"
+NIGHT_FALLBACK_STAMP_FILE="${HOME}/.omlx/night_fallback_stamp"
+DAY_FALLBACK_RETRY_SEC="${MAGI_DAY_FALLBACK_RETRY_SEC:-3600}"
+NIGHT_FALLBACK_RETRY_SEC="${MAGI_NIGHT_FALLBACK_RETRY_SEC:-3600}"
+
+fallback_cooldown_active() {
+    local stamp_file="$1"
+    local retry_sec="$2"
+    [ -f "$stamp_file" ] || return 1
+    local stamp now age
+    stamp=$(stat -f %m "$stamp_file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    age=$(( now - stamp ))
+    [ "$age" -lt "$retry_sec" ]
+}
+
+day_fallback_cooldown_active() {
+    fallback_cooldown_active "$DAY_FALLBACK_STAMP_FILE" "$DAY_FALLBACK_RETRY_SEC"
+}
+
+night_fallback_cooldown_active() {
+    fallback_cooldown_active "$NIGHT_FALLBACK_STAMP_FILE" "$NIGHT_FALLBACK_RETRY_SEC"
+}
 
 # ---- auto 模式：依當前時間自動選 day / night（在 lock 之前解析）----
-# day 窗口：06:55-21:49（對齊 job_omlx_switch_day=06:55 / job_omlx_switch_night=21:50）
+# day 窗口：06:35-21:49（06:35 排程重開後即應進入日間；06:55 只是安全重試）
 # 重要：auto 模式有冪等檢查 — 需「實際 API 模型」與 models-text 都對應正確才跳過切換
 if [ "$MODE" = "auto" ]; then
     current_hour=$((10#$(date +%H)))
     current_minute=$((10#$(date +%M)))
     current_total_min=$((current_hour * 60 + current_minute))
-    if [ "$current_total_min" -ge 415 ] && [ "$current_total_min" -lt 1310 ]; then
+    if [ "$current_total_min" -ge 395 ] && [ "$current_total_min" -lt 1310 ]; then
         MODE="day"
-        EXPECTED_MODEL_KEYWORD="e4b"
+        EXPECTED_MODEL_KEYWORD="$DAY_PRIMARY_MODEL_KEYWORD"
     else
         MODE="night"
-        EXPECTED_MODEL_KEYWORD="26b"
+        EXPECTED_MODEL_KEYWORD="$NIGHT_PRIMARY_MODEL_KEYWORD"
     fi
     printf '%s [switch] auto → %s (time=%02d:%02d)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_hour" "$current_minute" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
     # 冪等檢查：若 API 實際模型與 models-text 都正確且 oMLX 已在線，跳過切換
     current_model_in_dir=$(ls "/Users/ai/.omlx/models-text/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -1)
     current_model_api=$(
-        curl -sf --max-time 3 http://127.0.0.1:8080/v1/models 2>/dev/null | \
-        python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("data") or [{}])[0].get("id") or "").lower())' 2>/dev/null || true
+        probe_model_id_at_port 8080
     )
+    current_phi4_api=$(probe_model_id_at_port 8082)
+    current_smol_api=$(probe_model_id_at_port 8083)
+    active_profile_auto=$(cat "$ACTIVE_PROFILE_FILE" 2>/dev/null || echo "")
     omlx_online=$(curl -sf --max-time 3 http://127.0.0.1:8080/v1/models >/dev/null 2>&1 && echo "yes" || echo "no")
+    sidecars_ok="yes"
+    if [ "$MODE" = "day" ]; then
+        if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! echo "$current_phi4_api" | grep -qi "phi"; then
+            sidecars_ok="no"
+        fi
+        if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! echo "$current_smol_api" | grep -qi "smol"; then
+            sidecars_ok="no"
+        fi
+    else
+        # 離峰夜間只保留主模型；若日間 sidecar 還活著，仍需執行切換將其關閉。
+        if [ -n "$current_phi4_api" ] || [ -n "$current_smol_api" ]; then
+            sidecars_ok="no"
+        fi
+    fi
     if echo "$current_model_in_dir" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
        echo "$current_model_api" | grep -qi "$EXPECTED_MODEL_KEYWORD" && \
-       [ "$omlx_online" = "yes" ]; then
-        printf '%s [switch] auto: 已是 %s 模式（api=%s, dir=%s），跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_model_api" "$current_model_in_dir" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+       [ "$omlx_online" = "yes" ] && \
+       [ "$sidecars_ok" = "yes" ]; then
+        if [ "$MODE" = "day" ] && [ "$active_profile_auto" != "day" ]; then
+            echo "day" > "$ACTIVE_PROFILE_FILE"
+            rm -f "$DAY_FALLBACK_STAMP_FILE"
+            rm -f "$NIGHT_FALLBACK_STAMP_FILE"
+            active_profile_auto="day"
+        fi
+        printf '%s [switch] auto: 已是 %s 模式（api=%s, dir=%s, phi4=%s, smol=%s），跳過切換\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$MODE" "$current_model_api" "$current_model_in_dir" "${current_phi4_api:-off}" "${current_smol_api:-off}" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
         exit 0
     fi
-    printf '%s [switch] auto: 需切換（api=%s, dir=%s, online=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" "$omlx_online" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+    if [ "$MODE" = "day" ] && \
+       [ "$active_profile_auto" = "day-e4b-degraded" ] && \
+       echo "$current_model_in_dir" | grep -qi "$DAY_FALLBACK_MODEL_KEYWORD" && \
+       echo "$current_model_api" | grep -qi "$DAY_FALLBACK_MODEL_KEYWORD" && \
+       [ "$omlx_online" = "yes" ] && \
+       [ "$sidecars_ok" = "yes" ] && \
+       day_fallback_cooldown_active; then
+        printf '%s [switch] auto: day fallback 冷卻中（api=%s, dir=%s），保留 E4B degraded，避免反覆重啟\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+        exit 0
+    fi
+    if [ "$MODE" = "night" ] && \
+       [ "$active_profile_auto" = "night-12b-degraded" ] && \
+       echo "$current_model_in_dir" | grep -qi "$NIGHT_FALLBACK_MODEL_KEYWORD" && \
+       echo "$current_model_api" | grep -qi "$NIGHT_FALLBACK_MODEL_KEYWORD" && \
+       [ "$omlx_online" = "yes" ] && \
+       [ "$sidecars_ok" = "yes" ] && \
+       night_fallback_cooldown_active; then
+        printf '%s [switch] auto: night 12B fallback 冷卻中（api=%s, dir=%s），暫緩重試 26B，避免反覆重啟\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
+        exit 0
+    fi
+    printf '%s [switch] auto: 需切換（api=%s, dir=%s, online=%s, phi4=%s, smol=%s, sidecars_ok=%s）\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$current_model_api" "$current_model_in_dir" "$omlx_online" "${current_phi4_api:-off}" "${current_smol_api:-off}" "$sidecars_ok" | tee -a "/opt/homebrew/var/log/omlx_switch.log"
 fi
 
-PROFILE_FILE="/Users/ai/.omlx/active_profile"
+PROFILE_FILE="$ACTIVE_PROFILE_FILE"
 MODELS_TEXT_DIR="/Users/ai/.omlx/models-text"
 E4B_SRC="/Users/ai/.omlx/models/gemma-4-e4b-it-4bit"
+DAY12_SRC="/Users/ai/.omlx/models/gemma-4-12B-it-4bit"
+DAY_PRIMARY_SRC="${MAGI_DAY_MODEL_SRC:-$E4B_SRC}"
+DAY_PRIMARY_LINK_NAME="${MAGI_DAY_MODEL_LINK_NAME:-$(basename "$DAY_PRIMARY_SRC")}"
+DAY_PRIMARY_MAX_MODEL_MEMORY="${MAGI_DAY_MODEL_MAX_MODEL_MEMORY:-8GB}"
+DAY_PRIMARY_MAX_PROCESS_MEMORY="${MAGI_DAY_MODEL_MAX_PROCESS_MEMORY:-10GB}"
+DAY_PRIMARY_INITIAL_CACHE_BLOCKS="${MAGI_DAY_MODEL_INITIAL_CACHE_BLOCKS:-8}"
+DAY_PRIMARY_HOT_CACHE_MAX_SIZE="${MAGI_DAY_MODEL_HOT_CACHE_MAX_SIZE:-512MB}"
+DAY_PRIMARY_MAX_TOKENS="${MAGI_DAY_MODEL_MAX_TOKENS:-8192}"
+DAY_PRIMARY_MAX_CONTEXT_WINDOW="${MAGI_DAY_MODEL_MAX_CONTEXT_WINDOW:-8192}"
+DAY_PRIMARY_MIN_FREE_GB="${MAGI_DAY_MODEL_MIN_FREE_GB:-3}"
+NIGHT_FALLBACK_12B_SRC="${MAGI_NIGHT_FALLBACK_MODEL_SRC:-$DAY12_SRC}"
+NIGHT_FALLBACK_12B_LINK_NAME="${MAGI_NIGHT_FALLBACK_MODEL_LINK_NAME:-$(basename "$NIGHT_FALLBACK_12B_SRC")}"
+NIGHT_FALLBACK_12B_MAX_MODEL_MEMORY="${MAGI_NIGHT_FALLBACK_12B_MAX_MODEL_MEMORY:-13GB}"
+NIGHT_FALLBACK_12B_MAX_PROCESS_MEMORY="${MAGI_NIGHT_FALLBACK_12B_MAX_PROCESS_MEMORY:-18GB}"
+NIGHT_FALLBACK_12B_INITIAL_CACHE_BLOCKS="${MAGI_NIGHT_FALLBACK_12B_INITIAL_CACHE_BLOCKS:-4}"
+NIGHT_FALLBACK_12B_HOT_CACHE_MAX_SIZE="${MAGI_NIGHT_FALLBACK_12B_HOT_CACHE_MAX_SIZE:-0}"
+NIGHT_FALLBACK_12B_MAX_TOKENS="${MAGI_NIGHT_FALLBACK_12B_MAX_TOKENS:-8192}"
+NIGHT_FALLBACK_12B_MAX_CONTEXT_WINDOW="${MAGI_NIGHT_FALLBACK_12B_MAX_CONTEXT_WINDOW:-8192}"
+GEMMA4_UNIFIED_WRAPPER="${MAGI_OMLX_GEMMA4_WRAPPER:-/Users/ai/.omlx/bin/omlx-gemma4-unified-serve}"
+GEMMA4_UNIFIED_PYTHON="${MAGI_OMLX_GEMMA4_PYTHON:-$MAGI_ROOT_DIR/venv/bin/python3}"
 B26_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-4bit"
 B26_LEGACY_SRC="/Users/ai/.omlx/models/gemma-4-26b-a4b-it-UD-4bit"
 UID_NUM=$(id -u)
@@ -47,6 +147,8 @@ LOG="/opt/homebrew/var/log/omlx_switch.log"
 LOCKDIR="/tmp/omlx_switch.lock.d"
 LOCK_STALE_SEC=600   # 超過 10 分鐘視為 stale（night 切換含 sleep 120+heartbeat 60，正常 3-5 分鐘內完成）
 ADMIN_NOTIFY_FILE="/tmp/omlx_switch_alert.txt"
+OMLX_SSD_CACHE_ROOT="${MAGI_OMLX_PAGED_CACHE_ROOT:-$HOME/.omlx/paged-cache}"
+OMLX_CACHE_ON_SSD="${MAGI_OMLX_CACHE_ON_SSD:-1}"
 
 log() { printf '%s [switch] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
 
@@ -56,6 +158,49 @@ plist_set_env() {
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
     /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:${key} ${value}" "$plist" 2>/dev/null || \
         /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:${key} string ${value}" "$plist" 2>/dev/null || true
+}
+
+plist_set_program_arg() {
+    local plist="$1"
+    local index="$2"
+    local value="$3"
+    /usr/libexec/PlistBuddy -c "Set :ProgramArguments:${index} ${value}" "$plist" 2>/dev/null || true
+}
+
+omlx_cache_dir() {
+    local cache_name="$1"
+    local fallback="$2"
+    local root="$OMLX_SSD_CACHE_ROOT"
+    if [ "$OMLX_CACHE_ON_SSD" != "0" ] && [ -n "$root" ]; then
+        local candidate="$root/$cache_name"
+        local probe="/tmp/magi_omlx_cache_probe.$$.$cache_name"
+        (
+            mkdir -p "$candidate" &&
+            : > "$candidate/.magi_cache_probe" &&
+            rm -f "$candidate/.magi_cache_probe" &&
+            printf 'ok' > "$probe"
+        ) >/dev/null 2>&1 &
+        local pid=$!
+        local waited=0
+        while [ "$waited" -lt 3 ]; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid" 2>/dev/null || true
+                break
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        elif [ -f "$probe" ]; then
+            rm -f "$probe"
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        rm -f "$probe" 2>/dev/null || true
+    fi
+    mkdir -p "$fallback" 2>/dev/null || true
+    printf '%s\n' "$fallback"
 }
 
 # ---- A1: mkdir 原子互斥鎖（macOS 無 flock CLI）----
@@ -108,8 +253,8 @@ fi
 
 # ---- Layer 3: 檢查 pause 狀態（人工介入或反覆 abort 已觸發 TTL pause）----
 # status / auto 模式不受 pause 影響（前者為唯讀，後者有冪等檢查）
-GATEKEEPER="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_switch_gatekeeper.py"
-GATEKEEPER_PY="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+GATEKEEPER="$MAGI_ROOT_DIR/scripts/ops/omlx_switch_gatekeeper.py"
+GATEKEEPER_PY="$MAGI_ROOT_DIR/venv/bin/python3"
 if [ "$MODE" != "status" ] && [ -x "$GATEKEEPER" ] && [ -x "$GATEKEEPER_PY" ]; then
     if ! MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$GATEKEEPER" check-paused 2>&1 | while read ln; do log "$ln"; done; then
         :  # while read wraps around pipeline; real exit code fetched below
@@ -192,7 +337,7 @@ preflight_memory_check() {
     avail=$(available_memory_gb)
     log "preflight: 可用記憶體 ${avail}GB，${mode_name} 需求 ${required_gb}GB"
     if [ "$avail" -lt "$required_gb" ]; then
-        local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+        local governor="$MAGI_ROOT_DIR/scripts/ops/resource_governor.py"
         if [ -x "$GATEKEEPER_PY" ] && [ -f "$governor" ]; then
             log "preflight: 記憶體不足，先執行 resource_governor safe cleanup 後重試"
             MAGI_USE_RUNTIME_DIR=1 "$GATEKEEPER_PY" "$governor" --json prepare-switch \
@@ -218,32 +363,164 @@ preflight_memory_check() {
     return 0
 }
 
-start_night_e4b_fallback() {
-    local reason="${1:-26B 資源不足}"
-    log "⚠️  NIGHT ${reason}，降級啟動 E4B 主模型，避免 MAGI 無主模型"
-    check_model_src "$E4B_SRC"
-    rm -f "$MODELS_TEXT_DIR"/*
-    ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
-    rm -f /Users/ai/.omlx/models-text-e4b/*
-    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+configure_e4b_runtime_env() {
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-e4b /Users/ai/.omlx/cache-e4b)
     plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
     plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
     plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
     plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
     plist_set_env OMLX_TEXT_MAX_TOKENS 8192
     plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
-    bootstrap_omlx_main "NIGHT-FALLBACK-E4B"
+    plist_set_env OMLX_TEXT_DISABLE_CACHE 0
+    plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 0
+    plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
+    plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (E4B): $paged_cache_dir"
+}
+
+configure_day_primary_runtime_env() {
+    if echo "$DAY_PRIMARY_MODEL_KEYWORD" | grep -qi "e4b"; then
+        configure_e4b_runtime_env
+        return
+    fi
+    configure_12b_runtime_env "day primary"
+}
+
+configure_12b_runtime_env() {
+    local profile_label="${1:-12B fallback}"
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-gemma4-12b /Users/ai/.omlx/cache-gemma4-12b)
+    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY "$NIGHT_FALLBACK_12B_MAX_MODEL_MEMORY"
+    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY "$NIGHT_FALLBACK_12B_MAX_PROCESS_MEMORY"
+    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS "$NIGHT_FALLBACK_12B_INITIAL_CACHE_BLOCKS"
+    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE "$NIGHT_FALLBACK_12B_HOT_CACHE_MAX_SIZE"
+    plist_set_env OMLX_TEXT_MAX_TOKENS "$NIGHT_FALLBACK_12B_MAX_TOKENS"
+    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW "$NIGHT_FALLBACK_12B_MAX_CONTEXT_WINDOW"
+    plist_set_env OMLX_TEXT_DISABLE_CACHE 1
+    plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 1
+    plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
+    plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (${profile_label}): $paged_cache_dir"
+}
+
+configure_night_runtime_env() {
+    local paged_cache_dir
+    paged_cache_dir=$(omlx_cache_dir cache-26b /Users/ai/.omlx/cache-26b)
+    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
+    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
+    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2
+    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
+    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
+    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
+    plist_set_env OMLX_TEXT_DISABLE_CACHE 0
+    plist_set_env OMLX_GEMMA4_UNIFIED_RUNTIME 0
+    plist_set_env OMLX_GEMMA4_UNIFIED_WRAPPER "$GEMMA4_UNIFIED_WRAPPER"
+    plist_set_env MAGI_OMLX_GEMMA4_PYTHON "$GEMMA4_UNIFIED_PYTHON"
+    plist_set_env OMLX_PAGED_CACHE_DIR "$paged_cache_dir"
+    log "oMLX paged cache (night): $paged_cache_dir"
+}
+
+start_night_e4b_last_resort() {
+    local reason="${1:-26B 與 12B 都不可用}"
+    log "⚠️  NIGHT ${reason}，最後保底啟動 E4B 主模型，避免 MAGI 無主模型"
+    check_model_src "$E4B_SRC"
+    rm -f "$MODELS_TEXT_DIR"/*
+    ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
+    rm -f /Users/ai/.omlx/models-text-e4b/*
+    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+    configure_e4b_runtime_env
+    launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
+    clear_stale_8080_owner
+    wait_port_closed 8080 20 || true
+    if ! bootstrap_omlx_main "NIGHT-LAST-RESORT-E4B"; then
+        notify_admin "NIGHT last-resort E4B launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx.log"
+        exit 4
+    fi
     if ! wait_model_ready 8080 "e4b" 90; then
-        notify_admin "NIGHT fallback E4B 也未載入，請檢查 launchd/oMLX log"
+        notify_admin "NIGHT last-resort E4B 也未載入，請檢查 launchd/oMLX log"
         exit 4
     fi
     echo "night-e4b-degraded" > "$PROFILE_FILE"
-    notify_admin "NIGHT ${reason}，已降級啟動 E4B；待資源恢復後下次夜間切換會再嘗試 26B"
+    notify_admin "NIGHT ${reason}，12B fallback 不可用，已最後保底啟動 E4B；待資源恢復後下次夜間切換會再嘗試 26B"
+}
+
+start_night_12b_fallback() {
+    local reason="${1:-26B 資源不足}"
+    log "⚠️  NIGHT ${reason}，改啟動 12B fallback，避免退回 E4B"
+    if [ ! -d "$NIGHT_FALLBACK_12B_SRC" ]; then
+        start_night_e4b_last_resort "${reason}；12B 模型目錄不存在: $NIGHT_FALLBACK_12B_SRC"
+        return
+    fi
+    if [ ! -x "$GEMMA4_UNIFIED_WRAPPER" ]; then
+        start_night_e4b_last_resort "${reason}；Gemma4 unified wrapper 不存在或不可執行: $GEMMA4_UNIFIED_WRAPPER"
+        return
+    fi
+
+    launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
+    launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx-phi4" 12 || true
+    wait_launchctl_unloaded "com.magi.omlx-smol" 12 || true
+    wait_port_closed 8082 15 || true
+    wait_port_closed 8083 15 || true
+
+    rm -f "$MODELS_TEXT_DIR"/*
+    ln -sf "$NIGHT_FALLBACK_12B_SRC" "$MODELS_TEXT_DIR/$NIGHT_FALLBACK_12B_LINK_NAME"
+    rm -f /Users/ai/.omlx/models-text-e4b/*
+    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+    configure_12b_runtime_env "night 12B fallback"
+
+    launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
+    clear_stale_8080_owner
+    wait_port_closed 8080 20 || true
+    if ! bootstrap_omlx_main "NIGHT-FALLBACK-12B"; then
+        start_night_e4b_last_resort "${reason}；12B launchd 啟動失敗"
+        return
+    fi
+    if ! wait_model_ready 8080 "$NIGHT_FALLBACK_MODEL_KEYWORD" 180; then
+        start_night_e4b_last_resort "${reason}；12B 未於時限內載入"
+        return
+    fi
+    echo "night-12b-degraded" > "$PROFILE_FILE"
+    mkdir -p "$(dirname "$NIGHT_FALLBACK_STAMP_FILE")"
+    date +%s > "$NIGHT_FALLBACK_STAMP_FILE"
+    notify_admin "NIGHT ${reason}，已啟動 12B fallback；E4B 僅保留最後保底"
+}
+
+start_day_e4b_fallback() {
+    local reason="${1:-12B 啟動失敗}"
+    DAY_MAIN_DEGRADED=1
+    log "⚠️  DAY ${reason}，降級啟動 E4B 主模型，避免 MAGI 無主模型"
+    check_model_src "$E4B_SRC"
+    rm -f "$MODELS_TEXT_DIR"/*
+    ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
+    rm -f /Users/ai/.omlx/models-text-e4b/*
+    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+    configure_e4b_runtime_env
+    launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
+    clear_stale_8080_owner
+    wait_port_closed 8080 20 || true
+    if ! bootstrap_omlx_main "DAY-FALLBACK-E4B"; then
+        notify_admin "DAY fallback E4B launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx.log"
+        exit 4
+    fi
+    if ! wait_model_ready 8080 "$DAY_FALLBACK_MODEL_KEYWORD" 90; then
+        notify_admin "DAY fallback E4B 也未載入，請檢查 launchd/oMLX log"
+        exit 4
+    fi
+    echo "day-e4b-degraded" > "$PROFILE_FILE"
+    mkdir -p "$(dirname "$DAY_FALLBACK_STAMP_FILE")"
+    date +%s > "$DAY_FALLBACK_STAMP_FILE"
+    notify_admin "DAY ${reason}，已降級啟動 E4B；下一次日間切換會再嘗試 12B"
 }
 
 resource_guard_allows_night_26b() {
-    local governor="/Users/ai/Desktop/MAGI_v2/scripts/ops/resource_governor.py"
+    local governor="$MAGI_ROOT_DIR/scripts/ops/resource_governor.py"
     [ -x "$GATEKEEPER_PY" ] || return 0
     [ -f "$governor" ] || return 0
     local payload level disk_free
@@ -301,8 +578,8 @@ heartbeat_check() {
     if [ "$count" -gt "$upper_limit" ]; then
         notify_admin "${mode_name} 切換後偵測到 ${count} 個 MLX process（上限 ${upper_limit}），疑似重複實例，啟動 Layer 1 reaper"
     fi
-    local reaper="/Users/ai/Desktop/MAGI_v2/scripts/ops/omlx_heartbeat_reaper.py"
-    local py="/Users/ai/Desktop/MAGI_v2/venv/bin/python3"
+    local reaper="$MAGI_ROOT_DIR/scripts/ops/omlx_heartbeat_reaper.py"
+    local py="$MAGI_ROOT_DIR/venv/bin/python3"
     if [ -x "$reaper" ] && [ -x "$py" ]; then
         "$py" "$reaper" --expected-ports "$expected_ports" --mode-name "$mode_name" 2>&1 | while read ln; do log "$ln"; done || true
     else
@@ -319,13 +596,75 @@ check_model_src() {
     fi
 }
 
+run_launchctl_logged() {
+    local tag="$1"
+    shift
+    local out rc
+    set +e
+    out=$("$@" 2>&1)
+    rc=$?
+    set -e
+    if [ -n "$out" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "$tag: $line"
+        done <<< "$out"
+    fi
+    return "$rc"
+}
+
+launchctl_service_loaded() {
+    local label="$1"
+    launchctl print "gui/$UID_NUM/$label" >/dev/null 2>&1
+}
+
+wait_launchctl_unloaded() {
+    local label="$1"
+    local timeout="${2:-10}"
+    local waited=0
+    while [ "$waited" -lt "$timeout" ]; do
+        if ! launchctl_service_loaded "$label"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    log "⚠️  launchd service $label 經過 ${timeout}s 仍未卸載，稍後嘗試重新載入"
+    return 1
+}
+
+start_launch_agent() {
+    local label="$1"
+    local plist="$2"
+    local tag="$3"
+    run_launchctl_logged "$tag enable" launchctl enable "gui/$UID_NUM/$label" || true
+    if ! launchctl_service_loaded "$label"; then
+        if ! run_launchctl_logged "$tag bootstrap" launchctl bootstrap "gui/$UID_NUM" "$plist"; then
+            sleep 2
+            if ! launchctl_service_loaded "$label"; then
+                run_launchctl_logged "$tag bootstrap retry" launchctl bootstrap "gui/$UID_NUM" "$plist" || return 1
+            fi
+        fi
+    fi
+    sleep 2
+    run_launchctl_logged "$tag kickstart" launchctl kickstart -kp "gui/$UID_NUM/$label" || return 1
+}
+
+restart_launch_agent() {
+    local label="$1"
+    local plist="$2"
+    local tag="$3"
+    run_launchctl_logged "$tag bootout" launchctl bootout "gui/$UID_NUM/$label" || true
+    wait_launchctl_unloaded "$label" 12 || true
+    start_launch_agent "$label" "$plist" "$tag"
+}
+
 bootstrap_omlx_main() {
     local label="$1"
     local plist="$HOME/Library/LaunchAgents/com.magi.omlx.plist"
-    launchctl enable "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label enable: $line"; done || true
-    launchctl bootstrap "gui/$UID_NUM" "$plist" 2>&1 | grep -v "^$" | while read line; do log "$label bootstrap: $line"; done || true
-    sleep 2
-    launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx" 2>&1 | grep -v "^$" | while read line; do log "$label kickstart: $line"; done || true
+    # 主模型必須明確解除 Disabled 狀態；這台電腦排程重開後，
+    # launchd 可能保留 disabled bit，單純 bootstrap/kickstart 會失敗。
+    run_launchctl_logged "$label enable-main" launchctl enable "gui/$UID_NUM/com.magi.omlx" || true
+    start_launch_agent "com.magi.omlx" "$plist" "$label"
 }
 
 wait_model_ready() {
@@ -354,48 +693,96 @@ get_active_profile() {
     cat "$PROFILE_FILE" 2>/dev/null || echo "unknown"
 }
 
+already_in_requested_mode() {
+    local requested="$1"
+    local active current_main current_phi4 current_smol
+    active=$(get_active_profile)
+    current_main=$(probe_model_id_at_port 8080)
+    current_phi4=$(probe_model_id_at_port 8082)
+    current_smol=$(probe_model_id_at_port 8083)
+    if [ "$requested" = "day" ]; then
+        if [ "$active" != "day" ] || ! echo "$current_main" | grep -qi "$DAY_PRIMARY_MODEL_KEYWORD"; then
+            return 1
+        fi
+        if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! echo "$current_phi4" | grep -qi "phi"; then
+            return 1
+        fi
+        if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! echo "$current_smol" | grep -qi "smol"; then
+            return 1
+        fi
+        log "DAY mode already healthy（api=$current_main, phi4=${current_phi4:-off}, smol=${current_smol:-off}），跳過重啟"
+        return 0
+    fi
+    if [ "$requested" = "night" ]; then
+        if [ "$active" != "night" ] || ! echo "$current_main" | grep -qi "26b"; then
+            return 1
+        fi
+        if [ -n "$current_phi4" ] || [ -n "$current_smol" ]; then
+            return 1
+        fi
+        log "NIGHT mode already healthy（api=$current_main），跳過重啟"
+        return 0
+    fi
+    return 1
+}
+
+if [ "${MAGI_OMLX_FORCE_SWITCH:-0}" != "1" ] && [ "$MODE" != "auto" ] && [ "$MODE" != "status" ]; then
+    if already_in_requested_mode "$MODE"; then
+        exit 0
+    fi
+fi
+
 case "$MODE" in
   day)
-    log "→ DAY mode (E4B + Phi4 + SmolLM3)"
-    check_model_src "$E4B_SRC"
+    log "→ DAY mode (${DAY_PRIMARY_MODEL_KEYWORD} + Phi4 + SmolLM3)"
+    DAY_MAIN_DEGRADED=0
+    if [ ! -d "$DAY_PRIMARY_SRC" ]; then
+        start_day_e4b_fallback "日間主模型目錄不存在: $DAY_PRIMARY_SRC"
+    elif [ ! -x "$GEMMA4_UNIFIED_WRAPPER" ]; then
+        start_day_e4b_fallback "Gemma4 unified wrapper 不存在或不可執行: $GEMMA4_UNIFIED_WRAPPER"
+    fi
 
-    # 更新 models-text symlink → E4B
-    rm -f "$MODELS_TEXT_DIR"/*
-    ln -sf "$E4B_SRC" "$MODELS_TEXT_DIR/gemma-4-e4b-it-4bit"
+    if [ "$DAY_MAIN_DEGRADED" != "1" ]; then
+        # 更新 models-text symlink → day primary（預設 E4B）
+        rm -f "$MODELS_TEXT_DIR"/*
+        ln -sf "$DAY_PRIMARY_SRC" "$MODELS_TEXT_DIR/$DAY_PRIMARY_LINK_NAME"
 
-    # 更新 models-text-e4b symlink（確保 E4B LaunchAgent 指向正確）
-    rm -f /Users/ai/.omlx/models-text-e4b/*
-    ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
+        # 更新 models-text-e4b symlink（讓日間 4B 與 fallback 入口一致）
+        rm -f /Users/ai/.omlx/models-text-e4b/*
+        ln -sf "$E4B_SRC" "/Users/ai/.omlx/models-text-e4b/gemma-4-e4b-it-4bit"
 
-    preflight_oomlx_rss_check 6 "DAY"
+        preflight_oomlx_rss_check 8 "DAY"
 
-    # 重啟 oMLX E4B（降低記憶體）
-    launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
-    clear_stale_8080_owner
-    wait_port_closed 8080 15 || true
-    # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
-    preflight_memory_check 4 "DAY"
-    # 日間：E4B 5.10GB + KV cache need 6.38GB → MODEL=8GB / PROCESS=10GB
-    # 之前 6GB/6GB 會被 process_memory_enforcer 在啟動時強殺（2026-04-26 09:03/09:07 兩次 SIGABRT）
-    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 8GB
-    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 10GB
-    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 8
-    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
-    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
-    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-e4b
-    bootstrap_omlx_main "DAY"
+        # 重啟 oMLX day primary（Gemma4 unified overlay）
+        launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+        wait_launchctl_unloaded "com.magi.omlx" 12 || true
+        clear_stale_8080_owner
+        wait_port_closed 8080 15 || true
+        # bootout 後才檢查記憶體（避免舊 process 佔用干擾判斷）
+        if ! preflight_memory_check "$DAY_PRIMARY_MIN_FREE_GB" "DAY" return; then
+            start_day_e4b_fallback "日間主模型記憶體不足"
+        fi
+    fi
+    if [ "$DAY_MAIN_DEGRADED" != "1" ]; then
+        configure_day_primary_runtime_env
+        if ! bootstrap_omlx_main "DAY"; then
+            start_day_e4b_fallback "日間主模型 launchd 啟動失敗"
+        fi
+    fi
 
     # 啟動 Phi-4 和 SmolLM3（若模型已下載）
     if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ]; then
+        PHI4_CACHE_DIR=$(omlx_cache_dir cache-phi4 /Users/ai/.omlx/cache-phi4)
+        plist_set_program_arg "$HOME/Library/LaunchAgents/com.magi.omlx-phi4.plist" 15 "$PHI4_CACHE_DIR"
+        log "oMLX paged cache (Phi-4): $PHI4_CACHE_DIR"
         rm -f /Users/ai/.omlx/models-text-phi4/*
         ln -sf "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" \
                "/Users/ai/.omlx/models-text-phi4/Phi-4-mini-instruct-4bit"
-        launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
         wait_port_closed 8082 10 || true
-        launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-phi4.plist 2>/dev/null || true
-        sleep 2
-        launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
+        if ! restart_launch_agent "com.magi.omlx-phi4" "$HOME/Library/LaunchAgents/com.magi.omlx-phi4.plist" "Phi-4"; then
+            notify_admin "DAY 切換時 Phi-4 launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx-phi4.log"
+            exit 4
+        fi
         log "Phi-4 啟動中..."
     else
         log "⚠️  Phi-4 模型尚未下載，跳過"
@@ -403,42 +790,56 @@ case "$MODE" in
 
     if ls /Users/ai/.omlx/models/ | grep -q "SmolLM3"; then
         SMOL_MODEL=$(ls /Users/ai/.omlx/models/ | grep SmolLM3 | head -1)
+        SMOL_CACHE_DIR=$(omlx_cache_dir cache-smol /Users/ai/.omlx/cache-smol)
+        plist_set_program_arg "$HOME/Library/LaunchAgents/com.magi.omlx-smol.plist" 15 "$SMOL_CACHE_DIR"
+        log "oMLX paged cache (SmolLM3): $SMOL_CACHE_DIR"
         rm -f /Users/ai/.omlx/models-text-smol/*
         ln -sf "/Users/ai/.omlx/models/$SMOL_MODEL" \
                "/Users/ai/.omlx/models-text-smol/$SMOL_MODEL"
-        launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
         wait_port_closed 8083 10 || true
-        launchctl bootstrap "gui/$UID_NUM" ~/Library/LaunchAgents/com.magi.omlx-smol.plist 2>/dev/null || true
-        sleep 2
-        launchctl kickstart -kp "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
+        if ! restart_launch_agent "com.magi.omlx-smol" "$HOME/Library/LaunchAgents/com.magi.omlx-smol.plist" "SmolLM3"; then
+            notify_admin "DAY 切換時 SmolLM3 launchd 啟動失敗，請檢查 /opt/homebrew/var/log/omlx-smol.log"
+            exit 4
+        fi
         log "SmolLM3 ($SMOL_MODEL) 啟動中..."
     else
         log "⚠️  SmolLM3 模型尚未下載，跳過"
     fi
 
-    # 等待服務啟動；主 8080 必須真的是 E4B，避免 active_profile=day 但仍無主模型的假成功。
-    if ! wait_model_ready 8080 "e4b" 90; then
-        notify_admin "DAY 切換後 8080 未載入 E4B，請檢查 launchd/oMLX log"
+    if [ "$DAY_MAIN_DEGRADED" != "1" ]; then
+        # 等待服務啟動；主 8080 必須符合日間主模型，避免 active_profile=day 但模型錯置的假成功。
+        if ! wait_model_ready 8080 "$DAY_PRIMARY_MODEL_KEYWORD" 180; then
+            start_day_e4b_fallback "日間主模型未於時限內載入"
+        fi
+    fi
+    if [ -d "/Users/ai/.omlx/models/Phi-4-mini-instruct-4bit" ] && ! wait_model_ready 8082 "phi" 90; then
+        notify_admin "DAY 切換後 8082 未載入 Phi-4，交叉驗證不可用"
         exit 4
     fi
-    echo "day" > "$PROFILE_FILE"
-    curl -sf http://127.0.0.1:8082/v1/models >/dev/null 2>&1 && log "8082 (Phi-4) OK" || log "8082 未就緒（模型可能仍在載入）"
-    curl -sf http://127.0.0.1:8083/v1/models >/dev/null 2>&1 && log "8083 (SmolLM3) OK" || log "8083 未就緒（模型可能仍在載入）"
+    if ls /Users/ai/.omlx/models/ 2>/dev/null | grep -q "SmolLM3" && ! wait_model_ready 8083 "smol" 90; then
+        notify_admin "DAY 切換後 8083 未載入 SmolLM3，交叉驗證不可用"
+        exit 4
+    fi
+    if [ "$DAY_MAIN_DEGRADED" != "1" ]; then
+        echo "day" > "$PROFILE_FILE"
+        rm -f "$DAY_FALLBACK_STAMP_FILE"
+        rm -f "$NIGHT_FALLBACK_STAMP_FILE"
+    fi
 
     # heartbeat 背景執行，不阻塞腳本完成
     ( heartbeat_check 3 "DAY" ) &
     ;;
 
   night)
-    log "→ NIGHT mode (26B only)"
+    log "→ NIGHT mode (26B primary; 12B fallback; E4B last-resort)"
     if [ ! -d "$B26_SRC" ] && [ -d "$B26_LEGACY_SRC" ]; then
         B26_SRC="$B26_LEGACY_SRC"
     fi
     check_model_src "$B26_SRC"
 
     if ! resource_guard_allows_night_26b; then
-        start_night_e4b_fallback "本機資源低水位，暫不啟動 26B"
-        ( heartbeat_check 1 "NIGHT-FALLBACK-E4B" ) &
+        start_night_12b_fallback "本機資源低水位，暫不啟動 26B"
+        ( heartbeat_check 1 "NIGHT-FALLBACK-12B" ) &
         log "Switch to $MODE complete (active_profile=$(get_active_profile))"
         exit 0
     fi
@@ -446,6 +847,8 @@ case "$MODE" in
     # 停止 Phi-4 和 SmolLM3
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-phi4" 2>/dev/null || true
     launchctl bootout "gui/$UID_NUM/com.magi.omlx-smol" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx-phi4" 12 || true
+    wait_launchctl_unloaded "com.magi.omlx-smol" 12 || true
     wait_port_closed 8082 15 || true
     wait_port_closed 8083 15 || true
 
@@ -457,31 +860,34 @@ case "$MODE" in
 
     # 重啟 oMLX 26B（模型實際約 14.63GB；MODEL 需高於模型大小，否則 completion 回 507）
     launchctl bootout "gui/$UID_NUM/com.magi.omlx" 2>/dev/null || true
+    wait_launchctl_unloaded "com.magi.omlx" 12 || true
     clear_stale_8080_owner
     wait_port_closed 8080 30 || true
     log "等待記憶體回收（10s）..."
     sleep 10
     # 所有舊 process 都 bootout 後才檢查記憶體（門檻 8GB：26B ceiling=16GB，系統本身 6-8GB）
     if ! preflight_memory_check 8 "NIGHT" return; then
-        start_night_e4b_fallback "26B 記憶體不足"
-        ( heartbeat_check 1 "NIGHT-FALLBACK-E4B" ) &
+        start_night_12b_fallback "26B 記憶體不足"
+        ( heartbeat_check 1 "NIGHT-FALLBACK-12B" ) &
         log "Switch to $MODE complete (active_profile=$(get_active_profile))"
         exit 0
     fi
-    plist_set_env OMLX_TEXT_MAX_MODEL_MEMORY 16GB
-    plist_set_env OMLX_TEXT_MAX_PROCESS_MEMORY 17GB
-    plist_set_env OMLX_TEXT_INITIAL_CACHE_BLOCKS 2
-    plist_set_env OMLX_TEXT_HOT_CACHE_MAX_SIZE 512MB
-    plist_set_env OMLX_TEXT_MAX_TOKENS 8192
-    plist_set_env OMLX_TEXT_MAX_CONTEXT_WINDOW 8192
-    plist_set_env OMLX_PAGED_CACHE_DIR /Users/ai/.omlx/cache-26b
-    bootstrap_omlx_main "NIGHT"
+    configure_night_runtime_env
+    if ! bootstrap_omlx_main "NIGHT"; then
+        start_night_12b_fallback "26B launchd 啟動失敗"
+        ( heartbeat_check 1 "NIGHT-FALLBACK-12B" ) &
+        log "Switch to $MODE complete (active_profile=$(get_active_profile))"
+        exit 0
+    fi
 
     if ! wait_model_ready 8080 "26b" 180; then
-        notify_admin "NIGHT 切換後 8080 未載入 26B，請檢查 launchd/oMLX log"
-        exit 4
+        start_night_12b_fallback "26B 未於時限內載入"
+        ( heartbeat_check 1 "NIGHT-FALLBACK-12B" ) &
+        log "Switch to $MODE complete (active_profile=$(get_active_profile))"
+        exit 0
     fi
     echo "night" > "$PROFILE_FILE"
+    rm -f "$NIGHT_FALLBACK_STAMP_FILE"
 
     # heartbeat 背景執行
     ( heartbeat_check 1 "NIGHT" ) &

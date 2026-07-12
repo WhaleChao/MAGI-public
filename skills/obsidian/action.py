@@ -26,7 +26,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 MAGI_ROOT = os.path.abspath(os.path.join(SKILL_DIR, "..", ".."))
@@ -34,10 +34,22 @@ if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name
 
 # ── Config ──────────────────────────────────────────────────────────
 
-AGENT_DIR = Path(MAGI_ROOT) / ".agent"
+def _resolve_agent_dir() -> Path:
+    raw = (
+        os.environ.get("MAGI_OBSIDIAN_AGENT_DIR")
+        or os.environ.get("MAGI_SHARED_AGENT_DIR")
+        or ""
+    ).strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(MAGI_ROOT) / ".agent"
+
+
+AGENT_DIR = _resolve_agent_dir()
 AGENT_DIR.mkdir(exist_ok=True)
 
 INDEX_PATH = AGENT_DIR / "obsidian_index.json"
@@ -70,7 +82,7 @@ HIGH_VALUE_FOLDERS = {
     "07_證據資料",
     "08_筆錄",
     "09_法院通知或程序裁定",
-    "10_判決書",
+    judgment_folder_name(10),
     "12_信件往返",
     "13_電子筆錄",
 }
@@ -154,6 +166,43 @@ def _save_index(idx: Dict):
                     tmp_path.unlink()
             except OSError:
                 pass
+
+
+def _replace_index(idx: Dict):
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(idx or {})
+    payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    lock_path = INDEX_PATH.with_suffix(INDEX_PATH.suffix + ".lock")
+    tmp_path = INDEX_PATH.with_suffix(f"{INDEX_PATH.suffix}.{os.getpid()}.{time.time_ns()}.tmp")
+    with open(lock_path, "a") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, INDEX_PATH)
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _prune_missing_index_entries(idx: Dict, vault: Path, *, dry_run: bool = False) -> List[str]:
+    """Remove note index rows whose vault files no longer exist."""
+    pruned: List[str] = []
+    notes = idx.setdefault("notes", {})
+    for rel in list(notes.keys()):
+        if not isinstance(rel, str) or not rel.strip():
+            continue
+        path = Path(rel)
+        full_path = path if path.is_absolute() else vault / rel
+        if full_path.exists():
+            continue
+        pruned.append(rel)
+        if not dry_run:
+            notes.pop(rel, None)
+    return sorted(pruned)
 
 
 def _get_vault_path() -> Optional[Path]:
@@ -406,16 +455,43 @@ def task_ingest(
     vault_name = vault.name
 
     notes = _list_notes(vault, folder)
+    try:
+        note_limit = int(os.environ.get("MAGI_OBSIDIAN_INGEST_NOTE_LIMIT", "0") or 0)
+    except ValueError:
+        note_limit = 0
+    try:
+        checkpoint_every = int(os.environ.get("MAGI_OBSIDIAN_CHECKPOINT_EVERY", "10") or 10)
+    except ValueError:
+        checkpoint_every = 10
+    checkpoint_every = max(1, checkpoint_every)
+
+    def _indexed_chunks(rel: str) -> int:
+        try:
+            return int((notes_map.get(rel) or {}).get("chunks", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if os.environ.get("MAGI_OBSIDIAN_INGEST_ZERO_CHUNKS_FIRST", "0").strip() == "1":
+        notes = sorted(
+            notes,
+            key=lambda n: (
+                0 if _indexed_chunks(str(n.relative_to(vault))) <= 0 else 1,
+                str(n.relative_to(vault)),
+            ),
+        )
 
     # Apply --since filter (by file mtime)
     if since_ts is not None:
         notes = [n for n in notes if n.stat().st_mtime >= since_ts]
+    if note_limit > 0:
+        notes = notes[:note_limit]
 
     ingested = 0
     skipped = 0
     filtered_by_tag = 0
     errors = []
     total_chunks = 0
+    checkpoint_writes = 0
 
     for note in notes:
         if total_chunks >= CHUNK_CAP:
@@ -438,7 +514,8 @@ def task_ingest(
 
         # Dedup check
         prev = notes_map.get(rel, {})
-        if not force and prev.get("hash") == h and prev.get("mtime") == mtime:
+        prev_chunks = _indexed_chunks(rel)
+        if not force and prev.get("hash") == h and prev.get("mtime") == mtime and prev_chunks > 0:
             skipped += 1
             continue
 
@@ -467,6 +544,10 @@ def task_ingest(
                     "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 }
                 ingested += 1
+                if checkpoint_every and ingested % checkpoint_every == 0:
+                    idx["notes"] = notes_map
+                    _save_index(idx)
+                    checkpoint_writes += 1
             else:
                 errors.append({"path": rel, "error": result.get("error", "unknown")})
         except Exception as e:
@@ -483,8 +564,12 @@ def task_ingest(
         "skipped": skipped,
         "errors": len(errors),
         "total_chunks": total_chunks,
+        "notes_considered": len(notes),
+        "checkpoint_writes": checkpoint_writes,
         "error_details": errors[:10] if errors else [],
     }
+    if note_limit > 0:
+        result_dict["note_limit"] = note_limit
     if tags:
         result_dict["tags_filter"] = tags
         result_dict["filtered_by_tag"] = filtered_by_tag
@@ -537,9 +622,13 @@ def _generate_frontmatter(
     case_info: Optional[Dict] = None,
     doc_key: str = "",
     file_hash_val: str = "",
+    extraction_method: str = "",
+    extraction_pages: Any = "",
+    extraction_quality: str = "",
 ) -> str:
     """Generate YAML frontmatter for an extracted note."""
     lines = ["---"]
+    lines.append("summary_schema: magi-obsidian-note-v2")
     lines.append(f"source_root: {source_root}")
     lines.append(f"source_path: {source_path}")
     lines.append(f"source_relpath: {source_relpath}")
@@ -553,6 +642,12 @@ def _generate_frontmatter(
     lines.append(f"doc_key: {doc_key}")
     lines.append(f"file_hash: {file_hash_val}")
     lines.append(f"mtime: {mtime}")
+    if extraction_method:
+        lines.append(f"extraction_method: {extraction_method}")
+    if extraction_pages not in ("", None):
+        lines.append(f"extraction_pages: {extraction_pages}")
+    if extraction_quality:
+        lines.append(f"extraction_quality: {extraction_quality}")
     lines.append(f"extracted_at: {time.strftime('%Y-%m-%dT%H:%M:%S')}")
     lines.append("---")
     return "\n".join(lines)
@@ -582,6 +677,480 @@ def _sanitize_note_name(name: str) -> str:
     if len(name) > 120:
         name = name[:120]
     return name.strip("_. ")
+
+
+def _parse_frontmatter_dict(content: str) -> Dict[str, str]:
+    m = _FRONTMATTER_RE.match(str(content or ""))
+    if not m:
+        return {}
+    out: Dict[str, str] = {}
+    for raw in m.group(1).splitlines():
+        if ":" not in raw or raw.lstrip().startswith("-"):
+            continue
+        key, value = raw.split(":", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            out[key] = value
+    return out
+
+
+def _extract_section(content: str, heading: str) -> str:
+    pattern = rf"##\s+{re.escape(heading)}\s*\n(.+?)(?=\n##\s+|\Z)"
+    m = re.search(pattern, str(content or ""), flags=re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def _extract_existing_full_text(content: str) -> str:
+    return _extract_section(content, "Full Text") or _extract_section(content, "全文") or ""
+
+
+_GENERATED_IMAGE_ARTIFACT_RE = re.compile(
+    r"!\[[^\]\n]*\]\(<[^>\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^>\n]*>\)"
+    r"|!\[[^\]\n]*\]\([^\n)]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n)]*\)",
+    re.IGNORECASE,
+)
+_GENERATED_IMAGE_ARTIFACT_LINE_RE = re.compile(
+    r"(?im)^[^\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n]*$"
+)
+
+
+def _generated_image_artifact_count(text: str) -> int:
+    s = str(text or "")
+    return len(_GENERATED_IMAGE_ARTIFACT_RE.findall(s)) + len(
+        re.findall(r"_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)", s, flags=re.IGNORECASE)
+    )
+
+
+def _remove_generated_image_artifacts(text: str) -> str:
+    s = str(text or "")
+    s = _GENERATED_IMAGE_ARTIFACT_RE.sub(" ", s)
+    s = _GENERATED_IMAGE_ARTIFACT_LINE_RE.sub("", s)
+    s = re.sub(r"(?im)^[>\-\s]*(?:LightPDF)?\s*$", "", s)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def _strip_markdown_noise(text: str) -> str:
+    s = _remove_generated_image_artifacts(text)
+    s = re.sub(r"!\[[^\]\n]*\]\(<[^>\n]*>\)", " ", s)
+    s = re.sub(r"!\[[^\]\n]*\]\([^)]+\)", " ", s)
+    s = re.sub(r"^#+\s*", "", s, flags=re.MULTILINE)
+    s = re.sub(r"^[\s>*-]*(?:\d{1,3}|[０-９]{1,3})\s+", "", s, flags=re.MULTILINE)
+    s = re.sub(r"[ \t]+", " ", s)
+    return s.strip()
+
+
+def _text_signal(text: str) -> Dict[str, int]:
+    s = _strip_markdown_noise(text)
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", s))
+    alnum = len(re.findall(r"[A-Za-z0-9]", s))
+    image_links = len(re.findall(r"!\[[^\]\n]*\]\(<[^>\n]*>\)|!\[[^\]\n]*\]\([^)]+\)", str(text or "")))
+    image_artifacts = _generated_image_artifact_count(text)
+    spaced_digit_noise = len(re.findall(r"(?:\d\s+){2,}\d", s))
+    return {
+        "chars": len(s),
+        "cjk": cjk,
+        "alnum": alnum,
+        "image_links": image_links + image_artifacts,
+        "spaced_digit_noise": spaced_digit_noise,
+        "score": cjk * 2 + alnum - (image_links + image_artifacts) * 80 - spaced_digit_noise * 12,
+    }
+
+
+def _extraction_quality(text: str, method: str = "") -> str:
+    signal = _text_signal(text)
+    method_l = str(method or "").lower()
+    if _generated_image_artifact_count(text) and signal["score"] < 180:
+        return "image_only"
+    if signal["chars"] < MIN_EXTRACTED_CHARS:
+        return "too_short"
+    if signal["image_links"] and signal["score"] < 180:
+        return "image_only"
+    if "markitdown" in method_l and signal["score"] < 240:
+        return "weak_markitdown"
+    if signal["score"] < 140:
+        return "weak_text"
+    return "ok"
+
+
+def _sanitize_extracted_text_for_note(text: str) -> str:
+    image_artifacts = _generated_image_artifact_count(text)
+    cleaned = _remove_generated_image_artifacts(text)
+    if image_artifacts and _text_signal(cleaned)["score"] < 120:
+        return "（原始抽取結果僅包含圖片佔位符，MAGI 已移除這些無效連結；請以來源檔重新 OCR 或人工確認。）"
+    return cleaned or str(text or "").strip()
+
+
+def _split_candidate_lines(text: str, *, max_lines: int = 300) -> List[str]:
+    cleaned = _strip_markdown_noise(text)
+    raw_parts = re.split(r"[\n。；;]+", cleaned)
+    out: List[str] = []
+    seen = set()
+    for part in raw_parts:
+        line = re.sub(r"\s+", " ", part).strip(" -:：，,")
+        if len(line) < 8:
+            continue
+        if len(re.sub(r"[\W_]+", "", line)) < 6:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        out.append(line[:220])
+        if len(out) >= max_lines:
+            break
+    return out
+
+
+def _pick_lines(lines: List[str], keywords: Tuple[str, ...], *, limit: int = 5) -> List[str]:
+    picked: List[str] = []
+    for line in lines:
+        if any(k in line for k in keywords):
+            picked.append(line)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _extract_dates(text: str, *, limit: int = 8) -> List[str]:
+    patterns = [
+        r"\d{2,3}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日",
+        r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日",
+        r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}",
+        r"\d{8}",
+    ]
+    seen = set()
+    dates: List[str] = []
+    for pat in patterns:
+        for m in re.findall(pat, str(text or "")):
+            d = re.sub(r"\s+", "", m)
+            if d in seen:
+                continue
+            seen.add(d)
+            dates.append(d)
+            if len(dates) >= limit:
+                return dates
+    return dates
+
+
+def _detect_document_type(title: str, relpath: str, text: str) -> str:
+    hay = f"{title} {relpath} {text[:1200]}"
+    rules = [
+        ("判決/裁定/處分", ("判決", "裁定", "不起訴", "起訴書", "確定證明")),
+        ("書狀", ("書狀", "答辯狀", "聲請狀", "陳報狀", "準備書")),
+        ("筆錄", ("筆錄", "調查筆錄", "訊問筆錄", "準備程序")),
+        ("法院通知", ("通知書", "開庭", "傳票", "期日", "庭期")),
+        ("證據", ("證據", "存摺", "交易明細", "匯款", "照片", "截圖")),
+        ("信件", ("函", "電子郵件", "email", "信件")),
+    ]
+    for label, keywords in rules:
+        if any(k in hay for k in keywords):
+            return label
+    return "一般文件"
+
+
+def _extract_case_markers(lines: List[str], text: str) -> List[str]:
+    markers: List[str] = []
+    for pat in (
+        r"(臺灣[^，。\n]{0,18}法院|最高法院|最高行政法院|智慧財產及商業法院)",
+        r"\d{2,3}\s*年度\s*[\u4e00-\u9fffA-Za-z]{1,8}\s*字\s*第\s*\d+\s*號",
+        r"(原告|被告|聲請人|相對人|債權人|債務人|告訴人|代理人)\s*[^\n，。:：]{1,24}",
+    ):
+        for m in re.findall(pat, text[:3000]):
+            value = m if isinstance(m, str) else "".join(m)
+            value = re.sub(r"\s+", "", value)
+            if value and value not in markers:
+                markers.append(value)
+            if len(markers) >= 8:
+                return markers
+    if not markers:
+        markers.extend(lines[:3])
+    return markers[:8]
+
+
+def _bullet_lines(items: List[str], empty: str = "未見明確資料") -> str:
+    if not items:
+        return f"- {empty}"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _summarize_legal_meaning(doc_type: str, lines: List[str], dates: List[str]) -> List[str]:
+    if doc_type == "法院通知":
+        out = _pick_lines(lines, ("開庭", "庭期", "調解", "期日", "到庭", "續行"), limit=3)
+        return out or ["此文件主要影響程序期日與到庭/補正安排，應納入行事曆與待辦追蹤。"]
+    if doc_type == "筆錄":
+        out = _pick_lines(lines, ("諭知", "宣示", "表示", "到庭", "程序", "調解", "不成立"), limit=4)
+        return out or ["此文件記載程序進行與當事人陳述，應用於整理事實、爭點與後續期日。"]
+    if doc_type == "書狀":
+        out = _pick_lines(lines, ("聲明", "理由", "請求", "答辯", "爭執", "證據"), limit=4)
+        return out or ["此文件屬攻防主張，應與對造書狀、證據及法院期日交叉檢查。"]
+    if doc_type == "判決/裁定/處分":
+        out = _pick_lines(lines, ("主文", "理由", "上訴", "抗告", "期間", "處分", "判決"), limit=5)
+        return out or ["此文件可能決定案件階段或救濟期間，應檢查主文、理由及不變期間。"]
+    if doc_type == "證據":
+        return _pick_lines(lines, ("金額", "匯款", "交易", "帳戶", "證據", "照片", "紀錄"), limit=4) or [
+            "此文件偏向證據材料，應標明待證事實、來源與可否提出。"
+        ]
+    return _pick_lines(lines, ("應", "不得", "期限", "法院", "程序", "證據"), limit=4) or [
+        "此文件可供案件背景或後續檢索使用，尚未辨識出特定程序效果。"
+    ]
+
+
+def _build_structured_summary(
+    title: str,
+    relpath: str,
+    text: str,
+    *,
+    method: str = "",
+    pages: Any = "",
+    case_info: Optional[Dict] = None,
+) -> str:
+    lines = _split_candidate_lines(text)
+    dates = _extract_dates(text)
+    doc_type = _detect_document_type(title, relpath, text)
+    quality = _extraction_quality(text, method)
+    markers = _extract_case_markers(lines, text)
+    deadline_lines = _pick_lines(
+        lines,
+        ("期限", "應於", "前提出", "補正", "開庭", "庭期", "調解", "續行", "到庭", "上訴", "抗告", "不變期間"),
+        limit=6,
+    )
+    issue_lines = _pick_lines(lines, ("爭點", "主張", "抗辯", "否認", "承認", "理由", "不成立", "犯罪事實"), limit=5)
+    evidence_lines = _pick_lines(lines, ("證據", "存摺", "交易", "匯款", "明細", "照片", "截圖", "附件", "卷"), limit=5)
+    key_points = _summarize_legal_meaning(doc_type, lines, dates)
+
+    if quality != "ok":
+        quality_note = (
+            f"- 抽取品質：{quality}。此筆記仍保留來源與全文區，"
+            "但應由下次 reextract/OCR 或人工確認後再作實質判斷。"
+        )
+    else:
+        quality_note = ""
+
+    case_label = ""
+    if case_info:
+        case_label = f"{case_info.get('case_number', '')} {case_info.get('client_name', '')}".strip()
+
+    parts = [
+        "## 摘要",
+        "",
+        f"- 文件類型：{doc_type}",
+        f"- 案件：{case_label or '未從路徑辨識'}",
+        f"- 來源檔：`{relpath}`",
+        f"- 抽取：{method or '?'}；頁數：{pages or '?'}；品質：{quality}",
+    ]
+    if quality_note:
+        parts.append(quality_note)
+    parts += [
+        "",
+        "## 關鍵資訊",
+        "",
+        _bullet_lines(markers),
+        "",
+        "## 法律/程序意義",
+        "",
+        _bullet_lines(key_points),
+        "",
+        "## 期限與待辦",
+        "",
+        _bullet_lines(deadline_lines, "未在文字中辨識到明確期限或待辦"),
+        "",
+        "## 爭點與證據",
+        "",
+        "### 可能爭點",
+        "",
+        _bullet_lines(issue_lines, "未在文字中辨識到明確爭點"),
+        "",
+        "### 證據/資料",
+        "",
+        _bullet_lines(evidence_lines, "未在文字中辨識到明確證據材料"),
+    ]
+    return "\n".join(parts).strip()
+
+
+def _build_note_content(
+    *,
+    frontmatter: str,
+    title: str,
+    relpath: str,
+    suffix: str,
+    result: Dict[str, Any],
+    text: str,
+    case_info: Optional[Dict] = None,
+) -> str:
+    method = str(result.get("method") or "")
+    pages = result.get("pages", "?")
+    clean_text = _sanitize_extracted_text_for_note(text)
+    summary = _build_structured_summary(
+        title,
+        relpath,
+        clean_text,
+        method=method,
+        pages=pages,
+        case_info=case_info,
+    )
+    cleaned_noise = _strip_markdown_noise(clean_text)
+    excerpt = cleaned_noise[:360].replace("\n", " ").strip()
+    if len(cleaned_noise) > 360:
+        excerpt += "..."
+
+    return f"""{frontmatter}
+
+# {title}
+
+**Source:** `{relpath}`
+**Type:** {suffix.lower()} | **Pages:** {pages} | **Method:** {method or '?'}
+
+{summary}
+
+## Extract
+
+> {excerpt}
+
+## Full Text
+
+{clean_text}
+"""
+
+
+def _note_preference_key(path: Path, meta: Dict[str, str], content: str) -> Tuple[int, int, int, str]:
+    stem = path.stem
+    suffix_penalty = 1 if re.search(r"_\d+$", stem) else 0
+    schema_bonus = 1 if meta.get("summary_schema") == "magi-obsidian-note-v2" else 0
+    quality_bonus = 1 if meta.get("extraction_quality") == "ok" else 0
+    method_penalty = 1 if "markitdown" in meta.get("extraction_method", "").lower() else 0
+    return (
+        schema_bonus + quality_bonus,
+        -suffix_penalty - method_penalty,
+        len(content),
+        str(path),
+    )
+
+
+def _collect_existing_source_note_hashes(notes_dir: Path, vault: Path) -> Dict[str, Dict[str, str]]:
+    existing: Dict[str, Dict[str, str]] = {}
+    if not notes_dir.exists():
+        return existing
+    for note in notes_dir.rglob("summary__*.md"):
+        try:
+            content = note.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        meta = _parse_frontmatter_dict(content)
+        fhash = str(meta.get("file_hash") or "").strip()
+        if not fhash:
+            continue
+        rel = str(note.relative_to(vault))
+        current = existing.get(fhash)
+        candidate = {
+            "note_path": rel,
+            "source_relpath": meta.get("source_relpath", ""),
+            "source_path": meta.get("source_path", ""),
+            "preference": repr(_note_preference_key(note, meta, content)),
+        }
+        if not current:
+            existing[fhash] = candidate
+            continue
+        current_path = vault / current["note_path"]
+        try:
+            current_content = current_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            current_content = ""
+        current_key = _note_preference_key(current_path, _parse_frontmatter_dict(current_content), current_content)
+        candidate_key = _note_preference_key(note, meta, content)
+        if candidate_key > current_key:
+            existing[fhash] = candidate
+    return existing
+
+
+def _update_index_entry(idx: Dict, vault: Path, rel: str, doc_key: str = "", chunks: int = 0) -> None:
+    note_full = vault / rel
+    if not note_full.exists():
+        idx.setdefault("notes", {}).pop(rel, None)
+        return
+    content = note_full.read_text(encoding="utf-8", errors="replace")
+    idx.setdefault("notes", {})[rel] = {
+        "hash": _note_hash(content),
+        "mtime": int(note_full.stat().st_mtime),
+        "doc_key": doc_key,
+        "chunks": chunks,
+        "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def _full_file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def _duplicate_identity(meta: Dict[str, str], content: str) -> str:
+    full_text = _extract_existing_full_text(content) or content
+    if _text_signal(full_text)["score"] < 120:
+        return ""
+    if os.environ.get("MAGI_OBSIDIAN_DUPLICATE_SOURCE_HASH", "0").strip() == "1":
+        source_path = Path(meta.get("source_path", "")).expanduser()
+        try:
+            if source_path.exists() and source_path.is_file():
+                return "file:" + _full_file_hash(source_path)
+        except Exception:
+            pass
+    normalized = re.sub(r"\s+", "", _strip_markdown_noise(full_text))
+    return "text:" + hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _known_case_roots() -> List[Path]:
+    roots: List[Path] = []
+    for raw in list(preferred_case_roots(include_closed=True)) + list(default_case_roots(include_closed=True)):
+        try:
+            path = Path(raw).expanduser()
+        except Exception:
+            continue
+        if path not in roots:
+            roots.append(path)
+    return roots
+
+
+def _resolve_existing_source_path(meta: Dict[str, str]) -> Optional[Path]:
+    raw_source = (meta.get("source_path") or "").strip()
+    if raw_source:
+        source_path = Path(raw_source).expanduser()
+        if source_path.exists():
+            return source_path
+
+    rel = (meta.get("source_relpath") or "").strip().lstrip("/\\")
+    filename = Path(raw_source or rel).name
+    case_number = (meta.get("case_number") or "").strip()
+    roots = _known_case_roots()
+
+    if rel:
+        rel_path = Path(rel)
+        for root in roots:
+            candidate = root / rel_path
+            if candidate.exists():
+                return candidate
+
+    if case_number and filename:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                case_dirs = list(root.glob(f"*/*/{case_number}-*"))
+            except Exception:
+                continue
+            for case_dir in case_dirs[:8]:
+                if not case_dir.is_dir():
+                    continue
+                try:
+                    exact = list(case_dir.rglob(filename))
+                except Exception:
+                    continue
+                if exact:
+                    return exact[0]
+    return None
 
 
 def task_ingest_source(
@@ -660,6 +1229,7 @@ def task_ingest_source(
     # Load ingest state
     state = _load_ingest_state()
     files_state = state.get("files", {})
+    existing_hash_notes = _collect_existing_source_note_hashes(notes_dir, vault)
 
     # Vector pipeline
     try:
@@ -697,6 +1267,7 @@ def task_ingest_source(
     errors = []
     warnings = []
     malformed_skipped = 0
+    duplicate_hash_skipped = 0
     notes_created = []
     t_start = time.time()
 
@@ -783,8 +1354,27 @@ def task_ingest_source(
 
         note_name = _sanitize_note_name(f"summary__{f.stem}")
         note_path = note_subdir / f"{note_name}.md"
+        planned_note_rel = str(note_path.relative_to(vault))
+
+        canonical = existing_hash_notes.get(fhash)
+        if canonical and canonical.get("note_path") != planned_note_rel:
+            files_state[state_key] = {
+                "hash": fhash,
+                "mtime": mtime,
+                "note_path": canonical.get("note_path", ""),
+                "duplicate_of": canonical.get("note_path", ""),
+                "duplicate_source_relpath": canonical.get("source_relpath", ""),
+                "doc_key": "",
+                "chunks": 0,
+                "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            duplicate_hash_skipped += 1
+            skipped += 1
+            continue
 
         # Generate frontmatter
+        method = str(result.get("method") or "")
+        quality = _extraction_quality(text, method)
         frontmatter = _generate_frontmatter(
             source_root=source,
             source_path=str(f),
@@ -793,30 +1383,22 @@ def task_ingest_source(
             mtime=mtime,
             case_info=case_info,
             file_hash_val=fhash,
+            extraction_method=method,
+            extraction_pages=result.get("pages", ""),
+            extraction_quality=quality,
         )
 
         # Build note content
         title = f.stem
-        # First ~200 chars as excerpt
-        excerpt = text[:200].replace("\n", " ").strip()
-        if len(text) > 200:
-            excerpt += "..."
-
-        note_content = f"""{frontmatter}
-
-# {title}
-
-**Source:** `{relpath}`
-**Type:** {f.suffix.lower()} | **Pages:** {result.get('pages', '?')} | **Method:** {result.get('method', '?')}
-
-## Excerpt
-
-> {excerpt}
-
-## Full Text
-
-{text}
-"""
+        note_content = _build_note_content(
+            frontmatter=frontmatter,
+            title=title,
+            relpath=relpath,
+            suffix=f.suffix,
+            result=result,
+            text=text,
+            case_info=case_info,
+        )
         # Write note
         note_path.write_text(note_content, encoding="utf-8")
 
@@ -840,7 +1422,7 @@ def task_ingest_source(
                     kind="obsidian",
                     primary=source_meta,
                     title=title,
-                    text=text,
+                    text=note_content,
                     chunk_chars=CHUNK_CHARS,
                     overlap=CHUNK_OVERLAP,
                     max_chunks_total=50,
@@ -867,6 +1449,11 @@ def task_ingest_source(
         }
 
         notes_created.append(note_rel)
+        existing_hash_notes[fhash] = {
+            "note_path": note_rel,
+            "source_relpath": relpath,
+            "source_path": str(f),
+        }
         processed += 1
 
         # Checkpoint every 50 files to survive kills
@@ -889,25 +1476,14 @@ def task_ingest_source(
 
     idx = _load_index()
     for nc in notes_created:
-        note_full = vault / nc
-        if note_full.exists():
-            content = note_full.read_text(encoding="utf-8", errors="replace")
-            h = _note_hash(content)
-            mt = int(note_full.stat().st_mtime)
-            st = note_path_to_state.get(nc, {})
-            idx.setdefault("notes", {})[nc] = {
-                "hash": h,
-                "mtime": mt,
-                "doc_key": st.get("doc_key", ""),
-                "chunks": st.get("chunks", 0),
-                "ingested_at": st.get("ingested_at", ""),
-            }
+        st = note_path_to_state.get(nc, {})
+        _update_index_entry(idx, vault, nc, doc_key=st.get("doc_key", ""), chunks=st.get("chunks", 0))
     _save_index(idx)
 
     elapsed = time.time() - t_start
     print(f"[ingest_source] 完成！耗時 {elapsed:.1f}s  "
           f"匯入={processed} 跳過={skipped} 文字太短={short_text} 警告={len(warnings)} 錯誤={len(errors)} "
-          f"folder排除={filtered_by_folder}", flush=True)
+          f"重複={duplicate_hash_skipped} folder排除={filtered_by_folder}", flush=True)
 
     return {
         "success": True,
@@ -918,6 +1494,7 @@ def task_ingest_source(
         "processed": processed,
         "skipped": skipped,
         "malformed_pdf_skipped": malformed_skipped,
+        "duplicate_hash_skipped": duplicate_hash_skipped,
         "short_text_skipped": short_text,
         "warnings": len(warnings),
         "errors": len(errors),
@@ -927,6 +1504,280 @@ def task_ingest_source(
         "error_details": errors[:10] if errors else [],
         "include_folders": sorted(_include_set) if _include_set else None,
         "exclude_folders": sorted(_exclude_set) if _exclude_set else None,
+    }
+
+
+def task_repair_notes(
+    vault_path: Optional[Path] = None,
+    limit: int = 0,
+    force: bool = False,
+    reextract: bool = False,
+    case_number: str = "",
+) -> Dict:
+    """Rewrite existing summary notes into the v2 structured summary format."""
+    vault = vault_path or _get_vault_path()
+    if not vault:
+        return {"success": False, "error": "No vault configured."}
+    notes_dir = vault / "20_Notes"
+    if not notes_dir.is_dir():
+        return {"success": False, "error": "20_Notes not found"}
+
+    def _repair_priority(note_path: Path) -> Tuple[int, str]:
+        try:
+            content = note_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return (9, str(note_path))
+        meta = _parse_frontmatter_dict(content)
+        full_text = _extract_existing_full_text(content)
+        method = meta.get("extraction_method") or ""
+        missing_v2 = meta.get("summary_schema") != "magi-obsidian-note-v2"
+        missing_sections = not (
+            _extract_section(content, "摘要")
+            and _extract_section(content, "期限與待辦")
+            and _extract_section(content, "爭點與證據")
+            and _extract_section(content, "法律/程序意義")
+        )
+        weak = (
+            (meta.get("extraction_quality") or "") not in {"", "ok"}
+            or _extraction_quality(full_text, method) != "ok"
+            or (full_text and _text_signal(full_text)["score"] < 120)
+            or "markitdown" in method.lower()
+        )
+        if reextract and weak:
+            return (0, str(note_path))
+        if missing_v2 or missing_sections:
+            return (1, str(note_path))
+        if weak:
+            return (2, str(note_path))
+        return (3, str(note_path))
+
+    candidates = sorted(notes_dir.rglob("summary__*.md"), key=_repair_priority)
+    if case_number:
+        candidates = [p for p in candidates if case_number in str(p)]
+    if limit > 0:
+        candidates = candidates[:limit]
+
+    try:
+        from skills.obsidian.extractors import extract_text
+    except Exception:
+        extract_text = None
+
+    idx = _load_index()
+    repaired = 0
+    skipped = 0
+    reextracted = 0
+    source_relocated = 0
+    missing_sources = 0
+    weak = 0
+    errors: List[Dict[str, str]] = []
+
+    for note in candidates:
+        rel = str(note.relative_to(vault))
+        try:
+            content = note.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            errors.append({"path": rel, "error": str(e)})
+            continue
+        meta = _parse_frontmatter_dict(content)
+        current_text = _extract_existing_full_text(content)
+        current_method = meta.get("extraction_method") or ""
+        current_needs_reextract = (
+            reextract
+            and current_text
+            and (_extraction_quality(current_text, current_method) != "ok" or "markitdown" in current_method.lower())
+        )
+        if (
+            not force
+            and meta.get("summary_schema") == "magi-obsidian-note-v2"
+            and _extract_section(content, "摘要")
+            and _extract_section(content, "期限與待辦")
+            and _extract_section(content, "爭點與證據")
+            and _extract_section(content, "法律/程序意義")
+            and not current_needs_reextract
+        ):
+            skipped += 1
+            continue
+
+        text = current_text
+        method = current_method
+        pages = meta.get("extraction_pages") or "?"
+        original_source_raw = (meta.get("source_path") or "").strip()
+        original_source_path = Path(original_source_raw).expanduser() if original_source_raw else None
+        resolved_source_path = original_source_path if original_source_path and original_source_path.exists() else None
+        needs_reextract_source = (
+            reextract
+            and extract_text is not None
+            and (_extraction_quality(text, method) != "ok" or "markitdown" in method.lower())
+        )
+        if needs_reextract_source and resolved_source_path is None:
+            resolved_source_path = _resolve_existing_source_path(meta)
+        if resolved_source_path and resolved_source_path != original_source_path:
+            source_relocated += 1
+        source_path = resolved_source_path or original_source_path
+        should_reextract = (
+            needs_reextract_source
+            and resolved_source_path is not None
+        )
+        if needs_reextract_source and resolved_source_path is None and (meta.get("source_path") or meta.get("source_relpath")):
+            missing_sources += 1
+        if should_reextract:
+            try:
+                result = extract_text(source_path)
+                if result.get("success") and result.get("text"):
+                    text = result["text"]
+                    method = str(result.get("method") or method)
+                    pages = result.get("pages", pages)
+                    reextracted += 1
+            except Exception as e:
+                errors.append({"path": rel, "error": f"reextract: {e}"})
+
+        if not text:
+            weak += 1
+            text = _strip_markdown_noise(content)
+        text = _sanitize_extracted_text_for_note(text)
+
+        case_info = {
+            "case_number": meta.get("case_number", ""),
+            "client_name": meta.get("client_name", ""),
+        }
+        title_match = re.search(r"^#\s+(.+)$", content, flags=re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else note.stem.replace("summary__", "")
+        source_relpath = meta.get("source_relpath") or rel
+        file_type = meta.get("file_type") or (source_path.suffix.lstrip(".") if source_path else "") or note.suffix.lstrip(".")
+        mtime = int(float(meta.get("mtime") or note.stat().st_mtime))
+        quality = _extraction_quality(text, method)
+        if quality != "ok":
+            weak += 1
+        file_hash_val = meta.get("file_hash", "")
+        if os.environ.get("MAGI_OBSIDIAN_REPAIR_REFRESH_FILE_HASH", "0").strip() == "1":
+            try:
+                if source_path and source_path.exists() and source_path.is_file():
+                    file_hash_val = _full_file_hash(source_path)
+            except Exception:
+                pass
+        frontmatter = _generate_frontmatter(
+            source_root=meta.get("source_root", ""),
+            source_path=str(source_path) if source_path else meta.get("source_path", ""),
+            source_relpath=source_relpath,
+            file_type=file_type,
+            mtime=mtime,
+            case_info=case_info,
+            doc_key=meta.get("doc_key", ""),
+            file_hash_val=file_hash_val,
+            extraction_method=method,
+            extraction_pages=pages,
+            extraction_quality=quality,
+        )
+        new_content = _build_note_content(
+            frontmatter=frontmatter,
+            title=title,
+            relpath=source_relpath,
+            suffix=f".{file_type}" if file_type else note.suffix,
+            result={"method": method, "pages": pages},
+            text=text,
+            case_info=case_info,
+        )
+        if new_content != content:
+            note.write_text(new_content, encoding="utf-8")
+            prev_idx = (idx.get("notes") or {}).get(rel, {})
+            _update_index_entry(
+                idx,
+                vault,
+                rel,
+                doc_key=meta.get("doc_key", "") or prev_idx.get("doc_key", ""),
+                chunks=int(prev_idx.get("chunks", 0) or 0),
+            )
+            repaired += 1
+        else:
+            skipped += 1
+
+    _save_index(idx)
+    return {
+        "success": True,
+        "scanned": len(candidates),
+        "repaired": repaired,
+        "skipped": skipped,
+        "reextracted": reextracted,
+        "source_relocated": source_relocated,
+        "missing_sources": missing_sources,
+        "weak_after_repair": weak,
+        "errors": len(errors),
+        "error_details": errors[:10],
+    }
+
+
+def task_cleanup_duplicate_notes(
+    vault_path: Optional[Path] = None,
+    dry_run: bool = False,
+) -> Dict:
+    """Move duplicate summary notes out of 20_Notes and prune stale index rows."""
+    vault = vault_path or _get_vault_path()
+    if not vault:
+        return {"success": False, "error": "No vault configured."}
+    notes_dir = vault / "20_Notes"
+    if not notes_dir.is_dir():
+        return {"success": False, "error": "20_Notes not found"}
+
+    groups: Dict[str, List[Tuple[Path, Dict[str, str], str]]] = {}
+    for note in notes_dir.rglob("summary__*.md"):
+        try:
+            content = note.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        meta = _parse_frontmatter_dict(content)
+        identity = _duplicate_identity(meta, content)
+        if not identity:
+            continue
+        case_no = meta.get("case_number") or ""
+        key = f"{case_no}|{identity}"
+        groups.setdefault(key, []).append((note, meta, content))
+
+    archive_root = vault / "99_Archive" / "MAGI_duplicate_notes" / time.strftime("%Y%m%d")
+    idx = _load_index()
+    duplicate_groups = 0
+    moved = 0
+    planned: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+
+    for key, items in groups.items():
+        if len(items) < 2:
+            continue
+        duplicate_groups += 1
+        canonical = max(items, key=lambda item: _note_preference_key(item[0], item[1], item[2]))
+        canonical_rel = str(canonical[0].relative_to(vault))
+        for note, meta, _content in items:
+            if note == canonical[0]:
+                continue
+            rel = str(note.relative_to(vault))
+            target = archive_root / rel
+            planned.append({"from": rel, "to": str(target.relative_to(vault)), "canonical": canonical_rel})
+            if dry_run:
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    target = target.with_name(f"{target.stem}.{int(time.time())}{target.suffix}")
+                os.replace(note, target)
+                idx.setdefault("notes", {}).pop(rel, None)
+                moved += 1
+            except Exception as e:
+                errors.append({"path": rel, "error": str(e)})
+
+    orphaned_index = _prune_missing_index_entries(idx, vault, dry_run=dry_run)
+    if not dry_run:
+        _replace_index(idx)
+    return {
+        "success": True,
+        "dry_run": dry_run,
+        "duplicate_groups": duplicate_groups,
+        "planned_moves": len(planned),
+        "moved": moved,
+        "orphaned_index_prunable": len(orphaned_index),
+        "orphaned_index_pruned": 0 if dry_run else len(orphaned_index),
+        "errors": len(errors),
+        "moves": planned[:25],
+        "sample_orphaned_index": orphaned_index[:10],
+        "error_details": errors[:10],
     }
 
 
@@ -1256,7 +2107,8 @@ def main():
     parser.add_argument("--task", type=str, default="status",
                         choices=["status", "list_vaults", "set_vault", "search",
                                  "read", "ingest", "ingest_source", "ask",
-                                 "writeback", "sync_case_notes", "help"])
+                                 "writeback", "repair_notes", "cleanup_duplicate_notes",
+                                 "sync_case_notes", "help"])
     parser.add_argument("--vault-path", type=str, default="")
     parser.add_argument("--query", type=str, default="")
     parser.add_argument("--note", type=str, default="")
@@ -1279,6 +2131,11 @@ def main():
     parser.add_argument("--exclude-folders", type=str, default="",
                         help="Folder blacklist: 'default' or comma-separated names (e.g. '06_閱卷資料')")
     parser.add_argument("--json-out", type=str, default="")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reextract", action="store_true",
+                        help="For repair_notes, re-extract weak notes from source files when available")
+    parser.add_argument("--case-number", type=str, default="",
+                        help="For repair_notes, only repair notes whose path contains this case number")
     args = parser.parse_args()
 
     vault_override = Path(args.vault_path) if args.vault_path else None
@@ -1334,6 +2191,16 @@ def main():
         else:
             result = task_writeback(args.note, args.query, folder=args.folder or "MAGI",
                                     vault_path=vault_override)
+    elif args.task == "repair_notes":
+        result = task_repair_notes(
+            vault_path=vault_override,
+            limit=args.limit,
+            force=args.force,
+            reextract=args.reextract,
+            case_number=args.case_number,
+        )
+    elif args.task == "cleanup_duplicate_notes":
+        result = task_cleanup_duplicate_notes(vault_path=vault_override, dry_run=args.dry_run)
     elif args.task == "sync_case_notes":
         result = task_sync_case_notes(vault_path=vault_override)
     elif args.task == "help":
@@ -1348,6 +2215,8 @@ def main():
                 "ingest_source --source 案件|fang|結案|舊案 [--subpath <rel>] [--limit N] [--force] [--include-folders high-value|folder1,folder2] [--exclude-folders default|folder1,folder2] - Extract & ingest from source",
                 "ask --query <text> [--scope source:案件|folder:X|case:2025-0002] - Q&A with citations",
                 "writeback --note <name> --query <content> [--folder <subfolder>] - Write note back to vault",
+                "repair_notes [--force] [--reextract] [--limit N] [--case-number 2026-0001] - Rewrite summary notes into structured v2 format",
+                "cleanup_duplicate_notes [--dry-run] - Move duplicate summary notes out of 20_Notes",
                 "sync_case_notes - Sync active cases from DB to vault as .md notes",
             ]
         }

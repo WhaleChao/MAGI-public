@@ -6,7 +6,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Iterable, Mapping, Sequence
 
-_NAME_FIXES = str.maketrans({"餘": "余"})
+_NAME_FIXES = str.maketrans({"餘": "余", "遊": "游", "臺": "台"})
 _CASE_FOLDER_RE = re.compile(r"^(?P<case>\d{4}-\d{4})-(?P<rest>.+)$")
 
 
@@ -67,8 +67,10 @@ def should_trust_folder_client_name(db_name: str, folder_name: str) -> bool:
         return True
     db_key = normalize_person_name(db_name)
     folder_key = normalize_person_name(folder_name)
-    if not db_key or not folder_key or db_key == folder_key:
+    if not db_key or not folder_key:
         return False
+    if db_key == folder_key:
+        return str(db_name or "").strip() != str(folder_name or "").strip()
     if len(db_key) == len(folder_key) and 2 <= len(db_key) <= 12:
         diff_count = sum(1 for a, b in zip(db_key, folder_key) if a != b)
         return diff_count <= max(1, len(db_key) // 4)

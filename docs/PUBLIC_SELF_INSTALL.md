@@ -29,6 +29,7 @@ Build the customer artifacts:
 
 ```bash
 python3 scripts/packaging/build_installers.py --force
+python3 scripts/packaging/validate_installer_payload.py --json
 ```
 
 Build the Windows EXE on a Windows machine or by running the
@@ -105,10 +106,12 @@ Before giving the installation to an operator, all commands below should pass:
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 python3 scripts/customer_install_wizard.py --public --no-live
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/magi_doctor.py --json
 python3 scripts/install_magi.py --dry-run --check-live
+python3 scripts/packaging/validate_installer_payload.py --json
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
 

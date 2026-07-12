@@ -97,7 +97,40 @@ def classify_tool_requirement(
     text = (message or "").strip()
     if not text:
         return ToolRequirement(level="none", tool_hint="", reason="empty message")
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
 
+        if user_declines_tool_dispatch(text):
+            return ToolRequirement(level="none", tool_hint="", reason="user explicitly declined tools")
+    except Exception:
+        pass
+    try:
+        from api.routing.intent_contract import (
+            KIND_BUSY_STATUS,
+            KIND_CANCEL_REQUEST,
+            KIND_CASUAL_CHAT,
+            KIND_CORRECTION_REQUEST,
+            KIND_EMPTY,
+            KIND_META_CAPABILITY,
+            KIND_STATEFUL_REPLY,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        contract = classify_intent_contract(text)
+        if contract.kind in {
+            KIND_EMPTY,
+            KIND_META_CAPABILITY,
+            KIND_TOOL_CAPABILITY,
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_CANCEL_REQUEST,
+            KIND_CORRECTION_REQUEST,
+            KIND_STATEFUL_REPLY,
+        }:
+            return ToolRequirement(level="none", tool_hint="", reason=f"intent contract: {contract.kind}")
+    except Exception:
+        pass
     # Check required patterns first
     for pattern, tool_hint in _TOOL_REQUIRED_PATTERNS:
         if pattern.search(text):

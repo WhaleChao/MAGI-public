@@ -10,6 +10,7 @@
  */
 
 const fs = require("fs");
+const path = require("path");
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, PageOrientation,
@@ -24,6 +25,36 @@ const {
 function sanitizeXml(text) {
   if (!text) return "";
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+}
+
+function isInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function resolveOutputPath(data) {
+  const outPathRaw = String(data.out_path || "");
+  const exportsDirRaw = String(data.exports_dir || "");
+  const fileNameRaw = String(data.filename || "");
+  if (!outPathRaw || !exportsDirRaw || !fileNameRaw) {
+    throw new Error("out_path, exports_dir, and filename are required");
+  }
+  if (path.isAbsolute(fileNameRaw) || path.basename(fileNameRaw) !== fileNameRaw || fileNameRaw.includes("\\") || fileNameRaw.includes("..")) {
+    throw new Error("filename must be a plain basename");
+  }
+  if (!fileNameRaw.toLowerCase().endsWith(".docx")) {
+    throw new Error("filename must end with .docx");
+  }
+  const exportsDir = path.resolve(exportsDirRaw);
+  const outPath = path.resolve(outPathRaw);
+  if (!isInside(outPath, exportsDir)) {
+    throw new Error("out_path escapes exports_dir");
+  }
+  if (path.basename(outPath) !== fileNameRaw) {
+    throw new Error("out_path basename does not match filename");
+  }
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  return outPath;
 }
 
 // ── Design tokens ───────────────────────────────────────────────────────────
@@ -490,9 +521,12 @@ async function main() {
       process.exit(1);
   }
 
+  const outPath = resolveOutputPath(data);
   const buffer = await Packer.toBuffer(doc);
-  fs.writeFileSync(data.out_path, buffer);
-  console.log(`OK: ${data.out_path}`);
+  const tmpPath = path.join(path.dirname(outPath), `.${path.basename(outPath)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmpPath, buffer);
+  fs.renameSync(tmpPath, outPath);
+  console.log(`OK: ${outPath}`);
 }
 
 main().catch(err => {

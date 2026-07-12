@@ -41,10 +41,9 @@ if str(_MAGI_ROOT) not in sys.path:
 logger = logging.getLogger("pdf-tool")
 
 # ── 匯出目錄 ──
-_EXPORTS_DIR = Path(os.environ.get(
-    "MAGI_EXPORTS_DIR",
-    str(_MAGI_ROOT / "static" / "exports"),
-))
+_DEFAULT_EXPORTS_DIR = _MAGI_ROOT / "static" / "exports"
+_EXPORTS_DIR = Path(os.environ.get("MAGI_EXPORTS_DIR", str(_DEFAULT_EXPORTS_DIR)))
+_DEFAULT_EXTERNAL_TIMEOUT_SEC = 60.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -56,14 +55,153 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def _exports_dir() -> Path:
+    return Path(os.environ.get("MAGI_EXPORTS_DIR", str(_DEFAULT_EXPORTS_DIR))).expanduser().resolve(strict=False)
+
+
+def _split_env_paths(raw: str) -> List[Path]:
+    paths: List[Path] = []
+    for part in re.split(r"[:;,]", str(raw or "")):
+        part = part.strip()
+        if part:
+            paths.append(Path(part).expanduser())
+    return paths
+
+
+def _allowed_roots() -> List[Path]:
+    roots: List[Path] = [_exports_dir()]
+    for key in (
+        "MAGI_PDF_TOOL_ALLOWED_ROOTS",
+        "MAGI_CASE_ROOT",
+        "MAGI_ACTIVE_CASE_ROOT",
+        "MAGI_CLOSED_CASE_ROOT",
+        "MAGI_DRIVE_SYNC_ACTIVE_CASE_ROOT",
+        "MAGI_DRIVE_SYNC_CLOSED_CASE_ROOT",
+        "SYNOLOGY_CASE_ROOT",
+        "SYNOLOGY_CASE_ROOTS",
+    ):
+        roots.extend(_split_env_paths(os.environ.get(key, "")))
+    try:
+        from api.case_path_mapper import default_case_roots, preferred_case_roots
+
+        roots.extend(Path(p).expanduser() for p in preferred_case_roots(include_closed=True) if p)
+        roots.extend(Path(p).expanduser() for p in default_case_roots(include_closed=True) if p)
+    except Exception:
+        logger.debug("pdf-tool: case roots unavailable", exc_info=True)
+
+    deduped: List[Path] = []
+    seen = set()
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve(strict=False)
+        except Exception:
+            continue
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(resolved)
+    return deduped
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _ensure_under_allowed_root(path: Path, *, purpose: str) -> Path:
+    resolved = path.expanduser().resolve(strict=False)
+    for root in _allowed_roots():
+        if _is_relative_to(resolved, root):
+            return resolved
+    roots = ", ".join(str(r) for r in _allowed_roots())
+    raise PermissionError(f"{purpose} path outside allowed roots: {resolved} (allowed: {roots})")
+
+
+def _input_file(path: str, *, suffixes: Tuple[str, ...] = ()) -> Path:
+    p = _ensure_under_allowed_root(Path(path), purpose="input")
+    if not p.is_file():
+        raise FileNotFoundError(f"找不到檔案：{path}")
+    if suffixes and p.suffix.lower() not in {s.lower() for s in suffixes}:
+        raise ValueError(f"不支援的輸入副檔名：{p.suffix}")
+    return p
+
+
+def _output_file(name: str, user_output: Optional[str] = None) -> Path:
+    p = Path(user_output).expanduser() if user_output else _exports_dir() / Path(name).name
+    p = _ensure_under_allowed_root(p, purpose="output")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _output_dir(name: str, user_output_dir: Optional[str] = None) -> Path:
+    p = Path(user_output_dir).expanduser() if user_output_dir else _exports_dir() / Path(name).name
+    p = _ensure_under_allowed_root(p, purpose="output")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _temp_sibling(path: Path) -> Path:
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    os.close(fd)
+    return Path(tmp_name)
+
+
+def _atomic_write_pdf(path: Path, writer: Any) -> None:
+    tmp = _temp_sibling(path)
+    try:
+        with tmp.open("wb") as f:
+            writer.write(f)
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = _temp_sibling(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    tmp = _temp_sibling(path)
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _external_timeout_sec(default: float = _DEFAULT_EXTERNAL_TIMEOUT_SEC) -> float:
+    try:
+        return max(1.0, float(os.environ.get("MAGI_PDF_TOOL_EXTERNAL_TIMEOUT_SEC", str(default)) or default))
+    except Exception:
+        return default
+
+
+def _safe_filename_piece(name: str) -> str:
+    base = Path(str(name or "image.bin")).name
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")
+    return base or "image.bin"
+
+
 def _output_path(name: str, user_output: Optional[str] = None) -> str:
-    """決定輸出路徑：優先用使用者指定路徑，否則放到 exports。"""
-    if user_output:
-        p = Path(user_output)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        return str(p)
-    out = _ensure_dir(_EXPORTS_DIR) / name
-    return str(out)
+    """決定輸出路徑，且限制在 managed exports/case roots 內。"""
+    return str(_output_file(name, user_output))
 
 
 def _ts() -> str:
@@ -96,17 +234,16 @@ def task_merge(args: List[str]) -> Dict[str, Any]:
 
     writer = PdfWriter()
     total_pages = 0
-    for pdf_file in opts.files:
-        if not os.path.isfile(pdf_file):
-            return {"ok": False, "error": f"找不到檔案：{pdf_file}"}
-        reader = PdfReader(pdf_file)
+    input_files = [_input_file(pdf_file, suffixes=(".pdf",)) for pdf_file in opts.files]
+    for pdf_file in input_files:
+        reader = PdfReader(str(pdf_file))
         for page in reader.pages:
             writer.add_page(page)
             total_pages += 1
 
-    out = _output_path(f"merged_{_ts()}.pdf", opts.output)
-    with open(out, "wb") as f:
-        writer.write(f)
+    out_path = _output_file(f"merged_{_ts()}.pdf", opts.output)
+    _atomic_write_pdf(out_path, writer)
+    out = str(out_path)
 
     _eventlog(f"PDF 合併完成：{len(opts.files)} 份 → {total_pages} 頁", ok=True, payload={"output": out})
     return {"ok": True, "output": out, "files_merged": len(opts.files), "total_pages": total_pages}
@@ -122,14 +259,11 @@ def task_split(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output-dir", default=None, help="輸出目錄")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
-
-    reader = PdfReader(opts.file)
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
+    reader = PdfReader(str(input_file))
     total = len(reader.pages)
-    base = Path(opts.file).stem
-    out_dir = Path(opts.output_dir) if opts.output_dir else _ensure_dir(_EXPORTS_DIR / f"split_{base}_{_ts()}")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    base = input_file.stem
+    out_dir = _output_dir(f"split_{base}_{_ts()}", opts.output_dir)
 
     outputs = []
 
@@ -150,17 +284,17 @@ def task_split(args: List[str]) -> Dict[str, Any]:
             writer = PdfWriter()
             for i in range(max(1, start), min(end, total) + 1):
                 writer.add_page(reader.pages[i - 1])
-            fname = str(out_dir / f"{base}_p{start}-{end}.pdf")
-            with open(fname, "wb") as f:
-                writer.write(f)
+            fname_path = out_dir / f"{base}_p{start}-{end}.pdf"
+            _atomic_write_pdf(fname_path, writer)
+            fname = str(fname_path)
             outputs.append(fname)
     else:
         for i, page in enumerate(reader.pages, 1):
             writer = PdfWriter()
             writer.add_page(page)
-            fname = str(out_dir / f"{base}_p{i}.pdf")
-            with open(fname, "wb") as f:
-                writer.write(f)
+            fname_path = out_dir / f"{base}_p{i}.pdf"
+            _atomic_write_pdf(fname_path, writer)
+            fname = str(fname_path)
             outputs.append(fname)
 
     _eventlog(f"PDF 分割完成：{total} 頁 → {len(outputs)} 份", ok=True)
@@ -176,8 +310,7 @@ def task_extract(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--tables", action="store_true", help="一併擷取表格")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
     text_parts = []
     tables_found = []
@@ -190,7 +323,7 @@ def task_extract(args: List[str]) -> Dict[str, Any]:
 
     try:
         import pdfplumber
-        with pdfplumber.open(opts.file) as pdf:
+        with pdfplumber.open(str(input_file)) as pdf:
             for i, page in enumerate(pdf.pages, 1):
                 if i < start_page or i > end_page:
                     continue
@@ -201,7 +334,7 @@ def task_extract(args: List[str]) -> Dict[str, Any]:
                         tables_found.append({"page": i, "data": table})
     except ImportError:
         from pypdf import PdfReader
-        reader = PdfReader(opts.file)
+        reader = PdfReader(str(input_file))
         for i, page in enumerate(reader.pages, 1):
             if i < start_page or i > end_page:
                 continue
@@ -211,9 +344,8 @@ def task_extract(args: List[str]) -> Dict[str, Any]:
     full_text = "\n\n".join(text_parts)
 
     if opts.output:
-        Path(opts.output).parent.mkdir(parents=True, exist_ok=True)
-        with open(opts.output, "w", encoding="utf-8") as f:
-            f.write(full_text)
+        out_path = _output_file(f"{input_file.stem}_text.txt", opts.output)
+        _atomic_write_text(out_path, full_text)
 
     result: Dict[str, Any] = {
         "ok": True,
@@ -222,7 +354,7 @@ def task_extract(args: List[str]) -> Dict[str, Any]:
         "text_preview": full_text[:2000],
     }
     if opts.output:
-        result["output"] = opts.output
+        result["output"] = str(out_path)
     if tables_found:
         result["tables"] = tables_found
     return result
@@ -236,8 +368,7 @@ def task_ocr(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--lang", default="chi_tra+eng", help="OCR 語言（預設中文繁體+英文）")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
     try:
         old_lang = os.environ.get("MAGI_PDF_OCR_LANGS")
@@ -245,7 +376,7 @@ def task_ocr(args: List[str]) -> Dict[str, Any]:
             os.environ["MAGI_PDF_OCR_LANGS"] = opts.lang
             from skills.documents.pdf_bridge import extract_text as _extract_pdf_text
 
-            full_text = _extract_pdf_text(opts.file)
+            full_text = _extract_pdf_text(str(input_file))
         finally:
             if old_lang is None:
                 os.environ.pop("MAGI_PDF_OCR_LANGS", None)
@@ -255,8 +386,8 @@ def task_ocr(args: List[str]) -> Dict[str, Any]:
         if not full_text or full_text.startswith("[PDF 提取失敗"):
             return {"ok": False, "error": full_text or "OCR 無文字輸出"}
         if opts.output:
-            with open(opts.output, "w", encoding="utf-8") as f:
-                f.write(full_text)
+            out_path = _output_file(f"{input_file.stem}_ocr.txt", opts.output)
+            _atomic_write_text(out_path, full_text)
 
         return {
             "ok": True,
@@ -264,7 +395,7 @@ def task_ocr(args: List[str]) -> Dict[str, Any]:
             "pages": len(re.findall(r"--- 第\\s*\\d+\\s*頁", full_text)) or None,
             "chars": len(full_text),
             "text_preview": full_text[:2000],
-            **({"output": opts.output} if opts.output else {}),
+            **({"output": str(out_path)} if opts.output else {}),
         }
     except Exception as e:
         return {"ok": False, "error": f"MAGI OCR pipeline failed: {e}"}
@@ -280,19 +411,18 @@ def task_encrypt(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output", "-o", default=None, help="輸出路徑")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
-    reader = PdfReader(opts.file)
+    reader = PdfReader(str(input_file))
     writer = PdfWriter()
     for page in reader.pages:
         writer.add_page(page)
     writer.encrypt(opts.password)
 
-    base = Path(opts.file).stem
-    out = _output_path(f"{base}_encrypted.pdf", opts.output)
-    with open(out, "wb") as f:
-        writer.write(f)
+    base = input_file.stem
+    out_path = _output_file(f"{base}_encrypted.pdf", opts.output)
+    _atomic_write_pdf(out_path, writer)
+    out = str(out_path)
 
     _eventlog(f"PDF 加密完成：{base}", ok=True)
     return {"ok": True, "output": out}
@@ -308,10 +438,9 @@ def task_decrypt(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output", "-o", default=None, help="輸出路徑")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
-    reader = PdfReader(opts.file)
+    reader = PdfReader(str(input_file))
     if reader.is_encrypted:
         if not reader.decrypt(opts.password):
             return {"ok": False, "error": "密碼錯誤"}
@@ -320,10 +449,10 @@ def task_decrypt(args: List[str]) -> Dict[str, Any]:
     for page in reader.pages:
         writer.add_page(page)
 
-    base = Path(opts.file).stem
-    out = _output_path(f"{base}_decrypted.pdf", opts.output)
-    with open(out, "wb") as f:
-        writer.write(f)
+    base = input_file.stem
+    out_path = _output_file(f"{base}_decrypted.pdf", opts.output)
+    _atomic_write_pdf(out_path, writer)
+    out = str(out_path)
 
     _eventlog(f"PDF 解密完成：{base}", ok=True)
     return {"ok": True, "output": out}
@@ -340,10 +469,9 @@ def task_rotate(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output", "-o", default=None, help="輸出路徑")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
-    reader = PdfReader(opts.file)
+    reader = PdfReader(str(input_file))
     writer = PdfWriter()
 
     if opts.pages == "all":
@@ -356,10 +484,10 @@ def task_rotate(args: List[str]) -> Dict[str, Any]:
             page.rotate(opts.degrees)
         writer.add_page(page)
 
-    base = Path(opts.file).stem
-    out = _output_path(f"{base}_rotated.pdf", opts.output)
-    with open(out, "wb") as f:
-        writer.write(f)
+    base = input_file.stem
+    out_path = _output_file(f"{base}_rotated.pdf", opts.output)
+    _atomic_write_pdf(out_path, writer)
+    out = str(out_path)
 
     return {"ok": True, "output": out, "rotated_pages": len(target_pages), "degrees": opts.degrees}
 
@@ -374,22 +502,21 @@ def task_watermark(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output", "-o", default=None, help="輸出路徑")
     opts = parser.parse_args(args)
 
-    for f in [opts.file, opts.watermark]:
-        if not os.path.isfile(f):
-            return {"ok": False, "error": f"找不到檔案：{f}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
+    watermark_file = _input_file(opts.watermark, suffixes=(".pdf",))
 
-    wm_page = PdfReader(opts.watermark).pages[0]
-    reader = PdfReader(opts.file)
+    wm_page = PdfReader(str(watermark_file)).pages[0]
+    reader = PdfReader(str(input_file))
     writer = PdfWriter()
 
     for page in reader.pages:
         page.merge_page(wm_page)
         writer.add_page(page)
 
-    base = Path(opts.file).stem
-    out = _output_path(f"{base}_watermarked.pdf", opts.output)
-    with open(out, "wb") as f:
-        writer.write(f)
+    base = input_file.stem
+    out_path = _output_file(f"{base}_watermarked.pdf", opts.output)
+    _atomic_write_pdf(out_path, writer)
+    out = str(out_path)
 
     return {"ok": True, "output": out, "pages": len(reader.pages)}
 
@@ -402,16 +529,15 @@ def task_info(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--file", required=True, help="輸入 PDF")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
-    reader = PdfReader(opts.file)
+    reader = PdfReader(str(input_file))
     meta = reader.metadata or {}
-    size_mb = os.path.getsize(opts.file) / (1024 * 1024)
+    size_mb = input_file.stat().st_size / (1024 * 1024)
 
     return {
         "ok": True,
-        "file": opts.file,
+        "file": str(input_file),
         "pages": len(reader.pages),
         "size_mb": round(size_mb, 2),
         "encrypted": reader.is_encrypted,
@@ -429,32 +555,43 @@ def task_images(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output-dir", default=None, help="輸出目錄")
     opts = parser.parse_args(args)
 
-    if not os.path.isfile(opts.file):
-        return {"ok": False, "error": f"找不到檔案：{opts.file}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
 
-    base = Path(opts.file).stem
-    out_dir = Path(opts.output_dir) if opts.output_dir else _ensure_dir(_EXPORTS_DIR / f"images_{base}_{_ts()}")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    base = input_file.stem
+    out_dir = _output_dir(f"images_{base}_{_ts()}", opts.output_dir)
 
     # 嘗試 pdfimages（poppler-utils）
     pdfimages = shutil.which("pdfimages")
     if pdfimages:
-        prefix = str(out_dir / "img")
-        subprocess.run([pdfimages, "-j", opts.file, prefix], check=True)
+        stage = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.", suffix=".tmp", dir=str(out_dir.parent)))
+        prefix = str(stage / "img")
+        try:
+            subprocess.run(
+                [pdfimages, "-j", str(input_file), prefix],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=_external_timeout_sec(),
+            )
+            for item in sorted(stage.iterdir()):
+                if item.is_file():
+                    item.replace(out_dir / _safe_filename_piece(item.name))
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
         files = sorted(str(f) for f in out_dir.iterdir() if f.is_file())
         return {"ok": True, "output_dir": str(out_dir), "images": files, "count": len(files)}
 
     # Fallback: pypdf
     from pypdf import PdfReader
-    reader = PdfReader(opts.file)
+    reader = PdfReader(str(input_file))
     extracted = []
     idx = 0
     for page in reader.pages:
         for image_obj in page.images:
             idx += 1
-            fname = str(out_dir / f"img_{idx:03d}_{image_obj.name}")
-            with open(fname, "wb") as f:
-                f.write(image_obj.data)
+            fname_path = out_dir / f"img_{idx:03d}_{_safe_filename_piece(image_obj.name)}"
+            _atomic_write_bytes(fname_path, image_obj.data)
+            fname = str(fname_path)
             extracted.append(fname)
 
     return {"ok": True, "output_dir": str(out_dir), "images": extracted, "count": len(extracted)}
@@ -468,24 +605,31 @@ def task_form(args: List[str]) -> Dict[str, Any]:
     parser.add_argument("--output", "-o", default=None, help="輸出路徑")
     opts = parser.parse_args(args)
 
-    for f in [opts.file, opts.fields_json]:
-        if not os.path.isfile(f):
-            return {"ok": False, "error": f"找不到檔案：{f}"}
+    input_file = _input_file(opts.file, suffixes=(".pdf",))
+    fields_json = _input_file(opts.fields_json, suffixes=(".json",))
 
-    base = Path(opts.file).stem
-    out = _output_path(f"{base}_filled.pdf", opts.output)
+    base = input_file.stem
+    out_path = _output_file(f"{base}_filled.pdf", opts.output)
 
     scripts_dir = Path(__file__).parent / "scripts"
     fill_script = scripts_dir / "fill_fillable_fields.py"
     if fill_script.exists():
-        result = subprocess.run(
-            [sys.executable, str(fill_script), opts.file, opts.fields_json, out],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0:
-            return {"ok": True, "output": out}
-        else:
+        stage_out = _temp_sibling(out_path)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(fill_script), str(input_file), str(fields_json), str(stage_out)],
+                capture_output=True, text=True, timeout=_external_timeout_sec(60.0),
+            )
+            if result.returncode == 0:
+                stage_out.replace(out_path)
+                out = str(out_path)
+                return {"ok": True, "output": out}
             return {"ok": False, "error": result.stderr[:500]}
+        finally:
+            try:
+                stage_out.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     return {"ok": False, "error": "表單填寫腳本不存在"}
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -46,6 +47,11 @@ def detect_output_quality_issue(kind: str, output: str, *, source_chars: int = 0
         "語音處理失敗",
         "transcription_failed",
         "無法完成轉錄",
+        "翻譯逾時",
+        "翻譯失敗",
+        "先保留原文",
+        "處理發生系統錯誤",
+        "⚠️ 第",
     ]
     if any(marker.lower() in lowered for marker in blocking_markers):
         return "off_topic_or_refusal"
@@ -212,7 +218,7 @@ def run_output_quality_gate(
                 if missing_terms:
                     issue = "translation_missing_source_terms:" + ",".join(missing_terms[:4])
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 214, exc_info=True)
     return {
         "ok": not bool(issue),
         "kind": mode,

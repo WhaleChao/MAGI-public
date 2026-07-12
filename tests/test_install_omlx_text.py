@@ -21,3 +21,6 @@ def test_build_launch_agent_plist_sets_text_memory_guardrails(monkeypatch, tmp_p
     assert env["OMLX_TEXT_HOT_CACHE_MAX_SIZE"] == "512MB"
     assert env["OMLX_TEXT_MAX_TOKENS"] == "8192"
     assert env["OMLX_TEXT_MAX_CONTEXT_WINDOW"] == "8192"
+    assert env["OMLX_GEMMA4_UNIFIED_RUNTIME"] == "0"
+    assert env["OMLX_GEMMA4_UNIFIED_WRAPPER"].endswith("/.omlx/bin/omlx-gemma4-unified-serve")
+    assert env["MAGI_OMLX_GEMMA4_PYTHON"].endswith("/venv/bin/python3")

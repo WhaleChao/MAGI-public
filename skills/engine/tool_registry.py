@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,15 @@ def _tools_api_url() -> str:
         return get_service_url("tools_api")
     except Exception:
         return "http://localhost:5003"
+
+
+def _internal_api_headers() -> dict[str, str]:
+    key = (
+        os.environ.get("MAGI_EXTERNAL_API_KEY")
+        or os.environ.get("MAGI_API_KEY")
+        or ""
+    ).strip()
+    return {"X-API-Key": key} if key else {}
 
 logger = logging.getLogger("ToolRegistry")
 
@@ -85,17 +97,35 @@ def _web_search(query: str = "", num_results: int = 5, **_) -> str:
         return f"網路搜尋失敗: {e}"
 
 
+def _normalize_case_query(query: str = "") -> str:
+    """Extract the real case search token from natural chat/tool text."""
+    raw = str(query or "").strip()
+    compact = re.sub(r"\s+", "", raw)
+    magi_case = re.search(r"(20\d{2}-\d{4})", compact)
+    if magi_case:
+        return magi_case.group(1)
+
+    cleaned = re.sub(
+        r"^(?:請|麻煩|幫我|幫忙|協助)?(?:查詢|查一下|查|找|搜尋|案件查詢|查案件|案號)",
+        "",
+        compact,
+    )
+    cleaned = re.sub(r"(?:案件|案子|資料|資訊|狀態)$", "", cleaned)
+    return cleaned.strip() or raw
+
+
 def _query_cases(query: str = "", **_) -> str:
     """查詢案件資料庫（OSC）。直接走 DB，不繞 HTTP（避免 login_required 攔截）。"""
     try:
         from api.osc.utils import _osc_exec
+        normalized_query = _normalize_case_query(query)
         sql = """
             SELECT case_number, client_name, case_reason, court_case_no, status
             FROM cases
         """
         params: tuple = ()
-        if query:
-            like = f"%{query}%"
+        if normalized_query:
+            like = f"%{normalized_query}%"
             sql += """
                 WHERE case_number LIKE %s
                    OR client_name LIKE %s
@@ -217,11 +247,11 @@ def _search_judgments(keywords: str = "", court: str = "", max_results: int = 3,
     try:
         from skills.bridge.http_pool import get_session
         session = get_session()
-        payload = {"skill": "judicial-web-search", "task": "search", "timeout_sec": 60,
-                   "keywords": keywords, "max_results": min(max_results, 5)}
+        payload = {"skill": "judicial-web-search", "task": "search", "timeout_sec": 25,
+                   "keywords": keywords, "max_results": min(max_results, 3)}
         if court:
             payload["court"] = court
-        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=70)
+        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, headers=_internal_api_headers(), timeout=35)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):
@@ -233,24 +263,109 @@ def _search_judgments(keywords: str = "", court: str = "", max_results: int = 3,
         return f"判決搜尋失敗: {e}"
 
 
+def _statute_query_variants(query: str) -> list[str]:
+    raw = str(query or "").strip()
+    compact = re.sub(r"\s+", "", raw)
+    variants = [raw]
+    m = re.search(r"(民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|強制執行法)第?(\d+(?:-\d+)?)(?:條)?(?:之(\d+))?", compact)
+    if m:
+        law = m.group(1)
+        article = f"第 {m.group(2)}"
+        if m.group(3):
+            article += f" 之 {m.group(3)}"
+        article += " 條"
+        variants.insert(0, f"{law} {article}")
+        variants.append(f"{law}\n{article}")
+        if law == "民法" and m.group(2) == "184":
+            variants.append("侵權行為 民法 第 184 條")
+    seen = set()
+    out = []
+    for item in variants:
+        item = str(item or "").strip()
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _format_statute_items(data: dict, query: str) -> str:
+    items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list) or not items:
+        return ""
+    lines = [f"法規搜尋完成：{query}"]
+    for item in items[:5]:
+        content = str(item.get("content") or "").strip()
+        source = str(item.get("source") or "").strip()
+        if not content:
+            continue
+        lines.append(f"- {content[:650]}" + (f"\n  來源：{source}" if source else ""))
+    return "\n".join(lines).strip()
+
+
+def _search_statutes_local(query: str, top_k: int = 5) -> str:
+    script = MAGI_ROOT / "skills" / "statutes-vdb" / "action.py"
+    if not script.exists():
+        return ""
+    for q in _statute_query_variants(query):
+        compact_q = re.sub(r"\s+", "", q)
+        exact_article = bool(re.search(
+            r"(民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|強制執行法)第?(\d+(?:-\d+)?)(?:條)?(?:之\d+)?",
+            compact_q,
+        ))
+        payload = json.dumps({"query": q, "top_k": 1 if exact_article else top_k}, ensure_ascii=False)
+        env = os.environ.copy()
+        env["MAGI_ROOT_DIR"] = str(MAGI_ROOT)
+        env["MAGI_ROOT"] = str(MAGI_ROOT)
+        try:
+            cp = subprocess.run(
+                [sys.executable, str(script), "--task", f"search {payload}"],
+                cwd=str(MAGI_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except Exception:
+            continue
+        if cp.returncode != 0 or not (cp.stdout or "").strip():
+            continue
+        try:
+            data = json.loads(cp.stdout)
+        except Exception:
+            continue
+        formatted = _format_statute_items(data, q)
+        if formatted:
+            return formatted[:2000]
+    return ""
+
+
 def _search_statutes(query: str = "", **_) -> str:
     """搜尋台灣法規條文（民法、刑法、訴訟法等）。"""
     if not query:
         return "錯誤: 請提供搜尋關鍵字（例如：民法184條、過失傷害、強制執行法）。"
+    local = _search_statutes_local(query)
+    if local:
+        return local
     try:
         from skills.bridge.http_pool import get_session
         session = get_session()
-        resp = session.post(
-            f"{_tools_api_url()}/skills/run",
-            json={"skill": "statutes-vdb", "task": "search", "query": query, "timeout_sec": 30},
-            timeout=40,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                out = data.get("result") or data.get("output", "")
-                return str(out)[:2000]
-            return f"法規搜尋失敗: {data.get('error', '未知錯誤')}"
+        for q in _statute_query_variants(query):
+            resp = session.post(
+                f"{_tools_api_url()}/skills/run",
+                json={"skill": "statutes-vdb", "task": "search", "query": q, "timeout_sec": 30},
+                headers=_internal_api_headers(),
+                timeout=40,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    out = data.get("result") or data.get("output", "")
+                    if out:
+                        return str(out)[:2000]
+                continue
+            if resp.status_code in {401, 403}:
+                continue
+            return f"法規搜尋 API 回傳 {resp.status_code}"
         return f"法規搜尋 API 回傳 {resp.status_code}"
     except Exception as e:
         return f"法規搜尋失敗: {e}"
@@ -311,11 +426,24 @@ def _run_skill(skill_name: str = "", task: str = "run", params: str = "", **_) -
         from skills.bridge.http_pool import get_session
         session = get_session()
         timeout_sec = int(params_dict.pop("timeout_sec", 60) or 60) if isinstance(params_dict, dict) else 60
-        task_arg = task
-        if isinstance(params_dict, dict) and params_dict and "{" not in task_arg:
-            task_arg = f"{task_arg} {json.dumps(params_dict, ensure_ascii=False)}"
-        payload = {"skill": skill_name, "task": task_arg, "timeout_sec": timeout_sec}
-        resp = session.post(f"{_tools_api_url()}/skills/run", json=payload, timeout=max(70, timeout_sec + 10))
+        payload = {"skill": skill_name, "task": task, "timeout_sec": timeout_sec}
+        if isinstance(params_dict, dict) and params_dict:
+            payload.update(params_dict)
+        post_kwargs = {
+            "json": payload,
+            "headers": _internal_api_headers(),
+            "timeout": max(70, timeout_sec + 10),
+        }
+        try:
+            resp = session.post(f"{_tools_api_url()}/skills/run", **post_kwargs)
+        except TypeError as exc:
+            # Unit-test fakes and a few legacy bridge sessions do not accept
+            # custom headers; retry without them while keeping runtime auth for
+            # real HTTP sessions.
+            if "headers" not in str(exc):
+                raise
+            post_kwargs.pop("headers", None)
+            resp = session.post(f"{_tools_api_url()}/skills/run", **post_kwargs)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("success"):

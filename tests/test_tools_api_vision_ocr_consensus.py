@@ -16,19 +16,23 @@ from __future__ import annotations
 import os
 import pytest
 
+_AUTH_HEADER = {"X-API-Key": "test-key"}
+
 
 # ── shared fixture ──────────────────────────────────────────────────────────
 
 @pytest.fixture
 def vision_client(monkeypatch, tmp_path):
     """Minimal Tools-API test client with vision-capable fake gateway."""
-    import api.tools_api as tools_api
-
     monkeypatch.setenv("MAGI_API_KEY", "test-key")
     monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
-    import api.authz as _authz
-    monkeypatch.setattr(_authz, "MAGI_API_KEY", "test-key", raising=False)
-    monkeypatch.setattr(_authz, "MAGI_EXTERNAL_API_KEY", "test-key", raising=False)
+    import api.tools_api as tools_api
+    try:
+        import api.authz as _authz
+        monkeypatch.setattr(_authz, "MAGI_API_KEY", "test-key", raising=False)
+        monkeypatch.setattr(_authz, "MAGI_EXTERNAL_API_KEY", "test-key", raising=False)
+    except Exception:
+        pass
 
     # ensure external key cache is pre-warmed so require_api_key passes
     tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
@@ -107,6 +111,7 @@ def test_vision_consensus_flag_off_uses_legacy(monkeypatch, vision_client):
         resp = client.post(
             "/vision",
             json={"image_path": img, "task_type": "ocr"},
+            headers=_AUTH_HEADER,
         )
     finally:
         if original is None:
@@ -134,6 +139,7 @@ def test_vision_consensus_flag_on_ocr_task(monkeypatch, vision_client):
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "ocr"},
+        headers=_AUTH_HEADER,
     )
     assert resp.status_code == 200
     data = resp.get_json()
@@ -155,6 +161,7 @@ def test_vision_nemotron_enable_routes_to_consensus(monkeypatch, vision_client):
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "ocr"},
+        headers=_AUTH_HEADER,
     )
 
     assert resp.status_code == 200
@@ -191,6 +198,7 @@ def test_vision_captcha_never_uses_consensus(monkeypatch, vision_client):
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "captcha"},
+        headers=_AUTH_HEADER,
     )
     assert resp.status_code == 200
     data = resp.get_json()
@@ -216,6 +224,7 @@ def test_vision_consensus_exception_falls_through(monkeypatch, vision_client):
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "ocr"},
+        headers=_AUTH_HEADER,
     )
     assert resp.status_code == 200
     data = resp.get_json()
@@ -236,6 +245,7 @@ def test_vision_consensus_response_schema(monkeypatch, vision_client):
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "text"},
+        headers=_AUTH_HEADER,
     )
     assert resp.status_code == 200
     data = resp.get_json()
@@ -348,6 +358,7 @@ def test_vision_consensus_not_triggered_for_non_ocr_task(monkeypatch, vision_cli
     resp = client.post(
         "/vision",
         json={"image_path": img, "task_type": "vision"},
+        headers=_AUTH_HEADER,
     )
     assert resp.status_code == 200
     data = resp.get_json()

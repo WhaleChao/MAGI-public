@@ -104,7 +104,7 @@ def test_saas_overview_exposes_ten_capabilities(monkeypatch, tmp_path):
         "diagnostics_export",
     }
     assert result["readiness"]["mode"] == "single_host"
-    assert result["readiness"]["status_page"]["url"] == "/dashboard/nerv"
+    assert result["readiness"]["status_page"]["url"] == "/status"
     assert "多租戶" in result["readiness"]["not_needed"]
     assert "公開上傳入口" in result["readiness"]["not_needed"]
     assert {x["key"] for x in result["readiness"]["checks"]} >= {"nerv_status", "not_needed_scope"}
@@ -213,6 +213,25 @@ def test_operations_report_separates_total_active_and_closing_pending(monkeypatc
     assert result["active_cases"] == 143
     assert result["closed_cases"] == 38
     assert result["closing_pending_cases"] == 1
+    assert result["pending_review_todos"] == 0
+
+
+def test_operations_report_includes_actionable_business_detail_rows():
+    from api.osc import saas_workbench
+
+    def fake_exec(sql, params=(), fetch="one"):
+        if "COUNT(*) AS c" in sql:
+            return ({"c": 1}, None)
+        if "FROM cases" in sql and "SELECT case_number" in sql:
+            return ([{"case_number": "2026-0001", "client_name": "王小明", "status": "已結案", "legal_aid_status": "已結案，待報結"}], None)
+        if "FROM case_todos" in sql and "SELECT id" in sql:
+            return ([{"id": 9, "case_number": "2026-0002", "client_name": "林小華", "todo_date": "2026-07-13", "description": "原期限：2026-07-01／原類型：陳報\n補正資料"}], None)
+        return ([], None)
+
+    result = saas_workbench.build_operations_report(fake_exec)
+
+    assert result["closing_pending_items"][0]["case_number"] == "2026-0001"
+    assert result["pending_review_items"][0]["description"].endswith("補正資料")
 
 
 def test_risk_dashboard_marks_source_module():
@@ -265,8 +284,8 @@ def test_task_boards_split_calendar_imports_from_osc_todos():
                 ],
                 None,
             )
-        if "FROM case_todos" in sql and "source_file LIKE 'gcal_import" in sql:
-            assert "todo_type='行事曆事件'" in sql
+        if "FROM case_todos" in sql and "LIKE 'gcal_import" in sql:
+            assert "COALESCE(todo_type, '')='行事曆事件'" in sql
             return (
                 [
                     {
@@ -279,6 +298,17 @@ def test_task_boards_split_calendar_imports_from_osc_todos():
                         "description": "同事手動日曆事件",
                         "status": "pending",
                         "source_file": "gcal_import",
+                    },
+                    {
+                        "id": 4,
+                        "case_number": "2026-0004",
+                        "client_name": "",
+                        "todo_type": "行事曆事件",
+                        "todo_date": "2026-05-23",
+                        "todo_time": "11:00",
+                        "description": "本地行事曆事件待辦",
+                        "status": "pending",
+                        "source_file": "",
                     }
                 ],
                 None,
@@ -304,8 +334,8 @@ def test_task_boards_split_calendar_imports_from_osc_todos():
     assert result["refresh"]["interval_hours"] == 6
     assert result["osc_todos"]["count"] == 1
     assert result["osc_todos"]["items"][0]["source"] == "case_todos"
-    assert result["calendar_events"]["source_counts"] == {"calendar_events": 1, "gcal_import": 1}
-    assert {x["source"] for x in result["calendar_events"]["items"]} == {"calendar_events", "gcal_import"}
+    assert result["calendar_events"]["source_counts"] == {"calendar_events": 1, "gcal_import": 1, "calendar_todo": 1}
+    assert {x["source"] for x in result["calendar_events"]["items"]} == {"calendar_events", "gcal_import", "calendar_todo"}
 
 
 def test_document_timeline_reuses_document_actions():
@@ -365,9 +395,35 @@ def test_six_hour_event_refresh_is_seeded():
     jobs = json.loads(Path("cron_jobs.json").read_text(encoding="utf-8"))
     job = next(x for x in jobs if x.get("id") == "job_osc_events_refresh")
 
-    assert job["cron"] == "5 */6 * * *"
+    drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_bidirectional")
+    assert drive_job["cron"] == "1 */6 * * *"
+    assert "drive_case_sync_worker.py" in drive_job["command"]
+    assert "--timeout-sec 900" in drive_job["command"]
+    assert "--priority-upcoming-days 21" in drive_job["command"]
+    assert "--no-downloads" in drive_job["command"]
+    assert "--no-uploads" in drive_job["command"]
+    all_drive_job = next(x for x in jobs if x.get("id") == "job_drive_case_sync_all_files")
+    assert all_drive_job["cron"] == "12 1,7,13,19 * * *"
+    assert "drive_case_sync_worker.py" in all_drive_job["command"]
+    assert "--direct-all-cases" in all_drive_job["command"]
+    assert "--direct-all-case-limit 1" in all_drive_job["command"]
+    assert "--timeout-sec 1800" in all_drive_job["command"]
+    assert job["cron"] == "35 */6 * * *"
     assert job["enabled"] is True
     assert "osc_events_refresh.py" in job["command"]
+    assert "OSC_EVENTS_REFRESH_CALENDAR_LIMIT=120" in job["command"]
+    assert "OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT=60" in job["command"]
+    assert "OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=8000" in job["command"]
+    assert "OSC_EVENTS_REFRESH_PDF_LIMIT=120" in job["command"]
+    assert "OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=480" in job["command"]
+    assert "OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT=40" in job["command"]
+    assert "OSC_TRANSCRIPT_TODO_TIMEOUT_SEC=60" in job["command"]
+    assert "--skip-drive-sync" in job["command"]
+    assert "--skip-transcript-todos" in job["command"]
+    assert "--skip-calendar-audit" in job["command"]
+    assert "--skip-calendar-source-audit" in job["command"]
+    assert "--skip-share-repair" in job["command"]
+    assert "快刷" in job["desc"]
     assert job["no_catchup"] is True
 
 

@@ -33,6 +33,7 @@ import tempfile
 import shutil
 import subprocess
 import types
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
@@ -50,7 +51,20 @@ from api.case_path_mapper import (
     translate_case_path_to_local,
     translate_local_path_to_canonical,
 )
-from api.laf_case_classifier import normalize_laf_case_type
+from api.laf_case_classifier import (
+    clean_laf_case_reason,
+    extract_laf_staff_case_hint,
+    is_pending_laf_reason,
+    normalize_laf_case_fields,
+    normalize_laf_case_type,
+)
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
+from api.laf_closing_transfer import (
+    apply_laf_closing_transfer_notice,
+    laf_closing_transfer_record_status,
+    parse_laf_closing_transfer_notice,
+)
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 
 from api.runtime_paths import config_candidates, ensure_orch_on_sys_path, get_config_path
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
@@ -66,6 +80,43 @@ try:
 except Exception:
     _logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 61, exc_info=True)
 _log = _logging.getLogger("laf")
+MAGI_EXPORTS_DIR = _MAGI_ROOT / "static" / "exports"
+
+
+def _laf_default_case_lawyer(db_manager: Any = None, *, case_type: Any = "", case_reason: Any = "", case_category: Any = "法律扶助案件") -> str:
+    return normalize_case_lawyer(
+        "",
+        allow_default=True,
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=db_settings_getter(db_manager),
+    )
+
+
+def _get_public_base_url() -> str:
+    base = (os.environ.get("MAGI_PUBLIC_BASE_URL") or "").strip()
+    return base.rstrip("/")
+
+
+def _export_file_to_static(file_path: Path, prefix: str = "laf_captcha") -> dict:
+    """Copy a LAF diagnostic file into MAGI static exports and return its URL/path."""
+    try:
+        src = Path(file_path)
+        if not src.exists():
+            return {"success": False, "error": "file not found"}
+        MAGI_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        token = uuid.uuid4().hex[:10]
+        ext = src.suffix.lower() or ".bin"
+        filename = f"{prefix}_{stamp}_{token}{ext}"
+        dst = MAGI_EXPORTS_DIR / filename
+        shutil.copy2(src, dst)
+        base = _get_public_base_url()
+        url = f"{base}/static/exports/{filename}" if base else ""
+        return {"success": True, "path": str(dst), "filename": filename, "url": url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # ==============================================================================
 # 安全政策：禁止刪除（含下載暫存），避免誤刪 Synology Drive 內容
@@ -84,11 +135,17 @@ _PROGRESS_PRIORITY_TYPES = frozenset({
 def _laf_target_subfolder_for_attachment(filename: str) -> str:
     """Return the OSC subfolder for a downloaded LAF attachment."""
     fname = os.path.basename(filename or "")
-    if "結案酬金領款單" in fname or "結案審查通知書" in fname:
+    if "結案酬金領款單" in fname or "結案審查通知書" in fname or "變動審查通知書" in fname:
         return "03_結案資料"
     if "附條件第二階段預付酬金領款單" in fname or "二階段" in fname:
         return "02_開辦資料"
     return "01_法扶資料"
+
+
+def _is_laf_staff_email_case_info(case_info) -> bool:
+    """Return True for LAF staff email attachments that are not portal files."""
+    sender = str(getattr(case_info, "sender", "") or "").lower()
+    return "@laf.org.tw" in sender or "laf.org.tw" in sender
 
 
 def _classify_progress_email(subject: str, snippet: str) -> bool:
@@ -166,20 +223,20 @@ PDFINFO_BIN = os.environ.get("MAGI_PDFINFO_BIN", "/opt/homebrew/bin/pdfinfo").st
 # Selenium
 SELENIUM_AVAILABLE = importlib.util.find_spec("selenium") is not None
 if not SELENIUM_AVAILABLE:
-    print("⚠️ Selenium 未安裝，LAF 自動化功能無法使用")
+    print("⚠️ Selenium 未安裝，LAF 自動化功能無法使用", file=sys.stderr)
 
 # RapidOCR
 RAPIDOCR_AVAILABLE = importlib.util.find_spec("rapidocr_onnxruntime") is not None
 if not RAPIDOCR_AVAILABLE:
-    print("⚠️ RapidOCR 未安裝，驗證碼自動識別功能無法使用")
+    print("⚠️ RapidOCR 未安裝，驗證碼自動識別功能無法使用", file=sys.stderr)
 
 # ddddocr (Primary)
 DDDDOCR_AVAILABLE = importlib.util.find_spec("ddddocr") is not None
 
 if DDDDOCR_AVAILABLE:
-    print("✅ [Import] ddddocr 套件已找到（必要時使用 compat fallback）")
+    print("✅ [Import] ddddocr 套件已找到（必要時使用 compat fallback）", file=sys.stderr)
 else:
-    print("⚠️ [Import] ddddocr 模組不可用（將改用 RapidOCR）")
+    print("⚠️ [Import] ddddocr 模組不可用（將改用 RapidOCR）", file=sys.stderr)
 
 # Google Gmail API
 GMAIL_AVAILABLE = importlib.util.find_spec("googleapiclient") is not None and \
@@ -263,13 +320,14 @@ def _resolve_ddddocr_class(log=None):
     if not DDDDOCR_AVAILABLE:
         return None
 
+    import_error = None
     try:
         ddddocr_mod = importlib.import_module("ddddocr")
         cls = getattr(ddddocr_mod, "DdddOcr", None)
         if cls is not None:
             return cls
     except Exception as e:
-        _emit(f"⚠️ [ddddocr] import 失敗，改用相容載入器: {e}")
+        import_error = e
 
     try:
         spec = importlib.util.find_spec("ddddocr")
@@ -277,13 +335,20 @@ def _resolve_ddddocr_class(log=None):
         if spec and spec.submodule_search_locations:
             pkg_dir = list(spec.submodule_search_locations)[0]
         if not pkg_dir:
-            return None
-        cls = _load_ddddocr_legacy_class(pkg_dir)
-        if cls is not None:
-            _emit(f"✅ [ddddocr] 使用 compat/legacy fallback 載入: {pkg_dir}")
-            return cls
+            cls = None
+        else:
+            cls = _load_ddddocr_legacy_class(pkg_dir)
+            if cls is not None:
+                _emit(f"✅ [ddddocr] 使用 compat/legacy fallback 載入: {pkg_dir}")
+                return cls
     except Exception as e:
-        _emit(f"⚠️ [ddddocr] compat/legacy fallback 載入失敗: {e}")
+        detail = f"{e}"
+        if import_error is not None:
+            detail = f"import={import_error}; fallback={e}"
+        _emit(f"⚠️ [ddddocr] compat/legacy fallback 載入失敗: {detail}")
+
+    if import_error is not None:
+        _emit(f"⚠️ [ddddocr] import 失敗且 fallback 不可用: {import_error}")
 
     return None
 
@@ -421,6 +486,7 @@ class LAFCaseTypeParser:
     
     # 常見案由清理規則
     REASON_CLEANUP_PATTERNS = [
+        (r'^(涉嫌|涉及|涉犯|涉有|涉(?!外))', ''),  # 移除法扶主旨中非案由的「涉」
         (r'^違反', ''),         # 移除開頭的「違反」
         (r'等$', ''),           # 移除結尾的「等」
         (r'案件之訴訟代理$', ''),  # 移除「案件之訴訟代理」
@@ -548,10 +614,11 @@ class LAFCaseTypeParser:
 
         # 2. 嘗試解析新格式：[XX分會]檢送1141127-J-001楊志杰之案件資料
         # 格式：[XX分會]檢送(案號)(當事人)之案件資料
+        # 這是專員補充資料，不是正式派案；不得啟動建案/開辦流程。
         new_format_match = re.search(r'\[(.+?)分會\]檢送([A-Z0-9\-]+)(.+?)之案件資料', subject)
         if new_format_match:
             info.branch = new_format_match.group(1)
-            info.notification_type = "派案通知" # 視為派案通知
+            info.notification_type = "專員來信"
             info.laf_case_number = new_format_match.group(2)
             info.client_name = new_format_match.group(3)
             
@@ -561,7 +628,8 @@ class LAFCaseTypeParser:
             info.case_reason = "待確認"
             info.laf_case_type = "一般案件"
             
-            info.needs_download = True
+            info.has_attachment = True
+            info.needs_download = False
             return info
         
         # 3. ★ 原民中心格式：寄送1141216-W-002、003[當事人J]案件資料
@@ -569,7 +637,9 @@ class LAFCaseTypeParser:
         indigenous_match = re.search(r'寄送(\d{7}-[A-Z]-\d{3})[、\d-]*(.+?)案件資料', subject)
         if indigenous_match:
             info.branch = "原住民族法律服務中心"
-            info.notification_type = "派案通知"
+            # 原民中心「寄送案件資料」是補充資料信，不是正式派案信。
+            # 正式派案仍須由「法扶...分會派案通知」觸發建案/開辦流程。
+            info.notification_type = "原民中心案件資料"
             info.laf_case_number = indigenous_match.group(1)
             info.client_name = indigenous_match.group(2).strip()
             
@@ -580,7 +650,7 @@ class LAFCaseTypeParser:
             info.laf_case_type = "一般案件"
             
             info.has_attachment = True  # 這類信通常有附件
-            info.needs_download = False  # 不需從系統下載
+            info.needs_download = False  # 不因補充資料信啟動官網正式附件下載/開辦
             return info
 
         # 4. ★ 審核回報格式：通知範例律師回報(結案|附條件)...
@@ -625,6 +695,42 @@ class LAFCaseTypeParser:
             )
 
             info.needs_download = True
+            return info
+
+        # 4.05. ★ 疑義回報格式：通知律師回報(對扶助案件有疑義)...
+        inquiry_result_match = re.search(
+            r'回報[（(](?:對扶助案件有疑義|疑義)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
+            subject,
+        )
+        if inquiry_result_match:
+            info.notification_type = "疑義"
+            info.branch = "待確認"
+            info.laf_case_number = (inquiry_result_match.group(1) or "").strip()
+            tail = (inquiry_result_match.group(2) or "").strip(" -")
+            tail = re.sub(r'之資料.*$', '', tail).strip()
+            parts = [p.strip() for p in tail.split('-') if p.strip()]
+
+            if parts:
+                info.client_name = parts[0]
+            if len(parts) >= 2:
+                info.laf_case_type = parts[1]
+                info.case_type, info.case_stage = cls._determine_case_type(info.laf_case_type)
+            else:
+                info.case_type = "民事"
+                info.case_stage = "一審"
+                info.laf_case_type = "一般案件"
+            if len(parts) >= 3:
+                info.case_reason = cls._cleanup_reason("-".join(parts[2:]))
+            else:
+                info.case_reason = "待確認"
+            info.case_type, info.case_stage = normalize_laf_case_type(
+                info.case_type,
+                info.case_stage,
+                info.case_reason,
+                info.laf_case_type,
+            )
+            info.has_attachment = True
+            info.needs_download = False
             return info
 
         # 4.1. ★ 進度回報提醒格式：提醒！請扶助律師回報案件辦理進度
@@ -672,7 +778,7 @@ class LAFCaseTypeParser:
         if new_paren_match:
             info.client_name = new_paren_match.group(1).strip()
             info.laf_case_number = new_paren_match.group(2)
-            info.notification_type = "派案通知"
+            info.notification_type = "專員來信"
             info.branch = "待確認"
             # case_reason 從 email body 推斷（subject 後綴 -- 是 attachment 描述不可用）
             # 預設視為一般案件待確認；handle_go_live 與後續 reconcile 會補正
@@ -681,7 +787,7 @@ class LAFCaseTypeParser:
             info.case_reason = "待確認"
             info.laf_case_type = "一般案件"
             info.has_attachment = True
-            info.needs_download = True
+            info.needs_download = False
             return info
 
         # 5. ★ 專員來信簡寫格式：1150324-T-047沈筱筑(債清)
@@ -694,7 +800,7 @@ class LAFCaseTypeParser:
             info.laf_case_number = staff_short_match.group(1)
             # 清理 Pattern 5 常見殘留：全形逗號開頭（「，陳○華）」）和全形右括號結尾
             info.client_name = staff_short_match.group(2).strip().lstrip('，,').rstrip('）)')
-            info.notification_type = "派案通知"
+            info.notification_type = "專員來信"
             info.branch = "待確認"
 
             short_reason = (staff_short_match.group(3) or "").strip()
@@ -717,7 +823,7 @@ class LAFCaseTypeParser:
             info.laf_case_type = "一般案件"
 
             info.has_attachment = True  # 專員來信通常有附件
-            info.needs_download = True
+            info.needs_download = False
             return info
 
         return None
@@ -766,7 +872,7 @@ class LAFCaseTypeParser:
                 continue
             reason = re.sub(pattern, replacement, reason)
         
-        return reason.strip()
+        return clean_laf_case_reason(reason)
     
     @classmethod
     def _extract_stage_from_reason(cls, raw_reason: str, current_stage: str) -> Tuple[str, str]:
@@ -2142,6 +2248,23 @@ class LAFWebAutomation:
             return False
 
 
+# Keep the public import path stable while unifying the implementation.
+# Portal workflows, downloads, and Gmail-triggered case handling must all use
+# the same v2 browser automation class.  The legacy class above remains only as
+# a source-compatible fallback if v2 cannot be imported during early bootstrap.
+_LegacyLAFWebAutomation = LAFWebAutomation
+try:
+    from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
+        LAFWebAutomation as _UnifiedLAFWebAutomation,
+    )
+    LAFWebAutomation = _UnifiedLAFWebAutomation
+except Exception as _unified_laf_import_error:
+    _logging.getLogger(__name__).warning(
+        "Unified LAFWebAutomation unavailable; falling back to legacy class: %s",
+        _unified_laf_import_error,
+    )
+
+
 # ==============================================================================
 # Gmail 監控器
 # ==============================================================================
@@ -2167,7 +2290,11 @@ class GeneralEmailInfo:
 class LAFGmailMonitor:
     """監控 Gmail 中的法扶信件與一般信件"""
     
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+    ]
+    MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
     
     def __init__(self, credentials_path: str, token_path: str, 
                  callback=None, general_callback=None, log_callback=None,
@@ -2208,6 +2335,54 @@ class LAFGmailMonitor:
         # ★ 從檔案載入已處理的 message ID
         self._processed_ids = self._load_processed_ids()
         self._general_processed_ids = self._load_processed_ids('_general')
+        # Optional durable processed check, usually backed by osc.laf_email_records.
+        # JSON/dedup_db and DB are unioned by default to avoid duplicate business
+        # notifications when an older handler forgot to write laf_email_records.
+        self.processed_exists_func = None
+        self._state_path = Path(
+            os.environ.get(
+                "MAGI_LAF_GMAIL_MONITOR_STATE",
+                str(_MAGI_ROOT / "static" / "laf_gmail_monitor_state.json"),
+            )
+        )
+        self._file_review_state_path = Path(
+            os.environ.get(
+                "MAGI_FILE_REVIEW_EMAIL_MONITOR_STATE",
+                str(_MAGI_ROOT / "static" / "file_review_email_monitor_state.json"),
+            )
+        )
+
+    def _write_monitor_state(self, status: str, **extra: Any) -> None:
+        payload = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "running": bool(self._running),
+            "token_path": str(self.token_path),
+        }
+        payload.update(extra)
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._state_path)
+        except Exception:
+            _logging.getLogger(__name__).debug("silent-catch laf gmail monitor state", exc_info=True)
+
+    def _write_file_review_monitor_state(self, status: str, **extra: Any) -> None:
+        payload = {
+            "status": status,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "running": bool(self._running),
+            "source": "laf_gmail_monitor_cycle",
+        }
+        payload.update(extra)
+        try:
+            self._file_review_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._file_review_state_path.with_suffix(self._file_review_state_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._file_review_state_path)
+        except Exception:
+            _logging.getLogger(__name__).debug("silent-catch file review gmail monitor state", exc_info=True)
     
     def _load_processed_ids(self, suffix: str = '') -> set:
         """載入已處理的 Email ID 記錄"""
@@ -2267,6 +2442,52 @@ class LAFGmailMonitor:
                 _dd_mark(_db_category, str(mid), metadata={"source": "laf._save_processed_ids", "suffix": suffix})
         except Exception:
             pass
+
+    def _durable_laf_record_exists(self, msg_id: str, check_exists_func=None):
+        """Return True/False when DB state is known; None when unavailable."""
+        func = check_exists_func or self.processed_exists_func
+        if not func:
+            return None
+        try:
+            return bool(func(msg_id))
+        except Exception as e:
+            self.log(f"  ⚠️ 法扶信件 DB 去重檢查失敗，改用暫存紀錄: {e}")
+            return None
+
+    def _laf_message_already_processed(self, msg_id: str, check_exists_func=None) -> bool:
+        """Return whether an LAF Gmail message has already been handled."""
+        durable_exists = self._durable_laf_record_exists(msg_id, check_exists_func)
+        if durable_exists is True:
+            return True
+
+        fallback_exists = False
+        try:
+            from skills.ops.dedup_db import is_done as _dd_is_done
+            fallback_exists = bool(_dd_is_done("email_laf", msg_id))
+        except Exception:
+            pass
+        if not fallback_exists:
+            fallback_exists = msg_id in self._processed_ids
+
+        if fallback_exists and durable_exists is False:
+            recover_json_only = str(
+                os.environ.get("MAGI_LAF_GMAIL_RECOVER_JSON_ONLY", "0")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if recover_json_only:
+                self.log(f"  ♻️ 已處理暫存有紀錄但 DB 無紀錄，依 recovery 設定重新補處理法扶信件 (ID: {msg_id[-6:]}...)")
+                return False
+            self.log(f"  ⏭️ 已處理暫存有紀錄但 DB 無紀錄，為避免重複通知仍略過 (ID: {msg_id[-6:]}...)")
+            return True
+
+        return fallback_exists
+
+    def mark_laf_processed(self, msg_id: str):
+        """Persist the JSON/dedup fallback marker after callback handling has run."""
+        mid = str(msg_id or "").strip()
+        if not mid:
+            return
+        self._processed_ids.add(mid)
+        self._save_processed_ids()
     
     def authenticate(self) -> bool:
         """進行 Gmail API 認證"""
@@ -2320,13 +2541,96 @@ class LAFGmailMonitor:
             
             with open(self.token_path, 'wb') as token:
                 pickle.dump(creds, token)
+
+        if creds and creds.valid and not self._credentials_have_modify_scope(creds):
+            msg = (
+                "⚠️ LAF Gmail token 目前只有讀取權限；MAGI 不會刪除法扶信，"
+                "但若派案信落入 Gmail 垃圾郵件，需重新授權 gmail.modify 才能自動移回收件匣。"
+            )
+            if sys.stdin.isatty() and os.path.exists(self.credentials_path):
+                self.log("🔐 Gmail token 需要升級權限，正在重新授權以支援垃圾郵件復原…")
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_path, self.SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                with open(self.token_path, 'wb') as token:
+                    pickle.dump(creds, token)
+            else:
+                self.log(msg)
         
         self.credentials = creds
         self.service = build('gmail', 'v1', credentials=creds)
         self.log("✅ Gmail API 認證成功")
         return True
+
+    def _credentials_have_modify_scope(self, creds=None) -> bool:
+        """Return whether the current Gmail token can move spam back to inbox."""
+        creds = creds or self.credentials
+        if creds is None:
+            return True
+        try:
+            has_scopes = getattr(creds, 'has_scopes', None)
+            if callable(has_scopes):
+                return bool(has_scopes([self.MODIFY_SCOPE]))
+        except Exception:
+            pass
+        try:
+            scopes = list(getattr(creds, 'scopes', None) or getattr(creds, 'granted_scopes', None) or [])
+            if not scopes:
+                return True
+            return self.MODIFY_SCOPE in scopes
+        except Exception:
+            return True
+
+    def _restore_spam_to_inbox_if_needed(self, msg_id: str, msg_data: dict, subject: str = "") -> bool:
+        """
+        Move LAF mail accidentally classified as Gmail spam back to inbox.
+
+        Safety guard:
+        - only removes the SPAM label and adds INBOX;
+        - never deletes, trashes, archives, or marks mail as read;
+        - leaves TRASH alone because user deletion is a different signal.
+        """
+        labels = set(msg_data.get('labelIds') or [])
+        if 'SPAM' not in labels:
+            return False
+        if 'TRASH' in labels:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾桶，未自動移動: {subject or msg_id[-6:]}")
+            return False
+        enabled = str(os.environ.get("MAGI_LAF_GMAIL_RESTORE_SPAM", "1")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not enabled:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾郵件，已依設定保留原狀: {subject or msg_id[-6:]}")
+            return False
+        if not self.service:
+            return False
+        if not self._credentials_have_modify_scope():
+            self.log(
+                "  ⚠️ 法扶信件在 Gmail 垃圾郵件，但目前 token 缺 gmail.modify；"
+                "請重新授權後 MAGI 才能自動移回收件匣。"
+            )
+            return False
+        try:
+            self.service.users().messages().modify(
+                userId='me',
+                id=msg_id,
+                body={'removeLabelIds': ['SPAM'], 'addLabelIds': ['INBOX']},
+            ).execute()
+            labels.discard('SPAM')
+            labels.add('INBOX')
+            msg_data['labelIds'] = list(labels)
+            self.log(f"  ✅ 法扶信件曾在 Gmail 垃圾郵件，已移回收件匣: {subject or msg_id[-6:]}")
+            return True
+        except Exception as e:
+            err = str(e)
+            if "insufficient" in err.lower() or "403" in err:
+                self.log("  ⚠️ Gmail token 權限不足，無法把法扶信從垃圾郵件移回收件匣；請重新授權。")
+            else:
+                self.log(f"  ⚠️ 法扶信件垃圾郵件復原失敗: {e}")
+            return False
     
-    def check_emails(self, max_results: int = 10) -> List[LAFCaseInfo]:
+    def check_emails(self, max_results: int = 10, check_exists_func=None, mark_processed: bool = True) -> List[LAFCaseInfo]:
         """檢查新的法扶信件"""
         results = []
         
@@ -2335,6 +2639,11 @@ class LAFGmailMonitor:
             return results
         
         try:
+            try:
+                max_results = int(os.environ.get("MAGI_LAF_EMAIL_MAX_RESULTS", str(max_results)) or str(max_results))
+            except Exception:
+                max_results = int(max_results or 10)
+            max_results = max(50, min(max_results, 250))
             self.log("🔍 正在檢查新信件...")
             # 搜尋近期法扶流程信件。不能只看未讀，否則一旦信件先被人工點開，
             # 背景監控就會永遠錯過那封派案信。
@@ -2344,34 +2653,17 @@ class LAFGmailMonitor:
             except Exception:
                 lookback_days = 3
             lookback_days = max(1, min(lookback_days, 14))
-            query = (
-                f'(from:@laf.org.tw OR from:laf.server) '
-                f'newer_than:{lookback_days}d '
-                f'-subject:"回報案件辦理進度"'
-            )
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=max_results
-            ).execute()
-            
-            messages = response.get('messages', [])
+
+            messages_by_id = {}
+            for query in self._laf_mail_search_queries(lookback_days):
+                for msg in self._gmail_list_messages(query, max_results=max_results):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             
             for msg in messages:
                 msg_id = msg['id']
-
-                # DB 優先，JSON fallback
-                _email_already = False
-                try:
-                    from skills.ops.dedup_db import is_done as _dd_is_done
-                    _email_already = _dd_is_done("email_laf", msg_id)
-                except Exception:
-                    pass
-                if not _email_already:
-                    _email_already = msg_id in self._processed_ids
-                if _email_already:
-                    continue
 
                 # 取得完整信件
                 full_msg = self.service.users().messages().get(
@@ -2390,19 +2682,64 @@ class LAFGmailMonitor:
                     _log.debug("laf skipped: %s", _bare_e)
 
                 self.log(f"🔍 [掃描] 檢查信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
+
+                # DB 優先，JSON/dedup fallback。若只有暫存紀錄但 DB 無 durable record，需補處理。
+                if self._laf_message_already_processed(msg_id, check_exists_func):
+                    continue
 
                 case_info = self._process_message(msg_id, full_msg)
 
                 if case_info:
                     results.append(case_info)
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
+                    if mark_processed:
+                        self.mark_laf_processed(msg_id)
         
         except Exception as e:
             self.log(f"❌ 檢查信件失敗: {e}")
             traceback.print_exc()
         
         return results
+
+    @staticmethod
+    def _laf_mail_search_queries(lookback_days: int) -> List[str]:
+        """Return broad Gmail searches for LAF mail across the whole mailbox.
+
+        The official portal sweep does not depend on email.  This Gmail monitor
+        is the parallel trigger path, so it must not rely solely on sender
+        domains; branch/center staff mail can come from adjacent accounts while
+        still carrying LAF case numbers and LAF keywords.
+        """
+        days = max(1, min(int(lookback_days or 3), 14))
+        base = f'in:anywhere -in:trash newer_than:{days}d -subject:"回報案件辦理進度"'
+        return [
+            f'{base} (from:@laf.org.tw OR from:laf.server)',
+            f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+            f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+        ]
+
+    def _gmail_list_messages(self, query: str, *, max_results: int = 100) -> List[Dict[str, Any]]:
+        """List Gmail messages for one query with bounded pagination."""
+        if not self.service:
+            return []
+        remaining = max(1, int(max_results or 100))
+        messages: List[Dict[str, Any]] = []
+        page_token = None
+        while remaining > 0:
+            req = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=min(100, remaining),
+                pageToken=page_token,
+            )
+            response = req.execute()
+            batch = response.get('messages', []) or []
+            messages.extend(batch)
+            remaining -= len(batch)
+            page_token = response.get('nextPageToken')
+            if not page_token or not batch:
+                break
+        return messages
 
     def check_general_emails(self, rules: List[Dict], max_results: int = 10) -> List[GeneralEmailInfo]:
         """檢查符合規則的一般信件"""
@@ -2711,40 +3048,31 @@ class LAFGmailMonitor:
             except Exception:
                 query_end_date = end_date
 
-            query = f'(from:@laf.org.tw OR from:laf.server) after:{start_date} before:{query_end_date}'
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=100  # 增加掃描數量
-            ).execute()
-            
-            messages = response.get('messages', [])
+            base = f'in:anywhere -in:trash after:{start_date} before:{query_end_date}'
+            queries = [
+                f'{base} (from:@laf.org.tw OR from:laf.server)',
+                f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+                f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+            ]
+
+            messages_by_id = {}
+            for query in queries:
+                for msg in self._gmail_list_messages(query, max_results=100):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             self.log(f"📊 區間內共有 {len(messages)} 封相關信件")
             
             for msg in messages:
                 msg_id = msg['id']
                 
-                # 1. 檢查是否已處理 (DB)
-                if check_exists_func and check_exists_func(msg_id):
+                # DB 優先，JSON/dedup fallback。DB 沒紀錄時不可因暫存紀錄而靜默略過。
+                if self._laf_message_already_processed(msg_id, check_exists_func):
                     self.log(f"  ⏭️ 信件已處理，跳過 (ID: {msg_id[-6:]}...)")
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
                     continue
                 
-                # 2. DB 優先，JSON fallback
-                _scan_already = False
-                try:
-                    from skills.ops.dedup_db import is_done as _dd_is_done
-                    _scan_already = _dd_is_done("email_laf", msg_id)
-                except Exception:
-                    pass
-                if not _scan_already:
-                    _scan_already = msg_id in self._processed_ids
-                if _scan_already:
-                    continue
-                
-                # 3. 處理信件
+                # 處理信件
                 full_msg = self.service.users().messages().get(
                     userId='me', id=msg_id
                 ).execute()
@@ -2761,15 +3089,22 @@ class LAFGmailMonitor:
                     _log.debug("laf skipped: %s", _bare_e)
                 
                 self.log(f"  ✨ 發現未處理信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
                 
                 case_info = self._process_message(msg_id, full_msg)
                 
                 if case_info:
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
-                    # 觸發回呼
+                    callback_ok = True
                     if self.callback:
-                        self.callback(case_info)
+                        try:
+                            callback_result = self.callback(case_info)
+                            if callback_result is False:
+                                callback_ok = False
+                        except Exception:
+                            callback_ok = False
+                            raise
+                    if callback_ok:
+                        self.mark_laf_processed(msg_id)
                         
         except Exception as e:
             self.log(f"❌ 掃描區間信件失敗: {e}")
@@ -2778,6 +3113,18 @@ class LAFGmailMonitor:
         """掃描今日所有法扶信件 (啟動時執行)"""
         today_str = datetime.now().strftime('%Y/%m/%d')
         self.scan_emails_in_range(today_str, today_str, check_exists_func)
+
+    def scan_recent_emails(self, days: int = None, check_exists_func=None):
+        """啟動時補掃近期法扶信件，避免 daemon 停機或人工讀信造成漏啟動。"""
+        if days is None:
+            try:
+                days = int(os.environ.get("MAGI_LAF_GMAIL_STARTUP_SCAN_DAYS", "7") or "7")
+            except Exception:
+                days = 7
+        days = max(1, min(int(days or 7), 30))
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days - 1)
+        self.scan_emails_in_range(start_dt.strftime('%Y/%m/%d'), end_dt.strftime('%Y/%m/%d'), check_exists_func)
     
     def _process_message(self, msg_id: str, msg_data: dict) -> Optional[LAFCaseInfo]:
         """處理單封信件"""
@@ -2798,6 +3145,41 @@ class LAFGmailMonitor:
                 elif name == 'date':
                     date_str = value
             
+            body = ""
+            try:
+                body = self._get_email_body(msg_data)
+                if len(body) > 20000:
+                    body = body[:20000]
+            except Exception:
+                body = ""
+
+            transfer_notice = parse_laf_closing_transfer_notice(subject, body)
+            if transfer_notice:
+                case_info = LAFCaseInfo()
+                case_info.message_id = msg_id
+                case_info.subject = subject
+                case_info.sender = sender
+                case_info.body = body
+                case_info.laf_case_number = transfer_notice.laf_case_number
+                case_info.client_name = transfer_notice.client_name
+                case_info.staff_name = transfer_notice.staff_name
+                case_info.staff_phone = transfer_notice.staff_phone
+                case_info.staff_email = transfer_notice.staff_email
+                case_info.notification_type = "結案轉入通知"
+                case_info.case_type = "法律扶助"
+                case_info.case_stage = ""
+                case_info.case_reason = "結案轉入"
+                case_info.laf_case_type = "結案回報"
+                case_info.needs_download = False
+                case_info.has_attachment = False
+                try:
+                    from email.utils import parsedate_to_datetime
+                    case_info.received_at = parsedate_to_datetime(date_str)
+                except Exception:
+                    case_info.received_at = datetime.now()
+                self.log(f"  ✅ [結案轉入] 已辨識法扶結案轉入確認: {case_info.laf_case_number} {case_info.client_name}")
+                return case_info
+
             # 解析主旨
             case_info = LAFCaseTypeParser.parse_subject(subject)
             
@@ -2812,14 +3194,15 @@ class LAFGmailMonitor:
                     case_info.received_at = datetime.now()
                 
                 # 解析信件內文與附件，檢查是否需要下載
-                body = self._get_email_body(msg_data)
-                if len(body) > 20000:
-                    body = body[:20000]
                 attachments = self._extract_attachment_descriptors(msg_data.get('payload', {}) or {})
                 case_info.body = body
                 case_info.attachments = attachments
                 case_info.has_attachment = bool(case_info.has_attachment or attachments)
-                case_info.needs_download = LAFCaseTypeParser.check_needs_download(body)
+                body_needs_download = LAFCaseTypeParser.check_needs_download(body)
+                if case_info.notification_type in {"原民中心案件資料", "專員來信", "中心案件資料"}:
+                    case_info.needs_download = False
+                else:
+                    case_info.needs_download = bool(case_info.needs_download or body_needs_download)
                 
                 self.log(f"  📄 [附件檢查] 是否有附件標記: {'是' if case_info.has_attachment else '否'}")
                 self.log(f"  📥 [下載檢查] 是否需從系統下載: {'是' if case_info.needs_download else '否'}")
@@ -2904,7 +3287,7 @@ class LAFGmailMonitor:
             return ""
     
     def _parse_staff_info(self, body: str, case_info: LAFCaseInfo):
-        """從信件內文解析承辦人資訊"""
+        """從信件內文解析承辦人與主旨缺漏的案件資訊"""
         try:
             staff_match = re.search(
                 r'本案承辦人員[：:]\s*(\S+)\s+電話[：:]\s*([\d\-#]+)\s+Email[：:]\s*(\S+@\S+)',
@@ -2914,6 +3297,21 @@ class LAFGmailMonitor:
                 case_info.staff_name = staff_match.group(1)
                 case_info.staff_phone = staff_match.group(2)
                 case_info.staff_email = staff_match.group(3)
+            hint = extract_laf_staff_case_hint(
+                body,
+                laf_case_number=case_info.laf_case_number,
+                client_name=case_info.client_name,
+            )
+            if hint and is_pending_laf_reason(case_info.case_reason):
+                case_type, case_stage, case_reason = normalize_laf_case_fields(
+                    hint.get("case_type", "") or case_info.case_type,
+                    hint.get("case_stage", "") or case_info.case_stage,
+                    hint.get("case_reason", "") or case_info.case_reason,
+                    case_info.laf_case_type,
+                )
+                case_info.case_type = case_type or case_info.case_type
+                case_info.case_stage = case_stage or case_info.case_stage
+                case_info.case_reason = case_reason or case_info.case_reason
         except Exception as _bare_e:
             _log.debug("laf skipped: %s", _bare_e)
     
@@ -2926,8 +3324,10 @@ class LAFGmailMonitor:
         }
         if not enabled:
             _log.info("[閱卷] background file review email scan disabled (set MAGI_ENABLE_BACKGROUND_FILE_REVIEW_CHECK=1 to enable)")
+            self._write_file_review_monitor_state("disabled")
             return
         _log.info("[閱卷] file review email scan integrated in LAF monitor cycle — starting")
+        self._write_file_review_monitor_state("running")
         try:
             import sys as _sys
             _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2936,9 +3336,19 @@ class LAFGmailMonitor:
                 _sys.path.insert(0, _skill_path)
             from action import cmd_check_emails as _fr_check
             result = _fr_check(notify=True, notify_empty=False)
+            success = bool(result.get("success")) if isinstance(result, dict) else False
+            self._write_file_review_monitor_state(
+                "ok" if success else "error",
+                success=success,
+                payment_hits=int(result.get("payment_hits") or 0) if isinstance(result, dict) else 0,
+                payment_notified=int(result.get("payment_notified") or 0) if isinstance(result, dict) else 0,
+                download_hits=int(result.get("download_hits") or 0) if isinstance(result, dict) else 0,
+                ready_to_download_count=int(result.get("ready_to_download_count") or 0) if isinstance(result, dict) else 0,
+            )
             _log.info("[閱卷] file review email scan done: success=%s",
                       result.get("success") if isinstance(result, dict) else "?")
         except Exception as e:
+            self._write_file_review_monitor_state("error", error=str(e)[:500])
             _log.warning("[閱卷] file review email scan failed: %s", e)
 
     def start_monitor(self, interval_seconds: int = 300, check_immediately: bool = True, general_rules: List[Dict] = None):
@@ -2947,6 +3357,7 @@ class LAFGmailMonitor:
             return
         
         if not self.authenticate():
+            self._write_monitor_state("auth_failed", error="authenticate_failed")
             return
         
         self._running = True
@@ -2957,6 +3368,7 @@ class LAFGmailMonitor:
         )
         self._monitor_thread.start()
         self.log(f"✅ Gmail 監控已啟動 (每 {interval_seconds} 秒檢查)")
+        self._write_monitor_state("started", interval_sec=int(interval_seconds))
     
     def stop_monitor(self):
         """停止監控"""
@@ -3014,13 +3426,28 @@ class LAFGmailMonitor:
                     self._reauth_if_needed()
 
                     # 1. 檢查法扶信件
-                    cases = self.check_emails()
+                    cases = self.check_emails(
+                        check_exists_func=self.processed_exists_func,
+                        mark_processed=False,
+                    )
+                    self._write_monitor_state(
+                        "ok",
+                        interval_sec=int(interval),
+                        laf_cases=len(cases or []),
+                        consecutive_errors=_consecutive_errors,
+                    )
                     for case_info in cases:
+                        callback_ok = True
                         if self.callback:
                             try:
-                                self.callback(case_info)
+                                callback_result = self.callback(case_info)
+                                if callback_result is False:
+                                    callback_ok = False
                             except Exception as e:
+                                callback_ok = False
                                 self.log(f"❌ 法扶回呼處理失敗: {e}")
+                        if callback_ok:
+                            self.mark_laf_processed(case_info.message_id)
 
                     # 2. 檢查一般信件
                     if general_rules:
@@ -3037,6 +3464,12 @@ class LAFGmailMonitor:
 
                 except Exception as e:
                     _consecutive_errors += 1
+                    self._write_monitor_state(
+                        "error",
+                        interval_sec=int(interval),
+                        consecutive_errors=_consecutive_errors,
+                        error=str(e)[:500],
+                    )
                     self.log(f"❌ 監控迴圈錯誤 (連續第 {_consecutive_errors} 次): {e}")
                     # 連續失敗達閾值 → 發一次 admin 通知（有冷卻）
                     if _consecutive_errors >= _ADMIN_NOTIFY_THRESHOLD:
@@ -3060,6 +3493,7 @@ class LAFGmailMonitor:
                             self.log(f"❌ 重新認證失敗: {_ae}")
                     time.sleep(min(60 * _consecutive_errors, 300))
         finally:
+            self._write_monitor_state("exiting")
             _log.info("LAF Gmail monitor thread exiting")
 
 
@@ -3357,6 +3791,11 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
     """
     root = (final_root or "").strip()
     cn = (client_name or "").strip()
+    try:
+        from api.case_display import normalize_person_name as _normalize_person_name
+    except Exception:
+        _normalize_person_name = lambda value: re.sub(r"\s+", "", str(value or "").strip())
+    cn_key = _normalize_person_name(cn)
     cr = (case_reason or "").strip()
     cs = (case_stage or "").strip()
     if not root or not cn or not cr or not os.path.isdir(root):
@@ -3368,7 +3807,8 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
                 continue
             name = ent.name or ""
             score = 0.0
-            if cn and cn in name:
+            name_key = _normalize_person_name(name)
+            if cn and (cn in name or (cn_key and cn_key in name_key)):
                 score += 2.5
             if cr and cr in name:
                 score += 2.0
@@ -3429,8 +3869,100 @@ class OSCCaseCreator:
         self.log = log_callback or print
 
         os.makedirs(self.target_folder, exist_ok=True)
+
+    def dedupe_case_folders_by_laf_marker(self, max_scan_per_type: int = 2500) -> dict:
+        """
+        去重法扶案件資料夾（不刪除檔案）。
+
+        Same LAF number can appear in duplicate folder shells when NAS/Synology
+        fallback paths race. Mark duplicates and point DB back to canonical.
+        """
+        root = (self.target_folder or "").strip()
+        if not root or not os.path.isdir(root):
+            return {"ok": True, "skipped": True, "reason": "target_folder_missing"}
+
+        def _case_no_from_folder(path: str) -> str:
+            bn = os.path.basename(path.rstrip("/")) or ""
+            m = re.match(r"^(20\d{2}-\d{4})-", bn)
+            return m.group(1) if m else ""
+
+        type_roots = [root]
+        for sub in ["刑事", "民事", "行政", "消費者債務清理"]:
+            p = os.path.join(root, sub)
+            if os.path.isdir(p):
+                type_roots.append(p)
+
+        groups: Dict[str, List[dict]] = {}
+        scanned = 0
+        for tr in type_roots:
+            try:
+                n = 0
+                for ent in os.scandir(tr):
+                    if n >= int(max_scan_per_type):
+                        break
+                    n += 1
+                    if not ent.is_dir():
+                        continue
+                    laf_no = _read_laf_case_marker(ent.path)
+                    if not laf_no:
+                        continue
+                    groups.setdefault(laf_no, []).append(
+                        {"folder": ent.path, "case_number": _case_no_from_folder(ent.path)}
+                    )
+                    scanned += 1
+            except Exception:
+                continue
+
+        dup_groups = {k: v for k, v in groups.items() if isinstance(v, list) and len(v) > 1}
+        if not dup_groups:
+            return {"ok": True, "scanned": scanned, "duplicates": 0, "groups": 0}
+
+        fixed = 0
+        updated_db = 0
+        for laf_no, items in dup_groups.items():
+            items_sorted = sorted(
+                items,
+                key=lambda it: (it.get("case_number") or "9999-9999", it.get("folder") or ""),
+            )
+            canonical = (items_sorted[0].get("folder") or "").strip()
+            if not canonical:
+                continue
+
+            for it in items_sorted[1:]:
+                dp = (it.get("folder") or "").strip()
+                if dp and dp != canonical:
+                    _mark_duplicate_folder(dp, canonical, log=self.log)
+                    fixed += 1
+
+            try:
+                if self.db_manager and hasattr(self.db_manager, "execute_write"):
+                    canonical_db = self.to_canonical_path(canonical)
+                    for it in items_sorted:
+                        cn = (it.get("case_number") or "").strip()
+                        if not cn:
+                            continue
+                        self.db_manager.execute_write(
+                            "UPDATE `cases` SET "
+                            "`legal_aid_number` = CASE WHEN `legal_aid_number` IS NULL OR `legal_aid_number` = '' THEN %s ELSE `legal_aid_number` END, "
+                            "`folder_path` = %s, "
+                            "`folder_name` = %s "
+                            "WHERE `case_number` = %s",
+                            (laf_no, canonical_db, os.path.basename(canonical.rstrip("/")), cn),
+                        )
+                        updated_db += 1
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "scanned": scanned,
+            "duplicates": sum(len(v) for v in dup_groups.values()),
+            "groups": len(dup_groups),
+            "marked": fixed,
+            "db_updates": updated_db,
+        }
     
-    def _archive_files_to_folder(self, files: List[str], case_folder: str):
+    def _archive_files_to_folder(self, files: List[str], case_folder: str, case_info: Optional[LAFCaseInfo] = None):
         """
         將下載的檔案歸檔到案件資料夾
         
@@ -3442,6 +3974,24 @@ class OSCCaseCreator:
             return
         
         get_target_subfolder = _laf_target_subfolder_for_attachment
+
+        def ensure_poa_word_copy(pdf_path: str) -> None:
+            if not is_laf_power_of_attorney_pdf(pdf_path):
+                return
+            metadata = {}
+            if case_info:
+                metadata = {
+                    "client_name": case_info.client_name,
+                    "laf_case_number": case_info.laf_case_number,
+                    "branch": case_info.branch,
+                    "case_type": case_info.case_type,
+                    "case_reason": case_info.case_reason,
+                }
+            converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=metadata)
+            if converted.get("status") == "created":
+                self.log(f"    📝 已產生委任狀 Word 可填寫版: {os.path.basename(str(converted.get('docx_path') or ''))}")
+            elif not converted.get("ok"):
+                self.log(f"    ⚠️ 委任狀 Word 可填寫版產生失敗: {converted.get('error')}")
         
         for file_path in files:
             if not os.path.exists(file_path):
@@ -3480,10 +4030,12 @@ class OSCCaseCreator:
                             # 檢查檔案是否已存在
                             if os.path.exists(target_path):
                                 self.log(f"    ⏭️ 已存在，跳過: {base_name}")
+                                ensure_poa_word_copy(target_path)
                                 continue
                             
                             with open(target_path, "wb") as target_file, zip_ref.open(member) as source_file:
                                 shutil.copyfileobj(source_file, target_file)
+                            ensure_poa_word_copy(target_path)
                             
                             self.log(f"    ✓ {base_name} → {target_sub}/")
                     
@@ -3529,6 +4081,7 @@ class OSCCaseCreator:
                 if not os.path.exists(dest_path):
                     shutil.copy2(file_path, dest_path)
                     self.log(f"    ✓ {filename} → {target_sub}/")
+                ensure_poa_word_copy(dest_path)
         
         self.log(f"  ✅ 檔案歸檔完成")
 
@@ -3734,7 +4287,11 @@ class OSCCaseCreator:
                         # 執行歸檔
                         if final_folder_to_use:
                             self.log(f"  📂 歸檔下載的檔案到: {final_folder_to_use}")
-                            self._archive_files_to_folder(files, final_folder_to_use)
+                            if _is_laf_staff_email_case_info(case_info):
+                                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                                self.archive_staff_email_attachments(files, final_folder_to_use)
+                            else:
+                                self._archive_files_to_folder(files, final_folder_to_use, case_info)
                             # 補齊法扶案號 marker + 當事人基本資料（住址/電話/Email/身分證字號）
                             _write_laf_case_marker(final_folder_to_use, case_info.laf_case_number, log=self.log)
                             fields = _scan_laf_forms_for_client_fields(final_folder_to_use)
@@ -3813,7 +4370,11 @@ class OSCCaseCreator:
 
                 # 歸檔下載檔案（若有）
                 if files:
-                    self._archive_files_to_folder(files, reuse_folder)
+                    if _is_laf_staff_email_case_info(case_info):
+                        self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                        self.archive_staff_email_attachments(files, reuse_folder)
+                    else:
+                        self._archive_files_to_folder(files, reuse_folder, case_info)
                     fields2 = _scan_laf_forms_for_client_fields(reuse_folder)
                     if fields2:
                         try:
@@ -3862,7 +4423,11 @@ class OSCCaseCreator:
                                 "進行中",
                                 datetime.now().strftime('%Y-%m-%d'),
                                 None,
-                                "",
+                                _laf_default_case_lawyer(
+                                    self.db_manager,
+                                    case_type=case_info.case_type,
+                                    case_reason=case_reason,
+                                ),
                                 folder_path_for_db,
                                 case_info.case_stage,
                                 "",
@@ -3915,7 +4480,7 @@ class OSCCaseCreator:
                 '01_法扶資料', '02_開辦資料', '03_結案資料',
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料',
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定',
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for sf in subfolders:
@@ -3923,7 +4488,11 @@ class OSCCaseCreator:
                 os.makedirs(subfolder_path, exist_ok=True)
             
             # 8. 處理檔案 (ZIP 解壓縮/分類)
-            if files:
+            if files and _is_laf_staff_email_case_info(case_info):
+                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                self.archive_staff_email_attachments(files, case_folder)
+                self.log(f"  ✅ 專員來信附件處理完成")
+            elif files:
                 get_target_subfolder = _laf_target_subfolder_for_attachment
 
                 for file_path in files:
@@ -4072,7 +4641,11 @@ class OSCCaseCreator:
                 '進行中',  # status
                 datetime.now().strftime('%Y-%m-%d'),  # start_date
                 None,  # court_date
-                '',  # lawyer
+                _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_info.case_type,
+                    case_reason=case_reason,
+                ),  # lawyer
                 folder_path_for_db,
                 case_info.case_stage,
                 '',  # court_case_number
@@ -4209,6 +4782,11 @@ class LAFAutomationManager:
         self.log("[LAF] 🚀 開始執行 setup()...")
         gmail_config = self.config.get('gmail', {})
         laf_config = self.config.get('laf', {})
+        if not isinstance(laf_config, dict):
+            laf_config = {}
+        self.config['laf'] = laf_config
+        # Missing legacy configs must not silently disable the dispatch workflow.
+        laf_config.setdefault('auto_create_case', True)
         
         # 除錯：顯示收到的設定
         self.log(f"[LAF] 📋 設定檢查:")
@@ -4301,7 +4879,10 @@ class LAFAutomationManager:
         if self.db_manager:
             try:
                 # 取得 target_folder 並統一轉換為本機路徑
-                target_folder = laf_config.get('target_folder', './法扶資料')
+                target_folder = laf_config.get('target_folder') or ''
+                if not target_folder or target_folder in {'.', './法扶資料', '法扶資料'}:
+                    roots = preferred_case_roots(include_closed=False)
+                    target_folder = os.path.join((roots[0] if roots else "."), "法扶案件")
                 target_folder = OSCCaseCreator.to_local_path(target_folder)
 
                 # Mac 上若路徑仍是 Windows 格式，fallback 到 NAS 直連
@@ -4311,6 +4892,7 @@ class LAFAutomationManager:
                     roots = preferred_case_roots(include_closed=False)
                     target_folder = os.path.join((roots[0] if roots else "."), "法扶案件")
                     self.log(f"  [PathFix] fallback NAS 路徑: {target_folder}")
+                laf_config['target_folder'] = target_folder
                 
                 self.case_creator = OSCCaseCreator(
                     db_manager=self.db_manager,
@@ -4341,10 +4923,10 @@ class LAFAutomationManager:
             if self.db_manager:
                 # 定義檢查函式
                 check_func = lambda mid: self.db_manager.check_laf_email_exists(mid)
+                self.gmail_monitor.processed_exists_func = check_func
                 # 在背景執行掃描，避免卡住 GUI
                 threading.Thread(
-                    target=self.gmail_monitor.scan_today_emails,
-                    args=(check_func,),
+                    target=lambda: self.gmail_monitor.scan_recent_emails(check_exists_func=check_func),
                     daemon=True
                 ).start()
             
@@ -4419,6 +5001,88 @@ class LAFAutomationManager:
             LAFNotifier().notify_admin("⚠️ CASPER 告警：LAF 驗證碼連續辨識失敗，已自動重試，請稍後確認。")
         except Exception as e:
             self.log(f"⚠️ LINE 告警發送失敗: {e}")
+
+    def _update_laf_email_record_status(self, message_id: str, status: str, case_number: str = "") -> None:
+        if not self.db_manager or not message_id:
+            return
+        try:
+            writer = getattr(self.db_manager, "execute_write", None) or getattr(self.db_manager, "execute", None)
+            if not writer:
+                return
+            writer(
+                "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                (status, case_number or None, message_id),
+            )
+        except Exception as e:
+            self.log(f"  ⚠️ 法扶結案轉入信件紀錄更新失敗: {e}")
+
+    def _handle_closing_transfer_notice(self, case_info: LAFCaseInfo) -> bool:
+        notice = parse_laf_closing_transfer_notice(
+            getattr(case_info, "subject", ""),
+            getattr(case_info, "body", ""),
+        )
+        if not notice:
+            return False
+        if not self.db_manager:
+            self.log("  ⚠️ 收到法扶結案轉入確認，但 DB 尚未可用，保留人工檢查。")
+            return False
+
+        try:
+            result = apply_laf_closing_transfer_notice(
+                self.db_manager,
+                notice,
+                source_message_id=getattr(case_info, "message_id", "") or "",
+            )
+        except Exception as e:
+            result = {"ok": False, "updated": False, "status": "update_error", "error": str(e)}
+
+        record_status = laf_closing_transfer_record_status(result)
+        self._update_laf_email_record_status(
+            getattr(case_info, "message_id", "") or "",
+            record_status,
+            str(result.get("case_number") or notice.laf_case_number),
+        )
+
+        status = str(result.get("status") or "")
+        case_number = str(result.get("case_number") or "(未定位)")
+        if result.get("updated"):
+            message = (
+                "✅ 法扶結案轉入已自動更新\n"
+                f"OSC 案號: {case_number}\n"
+                f"法扶案號: {notice.laf_case_number}\n"
+                "狀態: 已結案"
+            )
+            self.log(f"  ✅ [結案轉入] {case_number} 已自動改為 已結案")
+            try:
+                if self.discord:
+                    self.discord.send_message("✅ 法扶結案轉入已自動更新", message, color=0x00ff00)
+                else:
+                    ensure_orch_on_sys_path()
+                    from line_notifier import LAFNotifier  # type: ignore
+                    LAFNotifier().notify_admin(message, topic_key="laf_closing")
+            except Exception as notify_error:
+                self.log(f"  ⚠️ 法扶結案轉入通知發送失敗: {notify_error}")
+        elif status == "already_final":
+            self.log(f"  ✅ [結案轉入] {case_number} 已是 已結案，略過重複更新")
+            return True
+        else:
+            self.log(
+                "  ⚠️ [結案轉入] 未自動更新 "
+                f"{notice.laf_case_number}: {status or 'unknown'}"
+            )
+            try:
+                ensure_orch_on_sys_path()
+                from line_notifier import LAFNotifier  # type: ignore
+                LAFNotifier().notify_admin(
+                    "⚠️ 法扶結案轉入信未自動落狀態\n"
+                    f"法扶案號: {notice.laf_case_number}\n"
+                    f"結果: {status or 'unknown'}",
+                    topic_key="laf_closing",
+                )
+            except Exception:
+                pass
+            return False
+        return bool(result.get("ok"))
     
     def _on_new_case(self, case_info: LAFCaseInfo):
         """處理新案件"""
@@ -4441,15 +5105,18 @@ class LAFAutomationManager:
             # 0. 記錄到資料庫 (避免重複處理)
             if self.db_manager:
                 record_data = {
-                    'message_id': case_info.message_id,
-                    'subject': f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
+                    'gmail_message_id': case_info.message_id,
+                    'subject': case_info.subject or f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
                     'sender': case_info.sender,
                     'received_at': case_info.received_at,
                     'status': 'processing',
-                    'laf_case_number': case_info.laf_case_number,
+                    'case_number': case_info.laf_case_number,
                     'created_case_id': None
                 }
                 self.db_manager.add_laf_email_record(record_data)
+
+            if self._handle_closing_transfer_notice(case_info):
+                return True
 
             notify_title = f"📧 法扶{case_info.notification_type}"
             notify_body = (
@@ -4532,7 +5199,19 @@ class LAFAutomationManager:
                 
                 # 有附件時建案（附件會自動歸檔）
                 if self.case_creator and self.config.get('laf', {}).get('auto_create_case'):
-                    osc_case_number = self.case_creator.create_case(case_info, downloaded_files)
+                    create_result = self.case_creator.create_case(case_info, downloaded_files)
+                    if isinstance(create_result, tuple):
+                        osc_case_number = create_result[0]
+                    else:
+                        osc_case_number = create_result
+                    if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                        try:
+                            self.db_manager.execute_write(
+                                "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                                ("completed", case_info.laf_case_number or str(osc_case_number), case_info.message_id),
+                            )
+                        except Exception as e:
+                            self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                     
                     if osc_case_number and self.discord:
                         self.discord.send_message(
@@ -4542,9 +5221,11 @@ class LAFAutomationManager:
                             f"**附件:** {len(downloaded_files)} 個檔案已歸檔",
                             color=0x00ff00
                         )
+            return True
         
         except Exception as e:
             self.log(f"❌ 處理新案件失敗: {e}")
+            return False
 
     def _on_general_email(self, email_info: GeneralEmailInfo):
         """處理一般信件"""
@@ -4707,6 +5388,27 @@ class LAFAutomationManager:
             # 建立案件
             if self.case_creator:
                 osc_case_number, case_folder = self.case_creator.create_case(case_info, files)
+                staff_attachment_count = 0
+                if case_folder and case_info.has_attachment and case_info.message_id and self.gmail_monitor:
+                    try:
+                        staff_target = os.path.join(case_folder, "01_法扶資料", "專員來信")
+                        downloaded_staff = self.gmail_monitor.download_attachments_by_msg_id(
+                            case_info.message_id,
+                            staff_target,
+                        )
+                        staff_attachment_count = len(downloaded_staff or [])
+                        if downloaded_staff:
+                            self.case_creator.postprocess_staff_email_attachments(downloaded_staff, case_folder)
+                    except Exception as e:
+                        self.log(f"  ⚠️ 專員來信附件歸檔失敗: {e}")
+                if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                    try:
+                        self.db_manager.execute_write(
+                            "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                            ("completed", case_info.laf_case_number or osc_case_number, case_info.message_id),
+                        )
+                    except Exception as e:
+                        self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                 
                 if osc_case_number and self.discord:
                     # 嘗試轉換回 Windows 路徑供顯示
@@ -4718,12 +5420,23 @@ class LAFAutomationManager:
                         f"**OSC 案號:** {osc_case_number}\n"
                         f"**當事人:** {case_info.client_name}\n"
                         f"**下載檔案:** {len(files)} 個\n"
+                        f"**專員附件:** {staff_attachment_count} 個\n"
                         f"**儲存位置:** `{display_path}`",
                         color=0x00ff00
                     )
+                return {
+                    "success": True,
+                    "laf_case_number": getattr(case_info, "laf_case_number", ""),
+                    "client_name": getattr(case_info, "client_name", ""),
+                    "downloaded_files": len(files or []),
+                    "staff_attachments": staff_attachment_count,
+                    "osc_case_number": osc_case_number,
+                    "case_folder": case_folder,
+                }
         
         except Exception as e:
             self.log(f"❌ 自動處理失敗: {e}")
+            return {"success": False, "error": str(e)}
         finally:
             # 保持瀏覽器開啟或關閉視需求而定，這裡選擇關閉以節省資源
             # 但因為是序列化處理，也可以考慮保持 session
@@ -5146,30 +5859,35 @@ class LAFAutomationManager:
                             }
                         else:
                              # ★ [Smart Discovery] 智慧資料夾搜尋 (即使 DB 路徑失效也能找到) ★
-                            self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
+                            db_case_closed = self._is_db_case_closed_or_archived(db_case)
+                            if db_case_closed:
+                                self.log(f"     ⚠️ 已結案案件路徑失效，改查結案歸檔資料夾...")
+                            else:
+                                self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
                             osc_case_number = db_case.get('case_number')
                             discovered_path = None
-                            
-                            # 搜尋潛在根目錄
-                            potential_roots = [target_root]
-                            # 加入子目錄
-                            for sub in ['刑事', '民事', '行政', '消費者債務清理']:
-                                sub_path = os.path.join(target_root, sub)
-                                if os.path.exists(sub_path):
-                                    potential_roots.append(sub_path)
-                            
-                            for root in potential_roots:
-                                if not os.path.exists(root): continue
-                                try:
-                                    for item in os.listdir(root):
-                                         if item.startswith(osc_case_number): # 只要開頭對了 (案號對了)
-                                             full_path = os.path.join(root, item)
-                                             if os.path.isdir(full_path):
-                                                 discovered_path = full_path
-                                                 break
-                                except Exception as _sd_err:
-                                    _log.debug("SmartDiscovery scan error: %s", _sd_err)
-                                if discovered_path: break
+
+                            if db_case_closed:
+                                case_roots = preferred_case_roots(include_closed=True)
+                                closed_roots = case_roots[1:] if len(case_roots) > 1 else []
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    closed_roots,
+                                    max_depth=3,
+                                )
+                            else:
+                                # 搜尋潛在根目錄
+                                potential_roots = [target_root]
+                                # 加入子目錄
+                                for sub in ['刑事', '民事', '行政', '消費者債務清理']:
+                                    sub_path = os.path.join(target_root, sub)
+                                    if os.path.exists(sub_path):
+                                        potential_roots.append(sub_path)
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    potential_roots,
+                                    max_depth=1,
+                                )
 
                             if discovered_path:
                                 self.log(f"     🔍 [SmartDiscovery] 找到更名後的資料夾: {discovered_path}")
@@ -5177,6 +5895,8 @@ class LAFAutomationManager:
                                     'folder_name': os.path.basename(discovered_path),
                                     'folder_path': discovered_path
                                 }
+                            elif db_case_closed:
+                                self.log(f"     ⏭️ {osc_case_number} 已結案但找不到結案歸檔資料夾，停止重建進行中空殼")
                             else:
                                 # 真的找不到才重建
                                 self.log(f"     ⚠️ 路徑皆不存在且找不到替代，嘗試重建...")
@@ -5232,7 +5952,7 @@ class LAFAutomationManager:
                 # 5. 定義檔案分類規則
                 file_category_rules = {
                     '01_法扶資料': ['接案通知書', '委任狀', '法律扶助申請書', '案件概述單', '資力詢問表', '審查表'],
-                    '03_結案資料': ['結案酬金領款單'],
+                    '03_結案資料': ['結案酬金領款單', '結案審查通知書', '變動審查通知書'],
                     '02_開辦資料': ['附條件第二階段預付酬金領款單'],
                 }
                 
@@ -5396,6 +6116,7 @@ class LAFAutomationManager:
             # (V2.1) 增加查詢 legal_aid_number
             query = """
                 SELECT case_number, client_name, folder_path, case_type, case_stage, case_reason,
+                       status, legal_aid_status,
                        legal_aid_number, laf_case_no, application_no, notes
                 FROM cases
                 WHERE client_name = %s
@@ -5585,7 +6306,7 @@ class LAFAutomationManager:
                 '01_法扶資料', '02_開辦資料', '03_結案資料', 
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料', 
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定', 
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for subfolder in subfolders:
@@ -5611,7 +6332,11 @@ class LAFAutomationManager:
                 'status': '進行中',
                 'start_date': datetime.now().strftime('%Y-%m-%d'),
                 'court_date': None,
-                'lawyer': '',
+                'lawyer': _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_type,
+                    case_reason=case_reason,
+                ),
                 'folder_path': OSCCaseCreator.to_canonical_path(full_path),
                 'case_stage': case_stage,
                 'court_case_number': '',
@@ -5636,6 +6361,48 @@ class LAFAutomationManager:
             self.log(f"     ❌ 自動建立案件失敗: {e}")
             traceback.print_exc()
             return None
+
+    @staticmethod
+    def _is_db_case_closed_or_archived(db_case: Dict) -> bool:
+        """Return True when an existing case must stay in the closed archive."""
+        status_text = str((db_case or {}).get('status') or '').strip().lower()
+        laf_status_text = str((db_case or {}).get('legal_aid_status') or '').strip().lower()
+        folder_path = str((db_case or {}).get('folder_path') or '').strip().replace('\\', '/')
+        closed_status_markers = ('已結案', 'closed', 'completed', 'archived')
+        return (
+            any(marker in status_text for marker in closed_status_markers)
+            or laf_status_text.startswith('已結案')
+            or '/10_結案/' in folder_path
+            or folder_path.upper().startswith('Y:/')
+        )
+
+    def _discover_case_folder_by_number(self, case_number: str, roots: list, max_depth: int = 2) -> Optional[str]:
+        """Find an existing case folder by OSC number without creating folders."""
+        case_no = str(case_number or '').strip()
+        if not case_no:
+            return None
+        queue = [(str(root), 0) for root in roots if str(root or '').strip()]
+        seen = set()
+        while queue:
+            root, depth = queue.pop(0)
+            norm_root = os.path.abspath(root)
+            if norm_root in seen:
+                continue
+            seen.add(norm_root)
+            if not os.path.isdir(root):
+                continue
+            try:
+                entries = os.listdir(root)
+            except Exception as exc:
+                _log.debug("case folder discovery scan failed: %s (%s)", root, exc)
+                continue
+            for item in entries:
+                full_path = os.path.join(root, item)
+                if item.startswith(case_no) and os.path.isdir(full_path):
+                    return full_path
+                if depth < max_depth and os.path.isdir(full_path) and not item.startswith('.'):
+                    queue.append((full_path, depth + 1))
+        return None
 
     def _recreate_folder_for_existing_case(self, db_case: Dict, case_type: str, 
                                             case_stage: str, case_reason: str,
@@ -5668,6 +6435,10 @@ class LAFAutomationManager:
             
             if not osc_case_number or not client_name:
                 self.log("     ❌ DB 記錄缺少必要欄位")
+                return None
+
+            if self._is_db_case_closed_or_archived(db_case):
+                self.log(f"     ⏭️ {osc_case_number} 已結案或已歸檔，跳過進行中資料夾重建")
                 return None
             
             self.log(f"     📋 使用原有 OSC 案號: {osc_case_number}")
@@ -5710,7 +6481,7 @@ class LAFAutomationManager:
                 '01_法扶資料', '02_開辦資料', '03_結案資料', 
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料', 
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定', 
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for subfolder in subfolders:
@@ -5774,7 +6545,12 @@ class LAFAutomationManager:
                         check_client_query = "SELECT id FROM clients WHERE name = %s"
                         existing_client = self.db_manager.execute(check_client_query, (client_name,), fetch='one')
                         if not existing_client:
-                            new_client_id = str(uuid.uuid4())
+                            if hasattr(self.db_manager, "generate_client_id"):
+                                new_client_id = self.db_manager.generate_client_id()
+                            else:
+                                from api.osc.client_ids import next_client_id_from_existing
+                                existing_ids = self.db_manager.execute("SELECT id FROM clients WHERE id LIKE 'C%'", fetch='all') or []
+                                new_client_id = next_client_id_from_existing(existing_ids)
                             create_client_query = """
                                 INSERT INTO clients (id, name, phone, email, address, created_date, status)
                                 VALUES (%s, %s, %s, %s, %s, NOW(), '進行中')
@@ -5809,7 +6585,14 @@ class LAFAutomationManager:
                 case_data.get('status'),
                 case_data.get('start_date'),
                 case_data.get('court_date'),
-                case_data.get('lawyer', ''),
+                normalize_case_lawyer(
+                    case_data.get('lawyer', ''),
+                    allow_default=True,
+                    case_type=case_data.get('case_type', ''),
+                    case_reason=case_data.get('case_reason', ''),
+                    case_category=case_data.get('case_category', ''),
+                    settings_getter=db_settings_getter(self.db_manager),
+                ),
                 case_data.get('folder_path'),
                 case_data.get('case_stage'),
                 case_data.get('court_case_number', ''),

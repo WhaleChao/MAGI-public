@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "default_lawyer_name": "受任律師",
+  "law_firm_profile": {
+    "lawyer_name": "受任律師",
+    "office_name": "範例法律事務所",
+    "address_line": "範例事務所地址",
+    "phone": "",
+    "fax": "",
+    "mobile": ""
+  },
+  "profiles": [
+    {
+      "branch_label": "花蓮分會",
+      "aliases": [
+        "花蓮",
+        "法扶花蓮分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "新北分會",
+      "aliases": [
+        "新北",
+        "法扶新北分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "宜蘭分會",
+      "aliases": [
+        "宜蘭",
+        "法扶宜蘭分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "台東分會",
+      "aliases": [
+        "台東",
+        "臺東",
+        "法扶台東分會",
+        "臺東分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "台北分會",
+      "aliases": [
+        "台北",
+        "臺北",
+        "法扶台北分會",
+        "臺北分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "基隆分會",
+      "aliases": [
+        "基隆",
+        "法扶基隆分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "士林分會",
+      "aliases": [
+        "士林",
+        "法扶士林分會"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    },
+    {
+      "branch_label": "原住民族法律服務中心",
+      "aliases": [
+        "原民",
+        "原民中心",
+        "原住民族法律服務",
+        "原住民族法律服務中心",
+        "法扶原住民族法律服務中心"
+      ],
+      "phone": "",
+      "default_lawyer_name": "受任律師",
+      "poa_footer_template": "本事件經本會　{branch_label}審核准予扶助，爰制作本委任狀如上，自105年10月1日起，本會不再蓋委任狀章。如欲反應律師辦理狀況，請逕致電分會({phone})。",
+      "source": "public_synthetic_seed"
+    }
+  ]
+}

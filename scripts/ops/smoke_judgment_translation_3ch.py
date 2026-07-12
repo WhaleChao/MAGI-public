@@ -16,11 +16,14 @@ import json
 import os
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Callable
 
 ROOT = Path(_MAGI_ROOT)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 JUDGMENT_DIR_DEFAULT = Path("/Users/ai/Desktop/判決")
 
 

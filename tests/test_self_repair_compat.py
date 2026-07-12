@@ -63,3 +63,19 @@ def test_self_repair_wrapper_falls_back_to_doctor_report(monkeypatch):
 
     assert report["message"] == "基礎設施全部正常，無需修復"
     assert report["repairs"] == []
+
+
+def test_self_repair_wrapper_exposes_guardian_target(monkeypatch):
+    module = _load_self_repair_module()
+
+    class GuardianStub:
+        @staticmethod
+        def build_report(**kwargs):
+            return {"ok": True, "mode": kwargs["mode"], "summary": {"open_issue_count": 0}}
+
+    monkeypatch.setattr(module, "_load_guardian_module", lambda: GuardianStub())
+
+    report = module.repair_targets(["guardian:repair-propose"])
+
+    assert report["ok"] is True
+    assert report["mode"] == "repair-propose"

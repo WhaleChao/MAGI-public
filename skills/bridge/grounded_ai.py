@@ -1047,16 +1047,40 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
     Layer 1: Statute / noise memory filter per tier
     Layer 2: Semantic coherence check on LLM output
 
-    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM 405B，跳過本地 oMLX
+    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM heavy，跳過本地 oMLX
     """
     logger.info(f"💬 Chatting: {message}")
 
-    # ── Layer 0: @heavy opt-in → 直接走 NIM 405B（P1-2 根修 2026-04-19）──
+    # ── Layer 0: @heavy opt-in → 直接走 NIM heavy（P1-2 根修 2026-04-19）──
     # 此為 chat_casper 主要入口，處理所有 /osc/external/chat → _handle_chat_async 路徑。
     # 必須在這一層接 @heavy，因為 chat_casper 不會走 inference_gateway._chat_inner 的 heavy fast path。
     _msg_stripped = str(message or "").strip()
-    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 orchestrator sanitize 統一轉半形
-    _msg_lower_head = _msg_stripped.lower()
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+        _MAGI_PREFIX_FALLBACK_RE = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+        _HEAVY_WORD_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(_message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            _text = str(_message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            _magi_match = _MAGI_PREFIX_FALLBACK_RE.match(_text)
+            if _magi_match:
+                _rest = _text[_magi_match.end():]
+                _heavy_after_magi = _HEAVY_WORD_PREFIX_FALLBACK_RE.match(_rest)
+                if _heavy_after_magi:
+                    _cleaned = _rest[_heavy_after_magi.end():].strip()
+                    return True, f"@MAGI {_cleaned}".strip()
+            _match = _HEAVY_PREFIX_FALLBACK_RE.match(_text)
+            return (True, _text[_match.end():].strip()) if _match else (False, _text)
     # 2026-04-24：三保險偵測（prefix / flask.g / explicit kwarg）
     # - prefix：上游尚未剝除時直接命中
     # - flask.g：同 request thread 設定，但 ThreadPoolExecutor 子 thread 讀不到
@@ -1068,7 +1092,7 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
             _heavy_via_g = bool(getattr(_flask_g_head, "heavy_opt_in", False))
         except Exception:
             _heavy_via_g = False
-    _has_prefix = _msg_lower_head.startswith("@heavy ") or _msg_lower_head.startswith("@重型 ")
+    _has_prefix, _clean_msg = split_heavy_prefix(_msg_stripped)
     if _has_prefix or _heavy_via_g:
         import os as _os
         _nim_enabled = (_os.environ.get("NVIDIA_NIM_ENABLE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -1076,11 +1100,9 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
             try:
                 from skills.bridge.nim_heavy import run_nim_chat
                 # 若 prefix 還在就剝除；若上游已剝除則直接用原文
-                if _has_prefix:
-                    _clean_msg = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
-                else:
+                if not _has_prefix:
                     _clean_msg = _msg_stripped
-                logger.info("chat_casper: @heavy opt-in → NIM 405B fast path")
+                logger.info("chat_casper: @heavy opt-in → NIM heavy fast path")
                 _nim_r = run_nim_chat(
                     prompt=_clean_msg,
                     timeout_sec=int(_os.environ.get("NVIDIA_NIM_TIMEOUT_SEC", "120") or "120"),
@@ -1092,7 +1114,7 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
                         "使用台灣慣用的法律術語，例如「被告」而非「被告人」、「起訴書」而非「起诉书」。"
                         "不要使用簡體中文或中國大陸用語。"
                     ),
-                    heavy=True,  # 強制 405B
+                    heavy=True,  # 強制重型 NIM
                 )
                 if _nim_r.get("success") and _nim_r.get("response"):
                     logger.info(
@@ -1109,13 +1131,13 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
             except Exception as _nim_err:
                 logger.warning("chat_casper: NIM exception (%s), falling back to oMLX", _nim_err)
                 if _has_prefix:
-                    message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                    message = _clean_msg
                 else:
                     message = _msg_stripped
         else:
             # NIM 未啟用，剝除 @heavy 前綴正常走 oMLX（避免前綴混進 prompt）
             if _has_prefix:
-                message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                message = _clean_msg
             else:
                 message = _msg_stripped
 

@@ -7,6 +7,7 @@ cd "$MAGI_DIR"
 
 VENV_PY="$MAGI_DIR/venv/bin/python3"
 LOG_DIR="$MAGI_DIR/logs"
+INTERPRETER_JUDGMENT_BASE_DIR="${INTERPRETER_JUDGMENT_BASE_DIR:-$HOME/Desktop/判決捕捉與分類器}"
 mkdir -p "$LOG_DIR"
 
 # Google Calendar dedup / audit defaults
@@ -63,16 +64,19 @@ cleanup_state() {
 
 # === 每小時任務 ===
 run_hourly() {
-    # DB sync（每小時）
-    log "hourly: db_sync"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 $VENV_PY skills/ops/db_sync.py --task sync >> "$LOG_DIR/db_sync_cron.log" 2>&1 &
+    if [ "${MAGI_ENABLE_DB_BIDIR_SYNC:-0}" = "1" ]; then
+        log "hourly: db_sync"
+        MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 $VENV_PY skills/ops/db_sync.py --task sync >> "$LOG_DIR/db_sync_cron.log" 2>&1 &
+    else
+        log "hourly: db_sync skipped (local-only DB mode)"
+    fi
 }
 
 # === 夜間任務（22:00 觸發）===
 run_nightly_22() {
     if already_ran_today "nightly_22"; then return; fi
     log "nightly_22: autopilot nightly 開始"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 timeout 21600 $VENV_PY skills/magi-autopilot/action.py --task nightly >> "$LOG_DIR/cron_nightly.log" 2>&1
+    MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 timeout 21600 $VENV_PY skills/magi-autopilot/action.py --task nightly >> "$LOG_DIR/cron_nightly.log" 2>&1
     log "nightly_22: autopilot nightly 完成"
     mark_done "nightly_22"
 }
@@ -91,19 +95,20 @@ run_judicial_pull() {
     log "judicial_pull: 入庫完成"
     if [ "${MAGI_SUPREME_INTERPRETER_BACKFILL:-0}" = "1" ]; then
         log "judicial_pull: 最高法院通譯 TXT/PDF 補抓開始"
+        export INTERPRETER_JUDGMENT_BASE_DIR
         timeout 5400 $VENV_PY scripts/fetch_supreme_interpreter_texts.py \
-            --output-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812 \
+            --output-dir "$INTERPRETER_JUDGMENT_BASE_DIR/完整812" \
             --delay-sec 0.2 --timeout-sec 45 \
             >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1 || true
         $VENV_PY scripts/classify_supreme_interpreter_mentions.py \
-            --input-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/TXT \
-            --output-prefix /Users/ai/Desktop/最高法院_通譯_TXT/完整812/最高法院_通譯_分類表 \
+            --input-dir "$INTERPRETER_JUDGMENT_BASE_DIR/完整812/TXT" \
+            --output-prefix "$INTERPRETER_JUDGMENT_BASE_DIR/完整812/判決分類表" \
             >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1
-        cp -f /Users/ai/Desktop/最高法院_通譯_TXT/完整812/最高法院_通譯_分類表.* \
-            /Users/ai/Desktop/最高法院_通譯_TXT/ 2>/dev/null || true
+        cp -f "$INTERPRETER_JUDGMENT_BASE_DIR"/完整812/判決分類表.* \
+            "$INTERPRETER_JUDGMENT_BASE_DIR"/ 2>/dev/null || true
         timeout 1800 $VENV_PY scripts/supreme_interpreter_pdf_backfill.py \
-            --text-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/TXT \
-            --pdf-dir /Users/ai/Desktop/最高法院_通譯_TXT/完整812/PDF \
+            --text-dir "$INTERPRETER_JUDGMENT_BASE_DIR/完整812/TXT" \
+            --pdf-dir "$INTERPRETER_JUDGMENT_BASE_DIR/完整812/PDF" \
             >> "$LOG_DIR/supreme_interpreter_pdf_backfill.log" 2>&1 || true
         log "judicial_pull: 最高法院通譯 TXT/PDF 補抓完成"
     else
@@ -134,7 +139,7 @@ run_nightly_council() {
 run_morning_ingest() {
     if already_ran_today "morning_ingest"; then return; fi
     log "morning_ingest: 開始"
-    MAGI_PREFER_LOCAL_DB=0 MAGI_NO_DELETE=1 \
+    MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 \
     $VENV_PY scripts/ingest_raw_judgments.py >> "$LOG_DIR/cron_judicial_ingest.log" 2>&1
     log "morning_ingest: 完成"
     mark_done "morning_ingest"

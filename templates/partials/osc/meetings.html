@@ -21,8 +21,8 @@
                 </div>
                 <div class="field-grid cols-4" style="margin-top:10px;">
                     <div class="field">
-                        <label for="meeting_id">ID</label>
-                        <input id="meeting_id" placeholder="更新時使用">
+                        <label for="meeting_id">編輯編號</label>
+                        <input id="meeting_id" placeholder="新增時留空" readonly>
                     </div>
                     <div class="field">
                         <label for="meeting_case_number">案件編號</label>
@@ -50,7 +50,11 @@
                     </div>
                     <div class="field">
                         <label for="meeting_status">狀態</label>
-                        <input id="meeting_status" placeholder="例：scheduled、done">
+                        <select id="meeting_status">
+                            <option value="scheduled">預定</option>
+                            <option value="done">已完成</option>
+                            <option value="cancelled">已取消</option>
+                        </select>
                     </div>
                 </div>
                 <div class="field" style="margin-top:10px;">
@@ -95,4 +99,3 @@
                 </div>
             </div>
         </section>
-

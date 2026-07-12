@@ -76,7 +76,16 @@ EMBED_MODEL = os.environ.get("OMLX_EMBED_MODEL", os.environ.get("MAGI_OMLX_EMBED
 SOURCE_PREFIX = "legal_insight"
 
 
-def _get_embedding(text: str) -> list:
+def _embedding_is_valid(embedding: object) -> bool:
+    if not isinstance(embedding, list) or not embedding:
+        return False
+    try:
+        return any(abs(float(x)) > 1e-12 for x in embedding)
+    except Exception:
+        return False
+
+
+def _get_embedding(text: str) -> list | None:
     """Get embedding from oMLX."""
     import requests
     try:
@@ -86,10 +95,13 @@ def _get_embedding(text: str) -> list:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()["data"][0]["embedding"]
+        embedding = resp.json()["data"][0]["embedding"]
+        if not _embedding_is_valid(embedding):
+            raise ValueError("embedding service returned empty/zero vector")
+        return embedding
     except Exception as e:
         logger.warning("Embedding failed: %s", e)
-        return [0.0] * 768
+        return None
 
 
 def _get_embeddings_batch(texts: list) -> list:
@@ -157,10 +169,10 @@ def sync(dry_run: bool = False, quiet: bool = False):
     local_conn = mysql.connector.connect(**LOCAL_DB)
     local_cur = local_conn.cursor()
 
-    # Get existing hashes from magi_brain for insight sources
+    # Get existing hashes from magi_brain across all sources so manual
+    # insights do not duplicate already-indexed knowledge.
     local_cur.execute(
-        "SELECT MD5(content) FROM documents WHERE source LIKE %s",
-        (f"{SOURCE_PREFIX}%",)
+        "SELECT MD5(content) FROM documents"
     )
     existing_hashes = {row[0] for row in local_cur.fetchall()}
 
@@ -203,7 +215,12 @@ def sync(dry_run: bool = False, quiet: bool = False):
     embeddings = _get_embeddings_batch(texts)
 
     inserted = 0
+    skipped_embedding = 0
     for i, ((ins, content), emb) in enumerate(zip(new_insights, embeddings)):
+        if not _embedding_is_valid(emb):
+            skipped_embedding += 1
+            logger.warning("Skipping insight %s: embedding unavailable", ins.get("id"))
+            continue
         source = f"{SOURCE_PREFIX}|id={ins['id']}|reason={ins.get('case_reason', '')[:30]}"[:250]
         try:
             local_cur.execute(
@@ -215,11 +232,12 @@ def sync(dry_run: bool = False, quiet: bool = False):
                 "INSERT INTO vectors (doc_id, embedding) VALUES (%s, %s)",
                 (doc_id, json.dumps(emb)),
             )
+            local_conn.commit()
             inserted += 1
         except Exception as e:
             logger.warning("Insert failed for insight %d: %s", ins["id"], e)
+            local_conn.rollback()
 
-    local_conn.commit()
     local_cur.close()
     local_conn.close()
 
@@ -248,6 +266,7 @@ def sync(dry_run: bool = False, quiet: bool = False):
                 "candidates": len(insights),
                 "new": len(new_insights),
                 "inserted": inserted,
+                "skipped_embedding": skipped_embedding,
                 "dedup_flagged": dedup_flagged,
                 "dedup_pool_size": len(dedup_pool),
                 "elapsed_sec": round(time.time() - t0, 2),
@@ -256,13 +275,19 @@ def sync(dry_run: bool = False, quiet: bool = False):
         pass
 
     elapsed = time.time() - t0
+    if skipped_embedding:
+        raise RuntimeError(f"embedding_failed:{skipped_embedding}/{len(new_insights)}")
     if not quiet:
         print(f"\n✅ 同步完成！寫入 {inserted} / {len(new_insights)} 筆")
+        if skipped_embedding:
+            print(f"   ⚠️  embedding 失敗略過 {skipped_embedding} 筆（未寫入零向量）")
         if dedup_flagged:
             print(f"   ⚠️  標記 {dedup_flagged} 筆疑似重複見解（近 {dedup_window_days} 天）")
         print(f"   耗時: {elapsed:.1f} 秒")
     else:
         parts = [f"insight_sync: {inserted} new vectors"]
+        if skipped_embedding:
+            parts.append(f"{skipped_embedding} embedding skipped")
         if dedup_flagged:
             parts.append(f"{dedup_flagged} dupes flagged")
         parts.append(f"({elapsed:.1f}s)")

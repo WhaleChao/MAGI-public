@@ -35,7 +35,6 @@ function bindTabs() {
             };
 
             if (tabId === "dashboard") _withLoading("載入業務概覽...", loadDashboard);
-            if (tabId === "magiModules") renderCaseMagiActions(activeCaseMagiModuleKey());
             if (tabId === "cases") _withLoading("載入案件...", loadCases);
             if (tabId === "laf") _withLoading("載入法扶清單...", loadLaf);
             if (tabId === "clients") _withLoading("載入當事人...", loadClients);
@@ -43,7 +42,7 @@ function bindTabs() {
             if (tabId === "calendar") _withLoading("載入行事曆...", loadCalendarEvents);
             if (tabId === "todos") _withLoading("載入待辦事項...", loadTodos);
             if (tabId === "documents") {
-                _withLoading("載入書狀索引...", loadDocuments);
+                _withLoading("載入文件總索引...", loadDocuments);
                 loadDocumentTemplates();
                 loadDocumentKeywords();
                 loadDocumentReplacements();
@@ -56,14 +55,14 @@ function bindTabs() {
                     if (status) {
                         status.hidden = false;
                         status.className = "status-banner";
-                        status.textContent = "請從案件資料夾或書狀索引帶入 PDF，或直接貼上 PDF 路徑。";
+                        status.textContent = "請從案件資料夾或文件總索引帶入 PDF，或直接貼上 PDF 路徑。";
                     }
                 }
             }
             if (tabId === "drafts") _withLoading("載入書狀草擬...", loadDraftComposer);
+            if (tabId === "documentReuse") _withLoading("載入沿用舊書狀...", loadDocumentReuse);
             if (tabId === "forms") {
-                const now = new Date();
-                const d = now.toISOString().slice(0, 10);
+                const d = fmtDate(new Date());
                 if (!document.getElementById("formDate").value) document.getElementById("formDate").value = d;
                 syncFormTypeFields();
             }
@@ -88,6 +87,9 @@ function bindTabs() {
                 loadQuotationTemplates();
             }
             if (tabId === "insights") _withLoading("載入實務見解...", loadInsights);
+            if (tabId === "raziel" && typeof initRazielControls === "function") {
+                _withLoading("載入判決捕捉與分類...", () => initRazielControls({ autoload: true }));
+            }
             if (tabId === "admin") {
                 _withLoading("載入系統設定...", loadAdminData);
                 loadDiscordWebhook();
@@ -127,10 +129,19 @@ async function jumpToPaperclipTabAndRun(tabId, fn) {
 
 async function dispatchDelegatedAction(act, t) {
     const id = t.dataset.id;
+    if (act === "case-card-modal-close") {
+        if (typeof closeCaseCardModal === "function") {
+            closeCaseCardModal();
+        } else {
+            document.getElementById("caseCardModal")?.remove();
+            document.body.classList.remove("case-card-modal-open");
+        }
+        return;
+    }
     if (act === "case-edit") return await editCase(id);
     if (act === "case-del") return await delCase(id);
-    if (act === "case-open") return await openCaseFolder(id);
-    if (act === "case-open-fm") return await openCaseFolder(id);
+    if (act === "case-open") return await openCaseInFileManager(id);
+    if (act === "case-open-fm") return await openCaseInFileManager(id);
     if (act === "case-workbench") return await openCaseWorkbench(id);
     if (act === "case-close") return await closeCase(id);
     if (act === "case-doc-finalize") return await openCaseDocumentFinalizer(id);
@@ -228,6 +239,8 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "doc-kw-del") return await delDocumentKeyword(Number(id));
     if (act === "doc-rp-del") return await delDocumentReplacement(Number(id));
     if (act === "draft-doc-toggle") return toggleDraftDocument(id);
+    if (act === "document-reuse-select") return selectDocumentReuseDocument(id);
+    if (act === "document-reuse-clear") return clearDocumentReuseSelection();
     if (act === "draft-insight-toggle") return toggleDraftInsight(id);
 
     if (act === "tx-edit") return await editTransaction(Number(id));
@@ -246,6 +259,7 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "insight-toggle") return await toggleInsight(id);
     if (act === "insight-copy") return await copyInsight(id);
     if (act === "insight-fetch") return await fetchInsightFullById(id);
+    if (act === "insight-source") return await openInsightSource(id);
 
     if (act === "admin-setting-edit") return await editAdminSetting(t.dataset.key || "");
     if (act === "admin-setting-del") return await delAdminSetting(t.dataset.key || "");
@@ -263,21 +277,27 @@ async function dispatchDelegatedAction(act, t) {
     if (act === "admin-opponent-del") return await delAdminOpponent(Number(id));
     if (act === "admin-pdf-log-del") return await delAdminPdfLog(Number(id));
     if (act === "admin-activity-del") return await delAdminActivityLog(Number(id));
+    if (act === "admin-drive-exclusion-del") return await removeAdminDriveExclusion(t.dataset.path || "");
 
     // P3: Backup / Restore
     if (act === "osc-backup-dry-run") return await restoreOscBackup(t.dataset.filename || "", true);
     if (act === "osc-backup-restore") return await restoreOscBackup(t.dataset.filename || "", false);
     if (act === "osc-backup-del") return await delOscBackup(t.dataset.filename || "");
 
-    if (act === "wb-case-open") return await openCaseFolder(id);
+    if (act === "wb-case-open") return await openCaseInFileManager(id);
     if (act === "wb-case-open-host") return await openCaseFolderHost(id);
     if (act === "wb-case-workbench") return await openCaseWorkbench(id);
     if (act === "wb-case-save") return await saveWorkbenchCase();
     if (act === "wb-case-create-folder") return await createCaseFolder(id);
+    if (act === "wb-case-rename-folder") return await renameWorkbenchCaseFolder(id);
     if (act === "wb-case-close") return await closeCase(id);
     if (act === "wb-case-action") return await wbQuickAction(t.dataset.action || "");
     if (act === "wb-folder-open") return await openCaseFolder(id, t.dataset.path || "");
+    if (act === "wb-folder-mkdir") return await createWorkbenchFolder(id, t.dataset.folderPath || "", t.dataset.path || "");
+    if (act === "wb-folder-rename") return await renameWorkbenchFolder(id, t.dataset.folderPath || "", t.dataset.path || "", t.dataset.currentPath || "", t.dataset.name || "");
     if (act === "wb-folder-upload") return promptFolderUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
+    if (act === "wb-folder-upload-dir") return promptDirectoryUpload(id, t.dataset.folderPath || "", t.dataset.path || "");
+    if (act === "wb-folder-trash") return await trashWorkbenchEntry(id, t.dataset.folderPath || "", t.dataset.path || "", t.dataset.currentPath || "", t.dataset.name || "", t.dataset.kind || "");
     if (act === "wb-folder-copy-path") return await copyText(t.dataset.path || "", "路徑已複製。");
     if (act === "wb-file-share") return await shareFileLink(t.dataset.path || "", t.dataset.name || "檔案");
     if (act === "wb-file-edit") return await openTextFileEditor(id, t.dataset.path || "", t.dataset.returnPath || "");
@@ -318,7 +338,7 @@ function bindGlobalDelegates() {
             const caseId = caseRow.dataset.caseId;
             if (caseId) {
                 try {
-                    await openCaseFolder(caseId);
+                    await openCaseInFileManager(caseId);
                     showToast("已送出案件資料夾開啟動作。", "ok");
                 } catch (err) {
                     showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
@@ -332,22 +352,25 @@ function bindGlobalDelegates() {
         if (th) {
             const col = th.dataset.sort;
             const type = th.dataset.type || "string";
-            if (state.sort.col === col) {
-                state.sort.dir = state.sort.dir === 1 ? -1 : 1;
+            const viewId = th.closest(".view")?.id || th.closest(".modal")?.id || "";
+            const activeSort = viewId === "cases" ? (state.caseSort || { col: "case_number", dir: -1, type: "string" }) : state.sort;
+            if (activeSort.col === col) {
+                activeSort.dir = activeSort.dir === 1 ? -1 : 1;
             } else {
-                state.sort.col = col;
-                state.sort.dir = 1;
-                state.sort.type = type;
+                activeSort.col = col;
+                activeSort.dir = 1;
+                activeSort.type = type;
             }
+            if (viewId === "cases") state.caseSort = activeSort;
+            else state.sort = activeSort;
 
             // Sync sort bar dropdown if present
-            const viewId = th.closest(".view")?.id || th.closest(".modal")?.id || "";
             const syncMap = { cases:'caseSortCol', clients:'clientSortCol', meetings:'meetingSortCol', accounting:'txSortCol', insights:'insightSortCol', todos:'todoSortCol' };
             const dirMap = { cases:'caseSortDir', clients:'clientSortDir', meetings:'meetingSortDir', accounting:'txSortDir', insights:'insightSortDir', todos:'todoSortDir' };
             const selEl = document.getElementById(syncMap[viewId]);
             if (selEl) selEl.value = col;
             const dirEl = document.getElementById(dirMap[viewId]);
-            if (dirEl) dirEl.textContent = state.sort.dir === 1 ? '▲' : '▼';
+            if (dirEl) dirEl.textContent = activeSort.dir === 1 ? '▲' : '▼';
 
             if (viewId === "laf") {
                 state.lafSort = { col, dir: state.sort.dir, type };
@@ -440,8 +463,12 @@ function bindEvents() {
         ["accountingSearchBtn", loadTransactions, "帳務搜尋"],
         ["accountingRefreshBtn", loadTransactions, "帳務重新整理"],
         ["accountingPeriodBtn", applyAccountingPeriod, "帳務區間套用"],
+        ["accountingDownloadXlsxBtn", downloadAccountingTransactionsXlsx, "帳務 Excel 下載"],
         ["accountingImportPreviewBtn", previewAccountingImport, "帳務匯入預覽"],
         ["accountingImportRunBtn", runAccountingImport, "帳務匯入"],
+        ["accountingBonusPreviewBtn", previewAccountingBonus, "月結獎金預覽"],
+        ["accountingBonusRunBtn", runAccountingBonus, "月結獎金登載"],
+        ["accountingBonusDownloadBtn", downloadAccountingBonusXlsx, "月結獎金 XLSX 下載"],
         ["txSaveBtn", saveTransaction, "帳務儲存"],
         ["txDefSearchBtn", loadExpenseDefaults, "預設帳務搜尋"],
         ["txDefRefreshBtn", loadExpenseDefaults, "預設帳務重新整理"],
@@ -469,12 +496,15 @@ function bindEvents() {
         ["adminSettingsRefreshBtn", loadAdminSettings, "系統設定重新整理"],
         ["adminSettingSaveBtn", saveAdminSetting, "系統設定儲存"],
         ["discordWebhookSaveBtn", saveDiscordWebhook, "Discord 設定儲存"],
-        ["discordWebhookTestBtn", testDiscordWebhook, "Discord Test 推播"],
+        ["discordWebhookTestBtn", testDiscordWebhook, "通知測試推播"],
         ["gcalSaveCredsBtn", saveGcalCreds, "GCal 憑證儲存"],
         ["gcalConnectBtn", connectGcal, "GCal 連線授權"],
-        ["gcalSyncDryRunBtn", () => syncGcal(true), "GCal Dry-run 同步"],
+        ["gcalSyncDryRunBtn", () => syncGcal(true), "Google 日曆同步預覽"],
         ["gcalSyncBtn", () => syncGcal(false), "GCal 立即同步"],
         ["gcalDisconnectBtn", disconnectGcal, "GCal 解除授權"],
+        ["adminLiveValidationRunBtn", loadAdminLiveValidation, "Live 驗證"],
+        ["adminDriveExclusionsRefreshBtn", loadAdminDriveExclusions, "排除清單重新整理"],
+        ["adminDriveExclusionAddBtn", addAdminDriveExclusion, "新增 Drive/NAS 排除"],
         ["oscBackupCreateBtn", createOscBackup, "立即備份"],
         ["oscBackupRefreshBtn", loadOscBackups, "備份列表重新整理"],
         ["adminReasonSearchBtn", loadAdminCaseReasons, "案由模板搜尋"],
@@ -527,12 +557,12 @@ function bindEvents() {
         btn.addEventListener("click", () => setCaseStatusScope(btn.dataset.scope || "working"));
     });
 
-    // Cases CSV
+    // Cases import/export
     const casesImportBtn = document.getElementById("casesImportCsvBtn");
-    const casesExportBtn = document.getElementById("casesExportCsvBtn");
+    const casesExportBtn = document.getElementById("casesExportXlsxBtn") || document.getElementById("casesExportCsvBtn");
     const casesFileInput = document.getElementById("casesImportCsvFile");
     if (casesImportBtn) casesImportBtn.addEventListener("click", importCasesCsv);
-    if (casesExportBtn) casesExportBtn.addEventListener("click", exportCasesCsv);
+    if (casesExportBtn) casesExportBtn.addEventListener("click", exportCasesXlsx);
     if (casesFileInput) casesFileInput.addEventListener("change", e => handleCasesCsvUpload(e.target.files[0]));
 
     // Clients CSV
@@ -558,8 +588,16 @@ function bindEvents() {
     if (caseClAddBtn)  caseClAddBtn.addEventListener("click", addCaseChecklistItem);
 
     document.getElementById("clientResetBtn").addEventListener("click", () => clearFields(["client_id", "client_name", "client_contact_person", "client_phone", "client_email", "client_address", "client_tax_id", "client_notes", "client_status"]));
-    document.getElementById("meetingResetBtn").addEventListener("click", () => clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]));
-    document.getElementById("calResetBtn").addEventListener("click", () => clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]));
+    document.getElementById("meetingResetBtn").addEventListener("click", () => {
+        clearFields(["meeting_id", "meeting_case_number", "meeting_client_name", "meeting_type", "meeting_datetime", "meeting_duration", "meeting_location", "meeting_notes", "meeting_status"]);
+        const status = document.getElementById("meeting_status");
+        if (status) status.value = "scheduled";
+    });
+    document.getElementById("calResetBtn").addEventListener("click", () => {
+        clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]);
+        const allDay = document.getElementById("cal_is_all_day");
+        if (allDay) allDay.value = "0";
+    });
     document.getElementById("todoResetBtn").addEventListener("click", () => clearFields(["todo_id", "todo_case_number", "todo_client_name", "todo_type", "todo_date", "todo_time", "todo_desc", "todo_status", "todo_source_file"]));
     document.getElementById("docsKind").addEventListener("change", () => runBusyAction("docsSearchBtn", loadDocuments, { actionLabel: "檔案搜尋" }));
 
@@ -572,6 +610,11 @@ function bindEvents() {
         renderDraftDocuments();
         setDraftStatus("已清除參考書狀選取。");
     });
+    document.getElementById("reuseCaseSearchBtn").addEventListener("click", () => searchDocumentReuseCases().catch(reportDocumentReuseError));
+    document.getElementById("reuseCaseLoadBtn").addEventListener("click", () => loadDocumentReuseSelectedCase().catch(reportDocumentReuseError));
+    document.getElementById("reuseSearchBtn").addEventListener("click", () => loadDocumentReuseDocuments().catch(reportDocumentReuseError));
+    document.getElementById("reuseRunBtn").addEventListener("click", () => reuseDocumentReuseDocument().catch(reportDocumentReuseError));
+    document.getElementById("reuseClearBtn").addEventListener("click", clearDocumentReuseSelection);
     document.getElementById("draftInsightsSearchBtn").addEventListener("click", () => loadDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsAutoBtn").addEventListener("click", () => autoDraftInsights().catch(reportDraftError));
     document.getElementById("draftInsightsClearBtn").addEventListener("click", () => {
@@ -594,13 +637,41 @@ function bindEvents() {
             document.getElementById("draftSuggestedName").value = `${docType}_${caseNo}`;
         }
     });
+    const reuseDocType = document.getElementById("reuseDocType");
+    reuseDocType.addEventListener("input", () => {
+        if (!(document.getElementById("reuseSuggestedName").value || "").trim()) {
+            const docType = (reuseDocType.value || "沿用書狀").trim();
+            const caseNo = (document.getElementById("reuseCaseNumber").value || "未命名").trim();
+            document.getElementById("reuseSuggestedName").value = `${docType}_${caseNo}`;
+        }
+        syncDocumentReuseDocNameSearch();
+    });
+    reuseDocType.addEventListener("change", () => syncDocumentReuseDocNameSearch({ immediate: true }));
+    const reuseQ = document.getElementById("reuseQ");
+    if (reuseQ) reuseQ.addEventListener("input", () => { reuseQ.dataset.autoFromDocName = "0"; });
+    const reuseCaseNumber = document.getElementById("reuseCaseNumber");
+    if (reuseCaseNumber) reuseCaseNumber.addEventListener("input", () => {
+        updateDocumentReuseSuggestedNameFromFields();
+        renderDocumentReusePreview();
+    });
+    const reuseSuggestedName = document.getElementById("reuseSuggestedName");
+    if (reuseSuggestedName) reuseSuggestedName.addEventListener("input", () => {
+        reuseSuggestedName.dataset.autoFromDocName = "0";
+        renderDocumentReusePreview();
+    });
+    ["reuseDivision", "reuseCourtName", "reuseReason", "reusePlaintiff", "reuseDefendant"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("input", renderDocumentReusePreview);
+    });
     bindEnterSubmit(["draftCaseSearch"], "draftCaseSearchBtn", searchDraftCases, { actionLabel: "案件搜尋", onError: reportDraftError });
     bindEnterSubmit(["draftDocsQ", "draftDocsCaseFilter"], "draftDocsSearchBtn", loadDraftDocuments, { actionLabel: "書狀搜尋", onError: reportDraftError });
+    bindEnterSubmit(["reuseCaseSearch"], "reuseCaseSearchBtn", searchDocumentReuseCases, { actionLabel: "沿用案件搜尋", onError: reportDocumentReuseError });
+    bindEnterSubmit(["reuseQ", "reuseCaseFilter"], "reuseSearchBtn", loadDocumentReuseDocuments, { actionLabel: "沿用來源搜尋", onError: reportDocumentReuseError });
     bindEnterSubmit(["draftInsightsQ", "draftInsightsCaseFilter", "draftInsightsReasonFilter"], "draftInsightsSearchBtn", loadDraftInsights, { actionLabel: "見解搜尋", onError: reportDraftError });
     document.getElementById("draftResult").addEventListener("input", updateDraftCharCount);
 
-    document.getElementById("formPreviewBtn").addEventListener("click", () => withBusy("formPreviewBtn", "預覽中...", previewForm).catch(e => alert(`預覽失敗：${e.message}`)));
-    document.getElementById("formExportBtn").addEventListener("click", () => withBusy("formExportBtn", "匯出中...", exportForm).catch(e => alert(`匯出失敗：${e.message}`)));
+    document.getElementById("formPreviewBtn").addEventListener("click", () => withBusy("formPreviewBtn", "預覽中...", previewForm).catch(e => showAlert("MAGI說", `預覽失敗：${e.message}`)));
+    document.getElementById("formExportBtn").addEventListener("click", () => withBusy("formExportBtn", "匯出中...", exportForm).catch(e => showAlert("MAGI說", `匯出失敗：${e.message}`)));
     document.getElementById("formType").addEventListener("change", syncFormTypeFields);
     document.getElementById("docTplResetBtn").addEventListener("click", () => {
         ["docTplId", "docTplType", "docTplParty", "docTplCase", "docTplDivision", "docTplUseCount", "docTplData"].forEach(x => {
@@ -611,8 +682,15 @@ function bindEvents() {
         ["docKwId", "docKwCase", "docKwName", "docKwCategory", "docKwHotkey", "docKwCaseSpecific", "docKwUsageCount", "docKwContent"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
+        const spec = document.getElementById("docKwCaseSpecific");
+        if (spec) spec.value = "0";
     });
     document.getElementById("txResetBtn").addEventListener("click", () => clearFields(["tx_id", "tx_case_id", "tx_date", "tx_type", "tx_sub_type", "tx_category", "tx_amount", "tx_description"]));
+    document.querySelectorAll("[data-tx-preset]").forEach(btn => {
+        if (btn._txPresetBound) return;
+        btn._txPresetBound = true;
+        btn.addEventListener("click", () => setTransactionPreset(btn.dataset.txPreset || ""));
+    });
     document.getElementById("txDefResetBtn").addEventListener("click", () => {
         ["txDefId", "txDefCategory", "txDefAmount", "txDefDescription"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
@@ -622,6 +700,8 @@ function bindEvents() {
         ["txRecurringId", "txRecurringCategory", "txRecurringSubType", "txRecurringDescription", "txRecurringAmount", "txRecurringDay", "txRecurringStartDate", "txRecurringEndDate", "txRecurringActive", "txRecurringLastMonth"].forEach(x => {
             const el = document.getElementById(x); if (el) el.value = "";
         });
+        const active = document.getElementById("txRecurringActive");
+        if (active) active.value = "1";
     });
     document.getElementById("txRecurringOnlyActive").addEventListener("change", () => runBusyAction("txRecurringSearchBtn", loadRecurringExpenses, { actionLabel: "固定支出搜尋" }));
     document.addEventListener("change", e => {
@@ -679,20 +759,37 @@ function bindEvents() {
         });
     }
     document.getElementById("adminSettingResetBtn").addEventListener("click", () => clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]));
-    document.getElementById("adminReasonResetBtn").addEventListener("click", () => clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]));
+    document.getElementById("adminReasonResetBtn").addEventListener("click", () => {
+        clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]);
+        const common = document.getElementById("adminReasonCommon");
+        if (common) common.value = "1";
+    });
     document.getElementById("adminCourtResetBtn").addEventListener("click", () => clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]));
     document.getElementById("adminBranchResetBtn").addEventListener("click", () => clearFields(["adminBranchId", "adminBranchName", "adminBranchAddress"]));
     document.getElementById("adminUserSettingResetBtn").addEventListener("click", () => clearFields(["adminUserSettingId", "adminUserSettingHost", "adminUserSettingKey", "adminUserSettingValue"]));
     document.getElementById("adminMemoryKeywordResetBtn").addEventListener("click", () => clearFields(["adminMemoryCaseNumber", "adminMemoryHotkey", "adminMemoryName", "adminMemoryValue"]));
-    document.getElementById("adminOpponentResetBtn").addEventListener("click", () => clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]));
+    document.getElementById("adminOpponentResetBtn").addEventListener("click", () => {
+        clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]);
+        const active = document.getElementById("adminOpponentActive");
+        if (active) active.value = "1";
+    });
 
     document.getElementById("wbCloseBtn").addEventListener("click", wbClose);
     const wbFolderUploadInput = document.getElementById("wbFolderUploadInput");
     if (wbFolderUploadInput) {
         wbFolderUploadInput.addEventListener("change", async (e) => {
-            const file = e.target.files && e.target.files[0];
-            if (!file) return;
-            await handleFolderUpload(file);
+            const files = e.target.files ? Array.from(e.target.files) : [];
+            if (!files.length) return;
+            await handleFolderUploadFiles(files);
+            e.target.value = "";
+        });
+    }
+    const wbDirectoryUploadInput = document.getElementById("wbDirectoryUploadInput");
+    if (wbDirectoryUploadInput) {
+        wbDirectoryUploadInput.addEventListener("change", async (e) => {
+            const files = e.target.files ? Array.from(e.target.files) : [];
+            if (!files.length) return;
+            await handleFolderUploadFiles(files);
             e.target.value = "";
         });
     }
@@ -753,7 +850,32 @@ function initSortBars() {
             renderFn();
         });
     }
-    wire('caseSortCol', 'caseSortDir', renderCases, 'string');
+    function wireCaseSort(selectId, dirBtnId) {
+        const sel = document.getElementById(selectId);
+        const btn = document.getElementById(dirBtnId);
+        if (!sel || !btn) return;
+        sel.value = state.caseSort?.col || 'case_number';
+        btn.textContent = (state.caseSort?.dir || -1) === 1 ? '▲' : '▼';
+        sel.addEventListener('change', () => {
+            const opt = sel.selectedOptions[0];
+            state.caseSort = {
+                col: sel.value || 'case_number',
+                dir: state.caseSort?.dir || -1,
+                type: opt?.dataset?.type || 'string',
+            };
+            renderCases();
+        });
+        btn.addEventListener('click', () => {
+            state.caseSort = {
+                col: state.caseSort?.col || 'case_number',
+                dir: (state.caseSort?.dir || -1) === 1 ? -1 : 1,
+                type: state.caseSort?.type || 'string',
+            };
+            btn.textContent = state.caseSort.dir === 1 ? '▲' : '▼';
+            renderCases();
+        });
+    }
+    wireCaseSort('caseSortCol', 'caseSortDir');
     wire('todoSortCol', 'todoSortDir', renderTodos, 'string');
     wire('clientSortCol', 'clientSortDir', renderClients, 'string');
     wire('meetingSortCol', 'meetingSortDir', renderMeetings, 'string');
@@ -762,6 +884,26 @@ function initSortBars() {
 }
 
 // ── Global search ──
+function runGlobalCaseSearch(rawQuery) {
+    const q = (rawQuery || '').trim();
+    if (!q) return;
+
+    const casesQ = document.getElementById('casesQ');
+    if (casesQ) {
+        casesQ.value = q;
+        casesQ.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
+    if (casesTab) casesTab.click();
+
+    window.setTimeout(() => {
+        if (typeof loadCases === 'function') {
+            Promise.resolve(loadCases()).catch(e => console.warn('global case search failed:', e));
+        }
+    }, 80);
+}
+
 function initGlobalSearch() {
     const input = document.getElementById('globalSearchInput');
     if (!input) return;
@@ -771,12 +913,7 @@ function initGlobalSearch() {
         timer = setTimeout(async () => {
             const q = (input.value || '').trim();
             if (!q) return;
-            // Switch to cases tab and search
-            const casesQ = document.getElementById('casesQ');
-            if (casesQ) casesQ.value = q;
-            // Click cases tab
-            const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
-            if (casesTab) casesTab.click();
+            runGlobalCaseSearch(q);
         }, 400);
     });
     input.addEventListener('keydown', e => {
@@ -784,10 +921,7 @@ function initGlobalSearch() {
             e.preventDefault();
             const q = (input.value || '').trim();
             if (!q) return;
-            const casesQ = document.getElementById('casesQ');
-            if (casesQ) casesQ.value = q;
-            const casesTab = document.querySelector('.tab-btn[data-tab="cases"]');
-            if (casesTab) casesTab.click();
+            runGlobalCaseSearch(q);
         }
     });
 }
@@ -830,12 +964,12 @@ async function boot() {
             loadMeta().catch((e) => {
                 console.error("loadMeta failed:", e);
                 const dbBadge = document.getElementById("dbBadge");
-                if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+                if (dbBadge) dbBadge.textContent = `資料庫：連線失敗 (${e.message || e})`;
             });
         } catch (e) {
             console.error("loadMeta sync error:", e);
             const dbBadge = document.getElementById("dbBadge");
-            if (dbBadge) dbBadge.textContent = `DB: 連線失敗 (${e.message || e})`;
+            if (dbBadge) dbBadge.textContent = `資料庫：連線失敗 (${e.message || e})`;
         }
     };
     _safeLoadMeta();

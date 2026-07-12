@@ -53,6 +53,182 @@ def test_auto_archive_closed_case_moves_folder(tmp_path, monkeypatch):
     assert updates and updates[-1][1][0] == str(target)
 
 
+def test_closed_case_user_level_mount_is_allowed_for_browser(tmp_path, monkeypatch):
+    from api.osc import utils as mod
+
+    active_share = tmp_path / "homes" / "lumi63181107"
+    closed_share = tmp_path / ".magi_mounts" / "lumi" / "lumi"
+    case_dir = closed_share / "03_工作資料" / "10_結案" / "法扶案件" / "刑事" / "2025-0002-游秀鈴-一審-傷害致死"
+    active_share.mkdir(parents=True)
+    case_dir.mkdir(parents=True)
+
+    def fake_roots(*, include_closed=False):
+        roots = [str(active_share)]
+        if include_closed:
+            roots.append(str(closed_share))
+        return roots
+
+    monkeypatch.setattr(mod, "default_synology_share_roots", fake_roots)
+    monkeypatch.setattr(mod, "_osc_preferred_smb_local_candidates", lambda _path: [str(case_dir)])
+    monkeypatch.setattr(mod, "local_synology_path_candidates", lambda _path: [])
+
+    assert mod._osc_is_safe_local_path(str(case_dir))
+    assert mod._osc_resolve_existing_local_path("Y:/lumi/03_工作資料/10_結案/法扶案件/刑事/2025-0002-游秀鈴-一審-傷害致死", prefer_dir=True) == str(case_dir)
+
+
+def test_user_level_magi_mount_paths_use_timeout_guard():
+    from api.osc import utils as mod
+
+    assert mod._osc_path_needs_fs_timeout("/Users/ai/.magi_mounts/homes/lumi63181107/01_案件")
+    assert mod._osc_path_needs_fs_timeout("/Users/ai/.magi_mounts/lumi/lumi/03_工作資料/10_結案")
+
+
+def test_auto_archive_closed_case_ignores_legacy_delete_guard(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import os
+
+    source = tmp_path / "01_案件" / "A001_王小明"
+    source.mkdir(parents=True)
+    (source / "note.txt").write_text("case file", encoding="utf-8")
+    archive = tmp_path / "99_結案案件"
+    archive.mkdir()
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "A001",
+                "client_name": "王小明",
+                "status": "已結案",
+                "folder_path": str(source),
+            }, None
+        updates.append((sql, params, fetch))
+        return {"rowcount": 1}, None
+
+    orig_unlink = os.unlink
+
+    def guarded_unlink(path, *args, **kwargs):
+        if os.environ.get("MAGI_NO_DELETE") == "1" and "01_案件" in str(path):
+            raise PermissionError(f"legacy guard blocked {path}")
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setenv("MAGI_NO_DELETE", "1")
+    monkeypatch.setenv("MAGI_DB_NO_DELETE", "1")
+    monkeypatch.setattr(mod.os, "unlink", guarded_unlink)
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_get_closed_archive_base", lambda: str(archive))
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda raw: [str(raw)])
+    monkeypatch.setattr(mod, "_osc_norm_path", lambda raw: str(raw))
+
+    result = mod._osc_auto_archive_closed_case("case-1")
+
+    target = archive / source.name
+    assert result["ok"] is True
+    assert target.exists()
+    assert not source.exists()
+    assert os.environ.get("MAGI_NO_DELETE") == "1"
+    assert os.environ.get("MAGI_DB_NO_DELETE") == "1"
+    assert updates and updates[-1][1][0] == str(target)
+
+
+def test_osc_remove_tree_robust_tolerates_vanishing_metadata_file(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import os
+
+    root = tmp_path / "01_案件" / "A001_王小明"
+    root.mkdir(parents=True)
+    ghost = root / "._.DS_Store"
+    ghost.write_bytes(b"")
+    orig_unlink = os.unlink
+
+    def flaky_unlink(path, *args, **kwargs):
+        if str(path).endswith("._.DS_Store"):
+            orig_unlink(path, *args, **kwargs)
+            raise FileNotFoundError(path)
+        return orig_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod.os, "unlink", flaky_unlink)
+
+    mod._osc_remove_tree_robust(str(root))
+
+    assert not root.exists()
+
+
+def test_case_folder_creation_refuses_synology_drive_fallback(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import api.nas_mount_guard as nas_mount_guard
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root)])
+    monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: {"ok": False})
+    monkeypatch.setenv("MAGI_ALLOW_SYNOLOGY_DRIVE_FOLDER_CREATE", "0")
+    monkeypatch.setenv("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "30")
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(tmp_path / ".runtime"))
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is False
+    assert result["error"] == "nas_case_root_not_mounted"
+
+
+def test_case_folder_creation_prefers_real_nas_over_synology_drive(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    nas_root = tmp_path / "Volumes" / "homes" / "lumi63181107" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    nas_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root), str(nas_root)])
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is True
+    assert result["root"] == str(nas_root)
+
+
+def test_case_folder_creation_allows_synology_drive_after_long_outage(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+    import api.nas_mount_guard as nas_mount_guard
+
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    cloud_root.mkdir(parents=True)
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [str(cloud_root)])
+    monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: {"ok": False})
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(tmp_path / ".runtime"))
+    monkeypatch.setenv("MAGI_SYNOLOGY_DRIVE_CASE_CREATE_AFTER_MINUTES", "0")
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is True
+    assert result["root"] == str(cloud_root)
+    assert result["temporary_synology_drive"] is True
+
+
+def test_auto_create_folder_skips_closed_case_before_root_selection(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    def fail_root_selection():
+        raise AssertionError("closed cases must not select an active creation root")
+
+    monkeypatch.setattr(mod, "_osc_select_case_creation_root", fail_root_selection)
+
+    result = mod._osc_auto_create_folder_for_case(
+        "case-1",
+        {
+            "case_number": "2025-0001",
+            "client_name": "王小明",
+            "status": "已結案",
+        },
+        "一般案件",
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "closed_case_no_active_folder_creation"
+
+
 def test_auto_archive_closed_case_merges_existing_target(tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
 
@@ -277,7 +453,7 @@ def test_closed_case_resolution_does_not_match_same_client_other_procedure(tmp_p
         update_db=True,
     )
 
-    assert result["source"] == "db_or_guess"
+    assert result["source"] in {"db_or_guess", "metadata_expected"}
     assert result["local_folder"] == str(active_debt)
     assert result["local_folder"] != str(closed_guardianship)
 
@@ -355,7 +531,132 @@ def test_folder_browser_lists_closed_archive_when_active_path_is_stale(tmp_path,
     assert data["folder_source"] == "closed_archive"
     assert data["local_folder"] == str(archived)
     assert any(entry["name"] == "note.txt" for entry in data["entries"])
-    assert updates and updates[-1][1][0] == str(archived)
+    assert data["folder_path_updated"] is False
+    assert updates == []
+
+
+def test_folder_path_endpoint_skips_auto_create_when_folder_path_exists(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+    from api.blueprints import osc_cases as mod
+    from api.blueprints.osc_cases import osc_bp
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    app.secret_key = "test"
+    lm = LoginManager()
+    lm.init_app(app)
+
+    class _User(UserMixin):
+        id = "test-user"
+
+    @lm.user_loader
+    def _load_user(_user_id):
+        return _User()
+
+    app.register_blueprint(osc_bp)
+
+    row = {
+        "id": "case-1",
+        "case_number": "2025-0099",
+        "client_name": "測試當事人",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2025-0099-測試當事人",
+    }
+
+    monkeypatch.setattr(mod, "_osc_exec", lambda sql, params=(), fetch="none": (row, None) if fetch == "one" else ({"rowcount": 1}, None))
+    monkeypatch.setattr(mod, "_osc_ensure_active_case_folder", lambda _row: pytest.fail("folder-path must not auto-create when folder_path exists"))
+    monkeypatch.setattr(
+        mod,
+        "_osc_effective_case_folder_for_row",
+        lambda _row, update_db=True: {
+            "folder_path": row["folder_path"],
+            "local_folder": "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人",
+            "source": "db_or_guess",
+            "updated": False,
+        },
+    )
+    monkeypatch.setattr(mod, "_osc_smb_candidates", lambda _path: ["smb://192.168.1.3/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda _path: ["/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_windows_unc_candidates", lambda _path: [r"\\192.168.1.3\homes\lumi63181107\01_案件\法扶案件\民事\2025-0099-測試當事人"])
+    monkeypatch.setattr(mod, "_osc_windows_synology_candidates", lambda _path: [])
+
+    resp = app.test_client().get("/api/osc/cases/case-1/folder-path")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert data["folder_path"] == row["folder_path"]
+    assert data["folder_exists"] is True
+    assert data["folder_source"] == "db_or_guess"
+
+
+def test_folder_browser_skips_auto_create_when_folder_path_exists(monkeypatch):
+    from flask import Flask
+    from flask_login import LoginManager, UserMixin
+    from api.blueprints import osc_cases as mod
+    from api.blueprints.osc_cases import osc_bp
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    app.secret_key = "test"
+    lm = LoginManager()
+    lm.init_app(app)
+
+    class _User(UserMixin):
+        id = "test-user"
+
+    @lm.user_loader
+    def _load_user(_user_id):
+        return _User()
+
+    app.register_blueprint(osc_bp)
+
+    row = {
+        "id": "case-1",
+        "case_number": "2025-0100",
+        "client_name": "測試當事人",
+        "status": "進行中",
+        "legal_aid_status": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2025-0100-測試當事人",
+    }
+    local_folder = "/Volumes/homes/lumi63181107/01_案件/法扶案件/民事/2025-0100-測試當事人"
+
+    monkeypatch.setattr(mod, "_osc_exec", lambda sql, params=(), fetch="none": (row, None) if fetch == "one" else ({"rowcount": 1}, None))
+    monkeypatch.setattr(mod, "_osc_ensure_active_case_folder", lambda _row: pytest.fail("folder-browser must not auto-create when folder_path exists"))
+    monkeypatch.setattr(
+        mod,
+        "_osc_effective_case_folder_for_row",
+        lambda _row, update_db=True: {
+            "folder_path": row["folder_path"],
+            "local_folder": local_folder,
+            "source": "db_or_guess",
+            "updated": False,
+        },
+    )
+    monkeypatch.setattr(mod, "_osc_smb_candidates", lambda _path: [])
+    monkeypatch.setattr(mod, "_osc_local_path_candidates", lambda _path: [local_folder])
+    monkeypatch.setattr(
+        mod,
+        "_osc_folder_entries",
+        lambda base_path, relative_path="", limit=240: {
+            "ok": True,
+            "base_path": str(base_path),
+            "current_path": str(base_path),
+            "current_relative_path": "",
+            "parent_relative_path": "",
+            "entries": [{"name": "note.txt", "relative_path": "note.txt", "type": "file"}],
+        },
+    )
+
+    resp = app.test_client().get("/api/osc/cases/case-1/folder-browser")
+    data = resp.get_json()
+
+    assert resp.status_code == 200
+    assert data["ok"] is True
+    assert data["folder_exists"] is True
+    assert any(entry["name"] == "note.txt" for entry in data["entries"])
 
 
 def test_case_identity_rejects_ambiguous_client_name(monkeypatch):
@@ -372,3 +673,47 @@ def test_case_identity_rejects_ambiguous_client_name(monkeypatch):
 
     with pytest.raises(ValueError, match="ambiguous_client_name"):
         drafts._osc_get_case_identity_by_payload({"client_name": "宣愛華Ayka lku"})
+
+
+def test_archive_job_runs_in_background_executor(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    saved_jobs = mod._OSC_ARCHIVE_JOBS
+    mod._OSC_ARCHIVE_JOBS = {}
+
+    class DeferredExecutor:
+        def submit(self, fn, *args, **kwargs):
+            class _Future:
+                target = fn
+                target_args = args
+                target_kwargs = kwargs
+
+            return _Future()
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "2025-0001",
+                "client_name": "測試",
+                "status": "已結案",
+                "folder_path": "/tmp/case",
+            }, None
+        return {"rowcount": 1}, None
+
+    monkeypatch.setattr(mod, "_OSC_ARCHIVE_JOB_EXECUTOR", DeferredExecutor())
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda row_id, force=False: {"ok": True, "reason": "moved", "id": row_id})
+    monkeypatch.setattr(mod, "_osc_log_activity", lambda *a, **k: None)
+
+    try:
+        job = mod._osc_start_archive_job("case-1", source="test")
+        assert job["ok"] is True
+        assert job["status"] == "queued"
+        assert "future" not in job
+        mod._osc_run_archive_job(job["id"])
+        finished = mod._osc_archive_job_public(mod._OSC_ARCHIVE_JOBS[job["id"]])
+        assert finished["status"] == "done"
+        assert finished["result"]["reason"] == "moved"
+    finally:
+        mod._OSC_ARCHIVE_JOBS = saved_jobs

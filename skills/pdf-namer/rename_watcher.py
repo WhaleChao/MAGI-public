@@ -49,6 +49,24 @@ def _init_case_roots() -> list:
     ]
 
 CASE_ROOTS = _init_case_roots()
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+
+
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
 
 # PDF 命名格式
 DATE_PREFIX_RE = re.compile(r"^(20\d{6})\s")
@@ -149,7 +167,9 @@ def scan_pdfs(case_root: str) -> Dict[int, dict]:
     """掃描所有 PDF，建立 inode → 檔案資訊 的對照表"""
     result = {}
     for root, dirs, files in os.walk(case_root):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not _is_synthetic_case_path(os.path.join(root, d))]
+        if _is_synthetic_case_path(root):
+            continue
         subfolder = os.path.basename(root)
         if subfolder in _SKIP_SUBFOLDERS or "閱卷" in subfolder or "筆錄" in subfolder:
             continue

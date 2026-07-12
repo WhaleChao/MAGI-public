@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ _PROTECTED_PATHS = {
     Path.home() / ".omlx" / "models-vision",
     Path.home() / ".omlx" / "training",
     Path.home() / ".cache" / "judgment_collector",
+    Path.home() / "Library" / "Caches" / "ms-playwright",
     MAGI_ROOT / "_db_backups",
     MAGI_ROOT / ".runtime" / "db_backups",
 }
@@ -52,6 +54,16 @@ _PRESERVED_STANDALONE_SUFFIXES = {
     ".sqlite",
     ".sqlite3",
 }
+
+_OMLX_EXTERNAL_CACHE_ROOT = Path(
+    os.environ.get("MAGI_OMLX_PAGED_CACHE_ROOT", str(Path.home() / ".omlx" / "paged-cache"))
+)
+_OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_OMLX_EXTERNAL_CACHE_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+_OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC = float(
+    os.environ.get("MAGI_DISK_OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC", "3")
+)
 
 # 退役 root：整包移除。要暫停可設 MAGI_KEEP_RETIRED_OLLAMA=1。
 _RETIRED_ROOT_TARGETS = [
@@ -152,6 +164,45 @@ _TARGETS = [
 ]
 
 
+def _external_omlx_cache_targets() -> list[dict]:
+    """Return rebuildable oMLX paged-cache dirs that were offloaded to SSD."""
+    if not _OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE:
+        return []
+    code = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+items = [root / "cache", *sorted(root.glob("cache-*"))]
+for item in items:
+    if item.is_dir():
+        print(item)
+"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code, str(_OMLX_EXTERNAL_CACHE_ROOT)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=max(0.5, _OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    except Exception:
+        return []
+    targets: list[dict] = []
+    for line in proc.stdout.splitlines():
+        root = Path(line.strip())
+        if not str(root):
+            continue
+        targets.append({
+            "path": root,
+            "atime_days": 7,
+            "label": f"external_{root.name}",
+        })
+    return targets
+
+
 def _is_protected(p: Path) -> bool:
     p = p.resolve() if p.exists() else p
     for prot in _PROTECTED_PATHS:
@@ -215,12 +266,18 @@ def cleanup_target(target: dict, dry_run: bool) -> dict:
     path: Path = target["path"]
     atime_days: int = target["atime_days"]
     label: str = target["label"]
+    exists = False
+    initial_error = ""
+    try:
+        exists = path.exists()
+    except OSError as e:
+        initial_error = f"{type(e).__name__}: {e}"
 
     summary = {
         "label": label,
         "path": str(path),
         "atime_threshold_days": atime_days,
-        "exists": path.exists(),
+        "exists": exists,
         "scanned_entries": 0,
         "deleted_entries": 0,
         "freed_bytes": 0,
@@ -231,12 +288,29 @@ def cleanup_target(target: dict, dry_run: bool) -> dict:
         "dry_run": dry_run,
     }
 
-    if not path.exists() or not path.is_dir():
+    if initial_error:
+        summary["errors"].append(initial_error)
+        summary["skipped_permission"] += 1
+        return summary
+    try:
+        is_dir = path.is_dir()
+    except OSError as e:
+        summary["errors"].append(f"{type(e).__name__}: {e}")
+        summary["skipped_permission"] += 1
+        return summary
+
+    if not exists or not is_dir:
         return summary
 
     cutoff = time.time() - atime_days * 86400
+    try:
+        entries = list(path.iterdir())
+    except OSError as e:
+        summary["errors"].append(f"{type(e).__name__}: {e}")
+        summary["skipped_permission"] += 1
+        return summary
 
-    for entry in path.iterdir():
+    for entry in entries:
         summary["scanned_entries"] += 1
         try:
             if _is_protected(entry):
@@ -328,8 +402,8 @@ def write_metrics(summaries: list) -> None:
             "ts": time.time(),
             "iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "summaries": summaries,
-            "total_freed_bytes": sum(s["freed_bytes"] for s in summaries),
-            "total_freed_gb": round(sum(s["freed_bytes"] for s in summaries) / 1024 / 1024 / 1024, 2),
+            "total_freed_bytes": sum(s.get("freed_bytes", 0) for s in summaries),
+            "total_freed_gb": round(sum(s.get("freed_bytes", 0) for s in summaries) / 1024 / 1024 / 1024, 2),
         }
         atomic_append_jsonl(path, record, rotate_at=200, keep_tail=100)
     except Exception as e:
@@ -371,7 +445,7 @@ def main() -> int:
                 "dry_run": args.dry_run,
             })
 
-    for target in _TARGETS:
+    for target in [*_TARGETS, *_external_omlx_cache_targets()]:
         try:
             s = cleanup_target(target, dry_run=args.dry_run)
             summaries.append(s)

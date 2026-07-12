@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -17,12 +18,11 @@ from typing import Iterable
 from xml.sax.saxutils import escape
 
 
-DEFAULT_INPUT_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")
+DEFAULT_INPUT_DIR = Path(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR") or "~/Desktop/判決捕捉與分類器").expanduser()
 DEFAULT_INPUT_CANDIDATES = (
     DEFAULT_INPUT_DIR / "完整812" / "TXT",
     DEFAULT_INPUT_DIR / "TXT",
     DEFAULT_INPUT_DIR,
-    Path("/Users/ai/Desktop/AGENT TEST DATA/最高法院_通譯_TXT/完整812/TXT"),
 )
 
 

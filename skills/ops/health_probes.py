@@ -10,13 +10,18 @@ without duplicating the request / retry / model-resolution logic.
 from __future__ import annotations
 
 import os
+import shlex
+import subprocess
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 def _build_omlx_base_url(base_url: Optional[str] = None, port_env: str = "MAGI_OMLX_PORT") -> str:
     if base_url:
-        return str(base_url).rstrip("/")
+        normalized = str(base_url).strip().rstrip("/")
+        if normalized.endswith("/v1"):
+            normalized = normalized[:-3].rstrip("/")
+        return normalized
     port = int(os.environ.get(port_env, "8080"))
     return f"http://127.0.0.1:{port}"
 
@@ -74,6 +79,82 @@ def probe_omlx_models(timeout_sec: int = 8, *, base_url: Optional[str] = None, p
     if status_code == 200:
         return {"pass": False, "status_code": 200, "models": [], "error": "empty_model_list"}
     return {"pass": False, "status_code": status_code, "models": [], "error": error}
+
+
+def command_executes_python_script(command: str, script: str) -> bool:
+    """Return True when a ps command line runs the given Python script.
+
+    `pgrep -f` is too brittle under launchd/cron and can produce false negatives
+    when PATH differs.  This parser accepts regular script paths and `python -m`
+    module execution while ignoring wrapper options such as `-S`.
+    """
+    try:
+        parts = shlex.split(command or "")
+    except ValueError:
+        parts = str(command or "").split()
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0]).lower()
+    if "python" not in exe:
+        return False
+    script_norm = script.replace("\\", "/")
+    module_name = script_norm.replace("/", ".").removesuffix(".py")
+    idx = 1
+    while idx < len(parts):
+        arg = parts[idx]
+        if arg == "-m" and idx + 1 < len(parts):
+            if parts[idx + 1] == module_name:
+                return True
+            idx += 2
+            continue
+        if arg.startswith("-"):
+            idx += 1
+            continue
+        norm = arg.replace("\\", "/")
+        if norm == script_norm or norm.endswith("/" + script_norm):
+            return True
+        idx += 1
+    return False
+
+
+def find_python_script_processes(script: str, *, timeout_sec: int = 5) -> list[str]:
+    """Return PIDs for live Python processes executing `script`."""
+    try:
+        env = os.environ.copy()
+        env.setdefault("COLUMNS", "4096")
+        result = subprocess.run(
+            ["ps", "axww", "-o", "pid=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_sec,
+            env=env,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    pids: list[str] = []
+    current_pid = os.getpid()
+    for line in (result.stdout or "").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, command = parts
+        try:
+            if int(pid) == current_pid:
+                continue
+        except ValueError:
+            continue
+        if command_executes_python_script(command, script):
+            pids.append(pid)
+    return pids
+
+
+def python_script_process_running(script: str, *, timeout_sec: int = 5) -> tuple[bool, str]:
+    """Return whether `script` is running and a comma-separated PID preview."""
+    pids = find_python_script_processes(script, timeout_sec=timeout_sec)
+    return bool(pids), ",".join(pids[:5])
 
 
 def resolve_omlx_model(

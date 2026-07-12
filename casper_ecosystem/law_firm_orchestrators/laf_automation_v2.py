@@ -60,7 +60,20 @@ from api.runtime_paths import (
     get_magi_root_dir,
 )
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_case_path_to_local
-from api.laf_case_classifier import normalize_laf_case_type
+from api.laf_case_classifier import (
+    clean_laf_case_reason,
+    extract_laf_staff_case_hint,
+    is_pending_laf_reason,
+    normalize_laf_case_fields,
+    normalize_laf_case_type,
+)
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
+from api.laf_closing_transfer import (
+    apply_laf_closing_transfer_notice,
+    laf_closing_transfer_record_status,
+    parse_laf_closing_transfer_notice,
+)
+from api.osc.case_defaults import db_settings_getter, normalize_case_lawyer
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -68,7 +81,7 @@ def _safe_print(*args, **kwargs) -> None:
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 70, exc_info=True)
 
 
 def _safe_log_callback(callback, message: str) -> None:
@@ -77,11 +90,22 @@ def _safe_log_callback(callback, message: str) -> None:
     try:
         callback(message)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 79, exc_info=True)
 
 
 def _safe_logger(callback=None):
     return lambda message: _safe_log_callback(callback or _safe_print, str(message))
+
+
+def _laf_default_case_lawyer(db_manager: Any = None, *, case_type: Any = "", case_reason: Any = "", case_category: Any = "法律扶助案件") -> str:
+    return normalize_case_lawyer(
+        "",
+        allow_default=True,
+        case_type=case_type,
+        case_reason=case_reason,
+        case_category=case_category,
+        settings_getter=db_settings_getter(db_manager),
+    )
 
 
 # ==============================================================================
@@ -179,6 +203,12 @@ def _safe_move(src: str, dst: str, log=None) -> None:
     except Exception as e:
         if log:
             log(f"    ⚠️ 移動失敗: {e}")
+
+
+def _is_laf_staff_email_case_info(case_info) -> bool:
+    """Return True for LAF staff email attachments that are not portal files."""
+    sender = str(getattr(case_info, "sender", "") or "").lower()
+    return "@laf.org.tw" in sender or "laf.org.tw" in sender
 
 
 PDFTOTEXT_BIN = os.environ.get("MAGI_PDFTOTEXT_BIN", "/opt/homebrew/bin/pdftotext").strip()
@@ -425,13 +455,14 @@ def _resolve_ddddocr_class(log=None):
     if not DDDDOCR_AVAILABLE:
         return None
 
+    import_error = None
     try:
         ddddocr_mod = importlib.import_module("ddddocr")
         cls = getattr(ddddocr_mod, "DdddOcr", None)
         if cls is not None:
             return cls
     except Exception as e:
-        _emit(f"⚠️ [ddddocr] import 失敗，改用相容載入器: {e}")
+        import_error = e
 
     try:
         spec = importlib.util.find_spec("ddddocr")
@@ -439,13 +470,20 @@ def _resolve_ddddocr_class(log=None):
         if spec and spec.submodule_search_locations:
             pkg_dir = list(spec.submodule_search_locations)[0]
         if not pkg_dir:
-            return None
-        cls = _load_ddddocr_legacy_class(pkg_dir)
-        if cls is not None:
-            _emit(f"✅ [ddddocr] 使用 compat/legacy fallback 載入: {pkg_dir}")
-            return cls
+            cls = None
+        else:
+            cls = _load_ddddocr_legacy_class(pkg_dir)
+            if cls is not None:
+                _emit(f"✅ [ddddocr] 使用 compat/legacy fallback 載入: {pkg_dir}")
+                return cls
     except Exception as e:
-        _emit(f"⚠️ [ddddocr] compat/legacy fallback 載入失敗: {e}")
+        detail = f"{e}"
+        if import_error is not None:
+            detail = f"import={import_error}; fallback={e}"
+        _emit(f"⚠️ [ddddocr] compat/legacy fallback 載入失敗: {detail}")
+
+    if import_error is not None:
+        _emit(f"⚠️ [ddddocr] import 失敗且 fallback 不可用: {import_error}")
 
     return None
 
@@ -654,6 +692,7 @@ class LAFCaseTypeParser:
     
     # 常見案由清理規則
     REASON_CLEANUP_PATTERNS = [
+        (r'^(涉嫌|涉及|涉犯|涉有|涉(?!外))', ''),  # 移除法扶主旨中非案由的「涉」
         (r'^違反', ''),         # 移除開頭的「違反」
         (r'等$', ''),           # 移除結尾的「等」
         (r'案件之訴訟代理$', ''),  # 移除「案件之訴訟代理」
@@ -796,10 +835,11 @@ class LAFCaseTypeParser:
 
         # 2. 嘗試解析新格式：[XX分會]檢送1141127-J-001楊志杰之案件資料
         # 格式：[XX分會]檢送(案號)(當事人)之案件資料
+        # 這是專員補充資料，不是正式派案；不得啟動建案/開辦流程。
         new_format_match = re.search(r'\[(.+?)分會\]檢送([A-Z0-9\-]+)(.+?)之案件資料', subject)
         if new_format_match:
             info.branch = new_format_match.group(1)
-            info.notification_type = "派案通知" # 視為派案通知
+            info.notification_type = "專員來信"
             info.laf_case_number = new_format_match.group(2)
             info.client_name = new_format_match.group(3)
             
@@ -809,7 +849,8 @@ class LAFCaseTypeParser:
             info.case_reason = "待確認"
             info.laf_case_type = "一般案件"
             
-            info.needs_download = True
+            info.has_attachment = True
+            info.needs_download = False
             return info
         
         # 3. ★ 原民中心格式：寄送1141216-W-002、003[當事人J]案件資料
@@ -817,7 +858,9 @@ class LAFCaseTypeParser:
         indigenous_match = re.search(r'寄送(\d{7}-[A-Z]-\d{3})[、\d-]*(.+?)案件資料', subject)
         if indigenous_match:
             info.branch = "原住民族法律服務中心"
-            info.notification_type = "派案通知"
+            # 原民中心「寄送案件資料」是補充資料信，不是正式派案信。
+            # 正式派案仍須由「法扶...分會派案通知」觸發建案/開辦流程。
+            info.notification_type = "原民中心案件資料"
             info.laf_case_number = indigenous_match.group(1)
             info.client_name = indigenous_match.group(2).strip()
             
@@ -828,7 +871,7 @@ class LAFCaseTypeParser:
             info.laf_case_type = "一般案件"
             
             info.has_attachment = True  # 這類信通常有附件
-            info.needs_download = False  # 不需從系統下載
+            info.needs_download = False  # 不因補充資料信啟動官網正式附件下載/開辦
             return info
 
         # 4. 審核回報格式：通知範例律師回報(結案|附條件)...
@@ -873,6 +916,42 @@ class LAFCaseTypeParser:
             )
 
             info.needs_download = True
+            return info
+
+        # 4.05. 疑義回報格式：通知律師回報(對扶助案件有疑義)...
+        inquiry_result_match = re.search(
+            r'回報[（(](?:對扶助案件有疑義|疑義)[)）].*?(\d{7}-[A-Z]-\d{3})(.*)$',
+            subject,
+        )
+        if inquiry_result_match:
+            info.notification_type = "疑義"
+            info.branch = "待確認"
+            info.laf_case_number = (inquiry_result_match.group(1) or "").strip()
+            tail = (inquiry_result_match.group(2) or "").strip(" -")
+            tail = re.sub(r'之資料.*$', '', tail).strip()
+            parts = [p.strip() for p in tail.split('-') if p.strip()]
+
+            if parts:
+                info.client_name = parts[0]
+            if len(parts) >= 2:
+                info.laf_case_type = parts[1]
+                info.case_type, info.case_stage = cls._determine_case_type(info.laf_case_type)
+            else:
+                info.case_type = "民事"
+                info.case_stage = "一審"
+                info.laf_case_type = "一般案件"
+            if len(parts) >= 3:
+                info.case_reason = cls._cleanup_reason("-".join(parts[2:]))
+            else:
+                info.case_reason = "待確認"
+            info.case_type, info.case_stage = normalize_laf_case_type(
+                info.case_type,
+                info.case_stage,
+                info.case_reason,
+                info.laf_case_type,
+            )
+            info.has_attachment = True
+            info.needs_download = False
             return info
 
         # 5. 進度回報提醒格式：提醒！請扶助律師回報案件辦理進度
@@ -938,7 +1017,7 @@ class LAFCaseTypeParser:
                 continue
             reason = re.sub(pattern, replacement, reason)
         
-        return reason.strip()
+        return clean_laf_case_reason(reason)
     
     @classmethod
     def _extract_stage_from_reason(cls, raw_reason: str, current_stage: str) -> Tuple[str, str]:
@@ -1066,7 +1145,7 @@ class CaptchaSolver:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1068, exc_info=True)
 
             if RapidOCR:
                 try:
@@ -1359,6 +1438,7 @@ class LAFWebAutomation:
         self._engine_logged = False
         self.last_debug_artifact = {}
         self.last_upload_result = {}
+        self.last_portal_error = ""
         # Pass log_callback specifically to capture OCR logs in UI
         self.captcha_solver = CaptchaSolver(callback_on_fail=on_captcha_fail, log_callback=self.log)
         # 驗證碼處理：優先 OCR 自動辨識，失敗才透過 LINE 請求人工輸入。
@@ -1396,7 +1476,7 @@ class LAFWebAutomation:
             try:
                 driver.quit()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1398, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1727,7 +1807,7 @@ class LAFWebAutomation:
             try:
                 pw._page.wait_for_selector('img#kaptchaImage, img[src*="captcha"]', timeout=8000, state='attached')
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1729, exc_info=True)
             candidates = []
             for frame in pw._page.frames:
                 try:
@@ -1856,7 +1936,7 @@ class LAFWebAutomation:
                     if src:
                         candidates.append(str(src))
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1858, exc_info=True)
                 candidates.extend([
                     _urljoin(self.LOGIN_URL, "/lafcsp/captcha-image"),
                     _urljoin(f"{self.base_url.rstrip('/')}/", "lafcsp/captcha-image"),
@@ -2042,6 +2122,23 @@ class LAFWebAutomation:
         except Exception:
             return {}
         return artifact
+
+    def _set_portal_error(self, code: str, detail: str = "", *, debug_tag: str = "") -> bool:
+        """Record a structured portal failure and capture the current page for retry diagnostics."""
+        text = str(code or "portal_error").strip()
+        detail = str(detail or "").strip()
+        if detail:
+            detail = re.sub(r"\s+", " ", detail)
+            text = f"{text}: {detail[:700]}"
+        self.last_portal_error = text
+        if debug_tag:
+            try:
+                artifact = self._save_page_debug_html(debug_tag, force=True)
+                if isinstance(artifact, dict) and artifact:
+                    self.last_debug_artifact = dict(artifact)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2059, exc_info=True)
+        return False
 
     def _workflow_form_modal_selectors(self, workflow: str) -> List[str]:
         wf = (workflow or "").strip().lower()
@@ -2452,7 +2549,7 @@ class LAFWebAutomation:
                         self.log("  ✅ 密碼提醒頁已略過。")
                         return True
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2454, exc_info=True)
             return False
         except Exception as e:
             self.log(f"  ⚠️ 密碼提醒頁處理失敗: {e}")
@@ -2613,14 +2710,14 @@ class LAFWebAutomation:
                         try:
                             _pw_page.evaluate("() => { if(typeof checkForm==='function') checkForm(); }")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).debug("checkForm login fallback unavailable", exc_info=True)
                         time.sleep(0.5)
                         # 如果還在登入頁，改 click loginLink
                         if 'toMainPage' not in (_pw_page.url or '') and 'processLogin' not in (_pw_page.url or ''):
                             try:
                                 _pw_page.click('#loginLink, a#loginLink', timeout=3000)
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).debug("loginLink fallback unavailable", exc_info=True)
                         # 等待登入結果（最多 25 秒）
                         _login_ok_pw = False
                         for _wi in range(25):
@@ -2646,7 +2743,7 @@ class LAFWebAutomation:
                                     _login_ok_pw = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2648, exc_info=True)
                         # 若 loop 結束後仍在 processLogin，再做一次內容確認（portal 重定向有時超過 25s）
                         if not _login_ok_pw:
                             try:
@@ -2658,7 +2755,7 @@ class LAFWebAutomation:
                                     elif ("contentFrame" in _src and "footerFrame" in _src) or ("toPublishmentList" in _src):
                                         _login_ok_pw = True
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2660, exc_info=True)
                         if not _login_ok_pw and self._handle_password_reminder_page():
                             _login_ok_pw = True
                         self.log(f"  🔗 當前 URL: {_pw_page.url}")
@@ -2710,12 +2807,12 @@ class LAFWebAutomation:
                             try:
                                 el._el.clear()
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2712, exc_info=True)
                             try:
                                 el._el.type(v)
                                 return
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2717, exc_info=True)
                     # Selenium 路徑
                     try:
                         self.driver.execute_script(
@@ -2808,7 +2905,7 @@ class LAFWebAutomation:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2810, exc_info=True)
                     self.driver.execute_script("checkForm();")
                 except Exception:
                     try:
@@ -2816,7 +2913,7 @@ class LAFWebAutomation:
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2818, exc_info=True)
                         login_btn.click()
                     except Exception:
                         try:
@@ -2825,19 +2922,19 @@ class LAFWebAutomation:
                                 try:
                                     self.driver._last_dialog = None
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2827, exc_info=True)
                                 self.driver._page.click('#loginLink, a#loginLink')
                             else:
                                 try:
                                     self.driver._last_dialog = None
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2833, exc_info=True)
                                 password_input.send_keys('\n')
                         except Exception:
                             try:
                                 self.driver._last_dialog = None
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2839, exc_info=True)
                             password_input.send_keys('\n')
 
                 # 等待 URL 離開 processLogin（最多 12 秒）
@@ -3176,12 +3273,12 @@ class LAFWebAutomation:
                                         try:
                                             _pg.close()
                                         except Exception:
-                                            pass
+                                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3178, exc_info=True)
                                         break
                             if popup_url:
                                 break
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3183, exc_info=True)
                     _t2.sleep(0.5)
 
             # ── Strategy 3: HTTP download via Playwright session (no re-auth needed) ──
@@ -3693,7 +3790,7 @@ return (() => {
             if hit:
                 return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3695, exc_info=True)
 
         for sel in (selectors or []):
             if not sel:
@@ -3704,7 +3801,7 @@ return (() => {
                     if self.driver.fill_by_selector(sel, v):
                         return True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3706, exc_info=True)
             # Strategy 2: ElementHandle-based (accept any non-empty value)
             try:
                 els = self.driver.find_elements(By.CSS_SELECTOR, sel)
@@ -3888,7 +3985,7 @@ return (() => {
                         while _f.read(1 << 20):
                             pass
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3890, exc_info=True)
             _t = _th.Thread(target=_read_drain, daemon=True)
             _t.start()
         except Exception:
@@ -3918,16 +4015,16 @@ return (() => {
                         import subprocess as _sp
                         _sp.run(["brctl", "download", path], capture_output=True, timeout=5)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3920, exc_info=True)
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3922, exc_info=True)
         # Timeout — log final state
         try:
             st3 = os.stat(path)
             final_on_disk = int(getattr(st3, "st_blocks", 0) or 0) * 512
             self.log(f"  ☁️ ⚠️ hydrate 逾時: {basename} (disk={final_on_disk}/{size} bytes，將仍嘗試上傳)")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3929, exc_info=True)
         return False
 
     def _upload_supporting_files(self, files: List[str], workflow: str = "") -> Dict[str, Any]:
@@ -3941,21 +4038,22 @@ return (() => {
             result["error"] = "driver_not_ready"
             return result
 
-        pdfs: List[str] = []
+        upload_paths: List[str] = []
+        allowed_exts = {".pdf", ".doc", ".docx", ".odt"}
         for p in (files or []):
             s = (str(p or "")).strip()
             if not s:
                 continue
-            if (not os.path.isfile(s)) or (not s.lower().endswith(".pdf")):
-                result["failed"].append({"path": s, "error": "not_pdf_or_missing"})
+            if (not os.path.isfile(s)) or (Path(s).suffix.lower() not in allowed_exts):
+                result["failed"].append({"path": s, "error": "not_supported_or_missing"})
                 continue
-            pdfs.append(s)
+            upload_paths.append(s)
 
         max_files = int(os.environ.get("MAGI_LAF_MAX_UPLOAD_FILES", "250") or "250")
-        if len(pdfs) > max_files:
-            pdfs = pdfs[:max_files]
-        result["requested"] = len(pdfs)
-        if not pdfs:
+        if len(upload_paths) > max_files:
+            upload_paths = upload_paths[:max_files]
+        result["requested"] = len(upload_paths)
+        if not upload_paths:
             self.last_upload_result = dict(result)
             return result
 
@@ -3979,7 +4077,7 @@ return (() => {
                 if bool(result):
                     return True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3982, exc_info=True)
             try:
                 pw_page = getattr(self.driver, "_page", None)
                 if pw_page is not None:
@@ -4002,7 +4100,7 @@ return (() => {
                         except Exception:
                             continue
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4005, exc_info=True)
             return False
 
         def _open_upload_panel() -> bool:
@@ -4093,7 +4191,7 @@ return (() => {
                                 except Exception:
                                     continue
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4096, exc_info=True)
                 time.sleep(0.2)
             return None
 
@@ -4421,7 +4519,7 @@ return (() => {
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2930, exc_info=True)
 
-        for p in pdfs:
+        for p in upload_paths:
             try:
                 basename = os.path.basename(p)
                 # --- Dedup: skip if already uploaded ---
@@ -4556,7 +4654,7 @@ return (() => {
                     self._restore_workflow_form_modal(workflow, close_upload_dialog=True)
                     time.sleep(0.5)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4559, exc_info=True)
 
             except Exception as e:
                 result["failed"].append({"path": p, "error": str(e)})
@@ -4691,7 +4789,7 @@ return null;
                             if inp:
                                 break
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4694, exc_info=True)
                 if inp:
                     break
                 time.sleep(0.3)
@@ -5171,7 +5269,7 @@ return null;
         Auto-navigates from Page 1 (toCR) to Page 2 (toClosedSummaryLawyer).
         """
         if not self.driver:
-            return False
+            return self._set_portal_error("closing_driver_missing", "報結瀏覽器尚未初始化")
         zero_reasons = zero_reasons or {}
         on_page2 = False
 
@@ -5259,18 +5357,29 @@ return null;
                         els = [byId];
                     }}
                     var set = 0;
+                    function norm(s) {{
+                        return String(s || '').replace(/台/g, '臺').replace(/\\s+/g, '').trim();
+                    }}
+                    var targetNorm = norm(val);
                     for (var j = 0; j < els.length; j++) {{
                         var el = els[j];
                         if (el.tagName === 'SELECT') {{
+                            var matched = false;
                             for (var i = 0; i < el.options.length; i++) {{
-                                if (el.options[i].value === val || el.options[i].text === val) {{
+                                var optText = el.options[i].text || '';
+                                var optVal = el.options[i].value || '';
+                                var optNorm = norm(optText);
+                                if (optVal === val || optText === val || optNorm === targetNorm ||
+                                    (targetNorm && optNorm.indexOf(targetNorm) >= 0) ||
+                                    (optNorm && targetNorm.indexOf(optNorm) >= 0)) {{
                                     el.selectedIndex = i;
                                     _fire(el);
                                     set++;
+                                    matched = true;
                                     break;
                                 }}
                             }}
-                            if (set === 0) {{ el.value = val; _fire(el); set++; }}
+                            if (!matched) {{ el.value = val; _fire(el); set++; }}
                         }} else {{
                             el.value = val;
                             _fire(el);
@@ -5292,7 +5401,7 @@ return null;
                 }}
                 results.judg_eff = setSelect('judg_eff', '{_judg_eff}');
                 results.rel_court1 = setSelect('rel_court1', '{_rel_court1}');
-                results.rel_court2 = setVal('rel_court2', '{_court_name}', true);
+                results.rel_court2 = setSelect('rel_court2', '{_court_name}') || setVal('rel_court2', '{_court_name}', true);
                 results.judg_dt = setVal('judg_dt', '{_tw_dt}', true);
                 results.appellee = setVal('appellee', '{_appellee}', true);
 
@@ -5393,7 +5502,13 @@ return null;
                         var xhr = new XMLHttpRequest();
                         xhr.open('POST', '/lafcsp/insertClosedSummaryBasic', true);
                         xhr.onload = function() {
-                            callback({status: xhr.status, ok: xhr.status === 200});
+                            callback({
+                                status: xhr.status,
+                                ok: xhr.status === 200,
+                                responseText: (xhr.responseText || '').slice(0, 1200),
+                                url: location.href,
+                                title: document.title || ''
+                            });
                         };
                         xhr.onerror = function() {
                             callback({status: -1, ok: false, error: 'xhr_error'});
@@ -5410,11 +5525,15 @@ return null;
                 except Exception as e:
                     self.log(f"  ⚠️ Page 1 AJAX save exception: {e}")
                     _save_ok = False
+                    _ajax_result = {"error": str(e), "status": -9}
 
                 if not _save_ok:
                     self.log("  ❌ Page 1 存檔失敗")
-                    self._save_page_debug_html("closing_page1_save_failed")
-                    return False
+                    return self._set_portal_error(
+                        "closing_page1_ajax_save_failed",
+                        json.dumps(_ajax_result or {}, ensure_ascii=False, default=str),
+                        debug_tag="closing_page1_save_failed",
+                    )
 
                 # 頁面仍在 Page 1，toPrevious() 可用
                 self.log("  🚀 toPrevious() → Page 2...")
@@ -5422,7 +5541,7 @@ return null;
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5436, exc_info=True)
                     self.driver.execute_script("toPrevious();")
                 except Exception as e:
                     self.log(f"  ⚠️ toPrevious() exception: {e}")
@@ -5437,7 +5556,7 @@ return null;
                     alert.accept()
                     time.sleep(2.0)
                 except NoAlertPresentException:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5451, exc_info=True)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3909, exc_info=True)
 
@@ -5465,15 +5584,17 @@ return null;
                     self.log("✅ 已進入報結第二頁 (Handling Info)")
                 except Exception as e:
                     self.log(f"⚠️ 無法確認是否進入第二頁: {e}")
-                    self._save_page_debug_html("closing_page2_wait_failed")
                     if not on_page2:
-                        self._save_page_debug_html("closing_page2_open_failed")
-                        return False
+                        return self._set_portal_error(
+                            "closing_page2_open_failed",
+                            str(e),
+                            debug_tag="closing_page2_open_failed",
+                        )
             else:
                 on_page2 = len(self.driver.find_elements("id", "meet_times")) > 0 or "toClosedSummaryLawyer" in self.driver.current_url
         except Exception as e:
             self.log(f"⚠️ 換頁過程發生異常：{e}")
-            return False
+            return self._set_portal_error("closing_page_transition_failed", str(e), debug_tag="closing_page_transition_failed")
 
         if not on_page2:
             try:
@@ -5483,8 +5604,7 @@ return null;
             on_page2 = len(self.driver.find_elements("id", "meet_times")) > 0 or "meet_times" in src_now
         if not on_page2:
             self.log("❌ 報結第二頁未就緒，停止填寫。")
-            self._save_page_debug_html("closing_page2_not_ready")
-            return False
+            return self._set_portal_error("closing_page2_not_ready", "未偵測到 meet_times/toClosedSummaryLawyer", debug_tag="closing_page2_not_ready")
 
         # 2. Wait for page stable
         try:
@@ -5566,6 +5686,24 @@ return null;
                     "calculateAp_times", "開庭"
                 )
                 self.log(f"  📅 開庭日期：新增 {_added_court} 筆")
+                v = f"{int(counts.get('court_count') or _added_court or 0):02d}"
+                self.driver.execute_script(f"""
+                    function _set(id, val) {{
+                        var el = document.getElementById(id) || document.getElementsByName(id)[0];
+                        if (el) {{
+                            el.disabled = false; el.readOnly = false;
+                            el.removeAttribute('disabled'); el.removeAttribute('readonly');
+                            el.value = val;
+                            el.dispatchEvent(new Event('change', {{bubbles:true}}));
+                            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                        }}
+                    }}
+                    _set('lawyerap_times', '{v}');
+                    _set('ap_times', '{v}');
+                    var s = document.getElementById('ap_timesShow');
+                    if (s) {{ var n = s.querySelector('strong.num') || s; n.textContent = '{v}'; }}
+                """)
+                self.log(f"  🔧 開庭/到庭次數強制回填: {v}")
             except Exception as e:
                 self.log(f"  ❌ 新增開庭日期失敗：{e}")
         elif int(counts.get("court_count", 0) or 0) > 0:
@@ -5783,7 +5921,7 @@ return null;
             try:
                 self.driver._last_dialog = None
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5815, exc_info=True)
             self.driver.execute_script("doFinish();")
         except Exception as e:
             self.log(f"  ❌ doFinish() 呼叫失敗：{e}")
@@ -5855,7 +5993,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5887, exc_info=True)
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called")
@@ -5863,7 +6001,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5895, exc_info=True)
                 save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave 失敗：{e}")
@@ -5894,8 +6032,9 @@ return null;
         """
         報結暫存：進入 toCR → 換頁至 toClosedSummaryLawyer → 填寫 → doTempSave()。
         """
+        self.last_portal_error = ""
         if not self.open_closing_report_page(laf_case_number):
-            return False
+            return self._set_portal_error("closing_open_page_failed", laf_case_number, debug_tag="closing_open_page_failed")
 
         try:
             src_probe = (self.driver.page_source or "")
@@ -5903,6 +6042,7 @@ return null;
             src_probe = ""
         if ("目前已有回報資料正在處理中" in src_probe) or ("已有回報資料正在處理中" in src_probe):
             self.log("ℹ️ 報結：系統顯示已有回報資料正在處理中，略過本次存檔。")
+            self.last_portal_error = ""
             self.last_upload_result = {
                 "ok": True,
                 "workflow": "closing",
@@ -5931,7 +6071,9 @@ return null;
 
         if not self.fill_closing_report(counts=counts or {}, zero_reasons=zero_reasons or {}):
             self.log("❌ 報結第二頁填寫前置失敗")
-            self._save_page_debug_html("closing_fill_failed")
+            if not self.last_portal_error:
+                return self._set_portal_error("closing_fill_failed", "報結第二頁填寫前置失敗", debug_tag="closing_fill_failed")
+            self._save_page_debug_html("closing_fill_failed", force=True)
             return False
 
         # Capture Page 2 HTML after fill (Debug)
@@ -5983,7 +6125,7 @@ return null;
                 try:
                     self.driver._last_dialog = None
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6015, exc_info=True)
                 self.driver.execute_script("doTempSave();")
                 save_attempted = True
                 self.log("  💾 doTempSave() called (with tempSaveFlag fix)")
@@ -5995,7 +6137,7 @@ return null;
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6027, exc_info=True)
                         btn.click()
                         save_attempted = True
                         self.log("  💾 save_btn clicked")
@@ -6005,15 +6147,15 @@ return null;
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6037, exc_info=True)
                     save_attempted = self._click_button_by_text(["存檔", "暫存", "保存", "儲存"])
         except Exception as e:
             self.log(f"  ⚠️ doTempSave exception: {e}")
+            self.last_portal_error = f"closing_do_temp_save_exception: {e}"
 
         if not save_attempted:
             self.log("❌ 找不到暫存方法")
-            self._save_page_debug_html("closing_save_failed")
-            return False
+            return self._set_portal_error("closing_save_method_missing", "找不到 doTempSave/save_btn/存檔按鈕", debug_tag="closing_save_failed")
 
         # Wait for form submission and server response
         time.sleep(4.0)
@@ -6035,12 +6177,12 @@ return null;
                     self.log(f"  ℹ️ Modal message: {modal_msg.strip()[:100]}")
                     if "存檔成功" in modal_msg or "暫存成功" in modal_msg or "儲存成功" in modal_msg:
                         self.log("✅ 報結存檔完成（Modal 確認成功）")
+                        self.last_portal_error = ""
                         self._save_page_debug_html("closing_save_success")
                         return True
                     elif "錯誤" in modal_msg or "失敗" in modal_msg:
                         self.log(f"❌ 報結存檔失敗: {modal_msg.strip()[:200]}")
-                        self._save_page_debug_html("closing_save_error")
-                        return False
+                        return self._set_portal_error("closing_modal_save_failed", modal_msg.strip(), debug_tag="closing_save_error")
                     else:
                         # 提醒 Modal（如「未閱卷…請填原因」）→ 點「繼續」按鈕提交表單
                         # 法扶 checkData() 在偵測到零值欄位且 noarrivereason 為空時，
@@ -6074,6 +6216,7 @@ return null;
 
         if any(k in src for k in ["存檔成功", "暫存成功"]):
             self.log("✅ 報結存檔完成（偵測到成功訊息）")
+            self.last_portal_error = ""
             self._save_page_debug_html("closing_save_success")
             return True
 
@@ -6086,6 +6229,7 @@ return null;
             # Form was submitted — check if response contains success
             if "存檔成功" in src or "暫存成功" in src:
                 self.log("✅ 報結存檔完成（更新回應頁確認成功）")
+                self.last_portal_error = ""
                 return True
 
         # Also check for JS alert (just in case)
@@ -6096,6 +6240,7 @@ return null;
             alert.accept()
             if any(k in alert_text for k in ["存檔成功", "暫存成功", "儲存成功"]):
                 self.log("✅ 報結存檔完成（Alert 確認成功）")
+                self.last_portal_error = ""
                 return True
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4500, exc_info=True)
@@ -6110,20 +6255,18 @@ return null;
                 closing_status = (status.get("closing") or {}).get("status", "")
                 if closing_status in ("暫存", "待轉入", "已轉入"):
                     self.log(f"✅ 報結存檔完成（資料庫驗證：{closing_status}）")
+                    self.last_portal_error = ""
                     self._save_page_debug_html("closing_save_verified")
                     return True
                 else:
                     self.log(f"❌ 報結存檔失敗（資料庫查無有效紀錄，狀態：'{closing_status}'）")
-                    self._save_page_debug_html("closing_save_db_mismatch")
-                    return False
+                    return self._set_portal_error("closing_save_db_mismatch", f"closing_status={closing_status!r}", debug_tag="closing_save_db_mismatch")
             except Exception as e:
                 self.log(f"⚠️ 報結資料庫驗證異常: {e}")
-                self._save_page_debug_html("closing_save_verify_error")
-                return False
+                return self._set_portal_error("closing_save_verify_error", str(e), debug_tag="closing_save_verify_error")
 
         self.log("❌ 報結存檔結果不明確（未偵測到成功訊息或跳轉）")
-        self._save_page_debug_html("closing_save_unclear")
-        return False
+        return self._set_portal_error("closing_save_unclear", f"url={cur_url}", debug_tag="closing_save_unclear")
 
     def final_submit_closing_report(self, laf_case_number: str) -> bool:
         """
@@ -6301,7 +6444,7 @@ return null;
             self.driver.save_screenshot(_sspath)
             self.log(f"📸 診斷截圖: {_sspath}")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6333, exc_info=True)
 
         searched = False
         # 優先點 queryBtn（showList 會走 form submit）
@@ -6452,20 +6595,20 @@ return null;
                 self.driver.execute_script(_onclick_js)
                 _clicked = True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6484, exc_info=True)
         # Strategy B: invoke element.click() via JS (triggers native click with onclick)
         if not _clicked:
             try:
                 self.driver.execute_script("arguments[0].click();", btn)
                 _clicked = True
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6491, exc_info=True)
         # Strategy C: Playwright ElementHandle.click() (unreliable for legacy onclick)
         if not _clicked:
             try:
                 btn.click()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6497, exc_info=True)
 
         token = (meta.get("expected_token") or "").strip()
         if token:
@@ -6502,7 +6645,7 @@ return null;
                     if _entered:
                         break
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6534, exc_info=True)
                 time.sleep(0.3)
             if not _entered:
                 self.log(f"⚠️ 未偵測到 {token} 入口（可能是 modal），改以欄位偵測繼續")
@@ -7452,7 +7595,11 @@ class GeneralEmailInfo:
 class LAFGmailMonitor:
     """監控 Gmail 中的法扶信件與一般信件"""
     
-    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    SCOPES = [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+    ]
+    MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
     
     def __init__(self, credentials_path: str, token_path: str, 
                  callback=None, general_callback=None, log_callback=None,
@@ -7493,6 +7640,8 @@ class LAFGmailMonitor:
         # ★ 從檔案載入已處理的 message ID
         self._processed_ids = self._load_processed_ids()
         self._general_processed_ids = self._load_processed_ids('_general')
+        # JSON is only a fallback. The durable source of truth is laf_email_records.
+        self.processed_exists_func = None
     
     def _load_processed_ids(self, suffix: str = '') -> set:
         """載入已處理的 Email ID 記錄"""
@@ -7537,6 +7686,43 @@ class LAFGmailMonitor:
                 json.dump(ids_list, f)
         except Exception as e:
             self.log(f"  ⚠️ 儲存已處理信件記錄失敗: {e}")
+
+    def _durable_laf_record_exists(self, msg_id: str, check_exists_func=None):
+        """Return True/False when DB state is known; None when unavailable."""
+        func = check_exists_func or self.processed_exists_func
+        if not func:
+            return None
+        try:
+            return bool(func(msg_id))
+        except Exception as e:
+            self.log(f"  ⚠️ 法扶信件 DB 去重檢查失敗，改用暫存紀錄: {e}")
+            return None
+
+    def _laf_message_already_processed(self, msg_id: str, check_exists_func=None) -> bool:
+        """Return whether an LAF Gmail message has already been handled."""
+        durable_exists = self._durable_laf_record_exists(msg_id, check_exists_func)
+        if durable_exists is True:
+            return True
+
+        fallback_exists = msg_id in self._processed_ids
+        if fallback_exists and durable_exists is False:
+            recover_json_only = str(
+                os.environ.get("MAGI_LAF_GMAIL_RECOVER_JSON_ONLY", "0")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if recover_json_only:
+                self.log(f"  ♻️ 已處理暫存有紀錄但 DB 無紀錄，依 recovery 設定重新補處理法扶信件 (ID: {msg_id[-6:]}...)")
+                return False
+            self.log(f"  ⏭️ 已處理暫存有紀錄但 DB 無紀錄，為避免重複通知仍略過 (ID: {msg_id[-6:]}...)")
+            return True
+        return fallback_exists
+
+    def mark_laf_processed(self, msg_id: str):
+        """Persist the JSON fallback marker after callback handling has run."""
+        mid = str(msg_id or "").strip()
+        if not mid:
+            return
+        self._processed_ids.add(mid)
+        self._save_processed_ids()
     
     def authenticate(self) -> bool:
         """進行 Gmail API 認證"""
@@ -7580,13 +7766,94 @@ class LAFGmailMonitor:
             
             with open(self.token_path, 'wb') as token:
                 pickle.dump(creds, token)
+
+        if creds and creds.valid and not self._credentials_have_modify_scope(creds):
+            msg = (
+                "⚠️ LAF Gmail token 目前只有讀取權限；MAGI 不會刪除法扶信，"
+                "但若派案信落入 Gmail 垃圾郵件，需重新授權 gmail.modify 才能自動移回收件匣。"
+            )
+            if sys.stdin.isatty() and os.path.exists(self.credentials_path):
+                self.log("🔐 Gmail token 需要升級權限，正在重新授權以支援垃圾郵件復原…")
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_path, self.SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+                with open(self.token_path, 'wb') as token:
+                    pickle.dump(creds, token)
+            else:
+                self.log(msg)
         
         self.credentials = creds
         self.service = build('gmail', 'v1', credentials=creds)
         self.log("✅ Gmail API 認證成功")
         return True
+
+    def _credentials_have_modify_scope(self, creds=None) -> bool:
+        """Return whether the current Gmail token can move spam back to inbox."""
+        creds = creds or self.credentials
+        if creds is None:
+            return True
+        try:
+            has_scopes = getattr(creds, 'has_scopes', None)
+            if callable(has_scopes):
+                return bool(has_scopes([self.MODIFY_SCOPE]))
+        except Exception as exc:
+            self.log(f"⚠️ Gmail token scope check failed; fallback to scope list: {type(exc).__name__}")
+        try:
+            scopes = list(getattr(creds, 'scopes', None) or getattr(creds, 'granted_scopes', None) or [])
+            if not scopes:
+                return True
+            return self.MODIFY_SCOPE in scopes
+        except Exception:
+            return True
+
+    def _restore_spam_to_inbox_if_needed(self, msg_id: str, msg_data: dict, subject: str = "") -> bool:
+        """
+        Move LAF mail accidentally classified as Gmail spam back to inbox.
+
+        Safety guard: only removes SPAM and adds INBOX; never deletes, trashes,
+        archives, or marks mail as read.
+        """
+        labels = set(msg_data.get('labelIds') or [])
+        if 'SPAM' not in labels:
+            return False
+        if 'TRASH' in labels:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾桶，未自動移動: {subject or msg_id[-6:]}")
+            return False
+        enabled = str(os.environ.get("MAGI_LAF_GMAIL_RESTORE_SPAM", "1")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not enabled:
+            self.log(f"  ⚠️ 法扶信件在 Gmail 垃圾郵件，已依設定保留原狀: {subject or msg_id[-6:]}")
+            return False
+        if not self.service:
+            return False
+        if not self._credentials_have_modify_scope():
+            self.log(
+                "  ⚠️ 法扶信件在 Gmail 垃圾郵件，但目前 token 缺 gmail.modify；"
+                "請重新授權後 MAGI 才能自動移回收件匣。"
+            )
+            return False
+        try:
+            self.service.users().messages().modify(
+                userId='me',
+                id=msg_id,
+                body={'removeLabelIds': ['SPAM'], 'addLabelIds': ['INBOX']},
+            ).execute()
+            labels.discard('SPAM')
+            labels.add('INBOX')
+            msg_data['labelIds'] = list(labels)
+            self.log(f"  ✅ 法扶信件曾在 Gmail 垃圾郵件，已移回收件匣: {subject or msg_id[-6:]}")
+            return True
+        except Exception as e:
+            err = str(e)
+            if "insufficient" in err.lower() or "403" in err:
+                self.log("  ⚠️ Gmail token 權限不足，無法把法扶信從垃圾郵件移回收件匣；請重新授權。")
+            else:
+                self.log(f"  ⚠️ 法扶信件垃圾郵件復原失敗: {e}")
+            return False
     
-    def check_emails(self, max_results: int = 10) -> List[LAFCaseInfo]:
+    def check_emails(self, max_results: int = 10, check_exists_func=None, mark_processed: bool = True) -> List[LAFCaseInfo]:
         """檢查新的法扶信件"""
         results = []
         
@@ -7595,23 +7862,29 @@ class LAFGmailMonitor:
             return results
         
         try:
+            try:
+                max_results = int(os.environ.get("MAGI_LAF_EMAIL_MAX_RESULTS", str(max_results)) or str(max_results))
+            except Exception:
+                max_results = int(max_results or 10)
+            max_results = max(50, min(max_results, 250))
             self.log("🔍 正在檢查新信件...")
-            # 搜尋最近的法扶相關信件（不再限定未讀，由內部 _processed_ids 避免重複）
-            query = '(from:@laf.org.tw OR from:laf.server)'
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=max_results
-            ).execute()
-            
-            messages = response.get('messages', [])
+            lookback_days = 3
+            try:
+                lookback_days = int(os.environ.get("MAGI_LAF_GMAIL_LOOKBACK_DAYS", "3") or "3")
+            except Exception:
+                lookback_days = 3
+            lookback_days = max(1, min(lookback_days, 14))
+
+            messages_by_id = {}
+            for query in self._laf_mail_search_queries(lookback_days):
+                for msg in self._gmail_list_messages(query, max_results=max_results):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             
             for msg in messages:
                 msg_id = msg['id']
-                
-                if msg_id in self._processed_ids:
-                    continue
                 
                 # 取得完整信件
                 full_msg = self.service.users().messages().get(
@@ -7630,13 +7903,17 @@ class LAFGmailMonitor:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5424, exc_info=True)
                 
                 self.log(f"🔍 [掃描] 檢查信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
+
+                if self._laf_message_already_processed(msg_id, check_exists_func):
+                    continue
                 
                 case_info = self._process_message(msg_id, full_msg)
 
                 if case_info:
                     results.append(case_info)
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
+                    if mark_processed:
+                        self.mark_laf_processed(msg_id)
                 else:
                     # 解析失敗：只標記「已忽略」，不加入 _processed_ids
                     # 讓 _process_message 內部的 ⚠️ log 留紀錄即可
@@ -7649,6 +7926,40 @@ class LAFGmailMonitor:
             traceback.print_exc()
 
         return results
+
+    @staticmethod
+    def _laf_mail_search_queries(lookback_days: int) -> List[str]:
+        """Return broad Gmail searches for LAF mail across the whole mailbox."""
+        days = max(1, min(int(lookback_days or 3), 14))
+        base = f'in:anywhere -in:trash newer_than:{days}d -subject:"回報案件辦理進度"'
+        return [
+            f'{base} (from:@laf.org.tw OR from:laf.server)',
+            f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+            f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+        ]
+
+    def _gmail_list_messages(self, query: str, *, max_results: int = 100) -> List[Dict[str, Any]]:
+        """List Gmail messages for one query with bounded pagination."""
+        if not self.service:
+            return []
+        remaining = max(1, int(max_results or 100))
+        messages: List[Dict[str, Any]] = []
+        page_token = None
+        while remaining > 0:
+            req = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=min(100, remaining),
+                pageToken=page_token,
+            )
+            response = req.execute()
+            batch = response.get('messages', []) or []
+            messages.extend(batch)
+            remaining -= len(batch)
+            page_token = response.get('nextPageToken')
+            if not page_token or not batch:
+                break
+        return messages
 
     def check_general_emails(self, rules: List[Dict], max_results: int = 10) -> List[GeneralEmailInfo]:
         """檢查符合規則的一般信件"""
@@ -7991,32 +8302,31 @@ class LAFGmailMonitor:
             except Exception:
                 query_end_date = end_date
 
-            query = f'(from:@laf.org.tw OR from:laf.server) after:{start_date} before:{query_end_date}'
-            
-            response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=100  # 增加掃描數量
-            ).execute()
-            
-            messages = response.get('messages', [])
+            base = f'in:anywhere -in:trash after:{start_date} before:{query_end_date}'
+            queries = [
+                f'{base} (from:@laf.org.tw OR from:laf.server)',
+                f'{base} (subject:法扶 OR subject:法律扶助 OR subject:原民中心 OR subject:派案通知 OR subject:審核結果通知 OR subject:審查結果通知 OR subject:案件資料)',
+                f'{base} ("法扶" OR "法律扶助" OR "原民中心" OR "派案通知" OR "審核結果通知" OR "審查結果通知")',
+            ]
+
+            messages_by_id = {}
+            for query in queries:
+                for msg in self._gmail_list_messages(query, max_results=100):
+                    if msg.get("id"):
+                        messages_by_id[msg["id"]] = msg
+
+            messages = list(messages_by_id.values())
             self.log(f"📊 區間內共有 {len(messages)} 封相關信件")
             
             for msg in messages:
                 msg_id = msg['id']
                 
-                # 1. 檢查是否已處理 (DB)
-                if check_exists_func and check_exists_func(msg_id):
+                # DB 優先，JSON fallback；DB 無紀錄時要補處理，不能只看暫存清單。
+                if self._laf_message_already_processed(msg_id, check_exists_func):
                     self.log(f"  ⏭️ 信件已處理，跳過 (ID: {msg_id[-6:]}...)")
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
                     continue
                 
-                # 2. 檢查記憶體快取
-                if msg_id in self._processed_ids:
-                    continue
-                
-                # 3. 處理信件
+                # 處理信件
                 full_msg = self.service.users().messages().get(
                     userId='me', id=msg_id
                 ).execute()
@@ -8033,15 +8343,22 @@ class LAFGmailMonitor:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5821, exc_info=True)
                 
                 self.log(f"  ✨ 發現未處理信件: {subject} (ID: {msg_id[-6:]}...)")
+                self._restore_spam_to_inbox_if_needed(msg_id, full_msg, subject)
                 
                 case_info = self._process_message(msg_id, full_msg)
 
                 if case_info:
-                    self._processed_ids.add(msg_id)
-                    self._save_processed_ids()  # ★ 持久化
-                    # 觸發回呼
+                    callback_ok = True
                     if self.callback:
-                        self.callback(case_info)
+                        try:
+                            callback_result = self.callback(case_info)
+                            if callback_result is False:
+                                callback_ok = False
+                        except Exception:
+                            callback_ok = False
+                            raise
+                    if callback_ok:
+                        self.mark_laf_processed(msg_id)
 
         except Exception as e:
             self.log(f"❌ 掃描區間信件失敗: {e}")
@@ -8050,6 +8367,18 @@ class LAFGmailMonitor:
         """掃描今日所有法扶信件 (啟動時執行)"""
         today_str = datetime.now().strftime('%Y/%m/%d')
         self.scan_emails_in_range(today_str, today_str, check_exists_func)
+
+    def scan_recent_emails(self, days: int = None, check_exists_func=None):
+        """啟動時補掃近期法扶信件，避免 daemon 停機或人工讀信造成漏啟動。"""
+        if days is None:
+            try:
+                days = int(os.environ.get("MAGI_LAF_GMAIL_STARTUP_SCAN_DAYS", "7") or "7")
+            except Exception:
+                days = 7
+        days = max(1, min(int(days or 7), 30))
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=days - 1)
+        self.scan_emails_in_range(start_dt.strftime('%Y/%m/%d'), end_dt.strftime('%Y/%m/%d'), check_exists_func)
     
     def _process_message(self, msg_id: str, msg_data: dict) -> Optional[LAFCaseInfo]:
         """處理單封信件"""
@@ -8070,6 +8399,41 @@ class LAFGmailMonitor:
                 elif name == 'date':
                     date_str = value
             
+            body = ""
+            try:
+                body = self._get_email_body(msg_data)
+                if len(body) > 20000:
+                    body = body[:20000]
+            except Exception:
+                body = ""
+
+            transfer_notice = parse_laf_closing_transfer_notice(subject, body)
+            if transfer_notice:
+                case_info = LAFCaseInfo()
+                case_info.message_id = msg_id
+                case_info.subject = subject
+                case_info.sender = sender
+                case_info.body = body
+                case_info.laf_case_number = transfer_notice.laf_case_number
+                case_info.client_name = transfer_notice.client_name
+                case_info.staff_name = transfer_notice.staff_name
+                case_info.staff_phone = transfer_notice.staff_phone
+                case_info.staff_email = transfer_notice.staff_email
+                case_info.notification_type = "結案轉入通知"
+                case_info.case_type = "法律扶助"
+                case_info.case_stage = ""
+                case_info.case_reason = "結案轉入"
+                case_info.laf_case_type = "結案回報"
+                case_info.needs_download = False
+                case_info.has_attachment = False
+                try:
+                    from email.utils import parsedate_to_datetime
+                    case_info.received_at = parsedate_to_datetime(date_str)
+                except Exception:
+                    case_info.received_at = datetime.now()
+                self.log(f"  ✅ [結案轉入] 已辨識法扶結案轉入確認: {case_info.laf_case_number} {case_info.client_name}")
+                return case_info
+
             # 解析主旨
             case_info = LAFCaseTypeParser.parse_subject(subject)
             
@@ -8084,8 +8448,11 @@ class LAFGmailMonitor:
                     case_info.received_at = datetime.now()
                 
                 # 解析信件內文，檢查是否需要下載
-                body = self._get_email_body(msg_data)
-                case_info.needs_download = LAFCaseTypeParser.check_needs_download(body)
+                body_needs_download = LAFCaseTypeParser.check_needs_download(body)
+                if case_info.notification_type in {"原民中心案件資料", "專員來信", "中心案件資料"}:
+                    case_info.needs_download = False
+                else:
+                    case_info.needs_download = bool(case_info.needs_download or body_needs_download)
                 
                 # 檢查附件 (類似一般信件)
                 payload = msg_data.get('payload', {})
@@ -8197,7 +8564,7 @@ class LAFGmailMonitor:
             return ""
     
     def _parse_staff_info(self, body: str, case_info: LAFCaseInfo):
-        """從信件內文解析承辦人資訊"""
+        """從信件內文解析承辦人與主旨缺漏的案件資訊"""
         try:
             staff_match = re.search(
                 r'本案承辦人員[：:]\s*(\S+)\s+電話[：:]\s*([\d\-#]+)\s+Email[：:]\s*(\S+@\S+)',
@@ -8207,6 +8574,22 @@ class LAFGmailMonitor:
                 case_info.staff_name = staff_match.group(1)
                 case_info.staff_phone = staff_match.group(2)
                 case_info.staff_email = staff_match.group(3)
+
+            hint = extract_laf_staff_case_hint(
+                body,
+                laf_case_number=case_info.laf_case_number,
+                client_name=case_info.client_name,
+            )
+            if hint and is_pending_laf_reason(case_info.case_reason):
+                case_type, case_stage, case_reason = normalize_laf_case_fields(
+                    hint.get("case_type", "") or case_info.case_type,
+                    hint.get("case_stage", "") or case_info.case_stage,
+                    hint.get("case_reason", "") or case_info.case_reason,
+                    case_info.laf_case_type,
+                )
+                case_info.case_type = case_type or case_info.case_type
+                case_info.case_stage = case_stage or case_info.case_stage
+                case_info.case_reason = case_reason or case_info.case_reason
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5999, exc_info=True)
     
@@ -8241,13 +8624,22 @@ class LAFGmailMonitor:
         while self._running:
             try:
                 # 1. 檢查法扶信件
-                cases = self.check_emails()
+                cases = self.check_emails(
+                    check_exists_func=self.processed_exists_func,
+                    mark_processed=False,
+                )
                 for case_info in cases:
+                    callback_ok = True
                     if self.callback:
                         try:
-                            self.callback(case_info)
+                            callback_result = self.callback(case_info)
+                            if callback_result is False:
+                                callback_ok = False
                         except Exception as e:
+                            callback_ok = False
                             self.log(f"❌ 法扶回呼處理失敗: {e}")
+                    if callback_ok:
+                        self.mark_laf_processed(case_info.message_id)
                 
                 # 2. 檢查一般信件
                 if general_rules:
@@ -8517,7 +8909,11 @@ def _mark_duplicate_folder(dup_folder: str, canonical_folder: str, log=None) -> 
 def _discover_existing_case_folder(final_root: str, client_name: str, case_reason: str, case_stage: str = "") -> Dict[str, str]:
     root = (final_root or "").strip()
     cn = (client_name or "").strip()
-    cn_key = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", cn).lower()
+    try:
+        from api.case_display import normalize_person_name as _normalize_person_name
+    except Exception:
+        _normalize_person_name = lambda value: re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", str(value or "").strip()).lower()
+    cn_key = _normalize_person_name(cn)
     cr = (case_reason or "").strip()
     cs = (case_stage or "").strip()
     if not root or not cn or not cr or not os.path.isdir(root):
@@ -8528,7 +8924,7 @@ def _discover_existing_case_folder(final_root: str, client_name: str, case_reaso
             if not ent.is_dir():
                 continue
             name = ent.name or ""
-            name_key = re.sub(r"[\s\u3000·・•‧∙．｡。]+", "", name).lower()
+            name_key = _normalize_person_name(name)
             score = 0.0
             if cn and (cn in name or (cn_key and cn_key in name_key)):
                 score += 2.5
@@ -8684,7 +9080,7 @@ class OSCCaseCreator:
             "db_updates": updated_db,
         }
     
-    def _archive_files_to_folder(self, files: List[str], case_folder: str):
+    def _archive_files_to_folder(self, files: List[str], case_folder: str, case_info: Optional[LAFCaseInfo] = None):
         """
         將下載的檔案歸檔到案件資料夾
         
@@ -8703,6 +9099,24 @@ class OSCCaseCreator:
         }
         if not files:
             return result
+
+        def ensure_poa_word_copy(pdf_path: str) -> None:
+            if not is_laf_power_of_attorney_pdf(pdf_path):
+                return
+            metadata = {}
+            if case_info:
+                metadata = {
+                    "client_name": case_info.client_name,
+                    "laf_case_number": case_info.laf_case_number,
+                    "branch": case_info.branch,
+                    "case_type": case_info.case_type,
+                    "case_reason": case_info.case_reason,
+                }
+            converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=metadata)
+            if converted.get("status") == "created":
+                self.log(f"    📝 已產生委任狀 Word 可填寫版: {os.path.basename(str(converted.get('docx_path') or ''))}")
+            elif not converted.get("ok"):
+                self.log(f"    ⚠️ 委任狀 Word 可填寫版產生失敗: {converted.get('error')}")
         
         # 定義檔案分類規則
         def get_target_subfolder(fname):
@@ -8754,10 +9168,12 @@ class OSCCaseCreator:
                             if os.path.exists(target_path):
                                 self.log(f"    ⏭️ 已存在，跳過: {base_name}")
                                 result["skipped_existing"].append(target_path)
+                                ensure_poa_word_copy(target_path)
                                 continue
                             
                             with open(target_path, "wb") as target_file, zip_ref.open(member) as source_file:
                                 shutil.copyfileobj(source_file, target_file)
+                            ensure_poa_word_copy(target_path)
                             
                             self.log(f"    ✓ {base_name} → {target_sub}/")
                             result["new_files"].append(target_path)
@@ -8814,6 +9230,7 @@ class OSCCaseCreator:
                 else:
                     self.log(f"    ⏭️ 已存在，跳過: {filename}")
                     result["skipped_existing"].append(dest_path)
+                ensure_poa_word_copy(dest_path)
         
         self.log(f"  ✅ 檔案歸檔完成")
         return result
@@ -9014,7 +9431,11 @@ class OSCCaseCreator:
                         # 執行歸檔
                         if final_folder_to_use:
                             self.log(f"  📂 歸檔下載的檔案到: {final_folder_to_use}")
-                            self._archive_files_to_folder(files, final_folder_to_use)
+                            if _is_laf_staff_email_case_info(case_info):
+                                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                                self.archive_staff_email_attachments(files, final_folder_to_use)
+                            else:
+                                self._archive_files_to_folder(files, final_folder_to_use, case_info)
                             _write_laf_case_marker(final_folder_to_use, case_info.laf_case_number, log=self.log)
                             fields = _scan_laf_forms_for_client_fields(final_folder_to_use)
                             if fields:
@@ -9112,7 +9533,11 @@ class OSCCaseCreator:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6899, exc_info=True)
 
                 if files:
-                    self._archive_files_to_folder(files, reuse_folder)
+                    if _is_laf_staff_email_case_info(case_info):
+                        self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                        self.archive_staff_email_attachments(files, reuse_folder)
+                    else:
+                        self._archive_files_to_folder(files, reuse_folder, case_info)
                     fields2 = _scan_laf_forms_for_client_fields(reuse_folder)
                     if fields2:
                         try:
@@ -9162,7 +9587,11 @@ class OSCCaseCreator:
                                 "進行中",
                                 datetime.now().strftime('%Y-%m-%d'),
                                 None,
-                                "",
+                                _laf_default_case_lawyer(
+                                    self.db_manager,
+                                    case_type=case_info.case_type,
+                                    case_reason=case_reason,
+                                ),
                                 folder_path_for_db,
                                 case_info.case_stage,
                                 "",
@@ -9215,7 +9644,7 @@ class OSCCaseCreator:
                 '01_法扶資料', '02_開辦資料', '03_結案資料',
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料',
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定',
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for sf in subfolders:
@@ -9223,7 +9652,11 @@ class OSCCaseCreator:
                 os.makedirs(subfolder_path, exist_ok=True)
             
             # 8. 處理檔案 (ZIP 解壓縮/分類)
-            if files:
+            if files and _is_laf_staff_email_case_info(case_info):
+                self.log("  📎 來源為法扶專員來信，歸檔至 01_法扶資料/專員來信，不列為官網附件")
+                self.archive_staff_email_attachments(files, case_folder)
+                self.log(f"  ✅ 專員來信附件處理完成")
+            elif files:
                 # 定義檔案分類規則
                 def get_target_subfolder(fname):
                     rules = {
@@ -9405,7 +9838,11 @@ class OSCCaseCreator:
                 '進行中',  # status
                 datetime.now().strftime('%Y-%m-%d'),  # start_date
                 None,  # court_date
-                '',  # lawyer
+                _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_info.case_type,
+                    case_reason=case_reason,
+                ),  # lawyer
                 folder_path_for_db,
                 case_info.case_stage,
                 '',  # court_case_number
@@ -9521,6 +9958,11 @@ class LAFAutomationManager:
         self.log("[LAF] 🚀 開始執行 setup()...")
         gmail_config = self.config.get('gmail', {})
         laf_config = self.config.get('laf', {})
+        if not isinstance(laf_config, dict):
+            laf_config = {}
+        self.config['laf'] = laf_config
+        # Missing legacy configs must not silently disable the dispatch workflow.
+        laf_config.setdefault('auto_create_case', True)
         
         # 除錯：顯示收到的設定
         self.log(f"[LAF] 📋 設定檢查:")
@@ -9587,7 +10029,10 @@ class LAFAutomationManager:
         if self.db_manager:
             try:
                 # (V-MacFix) 轉換為本機路徑
-                target_folder = laf_config.get('target_folder', './法扶資料')
+                target_folder = laf_config.get('target_folder') or ''
+                if not target_folder or target_folder in {'.', './法扶資料', '法扶資料'}:
+                    roots = preferred_case_roots(include_closed=False)
+                    target_folder = os.path.join((roots[0] if roots else "."), "法扶案件")
                 
                 # 嘗試路徑轉換 (最可能卡住的地方)
                 if hasattr(self.db_manager, 'translate_path_to_local'):
@@ -9618,6 +10063,7 @@ class LAFAutomationManager:
                         target_folder = mac_target
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7406, exc_info=True)
+                laf_config['target_folder'] = target_folder
                 
                 self.case_creator = OSCCaseCreator(
                     db_manager=self.db_manager,
@@ -9648,9 +10094,10 @@ class LAFAutomationManager:
             if self.db_manager:
                 # 定義檢查函式
                 check_func = lambda mid: self.db_manager.check_laf_email_exists(mid)
+                self.gmail_monitor.processed_exists_func = check_func
                 # 在背景執行掃描，避免卡住 GUI
                 threading.Thread(
-                    target=self.gmail_monitor.scan_today_emails,
+                    target=self.gmail_monitor.scan_recent_emails,
                     args=(check_func,),
                     daemon=True
                 ).start()
@@ -9719,6 +10166,88 @@ class LAFAutomationManager:
                 "LAF 律師線上操作系統的驗證碼連續識別失敗，請手動登入處理。",
                 color=0xff9900
             )
+
+    def _update_laf_email_record_status(self, message_id: str, status: str, case_number: str = "") -> None:
+        if not self.db_manager or not message_id:
+            return
+        try:
+            writer = getattr(self.db_manager, "execute_write", None) or getattr(self.db_manager, "execute", None)
+            if not writer:
+                return
+            writer(
+                "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                (status, case_number or None, message_id),
+            )
+        except Exception as e:
+            self.log(f"  ⚠️ 法扶結案轉入信件紀錄更新失敗: {e}")
+
+    def _handle_closing_transfer_notice(self, case_info: LAFCaseInfo) -> bool:
+        notice = parse_laf_closing_transfer_notice(
+            getattr(case_info, "subject", ""),
+            getattr(case_info, "body", ""),
+        )
+        if not notice:
+            return False
+        if not self.db_manager:
+            self.log("  ⚠️ 收到法扶結案轉入確認，但 DB 尚未可用，保留人工檢查。")
+            return True
+
+        try:
+            result = apply_laf_closing_transfer_notice(
+                self.db_manager,
+                notice,
+                source_message_id=getattr(case_info, "message_id", "") or "",
+            )
+        except Exception as e:
+            result = {"ok": False, "updated": False, "status": "update_error", "error": str(e)}
+
+        record_status = laf_closing_transfer_record_status(result)
+        self._update_laf_email_record_status(
+            getattr(case_info, "message_id", "") or "",
+            record_status,
+            str(result.get("case_number") or notice.laf_case_number),
+        )
+
+        status = str(result.get("status") or "")
+        case_number = str(result.get("case_number") or "(未定位)")
+        if result.get("updated"):
+            message = (
+                "✅ 法扶結案轉入已自動更新\n"
+                f"OSC 案號: {case_number}\n"
+                f"法扶案號: {notice.laf_case_number}\n"
+                "狀態: 已結案"
+            )
+            self.log(f"  ✅ [結案轉入] {case_number} 已自動改為 已結案")
+            try:
+                if self.discord:
+                    self.discord.send_message("✅ 法扶結案轉入已自動更新", message, color=0x00ff00)
+                else:
+                    from line_notifier import LAFNotifier
+                    LAFNotifier().notify_admin(message, topic_key="laf_closing")
+            except Exception as notify_error:
+                self.log(f"  ⚠️ 法扶結案轉入通知發送失敗: {notify_error}")
+        elif status == "already_final":
+            self.log(f"  ✅ [結案轉入] {case_number} 已是 已結案，略過重複更新")
+        else:
+            self.log(
+                "  ⚠️ [結案轉入] 未自動更新 "
+                f"{notice.laf_case_number}: {status or 'unknown'}"
+            )
+            try:
+                from line_notifier import LAFNotifier
+                LAFNotifier().notify_admin(
+                    "⚠️ 法扶結案轉入信未自動落狀態\n"
+                    f"法扶案號: {notice.laf_case_number}\n"
+                    f"結果: {status or 'unknown'}",
+                    topic_key="laf_closing",
+                )
+            except Exception as notify_admin_error:
+                logging.getLogger(__name__).warning(
+                    "LAF closing transfer fallback notification failed: %s",
+                    notify_admin_error,
+                    exc_info=True,
+                )
+        return True
     
     def _on_new_case(self, case_info: LAFCaseInfo):
         """處理新案件"""
@@ -9734,15 +10263,18 @@ class LAFAutomationManager:
             # 0. 記錄到資料庫 (避免重複處理)
             if self.db_manager:
                 record_data = {
-                    'message_id': case_info.message_id,
-                    'subject': f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
+                    'gmail_message_id': case_info.message_id,
+                    'subject': case_info.subject or f"【{case_info.branch}】{case_info.client_name}-{case_info.case_type}",
                     'sender': case_info.sender,
                     'received_at': case_info.received_at,
                     'status': 'processing',
-                    'laf_case_number': case_info.laf_case_number,
+                    'case_number': case_info.laf_case_number,
                     'created_case_id': None
                 }
                 self.db_manager.add_laf_email_record(record_data)
+
+            if self._handle_closing_transfer_notice(case_info):
+                return True
 
             notify_title = f"📧 法扶{case_info.notification_type}"
             notify_body = (
@@ -9814,7 +10346,19 @@ class LAFAutomationManager:
                 
                 # 有附件時建案（附件會自動歸檔）
                 if self.case_creator and self.config.get('laf', {}).get('auto_create_case'):
-                    osc_case_number = self.case_creator.create_case(case_info, downloaded_files)
+                    create_result = self.case_creator.create_case(case_info, downloaded_files)
+                    if isinstance(create_result, tuple):
+                        osc_case_number = create_result[0]
+                    else:
+                        osc_case_number = create_result
+                    if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                        try:
+                            self.db_manager.execute_write(
+                                "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                                ("completed", getattr(case_info, "laf_case_number", "") or str(osc_case_number), case_info.message_id),
+                            )
+                        except Exception as e:
+                            self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                     
                     if osc_case_number and self.discord:
                         self.discord.send_message(
@@ -9824,9 +10368,11 @@ class LAFAutomationManager:
                             f"**附件:** {len(downloaded_files)} 個檔案已歸檔",
                             color=0x00ff00
                         )
+            return True
         
         except Exception as e:
             self.log(f"❌ 處理新案件失敗: {e}")
+            return False
 
     def _on_general_email(self, email_info: GeneralEmailInfo):
         """處理一般信件"""
@@ -10019,6 +10565,27 @@ class LAFAutomationManager:
             # 建立案件
             if self.case_creator:
                 osc_case_number, case_folder = self.case_creator.create_case(case_info, files)
+                staff_attachment_count = 0
+                if case_folder and case_info.has_attachment and case_info.message_id and self.gmail_monitor:
+                    try:
+                        staff_target = os.path.join(case_folder, "01_法扶資料", "專員來信")
+                        downloaded_staff = self.gmail_monitor.download_attachments_by_msg_id(
+                            case_info.message_id,
+                            staff_target,
+                        )
+                        staff_attachment_count = len(downloaded_staff or [])
+                        if downloaded_staff:
+                            self.case_creator.postprocess_staff_email_attachments(downloaded_staff, case_folder)
+                    except Exception as e:
+                        self.log(f"  ⚠️ 專員來信附件歸檔失敗: {e}")
+                if osc_case_number and self.db_manager and getattr(case_info, "message_id", ""):
+                    try:
+                        self.db_manager.execute_write(
+                            "UPDATE `laf_email_records` SET `status`=%s, `processed_at`=NOW(), `case_number`=%s WHERE `gmail_message_id`=%s",
+                            ("completed", getattr(case_info, "laf_case_number", "") or osc_case_number, case_info.message_id),
+                        )
+                    except Exception as e:
+                        self.log(f"  ⚠️ 法扶信件完成狀態更新失敗: {e}")
                 
                 if osc_case_number and self.discord:
                     # 嘗試轉換回 Windows 路徑供顯示
@@ -10031,6 +10598,7 @@ class LAFAutomationManager:
                         f"**OSC 案號:** {osc_case_number}\n"
                         f"**當事人:** {case_info.client_name}\n"
                         f"**下載檔案:** {len(files)} 個\n"
+                        f"**專員附件:** {staff_attachment_count} 個\n"
                         f"**儲存位置:** `{display_path}`",
                         color=0x00ff00
                     )
@@ -10039,6 +10607,7 @@ class LAFAutomationManager:
                     "laf_case_number": getattr(case_info, "laf_case_number", ""),
                     "client_name": getattr(case_info, "client_name", ""),
                     "downloaded_files": len(files or []),
+                    "staff_attachments": staff_attachment_count,
                     "osc_case_number": osc_case_number,
                     "case_folder": case_folder,
                 }
@@ -10488,30 +11057,35 @@ class LAFAutomationManager:
                             }
                         else:
                              # ★ [Smart Discovery] 智慧資料夾搜尋 (即使 DB 路徑失效也能找到) ★
-                            self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
+                            db_case_closed = self._is_db_case_closed_or_archived(db_case)
+                            if db_case_closed:
+                                self.log(f"     ⚠️ 已結案案件路徑失效，改查結案歸檔資料夾...")
+                            else:
+                                self.log(f"     ⚠️ DB 路徑失效，嘗試 Smart Discovery...")
                             osc_case_number = db_case.get('case_number')
                             discovered_path = None
-                            
-                            # 搜尋潛在根目錄
-                            potential_roots = [target_root]
-                            # 加入子目錄
-                            for sub in ['刑事', '民事', '行政', '消費者債務清理']:
-                                sub_path = os.path.join(target_root, sub)
-                                if os.path.exists(sub_path):
-                                    potential_roots.append(sub_path)
-                            
-                            for root in potential_roots:
-                                if not os.path.exists(root): continue
-                                try:
-                                    for item in os.listdir(root):
-                                         if item.startswith(osc_case_number): # 只要開頭對了 (案號對了)
-                                             full_path = os.path.join(root, item)
-                                             if os.path.isdir(full_path):
-                                                 discovered_path = full_path
-                                                 break
-                                except:
-                                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 8269, exc_info=True)
-                                if discovered_path: break
+
+                            if db_case_closed:
+                                case_roots = preferred_case_roots(include_closed=True)
+                                closed_roots = case_roots[1:] if len(case_roots) > 1 else []
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    closed_roots,
+                                    max_depth=3,
+                                )
+                            else:
+                                # 搜尋潛在根目錄
+                                potential_roots = [target_root]
+                                # 加入子目錄
+                                for sub in ['刑事', '民事', '行政', '消費者債務清理']:
+                                    sub_path = os.path.join(target_root, sub)
+                                    if os.path.exists(sub_path):
+                                        potential_roots.append(sub_path)
+                                discovered_path = self._discover_case_folder_by_number(
+                                    osc_case_number,
+                                    potential_roots,
+                                    max_depth=1,
+                                )
                                 
                             if discovered_path:
                                 self.log(f"     🔍 [SmartDiscovery] 找到更名後的資料夾: {discovered_path}")
@@ -10519,6 +11093,8 @@ class LAFAutomationManager:
                                     'folder_name': os.path.basename(discovered_path),
                                     'folder_path': discovered_path
                                 }
+                            elif db_case_closed:
+                                self.log(f"     ⏭️ {osc_case_number} 已結案但找不到結案歸檔資料夾，停止重建進行中空殼")
                             else:
                                 # 真的找不到才重建
                                 self.log(f"     ⚠️ 路徑皆不存在且找不到替代，嘗試重建...")
@@ -10574,7 +11150,7 @@ class LAFAutomationManager:
                 # 5. 定義檔案分類規則
                 file_category_rules = {
                     '01_法扶資料': ['接案通知書', '委任狀', '法律扶助申請書', '案件概述單', '資力詢問表', '審查表', '准予扶助證明書', '預付酬金領款單', '結案回報書'],
-                    '03_結案資料': ['結案酬金領款單'],
+                    '03_結案資料': ['結案酬金領款單', '結案審查通知書', '變動審查通知書'],
                     '02_開辦資料': ['附條件第二階段預付酬金領款單'],
                 }
                 
@@ -10696,7 +11272,7 @@ class LAFAutomationManager:
                 if _runtime_deleted > 0:
                     self.log(f"  ✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 10739, exc_info=True)
 
             download_folder = self.web_automation.download_folder
             if not download_folder or not os.path.exists(download_folder):
@@ -10748,6 +11324,7 @@ class LAFAutomationManager:
             # (V2.1) 增加查詢 legal_aid_number
             query = """
                 SELECT case_number, client_name, folder_path, case_type, case_stage, case_reason,
+                       status, legal_aid_status,
                        legal_aid_number, laf_case_no, application_no, notes
                 FROM cases
                 WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(client_name), ' ', ''), '　', ''), '·', ''), '・', ''), '‧', ''), '．', '')) = %s
@@ -10940,7 +11517,7 @@ class LAFAutomationManager:
                 '01_法扶資料', '02_開辦資料', '03_結案資料', 
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料', 
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定', 
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for subfolder in subfolders:
@@ -10981,7 +11558,11 @@ class LAFAutomationManager:
                 'status': '進行中',
                 'start_date': datetime.now().strftime('%Y-%m-%d'),
                 'court_date': None,
-                'lawyer': '',
+                'lawyer': _laf_default_case_lawyer(
+                    self.db_manager,
+                    case_type=case_type,
+                    case_reason=case_reason,
+                ),
                 'folder_path': db_folder_path,
                 'case_stage': case_stage,
                 'court_case_number': '',
@@ -11006,6 +11587,48 @@ class LAFAutomationManager:
             self.log(f"     ❌ 自動建立案件失敗: {e}")
             traceback.print_exc()
             return None
+
+    @staticmethod
+    def _is_db_case_closed_or_archived(db_case: Dict) -> bool:
+        """Return True when an existing case must stay in the closed archive."""
+        status_text = str((db_case or {}).get('status') or '').strip().lower()
+        laf_status_text = str((db_case or {}).get('legal_aid_status') or '').strip().lower()
+        folder_path = str((db_case or {}).get('folder_path') or '').strip().replace('\\', '/')
+        closed_status_markers = ('已結案', 'closed', 'completed', 'archived')
+        return (
+            any(marker in status_text for marker in closed_status_markers)
+            or laf_status_text.startswith('已結案')
+            or '/10_結案/' in folder_path
+            or folder_path.upper().startswith('Y:/')
+        )
+
+    def _discover_case_folder_by_number(self, case_number: str, roots: list, max_depth: int = 2) -> Optional[str]:
+        """Find an existing case folder by OSC number without creating folders."""
+        case_no = str(case_number or '').strip()
+        if not case_no:
+            return None
+        queue = [(str(root), 0) for root in roots if str(root or '').strip()]
+        seen = set()
+        while queue:
+            root, depth = queue.pop(0)
+            norm_root = os.path.abspath(root)
+            if norm_root in seen:
+                continue
+            seen.add(norm_root)
+            if not os.path.isdir(root):
+                continue
+            try:
+                entries = os.listdir(root)
+            except Exception:
+                logging.getLogger(__name__).debug("case folder discovery scan failed: %s", root, exc_info=True)
+                continue
+            for item in entries:
+                full_path = os.path.join(root, item)
+                if item.startswith(case_no) and os.path.isdir(full_path):
+                    return full_path
+                if depth < max_depth and os.path.isdir(full_path) and not item.startswith('.'):
+                    queue.append((full_path, depth + 1))
+        return None
 
     def _recreate_folder_for_existing_case(self, db_case: Dict, case_type: str, 
                                             case_stage: str, case_reason: str,
@@ -11038,6 +11661,10 @@ class LAFAutomationManager:
             
             if not osc_case_number or not client_name:
                 self.log("     ❌ DB 記錄缺少必要欄位")
+                return None
+
+            if self._is_db_case_closed_or_archived(db_case):
+                self.log(f"     ⏭️ {osc_case_number} 已結案或已歸檔，跳過進行中資料夾重建")
                 return None
             
             self.log(f"     📋 使用原有 OSC 案號: {osc_case_number}")
@@ -11080,7 +11707,7 @@ class LAFAutomationManager:
                 '01_法扶資料', '02_開辦資料', '03_結案資料', 
                 '04_我方歷次書狀', '05_對方歷次書狀', '06_閱卷資料', 
                 '07_證據資料', '08_筆錄', '09_法院通知或程序裁定', 
-                '10_判決書', '11_回執', '12_信件往返'
+                '10_判決書或終局裁定及處分', '11_回執', '12_信件往返'
             ]
             
             for subfolder in subfolders:
@@ -11132,7 +11759,12 @@ class LAFAutomationManager:
                 existing_client = self.db_manager.execute(check_client_query, (client_name,), fetch='one')
                 
                 if not existing_client:
-                    new_client_id = str(uuid.uuid4())
+                    if hasattr(self.db_manager, "generate_client_id"):
+                        new_client_id = self.db_manager.generate_client_id()
+                    else:
+                        from api.osc.client_ids import next_client_id_from_existing
+                        existing_ids = self.db_manager.execute("SELECT id FROM clients WHERE id LIKE 'C%'", fetch='all') or []
+                        new_client_id = next_client_id_from_existing(existing_ids)
                     create_client_query = """
                         INSERT INTO clients (id, name, created_date, status)
                         VALUES (%s, %s, NOW(), '進行中')
@@ -11165,7 +11797,14 @@ class LAFAutomationManager:
                 case_data.get('status'),
                 case_data.get('start_date'),
                 case_data.get('court_date'),
-                case_data.get('lawyer', ''),
+                normalize_case_lawyer(
+                    case_data.get('lawyer', ''),
+                    allow_default=True,
+                    case_type=case_data.get('case_type', ''),
+                    case_reason=case_data.get('case_reason', ''),
+                    case_category=case_data.get('case_category', ''),
+                    settings_getter=db_settings_getter(self.db_manager),
+                ),
                 case_data.get('folder_path'),
                 case_data.get('case_stage'),
                 case_data.get('court_case_number', ''),

@@ -99,7 +99,7 @@ def test_main_fails_when_ape_output_empty_or_case_numbers_missing(monkeypatch, c
     mod._bench_apple_baseline = _bench_baseline
     mod._bench_ape = _bench_ape
 
-    rc = mod.main()
+    rc = mod.main([])
     out = capsys.readouterr().out.strip()
     payload = json.loads(out)
 

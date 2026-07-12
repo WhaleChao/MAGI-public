@@ -41,14 +41,17 @@ Public source package:
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/first_run_setup.py --public --json
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/packaging/validate_installer_payload.py --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 python3 scripts/ops/commercial_readiness_live.py --strict-public --skip-db
 ```
 
 `commercial_readiness_live.py` also performs a cleanroom public installability
-check: it clones the committed checkout to a temporary directory, runs strict
-public isolation there, and runs the public customer install wizard in dry-run
-mode. This catches release-only problems that a configured developer machine
-could otherwise hide.
+check: it copies the current git worktree candidate, including non-ignored
+uncommitted files, to a temporary directory, runs strict public isolation there,
+and runs the public customer install wizard in dry-run mode. This catches
+release-only problems that a configured developer machine could otherwise hide,
+without accidentally validating an older committed `HEAD`.
 
 For external customer onboarding, `scripts/customer_install_wizard.py` is the
 preferred entrypoint. It handles the repeatable chores automatically: local
@@ -62,12 +65,14 @@ generated safely by MAGI.
 Private production checkout:
 
 ```bash
-./venv/bin/python scripts/public_release_audit.py --strict
+./venv/bin/python scripts/public_release_audit.py --public-isolation --strict
+./venv/bin/python scripts/packaging/validate_installer_payload.py --json
+./venv/bin/python scripts/ops/public_push_guard.py --remote public --profile public --json
 ./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
 ./venv/bin/python scripts/ops/smoke_three_channels.py --strict-warn
 ./venv/bin/python scripts/ops/smoke_core_routes.py --with-network --with-heavy
 ./venv/bin/python scripts/ops/skill_realworld_smoke.py
-./venv/bin/python scripts/ops/smoke_test_full.py
+./venv/bin/python scripts/ops/smoke_test_full.py --commercial
 ```
 
 Acceptance target:
@@ -75,6 +80,8 @@ Acceptance target:
 - No public audit errors or warnings in strict mode.
 - First-run checklist public mode has no private-integration findings.
 - No failing live-gate checks.
+- Beginner entrypoints (`/start` and `/dashboard/beginner`) open after login
+  and explain feature readiness without requiring operator-only vocabulary.
 - No warning in strict channel smoke.
 - Google Calendar import dry-run is clean: coworker/manual events are skipped,
   OSC events require a leading OSC case number, and LAF activity-count events
@@ -161,15 +168,36 @@ Before launch, publish or provide:
 - `docs/OPERATOR_RUNBOOK.md`
 - Latest live-gate summary generated from the production machine
 
+Use a sanitized live-gate summary in public release notes. Do not paste raw
+business-module stdout because it can contain case numbers, court names, or
+other customer-owned details. `business_module_live_check.py` redacts common
+case/customer keys and sensitive tails in its machine output, but release notes
+should still summarize status instead of copying raw JSON.
+
+Example:
+
+```text
+Release verification: 2026-07-02
+Private production suite: production-live passed
+Business modules: LAF draft-safe portal scan passed; file-review probe passed;
+transcript DB probe passed
+Public safety: public-isolation strict audit passed, 0 errors / 0 warnings
+Commercial readiness: passed
+Cleanroom source: current-worktree snapshot
+Artifacts: .runtime/production_live_latest.json, .runtime/commercial_release_latest.json
+```
+
 ## Go / No-Go Checklist
 
 - [ ] Public repo audit passes strict mode.
+- [ ] Public push guard passes from a clean public worktree.
+- [ ] Installer payload validation passes against the built release archive.
 - [ ] Production checkout audit passes strict mode.
 - [ ] CI is green on the release branch.
 - [ ] Commercial readiness live gate passes on the target machine.
 - [ ] Channel smoke passes with no strict warnings.
 - [ ] Core route smoke passes, including tool-confusion guards.
-- [ ] Skill matrix passes.
+- [ ] `commercial-release` passes, including `skill_realworld_smoke`.
 - [ ] DB backup exists, is readable, and restore requires confirmation.
 - [ ] NAS/file storage is mounted at the expected path.
 - [ ] Portal automation is draft-only or explicitly confirmed.

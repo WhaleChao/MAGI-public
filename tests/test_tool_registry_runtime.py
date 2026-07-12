@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from api.tools import ToolContext, ToolRegistry, get_global_tool_registry
+from api.tools import GENERAL_ERROR_CATEGORIES, GeneralError, ToolContext, ToolRegistry, get_global_tool_registry
 
 
 def test_tool_registry_register_list_and_execute():
@@ -45,3 +45,16 @@ def test_tools_api_registered_search_uses_existing_callable(monkeypatch):
     assert result.success is True
     assert result.output["query"] == "MAGI"
     assert result.output["num_results"] == 2
+
+
+def test_general_error_contract_categories_are_stable():
+    assert set(GENERAL_ERROR_CATEGORIES) >= {
+        "auth_required",
+        "login_failed",
+        "path_missing",
+        "external_service",
+        "validation_failed",
+        "unknown",
+    }
+    assert GeneralError(category="login_failed", message="bad captcha").as_dict()["category"] == "login_failed"
+    assert GeneralError(category="surprise").as_dict()["category"] == "unknown"

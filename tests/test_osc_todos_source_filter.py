@@ -39,7 +39,7 @@ def test_todos_source_osc_excludes_google_calendar_import(client):
 
     assert resp.status_code == 200
     sql = client.calls[-1][0]
-    assert "source_file NOT LIKE 'gcal_import%%'" in sql
+    assert "COALESCE(source_file, '') NOT LIKE 'gcal_import%%'" in sql
     assert "COALESCE(todo_type, '') <> '行事曆事件'" in sql
 
 
@@ -48,8 +48,8 @@ def test_todos_source_gcal_returns_calendar_imports_and_calendar_todos(client):
 
     assert resp.status_code == 200
     sql = client.calls[-1][0]
-    assert "source_file LIKE 'gcal_import%%'" in sql
-    assert "todo_type='行事曆事件'" in sql
+    assert "COALESCE(source_file, '') LIKE 'gcal_import%%'" in sql
+    assert "COALESCE(todo_type, '')='行事曆事件'" in sql
     assert "source_file NOT LIKE" not in sql
 
 

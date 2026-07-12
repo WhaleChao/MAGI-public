@@ -25,6 +25,46 @@ def test_root_creates_dir(tmp_runtime):
     assert p.exists() and p.is_dir()
 
 
+def test_root_uses_magi_root_dir_without_explicit_runtime_dir(tmp_path, monkeypatch):
+    magi_root = tmp_path / "runtime" / "MAGI_v2"
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("MAGI_ROOT", raising=False)
+    monkeypatch.setenv("MAGI_ROOT_DIR", str(magi_root))
+
+    p = rd.root()
+
+    assert p == magi_root.resolve() / ".runtime"
+    assert p.exists() and p.is_dir()
+
+
+def test_root_uses_magi_root_fallback_without_root_dir(tmp_path, monkeypatch):
+    magi_root = tmp_path / "legacy-root"
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("MAGI_ROOT_DIR", raising=False)
+    monkeypatch.setenv("MAGI_ROOT", str(magi_root))
+
+    p = rd.root()
+
+    assert p == magi_root.resolve() / ".runtime"
+
+
+def test_root_prefers_explicit_runtime_dir(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "explicit-runtime"
+    magi_root = tmp_path / "runtime" / "MAGI_v2"
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setenv("MAGI_ROOT_DIR", str(magi_root))
+
+    assert rd.root() == runtime_dir.resolve()
+
+
+def test_root_without_environment_uses_the_loaded_code_root(monkeypatch):
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("MAGI_ROOT_DIR", raising=False)
+    monkeypatch.delenv("MAGI_ROOT", raising=False)
+
+    assert rd.root() == Path(rd.__file__).resolve().parents[2] / ".runtime"
+
+
 def test_pending_path(tmp_runtime):
     p = rd.pending("laf_progress_submit")
     assert p.parent.name == "pending"
@@ -98,6 +138,17 @@ def test_jsonl_rotates_to_tail(tmp_runtime):
     assert len(lines) == 300
     # tail 是最後 300 筆（i=201..500）
     assert json.loads(lines[-1]) == {"i": 500}
+
+
+def test_jsonl_rotation_reads_a_bounded_tail(tmp_runtime):
+    p = rd.metrics("large")
+    p.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(5000)), encoding="utf-8")
+
+    tail, overflow = rd._read_jsonl_tail(p, max_lines=501)
+
+    assert overflow is True
+    assert len(tail) == 501
+    assert json.loads(tail[-1]) == {"i": 4999}
 
 
 # --- legacy_fallback ----------------------------------------------------

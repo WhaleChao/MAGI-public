@@ -17,18 +17,42 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+import importlib.util
+import tempfile
 from pathlib import Path
+from html import escape
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, session, current_app
 from flask_login import login_required
+from scripts.ops.token_health_check import (
+    check_google_token,
+    google_calendar_token_path,
+    google_calendar_token_spec,
+    google_token_connected,
+    google_token_file_lock,
+)
 
 logger = logging.getLogger(__name__)
 
 osc_gcal_bp = Blueprint("osc_gcal", __name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-TOKEN_PATH = Path.home() / ".magi" / "google" / "token.json"
+TOKEN_PATH = google_calendar_token_path()
 MAGI_PORT = int(os.environ.get("MAGI_PORT", "5002"))
+_LAST_CREDS_STATUS = "unknown"
+_LAST_CREDS_ERROR = ""
+
+
+def _require_gcal_operator():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    from api.authz import check_authorization
+
+    allowed, reason = check_authorization("operator")
+    if allowed:
+        return None
+    return jsonify({"ok": False, "error": "forbidden", "reason": reason}), 403
 
 
 def _get_osc_exec():
@@ -52,27 +76,95 @@ def _get_setting(key: str) -> str | None:
         return None
 
 
+def _write_token_atomic(path: Path, text: str) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                logger.debug("token temp chmod failed", exc_info=True)
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                logger.debug("token temp fsync failed", exc_info=True)
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(0o600)
+        except Exception:
+            logger.debug("token chmod failed", exc_info=True)
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def _load_creds():
     """Load credentials from token.json, refreshing if expired."""
+    global _LAST_CREDS_STATUS, _LAST_CREDS_ERROR
+    _LAST_CREDS_STATUS = "unknown"
+    _LAST_CREDS_ERROR = ""
     if not TOKEN_PATH.exists():
+        _LAST_CREDS_STATUS = "missing_token"
         return None
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
-            TOKEN_PATH.chmod(0o600)
+        with google_token_file_lock(TOKEN_PATH):
+            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                _write_token_atomic(TOKEN_PATH, creds.to_json())
+        _LAST_CREDS_STATUS = "connected" if creds and creds.valid else "invalid_credentials"
         return creds
     except Exception as exc:
+        text = str(exc)
+        low = text.lower()
+        if "invalid_grant" in low or "expired or revoked" in low or "token has been revoked" in low:
+            _LAST_CREDS_STATUS = "auth_required"
+        elif isinstance(exc, json.JSONDecodeError):
+            _LAST_CREDS_STATUS = "token_corrupt"
+        elif isinstance(exc, ModuleNotFoundError) and str(exc).find("google") >= 0:
+            _LAST_CREDS_STATUS = "dependency_missing"
+        else:
+            _LAST_CREDS_STATUS = "refresh_failed"
+        _LAST_CREDS_ERROR = f"{type(exc).__name__}: {text[:180]}"
         logger.warning("_load_creds failed: %s", exc)
         return None
 
 
+def _run_current_gcal_sync(payload: dict) -> dict:
+    """Run the single current OSC Google Calendar sync implementation."""
+    skill_dir = Path(__file__).resolve().parents[2] / "skills" / "osc-orchestrator"
+    action_path = skill_dir / "action.py"
+    if not action_path.exists():
+        raise RuntimeError("找不到 OSC 日曆同步模組")
+    if str(skill_dir) not in sys.path:
+        sys.path.insert(0, str(skill_dir))
+    spec = importlib.util.spec_from_file_location("magi_osc_orchestrator_action", action_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("無法載入 OSC 日曆同步模組")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(module.task_gcal_sync(payload or {}))
+
+
 def _build_redirect_uri() -> str:
     return f"http://127.0.0.1:{MAGI_PORT}/api/osc/gcal/auth/callback"
+
+
+def _calendar_token_health(*, refresh: bool = False) -> dict:
+    return check_google_token(
+        google_calendar_token_spec(token_path=TOKEN_PATH),
+        refresh=refresh,
+        threshold_seconds=7 * 24 * 3600,
+    )
 
 
 # ── GET /api/osc/gcal/status ─────────────────────────────────────────────────
@@ -80,17 +172,35 @@ def _build_redirect_uri() -> str:
 @osc_gcal_bp.route("/api/osc/gcal/status", methods=["GET"])
 @login_required
 def gcal_status():
-    creds = _load_creds()
-    if creds is None or not creds.valid:
-        return jsonify({"ok": True, "connected": False})
-
-    info = {"ok": True, "connected": True}
-    try:
-        token_data = json.loads(TOKEN_PATH.read_text())
-        info["email"] = token_data.get("client_id", "")
-        info["expires_at"] = token_data.get("expiry", "")
-    except Exception:
-        pass
+    token_health = _calendar_token_health(refresh=False)
+    connected = google_token_connected(token_health)
+    info = {
+        "ok": bool(token_health.get("ok")),
+        "connected": connected,
+        "healthy": connected,
+        "reason": token_health.get("status") or "unknown",
+        "error": "" if token_health.get("ok") else token_health.get("message", ""),
+        "next_action": token_health.get("next_action", ""),
+        "token_health": {
+            "status": token_health.get("status"),
+            "message": token_health.get("message"),
+            "path": token_health.get("path"),
+            "expires_at": token_health.get("expires_at"),
+            "expires_in_hours": token_health.get("expires_in_hours"),
+            "refresh_token_present": token_health.get("refresh_token_present"),
+            "scopes_ok": token_health.get("scopes_ok"),
+            "account_check_status": token_health.get("account_check_status"),
+            "required": token_health.get("required"),
+            "next_action": token_health.get("next_action", ""),
+        },
+    }
+    if TOKEN_PATH.exists():
+        try:
+            token_data = json.loads(TOKEN_PATH.read_text())
+            info["email"] = token_data.get("client_id", "")
+            info["expires_at"] = token_data.get("expiry", "")
+        except Exception:
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 92, exc_info=True)
     info["calendar_id"] = _get_setting("gcal_calendar_id") or "primary"
     info["import_calendar_ids"] = _get_setting("gcal_import_calendar_ids") or "全部可讀日曆"
     return jsonify(info)
@@ -101,6 +211,9 @@ def gcal_status():
 @osc_gcal_bp.route("/api/osc/gcal/auth/start", methods=["POST"])
 @login_required
 def gcal_auth_start():
+    auth_error = _require_gcal_operator()
+    if auth_error:
+        return auth_error
     client_id = _get_setting("gcal_client_id")
     client_secret = _get_setting("gcal_client_secret")
 
@@ -126,6 +239,7 @@ def gcal_auth_start():
             redirect_uri=redirect_uri,
         )
         auth_url, state = flow.authorization_url(access_type="offline", prompt="consent")
+        session["gcal_oauth_state"] = state
         return jsonify({"ok": True, "auth_url": auth_url, "state": state})
     except Exception as exc:
         logger.exception("gcal_auth_start failed")
@@ -135,15 +249,25 @@ def gcal_auth_start():
 # ── GET /api/osc/gcal/auth/callback ──────────────────────────────────────────
 
 @osc_gcal_bp.route("/api/osc/gcal/auth/callback", methods=["GET"])
+@login_required
 def gcal_auth_callback():
+    auth_error = _require_gcal_operator()
+    if auth_error:
+        return _html_page("權限不足", "Google Calendar 授權需要 operator 或 admin 權限。", status=403)
     code = request.args.get("code", "")
     if not code:
-        return _html_page("❌ 授權失敗", "未收到授權碼，請重新嘗試。")
+        return _html_page("授權失敗", "未收到授權碼，請重新嘗試。", status=400)
+
+    state = request.args.get("state", "")
+    expected_state = session.pop("gcal_oauth_state", "")
+    if not expected_state or not state or state != expected_state:
+        logger.warning("gcal_auth_callback state mismatch")
+        return _html_page("授權失敗", "授權狀態驗證失敗，請重新從 MAGI 啟動連線。", status=400)
 
     client_id = _get_setting("gcal_client_id")
     client_secret = _get_setting("gcal_client_secret")
     if not client_id or not client_secret:
-        return _html_page("❌ 授權失敗", "Server 端尚未設定 gcal_client_id / gcal_client_secret。")
+        return _html_page("授權失敗", "Server 端尚未設定 gcal_client_id / gcal_client_secret。", status=400)
 
     redirect_uri = _build_redirect_uri()
 
@@ -166,25 +290,25 @@ def gcal_auth_callback():
         flow.fetch_token(code=code)
         creds = flow.credentials
 
-        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_PATH.write_text(creds.to_json())
-        TOKEN_PATH.chmod(0o600)
+        with google_token_file_lock(TOKEN_PATH):
+            _write_token_atomic(TOKEN_PATH, creds.to_json())
 
         logger.info("GCal token saved to %s", TOKEN_PATH)
-        return _html_page("✅ 授權成功", "Google Calendar 已成功連線，可關閉此分頁。", close=True)
+        return _html_page("授權成功", "Google Calendar 已成功連線，可關閉此分頁。", close=True)
 
     except Exception as exc:
         logger.exception("gcal_auth_callback failed")
-        return _html_page("❌ 授權失敗", f"錯誤：{exc}")
+        return _html_page("授權失敗", f"錯誤：{exc}", status=500)
 
 
-def _html_page(title: str, body: str, close: bool = False) -> str:
+def _html_page(title: str, body: str, close: bool = False, status: int = 200):
     close_script = "<script>setTimeout(()=>window.close(),2000);</script>" if close else ""
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{title}</title>
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{escape(title)}</title>
 <style>body{{font-family:sans-serif;display:flex;align-items:center;justify-content:center;
 height:100vh;margin:0}}div{{text-align:center}}</style></head>
-<body><div><h2>{title}</h2><p>{body}</p>{close_script}</div></body></html>"""
+<body><div><h2>{escape(title)}</h2><p>{escape(body)}</p>{close_script}</div></body></html>"""
+    return html, status
 
 
 # ── POST /api/osc/gcal/disconnect ────────────────────────────────────────────
@@ -192,6 +316,9 @@ height:100vh;margin:0}}div{{text-align:center}}</style></head>
 @osc_gcal_bp.route("/api/osc/gcal/disconnect", methods=["POST"])
 @login_required
 def gcal_disconnect():
+    auth_error = _require_gcal_operator()
+    if auth_error:
+        return auth_error
     try:
         if TOKEN_PATH.exists():
             TOKEN_PATH.unlink()
@@ -206,28 +333,37 @@ def gcal_disconnect():
 @osc_gcal_bp.route("/api/osc/gcal/sync", methods=["POST"])
 @login_required
 def gcal_sync():
+    auth_error = _require_gcal_operator()
+    if auth_error:
+        return auth_error
     creds = _load_creds()
     if creds is None or not creds.valid:
         return jsonify({"ok": False, "error": "尚未授權 Google Calendar，請先完成 OAuth 流程"}), 400
 
     payload = request.get_json(silent=True) or {}
-    dry_run = bool(payload.get("dry_run", False))
+    apply_enabled = (
+        bool(payload.get("apply"))
+        or str(os.environ.get("MAGI_GCAL_SYNC_APPLY") or "").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    dry_run = True if not apply_enabled else bool(payload.get("dry_run", False))
 
     try:
-        from skills.osc_orchestrator.gcal_sync import run_sync  # type: ignore
-        stats = run_sync(dry_run=dry_run)
-        return jsonify({"ok": True, **stats})
-    except ImportError:
-        # Fallback: import from skills directory directly
-        import sys
-        sys.path.insert(0, "/Users/ai/Desktop/MAGI_v2/skills/osc-orchestrator")
-        try:
-            from gcal_sync import run_sync  # type: ignore
-            stats = run_sync(dry_run=dry_run)
-            return jsonify({"ok": True, **stats})
-        except Exception as exc2:
-            logger.exception("gcal_sync fallback failed")
-            return jsonify({"ok": False, "error": str(exc2)}), 500
+        limit = max(1, min(400, int(payload.get("limit") or 80)))
+        stats = _run_current_gcal_sync(
+            {
+                "dry_run": dry_run,
+                "limit": limit,
+                "repair_existing": bool(payload.get("repair_existing", False)) and apply_enabled,
+                "repair_limit": max(limit, 80),
+                "mirror_imported": bool(payload.get("mirror_imported", False)) and apply_enabled,
+            }
+        )
+        stats.setdefault("dry_run", dry_run)
+        stats.setdefault("apply", apply_enabled and not dry_run)
+        if dry_run and not apply_enabled:
+            stats.setdefault("safety", "apply_required_for_writes")
+        status = 200 if stats.get("ok") else (400 if stats.get("need_interactive_oauth") else 500)
+        return jsonify(stats), status
     except Exception as exc:
         logger.exception("gcal_sync failed")
         return jsonify({"ok": False, "error": str(exc)}), 500

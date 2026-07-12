@@ -562,7 +562,7 @@ class SkillRegistry:
                 folder, message,
                 timeout_sec=60,
                 auto_repair=False,
-                auto_install_deps=True,
+                auto_install_deps=False,
             )
             if result.get("success"):
                 output = (result.get("output") or "").strip()

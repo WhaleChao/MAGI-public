@@ -166,9 +166,9 @@ class ReActEngine:
         return react_part
 
     @classmethod
-    def for_omlx(cls, tools=None, user_query="", max_steps=5, total_timeout=60, soul_text=""):
-        # type: (Optional[dict], str, int, int, str) -> ReActEngine
-        """建立走 oMLX E4B 的 ReAct 引擎。
+    def for_omlx(cls, tools=None, user_query="", max_steps=5, total_timeout=60, soul_text="", heavy=False):
+        # type: (Optional[dict], str, int, int, str, bool) -> ReActEngine
+        """建立 ReAct 引擎。
 
         Args:
             tools: 工具 dict，若為 None 則自動用 get_compact_tools
@@ -176,10 +176,48 @@ class ReActEngine:
             max_steps: 最大步數（E4B 較慢，預設 5）
             total_timeout: 整體超時秒數（預設 60，含 summarize/translate 等較慢工具）
             soul_text: SOUL 身份文字（注入 system prompt 前段）
+            heavy: True 時保留 ReAct 工具 prompt，但以 NVIDIA NIM 產生 ACTION/FINAL
         """
         if tools is None:
             from skills.engine.tool_registry import get_compact_tools
             tools = get_compact_tools(user_query)
+
+        def _split_messages_for_nim(messages):
+            system_parts = []
+            prompt_parts = []
+            for msg in messages or []:
+                role = str((msg or {}).get("role") or "user").strip().lower()
+                content = str((msg or {}).get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "system":
+                    system_parts.append(content)
+                else:
+                    prompt_parts.append("{}:\n{}".format(role.upper(), content))
+            return "\n\n".join(system_parts), "\n\n".join(prompt_parts)
+
+        def _heavy_llm(messages):
+            from skills.bridge.nim_heavy import run_nim_chat
+
+            system_prompt, prompt_body = _split_messages_for_nim(messages)
+            result = run_nim_chat(
+                prompt=prompt_body,
+                timeout_sec=max(60, int(total_timeout or STEP_TIMEOUT)),
+                task_type="agentic",
+                require_pii_scrub=(os.environ.get("NVIDIA_NIM_REQUIRE_PII_SCRUB", "1").strip() != "0"),
+                system_prompt=system_prompt,
+                heavy=True,
+            )
+            if result.get("success") and result.get("response"):
+                return result["response"]
+            err = str(result.get("error") or "unknown")
+            allow_fallback = os.environ.get("MAGI_HEAVY_STRICT_NIM_ALLOW_FALLBACK", "0").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if not allow_fallback:
+                return "LLM ERROR: nvidia_nim:{}".format(err)
+            logger.warning("NIM ReAct heavy failed, falling back to oMLX: %s", err)
+            return _omlx_llm(messages)
 
         def _omlx_llm(messages):
             from skills.bridge.ensemble_inference import (
@@ -195,11 +233,12 @@ class ReActEngine:
 
         engine = cls(
             tools=tools,
-            llm_fn=_omlx_llm,
+            llm_fn=_heavy_llm if heavy else _omlx_llm,
             max_steps=max_steps,
             total_timeout=total_timeout,
         )
         engine._soul_text = soul_text
+        engine._llm_route = "nvidia_nim" if heavy else "omlx"
         return engine
 
     @staticmethod
@@ -306,6 +345,60 @@ class ReActEngine:
             return f"Tool '{tool_name}' not found. Available: {list(self.tools.keys())}"
 
         return None
+
+    @staticmethod
+    def _is_interpreter_empirical_request(text: str) -> bool:
+        body = str(text or "")
+        if "通譯" not in body:
+            return False
+        intent_markers = ("實證", "分類", "分類表", "抓取", "補抓", "上網抓", "表格")
+        source_markers = ("最高法院", "裁判", "判決", "法院")
+        return any(m in body for m in intent_markers) and any(m in body for m in source_markers)
+
+    @staticmethod
+    def _extract_interpreter_keywords(text: str) -> str:
+        body = str(text or "")
+        quoted = re.search(r"[「『\"]([^」』\"]*通譯[^」』\"]*)[」』\"]", body)
+        if quoted:
+            return quoted.group(1).strip()
+        if "最高法院" in body:
+            return "最高法院 通譯"
+        return "通譯"
+
+    def _coerce_action_for_query(self, user_query: str, tool_name: str, params: dict) -> tuple[str, dict, str]:
+        """Correct known high-risk tool confusions before execution.
+
+        The LLM sometimes chooses the generic judgment collector for empirical
+        interpreter research. That is still a tool call, but it is the wrong
+        tool for the user's workflow. Keep this deterministic guard narrow so
+        plain judgment searches remain unaffected.
+        """
+        if not self._is_interpreter_empirical_request(user_query):
+            return tool_name, params, ""
+        if "run_skill" not in self.tools:
+            return tool_name, params, ""
+
+        merged = dict(params or {})
+        inner: dict[str, Any] = {}
+        raw_inner = merged.get("params")
+        if isinstance(raw_inner, dict):
+            inner.update(raw_inner)
+        elif isinstance(raw_inner, str) and raw_inner.strip():
+            try:
+                parsed = json.loads(raw_inner)
+                if isinstance(parsed, dict):
+                    inner.update(parsed)
+            except json.JSONDecodeError:
+                logger.debug("Interpreter empirical params JSON ignored: %s", raw_inner[:120])
+
+        inner.setdefault("keywords", self._extract_interpreter_keywords(user_query))
+        merged["skill_name"] = "interpreter-empirical-classifier"
+        current_task = str(merged.get("task") or "").strip()
+        allowed_tasks = {"fetch", "fetch_and_classify", "classify", "status", "self_test"}
+        merged["task"] = current_task if current_task in allowed_tasks else "fetch_and_classify"
+        merged["params"] = json.dumps(inner, ensure_ascii=False)
+        reason = "coerced_interpreter_empirical_classifier"
+        return "run_skill", merged, reason
 
     @staticmethod
     def _iron_dome_text_check(text: str) -> Optional[str]:
@@ -446,11 +539,14 @@ class ReActEngine:
             # 檢查是否有 ACTION
             if "ACTION:" in response:
                 tool_name, params = self._parse_action(response)
+                tool_name, params, coerce_reason = self._coerce_action_for_query(user_query, tool_name, params)
 
                 # 記錄思考過程
                 think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL)
                 if think_match:
                     trace.append({"step": step, "type": "think", "content": think_match.group(1).strip()[:300]})
+                if coerce_reason:
+                    trace.append({"step": step, "type": "tool_route_guard", "reason": coerce_reason})
 
                 # Iron Dome 安全檢查
                 block_reason = self._iron_dome_check(tool_name, params)
@@ -469,7 +565,7 @@ class ReActEngine:
                     except Exception as exc:
                         observation = f"工具執行錯誤: {type(exc).__name__}: {exc}"
 
-                    trace.append({"step": step, "type": "observation", "content": observation[:300]})
+                    trace.append({"step": step, "type": "observation", "content": observation[:1200]})
 
                     if self._observation_is_unusable(observation):
                         answer = (
@@ -535,11 +631,12 @@ class ReActEngine:
             messages.append({"role": "user", "content": summary_prompt})
             try:
                 final_response = self._llm(messages)
-                if final_response and len(final_response.strip()) > 10:
-                    trace.append({"step": self.max_steps + 1, "type": "forced_summary", "content": final_response.strip()[:500]})
+                clean_final = str(final_response or "").strip()
+                if clean_final and len(clean_final) > 10 and not clean_final.startswith("LLM ERROR"):
+                    trace.append({"step": self.max_steps + 1, "type": "forced_summary", "content": clean_final[:500]})
                     return {
                         "success": True,
-                        "answer": final_response.strip(),
+                        "answer": clean_final,
                         "trace": trace,
                         "steps": self.max_steps + 1,
                         "tools_used": tools_used,

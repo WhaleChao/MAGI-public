@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-30T03:05:59.174002+00:00",
+  "source_snapshot_schema_version": 1,
+  "status_counts": {
+    "verified_live": 15
+  },
+  "sections": [
+    {
+      "feature_id": "system_health",
+      "title": "系統健康與每日啟動",
+      "manual_section_hint": "每日啟動與健康檢查",
+      "plain_intro": "先看 MAGI、模型、磁碟、NAS、DB、OAuth 與背景服務是不是能安全工作。",
+      "how_to_use": "入口：MAGI 系統狀態、/health、magi status、NERV 狀態頁。",
+      "example_commands": [
+        "MAGI 系統狀態。",
+        "跑完整 smoke62 與 commercial readiness。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_function_health_index.py；最近 LIVE 素材：.runtime/commercial_readiness_live_latest.json#resource_governor"
+    },
+    {
+      "feature_id": "conversation_routing",
+      "title": "自然語言入口與工具路由",
+      "manual_section_hint": "對話、指令與工具調用",
+      "plain_intro": "用平常說法查行程、案件、文件或系統狀態；MAGI 會把需要工具的問題送到對應功能。",
+      "how_to_use": "入口：聊天框、LINE / Discord / Telegram、@heavy / @重型。",
+      "example_commands": [
+        "今天有什麼行程？",
+        "@heavy 翻譯這份 PDF，專有名詞後保留原文。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_manual_command_routes.py；最近 LIVE 素材：.runtime/smoke_test_full_live_latest.json"
+    },
+    {
+      "feature_id": "case_workspace",
+      "title": "案件查詢與案件資料夾",
+      "manual_section_hint": "案件與資料夾",
+      "plain_intro": "用案號、當事人或案件線索查案件，並打開標準案件資料夾與終局文件區。",
+      "how_to_use": "入口：案件頁、自然語言案件查詢、資料夾捷徑。",
+      "example_commands": [
+        "查 2026-0001 的案件狀態。",
+        "打開 2026-0001 資料夾。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_osc_folder_utils.py；最近 LIVE 素材：.runtime/smoke_test_full_live_latest.json"
+    },
+    {
+      "feature_id": "calendar_todos",
+      "title": "Google Calendar 與 OSC 待辦",
+      "manual_section_hint": "Calendar 與 OSC 待辦",
+      "plain_intro": "查今日或本週行程、看 OSC 待辦，並讓外部日曆事件保留原本標題。",
+      "how_to_use": "入口：Calendar、OSC 待辦頁、自然語言。",
+      "example_commands": [
+        "今天有什麼行程？",
+        "列出本週 OSC 建立待辦。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_osc_events_refresh.py；最近 LIVE 素材：.runtime/production_live_latest.json"
+    },
+    {
+      "feature_id": "laf_business",
+      "title": "法扶業務模組",
+      "manual_section_hint": "法扶業務",
+      "plain_intro": "處理法扶派案、狀態查詢、開辦/報結資料檢查、待補資料文字與文件分類。",
+      "how_to_use": "入口：法扶頁、自然語言、夜間巡檢。",
+      "example_commands": [
+        "查 1150421-W-004 法扶狀態。",
+        "產生這件消債案件的待補資料文字。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "法扶入口使用 portal/session 類憑證；OAuth token health 不會列出帳密內容。",
+      "recent_health_hint": "最近單元測試素材：tests/test_laf_case_classifier.py；最近 LIVE 素材：.runtime/business_module_live_check_latest.json#laf_portal_live"
+    },
+    {
+      "feature_id": "file_review",
+      "title": "閱卷業務模組",
+      "manual_section_hint": "閱卷業務",
+      "plain_intro": "分辨待繳費、可下載、到院閱卷與已略過，避免把繳費單當成閱卷成果。",
+      "how_to_use": "入口：閱卷頁、自然語言、夜間巡檢。",
+      "example_commands": [
+        "檢查這件是否有新閱卷資料。",
+        "列出待繳費閱卷。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "閱卷入口使用 portal/session 類憑證；OAuth token health 不會列出帳密內容。",
+      "recent_health_hint": "最近單元測試素材：tests/test_file_review_dispatch.py；最近 LIVE 素材：.runtime/smoke_test_full_live_latest.json#File review automation module"
+    },
+    {
+      "feature_id": "transcript",
+      "title": "筆錄業務模組",
+      "manual_section_hint": "筆錄業務",
+      "plain_intro": "確認 SSO、入口頁與 DB 探測後下載新筆錄；登入失敗時停止後續歸檔。",
+      "how_to_use": "入口：筆錄頁、自然語言、夜間巡檢。",
+      "example_commands": [
+        "下載這件的新筆錄。",
+        "檢查筆錄同步狀態。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "筆錄入口使用 SSO/session 類憑證；OAuth token health 不會列出帳密內容。",
+      "recent_health_hint": "最近單元測試素材：tests/test_transcript_notify_summary.py；最近 LIVE 素材：.runtime/transcript_sync/transcript_sync_latest.json"
+    },
+    {
+      "feature_id": "pdf_ocr_naming",
+      "title": "PDF 判讀、OCR 與歸檔命名",
+      "manual_section_hint": "PDF、OCR、命名與書籤",
+      "plain_intro": "掃描或可讀 PDF 會先抽文字，再依文件種類、日期、法院與資料夾範本產出可歸檔檔名。",
+      "how_to_use": "入口：檔案頁、PDF 工具、@heavy。",
+      "example_commands": [
+        "從這份法院通知建立待辦。",
+        "幫這批 PDF 依資料夾範本命名。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_pdf_namer_runtime.py；最近 LIVE 素材：.runtime/smoke_test_full_live_latest.json"
+    },
+    {
+      "feature_id": "pdf_bookmarking",
+      "title": "PDF 書籤",
+      "manual_section_hint": "PDF、OCR、命名與書籤",
+      "plain_intro": "長卷宗可依文件邊界、日期與文件類型建立書籤；單一文件也會保留 page-1 書籤。",
+      "how_to_use": "入口：PDF 工具、批次腳本、@heavy。",
+      "example_commands": [
+        "@heavy 請摘要這份卷宗並建立書籤。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_weekend_bookmark_batch.py；最近 LIVE 素材：.runtime/smoke_test_full_live_latest.json"
+    },
+    {
+      "feature_id": "judicial_research",
+      "title": "司法 API、判決資料與法律研究",
+      "manual_section_hint": "法律研究與判決資料",
+      "plain_intro": "查判決、法條與實務見解，並標示來源；夜間管線會回報是否仍在追趕 backlog。",
+      "how_to_use": "入口：法律研究、夜間作業、自然語言。",
+      "example_commands": [
+        "查這個爭點的實務見解。",
+        "列出司法 API 管線健康狀態。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "這項功能不需要專屬 OAuth/API token。",
+      "recent_health_hint": "最近單元測試素材：tests/test_judicial_api_backlog.py；最近 LIVE 素材：.runtime/production_live_latest.json#judicial_api_pipeline"
+    },
+    {
+      "feature_id": "notifications",
+      "title": "通知分流與去重",
+      "manual_section_hint": "通知與分層",
+      "plain_intro": "LINE、Discord、Telegram 按 topic 分層，避免繳費、閱卷與系統健康通知互相混雜或重複。",
+      "how_to_use": "入口：通知設定、Webhook、Red phone。",
+      "example_commands": [
+        "檢查通知分流狀態。",
+        "測試 Telegram topic routing。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_notification_routing_policy.py；最近 LIVE 素材：.runtime/business_module_live_check_latest.json"
+    },
+    {
+      "feature_id": "drive_nas_sync",
+      "title": "Google Drive / NAS 同步",
+      "manual_section_hint": "帳務、Drive 與 NAS",
+      "plain_intro": "檢查 NAS 掛載、Drive 下載/上傳與案件檔案同步，失敗時指出是 token、路徑或 API 問題。",
+      "how_to_use": "入口：同步頁、夜間作業、自然語言。",
+      "example_commands": [
+        "檢查 Drive/NAS 同步。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_drive_case_sync_worker_lock.py；最近 LIVE 素材：.runtime/business_module_live_check_latest.json#nas_mounts_live"
+    },
+    {
+      "feature_id": "accounting",
+      "title": "帳務匯入",
+      "manual_section_hint": "帳務、Drive 與 NAS",
+      "plain_intro": "從 Google Sheets/Drive 匯入帳務，排除非本人項目並監控 OAuth 授權狀態。",
+      "how_to_use": "入口：帳務頁、自然語言、Google Sheets。",
+      "example_commands": [
+        "匯入這個月帳務，排除非本人項目。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_accounting_sheet_import.py；最近 LIVE 素材：.runtime/business_module_live_check_latest.json#token_health_refresh"
+    },
+    {
+      "feature_id": "model_resource_governance",
+      "title": "模型與資源治理",
+      "manual_section_hint": "每日啟動與健康檢查",
+      "plain_intro": "確認日夜模型、MTP sidecar、resource governor 與重型模式在目前資源下可安全運作。",
+      "how_to_use": "入口：系統狀態、夜間巡檢、@heavy。",
+      "example_commands": [
+        "檢查目前模型。",
+        "@heavy 請精讀這份長文件。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_model_live_gate.py；最近 LIVE 素材：.runtime/commercial_readiness_live_latest.json#resource_governor"
+    },
+    {
+      "feature_id": "security_release",
+      "title": "安全與公開版守門",
+      "manual_section_hint": "使用守則",
+      "plain_intro": "發布或交付前檢查私密資料、硬編碼端點、不安全 shell、公開版隔離與 release gate。",
+      "how_to_use": "入口：CI、release guard、public audit。",
+      "example_commands": [
+        "跑公開版隔離檢查。",
+        "跑 commercial-release gate。"
+      ],
+      "status_summary": "最近有 LIVE 或 runtime 健康證據，可列為可用功能。",
+      "token_auth_hint": "相關 token health 最近回報可用。",
+      "recent_health_hint": "最近單元測試素材：tests/test_public_release_audit.py；最近 LIVE 素材：.runtime/commercial_readiness_live_latest.json#public_release_audit"
+    }
+  ]
+}

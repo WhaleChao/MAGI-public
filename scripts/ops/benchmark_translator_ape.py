@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+import argparse
 from collections import defaultdict
 from pathlib import Path
 
@@ -254,12 +255,36 @@ def _send_dc_alert(summary: dict) -> None:
         pass  # non-fatal
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Benchmark Apple Translation + LLM post-edit for legal translation quality.",
+    )
+    parser.add_argument("--max-cases", type=int, default=None, help="Limit benchmark cases for low-load probes.")
+    parser.add_argument("--skip-gtx", action="store_true", help="Skip Google GTX primary comparison.")
+    parser.add_argument("--llm-timeout", type=int, default=None, help="LLM post-edit timeout in seconds.")
+    parser.add_argument("--json-out", default="", help="Optional path for full benchmark JSON.")
+    parser.add_argument("--no-static", action="store_true", help="Do not update static/translator_ape_latest.json.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.max_cases is not None:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_MAX_CASES"] = str(args.max_cases)
+    if args.skip_gtx:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_SKIP_GTX"] = "1"
+    if args.llm_timeout is not None:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_LLM_TIMEOUT_SEC"] = str(args.llm_timeout)
+
     apple_ok, reason = _apple_avail()
     if not apple_ok:
         result = {"success": False, "error": f"apple_unavailable: {reason}"}
         print(json.dumps(result, ensure_ascii=False))
-        _write_static_result(result)
+        if args.json_out:
+            Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.json_out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not args.no_static:
+            _write_static_result(result)
         return 2
 
     # Pre-warm oMLX primary server to avoid cold-start timeout silently failing all calls.
@@ -304,9 +329,13 @@ def main() -> int:
         "rows": rows,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if args.json_out:
+        Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Write to static/ for dashboard consumption.
-    _write_static_result(summary)
+    if not args.no_static:
+        _write_static_result(summary)
 
     # Fail cron if APE regressed vs baseline or degraded >50% of the suite.
     regressed = (

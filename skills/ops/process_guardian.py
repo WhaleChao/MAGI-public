@@ -41,6 +41,8 @@ def get_running_processes(script_name):
         current_pid = os.getpid()
         for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
             try:
+                if proc.info.get('pid') == current_pid:
+                    continue
                 cmdline = proc.info.get('cmdline')
                 if cmdline and len(cmdline) > 1:
                     # Check if python and script name matches
@@ -112,7 +114,11 @@ def force_kill_all(script_name="api/discord_bot.py"):
 
 def is_daemon_running():
     """Checks if the Daemon Supervisor is active."""
-    return len(get_running_processes("daemon.py")) > 0
+    return bool(
+        get_running_processes("daemon.py")
+        or get_running_processes("run_daemon_no_site.py")
+        or get_running_processes("scripts/ops/run_daemon_no_site.py")
+    )
 
 
 # ════════════════════════════════════════════════════════════════

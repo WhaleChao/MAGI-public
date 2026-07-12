@@ -75,6 +75,21 @@ OPS_LOG_PREFIXES = [
 KEEP_PREFIXES = [
     "magi_autopilot|",  # high-level summaries (only ~1500 entries)
 ]
+DELETE_BATCH_SIZE = 1000
+
+
+def _prefix_where() -> str:
+    keep_clause = " AND ".join(["source NOT LIKE %s" for _ in KEEP_PREFIXES])
+    return "source LIKE %s" + (f" AND {keep_clause}" if keep_clause else "")
+
+
+def _prefix_params(prefix: str) -> tuple:
+    return tuple([f"{prefix}%"] + [f"{keep}%" for keep in KEEP_PREFIXES])
+
+
+def _chunked(values, size: int = DELETE_BATCH_SIZE):
+    for i in range(0, len(values), max(1, int(size))):
+        yield values[i:i + size]
 
 
 def _connect():
@@ -94,14 +109,31 @@ def count_ops_entries(cur) -> list:
     for prefix in OPS_LOG_PREFIXES:
         # Exclude entries that match KEEP_PREFIXES
         cur.execute(
-            "SELECT COUNT(*) FROM documents WHERE source LIKE %s",
-            (f"{prefix}%",)
+            f"SELECT COUNT(*) FROM documents WHERE {_prefix_where()}",
+            _prefix_params(prefix),
         )
         cnt = cur.fetchone()[0]
         if cnt > 0:
             results.append((prefix, cnt))
     results.sort(key=lambda x: x[1], reverse=True)
     return results
+
+
+def _ids_for_prefix(cur, prefix: str) -> list[int]:
+    cur.execute(
+        f"SELECT id FROM documents WHERE {_prefix_where()} ORDER BY id",
+        _prefix_params(prefix),
+    )
+    return [int(row[0]) for row in cur.fetchall()]
+
+
+def _delete_ids(cur, table: str, id_column: str, ids: list[int]) -> int:
+    deleted = 0
+    for batch in _chunked(ids):
+        placeholders = ",".join(["%s"] * len(batch))
+        cur.execute(f"DELETE FROM {table} WHERE {id_column} IN ({placeholders})", tuple(batch))
+        deleted += int(cur.rowcount or 0)
+    return deleted
 
 
 def purge_ops(dry_run: bool = False):
@@ -135,16 +167,23 @@ def purge_ops(dry_run: bool = False):
 
     print(f"\n🗑️  開始清理 {total:,} 筆操作日誌...")
     deleted = 0
+    vector_deleted = 0
     for prefix, cnt in entries:
-        cur.execute(
-            "DELETE FROM documents WHERE source LIKE %s",
-            (f"{prefix}%",)
-        )
-        deleted += cur.rowcount
-        print(f"  ✅ {prefix}: {cur.rowcount:,} 筆已刪除")
+        ids = _ids_for_prefix(cur, prefix)
+        if not ids:
+            print(f"  - {prefix}: 0 筆")
+            continue
+        vdel = _delete_ids(cur, "vectors", "doc_id", ids)
+        ddel = _delete_ids(cur, "documents", "id", ids)
+        conn.commit()
+        vector_deleted += vdel
+        deleted += ddel
+        if ddel != len(ids):
+            print(f"  ⚠️  {prefix}: expected {len(ids):,}, documents deleted {ddel:,}, vectors deleted {vdel:,}")
+        else:
+            print(f"  ✅ {prefix}: documents {ddel:,}, vectors {vdel:,} 已刪除")
 
-    conn.commit()
-    print(f"\n✅ 共刪除 {deleted:,} 筆")
+    print(f"\n✅ 共刪除 documents {deleted:,} 筆、vectors {vector_deleted:,} 筆")
 
     cur.close()
     conn.close()
@@ -194,9 +233,8 @@ def dedup_vectors(dry_run: bool = False):
         delete_ids = [x for x in all_ids if x != keep_id]
         if not delete_ids:
             continue
-        placeholders = ",".join(["%s"] * len(delete_ids))
-        cur.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", delete_ids)
-        deleted += cur.rowcount
+        _delete_ids(cur, "vectors", "doc_id", delete_ids)
+        deleted += _delete_ids(cur, "documents", "id", delete_ids)
 
     conn.commit()
     print(f"✅ 去重完成，刪除 {deleted:,} 筆多餘條目")

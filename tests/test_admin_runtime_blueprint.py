@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 import types
@@ -37,7 +38,7 @@ class _Orchestrator:
         return True, "新 SKILL 已建立並啟用。資料夾：`demo-skill`"
 
 
-def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None):
+def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None, mysql_connector_override=None):
     from api.blueprints.admin_runtime import create_admin_runtime_blueprint
 
     template_dir = tmp_path / "templates"
@@ -121,12 +122,22 @@ def _make_app(tmp_path: Path, monkeypatch, *, attachment_queue=None):
         read_attachment_job=lambda job_id: {"status": "queued"},
         expected_magi_api_key="test-api-key",
         db_config={"host": "127.0.0.1", "user": "u", "password": "p"},
-        mysql_connector=_MysqlConnector,
+        mysql_connector=mysql_connector_override or _MysqlConnector,
         safe_remove_tmp=lambda path: Path(path).unlink(missing_ok=True),
         magi_root=tmp_path,
     )
     app.register_blueprint(bp)
     return app, orchestrator, product_updates
+
+
+def test_safe_epoch_accepts_iso_strings_without_warning(caplog):
+    from api.blueprints.admin_runtime import _safe_epoch
+
+    caplog.clear()
+    value = _safe_epoch("2026-05-26T06:30:45.824976")
+
+    assert value > 0
+    assert not caplog.records
 
 
 def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
@@ -189,7 +200,7 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     assert data["omlx"]["status"] == "online"
     assert data["line_webhook"]["status"] == "online"
 
-    response = client.get("/api/status")
+    response = client.get("/api/status", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert response.get_json()["nodes"]["casper"]["model"] == "gemma-4-e4b"
 
@@ -210,6 +221,155 @@ def test_dashboard_nerv_health_status_and_logs(tmp_path, monkeypatch):
     assert response.content_type.startswith("text/html")
     assert "MAGI 系統健康狀態" in response.get_data(as_text=True)
     assert response.get_json(silent=True) is None
+
+
+def test_dashboard_nerv_health_telemetry_payload(tmp_path, monkeypatch):
+    import requests
+    import urllib.request as _urllib_request
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".runtime").mkdir(exist_ok=True)
+    (tmp_path / ".runtime" / "cron_state.json").write_text(
+        json.dumps({
+            "job_tesla": {"last_run": "2026-06-18T10:00:00", "status": "ok", "detail": "手動切換"},
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "casper.log").write_text("cron: job_tesla switch model to gemma-4-12B\n", encoding="utf-8")
+    monkeypatch.setenv("MAGI_LINE_WEBHOOK_ENDPOINT", "https://example.test/line/webhook")
+
+    def _fake_get(url, timeout=0):
+        if url.endswith("/v1/models"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]})
+        if url.endswith("/health"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {})
+        if url.endswith("/api/tags"):
+            return types.SimpleNamespace(status_code=200, json=lambda: {"models": [{"name": "phi-4-mini-instruct-4bit"}]})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(requests, "get", _fake_get)
+
+    def _fake_urlopen(url, timeout=0):
+        payload = json.dumps({"data": [{"id": "gemma-4-12b-it-4bit"}, {"id": "phi4-mini"}, {"id": "smolllm"}]})
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return payload.encode("utf-8")
+
+        return _Resp()
+
+    monkeypatch.setattr(_urllib_request, "urlopen", _fake_urlopen)
+
+    import scripts.ops.omlx_profile_policy as policy
+    monkeypatch.setattr(policy, "expected_profile_now", lambda: ("day", "e4b"))
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(
+        total=16 * 1024**3,
+        available=8 * 1024**3,
+        percent=50,
+    )
+    psutil_mod.swap_memory = lambda: types.SimpleNamespace(percent=10)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=18.0, free=220 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 15.0
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode=1))
+
+    client = app.test_client()
+    response = client.get("/dashboard/nerv/api/health", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert "telemetry" in data
+
+    telemetry = data["telemetry"]
+    assert "system" in telemetry and "inference" in telemetry and "activity" in telemetry and "pressure" in telemetry
+    assert telemetry["system"]["loadavg"]
+    assert telemetry["system"]["uptime_seconds"] > 0
+    assert telemetry["system"]["memory"]["pressure"] in {"ok", "warn", "critical"}
+    assert telemetry["system"]["swap"]["percent"] == 10
+
+    inference = telemetry["inference"]
+    assert inference["active_profile"] in {"day", "day-e4b-degraded"}
+    assert inference["active_profile_expected"] == "e4b"
+    assert isinstance(inference["available_models"], list)
+    assert inference["sidecars"]["phi4"]["status"] in {"online", "offline"}
+    assert inference["sidecars"]["smol"]["status"] in {"online", "offline"}
+    assert inference["summary"]["status"] in {"ok", "warn", "critical", "unknown"}
+
+    activity = telemetry["activity"]
+    assert isinstance(activity["events"], list)
+    assert activity["count"] == len(activity["events"])
+    assert any(event.get("source") == "cron_state" for event in activity["events"])
+
+    pressure = telemetry["pressure"]
+    assert pressure["level"] in {"ok", "warn", "critical"}
+    assert isinstance(pressure["reasons"], list)
+
+
+def test_dashboard_nerv_ignores_historical_swap_when_macos_memory_pressure_is_ok(tmp_path, monkeypatch):
+    import urllib.request as _urllib_request
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+
+    def _fake_urlopen(url, timeout=0):
+        payload = json.dumps({"data": [{"id": "gemma-4-12b-it-4bit"}]})
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return payload.encode("utf-8")
+
+        return _Resp()
+
+    monkeypatch.setattr(_urllib_request, "urlopen", _fake_urlopen)
+
+    import scripts.ops.omlx_profile_policy as policy
+    monkeypatch.setattr(policy, "expected_profile_now", lambda: ("night", "12b"))
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(
+        total=24 * 1024**3,
+        available=18 * 1024**3,
+        percent=25,
+    )
+    psutil_mod.swap_memory = lambda: types.SimpleNamespace(percent=93.6)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=18.0, free=220 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 12.0
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(os, "getloadavg", lambda: (1.0, 1.0, 1.0), raising=False)
+    monkeypatch.setattr(
+        _subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=0,
+            stdout="System-wide memory free percentage: 81%\n",
+            stderr="",
+        ),
+    )
+
+    response = app.test_client().get("/dashboard/nerv/api/health", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    telemetry = response.get_json()["telemetry"]
+    assert telemetry["system"]["macos_memory_pressure"]["status"] == "ok"
+    assert telemetry["system"]["swap"]["status"] == "historical"
+    assert telemetry["pressure"]["level"] == "ok"
+    assert any("macOS memory pressure is healthy" in item for item in telemetry["pressure"]["reasons"])
 
 
 def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
@@ -282,6 +442,460 @@ def test_health_reports_omlx_8083_unmanaged_as_degraded(tmp_path, monkeypatch):
     assert body["omlx"]["services"]["smol"]["management_state"] == "unmanaged"
 
 
+def test_health_route_caches_heavy_probes(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    calls: list[str] = []
+
+    def _fake_session_get(url, timeout=0):
+        calls.append(url)
+        return types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]})
+
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=_fake_session_get)
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+
+    apple_mod = types.ModuleType("skills.apple.apple_intelligence")
+    apple_mod.VISION_AVAILABLE = True
+    monkeypatch.setitem(sys.modules, "skills.apple.apple_intelligence", apple_mod)
+
+    browser_mod = types.ModuleType("skills.engine.playwright_wrapper")
+    browser_mod.playwright_chromium_health = lambda **kwargs: {"ok": True, "engine": "playwright-chromium"}
+    monkeypatch.setitem(sys.modules, "skills.engine.playwright_wrapper", browser_mod)
+
+    faiss_mod = types.ModuleType("skills.memory.faiss_index")
+    faiss_mod.FAISSMemoryIndex = types.SimpleNamespace(get_instance=lambda: types.SimpleNamespace(total=9))
+    monkeypatch.setitem(sys.modules, "skills.memory.faiss_index", faiss_mod)
+
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: [("homes", "/Volumes/homes")]
+    nas_mod.get_share_status = lambda share, vol: {"mounted": True}
+    nas_mod.ensure_nas_mounts = lambda: {"homes": True}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+
+    psutil_mod = types.ModuleType("psutil")
+    psutil_mod.virtual_memory = lambda: types.SimpleNamespace(percent=50, available=8 * 1024**3)
+    psutil_mod.disk_usage = lambda path: types.SimpleNamespace(percent=20, free=100 * 1024**3)
+    psutil_mod.cpu_percent = lambda interval=0.1: 12.5
+    monkeypatch.setitem(sys.modules, "psutil", psutil_mod)
+
+    monkeypatch.setattr(_subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(returncode=0))
+
+    first = client.get("/health")
+    assert first.status_code == 200
+    first_calls = len(calls)
+    first_json = first.get_json()
+    assert first_json["cached"] is False
+    assert first_json["probe"] == "aggregate_health"
+    assert first_json["health_contract"]["readiness"] == "/readyz"
+    assert first_json["readiness"]["status"] == "not_checked"
+    assert first_calls >= 1
+
+    second = client.get("/health")
+    assert second.status_code == 200
+    assert second.get_json()["cached"] is True
+    assert len(calls) == first_calls
+
+    fresh = client.get("/health?fresh=1")
+    assert fresh.status_code == 200
+    assert fresh.get_json()["cached"] is False
+    assert len(calls) > first_calls
+
+
+def test_health_route_marks_db_failure_degraded(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    class _FailingMysql:
+        @staticmethod
+        def connect(**_kwargs):
+            raise RuntimeError("db offline")
+
+    app, _, _ = _make_app(tmp_path, monkeypatch, mysql_connector_override=_FailingMysql)
+    client = app.test_client()
+    runtime = tmp_path / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    (runtime / "operational_hardening_audit_latest.json").write_text(
+        json.dumps({"cron": {"parse_failure_count": 0, "collision_count": 0}, "git": {}}),
+        encoding="utf-8",
+    )
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]}))
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+    apple_mod = types.ModuleType("skills.apple.apple_intelligence")
+    apple_mod.VISION_AVAILABLE = True
+    monkeypatch.setitem(sys.modules, "skills.apple.apple_intelligence", apple_mod)
+    browser_mod = types.ModuleType("skills.engine.playwright_wrapper")
+    browser_mod.playwright_chromium_health = lambda **kwargs: {"ok": True}
+    monkeypatch.setitem(sys.modules, "skills.engine.playwright_wrapper", browser_mod)
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: []
+    nas_mod.get_share_status = lambda share, vol: {"mounted": True}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+    monkeypatch.setattr(_subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(returncode=0))
+
+    response = client.get("/health?fresh=1")
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["db"]["ok"] is False
+    assert body["status"] == "degraded"
+
+
+def test_health_api_token_health_exposes_google_calendar_service(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+    token_dir = tmp_path / ".runtime" / "token_health"
+    token_dir.mkdir(parents=True)
+    report_path = token_dir / "token_health_latest.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "generated_at": "2026-07-09T01:00:00+00:00",
+                "summary": {"total": 1, "failures": 0, "refreshed": 0, "skipped": 0},
+                "checks": [
+                    {
+                        "kind": "google_oauth",
+                        "name": "google_calendar",
+                        "ok": True,
+                        "status": "ok",
+                        "message": "token valid",
+                        "path": "/tmp/calendar-token.json",
+                        "credentials_path": "/tmp/credentials.json",
+                        "expires_at": "2099-01-01T00:00:00+00:00",
+                        "expires_in_hours": 640000,
+                        "refresh_token_present": True,
+                        "scopes_ok": True,
+                        "account_check_status": "not_verifiable_primary_hint",
+                        "required": True,
+                    }
+                ],
+                "failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200, json=lambda: {"data": [{"id": "gemma-4-e4b"}]}))
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+    apple_mod = types.ModuleType("skills.apple.apple_intelligence")
+    apple_mod.VISION_AVAILABLE = True
+    monkeypatch.setitem(sys.modules, "skills.apple.apple_intelligence", apple_mod)
+    browser_mod = types.ModuleType("skills.engine.playwright_wrapper")
+    browser_mod.playwright_chromium_health = lambda **kwargs: {"ok": True}
+    monkeypatch.setitem(sys.modules, "skills.engine.playwright_wrapper", browser_mod)
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: []
+    nas_mod.get_share_status = lambda share, vol: {"mounted": True}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+    monkeypatch.setattr(_subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(returncode=0))
+
+    body = client.get("/health?fresh=1").get_json()
+
+    token_health = body["api_token_health"]
+    assert token_health["report_path"] == str(report_path)
+    assert token_health["generated_at"] == "2026-07-09T01:00:00+00:00"
+    assert token_health["services"]["google_calendar"]["token_path"] == "/tmp/calendar-token.json"
+    assert token_health["services"]["google_calendar"]["scopes_ok"] is True
+
+
+def test_health_drive_sync_auth_marker_self_heal(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    class _DriveService:
+        def __init__(self, *, succeed: bool):
+            self.succeed = succeed
+
+        def files(self):
+            succeed = self.succeed
+
+            class _Files:
+                def get(self, **_kwargs):
+                    if not succeed:
+                        raise _AuthReq("token-expired")
+
+                    class _Request:
+                        def execute(self):
+                            return {"id": "root"}
+
+                    return _Request()
+
+            return _Files()
+
+    def _probe_service_factory(*, write: bool):
+        return _DriveService(succeed=True)
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+    drive_mod.build_drive_service = lambda interactive=False, force_auth=False, write=False: _probe_service_factory(write=write)
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    marker_path = tmp_path / ".runtime" / "drive_sync" / "drive_case_sync_auth_required_latest.json"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(json.dumps({"message": "old marker", "token_path": "/tmp/token", "write_scope": False}), encoding="utf-8")
+    worker_state_path = marker_path.with_name("worker_state.json")
+    worker_state_path.write_text(
+        json.dumps(
+            {
+                "last_status": {
+                    "ok": False,
+                    "status": "auth_required",
+                    "action_required": True,
+                    "message": "old marker",
+                    "token_path": "/tmp/token",
+                    "write_scope": False,
+                },
+                "last_summary": {"auth_required": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is True
+    assert health["drive_sync"]["status"] == "ok"
+    assert not marker_path.exists()
+    worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+    assert worker_state["last_status"]["ok"] is True
+    assert worker_state["last_status"]["action_required"] is False
+    assert worker_state["last_summary"]["auth_required"] is False
+    assert worker_state["last_summary"]["auth_recovered"] is True
+
+
+def test_health_drive_sync_auth_marker_stays_when_still_required(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+
+    def _raise_auth(interactive=False, force_auth=False, write=False):
+        raise _AuthReq("still required")
+
+    drive_mod.build_drive_service = _raise_auth
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    marker_path = tmp_path / ".runtime" / "drive_sync" / "drive_case_sync_auth_required_latest.json"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps({"message": "old marker", "token_path": "/tmp/token", "write_scope": True}),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is False
+    assert health["drive_sync"]["status"] == "auth_required"
+    assert marker_path.exists()
+
+
+def test_health_drive_sync_prefers_newer_kind_status_over_old_partial(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = RuntimeError
+    drive_mod.build_drive_service = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    drive_dir = tmp_path / ".runtime" / "drive_sync"
+    drive_dir.mkdir(parents=True)
+    (drive_dir / "worker_state.json").write_text(
+        json.dumps(
+            {
+                "last_status": {
+                    "ok": False,
+                    "status": "partial_failure",
+                    "action_required": True,
+                    "finished_at": "2026-07-01T08:12:48+08:00",
+                    "message": "old partial",
+                },
+                "last_summary": {"matched_case_folders": 23},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (drive_dir / "drive_case_sync_worker_status_all_files_latest.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "already_running",
+                "action_required": False,
+                "pid": os.getpid(),
+                "worker_kind": "all_files",
+                "started_at": "2026-07-01T12:22:21+08:00",
+                "finished_at": "2026-07-01T12:22:21+08:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is True
+    assert health["drive_sync"]["status"] == "already_running"
+    assert health["drive_sync"]["worker_kind"] == "all_files"
+    assert health["drive_sync"]["status_by_kind"]["all_files"]["status"] == "already_running"
+
+
+def test_health_drive_sync_accepts_sla_healthy_priority_when_latest_all_files_partial(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = RuntimeError
+    drive_mod.build_drive_service = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_HEALTH_SLA_HOURS", "24")
+
+    drive_dir = tmp_path / ".runtime" / "drive_sync"
+    drive_dir.mkdir(parents=True)
+    fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    (drive_dir / "worker_state.json").write_text(
+        json.dumps(
+            {
+                "last_status": {
+                    "ok": False,
+                    "status": "partial_failure",
+                    "action_required": True,
+                    "worker_kind": "all_files",
+                    "started_at": fresh_iso,
+                    "message": "latest all-files partial",
+                },
+                "last_summary": {"matched_case_folders": 95},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (drive_dir / "drive_case_sync_worker_status_priority_latest.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "ok",
+                "action_required": False,
+                "pid": 73028,
+                "worker_kind": "priority",
+                "started_at": fresh_iso,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is False
+    assert health["drive_sync"]["status"] == "kind_action_required"
+    assert health["drive_sync"]["worker_kind"] == "priority"
+    assert health["drive_sync"]["latest_status"] == "partial_failure"
+    assert health["drive_sync"]["status_by_kind"]["priority"]["status"] == "ok"
+    assert "all_files" in health["drive_sync"]["blocking_kinds"]
+
+
+def test_health_drive_sync_ignores_stale_inactive_inventory_kind(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = RuntimeError
+    drive_mod.build_drive_service = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+    monkeypatch.setenv("MAGI_DRIVE_SYNC_HEALTH_SLA_HOURS", "24")
+
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_drive_case_sync_bidirectional",
+                    "enabled": True,
+                    "command": "python scripts/drive_case_sync_worker.py --matched-case-limit 8",
+                },
+                {
+                    "id": "job_drive_case_sync_all_files",
+                    "enabled": True,
+                    "command": "python scripts/drive_case_sync_worker.py --direct-all-cases",
+                },
+                {
+                    "id": "job_drive_case_sync_nightly",
+                    "enabled": False,
+                    "command": "python scripts/drive_case_sync_inventory.py --file-diff",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    drive_dir = tmp_path / ".runtime" / "drive_sync"
+    drive_dir.mkdir(parents=True)
+    fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    stale_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 48 * 3600))
+    (drive_dir / "worker_state.json").write_text(
+        json.dumps(
+            {
+                "last_status": {
+                    "ok": True,
+                    "status": "ok",
+                    "action_required": False,
+                    "worker_kind": "all_files",
+                    "finished_at": fresh_iso,
+                },
+                "last_summary": {"matched_case_folders": 1},
+                "status_by_kind": {
+                    "all_files": {
+                        "ok": True,
+                        "status": "ok",
+                        "action_required": False,
+                        "worker_kind": "all_files",
+                        "finished_at": fresh_iso,
+                    },
+                    "priority": {
+                        "ok": True,
+                        "status": "ok",
+                        "action_required": False,
+                        "worker_kind": "priority",
+                        "finished_at": fresh_iso,
+                    },
+                    "inventory": {
+                        "ok": True,
+                        "status": "ok",
+                        "action_required": False,
+                        "worker_kind": "inventory",
+                        "finished_at": stale_iso,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health?fresh=1")
+    health = response.get_json()
+
+    assert response.status_code == 200
+    assert health["drive_sync"]["ok"] is True
+    assert health["drive_sync"]["blocking_kinds"] == []
+    assert health["drive_sync"]["active_kinds"] == ["all_files", "priority"]
+    assert health["drive_sync"]["inactive_kinds"] == ["inventory"]
+    assert health["drive_sync"]["status_by_kind"]["inventory"]["stale"] is True
+
+
 def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     app, _, _ = _make_app(tmp_path, monkeypatch)
     client = app.test_client()
@@ -301,11 +915,15 @@ def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     transcribe_mod.transcribe = lambda path, language=None, taigi_hint=False: {"text": "ok", "language": language, "taigi_hint": taigi_hint}
     monkeypatch.setitem(sys.modules, "skills.bridge.balthasar_bridge", transcribe_mod)
 
-    response = client.post("/api/system-test", headers={"X-User-ID": "u1"})
+    response = client.post("/api/system-test", headers={"X-User-ID": "u1"}, json={"confirm": "system-test"})
     assert response.status_code == 200
     assert response.get_json()["passed"] == 12
 
-    response = client.post("/api/self-repair", headers={"X-User-ID": "u1"}, json={"targets": ["a"]})
+    response = client.post(
+        "/api/self-repair",
+        headers={"X-User-ID": "u1"},
+        json={"targets": ["a"], "confirm": "self-repair"},
+    )
     assert response.status_code == 200
     assert response.get_json()["targets"] == ["a"]
 
@@ -319,6 +937,26 @@ def test_system_self_repair_and_transcribe_routes(tmp_path, monkeypatch):
     assert response.get_json()["text"] == "ok"
     assert response.get_json()["language"] == "zh-TW"
     assert response.get_json()["taigi_hint"] is True
+
+
+def test_admin_mutation_routes_require_admin_and_confirmation(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    response = client.post(
+        "/api/system-test",
+        headers={"X-User-ID": "u1", "X-User-Role": "viewer"},
+        json={"confirm": "system-test"},
+    )
+    assert response.status_code == 403
+
+    response = client.post("/api/system-test", headers={"X-User-ID": "u1"}, json={})
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "confirmation_required"
+
+    response = client.post("/api/self-repair", headers={"X-User-ID": "u1"}, json={"targets": ["a"]})
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "confirmation_required"
 
 
 def test_nerv_skill_routes_and_heavy_runtime_controls(tmp_path, monkeypatch):
@@ -528,7 +1166,7 @@ def test_operational_issue_health_reconciles_recovered_and_false_positive(tmp_pa
     )
 
     cron_state = {
-        "job_debug_cleanup": {"last_run": str(now - 100)},
+        "job_debug_cleanup": {"last_success_at": str(now - 100)},
         "job_obsidian_ingest": {"last_run": str(now - 400)},
     }
     (runtime_dir / "cron_state.json").write_text(
@@ -578,12 +1216,30 @@ def test_operational_issue_health_treats_live_recovered_guards_as_inactive(tmp_p
             "command": "cron:job_resource_governor",
             "error": "exit=2 stdout_tail=critical resource governor",
         },
+        {
+            "ts": now - 30,
+            "severity": "High",
+            "source": "discord_bot.cron_scheduler",
+            "command": "cron:job_operational_hardening_audit",
+            "error": "exit=1 stdout_tail={\"stale_runtime_lock_count\":1}",
+        },
     ]
     (runtime_dir / "issue_agenda.jsonl").write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in issue_rows) + "\n",
         encoding="utf-8",
     )
     (runtime_dir / "cron_state.json").write_text("{}", encoding="utf-8")
+    (runtime_dir / "operational_hardening_audit_latest.json").write_text(
+        json.dumps(
+            {
+                "cron": {"parse_failure_count": 0, "collision_count": 0},
+                "stale_runtime_locks": {"stale_count": 0},
+                "silent_exception_handlers": {"critical_count": 0},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
     monkeypatch.setattr(mod, "_is_omlx_switch_recovered", lambda: True)
@@ -591,7 +1247,152 @@ def test_operational_issue_health_treats_live_recovered_guards_as_inactive(tmp_p
 
     summary = _compute_operational_issue_health(tmp_path, now)
 
-    assert summary["raw_cron_failures_24h"] == 2
+    assert summary["raw_cron_failures_24h"] == 3
     assert summary["active_cron_failures_24h"] == 0
-    assert summary["recovered_cron_failures_24h"] == 2
-    assert summary["inactive_or_noise_cron_failures_24h"] == 2
+    assert summary["recovered_cron_failures_24h"] == 3
+    assert summary["inactive_or_noise_cron_failures_24h"] == 3
+
+
+def test_live_validation_endpoint_payload_and_fast_checks(tmp_path, monkeypatch):
+    import subprocess as _subprocess
+
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    class _AuthReq(RuntimeError):
+        pass
+
+    class _DriveService:
+        def files(self):
+            class _Files:
+                def get(self, **_kwargs):
+                    class _Request:
+                        def execute(self):
+                            return {"id": "root"}
+
+                    return _Request()
+
+            return _Files()
+
+    drive_mod = types.ModuleType("api.osc.drive_case_sync")
+    drive_mod.DriveCaseSyncAuthRequired = _AuthReq
+    drive_mod.build_drive_service = lambda interactive=False, force_auth=False, write=False: _DriveService()
+    drive_mod.load_case_exclusion_payload = lambda include_env=False: {"updated_at": "2026-06-16T00:00:00", "relative_paths": [], "reason": ""}
+    drive_mod.sync_case_exclusions = lambda relative_paths, reason="": {"updated_at": "", "relative_paths": [], "reason": reason}
+    drive_mod.unsync_case_exclusions = lambda paths: ({}, 0)
+    monkeypatch.setitem(sys.modules, "api.osc.drive_case_sync", drive_mod)
+
+    status_file = tmp_path / ".runtime" / "drive_sync" / "worker_state.json"
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    status_file.write_text(
+        json.dumps(
+            {
+                "last_status": {"ok": True, "status": "ok", "action_required": False},
+                "last_summary": {"auth_required": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        _subprocess,
+        "run",
+        lambda args, **kwargs: types.SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                [
+                    "/usr/bin/python daemon.py",
+                    "/usr/bin/python api/server.py",
+                ]
+            ),
+            stderr="",
+        ),
+    )
+
+    nas_mod = types.ModuleType("api.nas_mount_guard")
+    nas_mod.get_configured_shares = lambda refresh=False: [("homes", "/Volumes/homes")]
+    nas_mod.get_share_status = lambda share, vol: {"mounted": share == "homes"}
+    monkeypatch.setitem(sys.modules, "api.nas_mount_guard", nas_mod)
+
+    http_pool = types.ModuleType("skills.bridge.http_pool")
+    http_pool.get_session = lambda: types.SimpleNamespace(get=lambda url, timeout=0: types.SimpleNamespace(status_code=200))
+    monkeypatch.setitem(sys.modules, "skills.bridge.http_pool", http_pool)
+
+    response = client.get("/api/live-validation", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] in {"operational", "degraded"}
+    assert set(payload.keys()) >= {"daemon", "server", "tools_api", "nas", "drive", "db", "model", "summary", "timestamp"}
+    assert payload["daemon"]["ok"] is True
+    assert payload["server"]["ok"] is True
+    assert payload["summary"]["ok"] is True
+    assert payload["summary"]["status"] == payload["status"]
+
+
+def test_drive_case_exclusions_endpoints_add_list_remove(tmp_path, monkeypatch):
+    app, _, _ = _make_app(tmp_path, monkeypatch)
+    client = app.test_client()
+
+    store_path = tmp_path / ".runtime" / "drive_sync" / "case_exclusions.json"
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-06-01T00:00:00",
+                "reason": "initial",
+                "relative_paths": ["一般案件/Lumi/測試保留", "一般案件/Lumi/測試移除"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    list_resp = client.get("/api/drive-case-exclusions", headers={"X-User-ID": "u1"})
+    assert list_resp.status_code == 200
+    list_data = list_resp.get_json()
+    assert list_data["ok"] is True
+    assert list_data["count"] == 2
+    assert "一般案件/Lumi/測試保留" in list_data["relative_paths"]
+
+    add_resp = client.post(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={
+            "relative_paths": ["一般案件/Lumi/測試新增", " 一般案件/Lumi/測試新增  ", "一般案件/Lumi/測試保留"],
+            "reason": "ui-add",
+        },
+    )
+    assert add_resp.status_code == 200
+    add_data = add_resp.get_json()
+    assert add_data["ok"] is True
+    assert add_data["changed"] is True
+    assert len(add_data["relative_paths"]) == 3
+    assert "一般案件/Lumi/測試新增" in add_data["relative_paths"]
+
+    remove_resp = client.delete(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={"relative_path": " 一般案件/Lumi/測試保留 "},
+    )
+    assert remove_resp.status_code == 200
+    remove_data = remove_resp.get_json()
+    assert remove_data["ok"] is True
+    assert remove_data["changed"] is True
+    assert remove_data["removed"] == 1
+    assert "一般案件/Lumi/測試保留" not in remove_data["relative_paths"]
+    assert "一般案件/Lumi/測試移除" in remove_data["relative_paths"]
+
+    noop_remove = client.delete(
+        "/api/drive-case-exclusions",
+        headers={"X-User-ID": "u1"},
+        json={"relative_path": "一般案件/Lumi/沒有這筆"},
+    )
+    assert noop_remove.status_code == 200
+    noop_data = noop_remove.get_json()
+    assert noop_data["ok"] is True
+    assert noop_data["changed"] is False
+    assert noop_data["removed"] == 0
+    assert len(noop_data["relative_paths"]) == 2

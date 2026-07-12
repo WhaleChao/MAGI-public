@@ -74,28 +74,29 @@ def build_backlog_interpretation(
 
     if err:
         status = "PROCESS_ERROR"
-        headline = "整理有錯誤，需優先看 traceback"
+        headline = "司法院裁判資料整理有錯誤，需優先看錯誤紀錄"
     elif remaining <= 0:
         status = "CLEAR"
-        headline = "已清空，最新裁判可進入見解流程"
+        headline = "司法院裁判資料整理序列已清空"
     elif oldest >= 24 * 7:
         status = "STALE"
-        headline = "嚴重積壓，見解庫的新鮮度已落後"
+        headline = "司法院裁判資料嚴重積壓，見解庫的新鮮度已落後"
     elif oldest >= 24:
         status = "AGING"
-        headline = "有跨日積壓，最新見解可能延遲出現"
+        headline = "司法院裁判資料有跨日積壓，最新見解可能延遲出現"
     else:
         status = "CATCHING_UP"
-        headline = "有待消化 backlog，但仍在正常消化"
+        headline = "司法院裁判資料仍有待整理量，但正在正常處理"
 
     lines: List[str] = [
         f"- 狀態：{headline}",
+        "- 範圍：這只代表已下載的司法院裁判資料整理序列；不等於通譯專案、研究簡報或案由爬蟲全部完成。",
         f"- 本輪：待處理 {format_count(before)} → {format_count(remaining)}（消化 {format_count(reduced)}，處理 {format_count(done)}）",
-        f"- 入庫：court_judgments {format_count(db)} / archive {format_count(archive)} / 摘要 {format_count(summaries)} / 向量 {format_count(vectors)}",
+        f"- 入庫：裁判資料庫 {format_count(db)} / 索引資料庫 {format_count(archive)} / 摘要 {format_count(summaries)} / 向量 {format_count(vectors)}",
         f"- 老化：最老 {format_duration_hours(oldest)}；最新 {format_duration_hours(newest)}",
     ]
     if raw:
-        lines.append(f"- Raw：總檔 {format_count(raw)}；不可讀 {format_count(unreadable)}")
+        lines.append(f"- 資料檔：總數 {format_count(raw)}；不可讀 {format_count(unreadable)}")
     if low_value or missing_text:
         lines.append(
             f"- 品質閘門：低價值程序文書略過 {format_count(low_value)}；無全文略過 {format_count(missing_text)}"
@@ -109,17 +110,21 @@ def build_backlog_interpretation(
         else:
             lines.append("- 預估：本輪未消化成功，無法估算清空時間")
     if cache_root:
-        lines.append(f"- 快取：{cache_root}")
+        normalized_cache_root = str(cache_root)
+        if "/.magi_mounts/" in normalized_cache_root or normalized_cache_root.startswith("/Volumes/"):
+            lines.append(f"- 資料檔資料夾：NAS 司法院裁判資料快取（{normalized_cache_root}）")
+        else:
+            lines.append(f"- 資料檔資料夾：本機司法院裁判資料快取（{normalized_cache_root}）")
 
     suggestions: List[str] = []
     if err:
-        suggestions.append("先查 issue_agenda / stderr，避免錯誤重跑造成同一批卡住。")
+        suggestions.append("先查問題紀錄與錯誤輸出，避免錯誤重跑造成同一批卡住。")
     if remaining > 0 and oldest >= 24 * 7:
-        suggestions.append("啟動或加密度執行 backlog_clear；目前不是缺資料，而是消化速度不足。")
+        suggestions.append("啟動或加密度執行裁判資料整理補跑任務；目前不是缺資料，而是整理速度不足。")
     elif remaining > 0:
-        suggestions.append("維持 night pull，白天整理可提高批量或增加補跑輪次。")
+        suggestions.append("維持夜間拉取，白天整理可提高批量或增加補跑輪次。")
     if unreadable:
-        suggestions.append("抽查不可讀 raw 檔，避免壞檔讓 backlog 永遠不歸零。")
+        suggestions.append("抽查不可讀資料檔，避免壞檔讓待整理量永遠不歸零。")
     if not suggestions:
         suggestions.append("維持目前排程。")
 

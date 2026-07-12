@@ -3,6 +3,28 @@ function esc(v) {
     return String(v ?? "").replace(/[&<>\"']/g, s => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[s]));
 }
 
+function oscTodoSourceKey(row) {
+    const sourceKind = String(row?.source_kind || "").trim();
+    if (sourceKind) return sourceKind;
+    const source = String(row?.source_file || "").trim();
+    if (source.startsWith("gcal_import")) return "gcal_import";
+    if (String(row?.todo_type || "").trim() === "行事曆事件") return "calendar_todo";
+    return "case_todos";
+}
+
+function oscTodoIsCalendarSource(row) {
+    return ["gcal_import", "calendar_todo"].includes(oscTodoSourceKey(row));
+}
+
+function oscTodoSourceLabel(row) {
+    const label = String(row?.source_label || "").trim();
+    if (label) return label;
+    const key = oscTodoSourceKey(row);
+    if (key === "gcal_import") return "Google 日曆匯入";
+    if (key === "calendar_todo") return "行事曆事件待辦";
+    return "OSC 建立";
+}
+
 function safeWebUrl(rawUrl) {
     const text = String(rawUrl || "").trim();
     try {
@@ -139,7 +161,7 @@ function isNonExtractableInsight(item) {
         "不能擷取之實務見解",
         "不可擷取之實務見解",
         "原始資料未提供全文文字",
-        "已存原始JSON",
+        "已保留原始資料",
         "請提供您需要我摘要的判決書全文",
         "請您提供需要我處理的判決書全文",
         "請您提供需要分析的判決書全文",
@@ -200,7 +222,7 @@ async function shareFileLink(path, label = "檔案") {
     const resp = await fetch("/api/osc/files/share", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: csrfHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ path: rawPath }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -215,7 +237,10 @@ async function shareFileLink(path, label = "檔案") {
         await navigator.clipboard.writeText(data.url);
         showToast(`已建立並複製分享連結：${label || data.name || "檔案"}`, "ok", 3500);
     } catch {
-        window.prompt("分享連結（不含檔案路徑）：", data.url);
+        showCustomDialog("MAGI說｜分享連結", `
+            <p>瀏覽器暫時不允許自動複製，請手動複製下列分享連結。</p>
+            <input value="${esc(data.url)}" readonly style="box-sizing:border-box;width:100%;border:1px solid #d2d7df;border-radius:8px;padding:10px 12px;font-size:14px">
+        `);
         showToast(`已建立分享連結：${label || data.name || "檔案"}`, "ok", 3500);
     }
     return data;
@@ -266,13 +291,28 @@ async function copyText(text, message = "已複製到剪貼簿。") {
         await navigator.clipboard.writeText(value);
         showToast(message, "ok");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
 }
 
 function _csrfToken() {
     const m = document.cookie.match(/(?:^|;\s*)X-CSRF-Token=([^;]+)/);
     return m ? decodeURIComponent(m[1]) : "";
+}
+
+function csrfHeaders(extra = {}) {
+    const headers = { ...(extra || {}) };
+    const csrf = _csrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    return headers;
+}
+
+function apiErrorMessage(data, fallback = "request_failed") {
+    const payload = data && typeof data === "object" ? data : {};
+    const detail = shortText(payload.message || payload.detail || payload.body || "", 240);
+    let message = payload.error || payload.reason || fallback || "request_failed";
+    if (detail && !String(message).includes(detail)) message = `${message}：${detail}`;
+    return String(message || "request_failed");
 }
 
 // session expired 時直接 redirect 到 login（每 30s 內只做一次，避免 setInterval 風暴）
@@ -285,9 +325,7 @@ function _handleSessionExpired() {
 }
 
 async function api(path, method = "GET", body = null) {
-    const opts = { method, headers: {}, redirect: "manual" };  // redirect:manual 才能偵測 302
-    const csrf = _csrfToken();
-    if (csrf) opts.headers["X-CSRF-Token"] = csrf;
+    const opts = { method, headers: csrfHeaders(), credentials: "same-origin", redirect: "manual" };  // redirect:manual 才能偵測 302
     if (body !== null) {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(body);
@@ -316,24 +354,43 @@ async function api(path, method = "GET", body = null) {
         throw new Error("登入已逾時，正在跳轉登入頁...");
     }
     if (!res.ok) {
-        const detail = shortText(data.detail || data.body || "", 240);
-        let message = data.error || res.statusText || `HTTP ${res.status}`;
-        if (detail && !message.includes(detail)) message = `${message}：${detail}`;
-        throw new Error(message);
+        throw new Error(apiErrorMessage(data, res.statusText || `HTTP ${res.status}`));
+    }
+    if (data && data.ok === false) {
+        const err = new Error(apiErrorMessage(data, "request_failed"));
+        err.payload = data;
+        err.status = res.status;
+        throw err;
     }
     return data;
 }
 
 async function apiForm(path, formData) {
-    const hdrs = {};
-    const csrf = _csrfToken();
-    if (csrf) hdrs["X-CSRF-Token"] = csrf;
-    const res = await fetch(path, { method: "POST", headers: hdrs, body: formData });
+    const res = await fetch(path, { method: "POST", credentials: "same-origin", redirect: "manual", headers: csrfHeaders(), body: formData });
+    if (res.type === "opaqueredirect" || res.status === 0 || (res.status >= 300 && res.status < 400)) {
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
+    }
     const txt = await res.text();
+    if (txt.trim().startsWith("<")) {
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
+    }
     let data = {};
     try { data = txt ? JSON.parse(txt) : {}; } catch { data = { ok: false, error: txt || res.statusText }; }
+    const rawErr = String(data.error || "");
+    if (!res.ok && (rawErr.includes("/login?next=") || rawErr.includes("Redirecting"))) {
+        _handleSessionExpired();
+        throw new Error("登入已逾時，正在跳轉登入頁...");
+    }
     if (!res.ok) {
-        const err = new Error(data.error || res.statusText || "request_failed");
+        const err = new Error(apiErrorMessage(data, res.statusText || "request_failed"));
+        err.payload = data;
+        err.status = res.status;
+        throw err;
+    }
+    if (data && data.ok === false) {
+        const err = new Error(apiErrorMessage(data, "request_failed"));
         err.payload = data;
         err.status = res.status;
         throw err;

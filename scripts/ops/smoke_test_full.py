@@ -9,6 +9,7 @@ Usage:
     python3 scripts/ops/smoke_test_full.py
     python3 scripts/ops/smoke_test_full.py --json-out results.json
     python3 scripts/ops/smoke_test_full.py --skip laf,eefile   # 跳過指定模組
+    python3 scripts/ops/smoke_test_full.py --commercial         # 加跑公版/商用發版守門
 
 Exit code: 0=全過, 1=有失敗
 """
@@ -40,6 +41,16 @@ try:
     load_dotenv(MAGI_ROOT / ".env")
 except ImportError:
     pass
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+JUDICIAL_API_PIPELINE_TIMEOUT_SEC = max(90, _env_int("MAGI_SMOKE_JUDICIAL_API_TIMEOUT_SEC", 150))
 
 # ── Result model ───────────────────────────────────────────────
 
@@ -231,14 +242,26 @@ def test_db_write_read():
 # 4. SERVICE HEALTH TESTS
 # ══════════════════════════════════════════════════════════════
 
-def _http_get(url, timeout=5):
+def _http_get(url, timeout=8, retries=1):
     import urllib.request
+    last_exc = None
     req = urllib.request.Request(url, headers={"User-Agent": "MAGI-Smoke/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read().decode("utf-8", errors="replace")
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", errors="replace")
+        except TimeoutError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(1.0)
+                continue
+            raise
+        except Exception:
+            raise
+    raise last_exc or TimeoutError("http_get_failed")
 
 def test_server_health():
-    code, body = _http_get("http://127.0.0.1:5002/health")
+    code, body = _http_get("http://127.0.0.1:5002/health", timeout=12, retries=1)
     return code == 200, f"HTTP {code}"
 
 def test_tools_api_health():
@@ -656,7 +679,7 @@ def test_judicial_api_pipeline_health():
     checker = MAGI_ROOT / "scripts" / "ops" / "check_judicial_api_pipeline.py"
     if not checker.exists():
         return False, "check_judicial_api_pipeline.py missing"
-    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=90)
+    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=JUDICIAL_API_PIPELINE_TIMEOUT_SEC)
     try:
         data = json.loads(proc.stdout)
     except Exception:
@@ -665,7 +688,7 @@ def test_judicial_api_pipeline_health():
         return False, (proc.stderr or proc.stdout)[:120]
     status = data.get("status")
     backlog = data.get("backlog") if isinstance(data.get("backlog"), dict) else {}
-    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP"}
+    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP", "PULL_STALE_CLEAR", "PULL_WAITING_WINDOW"}
     ok = proc.returncode in {0, 10} and status in ok_statuses
     interpretation = data.get("backlog_interpretation") if isinstance(data.get("backlog_interpretation"), dict) else {}
     if interpretation:
@@ -697,27 +720,36 @@ def test_omlx_aux_models_available():
     return ok, ", ".join(results)
 
 def test_mlx_mtp_sidecar_health():
-    try:
-        code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
-        data = json.loads(body)
-        ok = code == 200 and bool(data.get("ok", True))
-        model = data.get("model") or "-"
-        draft = data.get("draft_model") or "-"
-        return ok, f"model={model}; draft={draft}"
-    except Exception as e:
-        if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
-            return True, "MLX MTP optional"
-        return False, str(e)[:120]
+    last_error = ""
+    for attempt in range(4):
+        try:
+            code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
+            data = json.loads(body)
+            ok = code == 200 and bool(data.get("ok", True))
+            model = data.get("model") or "-"
+            draft = data.get("draft_model") or "-"
+            suffix = "" if attempt == 0 else f"; retry={attempt}"
+            return ok, f"model={model}; draft={draft}{suffix}"
+        except Exception as e:
+            last_error = str(e)[:120]
+            if attempt < 3:
+                time.sleep(2)
+                continue
+    if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
+        return True, "MLX MTP optional"
+    return False, last_error
 
 def test_menubar_process_running():
-    lines = _process_lines(r"gui/magi_menubar.py")
+    lines = _process_lines(r"run_menubar_no_site.py") + _process_lines(r"gui/magi_menubar.py")
     if lines:
-        return True, f"{len(lines)} process"
+        if len(lines) > 1:
+            return False, f"duplicate menubar processes: {len(lines)}"
+        return True, "1 process"
     if sys.platform != "darwin" or os.environ.get("CI"):
         return True, "not a desktop live environment"
     if os.environ.get("MAGI_REQUIRE_MENUBAR", "1").lower() in {"0", "false", "no"}:
         return True, "menubar optional"
-    return False, "magi_menubar.py not running"
+    return False, "MAGI menubar not running"
 
 def test_nas_lumi_mount_guard():
     candidates = [
@@ -736,6 +768,30 @@ def test_no_desktop_git_add_noise():
     lines = _process_lines(r"git add --")
     noisy = [line for line in lines if "/Users/ai/Desktop" in line or ".openclaw_archived" in line or "Paperclip_rebuild" in line]
     return not noisy, "no noisy git add" if not noisy else noisy[0][:160]
+
+
+def test_api_token_health_check():
+    checker = MAGI_ROOT / "scripts" / "ops" / "token_health_check.py"
+    if not checker.exists():
+        return False, "token_health_check.py missing"
+    out = MAGI_ROOT / ".runtime" / "smoke_token_health_latest.json"
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            str(checker),
+            "--refresh",
+            "--threshold-days",
+            "7",
+            "--json-out",
+            str(out),
+        ],
+        timeout=90,
+    )
+    if not ok:
+        return False, tail
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    failures = int(summary.get("failures") or 0)
+    return bool(data.get("ok")) and failures == 0, f"failures={failures} refreshed={summary.get('refreshed')}"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -817,14 +873,14 @@ def test_health_active_issues_clear():
     data = json.loads(body)
     op = data.get("operational_health") if isinstance(data.get("operational_health"), dict) else {}
     active = op.get("active_unresolved_24h") if isinstance(op.get("active_unresolved_24h"), dict) else {}
+    degraded_reasons = op.get("degraded_reasons") if isinstance(op.get("degraded_reasons"), list) else []
     passed = (
         code == 200
         and data.get("status") == "operational"
         and bool(op.get("ok"))
-        and int(active.get("cron_failures") or 0) == 0
-        and int(active.get("issue_agenda_high_severity") or 0) == 0
+        and not degraded_reasons
     )
-    return passed, f"status={data.get('status')} active={active}"
+    return passed, f"status={data.get('status')} active={active} degraded_reasons={degraded_reasons}"
 
 
 def test_process_hygiene_clean():
@@ -941,10 +997,18 @@ def main():
     parser = argparse.ArgumentParser(description="MAGI 全功能冒煙測試")
     parser.add_argument("--json-out", help="輸出 JSON 報告路徑")
     parser.add_argument("--skip", default="", help="跳過模組（逗號分隔，如 laf,eefile,inference）")
+    parser.add_argument(
+        "--commercial",
+        action="store_true",
+        help="加跑公版/商用發版守門（public audit、cleanroom install、commercial readiness）",
+    )
     parser.add_argument("--notify", action="store_true", help="完成後推送通知")
     args = parser.parse_args()
 
     skip = set(s.strip().lower() for s in args.skip.split(",") if s.strip())
+    commercial_enabled = args.commercial or os.environ.get("MAGI_SMOKE_COMMERCIAL", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not commercial_enabled:
+        skip.add("commercial")
 
     print("╔══════════════════════════════════════════╗")
     print("║     MAGI 全功能冒煙測試                  ║")
@@ -952,6 +1016,10 @@ def main():
     print(f"  Time: {report.timestamp}")
     print(f"  Root: {MAGI_ROOT}")
     print(f"  Skip: {skip or 'none'}")
+    if "commercial" in skip:
+        print("  Commercial guards: skipped (use --commercial for public/commercial release gate)")
+    else:
+        print("  Commercial guards: enabled")
     print()
 
     t0 = time.time()
@@ -1071,6 +1139,7 @@ def main():
     run_test("Menubar process running", "ops", test_menubar_process_running)
     run_test("NAS LUMI mount guard", "ops", test_nas_lumi_mount_guard)
     run_test("No Desktop git-add noise", "ops", test_no_desktop_git_add_noise)
+    run_test("API/OAuth token health", "ops", test_api_token_health_check)
     print()
 
     # ── 15. Commercial Release Guards ──

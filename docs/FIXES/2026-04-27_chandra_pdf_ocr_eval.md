@@ -5,14 +5,18 @@
 - Chandra OCR 2 可改善 PDF 命名/書籤的上游文字品質，尤其是掃描件、表格、手寫、多欄與低品質 OCR，但它本身不是命名器或書籤器。
 - 目前不適合直接取代 MAGI 既有 macOS Vision / RapidOCR / GLM fallback，因為 Chandra 預設需要 vLLM GPU server，HuggingFace 後端會下載大型模型，且模型權重有 OpenRAIL-M modified 使用限制。
 - 已安裝到隔離環境 `/tmp/magi_chandra_venv`，避免污染 MAGI 主 venv。
-- 已新增 MAGI optional provider，預設關閉；只有既有 OCR 低品質或空白時，且使用者明確啟用與接受模型授權，才會嘗試 Chandra。
+- 已新增 MAGI optional provider，預設關閉；只有既有 OCR 低品質或空白時，且使用者明確啟用、標示私用版、接受模型授權並明確確認 Qwen backend，才會嘗試 Chandra。
+- 2026-05-20 複查：Chandra OCR 2 的 upstream model card 標籤與 credits 顯示 `qwen3_5` / Qwen 3.5，涉及中國系模型；MAGI 因此只允許私用版明確 opt-in，不納入公開版預設，不自動下載權重。
 
 ## 變更範圍
 
 - `skills/engine/ocr/chandra_provider.py`
-  - 解析 Chandra CLI、檢查 feature flag、模型授權確認、vLLM server、HF 後端防呆。
+  - 解析 Chandra CLI、檢查 feature flag、私用版確認、模型授權確認、Qwen backend 確認、vLLM server、HF 後端防呆。
   - 透過 subprocess 呼叫 Chandra CLI，讀取 markdown output。
   - 所有不可用狀態回傳 structured failure，不拋例外。
+- `scripts/ops/chandra_ocr_healthcheck.py`
+  - 提供私用版 readiness/live check。
+  - 只記錄 text length 與法律實體數量，不把 OCR 原文寫入 runtime JSON。
 - `skills/pdf-namer/action.py`
   - 新增 `_chandra_ocr_page()` 與 `_prefer_chandra_if_better()`。
   - 接入 `_ocr_consensus()`、`_vision_analyze_for_naming()`、`batch_ocr_pages()` 的低品質 OCR fallback。
@@ -26,7 +30,9 @@
 ## Feature Flags
 
 - `MAGI_CHANDRA_OCR_ENABLE=1`：啟用 Chandra fallback。
+- `MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1` 或 `MAGI_DEPLOYMENT_MODE=private`：確認這是私用版部署。
 - `MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1`：允許實際模型推理前必填。
+- `MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1`：確認知悉 Chandra OCR 2 upstream 使用 Qwen backend。
 - `MAGI_CHANDRA_CLI=/tmp/magi_chandra_venv/bin/chandra`：CLI 路徑；預設也會找此隔離安裝。
 - `MAGI_CHANDRA_OCR_METHOD=vllm|hf`：預設 vLLM。
 - `MAGI_CHANDRA_VLLM_API_BASE=http://127.0.0.1:8000/v1`：vLLM OpenAI-compatible endpoint。
@@ -40,7 +46,9 @@
 - Import：`from chandra.input import load_pdf_images`; `from chandra.model import InferenceManager` 成功。
 - Provider live probe：
   - 未啟用：安全回 `MAGI_CHANDRA_OCR_ENABLE is not enabled`。
+  - 啟用但未標示私用版：安全回 private-only gate。
   - 啟用但未接受模型授權：安全回 `MAGI_CHANDRA_ACCEPT_MODEL_LICENSE is required before model inference`。
+  - 啟用但未確認 Qwen backend：安全回 `MAGI_CHANDRA_ACCEPT_QWEN_BACKEND` gate。
   - 已接受授權但 vLLM 未啟動：安全回 `vLLM unavailable`。
 - pdf-namer live smoke：
   - Chandra enabled / license missing：`self_test` success。

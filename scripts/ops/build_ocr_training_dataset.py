@@ -35,6 +35,10 @@ except Exception as exc:  # pragma: no cover
 from api.case_path_mapper import preferred_case_roots
 from skills.bridge.shared_utils.case_number_utils import extract_case_number
 from skills.bridge.shared_utils.court_utils import extract_court_name
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    LEGACY_JUDGMENT_FOLDER_LABEL,
+)
 from skills.engine.ocr.legal_entities import extract_entities
 from skills.engine.ocr.quality import compute_quality_score
 
@@ -167,6 +171,59 @@ def parse_filename_fields(filename: str) -> FilenameFields:
     doc_type = doc_type[:40]
 
     return FilenameFields(date=date, court=court, case_number=case_number, doc_type=doc_type, party=party)
+
+
+def _redact_text(text: str, fields: FilenameFields) -> str:
+    out = str(text or "")
+    if fields.party:
+        out = out.replace(fields.party, "[PARTY]")
+    out = re.sub(r"[（(][^（）()]{1,40}[）)]", "（[REDACTED]）", out)
+    return out
+
+
+def _redacted_fields(fields: FilenameFields) -> Dict[str, str]:
+    data = asdict(fields)
+    if data.get("party"):
+        data["party"] = "[PARTY]"
+    return data
+
+
+def _canonicalize_training_path_segment(segment: str) -> str:
+    m = re.match(r"^(\d+)_", segment)
+    clean = re.sub(r"^\d+_", "", segment)
+    if clean == LEGACY_JUDGMENT_FOLDER_LABEL:
+        return f"{int(m.group(1)):02d}_{JUDGMENT_FOLDER_LABEL}" if m else JUDGMENT_FOLDER_LABEL
+    return segment
+
+
+def _safe_training_relative_path(pdf_path: Path, roots: Iterable[Path], fields: FilenameFields) -> str:
+    expanded_roots = [Path(r).expanduser().resolve(strict=False) for r in roots]
+    resolved = pdf_path.expanduser().resolve(strict=False)
+    rel: Optional[Path] = None
+    for root in expanded_roots:
+        try:
+            rel = resolved.relative_to(root)
+            break
+        except ValueError:
+            continue
+    if rel is None:
+        rel = Path("external") / pdf_path.name
+    parts = [
+        _redact_text(_canonicalize_training_path_segment(part), fields)
+        for part in rel.parts
+    ]
+    return str(Path(*parts))
+
+
+def _root_manifest_refs(roots: Iterable[Path]) -> List[Dict[str, str]]:
+    refs = []
+    for idx, root in enumerate(roots, start=1):
+        value = str(Path(root).expanduser().resolve(strict=False))
+        refs.append({
+            "id": f"root_{idx}",
+            "sha256": hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16],
+        })
+    return refs
 
 
 def _candidate_allowed(path: Path) -> bool:
@@ -331,13 +388,15 @@ def _training_messages(fields: FilenameFields, sources: List[SourceResult], file
         "不得摘要、不得法律分析、不得補不存在的內容。\n\n"
         "原始檔名：%s\n\n%s"
     ) % (filename, "\n\n".join(source_blocks))
-    assistant = json.dumps(asdict(fields), ensure_ascii=False, sort_keys=True)
+    safe_fields = _redacted_fields(fields)
+    safe_filename = _redact_text(filename, fields)
+    assistant = json.dumps(safe_fields, ensure_ascii=False, sort_keys=True)
     return [
         {
             "role": "system",
             "content": "你是繁體中文法律文件 OCR 校正器。只輸出嚴格 JSON，欄位為 date,court,case_number,doc_type,party。",
         },
-        {"role": "user", "content": user},
+        {"role": "user", "content": _redact_text(user, fields).replace(filename, safe_filename)},
         {"role": "assistant", "content": assistant},
     ]
 
@@ -401,8 +460,11 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
         "rejected": 0,
         "errors": 0,
         "started_at": ts,
-        "roots": [str(p) for p in roots],
-        "candidate_list": str(candidate_list) if candidate_list else "",
+        "root_refs": _root_manifest_refs(roots),
+        "candidate_list_ref": (
+            hashlib.sha256(str(candidate_list).encode("utf-8", errors="replace")).hexdigest()[:16]
+            if candidate_list else ""
+        ),
         "page_nums": page_nums,
         "min_support_score": args.min_support_score,
         "min_quality": args.min_quality,
@@ -418,10 +480,11 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
             stats["scanned"] += 1
             fields = parse_filename_fields(pdf_path.name)
             record_base = {
-                "pdf_path": str(pdf_path),
-                "filename": pdf_path.name,
+                "pdf_ref": hashlib.sha256(str(pdf_path).encode("utf-8", errors="replace")).hexdigest()[:16],
+                "relative_path": _safe_training_relative_path(pdf_path, roots, fields),
+                "filename": _redact_text(pdf_path.name, fields),
                 "sha256_head": "",
-                "filename_fields": asdict(fields),
+                "filename_fields": _redacted_fields(fields),
             }
             result = _process_pdf_with_timeout(
                 pdf_path,
@@ -446,8 +509,13 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
             support_score, support = _support_score(fields, sources)
             best_quality = max((s.quality for s in sources), default=0.0)
             item = dict(record_base)
+            safe_sources = []
+            for source in sources:
+                data = asdict(source)
+                data["text"] = _redact_text(str(data.get("text") or ""), fields)
+                safe_sources.append(data)
             item.update({
-                "sources": [asdict(s) for s in sources],
+                "sources": safe_sources,
                 "support_score": support_score,
                 "support": support,
                 "best_quality": best_quality,
@@ -485,12 +553,12 @@ def build_dataset(args: argparse.Namespace) -> Dict[str, object]:
                 print(json.dumps({k: stats[k] for k in ("scanned", "silver", "needs_labeling", "rejected", "errors")}, ensure_ascii=False), flush=True)
 
     stats["finished_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stats["output_dir"] = str(out_dir)
+    stats["output_dir_name"] = out_dir.name
     stats["files"] = {
-        "silver": str(silver_path),
-        "needs_labeling": str(label_path),
-        "rejected": str(reject_path),
-        "manifest": str(manifest_path),
+        "silver": silver_path.name,
+        "needs_labeling": label_path.name,
+        "rejected": reject_path.name,
+        "manifest": manifest_path.name,
     }
     manifest_path.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
     return stats

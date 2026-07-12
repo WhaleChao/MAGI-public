@@ -3,6 +3,8 @@
 import os
 import sys
 import importlib.util
+import json
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 _SKILL_DIR = os.path.join(os.path.dirname(__file__), "..", "skills", "pdf-namer")
@@ -60,3 +62,96 @@ def test_sync_osc_todos_for_path_skips_when_not_in_case_tree():
 
     assert result.get("success") is False
     assert result.get("skipped") == "not_in_case_tree", f"應 skipped=not_in_case_tree，實際: {result}"
+
+
+def test_find_subfolder_prefers_canonical_judgment_folder_with_legacy_db_rule():
+    fake_training_loader = SimpleNamespace(
+        get_template_for_doc_type=lambda _doc_type: {"archive_destination_type": "判決書"}
+    )
+    case = {
+        "subfolders": [
+            "09_法院通知或程序裁定",
+            "10_判決書",
+            "10_判決書或終局裁定及處分",
+        ]
+    }
+
+    with patch.dict(sys.modules, {"training_loader": fake_training_loader}):
+        assert _mod._find_subfolder(case, "判決") == "10_判決書或終局裁定及處分"
+
+
+def test_find_subfolder_accepts_legacy_judgment_folder_when_canonical_missing():
+    case = {"subfolders": ["09_法院通知或程序裁定", "10_判決書"]}
+
+    with patch.dict(sys.modules, {"training_loader": SimpleNamespace(get_template_for_doc_type=lambda _: None)}):
+        assert _mod._find_subfolder(case, "判決") == "10_判決書"
+
+
+def test_find_subfolder_routes_terminal_rulings_and_dispositions_to_judgment_folder():
+    case = {"subfolders": ["09_法院通知或程序裁定", "10_判決書或終局裁定及處分"]}
+    stale_rule = SimpleNamespace(
+        get_template_for_doc_type=lambda _doc_type: {"archive_destination_type": "法院通知或程序裁定"}
+    )
+
+    with patch.dict(sys.modules, {"training_loader": stale_rule}):
+        assert _mod._find_subfolder(case, "免責裁定") == "10_判決書或終局裁定及處分"
+        assert _mod._find_subfolder(case, "不起訴處分書") == "10_判決書或終局裁定及處分"
+        assert _mod._find_subfolder(case, "裁定") == "09_法院通知或程序裁定"
+
+
+def test_build_case_index_normalizes_cached_legacy_judgment_folders(tmp_path, monkeypatch):
+    cache = tmp_path / "_case_index.json"
+    cache.write_text(
+        json.dumps(
+            [
+                {
+                    "folder_name": "2026-0001-王大明",
+                    "path": str(tmp_path / "case"),
+                    "parties": ["王大明"],
+                    "subfolders": ["09_法院通知或程序裁定", "07_判決書", "10_判決書"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INDEX_PATH", str(cache))
+
+    index = _mod.build_case_index()
+
+    assert index[0]["subfolders"] == [
+        "09_法院通知或程序裁定",
+        "07_判決書或終局裁定及處分",
+        "10_判決書或終局裁定及處分",
+    ]
+
+
+def test_build_case_index_filters_synthetic_case_cache_entries(tmp_path, monkeypatch):
+    cache = tmp_path / "_case_index.json"
+    cache.write_text(
+        json.dumps(
+            [
+                {
+                    "folder_name": "2026-9998-測試消債當事人-消費者債務清理-更生",
+                    "case_id": "2026-9998",
+                    "path": "/Volumes/homes/user/01_案件/法扶案件/消費者債務清理/2026-9998-測試消債當事人-消費者債務清理-更生",
+                    "parties": ["測試消債當事人"],
+                    "subfolders": ["01_法扶資料"],
+                },
+                {
+                    "folder_name": "2026-0002-林小華-一審-返還借款",
+                    "case_id": "2026-0002",
+                    "path": str(tmp_path / "real_case"),
+                    "parties": ["林小華"],
+                    "subfolders": ["01_法扶資料"],
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INDEX_PATH", str(cache))
+
+    index = _mod.build_case_index()
+
+    assert [item["case_id"] for item in index] == ["2026-0002"]

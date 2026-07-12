@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import shlex
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 # --- 常數 ---------------------------------------------------------------
 
@@ -34,7 +35,9 @@ _MAX_CONCURRENT = 8
 _STDOUT_CAP_BYTES = 1_048_576          # 1 MB
 _STDERR_CAP_BYTES = 1_048_576
 _SIGTERM_GRACE_SEC = 3.0
+_SIGKILL_GRACE_SEC = 2.0
 _LAUNCHCTL_LABEL_RE = re.compile(r"^com\.magi\.[a-z0-9\-]+$")
+_PYTHON_EXECUTABLE_RE = re.compile(r"^python3(?:\.\d+)?$")
 
 # argv[0] 白名單（basename 比對）
 _ARGV0_WHITELIST = frozenset({
@@ -77,6 +80,12 @@ class SafeRunResult:
     killed: bool
 
 
+class _SafeProcessCleanupError(RuntimeError):
+    """Raised only when a timed-out owned process cannot be reaped safely."""
+
+    safe_process_cleanup_failed = True
+
+
 # --- 內部鎖（進程內並發上限）-------------------------------------------
 
 _sem = threading.BoundedSemaphore(_MAX_CONCURRENT)
@@ -96,12 +105,16 @@ def _validate_argv(argv: Sequence[str]) -> None:
     if not argv or not isinstance(argv, (list, tuple)):
         raise ValueError("argv must be a non-empty list/tuple")
     head = os.path.basename(argv[0])
-    if head not in _ARGV0_WHITELIST and argv[0] not in _ARGV0_WHITELIST:
+    if (
+        head not in _ARGV0_WHITELIST
+        and argv[0] not in _ARGV0_WHITELIST
+        and not _PYTHON_EXECUTABLE_RE.fullmatch(head)
+    ):
         raise PermissionError(f"argv[0] not whitelisted: {argv[0]!r}")
     # python3 -c <code> 的 code 引數本就含 ; 是合法 Python，shell=False 下無注入風險
     _is_python_code_arg = (
         len(argv) >= 3
-        and os.path.basename(argv[0]) == "python3"
+        and bool(_PYTHON_EXECUTABLE_RE.fullmatch(os.path.basename(argv[0])))
         and argv[1] == "-c"
     )
     for i, a in enumerate(argv):
@@ -138,6 +151,92 @@ def _cap(s: bytes, max_bytes: int) -> str:
     return truncated.decode("utf-8", errors="replace") + f"\n[...truncated {len(s) - max_bytes} bytes]"
 
 
+def _owned_process_snapshot(root_pid: int) -> tuple[set[int], dict[int, int]]:
+    """Return the runner-owned descendant PIDs and wholly-owned process groups.
+
+    ``resource_guarded_run`` deliberately creates a new session for its child.
+    A parent-only ``killpg`` cannot reach that nested group.  We therefore take
+    a PPID snapshot while the wrapper is still alive and only signal groups
+    whose every current member belongs to this runner's descendant tree.
+    """
+    try:
+        table_proc = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,pgid="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return {int(root_pid)}, {}
+
+    table: dict[int, tuple[int, int]] = {}
+    for raw_line in (table_proc.stdout or "").splitlines():
+        parts = raw_line.split()
+        if len(parts) != 3:
+            continue
+        try:
+            pid, ppid, pgid = (int(part) for part in parts)
+        except ValueError:
+            continue
+        if pid > 0 and ppid >= 0 and pgid > 0:
+            table[pid] = (ppid, pgid)
+
+    owned = {int(root_pid)}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (ppid, _pgid) in table.items():
+            if ppid in owned and pid not in owned:
+                owned.add(pid)
+                changed = True
+
+    members_by_group: dict[int, set[int]] = {}
+    for pid, (_ppid, pgid) in table.items():
+        members_by_group.setdefault(pgid, set()).add(pid)
+    groups = {
+        pgid
+        for pid in owned
+        for _ppid, pgid in (table.get(pid, (0, 0)),)
+        if pgid and members_by_group.get(pgid, set()) <= owned
+    }
+    return owned, {pid: table[pid][1] for pid in owned if pid in table and table[pid][1] in groups}
+
+
+def _signal_owned_processes(
+    proc: subprocess.Popen,
+    *,
+    signal_number: int,
+    owned_pids: set[int],
+    owned_groups: dict[int, int],
+) -> tuple[set[int], dict[int, int]]:
+    """Signal only the process groups and PIDs proven to be runner-owned."""
+    current_pids, current_groups = _owned_process_snapshot(proc.pid)
+    owned_pids.update(current_pids)
+    owned_groups.update(current_groups)
+
+    signaled: set[int] = set()
+    for pgid in sorted(set(owned_groups.values())):
+        try:
+            os.killpg(pgid, signal_number)
+            signaled.update(pid for pid, group in owned_groups.items() if group == pgid)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            # Fall through to the individually-owned PID below.
+            continue
+
+    for pid in sorted(owned_pids - signaled):
+        try:
+            os.kill(pid, signal_number)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            continue
+    return owned_pids, owned_groups
+
+
 # --- 主函式 -------------------------------------------------------------
 
 def run(
@@ -146,6 +245,7 @@ def run(
     env_whitelist_prefixes: Optional[Sequence[str]] = None,
     cwd: Optional[str] = None,
     env_extra: Optional[dict] = None,
+    _on_started: Optional[Callable[[int], None]] = None,
 ) -> SafeRunResult:
     """以 argv 啟動子進程，禁用 shell=True。超時走 SIGTERM→3s→SIGKILL。"""
     _validate_argv(argv)
@@ -172,18 +272,69 @@ def run(
             cwd=cwd,
             shell=False,               # 絕不 shell=True
             close_fds=True,
+            start_new_session=True,
         )
+        owned_pids = {proc.pid}
+        owned_groups: dict[int, int] = {}
+        if _on_started is not None:
+            try:
+                _on_started(proc.pid)
+            except Exception as exc:
+                owned_pids, owned_groups = _signal_owned_processes(
+                    proc,
+                    signal_number=signal.SIGKILL,
+                    owned_pids=owned_pids,
+                    owned_groups=owned_groups,
+                )
+                try:
+                    proc.communicate(timeout=_SIGKILL_GRACE_SEC)
+                except subprocess.TimeoutExpired as reap_exc:
+                    raise _SafeProcessCleanupError(
+                        f"process start callback failed and child could not be reaped: pid={proc.pid} "
+                        f"owned_pids={sorted(owned_pids)}"
+                    ) from reap_exc
+                raise _SafeProcessCleanupError(
+                    f"process start callback failed; child was reaped: pid={proc.pid}"
+                ) from exc
         try:
             out_b, err_b = proc.communicate(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.terminate()
+            owned_pids, owned_groups = _signal_owned_processes(
+                proc,
+                signal_number=signal.SIGTERM,
+                owned_pids=owned_pids,
+                owned_groups=owned_groups,
+            )
             try:
                 out_b, err_b = proc.communicate(timeout=_SIGTERM_GRACE_SEC)
             except subprocess.TimeoutExpired:
-                proc.kill()
                 killed = True
-                out_b, err_b = proc.communicate(timeout=2.0)
+                owned_pids, owned_groups = _signal_owned_processes(
+                    proc,
+                    signal_number=signal.SIGKILL,
+                    owned_pids=owned_pids,
+                    owned_groups=owned_groups,
+                )
+                try:
+                    out_b, err_b = proc.communicate(timeout=_SIGKILL_GRACE_SEC)
+                except subprocess.TimeoutExpired:
+                    # A just-killed child may still be in the kernel's exit
+                    # path. Re-signal only the same verified ownership set,
+                    # then make one final bounded reap attempt.
+                    owned_pids, owned_groups = _signal_owned_processes(
+                        proc,
+                        signal_number=signal.SIGKILL,
+                        owned_pids=owned_pids,
+                        owned_groups=owned_groups,
+                    )
+                    try:
+                        out_b, err_b = proc.communicate(timeout=_SIGKILL_GRACE_SEC)
+                    except subprocess.TimeoutExpired as exc:
+                        raise _SafeProcessCleanupError(
+                            f"timed-out process group could not be reaped: pid={proc.pid} "
+                            f"owned_pids={sorted(owned_pids)}"
+                        ) from exc
         rc = proc.returncode if proc.returncode is not None else -1
         return SafeRunResult(
             returncode=rc,
@@ -210,9 +361,36 @@ def parse_cron_command(cmdline: str) -> List[str]:
         if meta in cmdline:
             raise PermissionError(f"cron cmdline contains shell metachar {meta!r}")
     tokens = shlex.split(cmdline, posix=True)
+    tokens = _repair_known_unquoted_space_paths(tokens)
     if not tokens:
         raise ValueError("shlex.split produced empty argv")
     return tokens
+
+
+def _repair_known_unquoted_space_paths(tokens: List[str]) -> List[str]:
+    """Repair legacy cron commands that forgot to quote MAGI's runtime path.
+
+    The installed runtime lives under "Application Support".  Older cron rows
+    stored commands without quotes, so shlex splits the path into
+    "/Users/ai/Library/Application" and "Support/...".  Joining only this
+    exact known prefix keeps shell metachar protection intact while allowing
+    the audit layer to validate the real argv.
+    """
+    repaired: List[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if (
+            token == "/Users/ai/Library/Application"
+            and i + 1 < len(tokens)
+            and tokens[i + 1].startswith("Support/")
+        ):
+            repaired.append(f"{token} {tokens[i + 1]}")
+            i += 2
+            continue
+        repaired.append(token)
+        i += 1
+    return repaired
 
 
 # --- launchctl 操作 -----------------------------------------------------

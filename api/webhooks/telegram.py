@@ -119,10 +119,52 @@ def _load_telegram_webhook_secret() -> str:
     ).strip()
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_falsey(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"0", "false", "no", "off"}
+
+
+def _telegram_production_mode() -> bool:
+    if _env_truthy("MAGI_TELEGRAM_WEBHOOK_PRODUCTION"):
+        return True
+    if _env_falsey("MAGI_TELEGRAM_WEBHOOK_PRODUCTION"):
+        return False
+    for name in ("MAGI_ENV", "APP_ENV", "FLASK_ENV"):
+        if str(os.environ.get(name, "")).strip().lower() in {"prod", "production"}:
+            return True
+    public_base = str(os.environ.get("MAGI_PUBLIC_BASE_URL") or "").strip().lower()
+    if public_base.startswith("https://"):
+        return True
+    try:
+        host = (request.headers.get("X-Forwarded-Host") or request.host or "").strip().lower()
+        if host and not (
+            host.startswith("localhost")
+            or host.startswith("127.0.0.1")
+            or host.startswith("[::1]")
+        ):
+            return True
+        if request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip"):
+            return True
+    except RuntimeError:
+        return False
+    return False
+
+
+def _telegram_webhook_secret_required() -> bool:
+    if _env_truthy("TELEGRAM_WEBHOOK_SECRET_REQUIRED") or _env_truthy("MAGI_TELEGRAM_WEBHOOK_SECRET_REQUIRED"):
+        return True
+    if _env_falsey("TELEGRAM_WEBHOOK_SECRET_REQUIRED") or _env_falsey("MAGI_TELEGRAM_WEBHOOK_SECRET_REQUIRED"):
+        return False
+    return _telegram_production_mode()
+
+
 def _telegram_verify_webhook_secret() -> bool:
     expected = _load_telegram_webhook_secret()
     if not expected:
-        return True
+        return not _telegram_webhook_secret_required()
     received = (request.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
     return bool(received) and hmac.compare_digest(received, expected)
 
@@ -689,11 +731,14 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
     allowed_admin_ids = set(_load_admin_telegram_ids() or [])
     allowed_admin_ids |= set(_load_notify_telegram_ids() or [])
     candidate_ids = {x for x in [sender_id, chat_id, user_id_raw, sender_chat_id] if str(x or "").strip()}
+    production_mode = _telegram_production_mode()
 
     def _is_allowed() -> bool:
-        return (not allowed_admin_ids) or any(cid in allowed_admin_ids for cid in candidate_ids)
+        if not allowed_admin_ids:
+            return not production_mode
+        return any(cid in allowed_admin_ids for cid in candidate_ids)
 
-    if not _is_allowed():
+    if not _is_allowed() and not production_mode:
         # Bootstrap path: if this is a MAGI-named group/channel, bind once then re-check.
         try:
             auto_pair = str(os.environ.get("MAGI_TG_AUTO_PAIR_MAGI_GROUP", "1")).strip().lower() in {"1", "true", "yes", "on"}
@@ -717,7 +762,7 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
             list(candidate_ids),
         )
         _telegram_send_text_to(chat_id, "⛔ 此 Telegram 帳號不在允許清單中。")
-        return {"ok": True, "blocked": "allowlist"}
+        return {"ok": False if production_mode else True, "blocked": "allowlist"}
 
     role = "admin" if any(cid in allowed_admin_ids for cid in candidate_ids) else "user"
     user_id = f"telegram_{sender_id}"
@@ -1431,7 +1476,7 @@ def _send_telegram_text(text: str) -> bool:
             topic_key="alert",
             queue_on_fail=True,
         ) or {}
-        if bool(st.get("telegram")) or bool(st.get("queued")):
+        if bool(st.get("telegram")):
             return True
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9430, exc_info=True)

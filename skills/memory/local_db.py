@@ -189,13 +189,23 @@ def search_local(query: str, limit: int = 5, source_contains: str = "") -> list:
         law_hint_precise = ""
         article_hints_precise = []
         try:
-            law_matches = re.findall(r"([\u4e00-\u9fff]{2,}(?:法|條例|通則|規則|細則|施行法|施行細則))", q)
-            if law_matches:
-                law_hint_precise = max(law_matches, key=len)
+            compact_q = re.sub(r"\s+", "", q)
+            direct = re.search(
+                r"(民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|強制執行法)"
+                r"第?\d",
+                compact_q,
+            )
+            if direct:
+                law_hint_precise = direct.group(1)
+            else:
+                law_matches = re.findall(r"([\u4e00-\u9fff]+(?:法|條例|通則|規則|細則|施行法|施行細則))", q)
+                if law_matches:
+                    law_hint_precise = max(law_matches, key=len)
         except Exception:
             law_hint_precise = ""
         try:
-            m0 = re.search(r"第\s*(\d{1,4})(?:\s*-\s*(\d{1,3}))?\s*條(?:\s*之\s*(\d{1,3}))?", q)
+            compact_q = re.sub(r"\s+", "", q)
+            m0 = re.search(r"第?\s*(\d{1,4})(?:\s*-\s*(\d{1,3}))?\s*條?(?:\s*之\s*(\d{1,3}))?", compact_q)
             if m0:
                 art = (m0.group(1) or "").strip()
                 dash = (m0.group(2) or "").strip()

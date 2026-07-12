@@ -75,7 +75,7 @@ CLAUDE.md 達 555 行，超出 §2.14 的 500 行紅線。本檔保留被移出�
   - **commit 13** `f606e46`: Playwright deep verify 33 項 + magic-byte mime sniff 強化（disguised .exe-as-.pdf 防護）
 - **commit 13 backend 強化**：`api/blueprints/osc_files.py` 新增 `_sniff_executable()` (7 個 magic-byte signature: MZ/ELF/Mach-O 32+64 LE+BE/Java class/shebang)，串入 upload-multi (post-save) 和 upload-chunked (post-finalize)；偵測到 executable signature 立即刪除已存檔案並回 `blocked_content_signature`，硬擋 `.exe` rename 為 `.pdf` 上傳的繞過攻擊。
 - **驗收層級：驗收**（Phase 1: 每個 P0 API curl live 通過 + Phase 2: Playwright headless 33/33 PASS：13 個檔類 preview status=200 + content-type 正確 / 結構顯示 (folders/hidden/view modes/sort/breadcrumb/tree) 全綠 / 上傳 7 子項 (single/multi/folder/chunked/.exe-rejected/conflict/missing-chunk-retry) 全綠 / 跨平台 3 個 UA (iPad Safari/Win Chrome/Mac Safari) 全綠 / 安全 3 子項 (path traversal blocked/disguised .exe blocked/.trash recycle) 全綠；screenshot `/tmp/paperclip_filemanager_p2_complete.png` + report `/tmp/paperclip_filemanager_p2_verify.json`）
-- **deep verify 重跑指令**：`/usr/bin/python3 scripts/ops/paperclip_filemanager_deep_verify.py`（系統 python 3.9 內建 playwright；TEST_BASE 預設 `~/SynologyDrive/homes/01_案件/法扶案件/刑事`，sandbox `_p2_verify_sandbox` 自動 wipe + recreate）
+- **deep verify 重跑指令**：`/usr/bin/python3 scripts/ops/paperclip_filemanager_deep_verify.py`（系統 python 3.9 內建 playwright；預設使用 `/tmp/paperclip_filemanager_test_base`，避免在真實案件 NAS 產生測試資料。需要 NAS live 測試時才手動設定 `PAPERCLIP_FILEMANAGER_TEST_BASE`；sandbox `_p2_verify_sandbox` 會自動清理。）
 - **fixtures**：`tests/fixtures/file_manager_samples/`（force-added，160KB total，17 個檔涵蓋 13 個預覽類型 + .exe + disguised .exe-as-.pdf）
 - **詳細實作計劃**：桌面 `MAGI_v2_Paperclip_NAS檔案總管_實作計劃_20260503.md`。
 

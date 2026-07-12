@@ -9,6 +9,7 @@ import sys
 import uuid
 import time
 import logging
+from typing import Optional
 from pathlib import Path
 
 _MAGI_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,12 @@ AGENT_DIR = Path(f"{_MAGI_ROOT}/.agent")
 STATE_PATH = AGENT_DIR / "poa_chat_state.json"
 
 _SKIP_WORDS = {"無", "沒有", "略", "跳過", "skip", "-"}
+
+_CAPABILITY_HINT_RE = re.compile(
+    r"(你會什麼|你能做什麼|你能做到什麼|你可以做什麼|你能做哪些|你可以做哪些|你做得到什麼|"
+    r"有什麼功能|有哪些功能|能力清單|功能列表|指令列表|能力導覽|能不能.*做什麼|怎麼使用|怎麼用)",
+    re.IGNORECASE,
+)
 
 # ── 案件類型 & 角色對照 ──
 CASE_TYPE_MAP = {
@@ -60,7 +67,7 @@ def _clear_user(state: dict, user_id: str):
 def _load_config() -> dict:
     config = {
         "company_name": os.environ.get("MAGI_PUBLIC_FIRM_NAME", "範例法律事務所"),
-        "default_lawyer": os.environ.get("MAGI_PUBLIC_LAWYER_NAME", "範例律師"),
+        "default_lawyer": os.environ.get("MAGI_PUBLIC_LAWYER_NAME", ""),
         "company_address_hl": "",
         "company_phone": "",
         "company_fax": "",
@@ -79,6 +86,28 @@ def _load_config() -> dict:
                     config[k] = cfg[k]
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 80, exc_info=True)
+    try:
+        from api.osc.utils import _osc_get_setting_value
+
+        aliases = {
+            "company_name": ["company_name", "firm_name"],
+            "default_lawyer": ["default_lawyer", "lawyer_name"],
+            "company_address_hl": ["company_address_hl", "firm_address"],
+            "company_phone": ["company_phone", "firm_phone", "specialist_phone"],
+            "company_fax": ["company_fax", "firm_fax"],
+            "company_email": ["company_email", "firm_email"],
+            "bank_name": ["bank_name", "firm_bank_name"],
+            "bank_account_name": ["bank_account_name", "firm_bank_account_name"],
+            "bank_account_number": ["bank_account_number", "firm_bank_account_number"],
+        }
+        for key, names in aliases.items():
+            for name in names:
+                value = (_osc_get_setting_value(name) or "").strip()
+                if value:
+                    config[key] = value
+                    break
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch osc settings config", exc_info=True)
     return config
 
 
@@ -313,6 +342,16 @@ def handle_chat(user_id: str, message: str) -> str:
     state = _load_state()
     us = state.get(user_id, {})
     doc_type = us.get("doc_type", "poa")
+
+    # 若在流程中收到一般能力詢問，直接退出流程並回傳功能導覽，避免舊流程殘留阻擋正常對話。
+    if us and _CAPABILITY_HINT_RE.search(message.strip()):
+        _clear_user(state, user_id)
+        return (
+            "✅ 我可以幫您做很多件事，常見有：\n"
+            "• 翻譯、摘要、查判決、查法規、查法條\n"
+            "• 開庭排程、檔案分析、繪圖、法務文件草擬、委任狀/收據生成\n"
+            "• 詢問 `/help` 看完整功能清單，或直接說明要做什麼。"
+        )
 
     # ── 初始化（委任狀）──
     if message == "init":

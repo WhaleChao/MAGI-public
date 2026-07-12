@@ -850,9 +850,10 @@
             }
         }
     </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
 </head>
 
-<body>
+<body class="site-dashboard">
 
     <div class="scanlines"></div>
 
@@ -924,7 +925,7 @@
 
             <!-- LOCAL CASPER (3) -->
             <a href="javascript:void(0)" onclick="openMagiAdjust(); return false;" class="node-card node-casper" id="card-local-casper"
-                style="text-decoration: none; cursor: pointer;" title="開啟 MAGI / NERV 管理頁">
+                style="text-decoration: none; cursor: pointer;" title="開啟 MAGI 調整頁">
                 <span class="sub-label">CASPER-3</span>
                 <h2>主控核心</h2>
                 <div class="status" id="status-local-casper">連線中...</div>
@@ -950,21 +951,21 @@
             <a class="sb-btn" href="/osc">[ 案件管理 ]</a>
             <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
             <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
-            <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
+            <a class="sb-btn" href="/status" style="color:#007AFF;">[ 系統檢測 / 狀態中心 ]</a>
             <a class="sb-btn" href="/golem" style="color:#0f766e;">[ 系統總覽 ]</a>
             <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
         </div>
         <div class="right-col-section">
             <h3 style="color: var(--magi-blue); border-color: rgba(9,132,227,0.3);">Skill Interview</h3>
             <div style="font-size:0.74rem; line-height:1.5; color:rgba(29,29,31,0.8);">
-                這裡直接走和通訊軟體、NERV 相同的 5 題問答流程。完成後會自動寫進 MAGI，並留下版本快照。
+                這裡直接走和通訊軟體、MAGI 調整相同的 5 題問答流程。完成後會自動寫進 MAGI，並留下版本快照。
             </div>
             <input id="skill-interview-request-right" class="wizard-field" type="text" placeholder="例如：幫我做一個會整理逐字稿的工具">
             <div class="wizard-actions">
                 <button class="sb-btn" onclick="startSkillInterviewRight()">[ 啟動 ]</button>
                 <button class="sb-btn" onclick="fetchSkillInterviewStateRight()">[ 進度 ]</button>
                 <button class="sb-btn sb-btn-red" onclick="cancelSkillInterviewRight()">[ 取消 ]</button>
-                <a class="sb-btn" href="/dashboard/nerv">[ NERV 編輯器 ]</a>
+                <a class="sb-btn" href="/magi-adjust">[ MAGI 調整 ]</a>
             </div>
             <textarea id="skill-interview-reply-right" class="wizard-textarea" placeholder="在這裡輸入目前題目的回答，然後按送出"></textarea>
             <div class="wizard-actions">
@@ -1078,10 +1079,12 @@
             <a class="bp-link" href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
             <a class="bp-link" href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
             <a class="bp-link" href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+            <a class="bp-link" href="/lottery">抽獎工具</a>
             <a class="bp-link" href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
             <a class="bp-link" href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
             <a class="bp-link" href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
             <a class="bp-link" href="https://drive.google.com/" target="_blank" rel="noopener noreferrer">Google 雲端硬碟</a>
+            <a class="bp-link" href="/research/judgment-classifier" style="color:#0984e3; font-weight:600;">判決捕捉與分類</a>
             <a class="bp-link" href="/dashboard/website" style="color:#0984e3; font-weight:600;">個人網站管理</a>
             <a class="bp-link" href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">whalechao.github.io</a>
         </div>
@@ -1100,7 +1103,7 @@
                 <a class="sb-btn" href="/osc">[ 案件管理 ]</a>
                 <a class="sb-btn" href="/ops/process-monitor">[ 程序監控 ]</a>
                 <button class="sb-btn" onclick="openMemoryPanel()">[ 向量記憶 ]</button>
-                <a class="sb-btn" href="/dashboard/nerv" style="color:#007AFF;">[ NERV 系統狀態 ]</a>
+                <a class="sb-btn" href="/status" style="color:#007AFF;">[ 系統檢測 / 狀態中心 ]</a>
                 <a class="sb-btn" href="/golem" style="color:#0f766e;">[ 系統總覽 ]</a>
                 <a class="sb-btn" href="/dashboard/website" style="color:#0984e3;">[ 個人網站管理 ]</a>
             </div>
@@ -1141,6 +1144,7 @@
                 <a class="sb-link" href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
                 <a class="sb-link" href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
                 <a class="sb-link" href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+                <a class="sb-link" href="/lottery">抽獎工具</a>
                 <a class="sb-link" href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
             </div>
         </div>
@@ -1378,7 +1382,7 @@
                         </div>
                         <div style="color: rgba(29,29,31,0.8); margin-bottom:4px;">${escapeHtml(event)} · ${escapeHtml(snapshot)}</div>
                         <div style="color: rgba(29,29,31,0.5); margin-bottom:6px;">${escapeHtml(detail)}</div>
-                        <a class="sb-link" href="/dashboard/nerv" style="font-size:0.72rem;">前往 NERV 編輯器</a>
+                        <a class="sb-link" href="/magi-adjust" style="font-size:0.72rem;">前往 MAGI 調整</a>
                     </div>
                 `;
             }).join('');
@@ -1429,7 +1433,7 @@
                         e.message === '請重新登入 MAGI' ? '請重新登入後再使用問答精靈。' : '問答精靈目前暫時沒有連上。',
                         'warn'
                     );
-                    setSkillInterviewOutputRight('目前無法讀取問答精靈狀態。若要先工作，可以直接到 NERV 編輯 SKILL。');
+                    setSkillInterviewOutputRight('目前無法讀取問答精靈狀態。若要先工作，可以直接到 MAGI 調整編輯 SKILL。');
                 }
             }
         }
@@ -1468,10 +1472,10 @@
                 setSkillInterviewStatusRight(
                     e.message === '請重新登入 MAGI'
                         ? '請重新登入後再使用問答精靈。'
-                        : '問答精靈目前沒有連上，你可以先到 NERV 直接編輯 SKILL。',
+                        : '問答精靈目前沒有連上，你可以先到 MAGI 調整直接編輯 SKILL。',
                     'warn'
                 );
-                setSkillInterviewOutputRight('目前沒有拿到題目。若你趕時間，可以先切到 NERV 直接建立或修改 SKILL。');
+                setSkillInterviewOutputRight('目前沒有拿到題目。若你趕時間，可以先切到 MAGI 調整直接建立或修改 SKILL。');
             }
         }
 
@@ -1495,7 +1499,7 @@
                 setSkillInterviewStatusRight(
                     e.message === '請重新登入 MAGI'
                         ? '請重新登入後再送出回答。'
-                        : '問答精靈暫時沒有收下這題，你也可以先到 NERV 直接編輯 SKILL。',
+                        : '問答精靈暫時沒有收下這題，你也可以先到 MAGI 調整直接編輯 SKILL。',
                     'warn'
                 );
             }

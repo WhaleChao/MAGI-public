@@ -8,6 +8,53 @@ import pytest
 import tempfile
 
 
+class _PreflightCursor:
+    def __init__(self, *, database="law_firm_data", tables=None):
+        self.database = database
+        self.tables = set(tables or [])
+        self.sql = ""
+        self.params = ()
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+        self.params = tuple(params or ())
+
+    def fetchone(self):
+        if "SELECT DATABASE()" in self.sql:
+            return (self.database,)
+        if "information_schema.tables" in self.sql:
+            return (1 if self.params and self.params[-1] in self.tables else 0,)
+        return None
+
+
+class TestMigrationPreflight:
+    def test_preflight_db_profile_rejects_unexpected_database(self, monkeypatch):
+        from migrations.migrate import MigrationPreflightError, _preflight_db_profile
+
+        monkeypatch.setenv("OSC_DB_NAME", "law_firm_data")
+
+        with pytest.raises(MigrationPreflightError, match="database_profile_mismatch"):
+            _preflight_db_profile(_PreflightCursor(database="other_db"), {"version": "003"})
+
+    def test_preflight_tenant_migration_requires_osc_base_tables(self, monkeypatch):
+        from migrations.migrate import MigrationPreflightError, _preflight_db_profile
+
+        monkeypatch.setenv("OSC_DB_NAME", "law_firm_data")
+
+        with pytest.raises(MigrationPreflightError, match="expected OSC base tables"):
+            _preflight_db_profile(_PreflightCursor(tables={"users", "clients"}), {"version": "003"})
+
+    def test_preflight_tenant_migration_accepts_expected_profile(self, monkeypatch):
+        from migrations.migrate import _preflight_db_profile
+
+        monkeypatch.setenv("OSC_DB_NAME", "law_firm_data")
+
+        _preflight_db_profile(
+            _PreflightCursor(tables={"users", "cases", "clients"}),
+            {"version": "003"},
+        )
+
+
 class TestParseMigration:
     """Tests for _parse_migration function."""
 
