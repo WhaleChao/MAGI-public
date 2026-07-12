@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from datetime import date
 from pathlib import Path
 from textwrap import wrap
@@ -37,19 +36,15 @@ SOURCE = ROOT / "docs" / "USER_GUIDE.md"
 GUIDES = ROOT / "docs" / "guides"
 ASSETS = GUIDES / "assets"
 
-VERSION = date(2026, 5, 19)
-BASE_NAME = f"MAGI_一般使用者超詳細操作手冊_{VERSION.isoformat()}"
+VERSION = date(2026, 7, 13)
+BASE_NAME = "MAGI_操作手冊"
 MD_OUT = GUIDES / f"{BASE_NAME}.md"
 DOCX_OUT = GUIDES / f"{BASE_NAME}.docx"
 PDF_OUT = GUIDES / f"{BASE_NAME}.pdf"
 
-# Backward-compatible file names used by README and smoke tests.
-VISUAL_DOCX_OUT = GUIDES / f"MAGI_一般使用者圖文操作手冊_{VERSION.isoformat()}.docx"
-VISUAL_PDF_OUT = GUIDES / f"MAGI_一般使用者圖文操作手冊_{VERSION.isoformat()}.pdf"
-
 FONT_PATH = Path("/System/Library/Fonts/STHeiti Medium.ttc")
-FONT_EAST_ASIA = "Microsoft JhengHei"
-FONT_LATIN = "Arial"
+FONT_EAST_ASIA = "Arial Unicode MS"
+FONT_LATIN = "Arial Unicode MS"
 
 INK = "172033"
 MUTED = "52627A"
@@ -107,28 +102,28 @@ def make_cover_image() -> Path:
 
     draw_round_rect(draw, (90, 75, 1510, 825), "FFFFFF", BORDER, radius=34)
     draw.text((140, 135), "MAGI", font=pil_font(72), fill=f"#{BLUE}")
-    draw.text((142, 218), "一般使用者超詳細操作手冊", font=pil_font(64), fill=f"#{INK}")
+    draw.text((142, 218), "完整操作手冊", font=pil_font(64), fill=f"#{INK}")
     draw_wrapped(
         draw,
-        "從第一次安裝、登入、案件、檔案、PDF、OCR、摘要、翻譯、逐字稿、書狀、法扶、閱卷、筆錄、法律資料、通知、健康檢查到疑難排除的完整指南。",
+        "從自然語言 Agent、案件、行事曆、檔案、摘要、翻譯、逐字稿、法扶、閱卷、筆錄、法律資料，到 MENUBAR 與出廠檢查的完整指南。",
         (145, 320),
         width_chars=34,
         size=34,
         fill=MUTED,
         gap=10,
     )
-    badges = [("外部使用者", BLUE), ("公開版 / 私有版", GREEN), ("繁體中文", PURPLE), ("2026-05-19", AMBER)]
+    badges = [("一般使用者", BLUE), ("公開版 / 私有版", GREEN), ("2026-07-13", AMBER)]
     x = 145
     for label, color in badges:
-        draw_round_rect(draw, (x, 610, x + 245, 684), color, color, radius=18)
+        draw_round_rect(draw, (x, 610, x + 240, 684), color, color, radius=18)
         bbox = draw.textbbox((0, 0), label, font=pil_font(29))
-        draw.text((x + (245 - (bbox[2] - bbox[0])) / 2, 630), label, font=pil_font(29), fill="#FFFFFF")
-        x += 270
+        draw.text((x + (240 - (bbox[2] - bbox[0])) / 2, 630), label, font=pil_font(29), fill="#FFFFFF")
+        x += 260
 
     draw_round_rect(draw, (1045, 145, 1435, 580), "111827", "334155", radius=26)
     draw_round_rect(draw, (1072, 185, 1408, 545), "F8FAFC", "CBD5E1", radius=18)
     draw.text((1105, 230), "健康狀態", font=pil_font(30), fill=f"#{INK}")
-    rows = [("資料庫", "正常"), ("模型", "E4B / 26B"), ("OCR", "正常"), ("NAS", "已掛載")]
+    rows = [("資料庫", "正常"), ("模型", "日／夜正常"), ("Agent", "37 / 37"), ("排程", "運作正常")]
     y = 292
     for label, value in rows:
         draw_round_rect(draw, (1100, y, 1380, y + 48), "FFFFFF", BORDER, radius=12)
@@ -153,7 +148,7 @@ def make_module_map() -> Path:
     draw_centered_text(draw, "查得到才回答；正式動作先確認", (center[0], center[1] + 137, center[2], center[3] - 20), 25, "E2E8F0")
 
     cards = [
-        ("日常入口", "Web / LINE\nDiscord / Telegram\n自然語言交辦", (70, 195, 390, 365), "06B6D4", "ECFEFF"),
+        ("自然語言 Agent", "Web / LINE\nDiscord / Telegram\n計畫、確認、驗證", (70, 195, 390, 365), "06B6D4", "ECFEFF"),
         ("案件工作", "新建案件\n案件資料夾\n庭期與待辦", (455, 150, 775, 320), BLUE, "EFF6FF"),
         ("文件處理", "OCR / PDF 命名\nPDF 書籤\n摘要與逐字稿", (825, 150, 1145, 320), GREEN, "F0FDF4"),
         ("法律產出", "書狀草擬\n委任與收據\n契約與存證信函", (1210, 195, 1530, 365), PURPLE, "F5F3FF"),
@@ -479,7 +474,7 @@ def add_doc_footer(doc: Document) -> None:
     for section in doc.sections:
         footer = section.footer.paragraphs[0]
         footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = footer.add_run("MAGI 一般使用者超詳細操作手冊")
+        run = footer.add_run("MAGI 完整操作手冊")
         run.font.size = Pt(8)
         run.font.color.rgb = RGBColor.from_string(MUTED)
         run.font.name = FONT_LATIN
@@ -503,8 +498,8 @@ def add_doc_code(doc: Document, text: str) -> None:
     para = cell.paragraphs[0]
     para.paragraph_format.space_after = Pt(0)
     run = para.add_run(text or " ")
-    run.font.name = "Courier New"
-    set_run_east_asia(run, "Microsoft JhengHei")
+    run.font.name = FONT_LATIN
+    set_run_east_asia(run, FONT_EAST_ASIA)
     run.font.size = Pt(8.5)
     doc.add_paragraph()
 
@@ -527,7 +522,7 @@ def build_docx(blocks: list[dict], images: list[Path], out: Path) -> None:
     configure_doc_styles(doc)
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("MAGI 一般使用者超詳細操作手冊")
+    run = title.add_run("MAGI 完整操作手冊")
     run.bold = True
     run.font.size = Pt(26)
     run.font.color.rgb = RGBColor.from_string(BLUE)
@@ -540,7 +535,7 @@ def build_docx(blocks: list[dict], images: list[Path], out: Path) -> None:
     sub_run.font.color.rgb = RGBColor.from_string(MUTED)
     set_run_east_asia(sub_run)
     doc.add_picture(str(images[0]), width=Inches(6.7))
-    doc.add_paragraph("本文件以 docs/USER_GUIDE.md 的 37 章內容為基礎，加入圖示導覽、完整功能索引、常用命令碼與故障排除。", style="Intense Quote")
+    doc.add_paragraph("本文件以 docs/USER_GUIDE.md 為唯一正文來源，涵蓋自然語言 Agent、37 項能力、MENUBAR、業務流程、安全確認與疑難排除。", style="Intense Quote")
 
     doc.add_section(WD_SECTION_START.NEW_PAGE)
     doc.add_heading("圖示導覽", level=1)
@@ -652,11 +647,11 @@ def build_pdf(blocks: list[dict], images: list[Path], out: Path) -> None:
         leftMargin=1.7 * cm,
         topMargin=1.5 * cm,
         bottomMargin=1.5 * cm,
-        title="MAGI 一般使用者超詳細操作手冊",
+        title="MAGI 完整操作手冊",
         author="MAGI",
     )
     usable_width = A4[0] - doc.leftMargin - doc.rightMargin
-    story: list = [pdf_para("MAGI 一般使用者超詳細操作手冊", styles["title"])]
+    story: list = [pdf_para("MAGI 完整操作手冊", styles["title"])]
     story.append(pdf_para("公開版與私有版適用｜一般使用者、事務協作者、導入顧問", styles["body"]))
     story.append(PdfImage(str(images[0]), width=usable_width, height=usable_width * 900 / 1600))
     story.append(PageBreak())
@@ -693,7 +688,7 @@ def main() -> None:
     markdown = SOURCE.read_text(encoding="utf-8")
     generated_note = (
         f"> 本檔由 `{SOURCE.relative_to(ROOT)}` 於 {VERSION.isoformat()} 產生，"
-        "供外部使用者閱讀與匯出 DOCX/PDF。正式內容請以本檔與 `docs/USER_GUIDE.md` 同步維護。\n\n"
+        "產生；DOCX/PDF 與本檔使用相同正文。正式內容請維護 `docs/USER_GUIDE.md` 後重新產生。\n\n"
     )
     MD_OUT.write_text(generated_note + markdown, encoding="utf-8")
     blocks = parse_blocks(markdown)
@@ -707,13 +702,9 @@ def main() -> None:
     ]
     build_docx(blocks, images, DOCX_OUT)
     build_pdf(blocks, images, PDF_OUT)
-    shutil.copyfile(DOCX_OUT, VISUAL_DOCX_OUT)
-    shutil.copyfile(PDF_OUT, VISUAL_PDF_OUT)
     print(f"wrote {MD_OUT}")
     print(f"wrote {DOCX_OUT}")
     print(f"wrote {PDF_OUT}")
-    print(f"updated {VISUAL_DOCX_OUT}")
-    print(f"updated {VISUAL_PDF_OUT}")
 
 
 if __name__ == "__main__":

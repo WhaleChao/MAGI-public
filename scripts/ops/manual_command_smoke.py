@@ -85,11 +85,50 @@ def route_checks() -> list[Check]:
 
 def docx_pdf_checks() -> list[Check]:
     checks: list[Check] = []
+    current_docx = ROOT / "docs/guides/MAGI_操作手冊.docx"
+    current_pdf = ROOT / "docs/guides/MAGI_操作手冊.pdf"
     user_manual = ROOT / "docs/guides/MAGI_一般使用者完整操作手冊_2026-06-26.docx"
     docx = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx"
     pdf = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf"
     detailed_docx = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx"
     detailed_pdf = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf"
+
+    if not current_docx.exists():
+        checks.append(Check("current_manual_docx_exists", False, "missing", expected=str(current_docx)))
+    else:
+        from docx import Document
+
+        current = Document(current_docx)
+        text = "\n".join(p.text for p in current.paragraphs)
+        required = ["自然語言 Agent", "行事曆", "MAGI 選單列", "37 項 Agent 能力索引"]
+        ok = len(current.inline_shapes) >= 6 and len(current.tables) >= 20 and all(token in text for token in required)
+        checks.append(
+            Check(
+                "current_manual_docx_integrity",
+                ok,
+                f"images={len(current.inline_shapes)} tables={len(current.tables)} required={required}",
+                expected="images>=6 tables>=20 and current agent sections",
+                actual=f"images={len(current.inline_shapes)} tables={len(current.tables)}",
+            )
+        )
+
+    if not current_pdf.exists():
+        checks.append(Check("current_manual_pdf_exists", False, "missing", expected=str(current_pdf)))
+    else:
+        import fitz
+
+        current_pdf_doc = fitz.open(current_pdf)
+        text_chars = sum(len(page.get_text()) for page in current_pdf_doc)
+        ok = current_pdf_doc.page_count >= 15 and text_chars >= 5_000
+        checks.append(
+            Check(
+                "current_manual_pdf_integrity",
+                ok,
+                f"pages={current_pdf_doc.page_count} text_chars={text_chars}",
+                expected="pages>=15 text_chars>=5000",
+                actual=f"pages={current_pdf_doc.page_count} text_chars={text_chars}",
+            )
+        )
 
     if not user_manual.exists():
         checks.append(Check("user_manual_docx_exists", False, "missing", expected=str(user_manual)))

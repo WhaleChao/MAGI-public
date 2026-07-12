@@ -36,3 +36,25 @@ def test_public_readme_uses_public_repository_clone_target():
     assert "git clone https://github.com/WhaleChao/MAGI-public.git" in readme_zh
     assert "git clone https://github.com/WhaleChao/MAGI-v2.git" not in readme
     assert "git clone https://github.com/WhaleChao/MAGI-v2.git" not in readme_zh
+
+
+def test_current_readmes_and_manual_cover_factory_agent_workflows():
+    paths = [
+        ROOT / "README.md",
+        ROOT / "README.zh-TW.md",
+        ROOT / "docs" / "USER_GUIDE.md",
+        ROOT / "docs" / "guides" / "MAGI_操作手冊.md",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "37" in text, path
+        assert "Agent" in text, path
+        assert ("MENUBAR" in text or "menubar" in text), path
+        assert ("calendar" in text.lower() or "行事曆" in text), path
+        assert ("confirm" in text.lower() or "確認" in text), path
+        assert "/Users/" not in text, path
+
+    docx = ROOT / "docs" / "guides" / "MAGI_操作手冊.docx"
+    pdf = ROOT / "docs" / "guides" / "MAGI_操作手冊.pdf"
+    assert docx.exists() and docx.stat().st_size > 100_000
+    assert pdf.exists() and pdf.stat().st_size > 100_000

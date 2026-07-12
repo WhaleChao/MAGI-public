@@ -7,7 +7,7 @@ The source of truth for which checks belong to each gate is:
 config/test_matrix.json
 ```
 
-As of 2026-07-10 the matrix has four canonical release suites, one legacy
+As of 2026-07-13 the matrix has four canonical release suites, one legacy
 alias, and four acceptance-boundary suites:
 `ci`, `smoke62`, `production-live`, `commercial-release`, `smoke50`,
 `acceptance-quick`, `acceptance-full`, `acceptance-live`, and
@@ -111,7 +111,10 @@ A MAGI build can be called "live verified" only when:
   from a clean worktree, and customer installers pass
   `scripts/packaging/validate_installer_payload.py --json`.
 - Direct full-pytest diagnostics should finish with no residual skipped tests
-  or warnings. The 2026-07-02 local baseline is `3958 passed`.
+  or warnings. The 2026-07-12 factory baseline is `4392 passed`.
+- GitHub preserves historical failed runs. Judge the current build by the
+  newest commit SHA and active PR checks; an earlier red run does not change
+  after a later fix passes.
 
 ## Adding Coverage
 
