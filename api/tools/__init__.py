@@ -5,7 +5,10 @@ from api.tools.contracts import (
     GeneralErrorCategory,
     ToolContext,
     ToolResult,
+    ToolSideEffect,
     ToolSpec,
+    TOOL_SIDE_EFFECTS,
+    normalize_tool_side_effect,
 )
 from api.tools.executors import CallableToolExecutor, HttpJsonToolExecutor
 from api.tools.policies import ToolRequirement, classify_tool_requirement, format_tool_failure_response
@@ -24,10 +27,13 @@ __all__ = [
     "ToolRegistry",
     "ToolRequirement",
     "ToolResult",
+    "ToolSideEffect",
     "ToolRouteResult",
     "ToolSpec",
+    "TOOL_SIDE_EFFECTS",
     "classify_tool_requirement",
     "format_tool_failure_response",
     "get_global_tool_registry",
+    "normalize_tool_side_effect",
     "route_to_tool",
 ]

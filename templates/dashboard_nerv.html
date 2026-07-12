@@ -223,6 +223,60 @@ body::after {
 .activity-panel .panel-title {
   margin-bottom: 6px;
 }
+.agent-status-panel {
+  width: 100%;
+  max-width: 920px;
+  border: 1px solid #4a2408;
+  border-radius: 4px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 102, 0, 0.045), rgba(17, 22, 27, 0.86)),
+    radial-gradient(circle at top right, rgba(255, 176, 102, 0.07), transparent 46%);
+  box-sizing: border-box;
+}
+.agent-status-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.agent-status-head .panel-title { margin: 0; }
+.agent-status-scope {
+  color: #8e715f;
+  font-size: 0.62em;
+  text-align: right;
+}
+.agent-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.agent-status-cell {
+  min-width: 0;
+  border: 1px solid rgba(255, 136, 0, 0.18);
+  border-radius: 3px;
+  padding: 7px 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.agent-status-label {
+  color: #8e715f;
+  font-size: 0.59em;
+  letter-spacing: 1.1px;
+}
+.agent-status-value {
+  margin-top: 3px;
+  color: #e6d5c5;
+  font-size: 0.72em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.agent-status-note {
+  margin: 8px 0 0;
+  color: #7b6658;
+  font-size: 0.61em;
+  line-height: 1.4;
+}
 .activity-stream {
   border: 1px solid #4a2408;
   background: rgba(17, 22, 27, 0.8);
@@ -1126,6 +1180,7 @@ body::after {
   .side-panel { order: 2; border: none; border-bottom: 1px solid #331a00; overflow: visible; }
   .side-panel.right { order: 3; }
   .command-strip { grid-template-columns: 1fr 1fr; }
+  .agent-status-grid { grid-template-columns: 1fr; }
   .magi-triangle { width: 280px; height: 260px; }
   .skill-grid { grid-template-columns: 1fr; }
   .runtime-grid { grid-template-columns: 1fr; }
@@ -1179,6 +1234,8 @@ body::after {
   .command-strip {
     grid-template-columns: 1fr;
   }
+  .agent-status-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .agent-status-scope { text-align: left; }
   .magi-triangle {
     width: min(100%, 320px);
     height: 240px;
@@ -1267,6 +1324,23 @@ body::after {
       <div class="command-chip"><div class="command-chip-label">系統壓力</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
       <div class="command-chip"><div class="command-chip-label">最近活動</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
     </div>
+
+    <section class="agent-status-panel" aria-live="polite">
+      <div class="agent-status-head">
+        <div class="panel-title">Agent 狀態</div>
+        <div class="agent-status-scope">僅顯示公開作業摘要，不含訊息內容或內部推理</div>
+      </div>
+      <div id="agent-status-grid" class="agent-status-grid">
+        <div class="agent-status-cell"><div class="agent-status-label">最近意圖</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">計畫步驟</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">工具／模型</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">等待確認</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">重試</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">路由信心</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">七日成功率</div><div class="agent-status-value">尚無活動</div></div>
+      </div>
+      <p class="agent-status-note">資料不存在時維持「尚無活動」；不從對話、日誌或模型思考內容推測狀態。</p>
+    </section>
 
     <section class="activity-panel">
       <div class="panel-title">最近活動</div>
@@ -1498,6 +1572,32 @@ const ROUTING_ROWS = [
   { task: '意圖/通用', localModel: 'Gemma-4 26B' },
   { task: '複雜法律分析', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
 ];
+const PUBLIC_AGENT_INTENTS = {
+  general: '一般作業', research: '資料研究', legal: '法律作業', laf: '法扶作業',
+  file_review: '閱卷作業', transcript: '筆錄作業', system: '系統維運', automation: '自動化作業',
+  cases: '案件管理', clients: '當事人管理', calendar: '行事曆作業', todos: '待辦作業',
+  documents: '文件作業', files: '檔案作業', nas: 'NAS 作業', drive: '雲端同步',
+  legal_statutes: '法規查詢', judgments: '裁判查詢', transcription: '錄音轉文字',
+  translation: '翻譯作業', ocr: '文字辨識', drafting: '書狀草擬', accounting: '帳務作業',
+  quotation: '報價作業', memory: '記憶查詢', obsidian: '知識庫作業', realtime: '即時資料',
+  web: '網路作業', models: '模型作業', backup: '備份作業', notifications: '通知作業',
+};
+const PUBLIC_AGENT_PLAN_STEPS = {
+  classify: '判定意圖', route: '選擇路由', check_permissions: '確認權限', retrieve: '取得資料',
+  execute: '執行工具', verify: '驗證結果', respond: '整理回覆', await_confirmation: '等待確認',
+};
+const PUBLIC_AGENT_STEP_STATES = {
+  pending: '等待', running: '進行中', done: '完成', blocked: '受阻', skipped: '略過',
+};
+const PUBLIC_AGENT_TOOL_CATEGORIES = {
+  web: '網路工具', search: '搜尋工具', fetch: '擷取工具', database: '資料庫工具',
+  calendar: '行事曆工具', drive: '檔案同步工具', file_review: '閱卷工具', transcript: '筆錄工具',
+  laf: '法扶工具', code: '程式工具', system: '系統工具', none: '未使用工具',
+  files: '檔案工具', nas: 'NAS 工具', documents: '文件工具', todos: '待辦工具',
+  transcription: '轉錄工具', translation: '翻譯工具', ocr: '文字辨識工具', legal: '法律工具',
+  accounting: '帳務工具', memory: '記憶工具', notifications: '通知工具',
+};
+const PUBLIC_AGENT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -1506,6 +1606,89 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function publicAgentPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '尚無活動';
+  const percent = number >= 0 && number <= 1 ? number * 100 : number;
+  return percent >= 0 && percent <= 100 ? `${Math.round(percent)}%` : '尚無活動';
+}
+
+function publicAgentStatus(raw) {
+  const empty = {
+    state: 'idle', label: '尚無活動', intent: '尚無活動', plan: '尚無活動', tool: '尚無活動',
+    model: '尚無活動', confirmation: '尚無活動', retry: '尚無活動',
+    routeConfidence: '尚無活動', successRate7d: '尚無活動',
+  };
+  const payload = raw && typeof raw === 'object' && raw.agent_status && typeof raw.agent_status === 'object'
+    ? raw.agent_status : raw;
+  if (!payload || typeof payload !== 'object') return empty;
+
+  const intent = PUBLIC_AGENT_INTENTS[String(payload.intent_category || '').trim().toLowerCase()] || '';
+  const steps = Array.isArray(payload.plan_steps) ? payload.plan_steps.slice(0, 5).map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    const step = PUBLIC_AGENT_PLAN_STEPS[String(item.id || '').trim().toLowerCase()];
+    const state = PUBLIC_AGENT_STEP_STATES[String(item.state || '').trim().toLowerCase()];
+    return step && state ? `${step}：${state}` : '';
+  }).filter(Boolean) : [];
+  const tool = PUBLIC_AGENT_TOOL_CATEGORIES[String(payload.tool_category || '').trim().toLowerCase()] || '';
+  const rawModel = String(payload.model_id || '').trim();
+  const model = PUBLIC_AGENT_MODEL_RE.test(rawModel) ? rawModel : '';
+  const confirmationKnown = typeof payload.waiting_confirmation === 'boolean';
+  const waitingConfirmation = confirmationKnown && payload.waiting_confirmation;
+  const retryRaw = Number(payload.retry_count);
+  const retryCount = Number.isInteger(retryRaw) && retryRaw >= 0 && retryRaw <= 99 ? retryRaw : null;
+  const routeConfidence = publicAgentPercent(payload.route_confidence);
+  const successRate7d = publicAgentPercent(payload.success_rate_7d);
+  const hasActivity = Boolean(intent || steps.length || tool || model || confirmationKnown || retryCount !== null || routeConfidence !== '尚無活動');
+  if (!hasActivity) return empty;
+
+  const status = {
+    state: waitingConfirmation ? 'waiting' : 'ok',
+    intent: intent || '其他公開作業',
+    plan: steps.length ? steps.join('；') : '尚無公開步驟',
+    tool: tool || '未使用公開工具',
+    model: model || '未提供公開模型',
+    confirmation: waitingConfirmation ? '等待確認' : '無需確認',
+    retry: retryCount === null ? '0 次' : `${retryCount} 次`,
+    routeConfidence,
+    successRate7d,
+  };
+  status.label = waitingConfirmation ? `${status.intent} · 等待確認`
+    : retryCount ? `${status.intent} · 重試 ${retryCount} 次` : status.intent;
+  return status;
+}
+
+function renderAgentStatus(raw) {
+  const panel = document.getElementById('agent-status-grid');
+  if (!panel) return;
+  const status = publicAgentStatus(raw);
+  const rows = [
+    ['最近意圖', status.intent],
+    ['計畫步驟', status.plan],
+    ['工具／模型', `${status.tool}／${status.model}`],
+    ['等待確認', status.confirmation],
+    ['重試', status.retry],
+    ['路由信心', status.routeConfidence],
+    ['七日成功率', status.successRate7d],
+  ];
+  panel.innerHTML = rows.map(([label, value]) => (
+    `<div class="agent-status-cell"><div class="agent-status-label">${escapeHtml(label)}</div><div class="agent-status-value">${escapeHtml(value)}</div></div>`
+  )).join('');
+}
+
+async function fetchPublicAgentStatus() {
+  try {
+    const response = await fetch('/static/agent_status_public_latest.json', {
+      credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'application/json' },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function zhStatus(value) {
@@ -2997,6 +3180,7 @@ function render(data) {
   data = data && typeof data === 'object' ? data : {};
   document.getElementById('ts').textContent = new Date().toLocaleTimeString('zh-TW', {hour12: false});
   const telemetry = _toTelemetryData(data);
+  renderAgentStatus(data.agent_status || telemetry.agent_status || null);
 
   // Infrastructure
   document.getElementById('infra-nodes').innerHTML = [
@@ -3075,6 +3259,8 @@ async function poll() {
       showHealthPollNotice('健康檢查格式異常', '健康 API 回應無法解析，請重新整理或重新登入。');
       return;
     }
+    const publicAgentStatus = await fetchPublicAgentStatus();
+    if (publicAgentStatus) payload.agent_status = publicAgentStatus;
     render(payload);
   } catch (e) {
     console.warn('Health poll failed:', e);

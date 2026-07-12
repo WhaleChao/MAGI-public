@@ -31,6 +31,7 @@ if str(_MAGI_ROOT) not in sys.path:
 from api.runtime_paths import ensure_orch_on_sys_path, get_config_path, get_orch_dir, get_skill_python
 from api.case_path_mapper import local_case_path_candidates, preferred_case_roots, translate_local_path_to_canonical
 from api.osc.calendar_sources import osc_todo_source_sql
+from api.domains.calendar_metadata import decode_calendar_source
 from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL, path_has_judgment_folder
 from scripts.ops.token_health_check import google_token_file_lock
 
@@ -1999,6 +2000,7 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
     todo_time = todo.get("todo_time")
     desc = (todo.get("description") or "").strip()
     src = (todo.get("source_file") or "").strip()
+    agent_metadata = decode_calendar_source(src)
     dedup_key = ""
     try:
         from osc_headless.gcal_dedup import build_dedup_key_from_todo
@@ -2008,7 +2010,9 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
 
     key = court_case_no or case_number
     source_is_human_calendar = src.startswith("gcal_import") or src.startswith("gcal_mirror")
-    if source_is_human_calendar and todo_type == "行事曆事件" and desc:
+    if agent_metadata and desc:
+        summary = desc[:120]
+    elif source_is_human_calendar and todo_type == "行事曆事件" and desc:
         summary = desc[:120]
     else:
         summary = "⚖️ "
@@ -2027,7 +2031,7 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
         lines.append(f"系統案號：{case_number}")
     if desc:
         lines.append(f"內容：{desc}")
-    if src:
+    if src and not agent_metadata:
         lines.append(f"來源檔案：{src}")
 
     # 顏色對照 (與 code/osc.py EVENT_COLORS 一致)
@@ -2069,18 +2073,24 @@ def _todo_to_gcal_event(todo: Dict[str, Any], tz: str) -> Dict[str, Any]:
         # Default duration: 60 minutes
         try:
             hh, mm, ss = [int(x) for x in t_str.split(":")]
-            end = (datetime.strptime(d_str, "%Y-%m-%d") + timedelta(hours=hh, minutes=mm, seconds=ss) + timedelta(minutes=60))
+            metadata_end = str((agent_metadata or {}).get("end") or "")
+            end = datetime.fromisoformat(metadata_end) if metadata_end else (datetime.strptime(d_str, "%Y-%m-%d") + timedelta(hours=hh, minutes=mm, seconds=ss) + timedelta(minutes=60))
             body["end"] = {"dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz}
         except Exception:
             body["end"] = {"dateTime": start_dt, "timeZone": tz}
     else:
         # All-day: end date is exclusive
         body["start"] = {"date": d_str}
+        metadata_end = str((agent_metadata or {}).get("end") or "")
         try:
-            end_d = (datetime.strptime(d_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            end_d = datetime.fromisoformat(metadata_end).date().isoformat() if metadata_end else (datetime.strptime(d_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
         except Exception:
             end_d = d_str
         body["end"] = {"date": end_d}
+
+    rrule = str((agent_metadata or {}).get("rrule") or "").strip()
+    if rrule:
+        body["recurrence"] = [rrule]
 
     return body
 

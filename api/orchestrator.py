@@ -1292,8 +1292,28 @@ class Orchestrator:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3928, exc_info=True)
 
         try:
-            return self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            from api.agentic.shadow import observe_start as _observe_agent_start
+
+            _observe_agent_start(str(message or ""))
+        except Exception:
+            logging.getLogger(__name__).debug("agent shadow start telemetry skipped", exc_info=True)
+
+        try:
+            result = self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                _observe_agent_finish(str(message or ""), result)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow completion telemetry skipped", exc_info=True)
+            return result
         except Exception as _fatal:
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                _observe_agent_finish(str(message or ""), None, failed=True)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow failure telemetry skipped", exc_info=True)
             try:
                 from skills.management.issue_tracker import log_issue
 

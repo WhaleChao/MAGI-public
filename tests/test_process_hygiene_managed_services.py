@@ -88,6 +88,27 @@ def test_drive_case_sync_worker_uses_guarded_timeout_window():
     assert module.scan_stuck(procs)
 
 
+def test_transcript_sync_detached_cron_uses_its_two_hour_timeout_window():
+    module = _load_process_hygiene()
+    procs = [
+        {
+            "pid": 210,
+            "ppid": 1,
+            "stat": "S",
+            "etime": "01:20:00",
+            "command": "/usr/bin/python /app/skills/transcript-downloader/action.py --task sync",
+        }
+    ]
+
+    assert module.scan_orphans(procs) == []
+    assert module.scan_stuck(procs) == []
+
+    procs[0]["etime"] = "02:06:00"
+
+    assert module.scan_orphans(procs)
+    assert module.scan_stuck(procs)
+
+
 def test_duplicate_scan_only_matches_actual_python_script_processes():
     module = _load_process_hygiene()
 

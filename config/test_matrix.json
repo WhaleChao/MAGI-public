@@ -13,6 +13,7 @@
             "-m",
             "py_compile",
             "api/model_config.py",
+            "api/app_factory.py",
             "api/blueprints/admin_runtime.py",
             "api/pipelines/message_pipeline.py",
             "api/pipelines/message_router.py",
@@ -42,6 +43,7 @@
             "bin/start.py",
             "scripts/ops/resource_governor.py",
             "scripts/ops/model_live_gate.py",
+            "scripts/ops/agent_readiness_gate.py",
             "scripts/ops/commercial_readiness_live.py",
             "skills/ops/config.py",
             "skills/process-hygiene/action.py",
@@ -92,6 +94,18 @@
           "timeout_sec": 30
         },
         {
+          "id": "agent_readiness",
+          "name": "Agent capability contract strict gate",
+          "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--json-out",
+            ".runtime/agent_readiness_ci_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+        {
           "id": "pytest_fast_gate",
           "name": "Fast pytest gate",
           "command": [
@@ -118,6 +132,7 @@
             "tests/test_osc_debt_supplement_checklist.py",
             "tests/test_public_push_guard.py",
             "tests/test_auth_mobile_layout.py",
+            "tests/test_app_factory.py",
             "tests/test_file_review_dispatch.py",
             "tests/test_message_pipeline_poa_flow_guard.py",
             "tests/test_mobile_auth_routes.py",
@@ -128,7 +143,19 @@
             "tests/test_installer_bootstrap.py",
             "tests/test_resource_governor.py",
             "tests/test_model_live_gate.py",
-            "tests/test_laf_vision_ocr_consensus.py"
+            "tests/test_laf_vision_ocr_consensus.py",
+            "tests/test_agentic_contracts.py",
+            "tests/test_agentic_planner.py",
+            "tests/test_agentic_bridges.py",
+            "tests/test_agentic_telemetry.py",
+            "tests/test_agentic_shadow.py",
+            "tests/test_agent_session.py",
+            "tests/test_tool_side_effect_contracts.py",
+            "tests/test_calendar_agent.py",
+            "tests/test_calendar_agent_runtime.py",
+            "tests/test_calendar_agent_gcal_metadata.py",
+            "tests/test_agent_dashboard_html.py",
+            "tests/test_agent_readiness_gate.py"
           ],
           "timeout_sec": 120
         }
@@ -323,6 +350,18 @@
           "timeout_sec": 60
         },
         {
+          "id": "agent_readiness",
+          "name": "Agent capability contract strict gate",
+          "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--json-out",
+            ".runtime/agent_readiness_live_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+        {
           "id": "smoke62",
           "name": "MAGI local full smoke",
           "command": [
@@ -423,6 +462,18 @@
             ".runtime/model_live_gate_release_latest.json"
           ],
           "timeout_sec": 60
+        },
+        {
+          "id": "agent_readiness",
+          "name": "Agent capability contract release gate",
+          "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--json-out",
+            ".runtime/agent_readiness_release_latest.json"
+          ],
+          "timeout_sec": 45
         },
       {
         "id": "operational_hardening",

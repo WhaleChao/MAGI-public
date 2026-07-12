@@ -265,6 +265,83 @@ HEALTH_ARTIFACTS = {
         "label": "功能健康",
     },
 }
+AGENT_STATUS_PUBLIC_FILENAME = "agent_status_public_latest.json"
+_PUBLIC_AGENT_INTENTS = {
+    "general": "一般作業",
+    "cases": "案件管理",
+    "clients": "當事人管理",
+    "calendar": "行事曆作業",
+    "todos": "待辦作業",
+    "documents": "文件作業",
+    "files": "檔案作業",
+    "nas": "NAS 作業",
+    "drive": "雲端同步",
+    "research": "資料研究",
+    "legal": "法律作業",
+    "legal_statutes": "法規查詢",
+    "judgments": "裁判查詢",
+    "laf": "法扶作業",
+    "file_review": "閱卷作業",
+    "transcript": "筆錄作業",
+    "transcription": "錄音轉文字",
+    "translation": "翻譯作業",
+    "ocr": "文字辨識",
+    "drafting": "書狀草擬",
+    "accounting": "帳務作業",
+    "quotation": "報價作業",
+    "memory": "記憶查詢",
+    "obsidian": "知識庫作業",
+    "realtime": "即時資料",
+    "web": "網路作業",
+    "models": "模型作業",
+    "system": "系統維運",
+    "backup": "備份作業",
+    "notifications": "通知作業",
+    "automation": "自動化作業",
+}
+_PUBLIC_AGENT_PLAN_STEPS = {
+    "classify": "判定意圖",
+    "route": "選擇路由",
+    "check_permissions": "確認權限",
+    "retrieve": "取得資料",
+    "execute": "執行工具",
+    "verify": "驗證結果",
+    "respond": "整理回覆",
+    "await_confirmation": "等待確認",
+}
+_PUBLIC_AGENT_STEP_STATES = {
+    "pending": "等待",
+    "running": "進行中",
+    "done": "完成",
+    "blocked": "受阻",
+    "skipped": "略過",
+}
+_PUBLIC_AGENT_TOOL_CATEGORIES = {
+    "web": "網路工具",
+    "search": "搜尋工具",
+    "fetch": "擷取工具",
+    "database": "資料庫工具",
+    "calendar": "行事曆工具",
+    "drive": "檔案同步工具",
+    "files": "檔案工具",
+    "nas": "NAS 工具",
+    "documents": "文件工具",
+    "todos": "待辦工具",
+    "file_review": "閱卷工具",
+    "transcript": "筆錄工具",
+    "transcription": "轉錄工具",
+    "translation": "翻譯工具",
+    "ocr": "文字辨識工具",
+    "laf": "法扶工具",
+    "legal": "法律工具",
+    "accounting": "帳務工具",
+    "memory": "記憶工具",
+    "notifications": "通知工具",
+    "code": "程式工具",
+    "system": "系統工具",
+    "none": "未使用工具",
+}
+_PUBLIC_AGENT_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$")
 TASK_MODULE_SECTION_HEIGHT = 144
 TASK_MODULE_ROW_Y = 44
 TASK_MODULE_ROW_STEP = 31
@@ -1371,9 +1448,18 @@ if _HAS_APPKIT:
                 info = health.get(key, {}) if isinstance(health, dict) else {}
                 title = str((HEALTH_ARTIFACTS.get(key) or {}).get("label") or key)
                 monitor_rows.append((title, _label_for_state(str(info.get("state") or "waiting"), OPERATIONAL_TEXT), str(info.get("state") or "waiting"), str(info.get("detail") or "健康報告未提供原因。")))
-            for i, row in enumerate(monitor_rows[:8]):
+            agent_status = cache.get("agent_status", {}) if isinstance(cache, dict) else {}
+            monitor_rows.append(
+                (
+                    "Agent 狀態",
+                    str(agent_status.get("label") or "尚無活動"),
+                    str(agent_status.get("state") or "idle"),
+                    str(agent_status.get("detail") or "Agent 尚無公開活動摘要。"),
+                )
+            )
+            for i, row in enumerate(monitor_rows[:9]):
                 detail = row[3] if len(row) > 3 else ""
-                self._draw_status_row(monitor_x + 14, bottom_y + 42 + i * 23, monitor_w - 28, row[0], row[1], row[2], 92, 20, detail)
+                self._draw_status_row(monitor_x + 14, bottom_y + 42 + i * 21, monitor_w - 28, row[0], row[1], row[2], 92, 18, detail)
 
             # 操作列
             commands = [
@@ -2040,6 +2126,105 @@ def _load_json_file(path: str) -> dict:
         return {}
 
 
+def _public_agent_percent(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "尚無活動"
+    if 0.0 <= number <= 1.0:
+        number *= 100.0
+    if not 0.0 <= number <= 100.0:
+        return "尚無活動"
+    return f"{number:.0f}%"
+
+
+def _public_agent_count(value) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return min(99, max(0, number))
+
+
+def _agent_status_from_public_payload(payload: dict) -> dict:
+    """Allowlist a public agent summary; never expose prompts, messages, or reasoning."""
+    empty = {
+        "state": "idle",
+        "label": "尚無活動",
+        "intent": "尚無活動",
+        "plan": "尚無活動",
+        "tool": "尚無活動",
+        "model": "尚無活動",
+        "confirmation": "尚無活動",
+        "retry": "尚無活動",
+        "route_confidence": "尚無活動",
+        "success_rate_7d": "尚無活動",
+        "detail": "Agent 尚無公開活動摘要。",
+    }
+    if not isinstance(payload, dict):
+        return empty
+
+    intent = _PUBLIC_AGENT_INTENTS.get(str(payload.get("intent_category") or "").strip().lower(), "")
+    steps = []
+    raw_steps = payload.get("plan_steps") if isinstance(payload.get("plan_steps"), list) else []
+    for item in raw_steps[:5]:
+        if not isinstance(item, dict):
+            continue
+        step = _PUBLIC_AGENT_PLAN_STEPS.get(str(item.get("id") or "").strip().lower())
+        step_state = _PUBLIC_AGENT_STEP_STATES.get(str(item.get("state") or "").strip().lower())
+        if step and step_state:
+            steps.append(f"{step}：{step_state}")
+    tool = _PUBLIC_AGENT_TOOL_CATEGORIES.get(str(payload.get("tool_category") or "").strip().lower(), "")
+    model_id = str(payload.get("model_id") or "").strip()
+    model = model_id if _PUBLIC_AGENT_MODEL_RE.fullmatch(model_id) else ""
+    confirmation_known = "waiting_confirmation" in payload and isinstance(payload.get("waiting_confirmation"), bool)
+    waiting_confirmation = bool(payload.get("waiting_confirmation")) if confirmation_known else False
+    retry_count = _public_agent_count(payload.get("retry_count"))
+    route_confidence = _public_agent_percent(payload.get("route_confidence"))
+    success_rate = _public_agent_percent(payload.get("success_rate_7d"))
+    has_activity = bool(intent or steps or tool or model or confirmation_known or retry_count is not None or route_confidence != "尚無活動")
+    if not has_activity:
+        return empty
+
+    status = {
+        "state": "waiting" if waiting_confirmation else "ok",
+        "intent": intent or "其他公開作業",
+        "plan": "；".join(steps) if steps else "尚無公開步驟",
+        "tool": tool or "未使用公開工具",
+        "model": model or "未提供公開模型",
+        "confirmation": "等待確認" if waiting_confirmation else "無需確認",
+        "retry": f"{retry_count} 次" if retry_count is not None else "0 次",
+        "route_confidence": route_confidence,
+        "success_rate_7d": success_rate,
+    }
+    if waiting_confirmation:
+        status["label"] = f"{status['intent']} · 等待確認"
+    elif retry_count:
+        status["label"] = f"{status['intent']} · 重試 {retry_count} 次"
+    else:
+        status["label"] = status["intent"]
+    status["detail"] = "\n".join(
+        [
+            f"最近意圖：{status['intent']}",
+            f"計畫步驟：{status['plan']}",
+            f"工具／模型：{status['tool']}／{status['model']}",
+            f"等待確認：{status['confirmation']}",
+            f"重試：{status['retry']}",
+            f"路由信心：{status['route_confidence']}",
+            f"七日成功率：{status['success_rate_7d']}",
+            "此區只顯示公開作業摘要，不含訊息內容或內部推理。",
+        ]
+    )
+    return status
+
+
+def _agent_status_live() -> dict:
+    path = os.path.join(MAGI_ROOT, "static", AGENT_STATUS_PUBLIC_FILENAME)
+    status = _agent_status_from_public_payload(_load_json_file(path))
+    status["path"] = path
+    return status
+
+
 def _epoch_from_iso(raw: str) -> float:
     raw = str(raw or "").strip()
     if not raw:
@@ -2090,6 +2275,8 @@ class MAGIMenuBar(rumps.App):
         self.menu_header.set_callback(None)
         self.overall_status_item = rumps.MenuItem("  整體狀態：等待同步", callback=None)
         self.overall_status_item.set_callback(None)
+        self.agent_status_item = rumps.MenuItem("  Agent 狀態：尚無活動", callback=None)
+        self.agent_status_item.set_callback(None)
 
         # ── 主控台 ──
         self.live_log_header = rumps.MenuItem("╭─ 即時紀錄 ─────────────────", callback=None)
@@ -2203,6 +2390,7 @@ class MAGIMenuBar(rumps.App):
         fallback_menu = [
             self.menu_header,
             self.overall_status_item,
+            self.agent_status_item,
             rumps.separator,
             # ── 主控台 ──
             self.live_log_header,
@@ -2397,6 +2585,7 @@ class MAGIMenuBar(rumps.App):
         cache["business_live"] = business_live
         cache["health"] = _runtime_health_states()
         cache["business_readiness"] = _business_readiness_live()
+        cache["agent_status"] = _agent_status_live()
 
         # ── 背景監控 ──
         monitors = {}
@@ -2655,6 +2844,14 @@ class MAGIMenuBar(rumps.App):
             f"  整體狀態：{overall_label}",
             _state_color(overall),
             bold=True,
+        )
+        agent_status = c.get("agent_status", {}) if isinstance(c, dict) else {}
+        agent_state = str(agent_status.get("state") or "idle") if isinstance(agent_status, dict) else "idle"
+        agent_label = str(agent_status.get("label") or "尚無活動") if isinstance(agent_status, dict) else "尚無活動"
+        _set_colored_title(
+            self.agent_status_item,
+            f"  {_state_icon(agent_state)} Agent 狀態：{agent_label}",
+            _state_color(agent_state),
         )
         _set_colored_title(self.live_log_header, "╭─ 即時紀錄 ─────────────────", _CYAN, bold=True)
 

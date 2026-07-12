@@ -32,6 +32,7 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.osc.calendar_sources import osc_todo_source_sql
+from api.domains.calendar_metadata import decode_calendar_source
 from scripts.ops.token_health_check import google_token_file_lock
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ def _make_todo_event(todo: dict) -> dict:
     client_name = (todo.get("client_name") or "").strip()
     todo_type = (todo.get("todo_type") or "").strip() or "待辦"
     source_file = (todo.get("source_file") or "").strip()
+    agent_metadata = decode_calendar_source(source_file)
     full_desc = todo.get("description") or ""
     due_str = str(todo.get("todo_date") or todo.get("due_date") or date.today().isoformat())
     todo_time = str(todo.get("todo_time") or "").strip()
@@ -195,12 +197,16 @@ def _make_todo_event(todo: dict) -> dict:
         due_str = due_str.isoformat()
 
     summary_parts = []
+    if agent_metadata and full_desc:
+        summary_parts.append(str(full_desc).replace("\n", " ")[:120])
     if case_number:
-        summary_parts.append(f"[{case_number}]")
+        if not agent_metadata:
+            summary_parts.append(f"[{case_number}]")
     if client_name:
         summary_parts.append(client_name)
-    summary_parts.append(todo_type)
-    if not client_name and full_desc:
+    if not agent_metadata:
+        summary_parts.append(todo_type)
+    if not agent_metadata and not client_name and full_desc:
         summary_parts.append(str(full_desc).replace("\n", " ")[:28])
     summary = " ".join(p for p in summary_parts if p).strip() or "OSC 待辦"
 
@@ -211,7 +217,7 @@ def _make_todo_event(todo: dict) -> dict:
         description_lines.append(f"當事人：{client_name}")
     if todo_type:
         description_lines.append(f"類型：{todo_type}")
-    if source_file:
+    if source_file and not agent_metadata:
         description_lines.append(f"來源檔案：{source_file}")
     if full_desc:
         description_lines.append("")
@@ -228,7 +234,8 @@ def _make_todo_event(todo: dict) -> dict:
     if todo_time:
         start = f"{due_str}T{todo_time}:00+08:00" if len(todo_time) == 5 else f"{due_str}T{todo_time}+08:00"
         try:
-            end_dt = datetime.fromisoformat(start) + timedelta(hours=1)
+            metadata_end = str((agent_metadata or {}).get("end") or "")
+            end_dt = datetime.fromisoformat(metadata_end) if metadata_end else datetime.fromisoformat(start) + timedelta(hours=1)
             end = end_dt.isoformat()
         except Exception:
             end = start
@@ -236,11 +243,15 @@ def _make_todo_event(todo: dict) -> dict:
         event["end"] = {"dateTime": end, "timeZone": "Asia/Taipei"}
     else:
         event["start"] = {"date": due_str}
+        metadata_end = str((agent_metadata or {}).get("end") or "")
         try:
-            end_str = (datetime.fromisoformat(str(due_str)) + timedelta(days=1)).date().isoformat()
+            end_str = datetime.fromisoformat(metadata_end).date().isoformat() if metadata_end else (datetime.fromisoformat(str(due_str)) + timedelta(days=1)).date().isoformat()
         except Exception:
             end_str = due_str
         event["end"] = {"date": end_str}
+    rrule = str((agent_metadata or {}).get("rrule") or "").strip()
+    if rrule:
+        event["recurrence"] = [rrule]
     return event
 
 

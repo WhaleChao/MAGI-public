@@ -9,21 +9,35 @@ from api.session.context_labels import (
 )
 from api.session.history import SessionHistory, append_message, last_message, list_messages, tail_messages
 from api.session.memory_policy import MemoryWriteDecision, evaluate_memory_write
-from api.session.models import SessionContext, SessionMessage, SessionPendingState, SessionSummary
+from api.session.models import (
+    IdentityBinding,
+    RecentReference,
+    SessionContext,
+    SessionKey,
+    SessionMessage,
+    SessionPendingState,
+    SessionSummary,
+)
 from api.session.pending import SessionPendingManager, clear_pending_state, get_pending_state, set_pending_state, update_pending_state
 from api.session.provenance import MemoryProvenance, build_source_signature, namespace_for_source_type, parse_source_provenance, render_provenance_badge
 from api.session.conversation_history import ConversationHistoryStore, get_conversation_history
 from api.session.verified_fact_gate import is_reflexive_query, promote_to_verified
 from api.session.summary import SessionSummaryManager, add_summary, latest_summary, list_summaries
 from api.session.store import SessionStore
+from api.session.references import ReferenceCandidate, ReferenceResolution, resolve_reference
 
 __all__ = [
     "MemoryProvenance",
     "MemoryWriteDecision",
+    "IdentityBinding",
+    "RecentReference",
+    "ReferenceCandidate",
+    "ReferenceResolution",
     "SessionContext",
     "ConversationHistoryStore",
     "SessionContextBuilder",
     "SessionHistory",
+    "SessionKey",
     "SessionMessage",
     "SessionPendingManager",
     "SessionPendingState",
@@ -54,6 +68,7 @@ __all__ = [
     "is_reflexive_query",
     "promote_to_verified",
     "render_provenance_badge",
+    "resolve_reference",
     "set_pending_state",
     "tail_messages",
     "update_pending_state",

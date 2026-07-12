@@ -3,6 +3,7 @@ Regression tests for POA state machine guard against capability questions.
 """
 
 import json
+import importlib
 import pytest
 
 
@@ -208,6 +209,32 @@ def test_poa_trigger_keeps_flow_when_not_capability(runtime_roots, monkeypatch):
     )
 
     assert reply.startswith("POA_FLOW:")
+
+
+def test_calendar_agent_runs_before_generic_agentic_route(runtime_roots, monkeypatch):
+    orch = _MockOrch()
+    calendar_runtime = importlib.import_module("api.domains.calendar_agent_runtime")
+    monkeypatch.setattr(
+        calendar_runtime,
+        "handle_calendar_message",
+        lambda *args, **kwargs: "共找到 1 筆行程：\n1. 客戶會議｜2026/07/13 10:00 至 11:00",
+    )
+    monkeypatch.setattr(
+        runtime_roots,
+        "_try_agentic_route",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generic agent route must not run")),
+    )
+
+    reply = runtime_roots.process_message_inner(
+        orch,
+        user_id="user-1",
+        message="請查詢下週有哪些行程",
+        platform="web",
+        role="user",
+    )
+
+    assert reply.startswith("共找到 1 筆行程")
+    assert any(trace[0][3] == "calendar_agent" for trace in orch.history_traces)
 
 
 def test_poa_stale_state_is_cleared_before_new_task_dispatch(runtime_roots, monkeypatch):

@@ -1192,6 +1192,31 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
         except Exception as inline_summary_err:
             logger.debug("Inline summary fast path skipped: %s", inline_summary_err)
 
+    # Safe calendar agent before the broad analytical route so natural
+    # schedule queries do not get consumed as generic research prompts.
+    try:
+        from api.domains.calendar_agent_runtime import handle_calendar_message
+
+        _cal_result = handle_calendar_message(
+            orch,
+            message,
+            user_id=str(user_id or ""),
+            platform=str(platform or ""),
+        )
+        if _cal_result:
+            orch._append_route_trace(
+                str(user_id or ""),
+                str(platform or ""),
+                "top_level",
+                "calendar_agent",
+                {"confirmation_flow": True},
+            )
+            orch._append_history(user_id, "assistant", _cal_result)
+            return _cal_result
+    except Exception as e:
+        logger.error(f"calendar-agent intercept failed: {e}")
+        return {"text": f"⚠️ 行事曆操作失敗，請稍後再試（{type(e).__name__}）"}
+
     # Broad AI-agent route before read-only domain fast paths.
     # Legal/file/search shortcuts are useful for direct lookup, but analytical
     # prompts such as "compare and summarize" need ReAct to choose tools and
@@ -1343,18 +1368,6 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception as e:
         logger.error(f"quotation intercept failed: {e}")
         return {"text": f"⚠️ 報價單操作失敗，請稍後再試（{type(e).__name__}）"}
-
-    # --- 行事曆事件 Intercept (Task 5: 排庭/排開會) ---
-    try:
-        _calendar_kws = ["排庭", "排開會", "排會議"]
-        if any(message.startswith(kw) for kw in _calendar_kws):
-            from api.pipelines.skill_dispatch import dispatch_calendar_event
-            _cal_result = dispatch_calendar_event(message, user_id=user_id, platform=platform)
-            if _cal_result:
-                return _cal_result
-    except Exception as e:
-        logger.error(f"calendar-event intercept failed: {e}")
-        return {"text": f"⚠️ 行事曆操作失敗，請稍後再試（{type(e).__name__}）"}
 
     # --- 書狀 AI 草擬 Intercept (Task 6: 草擬起訴狀/答辯狀) ---
     try:

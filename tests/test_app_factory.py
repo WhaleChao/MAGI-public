@@ -54,6 +54,8 @@ def test_create_base_app_blocks_sensitive_static_files(monkeypatch):
     assert app_factory._is_sensitive_static_request("/static/exports") is True
     assert app_factory._is_sensitive_static_request("/static/process_guardian_state.json") is True
     assert app_factory._is_sensitive_static_request("/static/file_review_auto_state.json") is True
+    assert app_factory._is_sensitive_static_request("/static/agent_status_public_latest.json") is False
+    assert app_factory._is_sensitive_static_request("/static/reports/agent_status_public_latest.json") is True
     assert app_factory._is_sensitive_static_request("/static/osc/osc-utils.js") is False
 
     blocked = client.get("/static/file_review_auto_state.json")

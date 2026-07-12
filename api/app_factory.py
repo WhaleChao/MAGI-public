@@ -64,15 +64,18 @@ _SENSITIVE_STATIC_SUFFIXES = (
     ".sqlite",
     ".db",
 )
+_PUBLIC_STATIC_JSON_NAMES = frozenset({"agent_status_public_latest.json"})
 
 
 def _is_sensitive_static_request(path: str) -> bool:
     normalized = (path or "").strip().lower()
     if not normalized.startswith("/static/"):
         return False
+    tail = normalized.rsplit("/", 1)[-1]
+    if tail in _PUBLIC_STATIC_JSON_NAMES and normalized == f"/static/{tail}":
+        return False
     if any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in _SENSITIVE_STATIC_PREFIXES):
         return True
-    tail = normalized.rsplit("/", 1)[-1]
     return tail in _SENSITIVE_STATIC_NAMES or tail.endswith(_SENSITIVE_STATIC_SUFFIXES)
 
 

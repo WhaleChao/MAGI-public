@@ -57,6 +57,7 @@ STUCK_THRESHOLDS = {
     "worker": 3600,          # worker 最多 1 小時
     "scripts/drive_case_sync_worker.py": 5400,  # cron resource_guarded timeout is 4800s
     "scripts/ops/resource_guarded_run.py": 5400,
+    "skills/transcript-downloader/action.py": 7500,  # cron timeout is 7200s
 }
 
 DEFAULT_STUCK_SEC = 3600
@@ -82,6 +83,7 @@ EXPECTED_DETACHED_JOB_MARKERS = [
     "download_worker",
     "scripts/drive_case_sync_worker.py",
     "scripts/ops/resource_guarded_run.py",
+    "skills/transcript-downloader/action.py",
 ]
 
 
