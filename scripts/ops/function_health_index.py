@@ -1328,10 +1328,37 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+def _only_non_business_results_failed(data: Any) -> bool:
+    """Accept legacy reports whose only failure was a non-business side effect."""
+    if not isinstance(data, dict):
+        return False
+    top_level_failed = any(data.get(key) is False for key in ("ok", "success", "passed"))
+    results = data.get("results")
+    if not top_level_failed or not isinstance(results, list) or not results:
+        return False
+
+    business_result_count = 0
+    non_business_failure_count = 0
+    for item in results:
+        if not isinstance(item, dict):
+            return False
+        item_ok, _source = _infer_payload_ok(item)
+        if item.get("business_impact") is False:
+            if item_ok is False:
+                non_business_failure_count += 1
+            continue
+        if item_ok is not True:
+            return False
+        business_result_count += 1
+    return business_result_count > 0 and non_business_failure_count > 0
+
+
 def _infer_payload_ok(data: Any) -> tuple[bool | None, str]:
     if isinstance(data, dict):
         if bool(data.get("skipped")):
             return None, "skipped"
+        if _only_non_business_results_failed(data):
+            return True, "business_impact_results"
         for key in ("ok", "success", "passed"):
             if isinstance(data.get(key), bool):
                 return bool(data[key]), key

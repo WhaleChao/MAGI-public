@@ -227,6 +227,56 @@ def test_matrix_only_artifacts_are_durable_acceptance_evidence(tmp_path: Path):
     assert report["runtime_health"]["stale"] == []
 
 
+def test_legacy_business_report_ignores_notification_only_failure(tmp_path: Path):
+    path = tmp_path / ".runtime" / "business_module_live_check_latest.json"
+    _write_json(
+        path,
+        {
+            "ok": False,
+            "success": False,
+            "results": [
+                {"name": "laf_portal_live", "ok": True},
+                {"name": "file_review_self_test", "ok": True},
+                {"name": "transcript_self_test", "ok": True},
+                {
+                    "name": "notification_delivery",
+                    "ok": False,
+                    "business_impact": False,
+                    "error": "notification_delivery_failed",
+                },
+            ],
+        },
+    )
+
+    result = index.evaluate_health_file(path, tmp_path, NOW, 72)
+
+    assert result["status"] == "ok"
+    assert result["contract"] == "business_impact_results"
+
+
+def test_legacy_business_report_still_fails_for_business_check_failure(tmp_path: Path):
+    path = tmp_path / ".runtime" / "business_module_live_check_latest.json"
+    _write_json(
+        path,
+        {
+            "ok": False,
+            "results": [
+                {"name": "laf_portal_live", "ok": False},
+                {
+                    "name": "notification_delivery",
+                    "ok": False,
+                    "business_impact": False,
+                },
+            ],
+        },
+    )
+
+    result = index.evaluate_health_file(path, tmp_path, NOW, 72)
+
+    assert result["status"] == "failed"
+    assert result["contract"] == "ok"
+
+
 def test_cron_health_uses_completion_not_dispatch_only(tmp_path: Path):
     _write_json(tmp_path / "config" / "test_matrix.json", {"suites": {"ci": {"checks": []}}})
     _write_json(

@@ -16,12 +16,26 @@ import re
 import time
 import uuid
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 import sys
 
 logger = logging.getLogger("RedPhone")
+
+try:
+    _TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
+except Exception:
+    _TAIPEI_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _taipei_now() -> datetime:
+    return datetime.now(_TAIPEI_TIMEZONE)
+
+
+def _alert_timestamp() -> str:
+    return _taipei_now().strftime("%Y-%m-%d %H:%M:%S（台灣時間）")
 
 # =============================================================================
 # Configuration
@@ -291,7 +305,7 @@ def _send_discord_webhook(message: str, webhook_url: str, severity: str) -> bool
         "title": "MAGI ALERT",
         "description": safe_message,
         "color": colors.get(severity, 0xF39C12),
-        "timestamp": datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "footer": {"text": "MAGI Iron Dome"},
     }
     payload = {"embeds": [embed]}
@@ -1876,7 +1890,7 @@ def send_telegram_push(message: str) -> bool:
         # 取訊息內容的雜湊，併入當前日期，確保每天至少可發送一次相同的內容（或是跨日重啟時去重）
         # 如果使用者想要更嚴格，可以只用 msg_hash
         event = classify_notification_event(message, source="direct", severity="warning")
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = _taipei_now().strftime("%Y%m%d")
         dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
@@ -1922,7 +1936,7 @@ def alert_admin(
     event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
     try:
         from skills.ops.dedup_db import is_done, mark_done
-        date_str = datetime.now().strftime("%Y%m%d")
+        date_str = _taipei_now().strftime("%Y%m%d")
         dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
@@ -1954,7 +1968,7 @@ def alert_admin(
     except Exception as e:
         logger.debug("[RED PHONE] alert_admin dedup check failed: %s", e)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = _alert_timestamp()
     severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(severity, "⚠️")
     formatted_message = f"{severity_emoji} MAGI 警報\n{timestamp}\n\n{message}"
 
