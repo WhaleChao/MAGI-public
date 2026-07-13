@@ -994,6 +994,60 @@ def _handle_file_review_confirmation_if_any(orch, user_id, platform: str, messag
     return True, f"📤 已收到閱卷確認碼 {token}，正在重新登入送出。"
 
 
+def _handle_council_command(message: str, user_id: str, role: str) -> str | None:
+    """Handle council commands before conversational fast paths can intercept them."""
+    text = str(message or "").strip()
+    lower = text.lower()
+    list_requested = any(kw in lower for kw in ["核心變更待審", "core approvals", "pending core changes"])
+    approval_match = re.search(r"(ccr-\d{14})", text)
+    view_requested = bool(approval_match) and any(kw in lower for kw in ["查看提案", "提案內容", "view proposal"])
+    approve_requested = bool(approval_match) and any(kw in lower for kw in ["批准", "核准", "approve", "ok", "通過"])
+    reject_requested = bool(approval_match) and any(kw in lower for kw in ["拒絕", "reject", "不要", "駁回"])
+
+    if not any((list_requested, view_requested, approve_requested, reject_requested)):
+        return None
+    if role != "admin":
+        return "⛔ 核心提案只限已驗證的管理者查看與操作。"
+
+    try:
+        if list_requested:
+            from skills.magi.council_approval import format_pending_summary
+            return format_pending_summary(limit=20)
+        if view_requested and approval_match:
+            from skills.magi.council_approval import format_core_change_detail
+            return format_core_change_detail(approval_match.group(1))
+        if approve_requested and approval_match:
+            from skills.magi.council_approval import resolve_core_change
+            approval_id = approval_match.group(1)
+            note = text[approval_match.end():].strip()
+            result = resolve_core_change(approval_id, "approved", approver=user_id, note=note)
+            if not result.get("success"):
+                return f"❌ 核准失敗：{result.get('error')}"
+            item = result.get("item", {})
+            execution = item.get("execution", {})
+            if execution.get("success"):
+                files = "、".join(execution.get("patches_applied", [])) or "未回報檔案"
+                return f"✅ 核心變更已核准並執行：`{approval_id}`\n修改檔案：{files}"
+            if execution.get("error"):
+                return (
+                    f"✅ 核心變更已核准：`{approval_id}`\n"
+                    f"⚠️ 自動執行失敗：{execution.get('error', '?')[:200]}\n"
+                    "系統未完成變更，需另行檢查。"
+                )
+            return f"✅ 核心變更已核准：`{approval_id}`"
+        if reject_requested and approval_match:
+            from skills.magi.council_approval import resolve_core_change
+            approval_id = approval_match.group(1)
+            note = text[approval_match.end():].strip()
+            result = resolve_core_change(approval_id, "rejected", approver=user_id, note=note)
+            if result.get("success"):
+                return f"🛑 核心變更已拒絕：`{approval_id}`"
+            return f"❌ 拒絕失敗：{result.get('error')}"
+    except Exception as exc:
+        return f"❌ 核心提案操作失敗：{exc}"
+    return None
+
+
 def process_message_inner(orch, user_id, message, platform="LINE", role="user", attachment=None, correlation_id=None, progress_callback=None, channel_context=None):
     message = orch._sanitize_incoming_message((message or "").strip())
 
@@ -1046,6 +1100,11 @@ def process_message_inner(orch, user_id, message, platform="LINE", role="user", 
     except Exception:
         if role == "admin":
             role = "user"
+
+    council_reply = _handle_council_command(message, str(user_id or ""), role)
+    if council_reply is not None:
+        orch._append_history(user_id, "assistant", council_reply)
+        return council_reply
 
     try:
         if attachment:

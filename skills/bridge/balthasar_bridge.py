@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import List
+from typing import List, Optional
 
 from api.model_config import SUMMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.http_pool import get_session as _get_session

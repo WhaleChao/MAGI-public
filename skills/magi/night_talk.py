@@ -1,5 +1,7 @@
 import logging
+import json
 import os
+import re
 import time
 from datetime import datetime
 
@@ -94,6 +96,17 @@ def get_casper_thought(prompt, system_prompt="You are Casper, the Chairman of th
         return f"(Error: {e})"
 
 
+MAX_COUNCIL_ALERT_CHARS = 1500
+
+
+def _compact_alert_text(value: str, limit: int) -> str:
+    text = re.sub(r"[`*_#]+", "", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
 def _notify_pending_core_change(item: dict, quorum_rule: str):
     """
     Send core-change pending approval to DC/LINE in plain language.
@@ -103,26 +116,28 @@ def _notify_pending_core_change(item: dict, quorum_rule: str):
         from skills.ops.red_phone import alert_admin
 
         approval_id = item.get("id", "?")
-        plain = item.get("plain_summary") or ""
-        if plain:
-            body = plain
-        else:
-            body = (
-                f"問題：{item.get('issue','')[:200]}\n"
-                f"提案：{(item.get('proposal') or '')[:400]}"
-            )
+        degraded = item.get("review_mode") == "degraded_draft" or "fallback" in (quorum_rule or "").lower()
+        issue = _compact_alert_text(item.get("issue", ""), 260)
+        proposal = _compact_alert_text(item.get("proposal", ""), 320)
+        risk_reasons = "、".join(item.get("risk_reasons") or []) or "一般系統變更"
+        title = "🟡 夜議提出一項改動草案，尚未通過" if degraded else "🟡 夜議完成審查，等待您核准"
+        review = "降級審查：第三方節點離線，本草案未經完整夜議表決。" if degraded else "完整審查：三方一致，但仍須由您核准。"
 
         msg = (
-            "🟡 夜議通過一項核心改動，等待您審批\n"
+            f"{title}\n"
             "─────────────────\n"
-            f"{body}\n"
+            f"問題：{issue}\n"
+            f"提案重點：{proposal}\n"
+            f"風險：{risk_reasons}\n"
+            f"{review}\n"
             "─────────────────\n"
-            f"決議規則：{quorum_rule}\n"
             f"審批碼：{approval_id}\n\n"
-            "✅ 批准請回覆：批准 " + approval_id + "\n"
+            "🔎 查看完整內容：查看提案 " + approval_id + "\n"
+            "✅ 核准請回覆：批准 " + approval_id + "\n"
             "❌ 拒絕請回覆：拒絕 " + approval_id + " [原因]"
         )
-        return alert_admin(msg, severity="warning", topic_key="alert")
+        msg = msg[:MAX_COUNCIL_ALERT_CHARS]
+        return alert_admin(msg, severity="warning", source="nightly_council", topic_key="alert")
     except Exception as e:
         logger.warning(f"Notify pending core change failed: {e}")
         return {"line": False, "discord": False, "error": str(e)}
@@ -130,6 +145,35 @@ def _notify_pending_core_change(item: dict, quorum_rule: str):
 
 def _to_yes(v: str) -> bool:
     return (v or "").strip().lower().startswith("yes")
+
+
+def _enabled_cron_jobs() -> set[str]:
+    try:
+        with open(os.path.join(_MAGI_ROOT, "cron_jobs.json"), "r", encoding="utf-8") as f:
+            jobs = json.load(f)
+        return {
+            str(job.get("id") or "")
+            for job in jobs
+            if isinstance(job, dict) and job.get("enabled", True)
+        }
+    except Exception:
+        return set()
+
+
+def _managed_backlog_note(issue: str, enabled_jobs: set[str] | None = None) -> str:
+    body = (issue or "").lower()
+    jobs = enabled_jobs if enabled_jobs is not None else _enabled_cron_jobs()
+    if (
+        ("判決摘要" in body or "missing_summary" in body or ("court_judgments" in body and "摘要" in body))
+        and "job_legacy_judgment_resummary_quality" in jobs
+    ):
+        return "判決摘要已有每日資源控管小批次排程處理；保留原文，逐批驗證，不啟動全量重寫。"
+    if (
+        any(term in body for term in ("bad_notes", "weak_extraction", "low_text_signal", "obsidian 筆記"))
+        and "job_obsidian_repair_notes" in jobs
+    ):
+        return "Obsidian 弱抽取筆記已有每日小批次重抽與 OCR 排程；不搬移、不刪除原始筆記。"
+    return ""
 
 
 def _vote_casper_safety(text: str) -> tuple[str, str]:
@@ -264,8 +308,8 @@ def start_night_talk():
         return minutes_text
 
     fallback_mode = not balthasar_online
-    quorum_rule = "2/2 fallback (Casper+Melchior)" if fallback_mode else "3/3 unanimous"
-    quorum_display = "2/2" if fallback_mode else "3/3"
+    quorum_rule = "degraded draft (Casper+Melchior only)" if fallback_mode else "3/3 unanimous"
+    quorum_display = "降級草案" if fallback_mode else "3/3"
 
     minutes_text += (
         f"**Roll Call**: Casper (Present), Melchior (Present), "
@@ -403,7 +447,9 @@ def start_night_talk():
             for _kline in _kaizen_response.split("\n"):
                 _kline = _kline.strip()
                 if _kline and ("Issue" in _kline or "Action" in _kline):
-                    issues.append(f"📈 [每日1%改善] {_kline}")
+                    candidate = f"📈 [每日1%改善] {_kline}"
+                    if not _managed_backlog_note(candidate):
+                        issues.append(candidate)
         elif _kaizen_response and len(_kaizen_response) > 20:
             issues.append(f"📈 [每日1%改善] {_kaizen_response[:200]}")
         logger.info(f"📈 Kaizen analysis generated {len([i for i in issues if '每日1%' in i])} improvement items")
@@ -417,8 +463,14 @@ def start_night_talk():
 
     # --- PHASE 3: COUNCIL VOTING ---
     pending_core_count = 0
+    enabled_jobs = _enabled_cron_jobs()
     for i, issue in enumerate(issues, 1):
         minutes_text += f"### Item {i}: {issue[:70]}...\n"
+
+        managed_note = _managed_backlog_note(issue, enabled_jobs)
+        if managed_note:
+            minutes_text += f"🟢 **既有保養流程持續處理**：{managed_note}\n---\n"
+            continue
 
         # 1. CASPER (Analyze + vote)
         c_res = get_casper_thought(
@@ -458,9 +510,10 @@ def start_night_talk():
         minutes_text += f"**🤖 Melchior**: {proposal}\n"
 
         # 2.5. DELIBERATION ROUND: Casper challenges proposal, Melchior may revise
-        c_challenge, proposal, plain_summary = _deliberate(issue, c_res, proposal)
+        initial_proposal = proposal
+        c_challenge, proposal, _plain_summary = _deliberate(issue, c_res, proposal)
         minutes_text += f"**💬 Casper 審查**: {c_challenge}\n"
-        if proposal != m_res.get("response", "None"):
+        if proposal != initial_proposal:
             minutes_text += f"**🔧 Melchior 修訂**: {proposal[:300]}...\n"
             # Re-evaluate votes against revised proposal
             m_vote, m_reason = _vote_melchior_engineering(proposal)
@@ -487,7 +540,7 @@ def start_night_talk():
             pass_rule = "3/3"
         else:
             passed = _to_yes(c_vote) and _to_yes(m_vote)
-            pass_rule = "2/2 fallback"
+            pass_rule = "degraded draft"
 
         if not passed:
             minutes_text += f"🚫 **VETOED** ({pass_rule} not met).\n---\n"
@@ -503,20 +556,29 @@ def start_night_talk():
                 source="nightly_council",
             )
             if queue.get("success"):
-                pending_core_count += 1
                 item = queue.get("item", {})
-                item["plain_summary"] = plain_summary  # attach human-readable summary
-                notify = _notify_pending_core_change(item, pass_rule)
-                minutes_text += (
-                    f"🟡 **PASSED ({pass_rule}) BUT CORE CHANGE IS PENDING APPROVAL**.\n"
-                    f"- Approval ID: `{item.get('id')}`\n"
-                    f"- DC Notify: line={notify.get('line')} discord={notify.get('discord')}\n"
-                    "⚠️ 未獲核准前不得執行此核心改動。\n"
-                )
+                if queue.get("created"):
+                    pending_core_count += 1
+                    notify = _notify_pending_core_change(item, pass_rule)
+                    review_label = "降級草案" if fallback_mode else "完整審查"
+                    minutes_text += (
+                        f"🟡 **{review_label}，等待使用者核准**。\n"
+                        f"- Approval ID: `{item.get('id')}`\n"
+                        f"- Notify: telegram={notify.get('telegram')} queued={notify.get('outbox_queued')}\n"
+                        "⚠️ 未獲核准前不得執行此核心改動。\n"
+                    )
+                else:
+                    minutes_text += (
+                        f"🟢 **同類提案已在待審清單，不重複通知**：`{item.get('id')}`\n"
+                    )
             else:
                 minutes_text += "❌ 核心改動待審建立失敗，視同未通過執行門檻。\n"
         else:
-            # Non-core change passed → auto-execute immediately
+            if fallback_mode:
+                minutes_text += "🟡 **降級審查僅列為草案，不自動執行。**\n"
+                minutes_text += "---\n"
+                continue
+            # Non-core change passed under full quorum → auto-execute immediately
             minutes_text += f"✅ **PASSED ({pass_rule})**."
             try:
                 from skills.magi.council_executor import execute_approved_change
