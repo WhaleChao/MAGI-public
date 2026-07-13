@@ -149,6 +149,12 @@ def test_mark_job_result_writes_success_and_failure_without_dirtying_cron_jobs(t
     assert state["j1"]["last_error"] == "boom"
     assert state["j1"]["returncode"] == 2
 
+    assert s.mark_job_result("j1", success=True, returncode=0) is True
+    state = json.loads(rd.cron_state().read_text())
+    assert state["j1"]["last_error"] == ""
+    assert state["j1"]["last_stdout_tail"] == ""
+    assert state["j1"]["last_stderr_tail"] == ""
+
 
 def test_mark_job_result_redacts_case_identity_credentials_and_paths(tmp_runtime, tmp_path, monkeypatch):
     s = _make_scheduler(tmp_path, monkeypatch, [

@@ -119,6 +119,27 @@ def _live_runtime_root() -> Path:
     return Path(os.environ.get("MAGI_LIVE_RUNTIME_ROOT") or DEFAULT_LIVE_RUNTIME_ROOT).expanduser()
 
 
+def _source_root() -> Path | None:
+    for env_name in ("MAGI_SOURCE_ROOT_DIR", "MAGI_PUBLIC_SOURCE_ROOT_DIR"):
+        raw = str(os.environ.get(env_name) or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser()
+        if (candidate / ".git").exists():
+            return candidate.resolve()
+
+    if (MAGI_ROOT / ".git").exists():
+        return MAGI_ROOT.resolve()
+
+    for candidate in (
+        Path.home() / "Desktop" / "MAGI_v2",
+        Path.home() / "Library" / "Application Support" / "MAGI" / "source" / "MAGI_v2",
+    ):
+        if (candidate / ".git").exists():
+            return candidate.resolve()
+    return None
+
+
 def _live_runtime_artifact(name: str) -> Path:
     live_root = _live_runtime_root()
     try:
@@ -266,9 +287,19 @@ def _command_gate(
 
 def check_repo_clean(*, allow_dirty: bool = False) -> GateResult:
     started = time.time()
+    source_root = _source_root()
+    if source_root is None:
+        return GateResult(
+            "repo_clean",
+            "Source Git worktree clean",
+            False,
+            "fail",
+            elapsed_sec=round(time.time() - started, 3),
+            detail="source checkout missing; set MAGI_SOURCE_ROOT_DIR",
+        )
     proc = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=MAGI_ROOT,
+        cwd=source_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -278,7 +309,7 @@ def check_repo_clean(*, allow_dirty: bool = False) -> GateResult:
     if proc.returncode != 0:
         return GateResult(
             "repo_clean",
-            "Git worktree clean",
+            "Source Git worktree clean",
             False,
             "fail",
             elapsed_sec=elapsed,
@@ -288,7 +319,7 @@ def check_repo_clean(*, allow_dirty: bool = False) -> GateResult:
     if dirty and allow_dirty:
         return GateResult(
             "repo_clean",
-            "Git worktree clean",
+            "Source Git worktree clean",
             True,
             "warn",
             blocking=False,
@@ -298,7 +329,7 @@ def check_repo_clean(*, allow_dirty: bool = False) -> GateResult:
         )
     return GateResult(
         "repo_clean",
-        "Git worktree clean",
+        "Source Git worktree clean",
         not dirty,
         "pass" if not dirty else "fail",
         elapsed_sec=elapsed,
@@ -346,6 +377,16 @@ def check_runtime_fingerprint() -> GateResult:
     try:
         from scripts import magi_doctor
 
+        source_root = _source_root()
+        if source_root is None:
+            return GateResult(
+                "runtime_fingerprint",
+                "Source/live runtime fingerprint",
+                False,
+                "fail",
+                elapsed_sec=round(time.time() - started, 3),
+                detail="source checkout missing; set MAGI_SOURCE_ROOT_DIR",
+            )
         live_root = _live_runtime_root()
         if not live_root.exists():
             return GateResult(
@@ -356,7 +397,7 @@ def check_runtime_fingerprint() -> GateResult:
                 elapsed_sec=round(time.time() - started, 3),
                 detail=f"live runtime missing: {live_root}",
             )
-        if live_root.resolve() == MAGI_ROOT.resolve():
+        if live_root.resolve() == source_root.resolve():
             return GateResult(
                 "runtime_fingerprint",
                 "Source/live runtime fingerprint",
@@ -365,7 +406,7 @@ def check_runtime_fingerprint() -> GateResult:
                 elapsed_sec=round(time.time() - started, 3),
                 detail="same root",
             )
-        fingerprint = magi_doctor._runtime_root_fingerprint(MAGI_ROOT, live_root)
+        fingerprint = magi_doctor._runtime_root_fingerprint(source_root, live_root)
         counts = {
             "file_mismatches": len(fingerprint.get("file_mismatches") or []),
             "missing": len(fingerprint.get("missing") or []),
@@ -550,6 +591,7 @@ def _gate_command_factory(gate_id: str, *, dry_run: bool) -> GateResult:
             artifact=artifact,
         )
     if gate_id == "cross_surface_pytest":
+        test_root = _source_root() or MAGI_ROOT
         return _command_gate(
             "cross_surface_pytest",
             "Cross-surface regression pytest",
@@ -558,12 +600,12 @@ def _gate_command_factory(gate_id: str, *, dry_run: bool) -> GateResult:
                 "-m",
                 "pytest",
                 "-q",
-                "tests/test_osc_web_smoke.py",
-                "tests/test_magi_menubar_monitors.py",
-                "tests/test_magi_doctor.py",
-                "tests/test_business_module_live_check.py",
-                "tests/test_laf_ddddocr_resolver.py",
-                "tests/test_magi_acceptance_gate.py",
+                str(test_root / "tests" / "test_osc_web_smoke.py"),
+                str(test_root / "tests" / "test_magi_menubar_monitors.py"),
+                str(test_root / "tests" / "test_magi_doctor.py"),
+                str(test_root / "tests" / "test_business_module_live_check.py"),
+                str(test_root / "tests" / "test_laf_ddddocr_resolver.py"),
+                str(test_root / "tests" / "test_magi_acceptance_gate.py"),
             ],
             timeout_sec=180,
             env={"MAGI_GOOGLE_CALENDAR_TOKEN_PATH": ""},
@@ -659,7 +701,7 @@ def build_report(profile: str, gates: list[GateResult], *, allow_dirty: bool, dr
         "root": str(MAGI_ROOT),
         "boundary": {
             "green_requires": [
-                "repo clean",
+                "source repo clean",
                 "source/live runtime fingerprint matched",
                 "doctor has 0 warn and 0 fail",
                 "no local residue such as stale git locks or dangling cache symlinks",

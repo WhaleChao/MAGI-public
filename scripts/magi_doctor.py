@@ -304,6 +304,35 @@ def _launchctl_print_status(label: str, *, uid: int | None = None) -> dict[str, 
     }
 
 
+def _direct_menubar_process(payload: dict[str, Any]) -> dict[str, Any] | None:
+    working_dir = str(payload.get("WorkingDirectory") or "").strip()
+    if not working_dir:
+        return None
+    expected_script = (Path(working_dir).expanduser() / "gui" / "magi_menubar.py").resolve()
+    if not expected_script.exists():
+        return None
+    try:
+        import psutil
+
+        matches = []
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = [str(arg) for arg in (proc.info.get("cmdline") or [])]
+                if any(
+                    Path(arg).expanduser().resolve() == expected_script
+                    for arg in cmdline
+                    if arg.endswith("magi_menubar.py")
+                ):
+                    matches.append(int(proc.info["pid"]))
+            except (OSError, psutil.Error):
+                continue
+        if matches:
+            return {"pid": min(matches), "count": len(matches), "script": str(expected_script)}
+    except Exception:
+        return None
+    return None
+
+
 def _launchctl_check(label: str, payload: dict[str, Any]) -> Check | None:
     if not _launchagent_expects_launchctl(payload):
         return None
@@ -312,6 +341,14 @@ def _launchctl_check(label: str, payload: dict[str, Any]) -> Check | None:
         return None
     name = f"launchctl:{label}"
     if not status.get("loaded"):
+        if label == "com.magi.menubar":
+            direct = _direct_menubar_process(payload)
+            if direct:
+                return Check(
+                    name,
+                    "pass",
+                    f"direct GUI fallback running; pid={direct['pid']}; count={direct['count']}",
+                )
         detail = str(status.get("detail") or status.get("error") or "not loaded")
         return Check(name, "warn", f"not loaded: {detail}", "載入或停用該 LaunchAgent，避免 plist 殘留造成監控誤判。")
 

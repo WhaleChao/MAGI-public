@@ -41,6 +41,52 @@ def test_doctor_gate_targets_live_runtime_state(monkeypatch, tmp_path):
     assert captured["env"]["MAGI_RUNTIME_DIR"] == str(tmp_path / ".runtime")
 
 
+def test_repo_clean_uses_source_checkout_when_invoked_from_runtime(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    runtime_root.mkdir()
+    (source_root / ".git").mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(gate, "MAGI_ROOT", runtime_root)
+    monkeypatch.setenv("MAGI_SOURCE_ROOT_DIR", str(source_root))
+
+    def fake_run(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+
+    result = gate.check_repo_clean()
+
+    assert result.ok is True
+    assert result.name == "Source Git worktree clean"
+    assert captured["kwargs"]["cwd"] == source_root.resolve()
+
+
+def test_runtime_fingerprint_compares_detected_source_to_runtime(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    runtime_root.mkdir()
+    (source_root / ".git").mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(gate, "MAGI_ROOT", runtime_root)
+    monkeypatch.setenv("MAGI_SOURCE_ROOT_DIR", str(source_root))
+    monkeypatch.setenv("MAGI_LIVE_RUNTIME_ROOT", str(runtime_root))
+
+    from scripts import magi_doctor
+
+    def fake_fingerprint(source, live):
+        captured.update(source=source, live=live)
+        return {"file_mismatches": [], "missing": [], "cron_mismatches": []}
+
+    monkeypatch.setattr(magi_doctor, "_runtime_root_fingerprint", fake_fingerprint)
+
+    result = gate.check_runtime_fingerprint()
+
+    assert result.ok is True
+    assert captured == {"source": source_root.resolve(), "live": runtime_root}
+
+
 def test_parse_json_from_output_prefers_largest_report_object():
     raw = 'log\n{"ok": true, "summary": {"warn": 0, "fail": 0}, "checks": [{"name": "x"}]}\n'
 
@@ -220,6 +266,26 @@ def test_cross_surface_pytest_clears_external_calendar_token_env(monkeypatch):
     gate._gate_command_factory("cross_surface_pytest", dry_run=False)
 
     assert captured["env"]["MAGI_GOOGLE_CALENDAR_TOKEN_PATH"] == ""
+
+
+def test_cross_surface_pytest_uses_latest_source_tests_from_runtime(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    source_root = tmp_path / "source"
+    runtime_root.mkdir()
+    (source_root / ".git").mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(gate, "MAGI_ROOT", runtime_root)
+    monkeypatch.setenv("MAGI_SOURCE_ROOT_DIR", str(source_root))
+
+    def fake_command_gate(_gate_id, _name, command, **_kwargs):
+        captured["command"] = command
+        return gate.GateResult("cross_surface_pytest", "pytest", True, "pass")
+
+    monkeypatch.setattr(gate, "_command_gate", fake_command_gate)
+
+    gate._gate_command_factory("cross_surface_pytest", dry_run=False)
+
+    assert str(source_root.resolve() / "tests" / "test_magi_doctor.py") in captured["command"]
 
 
 def test_live_acceptance_blocks_external_probes_when_runtime_preflight_fails(monkeypatch):

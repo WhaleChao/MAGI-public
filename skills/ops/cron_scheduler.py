@@ -182,6 +182,8 @@ def mark_job_result_from_evidence(
         "last_returncode": int(returncode),
         "last_timed_out": False,
         "last_error": "" if success else _tail_text(error, 1200),
+        "last_stdout_tail": "",
+        "last_stderr_tail": "",
     }
     if success:
         payload["last_success_at"] = timestamp
@@ -481,6 +483,8 @@ class CronScheduler:
             "timed_out": bool(timed_out),
             "last_returncode": returncode,
             "last_timed_out": bool(timed_out),
+            "last_stdout_tail": _tail_text(stdout_tail, 1200),
+            "last_stderr_tail": _tail_text(stderr_tail, 1200),
         }
         if duration_sec is not None:
             try:
@@ -493,11 +497,6 @@ class CronScheduler:
         else:
             payload["last_failure_at"] = now.isoformat()
             payload["last_error"] = _tail_text(error, 1200)
-        if stdout_tail:
-            payload["last_stdout_tail"] = _tail_text(stdout_tail, 1200)
-        if stderr_tail:
-            payload["last_stderr_tail"] = _tail_text(stderr_tail, 1200)
-
         changed = False
         for job in self.jobs:
             if str(job.get("id") or "") == jid:

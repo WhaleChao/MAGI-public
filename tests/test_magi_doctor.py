@@ -164,6 +164,28 @@ def test_mtp_sidecar_check_retries_transient_health_timeouts(monkeypatch):
     assert "retry=2" in detail
 
 
+def test_launchctl_check_accepts_running_direct_menubar_fallback(monkeypatch):
+    monkeypatch.setattr(
+        magi_doctor,
+        "_launchctl_print_status",
+        lambda _label: {"checked": True, "loaded": False, "detail": "not loaded"},
+    )
+    monkeypatch.setattr(
+        magi_doctor,
+        "_direct_menubar_process",
+        lambda _payload: {"pid": 123, "count": 1, "script": "/runtime/gui/magi_menubar.py"},
+    )
+
+    check = magi_doctor._launchctl_check(
+        "com.magi.menubar",
+        {"KeepAlive": True, "WorkingDirectory": "/runtime"},
+    )
+
+    assert check is not None
+    assert check.status == "pass"
+    assert "direct GUI fallback running" in check.detail
+
+
 def test_launchagent_checks_flag_missing_program_arguments(tmp_path):
     home = tmp_path / "home"
     launch_dir = home / "Library" / "LaunchAgents"
