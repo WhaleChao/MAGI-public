@@ -55,6 +55,55 @@ class TestToolsAPICors:
             elif 'api.tools_api' in sys.modules:
                 del sys.modules['api.tools_api']
 
+    def test_sensitive_tools_api_routes_require_api_key(self):
+        """Mutating/read-sensitive Tools API routes must not be exposed unauthenticated."""
+        import re
+        from pathlib import Path
+
+        tools_api_path = Path(__file__).parent.parent / "api" / "tools_api.py"
+        source = tools_api_path.read_text(encoding="utf-8")
+        protected_routes = [
+            "/search",
+            "/research",
+            "/fetch",
+            "/summarize",
+            "/vision",
+            "/skills/versions",
+            "/skills/rollback",
+            "/skills/stable",
+            "/skills/canary/start",
+            "/skills/teach",
+            "/skills/teach/file",
+            "/skills/internalize",
+            "/skills/internalize/codebase",
+            "/code/autofix",
+            "/council/core/approve",
+            "/melchior/skills/sync",
+            "/api/audit_log",
+            "/api/audit_log/restore/<int:log_id>",
+            "/static/exports/<path:filename>",
+        ]
+
+        for route in protected_routes:
+            pattern = (
+                r"@app\.route\(['\"]" + re.escape(route) + r"['\"].*?\)\n"
+                r"(?:(?:@[^\n]+\n))*?"
+                r"@require_api_key\n"
+                r"def "
+            )
+            assert re.search(pattern, source, re.DOTALL), f"{route} must require API key"
+
+    def test_tools_api_security_fallback_fails_closed(self):
+        """Auth import fallback must deny protected routes instead of becoming a no-op."""
+        from pathlib import Path
+
+        tools_api_path = Path(__file__).parent.parent / "api" / "tools_api.py"
+        source = tools_api_path.read_text(encoding="utf-8")
+
+        assert "security_modules_unavailable" in source
+        assert "def require_api_key(f):\n        return f" not in source
+        assert "def require_role(role):\n        def dec(f):\n            return f" not in source
+
 
 class TestServerSecurityHeaders:
     """Tests for Flask bootstrap security headers."""
@@ -91,6 +140,13 @@ class TestServerSecurityHeaders:
         from api import app_factory
 
         monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        monkeypatch.delenv("MAGI_FORCE_HTTPS", raising=False)
+        monkeypatch.delenv("MAGI_ENABLE_HSTS", raising=False)
+        monkeypatch.delenv("MAGI_SECURE_COOKIES", raising=False)
+        monkeypatch.delenv("MAGI_DEPLOYMENT_MODE", raising=False)
+        monkeypatch.delenv("MAGI_PUBLIC_BASE_URL", raising=False)
+        monkeypatch.delenv("MAGI_BASE_URL", raising=False)
+        monkeypatch.delenv("MAGI_EXTERNAL_BASE_URL", raising=False)
         app = app_factory.create_base_app()
         app_factory.install_security_headers(app)
 
@@ -104,6 +160,49 @@ class TestServerSecurityHeaders:
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
         assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        csp = response.headers["Content-Security-Policy"]
+        assert "frame-src 'self' blob:" in csp
+        assert "object-src 'self' blob:" in csp
+        assert "img-src 'self' data: blob:" in csp
+        assert "Strict-Transport-Security" not in response.headers
+
+    def test_proxy_headers_are_not_trusted_by_default(self, monkeypatch):
+        from api import app_factory
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        monkeypatch.delenv("MAGI_TRUST_PROXY_HEADERS", raising=False)
+
+        app = app_factory.create_base_app()
+
+        assert not isinstance(app.wsgi_app, ProxyFix)
+
+    def test_proxy_headers_require_explicit_opt_in(self, monkeypatch):
+        from api import app_factory
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        monkeypatch.setenv("MAGI_TRUST_PROXY_HEADERS", "1")
+
+        app = app_factory.create_base_app()
+
+        assert isinstance(app.wsgi_app, ProxyFix)
+
+    def test_hsts_only_when_https_is_explicitly_enforced(self, monkeypatch):
+        from api import app_factory
+
+        monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+        monkeypatch.setenv("MAGI_FORCE_HTTPS", "1")
+        app = app_factory.create_base_app()
+        app_factory.install_security_headers(app)
+
+        @app.route("/secure-ping")
+        def _secure_ping():
+            return "ok"
+
+        response = app.test_client().get("/secure-ping")
+
+        assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
 
 
 class TestServerSessionCookie:
@@ -212,6 +311,58 @@ class TestCORSMiddlewarePresence:
         source = tools_api_path.read_text(encoding="utf-8")
 
         assert "CORS(app" in source
+
+
+class TestTelegramWebhookSecurity:
+    def test_production_webhook_requires_secret_when_missing(self, monkeypatch):
+        from flask import Flask
+        from api.webhooks import telegram
+
+        monkeypatch.setenv("MAGI_TELEGRAM_WEBHOOK_PRODUCTION", "1")
+        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+        monkeypatch.delenv("OPENCLAW_TELEGRAM_WEBHOOK_SECRET", raising=False)
+
+        app = Flask(__name__)
+        with app.test_request_context("/telegram/webhook", method="POST"):
+            assert telegram._telegram_verify_webhook_secret() is False
+
+    def test_production_webhook_requires_allowlisted_sender(self, monkeypatch):
+        import sys
+        import types
+        from flask import Flask
+        from api.webhooks import telegram
+
+        monkeypatch.setenv("MAGI_TELEGRAM_WEBHOOK_PRODUCTION", "1")
+        monkeypatch.delenv("MAGI_ADMIN_TELEGRAM_IDS", raising=False)
+        monkeypatch.delenv("MAGI_NOTIFY_TELEGRAM_IDS", raising=False)
+        monkeypatch.setattr(telegram, "_telegram_send_text_to", lambda *args, **kwargs: False)
+        monkeypatch.setitem(
+            sys.modules,
+            "api.server",
+            types.SimpleNamespace(_check_rate_limit=lambda *_args, **_kwargs: False, orchestrator=object()),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "api.startup",
+            types.SimpleNamespace(_record_last_public_base_url=lambda: None),
+        )
+
+        update = {
+            "update_id": 123,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": "100", "type": "private"},
+                "from": {"id": "200"},
+                "text": "hello",
+            },
+        }
+
+        app = Flask(__name__)
+        with app.test_request_context("/telegram/webhook", method="POST"):
+            result = telegram._telegram_handle_update(update)
+
+        assert result["ok"] is False
+        assert result["blocked"] == "allowlist"
 
 
 class TestSecurityHeadersNotWildcard:

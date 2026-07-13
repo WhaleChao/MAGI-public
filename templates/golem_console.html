@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MAGI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260506-web-chat-format-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
 </head>
-<body>
+<body class="site-console">
     <header class="topbar">
         <div>
             <div class="eyebrow">MAGI</div>
@@ -16,6 +17,7 @@
             <time class="top-clock" id="top-clock" datetime="">--:--:--</time>
             <a href="/golem">MAGI</a>
             <a href="/osc">Paperclip</a>
+            <a href="/status">系統檢測</a>
             <a href="/mobile">手機</a>
             <a href="/research">研究</a>
             <a href="/magi-adjust">MAGI 調整</a>
@@ -59,6 +61,7 @@
                 <p id="golem-root">案件管理、MAGI 對話、系統狀態與調整入口集中於此。</p>
                 <div class="primary-actions" aria-label="核心操作">
                     <a class="primary-link" href="/osc">Paperclip 案件管理</a>
+                    <a class="primary-link" href="/status">系統檢測 / 狀態中心</a>
                     <a class="primary-link" href="/magi-adjust">MAGI 調整</a>
                     <a class="primary-link" href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">個人 GitHub 頁面</a>
                     <a class="primary-link" href="/intel">全球新聞網</a>
@@ -102,6 +105,7 @@
                         <a href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
                         <a href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
                         <a href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+                        <a href="/lottery">抽獎工具</a>
                         <a href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
                         <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
                         <a href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
@@ -110,6 +114,7 @@
                         <a href="/dashboard/website">個人網站管理</a>
                         <a href="/intel">全球新聞網</a>
                         <a href="/research">研究</a>
+                        <a href="/research/judgment-classifier">判決捕捉與分類</a>
                     </div>
                 </aside>
             </div>

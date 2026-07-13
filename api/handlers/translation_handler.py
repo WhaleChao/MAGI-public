@@ -154,8 +154,8 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     return {
                         "success": True,
                         "text": codex_text,
-                        "provider": "openclaw_codex",
-                        "route": "openclaw_codex",
+                        "provider": "codex_direct",
+                        "route": "codex_direct",
                         "model": codex_res.get("model", "gpt-5.4"),
                         "agent": codex_res.get("agent_id", "codex-distributed"),
                         "term_glossary": export_term_glossary,
@@ -280,7 +280,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         "on",
     }
     if heavy and use_gtx_primary and not heavy_allow_gtx_primary:
-        logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NIM 405B")
+        logger.info("translate_text_complete: heavy=True → skipping GTX primary, routing to NVIDIA NIM heavy")
         use_gtx_primary = False
     # 2026-04-24：strict NIM 模式 — 強制序列 (workers=1)，避免並行觸發 NIM 40 req/min 限制。
     # 使用者明確表示「慢沒關係，模型要統一」時啟用。每 chunk 間會由 inference_gateway 負責退避重試。
@@ -405,9 +405,47 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                 if en_out and (abs(len(en_out) - len(part)) >= 40 or en_out[:200] != part[:200]):
                     return en_out
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 407, exc_info=True)
 
         return auto_out
+
+    def _char_counts_for_lang(text_part: str) -> tuple[int, int]:
+        s = str(text_part or "")
+        return (
+            len(re.findall(r"[\u4e00-\u9fff]", s)),
+            len(re.findall(r"[A-Za-z]", s)),
+        )
+
+    def _should_preserve_target_chinese_source(text_part: str) -> bool:
+        """Target zh-TW + source already Chinese: preserve instead of paraphrasing.
+
+        File translation is often used on Taiwan legal/academic PDFs that already
+        contain Traditional Chinese plus a few English titles/citations. Sending a
+        Chinese-dominant chunk back through an LLM causes semantic drift
+        (e.g. 被告 -> 辯護人). In zh-TW target mode, a Chinese-dominant source chunk
+        is already in the desired language, so the safest high-quality translation
+        is an identity-preserving output.
+        """
+        if not target_is_zh:
+            return False
+        s = str(text_part or "").strip()
+        if not s:
+            return False
+        cjk, latin = _char_counts_for_lang(s)
+        if cjk < 50:
+            return False
+        if re.search(
+            r"(司法通譯|國民法官|公民法官|被告|證詞|量刑|法庭|法院|判決|裁定|犯罪|受試者|"
+            r"當事人|辯護人|檢察官|律師|上訴|審判|法律|訴訟|證據|法官)",
+            s,
+        ):
+            return True
+        if cjk < 80:
+            return False
+        # Mixed Chinese/English title pages and abstracts often contain both
+        # scripts. If Chinese is a substantial part of the chunk, preserve it
+        # whole; English-only chunks still go through the normal translator.
+        return (cjk / max(1, cjk + latin)) >= 0.25
 
     def _translation_needs_rescue(src_part: str, translated_part: str) -> bool:
         from api.handlers import text_processing_handler as _tp
@@ -733,6 +771,9 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
     def _process_chunk(idx, part):
         def _translate_piece(text_part: str, *, label: str, depth: int) -> tuple[str, str, int]:
             glossary = doc_glossary  # 使用 document-level glossary 確保全文術語一致
+            if _should_preserve_target_chinese_source(text_part):
+                preserved = _dh.polish_translated_document_text(text_part) or str(text_part or "").strip()
+                return preserved, "source_zh_preserved", 0
             # 2026-04-24：動態 NIM 壅塞偵測 — 若最近 NIM 呼叫成功率低或延遲超高，直接走 GTX 省時間
             _skip_nim_this_chunk = False
             _pure_mode = os.environ.get("MAGI_HEAVY_STRICT_NIM_PURE", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -1106,7 +1147,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         )
     except Exception:
         translate_idle_timeout = max(90, min(600, max(remote_timeout, quick_timeout) + 30))
-    # 2026-04-24：strict NIM 模式下 NIM 405B 單次可能跑 10-25 分鐘（NVIDIA 高負載時）+ 退避重試 6 次
+    # 2026-04-24：strict NIM 模式下重型 NIM 單次可能跑 10-25 分鐘（NVIDIA 高負載時）+ 退避重試 6 次
     # 預設 idle_timeout 600 秒會直接斷掉仍在跑的 NIM 請求 → 反而讓 strict 毫無意義。
     # 把上限拉到 2 小時 per chunk（7200s），讓 strict 真正能等到結果。
     if _strict_nim_mode:
@@ -1115,7 +1156,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
 
     from concurrent.futures import FIRST_COMPLETED, wait
     from api.thread_pools import inference_pool
-    checkpoint_version = 4
+    checkpoint_version = 6
     checkpoint_active = checkpoint_enabled and total >= checkpoint_threshold
     checkpoint_path = _translation_checkpoint_state_path(text, source_lang, target_lang) if checkpoint_active else None
     result_buffer = [None] * total
@@ -1144,7 +1185,14 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
             cached_source = str(cached.get("source_lang") or "")
             cached_target = str(cached.get("target_lang") or "")
             cached_results = cached.get("results") or []
-            if cached_version in {2, checkpoint_version} and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
+            legacy_complete_checkpoint = (
+                cached_version in {2, 3, 4, 5}
+                and cached_total == total
+                and isinstance(cached_results, list)
+                and len(cached_results) == total
+            )
+            checkpoint_schema_ok = cached_version == checkpoint_version or legacy_complete_checkpoint
+            if checkpoint_schema_ok and cached_source == str(source_lang or "auto") and cached_target == str(target_lang or ""):
                 cached_final = str(cached.get("final_text") or "").strip()
                 cached_translated = str(cached.get("translated_text") or "").strip()
                 if not cached_translated and isinstance(cached_results, list) and cached_results:
@@ -1274,7 +1322,7 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
                     try:
                         _gtx_fallback = _translate_via_gtx(chunks[i])
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1276, exc_info=True)
                 if _gtx_fallback and len(_gtx_fallback.strip()) > 10:
                     result_buffer[i] = {
                         "text": _gtx_fallback,
@@ -1378,6 +1426,24 @@ def translate_text_complete(text: str, source_lang: str = "auto", target_lang: s
         return {
             "success": False,
             "error": f"translation_quality_failed:{quality_failed_chunks}/{total} chunks require verified retry",
+            "provider": "melchior_chunk_complete",
+            "model": last_model,
+            "chunks_total": total,
+            "chunks_failed": failed_chunks,
+            "term_glossary": export_term_glossary,
+        }
+
+    if failed_chunks > 0 and not allow_partial:
+        _persist_checkpoint(
+            final_text=final_translation_text,
+            translated_text=final_translation_text,
+            complete=False,
+            chunks_failed=failed_chunks,
+            model=last_model,
+        )
+        return {
+            "success": False,
+            "error": f"translation_partial_failed:{failed_chunks}/{total} chunks failed; set MAGI_FILE_TRANSLATE_ALLOW_PARTIAL=1 to deliver partial output",
             "provider": "melchior_chunk_complete",
             "model": last_model,
             "chunks_total": total,

@@ -283,7 +283,7 @@ def test_memory_ingestion_is_idempotent_on_repeated_entries(rb_action, monkeypat
     first = rb_action._ingest_entries_to_memory("語言政策", entries)
     second = rb_action._ingest_entries_to_memory("語言政策", entries)
     assert first == 1
-    assert second == 0
+    assert second == 1
     assert len(captured) == 1
     assert captured[0]["metadata"]["brief_id"]
     assert "ingested_at" not in captured[0]["metadata"]
@@ -323,6 +323,67 @@ def test_memory_ingestion_same_content_different_brief_ids_are_allowed(rb_action
     assert count == 2
     assert len(captured) == 2
     assert captured[0]["metadata"]["brief_id"] != captured[1]["metadata"]["brief_id"]
+
+
+def test_memory_ingestion_treats_memory_duplicate_skips_as_success(rb_action, monkeypatch):
+    import types
+
+    def fake_remember_batch(payloads):
+        return {"ok": True, "inserted": 0, "skipped": len(payloads), "failed": 0, "total": len(payloads)}
+
+    stub = types.ModuleType("skills.memory.mem_bridge")
+    stub.remember_batch = fake_remember_batch
+    monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", stub)
+
+    entries = [
+        {
+            "title": "Already in memory",
+            "raw": "same body",
+            "snippet": "same body",
+            "url": "https://same.example/in-memory",
+            "source_name": "src",
+            "_hash": rb_action._hash_url("https://same.example/in-memory"),
+        }
+    ]
+
+    assert rb_action._ingest_entries_to_memory("語言政策", entries) == 1
+
+
+def test_digest_reports_degraded_when_memory_ingest_fails(rb_action, monkeypatch, capsys):
+    import types
+
+    rb_action.task_add_namespace("Tfail")
+    rb_action.task_add_source("Tfail", "https://example.com/feed", stype="rss")
+
+    fetchers_mod = _load_skill_module("fetchers", "fetchers.py")
+    monkeypatch.setattr(
+        fetchers_mod,
+        "fetch_source",
+        lambda _src: [{
+            "title": "Important Human Rights Update",
+            "url": "https://example.com/a",
+            "snippet": "body",
+            "raw": "body",
+        }],
+    )
+    sys.modules["fetchers"] = fetchers_mod
+
+    digest_mod = types.ModuleType("digest")
+    digest_mod.format_digest = lambda namespace, entries, keyword_pool=None: "digest"
+    monkeypatch.setitem(sys.modules, "digest", digest_mod)
+
+    mem_stub = types.ModuleType("skills.memory.mem_bridge")
+    mem_stub.remember_batch = lambda _payloads: 0
+    monkeypatch.setitem(sys.modules, "skills.memory.mem_bridge", mem_stub)
+
+    capsys.readouterr()
+    rc = rb_action.task_digest("Tfail", notify=False)
+    payload = rb_action.json.loads(capsys.readouterr().out)
+
+    assert rc == 1
+    assert payload["success"] is False
+    assert payload["results"][0]["degraded"] is True
+    assert payload["results"][0]["error"] == "memory_ingest_failed"
 
 
 # ───────── translator ─────────

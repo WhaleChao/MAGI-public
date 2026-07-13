@@ -19,6 +19,16 @@ def _cron_jobs_or_skip() -> list[dict]:
     return json.loads(_cron_jobs_text_or_skip())
 
 
+class _NoProcessRun:
+    stdout = ""
+    stderr = ""
+    returncode = 1
+
+
+def _silence_process_scan(monkeypatch, audit) -> None:
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: _NoProcessRun())
+
+
 def test_cron_result_policy_suppresses_structured_success_payload():
     from skills.ops.cron_result_policy import should_log_cron_issue
 
@@ -39,6 +49,14 @@ def test_cron_result_policy_keeps_real_failure():
     from skills.ops.cron_result_policy import should_log_cron_issue
 
     assert should_log_cron_issue(1, "", "Traceback: boom") is True
+
+
+def test_cron_result_policy_does_not_hide_stderr_failure_with_success_json():
+    from skills.ops.cron_result_policy import should_log_cron_issue
+
+    stdout = json.dumps({"success": True, "severity": "OK", "alarm_triggered": False})
+
+    assert should_log_cron_issue(1, stdout, "Traceback: boom") is True
 
 
 def test_operational_audit_ignores_macro_cron_companions(tmp_path, monkeypatch):
@@ -65,6 +83,282 @@ def test_operational_audit_ignores_macro_cron_companions(tmp_path, monkeypatch):
     report = audit.audit_cron()
 
     assert report["collision_count"] == 0
+
+
+def test_operational_audit_flags_duplicate_transcript_indexers(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "legacy_transcript_index",
+            "enabled": True,
+            "cron": "0 2 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "legacy",
+        },
+        {
+            "id": "job_transcript_indexer",
+            "enabled": True,
+            "cron": "30 6,21 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "canonical",
+        },
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    _silence_process_scan(monkeypatch, audit)
+
+    report = audit.audit_domain_interference()
+
+    assert report["issue_count"] == 1
+    assert report["issues"][0]["domain"] == "transcript_indexer"
+
+
+def test_operational_audit_allows_single_transcript_indexer(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "legacy_transcript_index",
+            "enabled": False,
+            "cron": "0 2 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "legacy",
+        },
+        {
+            "id": "job_transcript_indexer",
+            "enabled": True,
+            "cron": "30 6,21 * * *",
+            "command": "/venv/bin/python skills/transcript-indexer/action.py --task index",
+            "desc": "canonical",
+        },
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    _silence_process_scan(monkeypatch, audit)
+
+    report = audit.audit_domain_interference()
+
+    assert report["ok"] is True
+    assert report["issue_count"] == 0
+
+
+def test_operational_audit_flags_cron_root_mismatch(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    jobs = [
+        {
+            "id": "job_bad_root",
+            "enabled": True,
+            "cron": "0 * * * *",
+            "command": "/Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/x.py",
+            "desc": "bad",
+        }
+    ]
+    (tmp_path / "cron_jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+
+    report = audit.audit_runtime_root_consistency()
+
+    assert report["ok"] is False
+    assert report["mismatch_count"] == 1
+
+
+def test_operational_audit_flags_stale_runtime_lock(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "demo.lock").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    (lock_dir / "demo.lock.json").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks()
+
+    assert report["ok"] is False
+    assert report["stale_count"] == 1
+
+
+def test_operational_audit_can_cleanup_stale_runtime_lock_metadata(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "demo.lock").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    (lock_dir / "demo.lock.json").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks(cleanup=True)
+
+    assert report["ok"] is True
+    assert report["stale_count"] == 0
+    assert report["cleanup"]["cleaned_count"] == 1
+    assert (lock_dir / "demo.lock").read_text(encoding="utf-8") == ""
+    assert not (lock_dir / "demo.lock.json").exists()
+
+
+def test_operational_audit_treats_lock_body_without_sidecar_as_orphaned_anchor(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "demo.lock").write_text(
+        json.dumps({"domain": "demo", "owner": "test", "pid": 99999999}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks()
+
+    assert report["ok"] is True
+    assert report["stale_count"] == 0
+    assert report["orphaned_anchor_count"] == 1
+
+
+def test_operational_audit_flags_and_cleans_legacy_pid_files(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    runtime_dir = tmp_path / ".runtime"
+    runtime_dir.mkdir()
+    legacy = runtime_dir / "laf_portal.lock"
+    legacy.write_text("99999999 2026-07-05T09:11:53\n", encoding="utf-8")
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_RUNTIME_DIR", raising=False)
+
+    report = audit.audit_stale_runtime_locks()
+
+    assert report["ok"] is False
+    assert report["stale_count"] == 1
+    assert report["legacy_stale_count"] == 1
+    assert report["legacy_pid_files"]["stale"][0]["domain"] == "laf_portal"
+
+    cleaned = audit.audit_stale_runtime_locks(cleanup=True)
+
+    assert cleaned["ok"] is True
+    assert cleaned["legacy_pid_files"]["cleaned_count"] == 1
+    assert not legacy.exists()
+
+
+def test_operational_audit_requires_laf_gmail_fallback_json_out(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "job_laf_gmail_dispatch_scan",
+                    "enabled": True,
+                    "cron": "*/5 * * * *",
+                    "command": "python scripts/ops/laf_gmail_dispatch_scan.py --json-out static/laf_gmail_monitor_state.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+
+    report = audit.audit_laf_gmail_fallback_job()
+
+    assert report["ok"] is True
+
+
+def test_operational_audit_flags_unmanaged_cloudflared_port(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    (tmp_path / "cron_jobs.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.delenv("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", raising=False)
+
+    class _Proc:
+        stdout = "40654 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5002 --no-autoupdate\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(audit.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    report = audit.audit_domain_interference()
+
+    assert report["issue_count"] == 1
+    assert report["issues"][0]["domain"] == "cloudflare_quick_tunnel"
+    assert report["issues"][0]["processes"][0]["port"] == "5002"
+
+
+def test_startup_prefers_stable_webhook_base_and_proxy_port(monkeypatch):
+    import api.startup as startup
+
+    monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://aimac-mini.example.ts.net")
+    monkeypatch.setenv("MAGI_LINE_WEBHOOK_ENDPOINT", "https://temporary-host.trycloudflare.com/line/webhook")
+    monkeypatch.setenv("MAGI_SERVER_PORT", "5002")
+    monkeypatch.delenv("MAGI_WEBHOOK_PROXY_PORT", raising=False)
+    monkeypatch.delenv("MAGI_TAILSCALE_PORT", raising=False)
+
+    assert startup._stable_webhook_base_url() == "https://aimac-mini.example.ts.net/"
+    assert startup._magi_webhook_port() == "18790"
+
+    monkeypatch.setenv("MAGI_WEBHOOK_PROXY_PORT", "18791")
+    assert startup._magi_webhook_port() == "18791"
+
+
+def test_startup_stops_only_unmanaged_cloudflared_ports(monkeypatch):
+    import api.startup as startup
+
+    calls = []
+
+    class _Proc:
+        stdout = "\n".join(
+            [
+                "40654 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5002 --no-autoupdate",
+                "11353 /opt/homebrew/bin/cloudflared tunnel --url http://127.0.0.1:5014 --no-autoupdate",
+            ]
+        )
+        stderr = ""
+        returncode = 0
+
+    def _fake_run(argv, *args, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["pgrep", "-fl"]:
+            return _Proc()
+
+        class _Killed:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        return _Killed()
+
+    monkeypatch.setattr(startup.subprocess, "run", _fake_run)
+
+    startup._stop_unmanaged_cloudflared_tunnels(allowed_ports={"5014"})
+
+    assert ["kill", "40654"] in calls
+    assert ["kill", "11353"] not in calls
+
+
+def test_discord_line_self_heal_prefers_stable_webhook_before_quick_tunnel():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    stable_pos = source.index("_stable_webhook_base_url")
+    tunnel_pos = source.index("cloudflared tunnel --url")
+
+    assert stable_pos < tunnel_pos
+    assert "MAGI_ENABLE_CLOUDFLARE_WEBHOOK" in source
 
 
 def test_operational_audit_treats_runtime_cache_as_generated(monkeypatch):
@@ -374,13 +668,15 @@ def test_cron_uses_repo_omlx_switch_and_single_health_report_time():
     jobs = _cron_jobs_text_or_skip()
     parsed_jobs = json.loads(jobs)
     by_id = {job["id"]: job for job in parsed_jobs}
+    expected_switch = str(Path.cwd() / "config" / "bin" / "omlx_switch_model.sh")
 
     assert "/Users/ai/Library/Application Support/MAGI/bin/omlx_switch_model.sh" not in jobs
-    assert "/Users/ai/Desktop/MAGI_v2/config/bin/omlx_switch_model.sh" in jobs
+    assert expected_switch in jobs
     assert '"id": "job_health_report"' in jobs
     assert '"cron": "30 6 * * *"' in jobs
     assert by_id["job_omlx_profile_guard"]["cron"] == "*/15 * * * *"
-    assert "omlx_switch_model.sh auto" in by_id["job_omlx_profile_guard"]["command"]
+    assert "omlx_switch_model.sh" in by_id["job_omlx_profile_guard"]["command"]
+    assert by_id["job_omlx_profile_guard"]["command"].endswith(" auto")
     assert by_id["job_omlx_profile_guard"]["timeout_sec"] >= 1800
     assert by_id["job_distill_train_gemma"]["enabled"] is True
     assert "validation-gated" in by_id["job_distill_train_gemma"]["desc"]
@@ -397,8 +693,96 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert result["ok"] is True
     assert by_id["job_disk_low_water_alarm"]["enabled"] is True
     assert "disk_low_water_alarm.py" in by_id["job_disk_low_water_alarm"]["command"]
+    assert by_id["job_empty_case_shell_cleanup"]["enabled"] is True
+    assert by_id["job_empty_case_shell_cleanup"]["cron"] == "8,23,38,53 * * * *"
+    assert by_id["job_empty_case_shell_cleanup"]["no_catchup"] is True
+    assert "--max-seconds 240" in by_id["job_empty_case_shell_cleanup"]["command"]
+    assert "cleanup_synology_empty_case_shells.py" in by_id["job_empty_case_shell_cleanup"]["command"]
+    assert by_id["job_file_review_check"]["cron"] == "0 9-18 * * 1-5"
+    assert by_id["job_file_review_check"]["no_catchup"] is True
+    assert by_id["job_file_review_check"]["timeout_sec"] == 900
+    assert by_id["job_file_review_downloadable_probe_dense"]["cron"] == "*/15 8-20 * * 1-5"
+    assert by_id["job_file_review_downloadable_probe_dense"]["no_catchup"] is True
+    assert by_id["job_file_review_downloadable_probe_dense"]["timeout_sec"] == 420
+    assert "MAGI_FILE_REVIEW_PROBE_WITH_GMAIL=0" in by_id["job_file_review_downloadable_probe_dense"]["command"]
+    assert "downloadable_probe" in by_id["job_file_review_downloadable_probe_dense"]["command"]
+    assert by_id["job_slow_archive_closed_cases"]["enabled"] is True
+    assert by_id["job_slow_archive_closed_cases"]["no_catchup"] is True
+    assert by_id["job_slow_archive_closed_cases"]["cron"] == "40 5 * * *"
+    assert "start_slow_archive_closed_cases.py" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--limit 3" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--min-size-mb 0" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--bwlimit-mbps 80" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--rsync-timeout-sec 600" in by_id["job_slow_archive_closed_cases"]["command"]
+    assert "--case-number 2025-0002" not in by_id["job_slow_archive_closed_cases"]["command"]
+    assert by_id["job_drive_case_sync_bidirectional"]["enabled"] is True
+    assert by_id["job_drive_case_sync_bidirectional"]["timeout_sec"] == 1200
+    assert "--matched-case-limit 8" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--download-limit 24" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--upload-limit 24" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--max-download-bytes 1500000000" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--priority-case-limit 24" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--no-downloads" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--no-uploads" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--no-create-drive-folders" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "--inventory-timeout-sec 1200" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "MAGI_DRIVE_SYNC_HTTP_TIMEOUT=60" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=60" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert "MAGI_DRIVE_SYNC_API_RETRIES=2" in by_id["job_drive_case_sync_bidirectional"]["command"]
+    assert by_id["job_drive_case_sync_all_files"]["enabled"] is True
+    assert by_id["job_drive_case_sync_all_files"]["cron"] == "12 1,7,13,19 * * *"
+    assert by_id["job_drive_case_sync_all_files"]["timeout_sec"] == 2100
+    assert "--direct-all-case-limit 1" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--download-limit 8" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--upload-limit 8" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--timeout-sec 1800" in by_id["job_drive_case_sync_all_files"]["command"]
+    assert "--max-download-bytes 1500000000" in by_id["job_drive_case_sync_all_files"]["command"]
+    from api.platforms.safe_process import parse_cron_command
+
+    all_files_argv = parse_cron_command(by_id["job_drive_case_sync_all_files"]["command"])
+    token_gate_idx = next(
+        idx for idx, arg in enumerate(all_files_argv) if str(arg).endswith("run_after_token_refresh.py")
+    )
+    token_gate_separator_idx = all_files_argv.index("--", token_gate_idx)
+    assert all_files_argv[token_gate_separator_idx + 1] == str(tmp_path / "venv" / "bin" / "python3")
+    assert all_files_argv[token_gate_separator_idx + 2].endswith("run_with_env.py")
+    assert all_files_argv[token_gate_separator_idx + 3] == "MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=8"
+    assert "MAGI_DRIVE_SYNC_HTTP_TIMEOUT=60" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=60" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_API_RETRIES=2" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=5000000" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=5000000" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=5000000" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_DEFERRED_DOWNLOADS_ARE_OK=1" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_DEFERRED_UPLOADS_ARE_OK=1" in all_files_argv
+    assert "MAGI_DRIVE_SYNC_UNVERIFIED_EXISTING_ARE_OK=1" in all_files_argv
+    governance_cmd = by_id["job_osc_todo_governance"]["command"]
+    assert "OSC_PDF_CALENDAR_FULL_TEXT_SCAN=1" in governance_cmd
+    assert "OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES=0" in governance_cmd
+    assert "OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT=40" in governance_cmd
+    assert "OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC=8" in governance_cmd
+    assert "OSC_EVENTS_REFRESH_PDF_LIMIT=40" in governance_cmd
+    assert "OSC_EVENTS_REFRESH_PDF_CASE_BATCH=20" in governance_cmd
+    assert "OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=300" in governance_cmd
+    assert "OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_REMEDIATE_ENABLE=0" in governance_cmd
+    assert "--skip-drive-sync" in governance_cmd
+    assert "--skip-calendar-source-audit" in governance_cmd
+    assert "OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT=120" not in governance_cmd
+    assert "OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT=5000" not in governance_cmd
+    assert "OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASES=1" not in governance_cmd
+    assert "OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASE_LIMIT=2" not in governance_cmd
+    assert "OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASE_LIMIT=6" not in governance_cmd
+    assert "OSC_EVENTS_REFRESH_DRIVE_SYNC_ALL_CASE_LIMIT=64" not in governance_cmd
     assert by_id["job_disk_cleanup_healthcheck"]["no_catchup"] is True
     assert "MAGI_DISK_CLEANUP_DRY_RUN=0" in by_id["job_disk_cleanup_healthcheck"]["command"]
+    assert by_id["job_legacy_judgment_resummary_quality"]["enabled"] is True
+    assert by_id["job_legacy_judgment_resummary_quality"]["cron"] == "25 23 * * *"
+    assert by_id["job_legacy_judgment_resummary_quality"]["no_catchup"] is True
+    assert by_id["job_legacy_judgment_resummary_quality"]["resource_block_at"] == "throttle"
+    assert "resource_guarded_run.py" in by_id["job_legacy_judgment_resummary_quality"]["command"]
+    assert "--block-at throttle" in by_id["job_legacy_judgment_resummary_quality"]["command"]
+    assert "resummary_legacy_judgments_quality.py" in by_id["job_legacy_judgment_resummary_quality"]["command"]
+    assert "--limit 12" in by_id["job_legacy_judgment_resummary_quality"]["command"]
     assert by_id["job_nas_recycle_heavy_cleanup"]["cron"] == "20 4 * * *"
     assert by_id["job_nas_recycle_heavy_cleanup"]["no_catchup"] is True
     assert "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1" in by_id["job_nas_recycle_heavy_cleanup"]["command"]
@@ -407,6 +791,195 @@ def test_seed_cron_jobs_installs_disk_maintenance_jobs(tmp_path):
     assert "scheduled_reboot_guard.py" in by_id["job_reboot_before_day_model_switch"]["command"]
     assert by_id["job_reboot_before_night_model_switch"]["enabled"] is False
     assert "MAGI_ALLOW_SCHEDULED_REBOOT=1" in by_id["job_reboot_before_night_model_switch"]["command"]
+    assert by_id["job_nightly_bookmark_regex"]["enabled"] is True
+    assert by_id["job_nightly_bookmark_regex"]["no_catchup"] is True
+    assert "--enqueue-ocr-followups" in by_id["job_nightly_bookmark_regex"]["command"]
+    assert by_id["job_pdf_bookmark_label_repair"]["enabled"] is True
+    assert by_id["job_pdf_bookmark_label_repair"]["no_catchup"] is True
+    assert by_id["job_pdf_bookmark_label_repair"]["cron"] == "35 4 * * *"
+    assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--apply --limit 12" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--per-file-timeout 90" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert "--max-file-mb 80" in by_id["job_pdf_bookmark_label_repair"]["command"]
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["enabled"] is True
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["no_catchup"] is True
+    assert by_id["job_pdf_bookmark_large_volume_repair"]["cron"] == "55 4 * * *"
+    assert "repair_pdf_bookmark_labels.py" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--apply --limit 1" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--per-file-timeout 900" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--min-file-mb 80" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert "--max-file-mb 1600" in by_id["job_pdf_bookmark_large_volume_repair"]["command"]
+    assert by_id["job_weekend_bookmark"]["timeout_sec"] == 21600
+    assert "--max-minutes 330" in by_id["job_weekend_bookmark"]["command"]
+    assert "--single-doc-fastpath" in by_id["job_weekend_bookmark"]["command"]
+    assert by_id["job_nas_pdf_ocr_worker_offpeak"]["cron"] == "45 1,3,5,22 * * *"
+    assert "--batch 1" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
+    assert "--require-free-inactive-gb 4" in by_id["job_nas_pdf_ocr_worker_offpeak"]["command"]
+
+
+def test_seed_cron_jobs_disables_deprecated_pdf_annotator(tmp_path):
+    import scripts.seed_cron_jobs as seed
+
+    legacy = {
+        "id": "job_1772867062892_e33b6a",
+        "cron": "10 2 * * *",
+        "command": "python3 skills/pdf-annotator/action.py --task annotate",
+        "desc": "PDF 自動標籤（舊）",
+        "enabled": True,
+    }
+    (tmp_path / "cron_jobs.json").write_text(json.dumps([legacy], ensure_ascii=False), encoding="utf-8")
+
+    result = seed.seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    jobs = json.loads((tmp_path / "cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+
+    assert result["ok"] is True
+    assert by_id["job_1772867062892_e33b6a"]["enabled"] is False
+    assert by_id["job_1772867062892_e33b6a"]["no_catchup"] is True
+    assert by_id["job_1772867062892_e33b6a"]["desc"].startswith("已停用：")
+
+
+def test_discord_cron_scheduler_dispatches_without_blocking_loop():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    assert "_execute_scheduled_job" in source
+    assert "asyncio.create_task" in source
+    assert "_CRON_RUNNING_TASKS" in source
+    assert "skip overlapping launch" in source
+    assert "SCHEDULER_LOCK_NAME" in source
+
+
+def test_discord_cron_scheduler_parses_quoted_commands_before_blocking_prefixes():
+    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+
+    assert "parse_cron_command(command)" in source
+    assert "command.strip().startswith" not in source
+
+
+def test_daemon_cron_fallback_dispatches_without_blocking_loop():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+
+    assert "ThreadPoolExecutor" in source
+    assert "magi-cron-fallback" in source
+    assert "executor.submit(_run_fallback_job, job)" in source
+    assert "skip overlapping launch" in source
+    assert "SCHEDULER_LOCK_NAME" in source
+
+
+def test_daemon_reaper_never_kills_managed_sidecars():
+    source = Path("daemon.py").read_text(encoding="utf-8")
+    never_kill = source[source.index("REAPER_NEVER_KILL") : source.index("# ── 每個 worker")]
+
+    assert "scripts/share_gateway.py" in never_kill
+    assert "scripts/share_tunnel_supervisor.py" in never_kill
+    assert "scripts/serve_mlx_mtp.py" in never_kill
+    assert "scripts/ops/run_menubar_no_site" in never_kill
+    assert "scripts/ops/run_daemon_no_site" in never_kill
+
+
+def test_background_task_lock_audit_contracts_are_green():
+    import scripts.ops.audit_operational_hardening as audit
+
+    report = audit.audit_background_task_locks()
+
+    assert report["ok"] is True
+    assert report["failure_count"] == 0
+    names = {check["name"] for check in report["checks"]}
+    assert "pdf_in_place_mutation_guard" in names
+    assert "nas_ocr_queue_worker_lock" in names
+
+
+def test_operational_audit_issue_agenda_counts_active_separately(tmp_path, monkeypatch):
+    import scripts.ops.audit_operational_hardening as audit
+
+    now = 2_000_000.0
+    runtime_dir = tmp_path / ".runtime"
+    runtime_dir.mkdir()
+    rows = [
+        {
+            "ts": now - 60,
+            "source": "discord_bot.cron_scheduler",
+            "severity": "High",
+            "command": "cron:job_active",
+            "error": "exit=1 active",
+        },
+        {
+            "ts": now - 120,
+            "source": "discord_bot.cron_scheduler",
+            "severity": "High",
+            "command": "cron:job_recovered",
+            "error": "exit=1 recovered later",
+        },
+        {
+            "ts": now - 7200,
+            "source": "discord_bot.cron_scheduler",
+            "severity": "High",
+            "command": "cron:job_stale",
+            "error": "exit=1 old",
+        },
+    ]
+    (runtime_dir / "issue_agenda.jsonl").write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    (runtime_dir / "cron_state.json").write_text(
+        json.dumps({"job_recovered": {"last_success_at": str(now - 30)}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(audit, "ROOT", tmp_path)
+    monkeypatch.setattr(audit.time, "time", lambda: now)
+    monkeypatch.setenv("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "3600")
+
+    report = audit.audit_issue_agenda()
+
+    assert report["recent_count"] == 3
+    assert report["active_count"] == 1
+    assert report["inactive_or_context_count"] == 2
+    assert report["recent_state_counts"]["active_unresolved"] == 1
+    assert report["recent_state_counts"]["recovered"] == 1
+    assert report["recent_state_counts"]["stale"] == 1
+
+
+def test_seed_cron_jobs_parse_runtime_paths_with_spaces(tmp_path):
+    import scripts.seed_cron_jobs as seed
+    from api.platforms.safe_process import parse_cron_command
+
+    repo_root = tmp_path / "Workspace Home" / "MAGI_v2"
+    python_path = repo_root / "Library" / "Application Support" / "MAGI" / "bin" / "python3"
+
+    jobs = [
+        seed.worldmonitor_job(repo_root=repo_root, python_path=python_path),
+        *seed.business_jobs(repo_root=repo_root, python_path=python_path),
+        *seed.operational_jobs(repo_root=repo_root, python_path=python_path),
+    ]
+
+    for job in jobs:
+        argv = parse_cron_command(job["command"])
+        assert argv, f"failed to parse command for {job['id']}"
+        assert not any("&&" in arg for arg in argv), f"unexpected shell token in {job['id']}"
+
+    worldmonitor = next(job for job in jobs if job["id"] == "job_worldmonitor_intel")
+    assert parse_cron_command(worldmonitor["command"])[0] == str(python_path)
+
+
+def test_seed_cron_jobs_installs_monthly_accounting_bonus_job(tmp_path):
+    import scripts.seed_cron_jobs as seed
+
+    result = seed.seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    jobs = json.loads((tmp_path / "cron_jobs.json").read_text(encoding="utf-8"))
+    by_id = {job["id"]: job for job in jobs}
+
+    job = by_id["job_accounting_monthly_bonus"]
+    assert result["ok"] is True
+    assert job["enabled"] is True
+    assert job["cron"] == "0 12 * * *"
+    assert job["no_catchup"] is True
+    assert "accounting_monthly_bonus.py" in job["command"]
+    assert "--commit" in job["command"]
+    assert "--refresh-import" in job["command"]
+    assert "--catch-up" in job["command"]
+    assert "--export-xlsx" in job["command"]
 
 
 def test_omlx_auto_switch_checks_real_api_model_and_2150_boundary():
@@ -456,16 +1029,17 @@ def test_judicial_daytime_cron_batches_are_bounded():
     jobs = _cron_jobs_or_skip()
     by_id = {job["id"]: job for job in jobs}
     expected_caps = {
-        "job_judicial_api_morning": (300, 60, 7200, "llm", False, True),
-        "job_judicial_api_noon": (2000, 2000, 7200, "extractive", True, False),
-        "job_judicial_api_afternoon": (2000, 2000, 7200, "extractive", True, False),
-        "job_judicial_api_evening": (2000, 2000, 7200, "extractive", True, False),
-        "job_judicial_api_backlog_clear": (2500, 2500, 7200, "extractive", True, False),
+        "job_judicial_api_morning": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_noon": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_afternoon": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_evening": (240, 48, 2400, "extractive", True, False),
+        "job_judicial_api_backlog_clear": (240, 48, 2400, "extractive", True, False),
     }
 
     for job_id, (max_docs, summarize_max, timeout_sec, summary_mode, skip_assets, vector_ingest) in expected_caps.items():
         job = by_id[job_id]
-        match = re.search(r"official_api_day_process (\{.*?\})'", job["command"])
+        assert job["enabled"] is True
+        match = re.search(r"official_api_day_process (\{.*?\})(?:'|\")", job["command"])
         assert match, job_id
         payload = json.loads(match.group(1).replace(r"\"", '"'))
         assert payload["max_docs"] == max_docs
@@ -493,11 +1067,11 @@ def test_local_nightly_autopilot_timeout_covers_midnight_pull():
     assert "--block-at core_only" in by_id["job_nightly_autopilot"]["command"]
 
 
-def test_cron_scheduler_has_hardcoded_timeouts_for_runtime_only_jobs():
-    source = Path("api/discord_bot.py").read_text(encoding="utf-8")
+def test_cron_scheduler_has_shared_timeouts_for_runtime_only_jobs():
+    from skills.ops.cron_runtime_policy import cron_job_timeout
 
-    assert '"job_nightly_autopilot": 28800' in source
-    assert '"job_weekend_bookmark": 21600' in source
+    assert cron_job_timeout({"id": "job_nightly_autopilot"}) == 28800
+    assert cron_job_timeout({"id": "job_weekend_bookmark"}) == 21600
 
 
 def test_obsidian_known_malformed_pdf_hints_include_fitz_xref_errors():

@@ -11,25 +11,116 @@ import hashlib
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = int(os.environ.get("MAGI_EXTRACT_MAX_CHARS", str(2_000_000)))  # 2M chars
+PDF_EXTRACTOR_TIMEOUT_SEC = int(os.environ.get("MAGI_OBSIDIAN_PDF_EXTRACTOR_TIMEOUT_SEC", "45"))
+
+_GENERATED_IMAGE_ARTIFACT_RE = re.compile(
+    r"!\[[^\]\n]*\]\(<[^>\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^>\n]*>\)"
+    r"|!\[[^\]\n]*\]\([^\n)]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n)]*\)",
+    re.IGNORECASE,
+)
+_GENERATED_IMAGE_ARTIFACT_LINE_RE = re.compile(
+    r"(?im)^[^\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n]*$"
+)
 
 
 def file_hash(path: Path) -> str:
-    """Return a short sha256 hex of file contents (first 64KB for speed)."""
+    """Return a short sha256 hex of the full file contents."""
     h = hashlib.sha256()
     try:
         with open(path, "rb") as f:
-            h.update(f.read(65536))
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 30, exc_info=True)
     return h.hexdigest()[:16]
+
+
+def _generated_image_artifact_count(text: str) -> int:
+    s = str(text or "")
+    return len(_GENERATED_IMAGE_ARTIFACT_RE.findall(s)) + len(
+        re.findall(r"_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)", s, flags=re.IGNORECASE)
+    )
+
+
+def _remove_generated_image_artifacts(text: str) -> str:
+    s = str(text or "")
+    s = _GENERATED_IMAGE_ARTIFACT_RE.sub(" ", s)
+    s = _GENERATED_IMAGE_ARTIFACT_LINE_RE.sub("", s)
+    s = re.sub(r"(?im)^[>\-\s]*(?:LightPDF)?\s*$", "", s)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+@contextmanager
+def _time_limit(seconds: int, label: str):
+    """Bound slow PDF parser steps when running in a Unix main thread."""
+    if seconds <= 0 or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise TimeoutError(f"{label} timed out after {seconds}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer and previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
+def _text_signal_score(text: str) -> int:
+    artifact_count = _generated_image_artifact_count(text)
+    cleaned = _remove_generated_image_artifacts(text)
+    cleaned = re.sub(r"!\[[^\]\n]*\]\(<[^>\n]*>\)", "", cleaned)
+    cleaned = re.sub(r"!\[[^\]\n]*\]\([^)]+\)", "", cleaned)
+    cleaned = re.sub(r"[#>*_`|\\[\](){}\\-]+", "", cleaned)
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", cleaned))
+    alnum = len(re.findall(r"[A-Za-z0-9]", cleaned))
+    spaced_digit_noise = len(re.findall(r"(?:\d\s+){2,}\d", cleaned))
+    image_links = len(re.findall(r"!\[[^\]\n]*\]\(<[^>\n]*>\)|!\[[^\]\n]*\]\([^)]+\)", str(text or "")))
+    return cjk * 2 + alnum - spaced_digit_noise * 12 - (image_links + artifact_count) * 80
+
+
+def _markitdown_text_is_usable(text: str, *, ext: str) -> bool:
+    s = str(text or "").strip()
+    if len(s) < 80:
+        return False
+    image_links = len(re.findall(r"!\[[^\]\n]*\]\(<[^>\n]*>\)|!\[[^\]\n]*\]\([^)]+\)", s)) + _generated_image_artifact_count(s)
+    if image_links and _text_signal_score(s) < 180:
+        return False
+    if ext == ".pdf" and _text_signal_score(s) < 240:
+        return False
+    return True
+
+
+def _extract_with_markitdown(path: Path) -> Optional[Dict]:
+    try:
+        from skills.engine.document_reader import read_document
+        r = read_document(str(path))
+        if r.success and r.text and _markitdown_text_is_usable(r.text, ext=path.suffix.lower()):
+            text = _remove_generated_image_artifacts(r.text)
+            return {"success": True, "text": text[:MAX_TEXT_CHARS], "pages": 1, "method": "markitdown"}
+    except Exception:
+        return None
+    return None
 
 
 def extract_text(path: Path) -> Dict:
@@ -39,23 +130,30 @@ def extract_text(path: Path) -> Dict:
         {"success": True, "text": ..., "pages": ..., "method": ...}
         or {"success": False, "error": ...}
     """
-    import os
-    # MarkItDown path (feature-flagged, default OFF)
-    if os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1":
-        try:
-            from skills.engine.document_reader import read_document
-            r = read_document(str(path))
-            if r.success and r.text:
-                return {"success": True, "text": r.text, "pages": 1, "method": "markitdown"}
-        except Exception:
-            pass  # fall through to legacy
-
     ext = path.suffix.lower()
+    markitdown_enabled = os.environ.get("MAGI_USE_MARKITDOWN", "0").strip() == "1"
+    markitdown_pdf_first = os.environ.get("MAGI_OBSIDIAN_MARKITDOWN_PDF_FIRST", "0").strip() == "1"
+
+    # PDF notes are usually legal filings or court records; native PDF text/OCR
+    # is more reliable than MarkItDown's image-link markdown, so MarkItDown is a
+    # fallback unless explicitly forced first.
+    if markitdown_enabled and (ext != ".pdf" or markitdown_pdf_first):
+        md = _extract_with_markitdown(path)
+        if md:
+            return md
+
     try:
         if ext in (".md", ".txt", ".text", ".log", ".csv"):
             return _extract_plaintext(path)
         elif ext == ".pdf":
-            return _extract_pdf(path)
+            result = _extract_pdf(path)
+            if result.get("success"):
+                return result
+            if markitdown_enabled:
+                md = _extract_with_markitdown(path)
+                if md:
+                    return md
+            return result
         elif ext == ".docx":
             return _extract_docx(path)
         elif ext == ".doc":
@@ -150,11 +248,14 @@ def _maybe_opendataloader_pdf(path: Path, current_text: str = "") -> Optional[Di
         logger.debug("opendataloader provider failed for %s: %s", path, exc)
         return None
     text = (getattr(result, "corrected_text", "") or getattr(result, "raw_text", "") or "").strip()
-    if not getattr(result, "success", False) or len(text) < max(_OCR_MIN_CHARS, len(current) + 100):
+    cleaned = _remove_generated_image_artifacts(text)
+    if _generated_image_artifact_count(text) and _text_signal_score(cleaned) < 240:
+        return None
+    if not getattr(result, "success", False) or len(cleaned) < max(_OCR_MIN_CHARS, len(current) + 100):
         return None
     return {
         "success": True,
-        "text": text[:MAX_TEXT_CHARS],
+        "text": cleaned[:MAX_TEXT_CHARS],
         "pages": None,
         "method": getattr(result, "provider", "opendataloader_pdf"),
     }
@@ -167,12 +268,13 @@ def _extract_pdf(path: Path) -> Dict:
     try:
         import pdfplumber
         texts = []
-        with pdfplumber.open(str(path)) as pdf:
-            page_count = len(pdf.pages)
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    texts.append(t)
+        with _time_limit(PDF_EXTRACTOR_TIMEOUT_SEC, "pdfplumber"):
+            with pdfplumber.open(str(path)) as pdf:
+                page_count = len(pdf.pages)
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        texts.append(t)
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
             odl = _maybe_opendataloader_pdf(path, combined)
@@ -185,14 +287,15 @@ def _extract_pdf(path: Path) -> Dict:
     # Fallback: PyMuPDF (fitz)
     try:
         import fitz
-        doc = fitz.open(str(path))
-        texts = []
-        for page in doc:
-            t = page.get_text()
-            if t:
-                texts.append(t)
-        page_count = len(doc)
-        doc.close()
+        with _time_limit(PDF_EXTRACTOR_TIMEOUT_SEC, "pymupdf"):
+            doc = fitz.open(str(path))
+            texts = []
+            for page in doc:
+                t = page.get_text()
+                if t:
+                    texts.append(t)
+            page_count = len(doc)
+            doc.close()
         combined = "\n\n".join(texts)
         if len(combined.strip()) >= _OCR_MIN_CHARS:
             odl = _maybe_opendataloader_pdf(path, combined)
@@ -205,20 +308,21 @@ def _extract_pdf(path: Path) -> Dict:
     # Fallback: PyPDF2
     try:
         import PyPDF2
-        with open(str(path), "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            page_count = len(reader.pages)
-            texts = []
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    texts.append(t)
-            combined = "\n\n".join(texts)
-            if len(combined.strip()) >= _OCR_MIN_CHARS:
-                odl = _maybe_opendataloader_pdf(path, combined)
-                if odl:
-                    return odl
-                return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pypdf2"}
+        with _time_limit(PDF_EXTRACTOR_TIMEOUT_SEC, "pypdf2"):
+            with open(str(path), "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                page_count = len(reader.pages)
+                texts = []
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t:
+                        texts.append(t)
+                combined = "\n\n".join(texts)
+                if len(combined.strip()) >= _OCR_MIN_CHARS:
+                    odl = _maybe_opendataloader_pdf(path, combined)
+                    if odl:
+                        return odl
+                    return {"success": True, "text": combined[:MAX_TEXT_CHARS], "pages": page_count, "method": "pypdf2"}
     except Exception as e:
         logger.debug("pypdf2 failed for %s: %s", path, e)
 

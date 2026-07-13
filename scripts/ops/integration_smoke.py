@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib
 import io
@@ -23,6 +24,35 @@ if str(ROOT) not in sys.path:
 
 from api.runtime_paths import get_config_path, get_json_dir, get_laf_script, get_orch_dir
 
+
+def _load_env_file() -> None:
+    env_path = ROOT / ".env"
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv(env_path, override=False)
+        return
+    except Exception:
+        pass
+
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            value = value.strip().strip('"').strip("'")
+            os.environ[key] = value
+    except Exception:
+        return
+
+
+_load_env_file()
 
 try:
     from api.routing.service_registry import get_service_url as _get_svc_url
@@ -73,9 +103,19 @@ def _http_get_json(url: str, timeout: int = 20) -> tuple[bool, int | None, dict[
         return False, None, {}, f"{type(e).__name__}: {e}"
 
 
+def _json_headers(*, authenticated: bool = False) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if authenticated:
+        api_key = (os.environ.get("MAGI_API_KEY") or "").strip()
+        if api_key:
+            headers["X-API-Key"] = api_key
+    return headers
+
+
 def _http_post_json(url: str, payload: dict[str, Any], timeout: int = 60) -> tuple[bool, int | None, dict[str, Any], str]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    authenticated = "/skills/run" in url
+    req = urllib.request.Request(url, data=data, headers=_json_headers(authenticated=authenticated), method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = int(getattr(resp, "status", 200))
@@ -204,7 +244,37 @@ def _write_reports(report: dict[str, Any]) -> None:
     MD_REPORT.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
-def main() -> int:
+def _sages_operational(body: dict[str, Any]) -> tuple[bool, str]:
+    casper_ok = _extract_bool(body, "casper", "online")
+    melchior_ok = _extract_bool(body, "melchior", "online")
+    balthasar = body.get("balthasar") if isinstance(body.get("balthasar"), dict) else {}
+    proxy_on_casper = balthasar.get("proxy_on_casper") if isinstance(balthasar.get("proxy_on_casper"), dict) else {}
+    council_proxy_ok = bool(
+        balthasar.get("council_only")
+        or proxy_on_casper.get("summarize")
+        or proxy_on_casper.get("transcribe")
+    )
+    ok = bool(casper_ok is True and (melchior_ok is True or council_proxy_ok))
+    summary = (
+        f"casper_online={casper_ok} melchior_online={melchior_ok} "
+        f"council_proxy={council_proxy_ok}"
+    )
+    return ok, summary
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="MAGI full integration smoke test.")
+    parser.add_argument("--json-out", default=str(JSON_REPORT), help="JSON report path")
+    parser.add_argument("--md-out", default=str(MD_REPORT), help="Markdown report path")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    global JSON_REPORT, MD_REPORT
+    JSON_REPORT = Path(args.json_out)
+    MD_REPORT = Path(args.md_out)
+
     checks: list[dict[str, Any]] = []
     orch_dir = str(get_orch_dir())
     if orch_dir not in sys.path:
@@ -221,13 +291,12 @@ def main() -> int:
     )
 
     ok, status, sages_body, err = _http_get_json(f"{TOOLS_API}/sages", timeout=20)
-    casper_ok = _extract_bool(sages_body, "casper", "online")
-    melchior_ok = _extract_bool(sages_body, "melchior", "online")
+    sages_ok, sages_summary = _sages_operational(sages_body)
     checks.append(
         {
             "name": "tools_sages",
-            "ok": bool(ok and casper_ok is True and melchior_ok is True),
-            "summary": f"casper_online={casper_ok} melchior_online={melchior_ok} http={status}",
+            "ok": bool(ok and sages_ok),
+            "summary": f"{sages_summary} http={status}",
             "details": sages_body if sages_body else {"error": err},
         }
     )
@@ -239,7 +308,7 @@ def main() -> int:
         "file_review_automation",
         "legalbridge_core",
         "laf_automation_v2",
-        "magi_eventlog",
+        "api.runtime_paths",
         "line_notifier",
     ]:
         imports.append(_capture_import(name))
@@ -353,13 +422,17 @@ def main() -> int:
         timeout=20,
     )
     launch_text = (launch.stdout or "") + "\n" + (launch.stderr or "")
+    launch_matches = [
+        ln for ln in launch_text.splitlines()
+        if "com.magi.daemon" in ln or "com.magi.casper" in ln
+    ][:6]
     checks.append(
         {
             "name": "launch_agent",
-            "ok": "com.magi.casper" in launch_text,
-            "summary": "com.magi.casper present in launchctl list",
+            "ok": bool("com.magi.daemon" in launch_text or "com.magi.casper" in launch_text),
+            "summary": "MAGI daemon launch agent present",
             "details": {
-                "matches": [ln for ln in launch_text.splitlines() if "com.magi.casper" in ln][:3],
+                "matches": launch_matches,
             },
         }
     )

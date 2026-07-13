@@ -30,6 +30,7 @@ import os
 import sys
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -37,8 +38,23 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# Live marker（pytest 預設不報 unknown marker，加 -W 即可；本檔依賴 marker config）
-pytestmark = pytest.mark.live
+def _live_opt_in() -> bool:
+    if os.environ.get("MAGI_ENABLE_LIVE_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    argv = [str(arg).strip().lower() for arg in sys.argv]
+    if "--magi-live" in argv:
+        return True
+    for idx, arg in enumerate(argv):
+        if arg == "-m" and idx + 1 < len(argv):
+            expr = argv[idx + 1]
+            return "live" in expr and "not live" not in expr
+        if arg.startswith("-m") and len(arg) > 2:
+            expr = arg[2:].strip()
+            return "live" in expr and "not live" not in expr
+    return False
+
+
+_LIVE_OPTED_IN = _live_opt_in()
 
 
 # ── .env loading ───────────────────────────────────────────────────────
@@ -59,10 +75,12 @@ def _load_dotenv():
             os.environ[k] = v
 
 
-_load_dotenv()
+if _LIVE_OPTED_IN:
+    _load_dotenv()
 
 OUT_DIR = Path("/tmp/osc_live_test")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+if _LIVE_OPTED_IN:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ── DB connectivity probe ─────────────────────────────────────────────
@@ -79,12 +97,16 @@ def _can_connect_db() -> bool:
         return False
 
 
-_DB_OK = _can_connect_db()
+_DB_OK = _can_connect_db() if _LIVE_OPTED_IN else False
 
 
 pytestmark = [
     pytest.mark.live,
-    pytest.mark.skipif(not _DB_OK, reason="MariaDB 不可達或 OSC_DB_PASSWORD 未設"),
+    pytest.mark.skipif(
+        not _LIVE_OPTED_IN,
+        reason="live OSC integration tests require MAGI_ENABLE_LIVE_TESTS=1, --magi-live, or -m live",
+    ),
+    pytest.mark.skipif(_LIVE_OPTED_IN and not _DB_OK, reason="MariaDB 不可達或 OSC_DB_PASSWORD 未設"),
 ]
 
 
@@ -135,16 +157,55 @@ def sample_case_id():
 
 
 @pytest.fixture(scope="module")
-def sample_quotation_id():
+def sample_quotation_id(client):
     from api.osc.utils import _osc_exec
+
     row, _ = _osc_exec(
         "SELECT id FROM quotations LIMIT 1",
         (),
         fetch="one",
     )
-    if not row:
-        pytest.skip("DB 內無 quotations 樣本")
-    return row["id"] if isinstance(row, dict) else row[0]
+    if row:
+        yield row["id"] if isinstance(row, dict) else row[0]
+        return
+
+    row_id = f"pytest-quotation-{uuid.uuid4().hex[:8]}"
+    response = client.post(
+        "/api/osc/quotations",
+        json={
+            "id": row_id,
+            "client_name": "Pytest 報價單測試",
+            "project_name": "自動化 PDF 匯出驗證",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "expiry": datetime.now().strftime("%Y-%m-%d"),
+            "items": [{"item": "測試法律服務", "description": "PDF export smoke", "qty": 1, "unit_price": 1200}],
+            "subtotal": 1200,
+            "discount": 0,
+            "tax": 0,
+            "total": 1200,
+            "status": "draft",
+            "notes": "pytest temporary quotation",
+        },
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["ok"] is True
+    try:
+        yield row_id
+    finally:
+        client.delete(f"/api/osc/quotations/{row_id}")
+
+
+def _minimal_pdf_bytes() -> bytes:
+    try:
+        from PyPDF2 import PdfWriter
+    except ImportError:
+        from pypdf import PdfWriter
+
+    buf = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(buf)
+    return buf.getvalue()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -536,20 +597,29 @@ def test_debt_document_generate(client, form_type, minimal_fields):
 
 def test_debt_merge_pdf_two_files(client):
     """合併 2 份範本 PDF。"""
-    src1 = "/Users/ai/Desktop/0000-0000-範本-消費者債務清理/01_各種申請表/07_收入證明切結書.pdf"
-    src2 = "/Users/ai/Desktop/0000-0000-範本-消費者債務清理/01_各種申請表/02_債權人清冊申請書.pdf"
-    if not (os.path.isfile(src1) and os.path.isfile(src2)):
-        pytest.skip("範本 PDF 不存在")
-
     r = client.post(
         "/api/osc/debt/merge-pdf",
-        json={"file_paths": [src1, src2], "add_bookmarks": True},
+        data={
+            "files": [
+                (BytesIO(_minimal_pdf_bytes()), "source-a.pdf"),
+                (BytesIO(_minimal_pdf_bytes()), "source-b.pdf"),
+            ],
+            "add_bookmarks": "true",
+        },
+        content_type="multipart/form-data",
     )
-    if r.status_code != 200:
-        pytest.skip(f"merge-pdf 端點要求不同 payload: {r.get_data(as_text=True)[:200]}")
-
+    assert r.status_code == 200, r.get_data(as_text=True)
     body = r.get_json()
     assert body.get("success") or body.get("ok")
+    merged = Path(body["path"])
+    try:
+        assert merged.exists()
+        assert merged.read_bytes()[:4] == b"%PDF"
+    finally:
+        try:
+            merged.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def test_forms_export_power_of_attorney(client, sample_case_id):

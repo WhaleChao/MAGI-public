@@ -121,6 +121,13 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     if not text:
         return None
 
+    # Management/reporting phrases are not single-case portal actions.  Without
+    # this guard, "法扶未開辦掃描" can be tokenized as client_name="未 掃描" and
+    # accidentally launch the go-live workflow.
+    if any(k in text for k in ("掃描", "巡檢", "稽核", "清單", "統計", "批次", "待辦提醒")):
+        if not re.search(r"\d{6,8}-[A-Za-z]-\d{3}|\b\d{4}-\d{4}\b", text):
+            return None
+
     # 含法扶案號格式（XXXXXXX-X-XXX）也視為法扶指令
     _has_laf_no = bool(re.search(r"\d{6,8}-[A-Za-z]-\d{3}", text))
     looks_like_laf = _has_laf_no or any(k in text for k in ("法扶", "回報", "報結", "開辦", "疑義", "二階段", "費用支付", "訴訟中費用", "撤回", "結案"))
@@ -163,6 +170,21 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
         if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
             client_name = _candidate_name
 
+    # Contextual follow-up such as:
+    # 「20260617 ... 民事裁定（劉亞箖；主文：...）」即為結案文件。
+    # The target is inside the filename parentheses; "即為" is not a person.
+    if not client_name and action == "closing" and any(k in text for k in ("即為結案文件", "就是結案文件", "作為結案文件")):
+        for inner in re.findall(r"[（(]([^（）()\n]{1,160})[）)]", text):
+            name_part = re.split(r"[；;，,：:]", inner, maxsplit=1)[0].strip()
+            _candidate_name = _clean_client_name(name_part)
+            if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
+                client_name = _candidate_name
+                break
+
+    if action == "closing" and not (client_name or laf_case_no or case_number):
+        if "結案文件" in text and any(k in text for k in ("即為", "就是", "作為")):
+            return None
+
     # natural phrase fallback: 「蕭仁俊開辦回報」
     if not client_name:
         m_inline = re.search(
@@ -172,7 +194,7 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
         if m_inline:
             _candidate_name = _clean_client_name(m_inline.group(1) or "")
             # 排除常見非人名詞彙
-            _NOT_NAMES = {"案件", "案號", "法扶", "準備", "請", "幫", "做", "處理", "確認", "正式", "先", "這個", "那個"}
+            _NOT_NAMES = {"案件", "案號", "法扶", "準備", "請", "幫", "做", "處理", "確認", "正式", "先", "這個", "那個", "即為", "就是", "結案文件"}
             # 排除含案號片段、純數字、或非人名的候選
             _is_noise = (
                 _candidate_name in _NOT_NAMES
@@ -245,10 +267,11 @@ _STATUS_UPDATE_PATTERNS = [
 
 _STATUS_MAP = {
     "開辦": "進行中",
-    "報結": "已報結",
-    "結案": "已報結",
-    "撤回": "已報結",
-    "撤案": "已報結",
+    # 主狀態統一用「已結案」；法扶流程細節另由 legal_aid_status 表示。
+    "報結": "已結案",
+    "結案": "已結案",
+    "撤回": "已結案",
+    "撤案": "已結案",
 }
 
 # 案由簡寫對照：簡寫 → 正式案由中的關鍵字（用於 LIKE 搜尋）

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
 import json
 import os
@@ -22,11 +22,33 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-import mysql.connector
-
 _MAGI_ROOT = Path(__file__).resolve().parents[3]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
+
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+from api.osc.calendar_sources import osc_todo_source_sql
+
+if TYPE_CHECKING:
+    import mysql.connector  # pragma: no cover
+
+
+_mysql_connector = None
+
+
+def _load_mysql():
+    """Lazy-load mysql.connector only when the DB helper is actually used."""
+    global _mysql_connector
+    if _mysql_connector is not None:
+        return _mysql_connector
+    try:
+        import mysql.connector as mysql_connector
+        install_mysql_cext_blocker()
+        patch_mysql_connector_for_stability()
+        _mysql_connector = mysql_connector
+        return _mysql_connector
+    except Exception as exc:
+        raise RuntimeError("OSC headless DB features require mysql package") from exc
 
 from api.runtime_paths import config_candidates
 
@@ -68,6 +90,43 @@ def _should_refresh_share_description(old_desc: str, new_desc: str) -> bool:
     if old_url == new_url:
         return False
     return _share_host(old_url) != _share_host(new_url) or _share_expires_soon(old_desc)
+
+
+_CHALLENGE_TODO_TYPES = {"上訴", "抗告", "再抗告", "異議", "再議"}
+_COURT_DOC_KIND_RE = re.compile(r"(判決|裁定|不起訴處分書|支付命令)")
+_COURT_CASE_NO_RE = re.compile(r"(\d{2,3})年度(.{1,12}?字)第0*(\d{1,6})號")
+
+
+def _normalize_court_doc_identity(source_file: str, desc: str = "") -> tuple[str, str]:
+    """Return a stable court-document identity for duplicate deadline guards.
+
+    Google Drive/NAS sync can produce two filenames for the same judgment, e.g.
+    a full OSC filename and a short Drive-imported filename.  The original OSC
+    was single-machine and mostly saw one path; MAGI needs a semantic guard so
+    the same judgment does not create two appeal deadlines.
+    """
+    text = re.sub(r"\s+", "", f"{source_file or ''} {desc or ''}")
+    kind_match = _COURT_DOC_KIND_RE.search(text)
+    kind = kind_match.group(1) if kind_match else ""
+    case_match = _COURT_CASE_NO_RE.search(text)
+    if not case_match:
+        return kind, ""
+    roc_year, case_word, serial = case_match.groups()
+    return kind, f"{int(roc_year)}年度{case_word}第{int(serial)}號"
+
+
+def _source_specificity_score(source_file: str, desc: str = "") -> int:
+    text = f"{source_file or ''} {desc or ''}"
+    score = 0
+    if re.search(r"^(20\d{6}|\d{7})(?:\s|$)", os.path.basename(source_file or "")):
+        score += 20
+    kind, court_no = _normalize_court_doc_identity(source_file, desc)
+    if kind:
+        score += 10
+    if court_no:
+        score += 20
+    score += min(len(os.path.basename(source_file or "")), 120) // 20
+    return score
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -188,8 +247,8 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
             connection_timeout=int(_get("CONNECTION_TIMEOUT", "5")),
         )
 
-    # Otherwise choose profile by policy: remote-first unless MAGI_PREFER_LOCAL_DB=1.
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    # Otherwise choose profile by policy: local-first unless a remote DB is explicitly requested.
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     cands = _profile_candidates(prefer_local=prefer_local)
     if cands:
         c0 = cands[0]
@@ -215,7 +274,8 @@ def db_config_from_env(prefix: str = "OSC_DB_") -> DBConfig:
 
 def connect_mysql(cfg: DBConfig) -> mysql.connector.MySQLConnection:
     def _connect(one: DBConfig) -> mysql.connector.MySQLConnection:
-        conn = mysql.connector.connect(
+        mysql_connector = _load_mysql()
+        conn = mysql_connector.connect(
             host=one.host,
             port=one.port,
             user=one.user,
@@ -247,7 +307,7 @@ def connect_mysql(cfg: DBConfig) -> mysql.connector.MySQLConnection:
         last_err = e
 
     # 2) profile-based candidates
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     for c in _profile_candidates(prefer_local=prefer_local):
         key = (c.host, int(c.port), c.database)
         if key in tried:
@@ -525,6 +585,7 @@ def upsert_case(
     court_name: str = "",
     court_case_number: str = "",
     court_case_no: str = "",
+    court_division: str = "",
     laf_case_no: str = "",
     application_no: str = "",
     legal_aid_number: str = "",
@@ -540,6 +601,7 @@ def upsert_case(
 
     court_case_number_v = (court_case_number or court_case_no or "").strip()
     court_case_no_v = (court_case_no or court_case_number or "").strip()
+    court_division_v = (court_division or "").strip()
     application_no_v = (application_no or legal_aid_number or laf_case_no or "").strip()
     laf_case_no_v = (laf_case_no or application_no_v or "").strip()
     # Keep legacy legal_aid_number in sync for older modules.
@@ -558,13 +620,18 @@ def upsert_case(
                     `case_category`=%s,
                     `case_reason`=%s,
                     `folder_path`=%s,
-                    `court_name`=%s,
-                    `court_case_number`=%s,
-                    `court_case_no`=%s,
-                    `laf_case_no`=%s,
-                    `application_no`=%s,
-                    `legal_aid_number`=%s,
-                    `status`=%s
+                    `court_name`=CASE WHEN %s <> '' THEN %s ELSE `court_name` END,
+                    `court_case_number`=CASE WHEN %s <> '' THEN %s ELSE `court_case_number` END,
+                    `court_case_no`=CASE WHEN %s <> '' THEN %s ELSE `court_case_no` END,
+                    `court_division`=CASE WHEN %s <> '' THEN %s ELSE `court_division` END,
+                    `laf_case_no`=CASE WHEN %s <> '' THEN %s ELSE `laf_case_no` END,
+                    `application_no`=CASE WHEN %s <> '' THEN %s ELSE `application_no` END,
+                    `legal_aid_number`=CASE WHEN %s <> '' THEN %s ELSE `legal_aid_number` END,
+                    `status`=CASE
+                        WHEN COALESCE(`status`, '') = '' THEN %s
+                        WHEN COALESCE(`status`, '') IN ('Active', 'active') THEN %s
+                        ELSE `status`
+                    END
                 WHERE `id`=%s
                 """,
                 (
@@ -574,11 +641,20 @@ def upsert_case(
                     (case_reason or "").strip(),
                     (folder_path or "").strip(),
                     (court_name or "").strip(),
+                    (court_name or "").strip(),
+                    court_case_number_v,
                     court_case_number_v,
                     court_case_no_v,
+                    court_case_no_v,
+                    court_division_v,
+                    court_division_v,
+                    laf_case_no_v,
                     laf_case_no_v,
                     application_no_v,
+                    application_no_v,
                     legal_aid_number_v,
+                    legal_aid_number_v,
+                    (status or "").strip(),
                     (status or "").strip(),
                     row["id"],
                 ),
@@ -591,8 +667,8 @@ def upsert_case(
             """
             INSERT INTO `cases`
               (`case_number`,`client_name`,`case_type`,`case_category`,`case_reason`,`folder_path`,
-               `court_name`,`court_case_number`,`court_case_no`,`laf_case_no`,`application_no`,`legal_aid_number`,`status`)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               `court_name`,`court_case_number`,`court_case_no`,`court_division`,`laf_case_no`,`application_no`,`legal_aid_number`,`status`)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 cn,
@@ -604,6 +680,7 @@ def upsert_case(
                 (court_name or "").strip(),
                 court_case_number_v,
                 court_case_no_v,
+                court_division_v,
                 laf_case_no_v,
                 application_no_v,
                 legal_aid_number_v,
@@ -648,16 +725,36 @@ def seed_default_todo_keywords(conn: mysql.connector.MySQLConnection) -> int:
     Seed a small default set, using INSERT IGNORE to avoid duplicates.
     Returns number of inserted rows (best-effort).
     """
+    duration = r"([\d零一二三四五六七八九十]+)(日|週|周)"
     defaults = [
-        ("補正", r"應於本裁定送達後(\d+)日內補正", "relative", None),
-        ("補正", r"請於文到(\d+)日內補正", "relative", None),
-        ("補正", r"文到(\d+)日內.*?補正", "relative", None),
-        ("補正", r"(\d+)日內補正", "relative", None),
-        ("陳述意見", r"文到(\d+)日內陳述意見", "relative", None),
-        ("陳述意見", r"(\d+)日內陳述意見", "relative", None),
-        ("開庭", r"(\d{1,2})月(\d{1,2})日([上下])午(\d{1,2})時(\d*)分?.*?(開庭|準備程序)", "absolute_time", None),
-        ("繳費", r"文到(\d+)日內繳納", "relative", None),
-        ("閱卷", r"文到(\d+)日內.*?閱卷", "relative", None),
+        ("補正", rf"應於本裁定送達後{duration}內補正", "relative", None),
+        ("補正", rf"請於文到{duration}內補正", "relative", None),
+        ("補正", rf"文到{duration}內.*?補正", "relative", None),
+        ("補正", rf"{duration}內補正", "relative", None),
+        ("補正", "補陳", "relative", None),
+        ("補正", "補提", "relative", None),
+        ("陳述意見", rf"文到{duration}內陳述意見", "relative", None),
+        ("陳述意見", rf"{duration}內陳述意見", "relative", None),
+        ("陳報", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:陳報|回覆|表示意見|確答|陳明)", "relative", None),
+        ("陳報", "回復", "relative", None),
+        ("提出資料", rf"(?:文到|送達翌日起|送達後){duration}內.*?(?:提出|檢送|補提).{{0,20}}?(?:資料|文件|清冊|報告書|截圖|證據)", "relative", None),
+        ("開庭", rf"(\d{{1,2}})月(\d{{1,2}})日(上午|下午|早上|中午|晚上|晚間|傍晚|夜間|上|下)(\d{{1,2}}|[零一二三四五六七八九十]{{1,3}})時([零一二三四五六七八九十\d]{{0,3}})(?:分|整)?.*?(開庭|準備程序|協商程序|言詞辯論|調解|審理|宣判|訊問|調查|辯論|閱卷)", "absolute_time", None),
+        ("繳費", rf"文到{duration}內繳納", "relative", None),
+        ("閱卷", rf"文到{duration}內.*?閱卷", "relative", None),
+        ("答辯", "答辯", "relative", None),
+        ("聲請", "聲請", "relative", None),
+        ("異議", "異議", "relative", None),
+        ("上訴", "判決", "fixed", 20),
+        ("抗告", "羈押裁定", "fixed", 10),
+        ("抗告", "民事裁定", "fixed", 10),
+        ("抗告", "刑事裁定", "fixed", 10),
+        ("抗告", "家事裁定", "fixed", 10),
+        ("抗告", "裁定", "fixed", 10),
+        ("再議", "不起訴處分書", "fixed", 10),
+        ("異議", "支付命令", "fixed", 20),
+        ("異議", "司消債更字", "fixed", 10),
+        ("異議", "司消債清字", "fixed", 10),
+        ("異議", "司消債調字", "fixed", 10),
     ]
 
     cur = conn.cursor()
@@ -699,6 +796,7 @@ def insert_case_todos(
     """
     Insert todos into case_todos with a conservative de-dupe check (no deletes).
     """
+    hearing_types = {"開庭", "準備程序", "言詞辯論", "調解", "審理", "審理程序", "審判程序", "宣判", "訊問", "調查"}
     cur = conn.cursor()
     inserted = 0
     skipped = 0
@@ -764,6 +862,177 @@ def insert_case_todos(
                         skipped += 1
                     continue
 
+                if todo_type in hearing_types and todo_date and source_file:
+                    hearing_placeholders = ",".join(["%s"] * len(hearing_types))
+                    cur.execute(
+                        f"""
+                        SELECT `id`, `description`, `client_name`, `todo_type`, `todo_time` FROM `case_todos`
+                        WHERE `case_number`=%s
+                          AND `source_file`=%s
+                          AND `todo_date`=%s
+                          AND `todo_type` IN ({hearing_placeholders})
+                          AND (status IS NULL OR status='' OR status='pending')
+                        ORDER BY `id` DESC
+                        LIMIT 1
+                        """,
+                        (case_number, source_file, todo_date, *sorted(hearing_types)),
+                    )
+                    same_source_hearing = cur.fetchone()
+                    if same_source_hearing:
+                        same_id = same_source_hearing[0] if isinstance(same_source_hearing, tuple) else same_source_hearing
+                        old_client = same_source_hearing[2] if isinstance(same_source_hearing, tuple) and len(same_source_hearing) > 2 else ""
+                        if same_id:
+                            cur.execute(
+                                """
+                                UPDATE `case_todos`
+                                SET `client_name`=%s,
+                                    `todo_type`=%s,
+                                    `todo_time`=%s,
+                                    `description`=%s,
+                                    `status`='pending'
+                                WHERE `id`=%s
+                                """,
+                                (client_name or old_client or "", todo_type, todo_time, desc, same_id),
+                            )
+                            updated += int(getattr(cur, "rowcount", 0) or 0)
+                        else:
+                            skipped += 1
+                        continue
+
+                cur.execute(
+                    f"""
+                    SELECT `id`, `description`, `client_name`, `status` FROM `case_todos`
+                    WHERE `case_number`=%s
+                      AND `todo_type`=%s
+                      AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
+                      AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
+                      AND (status IS NULL OR status='' OR status!='deleted')
+                      AND {osc_todo_source_sql()}
+                    LIMIT 1
+                    """,
+                    (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
+                )
+                same_event = cur.fetchone()
+                if same_event:
+                    old_status = same_event[3] if isinstance(same_event, tuple) and len(same_event) > 3 else ""
+                    if str(old_status or "").strip().lower() in {"completed", "done", "已完成"}:
+                        skipped += 1
+                        continue
+                    same_id = same_event[0] if isinstance(same_event, tuple) else same_event
+                    old_desc = same_event[1] if isinstance(same_event, tuple) and len(same_event) > 1 else ""
+                    old_client = same_event[2] if isinstance(same_event, tuple) and len(same_event) > 2 else ""
+                    should_refresh_share = _should_refresh_share_description(str(old_desc or ""), desc)
+                    should_refresh_client = bool(client_name) and not str(old_client or "").strip()
+                    if same_id and (should_refresh_share or should_refresh_client):
+                        cur.execute(
+                            """
+                            UPDATE `case_todos`
+                            SET `client_name`=%s,
+                                `description`=%s,
+                                `status`='pending'
+                            WHERE `id`=%s
+                            """,
+                            (client_name or old_client or "", desc or old_desc or "", same_id),
+                        )
+                        updated += int(getattr(cur, "rowcount", 0) or 0)
+                    else:
+                        skipped += 1
+                    continue
+
+                if todo_type in hearing_types and todo_date and todo_time:
+                    cur.execute(
+                        f"""
+                        SELECT `id`, `description`, `client_name`, `source_file` FROM `case_todos`
+                        WHERE `case_number`=%s
+                          AND `todo_type`=%s
+                          AND ( (`todo_date`=%s) OR (%s IS NULL AND `todo_date` IS NULL) )
+                          AND ( (`todo_time`=%s) OR (%s IS NULL AND `todo_time` IS NULL) )
+                          AND (status IS NULL OR status='' OR status!='deleted')
+                          AND {osc_todo_source_sql()}
+                        LIMIT 1
+                        """,
+                        (case_number, todo_type, todo_date, todo_date, todo_time, todo_time),
+                    )
+                    same_hearing = cur.fetchone()
+                    if same_hearing:
+                        same_id = same_hearing[0] if isinstance(same_hearing, tuple) else same_hearing
+                        old_desc = same_hearing[1] if isinstance(same_hearing, tuple) and len(same_hearing) > 1 else ""
+                        old_client = same_hearing[2] if isinstance(same_hearing, tuple) and len(same_hearing) > 2 else ""
+                        has_existing_details = isinstance(same_hearing, tuple) and len(same_hearing) > 2
+                        should_refresh_share = _should_refresh_share_description(str(old_desc or ""), desc)
+                        should_refresh_client = bool(client_name) and has_existing_details and not str(old_client or "").strip()
+                        if same_id and (should_refresh_share or should_refresh_client):
+                            cur.execute(
+                                """
+                                UPDATE `case_todos`
+                                SET `client_name`=%s,
+                                    `description`=%s,
+                                    `status`='pending'
+                                WHERE `id`=%s
+                                """,
+                                (client_name or old_client or "", desc or old_desc or "", same_id),
+                            )
+                            updated += int(getattr(cur, "rowcount", 0) or 0)
+                        else:
+                            skipped += 1
+                        continue
+
+                if todo_type in _CHALLENGE_TODO_TYPES and todo_date:
+                    new_kind, new_court_no = _normalize_court_doc_identity(source_file, desc)
+                    if new_kind:
+                        cur.execute(
+                            f"""
+                            SELECT `id`, `description`, `client_name`, `source_file`, `todo_date`, `status`
+                            FROM `case_todos`
+                            WHERE `case_number`=%s
+                              AND `todo_type`=%s
+                              AND `todo_date` IS NOT NULL
+                              AND ABS(DATEDIFF(`todo_date`, %s)) <= 3
+                              AND (status IS NULL OR status='' OR status='pending')
+                              AND {osc_todo_source_sql()}
+                            ORDER BY `id` ASC
+                            """,
+                            (case_number, todo_type, todo_date),
+                        )
+                        near_rows = cur.fetchall() or []
+                        best_row = None
+                        best_score = -1
+                        new_score = _source_specificity_score(source_file, desc)
+                        for row in near_rows:
+                            old_source = row[3] if isinstance(row, tuple) and len(row) > 3 else ""
+                            old_desc = row[1] if isinstance(row, tuple) and len(row) > 1 else ""
+                            old_kind, old_court_no = _normalize_court_doc_identity(str(old_source or ""), str(old_desc or ""))
+                            if old_kind != new_kind:
+                                continue
+                            if old_court_no and new_court_no and old_court_no != new_court_no:
+                                continue
+                            score = _source_specificity_score(str(old_source or ""), str(old_desc or ""))
+                            if score > best_score:
+                                best_row = row
+                                best_score = score
+                        if best_row is not None:
+                            old_id = best_row[0] if isinstance(best_row, tuple) else best_row
+                            old_desc = best_row[1] if isinstance(best_row, tuple) and len(best_row) > 1 else ""
+                            old_client = best_row[2] if isinstance(best_row, tuple) and len(best_row) > 2 else ""
+                            if old_id and new_score > best_score:
+                                cur.execute(
+                                    """
+                                    UPDATE `case_todos`
+                                    SET `client_name`=%s,
+                                        `todo_date`=%s,
+                                        `todo_time`=%s,
+                                        `description`=%s,
+                                        `source_file`=%s,
+                                        `status`='pending'
+                                    WHERE `id`=%s
+                                    """,
+                                    (client_name or old_client or "", todo_date, todo_time, desc or old_desc or "", source_file, old_id),
+                                )
+                                updated += int(getattr(cur, "rowcount", 0) or 0)
+                            else:
+                                skipped += 1
+                            continue
+
                 cur.execute(
                     """
                     SELECT `id` FROM `case_todos`
@@ -823,7 +1092,7 @@ def list_unsynced_todos_with_case_info(
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            """
+            f"""
             SELECT
                 ct.id,
                 ct.case_number,
@@ -841,7 +1110,10 @@ def list_unsynced_todos_with_case_info(
                = ct.case_number COLLATE utf8mb4_unicode_ci
             WHERE (ct.google_calendar_id IS NULL OR ct.google_calendar_id = '')
               AND ct.todo_date IS NOT NULL
+              AND ct.todo_date >= CURDATE()
+              AND ct.todo_date <= DATE_ADD(CURDATE(), INTERVAL 2 YEAR)
               AND (ct.status IS NULL OR ct.status = '' OR ct.status = 'pending')
+              AND {osc_todo_source_sql('ct.source_file', 'ct.todo_type')}
             ORDER BY ct.todo_date ASC, ct.id ASC
             LIMIT %s
             """,

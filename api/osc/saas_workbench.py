@@ -22,6 +22,14 @@ from api.legal_workflow import (
     detect_legal_workflow,
     workflow_review,
 )
+from api.saas_readiness import build_saas_readiness
+from api.osc.calendar_sources import (
+    calendar_todo_source_sql,
+    is_calendar_todo,
+    osc_todo_source_sql,
+    todo_source_key,
+    todo_source_label,
+)
 from api.osc.draft_learning import draft_learning_summary, recent_draft_feedback
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +39,19 @@ NOTIFICATION_PREFS_PATH = ROOT / ".runtime" / "osc_saas_notification_prefs.json"
 WORKFLOW_TEMPLATES_PATH = ROOT / ".runtime" / "osc_saas_workflow_templates.json"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
+INACTIVE_TODO_STATUSES = CLOSED_CASE_STATUSES + (
+    "完成",
+    "completed",
+    "done",
+    "cancelled",
+    "canceled",
+    "deleted",
+    "calendar_deduped",
+    "已完成",
+    "已刪除",
+    "刪除",
+    "取消",
+)
 NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
 TASK_REFRESH_INTERVAL_HOURS = 6
 
@@ -80,13 +101,13 @@ CAPABILITIES = [
     },
     {
         "key": "nerv_status_page",
-        "title": "NERV 上線狀態",
+        "title": "狀態中心上線狀態",
         "status": "enabled",
-        "owner": "NERV",
+        "owner": "狀態中心",
         "tab": "",
-        "primary_action": {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
-        "secondary_actions": [{"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康檢查"}],
-        "source": "NERV health API",
+        "primary_action": {"act": "open-url", "url": "/status", "label": "開啟狀態中心"},
+        "secondary_actions": [{"act": "open-url", "url": "/status/api/health", "label": "健康檢查"}],
+        "source": "狀態中心 health API",
         "role": "作為正式上線狀態頁，顯示推理、OCR、DB、NAS 與背景服務健康度",
     },
     {
@@ -173,7 +194,7 @@ CAPABILITIES = [
         "key": "diagnostics_export",
         "title": "維運診斷匯出",
         "status": "enabled",
-        "owner": "NERV / 管理工具",
+        "owner": "狀態中心 / 管理工具",
         "tab": "",
         "primary_action": {"act": "download-url", "url": "/api/osc/saas/diagnostic-pack", "label": "下載診斷"},
         "source": "readiness, operations, audit",
@@ -187,16 +208,16 @@ READINESS_CHECKS = [
         "title": "部署邊界",
         "status": "ready",
         "detail": "每台主機是一個獨立 MAGI；不做共用多租戶資料庫。",
-        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "NERV 狀態"}],
+        "actions": [{"act": "open-url", "url": "/status", "label": "狀態中心狀態"}],
     },
     {
         "key": "nerv_status",
         "title": "上線狀態頁",
         "status": "ready",
-        "detail": "NERV 已提供健康檢查與服務狀態，作為正式上線狀態頁。",
+        "detail": "狀態中心已提供健康檢查與服務狀態，作為正式上線狀態頁。",
         "actions": [
-            {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
-            {"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康 API"},
+            {"act": "open-url", "url": "/status", "label": "開啟狀態中心"},
+            {"act": "open-url", "url": "/status/api/health", "label": "健康 API"},
         ],
     },
     {
@@ -239,7 +260,7 @@ READINESS_CHECKS = [
         "title": "維運診斷",
         "status": "ready",
         "detail": "public audit、smoke50、production-live 與 commercial-release 作為交付前檢查。",
-        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "查看狀態"}],
+        "actions": [{"act": "open-url", "url": "/status", "label": "查看狀態"}],
     },
     {
         "key": "not_needed_scope",
@@ -265,12 +286,12 @@ INTEGRATION_MATRIX = [
     {"area": "修正學習", "source": "AI 草擬的人工改正紀錄", "target_tab": "drafts", "mode": "彙整顯示"},
     {"area": "對外資料", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
     {"area": "高風險紀錄", "source": "系統活動紀錄", "target_tab": "admin", "mode": "只開高風險稽核"},
-    {"area": "上線檢查", "source": "NERV、導入檢查、診斷匯出", "target_tab": "saasOnboardingSection", "mode": "狀態確認 / JSON 匯出"},
+    {"area": "上線檢查", "source": "狀態中心、導入檢查、診斷匯出", "target_tab": "saasOnboardingSection", "mode": "狀態確認 / JSON 匯出"},
 ]
 
 DEFAULT_ONBOARDING_ITEMS = [
     {"key": "public_audit", "title": "public audit strict 通過", "category": "交付", "required": True},
-    {"key": "daemon_health", "title": "MAGI daemon、NERV、Tools API 正常", "category": "服務", "required": True},
+    {"key": "daemon_health", "title": "MAGI daemon、狀態中心、Tools API 正常", "category": "服務", "required": True},
     {"key": "db_backup", "title": "本機 DB 備份可讀取且還原需確認", "category": "資料", "required": True},
     {"key": "nas_mounts", "title": "NAS 掛載名稱正確，未掛成 -1", "category": "資料", "required": True},
     {"key": "calendar_scope", "title": "Google Calendar 匯入只抓 OSC 與法扶計數行程", "category": "行事曆", "required": True},
@@ -400,7 +421,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _status_open_sql(alias: str = "") -> str:
     p = f"{alias}." if alias else ""
-    closed = "','".join(CLOSED_CASE_STATUSES + ("完成", "completed", "done", "cancelled", "canceled"))
+    closed = "','".join(INACTIVE_TODO_STATUSES)
     return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('{closed}'))"
 
 
@@ -448,12 +469,11 @@ def _risk_from_todo(row: dict, today: date) -> dict:
             severity, reason = "high", f"{delta} 天內到期"
         else:
             severity, reason = "medium", f"{delta} 天後"
-    source_file = str(row.get("source_file") or "").strip()
-    is_calendar_import = source_file.startswith("gcal_import")
+    is_calendar_import = is_calendar_todo(row)
     return {
         "type": "todo",
         "severity": severity,
-        "owner": "行事曆匯入" if is_calendar_import else "OSC 建立待辦",
+        "owner": todo_source_label(row) if is_calendar_import else "OSC 建立待辦",
         "target_tab": "calendar" if is_calendar_import else "todos",
         "reason": reason,
         "case_number": row.get("case_number") or "",
@@ -579,10 +599,11 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
 def _todo_board_item(row: dict, *, imported_calendar: bool = False) -> dict:
     date_part = str(row.get("todo_date") or "").strip()
     time_part = str(row.get("todo_time") or "").strip()
+    source_key = todo_source_key(row) if imported_calendar else "case_todos"
     return {
         "id": row.get("id"),
-        "source": "gcal_import" if imported_calendar else "case_todos",
-        "source_label": "行事曆匯入" if imported_calendar else "OSC 建立",
+        "source": source_key,
+        "source_label": todo_source_label(row) if imported_calendar else "OSC 建立",
         "case_number": row.get("case_number") or "",
         "client_name": row.get("client_name") or "",
         "date": date_part,
@@ -637,8 +658,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
         FROM case_todos
         WHERE {_status_open_sql()}
-          AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
-          AND COALESCE(todo_type, '') <> '行事曆事件'
+          AND {osc_todo_source_sql()}
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s
@@ -651,7 +671,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
         FROM case_todos
         WHERE {_status_open_sql()}
-          AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
+          AND {calendar_todo_source_sql()}
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s
@@ -676,10 +696,13 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         """,
         tuple([date.today() - timedelta(days=1)] + cal_params + [limit]),
     )
-    calendar_items = [_calendar_board_item(x) for x in calendar_events] + [
-        _todo_board_item(x, imported_calendar=True) for x in imported_calendar_todos
-    ]
+    imported_calendar_items = [_todo_board_item(x, imported_calendar=True) for x in imported_calendar_todos]
+    calendar_items = [_calendar_board_item(x) for x in calendar_events] + imported_calendar_items
     calendar_items.sort(key=lambda x: x.get("sort_key") or "")
+    imported_counts = {}
+    for item in imported_calendar_items:
+        key = item.get("source") or "calendar_todo"
+        imported_counts[key] = imported_counts.get(key, 0) + 1
     return {
         "ok": True,
         "refresh": {
@@ -701,7 +724,8 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
             "count": len(calendar_items),
             "source_counts": {
                 "calendar_events": len(calendar_events),
-                "gcal_import": len(imported_calendar_todos),
+                "gcal_import": imported_counts.get("gcal_import", 0),
+                "calendar_todo": imported_counts.get("calendar_todo", 0),
             },
             "entry_actions": [{"act": "tab-jump", "tab": "calendar", "label": "行事曆"}],
         },
@@ -1019,6 +1043,30 @@ def build_operations_report(exec_fn: ExecFn) -> dict:
     closed = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_case_status_closed_sql()}")
     pending = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()}")
     overdue = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_date < CURDATE()")
+    pending_review = _count(
+        exec_fn,
+        f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_type='逾期確認'",
+    )
+    closing_pending_items = _rows(
+        exec_fn,
+        f"""
+        SELECT case_number, client_name, status, legal_aid_status
+        FROM cases
+        WHERE {_case_status_closing_sql()}
+        ORDER BY case_number
+        LIMIT 50
+        """,
+    )
+    pending_review_items = _rows(
+        exec_fn,
+        f"""
+        SELECT id, case_number, client_name, todo_date, description
+        FROM case_todos
+        WHERE {_status_open_sql()} AND todo_type='逾期確認'
+        ORDER BY todo_date, id
+        LIMIT 50
+        """,
+    )
     docs = _count(exec_fn, "SELECT COUNT(*) AS c FROM document_index")
     insights = _count(exec_fn, "SELECT COUNT(*) AS c FROM legal_insights")
     laf = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%'")
@@ -1027,8 +1075,11 @@ def build_operations_report(exec_fn: ExecFn) -> dict:
         "active_cases": active,
         "closed_cases": closed,
         "closing_pending_cases": closing_pending,
+        "closing_pending_items": closing_pending_items,
         "pending_todos": pending,
         "overdue_todos": overdue,
+        "pending_review_todos": pending_review,
+        "pending_review_items": pending_review_items,
         "documents": docs,
         "legal_insights": insights,
         "legal_aid_cases": laf,
@@ -1205,11 +1256,13 @@ def render_operations_report_text(exec_fn: ExecFn) -> dict:
 
 
 def build_diagnostic_pack(exec_fn: ExecFn) -> dict:
+    readiness = build_product_readiness(exec_fn)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scope": "single_host_magi",
-        "readiness": build_product_readiness(exec_fn),
+        "scope": "formal_saas" if readiness.get("mode") == "formal_saas" else "single_host_magi",
+        "readiness": readiness,
+        "formal_saas_gate": readiness.get("formal_saas_gate") or {},
         "operations": build_operations_report(exec_fn),
         "task_boards": build_task_boards(exec_fn, limit=8),
         "onboarding": build_onboarding_status(),
@@ -1230,10 +1283,12 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
 
     This is intentionally lightweight: it only checks local files/routes that
     should exist in every checkout and DB-backed counts that are safe to read.
-    The live health of services remains NERV's job.
+    The live health of services remains the status center's job.
     """
 
     checks = [dict(item) for item in READINESS_CHECKS]
+    formal_gate = build_saas_readiness(root=ROOT)
+    formal_enabled = formal_gate.get("mode") == "formal_saas"
     file_checks = {
         "nerv_status": _file_ready("templates/dashboard_nerv.html") and _file_ready("api/blueprints/admin_runtime.py"),
         "workflow_templates": _file_ready("api/osc/saas_workbench.py") and _file_ready("api/osc/laf_activity_stats.py"),
@@ -1247,25 +1302,45 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
         if key in file_checks and not file_checks[key]:
             item["status"] = "needs_attention"
             item["detail"] = f"{item['detail']}（本機缺少必要檔案，請先檢查安裝。）"
+    checks.append({
+        "key": "formal_saas_gate",
+        "title": "正式 SaaS Gate",
+        "status": "ready" if formal_gate.get("ok") and formal_enabled else ("needs_attention" if formal_enabled else "guarded"),
+        "detail": (
+            "正式 SaaS 模式已通過所有必要檢查。"
+            if formal_gate.get("ok") and formal_enabled
+            else (
+                f"正式 SaaS 模式尚未通過：{', '.join(formal_gate.get('failed_keys') or []) or '請查看檢查明細'}。"
+                if formal_enabled
+                else "目前是單主機模式；正式上線時需設定 MAGI_SAAS_MODE=1 並通過 /saas-readyz。"
+            )
+        ),
+        "actions": [{"act": "open-url", "url": "/saas-readyz", "label": "SaaS readiness JSON"}],
+    })
 
     high_risk_count = len(high_risk_activity(exec_fn, limit=5).get("items") or [])
     operations = build_operations_report(exec_fn)
+    not_needed = list(NOT_NEEDED_FOR_SINGLE_HOST)
+    if formal_enabled:
+        not_needed = [item for item in not_needed if item != "多租戶"]
     return {
-        "mode": "single_host",
-        "mode_label": "單主機 MAGI",
-        "not_needed": list(NOT_NEEDED_FOR_SINGLE_HOST),
-        "status_page": {"label": "NERV 上線狀態", "url": "/dashboard/nerv", "health_api": "/dashboard/nerv/api/health"},
+        "mode": "formal_saas" if formal_enabled else "single_host",
+        "mode_label": "正式 SaaS" if formal_enabled else "單主機 MAGI",
+        "not_needed": not_needed,
+        "status_page": {"label": "狀態中心上線狀態", "url": "/status", "health_api": "/status/api/health"},
         "summary": {
             "ready": sum(1 for x in checks if x.get("status") == "ready"),
             "guarded": sum(1 for x in checks if x.get("status") == "guarded"),
             "not_needed": sum(1 for x in checks if x.get("status") == "not_needed"),
             "needs_attention": sum(1 for x in checks if x.get("status") == "needs_attention"),
+            "saas_failed_required": (formal_gate.get("summary") or {}).get("failed_required", 0),
             "high_risk_recent": high_risk_count,
             "total_cases": operations.get("total_cases", 0),
             "pending_todos": operations.get("pending_todos", 0),
             "task_refresh_interval_hours": TASK_REFRESH_INTERVAL_HOURS,
         },
         "checks": checks,
+        "formal_saas_gate": formal_gate,
         "approval_matrix": APPROVAL_MATRIX,
     }
 

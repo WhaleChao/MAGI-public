@@ -91,6 +91,27 @@ def test_nightly_last_accepted_pair_count_prefers_accepted_pairs(tmp_path):
     assert nightly._last_accepted_pair_count(metrics) == 120
 
 
+def test_nightly_training_keeps_production_inference_online(monkeypatch):
+    calls = []
+    monkeypatch.setattr(nightly, "_write_training_lock", lambda: calls.append("lock"))
+    monkeypatch.setattr(nightly, "_clear_training_lock", lambda: calls.append("unlock"))
+    monkeypatch.setattr(
+        nightly,
+        "safe_stop_omlx",
+        lambda: (_ for _ in ()).throw(AssertionError("training must not stop 8080")),
+    )
+    monkeypatch.setattr(
+        nightly,
+        "safe_start_omlx",
+        lambda: (_ for _ in ()).throw(AssertionError("training must not restart an online 8080")),
+    )
+
+    nightly.prepare_online_training()
+    nightly.finish_online_training()
+
+    assert calls == ["lock", "unlock"]
+
+
 def test_deploy_model_refuses_rejected_pending(monkeypatch, tmp_path):
     pending = tmp_path / "pending_deploy.json"
     pending.write_text(

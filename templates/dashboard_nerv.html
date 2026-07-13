@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MAGI 調整頁面</title>
+<title>MAGI 調整｜MAGI</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -12,7 +12,7 @@ body {
   font-family: 'Share Tech Mono', monospace;
   min-height: 100vh;
   height: 100vh;
-  overflow: hidden;
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }
@@ -31,6 +31,7 @@ body::after {
   );
   pointer-events: none;
   z-index: 9999;
+  display: none;
 }
 
 /* ── Header ── */
@@ -87,7 +88,7 @@ body::after {
   font-size: 0.7em;
   letter-spacing: 8px;
   color: #ff8800;
-  animation: warningPulse 3s ease-in-out infinite;
+  animation: none;
   flex-shrink: 0;
 }
 @keyframes warningPulse {
@@ -211,6 +212,116 @@ body::after {
 .command-chip-meta {
   font-size: 0.62em;
   color: #7b6658;
+}
+
+.activity-panel {
+  width: 100%;
+  max-width: 920px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.activity-panel .panel-title {
+  margin-bottom: 6px;
+}
+.agent-status-panel {
+  width: 100%;
+  max-width: 920px;
+  border: 1px solid #4a2408;
+  border-radius: 4px;
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 102, 0, 0.045), rgba(17, 22, 27, 0.86)),
+    radial-gradient(circle at top right, rgba(255, 176, 102, 0.07), transparent 46%);
+  box-sizing: border-box;
+}
+.agent-status-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.agent-status-head .panel-title { margin: 0; }
+.agent-status-scope {
+  color: #8e715f;
+  font-size: 0.62em;
+  text-align: right;
+}
+.agent-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.agent-status-cell {
+  min-width: 0;
+  border: 1px solid rgba(255, 136, 0, 0.18);
+  border-radius: 3px;
+  padding: 7px 8px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.agent-status-label {
+  color: #8e715f;
+  font-size: 0.59em;
+  letter-spacing: 1.1px;
+}
+.agent-status-value {
+  margin-top: 3px;
+  color: #e6d5c5;
+  font-size: 0.72em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.agent-status-note {
+  margin: 8px 0 0;
+  color: #7b6658;
+  font-size: 0.61em;
+  line-height: 1.4;
+}
+.activity-stream {
+  border: 1px solid #4a2408;
+  background: rgba(17, 22, 27, 0.8);
+  border-radius: 4px;
+  padding: 8px;
+  min-height: 220px;
+  max-height: 320px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.activity-item {
+  display: grid;
+  grid-template-columns: 84px 90px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.activity-item:first-child {
+  border-top: 0;
+}
+.activity-ts {
+  color: #9ca3af;
+  font-size: 0.62em;
+  white-space: nowrap;
+}
+.activity-badge {
+  color: #ffcc00;
+  font-size: 0.62em;
+  width: 82px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 204, 0, 0.35);
+  text-transform: uppercase;
+}
+.activity-badge-info { color: #9bd1ff; border-color: rgba(155, 209, 255, 0.4); }
+.activity-badge-warning { color: #ffc107; border-color: rgba(255, 193, 7, 0.45); }
+.activity-badge-error { color: #ff7878; border-color: rgba(255, 120, 120, 0.45); }
+.activity-badge-unknown { color: #c5d4e8; border-color: rgba(197, 212, 232, 0.45); }
+.activity-body {
+  color: #d1d5db;
+  font-size: 0.74em;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 /* ── MAGI triangle ── */
@@ -538,13 +649,13 @@ body::after {
   border-bottom: 1px solid rgba(255, 102, 0, 0.1);
 }
 .nerv-fold summary::after {
-  content: 'EXPAND';
+  content: '展開';
   font-size: 0.58em;
   letter-spacing: 2px;
   color: #7c614f;
 }
 .nerv-fold[open] summary::after {
-  content: 'COLLAPSE';
+  content: '收合';
   color: #ffb066;
 }
 .nerv-fold-body {
@@ -1069,6 +1180,7 @@ body::after {
   .side-panel { order: 2; border: none; border-bottom: 1px solid #331a00; overflow: visible; }
   .side-panel.right { order: 3; }
   .command-strip { grid-template-columns: 1fr 1fr; }
+  .agent-status-grid { grid-template-columns: 1fr; }
   .magi-triangle { width: 280px; height: 260px; }
   .skill-grid { grid-template-columns: 1fr; }
   .runtime-grid { grid-template-columns: 1fr; }
@@ -1122,6 +1234,8 @@ body::after {
   .command-strip {
     grid-template-columns: 1fr;
   }
+  .agent-status-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .agent-status-scope { text-align: left; }
   .magi-triangle {
     width: min(100%, 320px);
     height: 240px;
@@ -1172,64 +1286,76 @@ body::after {
   }
 }
 </style>
+<link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
 </head>
-<body>
+<body class="site-nerv">
 <div class="nerv-header">
   <a href="/dashboard" class="back-link">&lt; 回到 MAGI</a>
-  <h1>MAGI SYSTEM</h1>
-  <div class="subtitle">SUPER COMPUTER SYSTEM STATUS</div>
+  <h1>MAGI 調整</h1>
+  <div class="subtitle">MAGI 系統設定與服務健康檢查</div>
   <div class="timestamp" id="ts">--:--:--</div>
 </div>
-<div class="warning-bar">MAGI 調整頁面 --- 系統設定與進階功能 --- AUTHORIZED PERSONNEL ONLY</div>
+<div class="warning-bar">MAGI 調整頁面 · 系統設定與進階功能 · 已登入使用者可檢視</div>
 
 <div class="main-grid">
   <!-- Left: Infrastructure -->
   <div class="side-panel">
-    <div class="panel-title">基礎設施 INFRASTRUCTURE</div>
+    <div class="panel-title">服務狀態</div>
     <div id="infra-nodes">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
 
-    <div class="panel-title" style="margin-top:18px;">推論引擎 ENGINES</div>
+    <div class="panel-title" style="margin-top:18px;">推論引擎</div>
     <div id="engine-nodes">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
+    </div>
+
+    <div class="panel-title" style="margin-top:18px;">資源監控</div>
+    <div id="resource-metrics">
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
   </div>
 
   <!-- Center: MAGI Core -->
   <div class="center-panel">
     <div id="command-strip" class="command-strip">
-      <div class="command-chip"><div class="command-chip-label">SYSTEM</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">awaiting telemetry</div></div>
-      <div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">route sync</div></div>
-      <div class="command-chip"><div class="command-chip-label">PRODUCTS</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">runtime sync</div></div>
-      <div class="command-chip"><div class="command-chip-label">OPERATIONS</div><div class="command-chip-value">LOADING</div><div class="command-chip-meta">stand by</div></div>
-    </div>
-    <div class="magi-triangle">
-      <svg class="tri-lines" viewBox="0 0 360 320">
-        <line x1="180" y1="50" x2="60" y2="270"/>
-        <line x1="180" y1="50" x2="300" y2="270"/>
-        <line x1="60" y1="270" x2="300" y2="270"/>
-      </svg>
-      <div class="magi-node casper" id="node-casper">
-        <div class="hex"><div class="hex-bg"></div><div class="hex-label">CASPER</div></div>
-        <div class="node-name">CASPER</div>
-        <div class="node-detail" id="casper-detail">主控核心</div>
-      </div>
-      <div class="magi-node melchior" id="node-melchior">
-        <div class="hex"><div class="hex-bg"></div><div class="hex-label">MELCHIOR</div></div>
-        <div class="node-name">MELCHIOR</div>
-        <div class="node-detail" id="melchior-detail">推論節點</div>
-      </div>
-      <div class="magi-node balthasar" id="node-balthasar">
-        <div class="hex"><div class="hex-bg"></div><div class="hex-label">BALTHASAR</div></div>
-        <div class="node-name">BALTHASAR</div>
-        <div class="node-detail" id="balthasar-detail">分析節點</div>
-      </div>
+      <div class="command-chip"><div class="command-chip-label">整體狀態</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
+      <div class="command-chip"><div class="command-chip-label">推論狀態</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
+      <div class="command-chip"><div class="command-chip-label">系統壓力</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
+      <div class="command-chip"><div class="command-chip-label">最近活動</div><div class="command-chip-value">載入中...</div><div class="command-chip-meta">等待監測資料</div></div>
     </div>
 
-    <details class="nerv-fold" open>
+    <section class="agent-status-panel" aria-live="polite">
+      <div class="agent-status-head">
+        <div class="panel-title">Agent 狀態</div>
+        <div class="agent-status-scope">僅顯示公開作業摘要，不含訊息內容或內部推理</div>
+      </div>
+      <div id="agent-status-grid" class="agent-status-grid">
+        <div class="agent-status-cell"><div class="agent-status-label">最近意圖</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">計畫步驟</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">工具／模型</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">等待確認</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">重試</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">路由信心</div><div class="agent-status-value">尚無活動</div></div>
+        <div class="agent-status-cell"><div class="agent-status-label">七日成功率</div><div class="agent-status-value">尚無活動</div></div>
+      </div>
+      <p class="agent-status-note">資料不存在時維持「尚無活動」；不從對話、日誌或模型思考內容推測狀態。</p>
+    </section>
+
+    <section class="activity-panel">
+      <div class="panel-title">最近活動</div>
+      <div id="nerv-activity-stream" class="activity-stream">
+        <div class="activity-item activity-item-neutral">
+          <div class="activity-ts">--:--:--</div>
+          <div class="activity-badge activity-badge-unknown">載入中</div>
+          <div class="activity-body">正在取得最近排程、紀錄與模型切換狀態...</div>
+        </div>
+      </div>
+    </section>
+
+    <details class="nerv-fold">
       <summary>
-        <span class="nerv-fold-title">推論分派 INFERENCE ROUTING</span>
+        <span class="nerv-fold-title">推論分派</span>
         <span class="nerv-fold-meta">核心路由常駐顯示</span>
       </summary>
       <div class="nerv-fold-body">
@@ -1249,28 +1375,28 @@ body::after {
 
     <details class="nerv-fold">
       <summary>
-        <span class="nerv-fold-title">技能模組 SKILL MODULES</span>
+        <span class="nerv-fold-title">技能模組</span>
         <span class="nerv-fold-meta">預設折疊，展開後可檢視清單與開啟編輯器</span>
       </summary>
       <div class="nerv-fold-body">
         <div class="fold-actions">
-          <button type="button" class="fold-btn" onclick="startNewSkill()">新增 SKILL</button>
+          <button type="button" class="fold-btn" onclick="startNewSkill()">新增技能</button>
           <button type="button" class="fold-btn" onclick="reloadSkillCatalog()">重新整理</button>
           <button type="button" class="fold-btn" onclick="openSkillModal()">打開編輯器</button>
         </div>
         <div class="skill-tree compact-scroll" style="max-height: 184px;">
           <div id="skill-tree-content">
             <div class="skill-category">
-              <div class="skill-cat-header">Loading...</div>
+              <div class="skill-cat-header">載入中...</div>
             </div>
           </div>
         </div>
       </div>
     </details>
 
-    <details class="nerv-fold" open>
+    <details class="nerv-fold">
       <summary>
-        <span class="nerv-fold-title">HEAVY API SWITCHBOARD</span>
+        <span class="nerv-fold-title">重型任務 API</span>
         <span class="nerv-fold-meta">NVIDIA API 與大型任務開關</span>
       </summary>
       <div class="nerv-fold-body">
@@ -1278,22 +1404,22 @@ body::after {
           <div id="runtime-status-line" class="runtime-status-line">正在讀取產品切換設定...</div>
           <div id="runtime-grid" class="runtime-grid">
             <div class="runtime-card">
-              <div class="runtime-card-title">Loading...</div>
+              <div class="runtime-card-title">載入中...</div>
             </div>
           </div>
         </div>
       </div>
     </details>
 
-    <details class="nerv-fold" open>
+    <details class="nerv-fold">
       <summary>
-        <span class="nerv-fold-title">遠端操作 REMOTE ACCESS</span>
+        <span class="nerv-fold-title">遠端操作</span>
         <span class="nerv-fold-meta">Google 遠端桌面與本機螢幕共享入口</span>
       </summary>
       <div class="nerv-fold-body">
         <div id="remote-access-panel" class="remote-access-grid">
           <div class="remote-access-card">
-            <div class="remote-access-head"><div class="indicator gray"></div><div class="remote-access-title">Loading...</div></div>
+            <div class="remote-access-head"><div class="indicator gray"></div><div class="remote-access-title">載入中...</div></div>
             <div class="remote-access-meta">正在讀取遠端連線狀態</div>
           </div>
         </div>
@@ -1304,24 +1430,24 @@ body::after {
 
   <!-- Right: Communication & Services -->
   <div class="side-panel right">
-    <div class="panel-title">通訊連線 COMMS</div>
+    <div class="panel-title">通訊連線</div>
     <div id="comm-nodes">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
 
-    <div class="panel-title" style="margin-top:18px;">資料儲存 DATA</div>
+    <div class="panel-title" style="margin-top:18px;">資料儲存</div>
     <div id="data-nodes">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
 
-    <div class="panel-title" style="margin-top:18px;">Office Access</div>
+    <div class="panel-title" style="margin-top:18px;">Office 服務</div>
     <div id="office-nodes">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
 
     <div class="panel-title" style="margin-top:18px;">oMLX 模型</div>
     <div id="omlx-models">
-      <div class="node-item"><div class="indicator gray"></div><span class="label">Loading...</span></div>
+      <div class="node-item"><div class="indicator gray"></div><span class="label">載入中...</span></div>
     </div>
 
     <div class="panel-title" style="margin-top:18px;">MAGI 對話</div>
@@ -1329,7 +1455,7 @@ body::after {
       <div style="color:#ff8800;">系統已就緒，可直接用自然語句指示 MAGI。大型翻譯、長文摘要、複雜法律分析可在開頭加上 @heavy 或 @重型，啟用 NVIDIA API 路徑。</div>
     </div>
     <textarea id="nerv-chat-input" placeholder="輸入指示（大型任務可用 @heavy 或 @重型；Enter 送出）" style="width:100%; min-height:40px; background:rgba(0,0,0,0.4); color:#ccc; border:1px solid #331a00; border-radius:2px; padding:6px 8px; font-family:'Share Tech Mono',monospace; font-size:0.75em; resize:vertical; box-sizing:border-box;"></textarea>
-    <div style="color:#9a7a55; font-size:0.68em; line-height:1.45; margin-top:5px;">HEAVY 命令：<code>@heavy 摘要這份大型卷證</code>、<code>@重型 翻譯這份長文</code>。只有在 NERV 的 NVIDIA API 開關啟用且已設定金鑰時會優先使用 API。</div>
+    <div style="color:#9a7a55; font-size:0.68em; line-height:1.45; margin-top:5px;">重型任務指令：<code>@heavy 摘要這份大型卷證</code>、<code>@重型 翻譯這份長文</code>。只有在狀態中心的 NVIDIA API 開關啟用且已設定金鑰時會優先使用 API。</div>
     <div style="display:flex; gap:6px; margin-top:6px;">
       <button id="nerv-chat-send" style="background:transparent; color:#ff8800; border:1px solid #ff880044; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">送出</button>
       <button id="nerv-chat-clear" style="background:transparent; color:#666; border:1px solid #333; padding:4px 10px; cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:0.72em;">清空</button>
@@ -1338,14 +1464,14 @@ body::after {
 </div>
 
 <div class="nerv-footer">
-  GOD'S IN HIS HEAVEN. ALL'S RIGHT WITH THE WORLD. &mdash; REFRESH: <span id="refresh-interval">5</span>s
+  MAGI 執行狀態 · 每 <span id="refresh-interval">5</span> 秒更新
 </div>
 
 <div id="skill-modal" class="skill-modal" onclick="handleSkillModalBackdrop(event)">
   <div class="skill-modal-shell">
     <div class="skill-modal-head">
       <div>
-        <div id="skill-modal-title" class="skill-modal-title">SKILL EDITOR</div>
+        <div id="skill-modal-title" class="skill-modal-title">技能編輯器</div>
         <div class="skill-modal-subtitle">左側直接改 SKILL.md；右側用分頁切換範本、問答精靈和版本快照。可按右上角、Esc 或外側空白關閉。</div>
       </div>
       <button type="button" class="skill-modal-close" onclick="closeSkillModal()">關閉編輯器</button>
@@ -1354,7 +1480,7 @@ body::after {
     <div class="skill-modal-grid">
       <div class="skill-modal-card skill-modal-editor">
         <div class="skill-modal-toolbar">
-          <input id="skill-editor-name" type="text" placeholder="new-skill-name" spellcheck="false" />
+          <input id="skill-editor-name" type="text" placeholder="新技能名稱" spellcheck="false" />
           <button type="button" onclick="openSkillInterviewWizard()">問答精靈</button>
           <button type="button" onclick="applySkillTemplate()">套用範本</button>
           <button type="button" onclick="reloadSkillCatalog()">重新整理</button>
@@ -1372,7 +1498,7 @@ body::after {
           <button type="button" id="skill-side-tab-versions" class="skill-side-tab" onclick="switchSkillSidePanel('versions')">版本快照</button>
         </div>
         <div id="skill-side-section-template" class="skill-side-section active">
-          <div class="skill-template-title">撰寫範本 TEMPLATE</div>
+          <div class="skill-template-title">撰寫範本</div>
           <div class="skill-template-copy">建議至少先補齊這四段，MAGI 之後比較容易理解你希望它何時用、怎麼用、哪些事情不能做。</div>
           <ol class="skill-template-list">
             <li>`Purpose`：這個技能解決什麼問題。</li>
@@ -1384,8 +1510,8 @@ body::after {
           <pre id="skill-template-preview" class="skill-template-preview"></pre>
         </div>
         <div id="skill-side-section-wizard" class="skill-side-section">
-          <div class="skill-template-title">問答精靈 INTERVIEW</div>
-          <div class="skill-template-copy">輸入需求後，NERV 會逐題問你。若精靈暫時沒連上，也可以直接改左側 SKILL.md。</div>
+          <div class="skill-template-title">問答精靈</div>
+          <div class="skill-template-copy">輸入需求後，狀態中心會逐題問你。若精靈暫時沒連上，也可以直接改左側 SKILL.md。</div>
           <input id="skill-wizard-request" class="skill-wizard-input" type="text" placeholder="例如：幫我做一個會整理判決晨報補跑的工具" spellcheck="false" />
           <div class="skill-wizard-actions">
             <button type="button" onclick="startSkillInterviewWizard()">開始精靈</button>
@@ -1400,7 +1526,7 @@ body::after {
           <pre id="skill-wizard-prompt" class="skill-template-preview skill-wizard-prompt">點「開始精靈」後，這裡會顯示目前題目與建立結果。</pre>
         </div>
         <div id="skill-side-section-versions" class="skill-side-section">
-          <div class="skill-template-title">版本快照 VERSIONS</div>
+          <div class="skill-template-title">版本快照</div>
           <div class="skill-template-copy">每次問答產生或手動儲存後，都可以在這裡看最近版本。管理員可直接回滾到指定快照。</div>
           <div class="skill-wizard-actions">
             <button type="button" onclick="refreshSkillVersions()">重新整理版本</button>
@@ -1431,9 +1557,9 @@ let isNewSkillDraft = false;
 let activeSkillVersions = [];
 let activeSkillSidePanel = 'template';
 const PRODUCT_RUNTIME_LABELS = {
-  file_review: { title: '閱卷 FILE REVIEW', subtitle: '閱卷通知、繳費單辨識與 portal 流程' },
-  transcript: { title: '筆錄 TRANSCRIPT', subtitle: '法院筆錄下載、OCR 與案件同步' },
-  laf: { title: '法扶 LAF', subtitle: '法扶 workflow 與 portal test/prod 切換' },
+  file_review: { title: '閱卷作業', subtitle: '閱卷通知、繳費單辨識與入口流程' },
+  transcript: { title: '筆錄作業', subtitle: '法院筆錄下載、OCR 與案件同步' },
+  laf: { title: '法扶作業', subtitle: '法扶流程與入口正式/測試環境切換' },
 };
 const ROUTING_ROWS = [
   { task: '摘要產生', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
@@ -1446,6 +1572,32 @@ const ROUTING_ROWS = [
   { task: '意圖/通用', localModel: 'Gemma-4 26B' },
   { task: '複雜法律分析', heavy: true, localModel: 'Gemma-4 26B', heavyModel: 'NVIDIA NIM API' },
 ];
+const PUBLIC_AGENT_INTENTS = {
+  general: '一般作業', research: '資料研究', legal: '法律作業', laf: '法扶作業',
+  file_review: '閱卷作業', transcript: '筆錄作業', system: '系統維運', automation: '自動化作業',
+  cases: '案件管理', clients: '當事人管理', calendar: '行事曆作業', todos: '待辦作業',
+  documents: '文件作業', files: '檔案作業', nas: 'NAS 作業', drive: '雲端同步',
+  legal_statutes: '法規查詢', judgments: '裁判查詢', transcription: '錄音轉文字',
+  translation: '翻譯作業', ocr: '文字辨識', drafting: '書狀草擬', accounting: '帳務作業',
+  quotation: '報價作業', memory: '記憶查詢', obsidian: '知識庫作業', realtime: '即時資料',
+  web: '網路作業', models: '模型作業', backup: '備份作業', notifications: '通知作業',
+};
+const PUBLIC_AGENT_PLAN_STEPS = {
+  classify: '判定意圖', route: '選擇路由', check_permissions: '確認權限', retrieve: '取得資料',
+  execute: '執行工具', verify: '驗證結果', respond: '整理回覆', await_confirmation: '等待確認',
+};
+const PUBLIC_AGENT_STEP_STATES = {
+  pending: '等待', running: '進行中', done: '完成', blocked: '受阻', skipped: '略過',
+};
+const PUBLIC_AGENT_TOOL_CATEGORIES = {
+  web: '網路工具', search: '搜尋工具', fetch: '擷取工具', database: '資料庫工具',
+  calendar: '行事曆工具', drive: '檔案同步工具', file_review: '閱卷工具', transcript: '筆錄工具',
+  laf: '法扶工具', code: '程式工具', system: '系統工具', none: '未使用工具',
+  files: '檔案工具', nas: 'NAS 工具', documents: '文件工具', todos: '待辦工具',
+  transcription: '轉錄工具', translation: '翻譯工具', ocr: '文字辨識工具', legal: '法律工具',
+  accounting: '帳務工具', memory: '記憶工具', notifications: '通知工具',
+};
+const PUBLIC_AGENT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$/;
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -1454,6 +1606,123 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function publicAgentPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '尚無活動';
+  const percent = number >= 0 && number <= 1 ? number * 100 : number;
+  return percent >= 0 && percent <= 100 ? `${Math.round(percent)}%` : '尚無活動';
+}
+
+function publicAgentStatus(raw) {
+  const empty = {
+    state: 'idle', label: '尚無活動', intent: '尚無活動', plan: '尚無活動', tool: '尚無活動',
+    model: '尚無活動', confirmation: '尚無活動', retry: '尚無活動',
+    routeConfidence: '尚無活動', successRate7d: '尚無活動',
+  };
+  const payload = raw && typeof raw === 'object' && raw.agent_status && typeof raw.agent_status === 'object'
+    ? raw.agent_status : raw;
+  if (!payload || typeof payload !== 'object') return empty;
+
+  const intent = PUBLIC_AGENT_INTENTS[String(payload.intent_category || '').trim().toLowerCase()] || '';
+  const steps = Array.isArray(payload.plan_steps) ? payload.plan_steps.slice(0, 5).map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    const step = PUBLIC_AGENT_PLAN_STEPS[String(item.id || '').trim().toLowerCase()];
+    const state = PUBLIC_AGENT_STEP_STATES[String(item.state || '').trim().toLowerCase()];
+    return step && state ? `${step}：${state}` : '';
+  }).filter(Boolean) : [];
+  const tool = PUBLIC_AGENT_TOOL_CATEGORIES[String(payload.tool_category || '').trim().toLowerCase()] || '';
+  const rawModel = String(payload.model_id || '').trim();
+  const model = PUBLIC_AGENT_MODEL_RE.test(rawModel) ? rawModel : '';
+  const confirmationKnown = typeof payload.waiting_confirmation === 'boolean';
+  const waitingConfirmation = confirmationKnown && payload.waiting_confirmation;
+  const retryRaw = Number(payload.retry_count);
+  const retryCount = Number.isInteger(retryRaw) && retryRaw >= 0 && retryRaw <= 99 ? retryRaw : null;
+  const routeConfidence = publicAgentPercent(payload.route_confidence);
+  const successRate7d = publicAgentPercent(payload.success_rate_7d);
+  const hasActivity = Boolean(intent || steps.length || tool || model || confirmationKnown || retryCount !== null || routeConfidence !== '尚無活動');
+  if (!hasActivity) return empty;
+
+  const status = {
+    state: waitingConfirmation ? 'waiting' : 'ok',
+    intent: intent || '其他公開作業',
+    plan: steps.length ? steps.join('；') : '尚無公開步驟',
+    tool: tool || '未使用公開工具',
+    model: model || '未提供公開模型',
+    confirmation: waitingConfirmation ? '等待確認' : '無需確認',
+    retry: retryCount === null ? '0 次' : `${retryCount} 次`,
+    routeConfidence,
+    successRate7d,
+  };
+  status.label = waitingConfirmation ? `${status.intent} · 等待確認`
+    : retryCount ? `${status.intent} · 重試 ${retryCount} 次` : status.intent;
+  return status;
+}
+
+function renderAgentStatus(raw) {
+  const panel = document.getElementById('agent-status-grid');
+  if (!panel) return;
+  const status = publicAgentStatus(raw);
+  const rows = [
+    ['最近意圖', status.intent],
+    ['計畫步驟', status.plan],
+    ['工具／模型', `${status.tool}／${status.model}`],
+    ['等待確認', status.confirmation],
+    ['重試', status.retry],
+    ['路由信心', status.routeConfidence],
+    ['七日成功率', status.successRate7d],
+  ];
+  panel.innerHTML = rows.map(([label, value]) => (
+    `<div class="agent-status-cell"><div class="agent-status-label">${escapeHtml(label)}</div><div class="agent-status-value">${escapeHtml(value)}</div></div>`
+  )).join('');
+}
+
+async function fetchPublicAgentStatus() {
+  try {
+    const response = await fetch('/static/agent_status_public_latest.json', {
+      credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'application/json' },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function zhStatus(value) {
+  const key = String(value || '').toLowerCase();
+  if (key === 'online' || key === 'ok' || key === 'healthy') return '正常';
+  if (key === 'local') return '本機';
+  if (key === 'offline') return '離線';
+  if (key === 'critical' || key === 'error') return '警戒';
+  if (key === 'warn' || key === 'warning' || key === 'degraded') return '注意';
+  if (key === 'historical') return '歷史配置';
+  if (key === 'unknown') return '未知';
+  return value || '未知';
+}
+
+function zhPressure(value) {
+  const key = String(value || '').toLowerCase();
+  if (key === 'ok') return '正常';
+  if (key === 'warn') return '注意';
+  if (key === 'critical') return '警戒';
+  return zhStatus(value);
+}
+
+function zhPressureReason(value) {
+  const text = String(value || '').trim();
+  const lower = text.toLowerCase();
+  if (!text || lower === 'no pressure warning') return '目前沒有壓力警示';
+  if (lower.includes('swap reserved') && lower.includes('healthy')) return 'Swap 已保留，但目前記憶體壓力健康';
+  if (lower.includes('macos memory pressure')) return text.replace('macOS memory pressure free', 'macOS 可用記憶體').replace('<', '低於');
+  if (lower.includes('memory pressure')) return text.replace('memory pressure', '記憶體壓力');
+  if (lower.includes('swap pressure')) return text.replace('swap pressure', 'Swap 壓力');
+  if (lower.includes('loadavg_1m')) return text.replace('loadavg_1m', '1 分鐘負載');
+  if (lower.includes('inference degraded')) return '推論服務降級';
+  if (lower.includes('inference critical')) return '推論服務異常';
+  return text;
 }
 
 function openIntelPanel() {
@@ -1482,14 +1751,15 @@ async function parseJsonApiResponse(response, unavailableMessage) {
 }
 
 async function parseHeavyApiResponse(response) {
-  return parseJsonApiResponse(response, 'NVIDIA HEAVY 狀態暫不可得');
+  return parseJsonApiResponse(response, 'NVIDIA 重型 API 狀態暫不可得');
 }
 
 async function parseSkillApiResponse(response) {
-  return parseJsonApiResponse(response, 'SKILL 工具頁暫不可得');
+  return parseJsonApiResponse(response, '技能工具頁暫不可得');
 }
 
 function statusColor(s) {
+  if (['green', 'yellow', 'red', 'gray'].includes(s)) return s;
   if (s === 'online' || s === 'local') return 'green';
   if (s === 'offline') return 'yellow';
   if (s === 'retired') return 'gray';
@@ -1499,6 +1769,22 @@ function statusColor(s) {
 function nodeHTML(label, status, meta) {
   const c = statusColor(status);
   return `<div class="node-item"><div class="indicator ${c}"></div><span class="label">${escapeHtml(label)}</span><span class="meta">${escapeHtml(meta || '')}</span></div>`;
+}
+
+function showHealthPollNotice(title, detail, status = 'yellow') {
+  const notice = nodeHTML(title, status, detail);
+  ['infra-nodes', 'engine-nodes', 'resource-metrics', 'comm-nodes', 'data-nodes', 'omlx-models'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = notice;
+  });
+  const strip = document.getElementById('command-strip');
+  if (strip) {
+    strip.innerHTML = `<div class="command-chip"><div class="command-chip-label">整體狀態</div><div class="command-chip-value">${escapeHtml(title)}</div><div class="command-chip-meta">${escapeHtml(detail)}</div></div>`;
+  }
+  const remote = document.querySelector('.remote-access-card');
+  if (remote) {
+    remote.innerHTML = `<div class="remote-access-head"><div class="indicator ${statusColor(status)}"></div><div class="remote-access-title">${escapeHtml(title)}</div></div><div class="remote-access-status">${escapeHtml(detail)}</div>`;
+  }
 }
 
 function remoteButtonHTML(label, onclick, primary = false) {
@@ -1644,12 +1930,12 @@ function nervMiniButtonHTML(label, onclick, tone = 'default', disabled = false) 
 
 function heavyEngineMeta(report) {
   if (!report) {
-    return { status: 'offline', meta: 'status unavailable' };
+    return { status: 'offline', meta: '狀態暫不可得' };
   }
   if (!report.enabled) {
-    return { status: report.configured ? 'local' : 'offline', meta: report.configured ? 'API 已設定，HEAVY 關閉' : '尚未設定 API 金鑰' };
+    return { status: report.configured ? 'local' : 'offline', meta: report.configured ? 'API 已設定，重型任務關閉' : '尚未設定 API 金鑰' };
   }
-  return { status: report.configured ? 'online' : 'error', meta: report.configured ? 'HEAVY 任務可使用 API' : '開關已開但缺少金鑰' };
+  return { status: report.configured ? 'online' : 'error', meta: report.configured ? '重型任務可使用 API' : '開關已開但缺少金鑰' };
 }
 
 function heavyEngineRowHTML(report) {
@@ -1657,19 +1943,19 @@ function heavyEngineRowHTML(report) {
   const canToggle = !!(report && report.can_edit);
   const hintText = report
     ? `${report.description || ''} · 金鑰 ${report.configured ? report.masked || '已設定' : '未設定'}`
-    : 'status unavailable';
+    : '狀態暫不可得';
   return `
     <div class="node-item node-item-stack">
       <div class="indicator ${statusColor(meta.status)}"></div>
       <div class="engine-stack">
         <div class="engine-row-head">
-          <span class="label">NVIDIA HEAVY API</span>
+          <span class="label">NVIDIA 重型 API</span>
           <span class="meta">${escapeHtml(meta.meta)}</span>
         </div>
         <div class="engine-inline-status">${escapeHtml(hintText)}</div>
         <div class="engine-inline-actions">
-          ${nervMiniButtonHTML('啟用 HEAVY', 'setHeavyRuntimeEnabled(true)', 'default', !canToggle)}
-          ${nervMiniButtonHTML('關閉 HEAVY', 'setHeavyRuntimeEnabled(false)', 'danger', !canToggle)}
+          ${nervMiniButtonHTML('啟用重型 API', 'setHeavyRuntimeEnabled(true)', 'default', !canToggle)}
+          ${nervMiniButtonHTML('關閉重型 API', 'setHeavyRuntimeEnabled(false)', 'danger', !canToggle)}
           ${nervMiniButtonHTML('重新整理', 'fetchHeavyRuntime()')}
         </div>
       </div>
@@ -1680,14 +1966,14 @@ function heavyEngineRowHTML(report) {
 function heavyCommandPanelHTML(report) {
   const on = !!(report && report.enabled);
   const statusText = on
-    ? 'HEAVY 命令會優先使用 NVIDIA API'
-    : 'HEAVY 命令目前回到本機 26B';
+    ? '重型任務會優先使用 NVIDIA API'
+    : '重型任務目前回到本機 26B';
   return `
     <div class="node-item node-item-stack">
       <div class="indicator ${on ? 'green' : 'yellow'}"></div>
       <div class="engine-stack">
         <div class="engine-row-head">
-          <span class="label">HEAVY 命令說明</span>
+          <span class="label">重型任務指令</span>
           <span class="meta">@heavy / @重型</span>
         </div>
         <div class="engine-inline-status">${escapeHtml(statusText)}</div>
@@ -1717,7 +2003,7 @@ function routingRowHTML(row, report) {
     return `
       <div class="route-row">
         <span class="task">${escapeHtml(row.task)}</span>
-        <span class="path"><span class="engine remote">NVIDIA</span><span class="arrow">→</span><span class="engine fallback">LOCAL</span></span>
+        <span class="path"><span class="engine remote">NVIDIA</span><span class="arrow">→</span><span class="engine fallback">本機</span></span>
         <span class="model">缺少 API 金鑰，回到 26B</span>
       </div>
     `;
@@ -1726,7 +2012,7 @@ function routingRowHTML(row, report) {
     <div class="route-row">
       <span class="task">${escapeHtml(row.task)}</span>
       <span class="path"><span class="engine omlx">oMLX</span></span>
-      <span class="model">${escapeHtml(row.localModel || 'local')}</span>
+      <span class="model">${escapeHtml(row.localModel || '本機')}</span>
     </div>
   `;
 }
@@ -1740,13 +2026,13 @@ function renderRoutingTable() {
 function renderEngineNodes(data) {
   const omlxS = data.omlx?.status || 'error';
   document.getElementById('engine-nodes').innerHTML = [
-    nodeHTML('oMLX :8080', omlxS, `${data.omlx?.count || 0} models`),
+    nodeHTML('oMLX 主模型', omlxS, `:8080 · ${data.omlx?.count || 0} 個模型`),
     `
       <div class="node-item node-item-stack">
         <div class="indicator green"></div>
         <div class="engine-stack">
           <div class="engine-row-head">
-            <span class="label">新增 SKILL</span>
+            <span class="label">新增技能</span>
             <span class="meta">MAGI 內建入口</span>
           </div>
           <div class="engine-inline-status">一鍵開啟新技能草稿，並自動帶入撰寫範本。</div>
@@ -1768,8 +2054,8 @@ function renderOfficeNodes(data) {
   const app = data.office_app || {};
   const proxy = data.caddy_proxy || {};
   panel.innerHTML = [
-    nodeHTML('Office App :4200 (本機)', app.status === 'skipped' ? 'online' : (app.status || 'error'), app.status === 'skipped' ? 'disabled' : (app.detail || '')),
-    nodeHTML('Cloudflared → :5002', proxy.status === 'skipped' ? 'online' : (proxy.status || 'error'), proxy.detail || 'direct tunnel'),
+    nodeHTML('Office 本機服務', app.status === 'skipped' ? 'online' : (app.status || 'error'), app.status === 'skipped' ? ':4200 已停用' : (`:4200 · ${app.detail || ''}`)),
+    nodeHTML('Cloudflare 入口', proxy.status === 'skipped' ? 'online' : (proxy.status || 'error'), proxy.detail ? `:5002 · ${proxy.detail}` : '指向 :5002'),
     '',
   ].join('');
 }
@@ -1823,30 +2109,43 @@ function runtimeFieldValue(product, field) {
   return el ? String(el.value || '').trim() : '';
 }
 
+function zhRuntimeEnv(value) {
+  const key = String(value || '').toLowerCase();
+  if (key === 'local') return '本機';
+  if (key === 'production' || key === 'prod') return '正式';
+  if (key === 'test' || key === 'testing') return '測試';
+  if (key === 'compare') return '比對';
+  if (key === 'enabled') return '已啟用';
+  if (key === 'off' || key === 'disabled') return '關閉';
+  if (key === 'n/a') return '未設定';
+  return value || '未設定';
+}
+
 function productRuntimeCardHTML(product, report, canEdit) {
   const meta = PRODUCT_RUNTIME_LABELS[product] || { title: product, subtitle: '' };
   const profile = (report && report.profile) || {};
   const portal = report && report.portal;
   const portalEnv = profile.portal_env || 'production';
   const executeBaseUrl = portal && portal.execute_base_url ? portal.execute_base_url : 'n/a';
-  const compareText = portal && portal.compare_enabled ? (portal.compare_base_url || 'enabled') : 'off';
   const executeEnv = portal && portal.execute_env ? portal.execute_env : 'local';
+  const executeEnvLabel = zhRuntimeEnv(executeEnv);
+  const compareLabel = portal && portal.compare_enabled ? (portal.compare_base_url || '已啟用') : '關閉';
   const disableAttr = canEdit ? '' : 'disabled';
-  const heavyLabel = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY ON' : 'LOCAL';
+  const heavyLabel = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? '重型 API' : '本機';
   const portalRow = product === 'laf'
     ? `
       <div class="runtime-row">
-        <label for="${runtimeFieldId(product, 'portal_env')}">LAF portal 環境</label>
+        <label for="${runtimeFieldId(product, 'portal_env')}">法扶入口環境</label>
         <select id="${runtimeFieldId(product, 'portal_env')}" class="runtime-select" ${disableAttr}>
-          <option value="production" ${portalEnv === 'production' ? 'selected' : ''}>production</option>
-          <option value="test" ${portalEnv === 'test' ? 'selected' : ''}>test</option>
-          <option value="compare" ${portalEnv === 'compare' ? 'selected' : ''}>compare</option>
+          <option value="production" ${portalEnv === 'production' ? 'selected' : ''}>正式</option>
+          <option value="test" ${portalEnv === 'test' ? 'selected' : ''}>測試</option>
+          <option value="compare" ${portalEnv === 'compare' ? 'selected' : ''}>比對</option>
         </select>
       </div>
     `
     : `
       <div class="runtime-row placeholder" aria-hidden="true">
-        <label>Portal 環境</label>
+        <label>入口環境</label>
         <select class="runtime-select" disabled><option>-</option></select>
       </div>
     `;
@@ -1862,14 +2161,14 @@ function productRuntimeCardHTML(product, report, canEdit) {
       </div>
       <div class="runtime-band">
         <div>
-          <div class="runtime-band-label">ACTIVE EXECUTION PATH</div>
+          <div class="runtime-band-label">目前執行路徑</div>
           <div class="runtime-band-value" title="${escapeHtml(executeBaseUrl)}">${escapeHtml(executeBaseUrl)}</div>
         </div>
-        <div class="runtime-band-code">${escapeHtml(executeEnv.toUpperCase())}</div>
+        <div class="runtime-band-code">${escapeHtml(executeEnvLabel)}</div>
       </div>
       <div class="runtime-controls">
         <div class="runtime-row">
-          <label>NVIDIA HEAVY</label>
+          <label>NVIDIA 重型任務</label>
           <select class="runtime-select" disabled>
             <option>${heavyLabel}</option>
           </select>
@@ -1878,7 +2177,7 @@ function productRuntimeCardHTML(product, report, canEdit) {
       </div>
       <div class="runtime-meta">
         <div>大型任務: ${escapeHtml(heavyLabel)}（全域開關於本區上方控制）</div>
-        ${product === 'laf' ? `<div>compare target: ${escapeHtml(compareText)}</div>` : ''}
+        ${product === 'laf' ? `<div>比對目標: ${escapeHtml(compareLabel)}</div>` : ''}
       </div>
       <div class="runtime-actions">
         <button class="runtime-btn" ${disableAttr} onclick="saveProductRuntime('${product}')">套用設定</button>
@@ -1887,24 +2186,225 @@ function productRuntimeCardHTML(product, report, canEdit) {
   `;
 }
 
-function renderCommandStrip() {
+function _safeNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function _safeStatusText(value, fallback = '未知') {
+  if (value === null || value === undefined || value === '') return fallback;
+  return String(value);
+}
+
+function _activityBadgeClass(activityType) {
+  if (!activityType) return 'activity-badge-unknown';
+  const t = String(activityType).toLowerCase();
+  if (t === 'error') return 'activity-badge-error';
+  if (t === 'model_switch') return 'activity-badge-warning';
+  if (t === 'cron') return 'activity-badge-info';
+  return 'activity-badge-unknown';
+}
+
+function _activityTypeLabel(activityType) {
+  if (!activityType) return 'LOG';
+  return String(activityType).toUpperCase().replace('_', ' ');
+}
+
+function _toTelemetryData(rawData) {
+  const payload = (rawData && typeof rawData === 'object' && rawData.telemetry && typeof rawData.telemetry === 'object')
+    ? rawData.telemetry
+    : {};
+
+  const legacyOmlx = rawData && rawData.omlx && typeof rawData.omlx === 'object' ? rawData.omlx : {};
+  const legacyModelList = legacyOmlx.models && Array.isArray(legacyOmlx.models)
+    ? legacyOmlx.models
+    : [];
+
+  const infer = payload.inference && typeof payload.inference === 'object' ? payload.inference : {};
+  const model8080 = infer.model_8080 && typeof infer.model_8080 === 'object' ? infer.model_8080 : {};
+  const inferModels = _toTelemetryList(model8080.models).length
+    ? _toTelemetryList(model8080.models)
+    : _toTelemetryList(legacyModelList);
+
+  const pressure = payload.pressure && typeof payload.pressure === 'object' ? payload.pressure : {};
+  let pressureLevel = _safeStatusText(pressure.level, 'unknown').toLowerCase();
+  const pressureReasons = _toTelemetryList(pressure.reasons);
+
+  if (!pressureLevel || pressureLevel === 'unknown') {
+    pressureLevel = rawData && rawData.magi_server?.status === 'online'
+      ? 'ok'
+      : 'warn';
+  }
+
+  const inferenceSummary = infer.summary && typeof infer.summary === 'object' ? infer.summary : {};
+  const summaryStatus = _safeStatusText(inferenceSummary.status, 'unknown').toLowerCase();
+  const inferenceStatus = summaryStatus === 'unknown'
+    ? (legacyOmlx.status === 'online' ? 'ok' : 'warn')
+    : summaryStatus;
+
+  return {
+    fromTelemetry: !!(rawData && rawData.telemetry),
+    system: payload.system && typeof payload.system === 'object' ? payload.system : {},
+    inference: {
+      activeProfile: _safeStatusText(infer.active_profile, 'unknown'),
+      expectedProfile: _safeStatusText(infer.active_profile_expected, 'unknown'),
+      model: {
+        active: _safeStatusText(model8080.active_model || inferModels[0], 'unknown'),
+        status: _safeStatusText(model8080.status || legacyOmlx.status, 'unknown'),
+        count: _safeNumber(model8080.count) !== null ? Number(model8080.count) : inferModels.length,
+        models: inferModels,
+      },
+      sidecars: infer.sidecars && typeof infer.sidecars === 'object' ? infer.sidecars : {},
+      summary: {
+        status: inferenceStatus,
+        reasons: _toTelemetryList(inferenceSummary.reasons),
+      },
+    },
+    activity: {
+      events: _toTelemetryList((payload.activity && typeof payload.activity === 'object') ? payload.activity.events : null),
+      count: Math.max(0, _safeNumber(payload.activity?.count) || 0),
+    },
+    pressure: {
+      level: pressureLevel,
+      reasons: pressureReasons.length ? pressureReasons : (pressureLevel === 'ok' ? ['系統壓力偏低'] : ['壓力資訊缺少']),
+    },
+  };
+}
+
+function _toTelemetryList(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function _formatBytesGb(value) {
+  const num = _safeNumber(value);
+  if (num === null || !Number.isFinite(num)) return 'n/a';
+  return `${num.toFixed(1)} GB`;
+}
+
+function _formatUptime(value) {
+  const num = _safeNumber(value);
+  if (!Number.isFinite(num) || num <= 0) return 'n/a';
+  const total = Math.floor(num);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 24) {
+    const d = Math.floor(h / 24);
+    const hh = h % 24;
+    return `${d}d ${String(hh).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function _formatTelemetryTs(epochSeconds) {
+  const value = _safeNumber(epochSeconds);
+  if (!Number.isFinite(value)) return '--:--:--';
+  const d = new Date(value * 1000);
+  if (Number.isNaN(d.getTime())) return '--:--:--';
+  return d.toLocaleTimeString('zh-TW', {hour12: false}) ;
+}
+
+function renderResourceMetrics(data) {
+  const panel = document.getElementById('resource-metrics');
+  if (!panel) return;
+  const telemetry = _toTelemetryData(data);
+  const system = telemetry.system || {};
+  const mem = system.memory && typeof system.memory === 'object' ? system.memory : {};
+  const swap = system.swap && typeof system.swap === 'object' ? system.swap : {};
+  const macPressure = system.macos_memory_pressure && typeof system.macos_memory_pressure === 'object' ? system.macos_memory_pressure : {};
+  const load = system.loadavg && typeof system.loadavg === 'object' ? system.loadavg : {};
+  const disk = system.disk && typeof system.disk === 'object' ? system.disk : {};
+  const memPercent = _safeNumber(mem.percent);
+  const swapPercent = _safeNumber(swap.percent);
+  const cpuPercent = _safeNumber(system.cpu_percent);
+  const macStatus = macPressure.status || '';
+  const memPressure = macStatus === 'critical'
+    ? 'red'
+    : (macStatus === 'warn'
+      ? 'yellow'
+      : (macStatus === 'ok'
+        ? 'green'
+        : (memPercent !== null
+    ? (memPercent >= 92 ? 'red' : (memPercent >= 85 ? 'yellow' : 'green'))
+    : 'gray')));
+  const diskPressure = _safeNumber(disk.percent) !== null
+    ? (_safeNumber(disk.percent) >= 90 ? 'red' : (_safeNumber(disk.percent) >= 85 ? 'yellow' : 'green'))
+    : 'gray';
+  const swapStatus = swap.status || '';
+  const swapPressure = swapStatus === 'historical'
+    ? 'gray'
+    : (swapStatus === 'critical'
+      ? 'red'
+      : (swapStatus === 'warn'
+        ? 'yellow'
+        : (swapStatus === 'ok'
+          ? 'green'
+          : (swapPercent !== null
+    ? (swapPercent >= 90 ? 'red' : (swapPercent >= 75 ? 'yellow' : 'green'))
+    : 'gray'))));
+  const macFreeMeta = _safeNumber(macPressure.free_percent) !== null ? ` · macOS 可用 ${macPressure.free_percent}%` : '';
+  const swapMetaPrefix = swapStatus === 'historical' ? '歷史配置 ' : '';
+  const loadValue = [load['1m'], load['5m'], load['15m']]
+    .filter((item) => _safeNumber(item) !== null)
+    .map((item) => String(Number(item).toFixed(2)))
+    .join(' / ');
+  const systemStatus = telemetry.activity.count >= 0 ? '資料更新' : '暫無資料';
+
+  panel.innerHTML = [
+    nodeHTML('CPU 負載', 'online', loadValue || '無資料'),
+    nodeHTML('CPU 使用率', memPressure === 'green' ? 'online' : 'offline', `${cpuPercent !== null ? `${cpuPercent}%` : '無資料'}`),
+    nodeHTML('記憶體', memPressure, `已用 ${_formatBytesGb(mem.used_gb)} · 可用 ${_formatBytesGb(mem.free_gb)} (${memPercent !== null ? `${memPercent}%` : '無資料'})${macFreeMeta}`),
+    nodeHTML('Swap', swapPressure, `${swapMetaPrefix}${swapPercent !== null ? `${swapPercent}%` : '無資料'}`),
+    nodeHTML('磁碟使用率', diskPressure, `可用 ${_formatBytesGb(disk.free_gb)} · 已用 ${_safeNumber(disk.percent) !== null ? `${disk.percent}%` : '無資料'}`),
+    nodeHTML('執行時間', 'online', _formatUptime(system.uptime_seconds)),
+    nodeHTML('監測資料', telemetry.fromTelemetry ? 'online' : 'offline', systemStatus),
+  ].join('');
+}
+
+function renderActivityStream(data) {
+  const panel = document.getElementById('nerv-activity-stream');
+  if (!panel) return;
+  const telemetry = _toTelemetryData(data);
+  const events = telemetry.activity.events || [];
+  if (!events.length) {
+    panel.innerHTML = `<div class="activity-item"><div class="activity-ts">--:--:--</div><div class="activity-badge ${'activity-badge-unknown'}">無資料</div><div class="activity-body">目前沒有可呈現的活動事件。</div></div>`;
+    return;
+  }
+  panel.innerHTML = events.slice(0, 20).map((evt) => {
+    const ts = evt.ts ? _formatTelemetryTs(evt.ts) : '--:--:--';
+    const type = evt.type || 'log';
+    const source = evt.source ? `[${evt.source}] ` : '';
+    const msg = evt.message ? String(evt.message) : '';
+    return `<div class="activity-item"><div class="activity-ts">${escapeHtml(ts)}</div><div class="activity-badge ${_activityBadgeClass(type)}">${_activityTypeLabel(type)}</div><div class="activity-body"><span>${escapeHtml(source)}${escapeHtml(msg)}</span></div></div>`;
+  }).join('');
+}
+
+function renderCommandStrip(data) {
   const strip = document.getElementById('command-strip');
   if (!strip) return;
-  const data = lastData || {};
+  const source = data || lastData || {};
+  const telemetry = _toTelemetryData(source);
   const products = (productRuntimeState && productRuntimeState.products) || {};
-  const productModes = ['file_review', 'transcript', 'laf']
-    .map((name) => (products[name] && products[name].portal && products[name].portal.execute_env) || 'local')
-    .join(' / ');
-  const lafPortal = (products.laf && products.laf.portal && products.laf.portal.execute_env) || 'n/a';
-  const systemValue = data.magi_server?.status === 'online' ? 'GREEN' : 'ALERT';
-  const inferenceValue = data.omlx?.status === 'online' ? `${data.omlx?.count || 0} MODELS` : 'DEGRADED';
-  const heavyValue = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? 'HEAVY API ON' : 'LOCAL 26B';
-  const opsValue = data.line_webhook?.status === 'online' && data.cloudflared?.status === 'online' ? 'READY' : 'CHECK';
+  const inference = telemetry.inference;
+  const pressure = telemetry.pressure;
+  const pressureLabel = zhPressure(pressure.level);
+  const pressureMeta = pressure.reasons && pressure.reasons.length ? zhPressureReason(pressure.reasons[0]) : '正常';
+  const systemValue = source.magi_server?.status === 'online' ? '正常' : '注意';
+  const inferenceValue = inference.model.status === 'online'
+    ? `${String(inference.model.count || 0)} 個模型`
+    : '降級';
+  const heavyValue = heavyRuntimeState && heavyRuntimeState.enabled && heavyRuntimeState.configured ? '重型 API 已啟用' : '本機推論';
+  const activeActivity = telemetry.activity.events && telemetry.activity.events.length
+    ? telemetry.activity.events[0]
+    : null;
+  const activityText = activeActivity
+    ? `${_activityTypeLabel(activeActivity.type || 'LOG')} ${activeActivity.message || ''}`.slice(0, 84)
+    : '尚未收到活動';
   strip.innerHTML = [
-    `<div class="command-chip"><div class="command-chip-label">SYSTEM</div><div class="command-chip-value">${escapeHtml(systemValue)}</div><div class="command-chip-meta">server ${escapeHtml(data.magi_server?.status || 'unknown')} · db ${escapeHtml(data.mysql?.status || 'unknown')}</div></div>`,
-    `<div class="command-chip"><div class="command-chip-label">INFERENCE</div><div class="command-chip-value">${escapeHtml(inferenceValue)}</div><div class="command-chip-meta">${escapeHtml(heavyValue)} · oMLX ${escapeHtml(data.omlx?.status || 'unknown')}</div></div>`,
-    `<div class="command-chip"><div class="command-chip-label">PRODUCTS</div><div class="command-chip-value">${escapeHtml(lafPortal.toUpperCase())}</div><div class="command-chip-meta">modes ${escapeHtml(productModes)}</div></div>`,
-    `<div class="command-chip"><div class="command-chip-label">OPERATIONS</div><div class="command-chip-value">${escapeHtml(opsValue)}</div><div class="command-chip-meta">line ${escapeHtml(data.line_webhook?.status || 'unknown')} · cf webhook-only ${escapeHtml(data.cloudflared?.status || 'unknown')}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">整體狀態</div><div class="command-chip-value">${escapeHtml(systemValue)} / ${escapeHtml(pressureLabel)}</div><div class="command-chip-meta">服務 ${escapeHtml(zhStatus(source.magi_server?.status || 'unknown'))} · 資料庫 ${escapeHtml(zhStatus(source.mysql?.status || 'unknown'))}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">推論狀態</div><div class="command-chip-value">${escapeHtml((inference.activeProfile || '設定檔') + ' · ' + inferenceValue)}</div><div class="command-chip-meta">${escapeHtml(heavyValue)} · ${escapeHtml(inference.model.active || '未知模型')}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">系統壓力</div><div class="command-chip-value">${escapeHtml(pressureLabel)}</div><div class="command-chip-meta">${escapeHtml(pressureMeta)}</div></div>`,
+    `<div class="command-chip"><div class="command-chip-label">最近活動</div><div class="command-chip-value">${escapeHtml(String(telemetry.activity.count || 0))} 件事件</div><div class="command-chip-meta">${escapeHtml(activityText)}</div></div>`,
   ].join('');
 }
 
@@ -1934,26 +2434,27 @@ function heavyRuntimeCardHTML(canEdit) {
   const enabled = !!state.enabled;
   const configured = !!state.configured;
   const disableAttr = canEdit ? '' : 'disabled';
-  const badge = enabled && configured ? 'API ON' : enabled ? '缺少金鑰' : 'API OFF';
+  const badge = enabled && configured ? 'API 已啟用' : enabled ? '缺少金鑰' : 'API 關閉';
+  const runtimeCode = enabled ? '啟用' : '關閉';
   return `
     <div class="runtime-card">
       <div class="runtime-card-head">
         <div>
-          <div class="runtime-card-title">NVIDIA HEAVY API</div>
+          <div class="runtime-card-title">NVIDIA 重型 API</div>
           <div class="runtime-card-subtitle">大型摘要、長文翻譯、複雜法律分析的 API 路徑</div>
         </div>
         <div class="runtime-badge">${escapeHtml(badge)}</div>
       </div>
       <div class="runtime-band">
         <div>
-          <div class="runtime-band-label">COMMAND</div>
+          <div class="runtime-band-label">指令</div>
           <div class="runtime-band-value">@heavy / @重型</div>
         </div>
-        <div class="runtime-band-code">${enabled ? 'ON' : 'OFF'}</div>
+        <div class="runtime-band-code">${runtimeCode}</div>
       </div>
       <div class="runtime-controls">
         <div class="runtime-row">
-          <label for="heavy-runtime-enabled">HEAVY 任務</label>
+          <label for="heavy-runtime-enabled">重型任務</label>
           <select id="heavy-runtime-enabled" class="runtime-select" ${disableAttr}>
             <option value="1" ${enabled ? 'selected' : ''}>啟用 NVIDIA API</option>
             <option value="0" ${!enabled ? 'selected' : ''}>關閉，使用本機 26B</option>
@@ -1965,11 +2466,11 @@ function heavyRuntimeCardHTML(canEdit) {
         </div>
       </div>
       <div class="runtime-meta">
-        <div>${escapeHtml(state.description || 'HEAVY 任務會優先嘗試 NVIDIA API。')}</div>
+        <div>${escapeHtml(state.description || '重型任務會優先嘗試 NVIDIA API。')}</div>
         <div>狀態：${configured ? `已設定 ${escapeHtml(state.masked || '')}` : '尚未設定金鑰'}</div>
       </div>
       <div class="runtime-actions">
-        <button class="runtime-btn" ${disableAttr} onclick="saveHeavyRuntime()">套用 HEAVY 設定</button>
+        <button class="runtime-btn" ${disableAttr} onclick="saveHeavyRuntime()">套用重型 API 設定</button>
       </div>
     </div>
   `;
@@ -1978,7 +2479,7 @@ function heavyRuntimeCardHTML(canEdit) {
 async function saveHeavyRuntime() {
   const canEdit = !!(heavyRuntimeState && heavyRuntimeState.can_edit);
   if (!canEdit) {
-    alert('只有管理員可以修改 HEAVY API。');
+    alert('只有管理員可以修改重型 API。');
     return;
   }
   const enabledEl = document.getElementById('heavy-runtime-enabled');
@@ -1987,7 +2488,7 @@ async function saveHeavyRuntime() {
   const apiKey = keyEl && keyEl.value ? keyEl.value.trim() : '';
   if (apiKey) payload.api_key = apiKey;
   const lineEl = document.getElementById('runtime-status-line');
-  if (lineEl) lineEl.textContent = '正在套用 HEAVY API 設定...';
+  if (lineEl) lineEl.textContent = '正在套用重型 API 設定...';
   try {
     const response = await fetch('/api/nerv/heavy-runtime', {
       method: 'POST',
@@ -1999,10 +2500,10 @@ async function saveHeavyRuntime() {
     renderProductRuntime();
     if (lastData) renderEngineNodes(lastData);
     renderRoutingTable();
-    if (lineEl) lineEl.textContent = 'HEAVY API 設定已套用。';
+    if (lineEl) lineEl.textContent = '重型 API 設定已套用。';
   } catch (e) {
-    if (lineEl) lineEl.textContent = 'HEAVY API 設定儲存失敗。';
-    alert(`HEAVY API 設定儲存失敗: ${e.message}`);
+    if (lineEl) lineEl.textContent = '重型 API 設定儲存失敗。';
+    alert(`重型 API 設定儲存失敗: ${e.message}`);
     await fetchHeavyRuntime();
   }
 }
@@ -2079,7 +2580,7 @@ function setSkillEditorStatus(message, tone = '') {
 function updateSkillModalTitle(label) {
   const modalTitle = document.getElementById('skill-modal-title');
   if (!modalTitle) return;
-  modalTitle.textContent = label || 'SKILL EDITOR';
+  modalTitle.textContent = label || '技能編輯器';
 }
 
 function switchSkillSidePanel(panel) {
@@ -2098,7 +2599,7 @@ function isSkillModalOpen() {
   return !!(modal && modal.classList.contains('open'));
 }
 
-function openSkillModal(title = 'SKILL EDITOR') {
+function openSkillModal(title = '技能編輯器') {
   const modal = document.getElementById('skill-modal');
   if (!modal) return;
   updateSkillModalTitle(title);
@@ -2289,7 +2790,7 @@ async function fetchSkillInterviewState(options = {}) {
 }
 
 function openSkillInterviewWizard() {
-  openSkillModal('SKILL INTERVIEW');
+  openSkillModal('技能問答精靈');
   switchSkillSidePanel('wizard');
   const input = document.getElementById('skill-wizard-request');
   if (input) input.focus();
@@ -2543,7 +3044,7 @@ async function loadSkillDoc(skillName, encoded = false) {
   if (!resolvedName) return;
   activeSkillName = resolvedName;
   isNewSkillDraft = false;
-  openSkillModal(`SKILL EDITOR · ${resolvedName}`);
+  openSkillModal(`技能編輯器 · ${resolvedName}`);
   renderSkillTree();
   setSkillEditorStatus(`正在讀取 ${resolvedName}...`, 'warn');
   try {
@@ -2558,7 +3059,7 @@ async function loadSkillDoc(skillName, encoded = false) {
   } catch (e) {
     resetSkillVersionsPanel(`${resolvedName} 的版本快照目前無法讀取。`);
     setSkillEditorStatus(
-      e.message === '請重新登入 MAGI' ? '請重新登入後再檢視 SKILL。' : `${resolvedName} 讀取失敗，請稍後再試。`,
+      e.message === '請重新登入 MAGI' ? '請重新登入後再檢視技能。' : `${resolvedName} 讀取失敗，請稍後再試。`,
       'error'
     );
   }
@@ -2591,7 +3092,7 @@ async function saveSkillDoc() {
     const skill = payload.skill || {};
     activeSkillName = skillName;
     isNewSkillDraft = false;
-    updateSkillModalTitle(`SKILL EDITOR · ${skillName}`);
+    updateSkillModalTitle(`技能編輯器 · ${skillName}`);
     contentInput.value = skill.content || content;
     setSkillEditorStatus(`${skillName} 已儲存到 MAGI。`, 'ok');
     await fetchNervSkills();
@@ -2676,29 +3177,20 @@ async function rollbackSkillVersion(encodedVersionId) {
 
 function render(data) {
   lastData = data;
+  data = data && typeof data === 'object' ? data : {};
   document.getElementById('ts').textContent = new Date().toLocaleTimeString('zh-TW', {hour12: false});
-
-  // MAGI triangle
-  const casperEl = document.getElementById('node-casper');
-  const melEl = document.getElementById('node-melchior');
-  const balEl = document.getElementById('node-balthasar');
-
-  casperEl.className = `magi-node casper ${data.magi_server?.status === 'online' ? 'online' : 'offline'}`;
-  document.getElementById('casper-detail').textContent = `PID ${data.magi_server?.pid || '?'}`;
-
-  const melStatus = data.melchior?.status || 'error';
-  melEl.className = `magi-node melchior ${(melStatus === 'online' || melStatus === 'local') ? 'online' : 'offline'}`;
-  document.getElementById('melchior-detail').textContent = data.melchior?.detail || melStatus;
-
-  const balStatus = data.balthasar?.status || 'error';
-  balEl.className = `magi-node balthasar ${(balStatus === 'online' || balStatus === 'local') ? 'online' : 'offline'}`;
-  document.getElementById('balthasar-detail').textContent = data.balthasar?.detail || balStatus;
+  const telemetry = _toTelemetryData(data);
+  renderAgentStatus(data.agent_status || telemetry.agent_status || null);
 
   // Infrastructure
   document.getElementById('infra-nodes').innerHTML = [
-    nodeHTML('MAGI Server', data.magi_server?.status, `PID ${data.magi_server?.pid || '?'}`),
-    nodeHTML('Cloudflared (LINE only)', data.cloudflared?.status, ''),
-    nodeHTML('全球新聞網', data.worldmonitor?.status, ''),
+    nodeHTML(
+      'MAGI 服務',
+      data.magi_server?.status || 'offline',
+      `PID ${data.magi_server?.pid || '?'} · 監測 ${telemetry.fromTelemetry ? '正常' : '未取得'}`
+    ),
+    nodeHTML('LINE 通道', data.cloudflared?.status || 'offline', 'Cloudflare'),
+    nodeHTML('全球新聞網', data.worldmonitor?.status || 'offline', ''),
   ].join('');
 
   // Engines
@@ -2707,9 +3199,9 @@ function render(data) {
 
   // Communications
   document.getElementById('comm-nodes').innerHTML = [
-    nodeHTML('LINE Webhook', data.line_webhook?.status, ''),
-    nodeHTML('Cloudflare Tunnel (Webhook only)', data.cloudflared?.status, ''),
-    nodeHTML('Tailscale VPN', 'online', ''),
+    nodeHTML('LINE 接收端', data.line_webhook?.status || 'offline', 'Webhook'),
+    nodeHTML('Cloudflare 通道', data.cloudflared?.status || 'offline', 'Webhook 專用'),
+    nodeHTML('Tailscale 連線', data.remote_access?.tailscale?.status || 'offline', '私有 VPN'),
   ].join('') +
   '<div style="margin-top:12px;border-top:1px solid #1a1a00;padding-top:8px;">' +
   '<div class="panel-title">快速連結</div>' +
@@ -2719,29 +3211,60 @@ function render(data) {
 
   // Data stores
   document.getElementById('data-nodes').innerHTML = [
-    nodeHTML('MySQL (Keeper)', data.mysql?.status, ''),
-    nodeHTML('LanceDB (Memory)', 'online', 'local'),
-    nodeHTML('FAISS (Embed)', 'online', data.faiss?.vectors ? Number(data.faiss.vectors).toLocaleString() + ' vectors' : 'local'),
+    nodeHTML('MySQL 資料庫', data.mysql?.status || 'offline', ''),
+    nodeHTML('LanceDB 記憶庫', 'online', '本機'),
+    nodeHTML('FAISS 向量索引', 'online', data.faiss?.vectors ? `${Number(data.faiss.vectors).toLocaleString()} 個向量` : '本機'),
   ].join('');
 
   // oMLX models
   const omlxModels = data.omlx?.models || [];
   document.getElementById('omlx-models').innerHTML = omlxModels.length
     ? omlxModels.map(m => nodeHTML(m, 'online', '')).join('')
-    : nodeHTML('No models', 'red', '');
+    : nodeHTML('沒有模型', 'red', '');
 
   renderOfficeNodes(data);
   renderRemoteAccess(data.remote_access);
   renderCommandStrip();
+  renderResourceMetrics(data);
+  renderActivityStream(data);
   renderSkillTree();
 }
 
 async function poll() {
   try {
-    const r = await fetch('/dashboard/nerv/api/health');
-    if (r.ok) render(await r.json());
+    const r = await fetch('/status/api/health', {
+      credentials: 'same-origin',
+      redirect: 'manual',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (r.type === 'opaqueredirect' || [301, 302, 303, 307, 308].includes(r.status)) {
+      showHealthPollNotice('需要重新登入', '登入狀態已過期；請從儀表板重新進入系統檢測。');
+      return;
+    }
+    if (!r.ok) {
+      console.warn('Health poll failed:', r.status, r.statusText);
+      showHealthPollNotice('健康檢查暫時無回應', `${r.status} ${r.statusText || ''}`.trim() || 'API 沒有回應');
+      return;
+    }
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      showHealthPollNotice('需要重新登入', '健康 API 回傳的不是 JSON；通常代表登入狀態已過期。');
+      return;
+    }
+    let payload;
+    try {
+      payload = await r.json();
+    } catch (e) {
+      console.warn('Health poll parse failed:', e);
+      showHealthPollNotice('健康檢查格式異常', '健康 API 回應無法解析，請重新整理或重新登入。');
+      return;
+    }
+    const publicAgentStatus = await fetchPublicAgentStatus();
+    if (publicAgentStatus) payload.agent_status = publicAgentStatus;
+    render(payload);
   } catch (e) {
     console.warn('Health poll failed:', e);
+    showHealthPollNotice('健康檢查連線失敗', String(e && e.message ? e.message : e).slice(0, 120));
   }
 }
 

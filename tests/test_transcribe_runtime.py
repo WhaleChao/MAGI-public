@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from skills.bridge import tri_sage_collab
+from skills.bridge.balthasar_bridge import _transcript_postprocess
 
 
 def test_transcribe_auto_prefers_balthasar_before_apple(monkeypatch, tmp_path):
@@ -49,3 +50,7 @@ def test_transcribe_auto_uses_fast_cli_before_balthasar(monkeypatch, tmp_path):
     assert result["model"] == "tiny"
     assert calls["cli"] == 1
     assert calls["balthasar"] == 0
+
+
+def test_transcript_postprocess_uses_taiwan_legal_term_for_evidence_motion():
+    assert _transcript_postprocess("辯護人申請調查證據") == "辯護人聲請調查證據"

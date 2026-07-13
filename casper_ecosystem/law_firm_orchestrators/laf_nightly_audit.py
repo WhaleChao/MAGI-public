@@ -38,8 +38,18 @@ from api.case_display import (
     should_trust_folder_client_name as _canonical_should_trust_folder_client_name,
 )
 from api.runtime_paths import get_config_path
-from api.case_path_mapper import default_case_roots, preferred_case_roots
-from api.laf_case_classifier import normalize_laf_case_type
+from api.case_path_mapper import default_case_roots, preferred_case_roots, translate_case_path_to_local
+from api.laf_case_classifier import extract_laf_staff_case_hint, normalize_laf_case_type
+from api.laf_go_live_rules import (
+    go_live_missing_labels,
+    is_consumer_debt_text,
+    is_go_live_ready,
+    is_go_live_receipt_proof,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
+from api.laf_poa_docx import ensure_laf_poa_docx_companion, is_laf_power_of_attorney_pdf
+from skills.bridge.shared_utils.judgment_folder_names import first_existing_judgment_folder
 from api.product_runtime import get_product_profile, resolve_laf_portal_targets
 
 # 載入 .env
@@ -47,14 +57,17 @@ try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 except ImportError:
-    pass
+    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 49, exc_info=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("LAFNightlyAudit")
-_SKIP_IMPORT_PROBES = "pytest" in sys.modules or os.getenv("MAGI_SKIP_IMPORT_PROBES") == "1"
+_SKIP_IMPORT_PROBES = (
+    "pytest" in sys.modules
+    or os.getenv("MAGI_SKIP_IMPORT_PROBES", "1").strip().lower() not in {"0", "false", "no", "off"}
+)
 
 # ── DB Failover: 獨立 process 需自行偵測，daemon 的 monitor 不會跑在這裡 ──
 if not _SKIP_IMPORT_PROBES:
@@ -93,7 +106,7 @@ LAF_NO_RE = re.compile(r"\d{6,8}-[A-Za-z]-\d{3}")
 _PRIORITY_LAF_FILENAME_KEYWORDS = ("開辦通知書", "接案通知書", "准予扶助證明書", "委任狀")
 _PORTAL_FILE_CATEGORY_RULES = {
     "01_法扶資料": ["接案通知書", "委任狀", "法律扶助申請書", "案件概述單", "資力詢問表", "審查表", "准予扶助證明書", "預付酬金領款單", "結案回報書"],
-    "03_結案資料": ["結案酬金領款單"],
+    "03_結案資料": ["結案酬金領款單", "結案審查通知書", "變動審查通知書"],
     "02_開辦資料": ["附條件第二階段預付酬金領款單"],
 }
 _STATUS_TEXT_ALIASES = {
@@ -112,7 +125,7 @@ _STATUS_TEXT_ALIASES = {
     "archived": "已結案",
     "已結案": "已結案",
 }
-_NAME_FIXES = str.maketrans({"餘": "余"})
+_NAME_FIXES = str.maketrans({"餘": "余", "遊": "游", "臺": "台"})
 _BACKFILL_NOTICE_RE = re.compile(r"^\s*•\s+(?P<case>20\d{2}-\d{4})\s+.+?→\s+(?P<laf>\d{6,8}-[A-Za-z]-\d{3})", re.MULTILINE)
 
 
@@ -150,7 +163,7 @@ def _get_db():
                 "user": c.user, "password": c.password, "database": c.database,
             })
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 152, exc_info=True)
     except Exception as e:
         logger.error("DB connection failed: %s", e)
     return None
@@ -370,7 +383,7 @@ def _inspect_laf_number_candidates(case: dict) -> dict:
                 for fn in files:
                     info["fallback_numbers"].update(LAF_NO_RE.findall(fn))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 372, exc_info=True)
 
     info["candidate_numbers"] = info["priority_numbers"] or info["fallback_numbers"]
     if info["priority_numbers"]:
@@ -617,6 +630,24 @@ def mark_progress_reported(target: str, *, db=None, actor: str = "user", note: s
     except Exception as e:
         return {"ok": False, "error": "db_query_failed", "detail": str(e)}
 
+    if not rows and _normalize_person_name(target) != target:
+        try:
+            candidates = db.fetch_all(
+                """
+                SELECT `id`, `case_number`, `client_name`, `legal_aid_number`, `laf_case_no`, `application_no`,
+                       `legal_aid_status`, `status`, `start_date`, `legal_aid_startup_deadline`
+                FROM `cases`
+                WHERE (`case_category` = '法律扶助案件' OR `case_reason` LIKE '%法扶%' OR `case_reason` LIKE '%法律扶助%')
+                ORDER BY `case_number` DESC
+                LIMIT 300
+                """,
+                as_dict=True,
+            ) or []
+            target_key = _normalize_person_name(target)
+            rows = [r for r in candidates if _normalize_person_name(r.get("client_name") or "") == target_key]
+        except Exception as e:
+            return {"ok": False, "error": "db_query_failed", "detail": str(e)}
+
     if not rows:
         return {"ok": False, "error": "case_not_found", "target": target}
 
@@ -759,15 +790,49 @@ def _update_laf_status(db, case: dict, new_status: str) -> bool:
         return False
     old_status = case.get("legal_aid_status") or "(空)"
     next_case_status = _case_status_for_laf_status(new_status)
+    downgrade_to_not_started = str(new_status or "").strip() == "未開辦"
     try:
-        db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
-            (new_status, next_case_status, case_id),
-        )
+        if downgrade_to_not_started:
+            try:
+                lock_row = db.execute(
+                    "SELECT `manual_laf_status_lock`, `legal_aid_status` FROM `cases` WHERE `id` = %s",
+                    (case_id,),
+                    fetch="one",
+                )
+                if lock_row and int(lock_row.get("manual_laf_status_lock") or 0) == 1:
+                    logger.info(
+                        "⏭️ DB 法扶狀態人工鎖定，跳過自動降回未開辦: %s %s（目前 %s）",
+                        case.get("case_number"),
+                        case.get("client_name"),
+                        lock_row.get("legal_aid_status") or old_status,
+                    )
+                    return False
+            except Exception as lock_err:
+                if "manual_laf_status_lock" not in str(lock_err) and "Unknown column" not in str(lock_err):
+                    raise
+        try:
+            db.execute_write(
+                """
+                UPDATE `cases`
+                SET `legal_aid_status` = %s,
+                    `status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END
+                WHERE `id` = %s
+                  AND NOT (COALESCE(`manual_laf_status_lock`, 0) = 1 AND %s)
+                """,
+                (new_status, next_case_status, case_id, 1 if downgrade_to_not_started else 0),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "manual_laf_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `status` = %s WHERE `id` = %s",
+                (new_status, next_case_status, case_id),
+            )
         logger.info("📝 DB 狀態更新: %s %s「%s」→「%s」",
                      case.get("case_number"), case.get("client_name"), old_status, new_status)
         case["legal_aid_status"] = new_status
-        case["status"] = next_case_status
+        if not case.get("manual_status_lock"):
+            case["status"] = next_case_status
         return True
     except Exception as e:
         logger.error("DB 狀態更新失敗 %s: %s", case.get("case_number"), e)
@@ -787,15 +852,27 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
     cur_approval = (case.get("legal_aid_approval_status") or "").strip()
     next_case_status = _case_status_for_laf_status(main_status)
     cur_case_status = (case.get("status") or "").strip()
-    if cur_main == main_status and cur_approval == approval_status and cur_case_status == next_case_status:
+    manual_locked = bool(int(case.get("manual_status_lock") or 0))
+    if cur_main == main_status and cur_approval == approval_status and (manual_locked or cur_case_status == next_case_status):
         logger.debug("DB 冪等跳過 case_id=%s: %s/%s 無變化", case_id, main_status, approval_status)
         return
     try:
-        db.execute_write(
-            "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
-            "`legal_aid_approval_checked_at` = NOW(), `status` = %s WHERE `id` = %s",
-            (main_status, approval_status, next_case_status, case_id),
-        )
+        try:
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
+                "`legal_aid_approval_checked_at` = NOW(), "
+                "`status` = CASE WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status` ELSE %s END "
+                "WHERE `id` = %s",
+                (main_status, approval_status, next_case_status, case_id),
+            )
+        except Exception as inner:
+            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+                raise
+            db.execute_write(
+                "UPDATE `cases` SET `legal_aid_status` = %s, `legal_aid_approval_status` = %s, "
+                "`legal_aid_approval_checked_at` = NOW(), `status` = %s WHERE `id` = %s",
+                (main_status, approval_status, next_case_status, case_id),
+            )
         logger.info(
             "📝 DB 狀態更新（主+副）: %s %s「%s/%s」→「%s/%s」",
             case.get("case_number"), case.get("client_name"),
@@ -803,7 +880,8 @@ def _update_laf_status_with_approval(db, case: dict, main_status: str, approval_
         )
         case["legal_aid_status"] = main_status
         case["legal_aid_approval_status"] = approval_status
-        case["status"] = next_case_status
+        if not manual_locked:
+            case["status"] = next_case_status
     except Exception as e:
         err_str = str(e)
         if "legal_aid_approval_status" in err_str or "Unknown column" in err_str:
@@ -914,7 +992,13 @@ def _find_missing_portal_files(expected_files: List[str], existing_files: List[s
 
 
 def _make_laf_web_automation(*, log_prefix: str = "LAF-AUDIT"):
-    from laf_automation_v2 import LAFWebAutomation
+    try:
+        from casper_ecosystem.law_firm_orchestrators.laf_automation_v2 import (
+            LAFWebAutomation,
+        )
+    except Exception as exc:
+        logger.warning("新版 LAFWebAutomation 載入失敗，退回舊入口: %s", exc)
+        from skills.legal.laf import LAFWebAutomation
 
     config = _load_config()
     laf_cfg = config.get("laf") if isinstance(config.get("laf"), dict) else {}
@@ -1073,7 +1157,7 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1120, exc_info=True)
 
     if not xlsx_path:
         return []
@@ -1149,7 +1233,7 @@ def backfill_from_case_list(db, missing_cases: List[dict]) -> List[dict]:
         if xlsx_path and os.path.exists(xlsx_path):
             os.remove(xlsx_path)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1196, exc_info=True)
 
     return backfilled
 
@@ -1248,7 +1332,7 @@ def _process_display_name(pid: int, fallback: str = "") -> str:
             if name:
                 return name
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1295, exc_info=True)
     return fallback or ""
 
 
@@ -1486,7 +1570,7 @@ def _safe_rename_case_folder(old_path: str, new_path: str) -> Tuple[bool, str]:
     try:
         os.makedirs(os.path.dirname(new_path), exist_ok=True)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1533, exc_info=True)
     is_open, who = _is_folder_open_by_other(old_path)
     if is_open:
         released, release_reason = _release_folder_for_rename(old_path)
@@ -1523,6 +1607,38 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
     folder = _to_mac_path((case.get("folder_path") or "").strip())
     if not folder or not os.path.isdir(folder):
         return {}
+    local_hint: dict = {}
+    staff_dir = os.path.join(folder, "01_法扶資料", "專員來信")
+    if os.path.isdir(staff_dir):
+        try:
+            for root, dirs, files in os.walk(staff_dir):
+                depth = root.replace(staff_dir, "").count(os.sep)
+                if depth > 1:
+                    dirs.clear()
+                    continue
+                for fn in files:
+                    if not fn.lower().endswith((".txt", ".eml")):
+                        continue
+                    p = os.path.join(root, fn)
+                    try:
+                        body = Path(p).read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    hint = extract_laf_staff_case_hint(
+                        body,
+                        laf_case_number=str(case.get("legal_aid_number") or ""),
+                        client_name=str(case.get("client_name") or ""),
+                    )
+                    if hint:
+                        if hint.get("case_reason"):
+                            local_hint["reason"] = hint.get("case_reason")
+                        if hint.get("case_stage"):
+                            local_hint["procedure"] = hint.get("case_stage")
+                        break
+                if local_hint:
+                    break
+        except Exception:
+            local_hint = {}
     preferred = (
         "審查表",
         "准予扶助證明書",
@@ -1555,7 +1671,7 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
             continue
     text = "\n".join(text_parts)
     if not text.strip():
-        return {}
+        return local_hint
 
     def _line_after(marker: str) -> str:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -1599,6 +1715,9 @@ def _extract_placeholder_identity_from_local_docs(case: dict) -> dict:
         out["reason"] = reason
     if stage and stage not in {"扶助內容", "扶助內容程序"}:
         out["procedure"] = stage
+    for key, value in local_hint.items():
+        if value and not out.get(key):
+            out[key] = value
     return out
 
 
@@ -1639,7 +1758,7 @@ def _move_tree_contents(src_root: str, dst_root: str) -> tuple[int, list[str]]:
     try:
         shutil.rmtree(src_root)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1686, exc_info=True)
     return moved, skipped
 
 
@@ -1796,7 +1915,7 @@ def _check_reconcile_throttle() -> Tuple[bool, int]:
             if elapsed < _RECONCILE_THROTTLE_SEC:
                 return True, int(_RECONCILE_THROTTLE_SEC - elapsed)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1843, exc_info=True)
     return False, 0
 
 
@@ -1931,7 +2050,7 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1978, exc_info=True)
 
     if not xlsx_path:
         return {"error": "excel_path_empty", "placeholder_count": len(placeholders)}
@@ -2135,7 +2254,7 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
         if xlsx_path and os.path.exists(xlsx_path):
             os.remove(xlsx_path)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2182, exc_info=True)
 
     if not only_laf_no:
         _write_reconcile_state()
@@ -2162,7 +2281,7 @@ def scan_laf_reporting_status(db) -> dict:
             "not_started": [...],     # 未開辦且已逾期
             "can_go_live": [...],     # 有開辦資料，可回報開辦但還沒
             "pending_close": [...],   # 已結案但尚未報結
-            "can_close": [...],       # 有判決書，可報結但還沒
+            "can_close": [...],       # 有終局文件且狀態待報結，需人工確認
             "progress_overdue": [...],# 進行中且派案超過 18 個月，需確認進度回報
             "all_cases": [...],       # 所有法扶案件
         }
@@ -2187,7 +2306,7 @@ def scan_laf_reporting_status(db) -> dict:
     not_started = []      # 未開辦且已逾期
     can_go_live = []      # 有開辦資料可回報
     pending_close = []    # DB 狀態=結案 但法扶未報結
-    can_close = []        # 有判決書可報結
+    can_close = []        # 有終局文件且狀態待報結，需人工確認
     progress_overdue = [] # 進行中且派案超過提醒門檻
     progress_suppressed = [] # 已由使用者確認回報，冷卻中
     progress_cooldowns = _load_progress_cooldowns()
@@ -2206,26 +2325,21 @@ def scan_laf_reporting_status(db) -> dict:
         # 轉換路徑
         mac_folder = _to_mac_path(folder)
 
-        has_go_live_notice = False
-        has_go_live_poa = False
+        go_live_docs = _empty_go_live_docs()
+        is_consumer_debt = is_consumer_debt_text(
+            case.get("case_type") or "",
+            case.get("case_reason") or "",
+            folder,
+        )
         if laf_status in ("未開辦", "", None) and mac_folder:
-            has_go_live_notice = _folder_has_file(
-                mac_folder,
-                "02_開辦資料",
-                ("開辦通知書", "接案通知書", "准予扶助證明書"),
-            )
-            has_go_live_poa = _folder_has_file(mac_folder, "02_開辦資料", ("委任狀",))
-            if not has_go_live_notice:
-                has_go_live_notice = _folder_has_file(
-                    mac_folder,
-                    "01_法扶資料",
-                    ("開辦通知書", "接案通知書", "准予扶助證明書"),
-                )
-            if not has_go_live_poa:
-                has_go_live_poa = _folder_has_file(mac_folder, "01_法扶資料", ("委任狀",))
+            go_live_docs = _scan_go_live_prepared_docs(mac_folder)
 
         # A. 未開辦且已逾期
-        if laf_status in ("未開辦", "", None) and laf_no and not (has_go_live_notice and has_go_live_poa):
+        if (
+            laf_status in ("未開辦", "", None)
+            and laf_no
+            and not is_go_live_ready(go_live_docs, is_consumer_debt=is_consumer_debt)
+        ):
             if deadline_raw:
                 try:
                     dl = deadline_raw if isinstance(deadline_raw, date) else datetime.strptime(str(deadline_raw)[:10], "%Y-%m-%d").date()
@@ -2235,16 +2349,24 @@ def scan_laf_reporting_status(db) -> dict:
                             "days_overdue": (today - dl).days,
                         })
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2274, exc_info=True)
 
         # B. 有開辦資料但尚未回報開辦
         if (
             laf_status in ("未開辦", "", None)
-            and has_go_live_notice
-            and has_go_live_poa
+            and is_go_live_ready(go_live_docs, is_consumer_debt=is_consumer_debt)
             and not _is_placeholder_client_name(case.get("client_name") or "")
         ):
-            can_go_live.append(case)
+            can_go_live.append({
+                **case,
+                "go_live_docs": go_live_docs,
+                "go_live_missing": go_live_missing_labels(go_live_docs, is_consumer_debt=is_consumer_debt),
+            })
+            if _env_flag("MAGI_LAF_AUTO_MARK_GO_LIVE_READY", "1") and hasattr(db, "execute_write"):
+                try:
+                    _update_laf_status(db, case, "進行中")
+                except Exception as e:
+                    logger.warning("auto mark LAF go-live ready failed for %s: %s", case.get("case_number"), e)
 
         # C. OSC 已結案但 DB 法扶狀態未標記已結案（需上法扶網站確認是否已報結）
         # deprecated alias：「已報結」/「已報結（待轉入）」保留至 2026-07-26，遷移完成後可移除
@@ -2256,13 +2378,13 @@ def scan_laf_reporting_status(db) -> dict:
         if osc_status in ("結案", "已結案") and laf_status not in _skip_pending:
             pending_close.append(case)
 
-        # D. 有判決書/處分書，可報結但還沒
-        #    包含「已結案，待報結」狀態（DB 標記已結案但尚未向法扶回報）
-        _closeable_statuses = ("進行中", "已開辦", "待報結", "已結案，待報結")
+        # D. 有明確終局文件，且狀態本身已進入待報結。
+        #    進行中/已開辦不能只因資料夾出現裁定或調解筆錄就觸發報結。
+        _closeable_statuses = ("待報結", "已結案，待報結")
         if laf_status in _closeable_statuses and mac_folder:
-            has_judgment = _folder_has_any_file(mac_folder, "10_判決書")
-            if has_judgment:
-                can_close.append(case)
+            basis_files = _folder_auto_closing_basis_files(mac_folder, case)
+            if basis_files:
+                can_close.append({**case, "closing_basis_files": basis_files[:5]})
 
         # E. 進行中案件：派案/建案超過 18 個月仍未結案，應提醒確認進度回報
         if laf_status in ("進行中", "已開辦") and osc_status not in ("結案", "已結案"):
@@ -2312,7 +2434,39 @@ def _to_mac_path(folder: str) -> str:
     """
     if not folder:
         return ""
+    mapped = translate_case_path_to_local(folder, require_existing=True, for_write=True)
+    if mapped:
+        return mapped
     f = folder.replace("\\", "/")
+
+    def _closed_fallback_roots() -> List[str]:
+        raw = os.getenv("MAGI_LAF_CLOSED_CASE_FALLBACK_ROOTS", "")
+        roots: List[str] = []
+        for value in re.split(r"[:;,]", raw):
+            value = value.strip()
+            if value:
+                roots.append(value)
+        roots.extend([
+            "/Volumes/bakup/" + "lumi" + "63181107" + "/01_案件",
+            "/Volumes/bakup/lumi/01_案件",
+        ])
+        out: List[str] = []
+        seen: Set[str] = set()
+        for root in roots:
+            norm = os.path.abspath(os.path.expanduser(root))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            out.append(norm)
+        return out
+
+    def _existing_closed_fallback(*rel_parts: str) -> str:
+        for root in _closed_fallback_roots():
+            candidate = os.path.join(root, *rel_parts)
+            if _is_dir_ok(candidate):
+                return candidate
+        return ""
+
     if f.startswith("Z:") or f.startswith("z:"):
         # Z:/<active-share>/01_案件/法扶案件/SomeFolder → NAS_CASE_ROOT/法扶案件/SomeFolder
         parts = f.split("/")
@@ -2327,12 +2481,20 @@ def _to_mac_path(folder: str) -> str:
                     if _is_dir_ok(closed_path):
                         logger.debug("_to_mac_path: 案件已在結案資料夾: %s", closed_path)
                         return closed_path
+                fallback_path = _existing_closed_fallback(*parts[i + 1:])
+                if fallback_path:
+                    logger.debug("_to_mac_path: 案件已在 fallback 結案根目錄: %s", fallback_path)
+                    return fallback_path
                 return active_path  # 回傳原路徑供上層判斷（不靜默丟棄）
         return ""
     if f.startswith("Y:") or f.startswith("y:"):
         # Canonical closed-case path -> local closed-case root
         rel = re.sub(r"^[Yy]:/lumi/03_工作資料/10_結案/", "", f)
-        return os.path.join(Y_DRIVE_ROOT, rel)
+        closed_path = os.path.join(Y_DRIVE_ROOT, rel)
+        if _is_dir_ok(closed_path):
+            return closed_path
+        fallback_path = _existing_closed_fallback(*[p for p in rel.split("/") if p])
+        return fallback_path or closed_path
     if _is_dir_ok(f):
         return f
     return ""
@@ -2348,8 +2510,82 @@ def _folder_has_file(mac_folder: str, subfolder: str, keywords: tuple) -> bool:
             if any(k in fn for k in keywords):
                 return True
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2387, exc_info=True)
     return False
+
+
+def _empty_go_live_docs() -> dict:
+    return {
+        "opening_notice_files": [],
+        "poa_files": [],
+        "opening_proof_files": [],
+        "stored_pleading_files": [],
+        "receipt_files": [],
+    }
+
+
+def _append_doc(out: dict, key: str, path: str) -> None:
+    if path and path not in out.setdefault(key, []):
+        out[key].append(path)
+
+
+def _scan_go_live_prepared_docs(mac_folder: str) -> dict:
+    """Lightweight prepared go-live scan.
+
+    Only prepared folders are scanned.  01_法扶資料 is intentionally excluded
+    because it stores blank official forms downloaded from the portal.
+    """
+    out = _empty_go_live_docs()
+    root = str(mac_folder or "").strip()
+    if not root or not os.path.isdir(root):
+        return out
+    allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".doc", ".docx"}
+    max_entries = max(1, int(os.environ.get("MAGI_LAF_GO_LIVE_SCAN_MAX_ENTRIES", "300") or "300"))
+
+    def _scan_dir(label: str, path: str, *, one_level: bool = True) -> None:
+        if not os.path.isdir(path):
+            return
+        try:
+            entries = sorted(os.listdir(path))[:max_entries]
+        except OSError:
+            return
+        for fn in entries:
+            if fn.startswith(".") or fn.startswith("~"):
+                continue
+            full = os.path.join(path, fn)
+            if os.path.isdir(full) and one_level:
+                try:
+                    for fn2 in sorted(os.listdir(full))[:max_entries]:
+                        if fn2.startswith(".") or fn2.startswith("~"):
+                            continue
+                        full2 = os.path.join(full, fn2)
+                        if os.path.isfile(full2) and Path(fn2).suffix.lower() in allowed:
+                            _classify_go_live_file(fn2, full2, label)
+                except OSError:
+                    continue
+                continue
+            if os.path.isfile(full) and Path(fn).suffix.lower() in allowed:
+                _classify_go_live_file(fn, full, label)
+
+    def _classify_go_live_file(fn: str, full: str, label: str) -> None:
+        if label == "02_開辦資料" and is_opening_notice_filename(fn, full_path=full, subdir=label):
+            _append_doc(out, "opening_notice_files", full)
+        if "委任狀" in fn and label == "02_開辦資料":
+            _append_doc(out, "poa_files", full)
+            _append_doc(out, "opening_proof_files", full)
+        if label == "04_我方歷次書狀" and is_stored_pleading_proof(fn, full_path=full, subdir=label):
+            _append_doc(out, "stored_pleading_files", full)
+            _append_doc(out, "opening_proof_files", full)
+        if label == "11_回執" and is_go_live_receipt_proof(fn):
+            _append_doc(out, "receipt_files", full)
+            _append_doc(out, "opening_proof_files", full)
+
+    _scan_dir("02_開辦資料", os.path.join(root, "02_開辦資料"))
+    _scan_dir("04_我方歷次書狀", os.path.join(root, "04_我方歷次書狀"))
+    _scan_dir("11_回執", os.path.join(root, "11_回執"))
+    for key in out:
+        out[key] = sorted(out[key])
+    return out
 
 
 def _folder_has_any_file(mac_folder: str, subfolder: str) -> bool:
@@ -2362,11 +2598,143 @@ def _folder_has_any_file(mac_folder: str, subfolder: str) -> bool:
             if not fn.startswith("."):
                 return True
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2401, exc_info=True)
     return False
 
 
 # ─── 2a-2. 可報結案件自動暫存 ─────────────────────────────────
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _folder_auto_closing_basis_files(mac_folder: str, case: dict | None = None) -> List[str]:
+    """Return terminal files safe enough for nightly closing *candidate* reporting."""
+    if not mac_folder or not os.path.isdir(mac_folder):
+        return []
+    case = case or {}
+    try:
+        from laf_orchestrator_docmixins import LAFOrchestratorDocumentMixin
+
+        scanner = LAFOrchestratorDocumentMixin()
+        docs = scanner._scan_case_folder_docs(mac_folder, action="closing")
+        case_reason = str(case.get("case_reason") or "")
+        basis = [
+            p for p in list(docs.get("closing_basis_files") or [])
+            if scanner._is_auto_closing_basis_candidate(p, case_reason=case_reason, folder_path=mac_folder)
+        ]
+        return scanner._sort_closing_basis_files(basis)
+    except Exception as e:
+        logger.warning("auto closing basis scan fallback: %s", e)
+
+    # Fallback remains intentionally conservative.
+    target = str(first_existing_judgment_folder(Path(mac_folder), 10))
+    if not os.path.isdir(target):
+        return []
+    safe_keywords = (
+        "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
+        "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+        "認可更生方案", "更生方案認可",
+    )
+    review_only = ("調解筆錄", "和解筆錄", "調解書", "和解書", "普通裁定")
+    out: List[str] = []
+    try:
+        for fn in sorted(os.listdir(target)):
+            if fn.startswith(".") or fn.startswith("~") or any(k in fn for k in review_only):
+                continue
+            if any(k in fn for k in safe_keywords):
+                out.append(os.path.join(target, fn))
+    except Exception:
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2456, exc_info=True)
+    return out
+
+
+def _active_canonical_case_folder(folder_path: str) -> bool:
+    """Return True only for canonical active-case paths, not archived paths."""
+    text = str(folder_path or "").replace("\\", "/").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    if upper.startswith("Y:/") or "/10_結案/" in text:
+        return False
+    return upper.startswith("Z:/") or "/01_案件/" in text
+
+
+def repair_false_laf_closing_statuses(db, dry_run: bool = False) -> dict:
+    """
+    Restore automated false-positive LAF closing statuses.
+
+    Manual LAF status locks are respected.  This only repairs active-folder
+    cases that were moved into 「待報結」 without a strict terminal basis file.
+    """
+    if db is None:
+        return {"checked": 0, "repaired": 0, "items": [], "error": "db_unavailable"}
+    query = """
+        SELECT `id`, `case_number`, `client_name`, `case_reason`, `status`,
+               `folder_path`, `legal_aid_number`, `laf_case_no`, `application_no`,
+               `legal_aid_status`, COALESCE(`manual_laf_status_lock`, 0) AS `manual_laf_status_lock`
+        FROM `cases`
+        WHERE (`case_category` = '法律扶助案件'
+               OR `case_reason` LIKE '%法扶%'
+               OR `case_reason` LIKE '%法律扶助%')
+          AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
+          AND COALESCE(`manual_laf_status_lock`, 0) = 0
+        ORDER BY `updated_at` DESC, `id` DESC
+        LIMIT 500
+    """
+    try:
+        rows = db.fetch_all(query, (), as_dict=True) or []
+    except TypeError:
+        rows = db.fetch_all(query, as_dict=True) or []
+    except Exception as e:
+        logger.warning("法扶待報結誤判修復掃描失敗: %s", e)
+        return {"checked": 0, "repaired": 0, "items": [], "error": str(e)}
+
+    items: List[dict] = []
+    for row in rows:
+        folder = str(row.get("folder_path") or "")
+        if not _active_canonical_case_folder(folder):
+            continue
+        mac_folder = _to_mac_path(folder)
+        if not mac_folder or not _is_dir_ok(mac_folder):
+            continue
+        basis_files = _folder_auto_closing_basis_files(mac_folder, row)
+        if basis_files:
+            continue
+        items.append({
+            "id": row.get("id"),
+            "case_number": row.get("case_number"),
+            "client_name": _display_client_name(row),
+            "legal_aid_number": _case_laf_number(row),
+            "old_legal_aid_status": row.get("legal_aid_status") or "",
+            "old_status": row.get("status") or "",
+            "folder_path": folder,
+            "reason": "active_folder_without_strict_closing_basis",
+        })
+
+    if items and not dry_run and hasattr(db, "execute_write"):
+        for item in items:
+            try:
+                db.execute_write(
+                    """
+                    UPDATE `cases`
+                    SET `legal_aid_status` = '進行中',
+                        `status` = CASE
+                            WHEN COALESCE(`manual_status_lock`, 0) = 1 THEN `status`
+                            ELSE '進行中'
+                        END
+                    WHERE `id` = %s
+                      AND COALESCE(`manual_laf_status_lock`, 0) = 0
+                      AND TRIM(COALESCE(`legal_aid_status`, '')) IN ('待報結', '已結案，待報結')
+                    """,
+                    (item["id"],),
+                )
+            except Exception as e:
+                item["error"] = str(e)
+                logger.warning("法扶待報結誤判修復失敗 %s: %s", item.get("case_number"), e)
+    repaired = len([x for x in items if not x.get("error")]) if not dry_run else 0
+    return {"checked": len(rows), "repaired": repaired, "items": items, "dry_run": dry_run}
+
 
 def _run_closing_drafts(max_cases: int = 5) -> dict:
     """呼叫 LAFOrchestrator.run_closing_drafts() 自動暫存報結資料。"""
@@ -2564,7 +2932,7 @@ def verify_portal_closing_status(pending_cases: List[dict], db=None) -> dict:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2603, exc_info=True)
 
     return result
 
@@ -2598,6 +2966,7 @@ def _filter_can_close_by_portal_status(can_close: List[dict], portal_status: dic
 def _move_downloaded_to_case_folder(
     downloaded_paths: List[str],
     case_root: str,
+    case_metadata: Optional[dict] = None,
 ) -> Tuple[List[str], List[str]]:
     """將下載的檔案移動到案件對應子資料夾。
 
@@ -2608,6 +2977,15 @@ def _move_downloaded_to_case_folder(
     import zipfile
     moved, failed = [], []
 
+    def _ensure_poa_word_copy(pdf_path: str) -> None:
+        if not is_laf_power_of_attorney_pdf(pdf_path):
+            return
+        converted = ensure_laf_poa_docx_companion(pdf_path, case_metadata=case_metadata)
+        if converted.get("status") == "created":
+            logger.info("  📝 已產生委任狀 Word 可填寫版: %s", os.path.basename(str(converted.get("docx_path") or "")))
+        elif not converted.get("ok"):
+            logger.warning("  ⚠️ 委任狀 Word 可填寫版產生失敗 %s: %s", os.path.basename(pdf_path), converted.get("error"))
+
     def _move_regular_file(src_path: str, display_name: str) -> bool:
         subfolder = _classify_portal_file(display_name)
         target_dir = os.path.join(case_root, subfolder)
@@ -2615,16 +2993,19 @@ def _move_downloaded_to_case_folder(
         dest = os.path.join(target_dir, display_name)
         if os.path.abspath(src_path) == os.path.abspath(dest):
             logger.info("  ⏭️ 檔案已在正確位置: %s", display_name)
+            _ensure_poa_word_copy(dest)
             return True
         if os.path.exists(dest):
             logger.info("  ⏭️ 檔案已存在，跳過: %s", display_name)
+            _ensure_poa_word_copy(dest)
             try:
                 os.remove(src_path)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2660, exc_info=True)
             return True
         shutil.move(src_path, dest)
         logger.info("  ✅ 已移至 %s/%s", subfolder, display_name)
+        _ensure_poa_word_copy(dest)
         return True
 
     for fpath in downloaded_paths:
@@ -2644,10 +3025,12 @@ def _move_downloaded_to_case_folder(
                         dest = os.path.join(target_dir, member_name)
                         if os.path.exists(dest):
                             logger.info("  ⏭️ ZIP 內檔案已存在，跳過: %s", member_name)
+                            _ensure_poa_word_copy(dest)
                             moved.append(member_name)
                             continue
                         with zf.open(member) as src, open(dest, "wb") as out:
                             shutil.copyfileobj(src, out)
+                        _ensure_poa_word_copy(dest)
                         moved.append(member_name)
                         logger.info("  ✅ ZIP 展開至 %s/%s", subfolder, member_name)
                 _move_regular_file(fpath, fname)
@@ -2661,10 +3044,18 @@ def _move_downloaded_to_case_folder(
     return moved, failed
 
 
-def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
+def scan_portal_new_files(
+    all_cases: List[dict],
+    *,
+    only_laf_no: str = "",
+    auto_download: bool = False,
+) -> List[dict]:
     """
     上法扶律師系統的下載頁面，取得所有待下載案件，
     偵測缺檔後自動下載並歸檔到正確子資料夾。
+
+    ``auto_download=False`` 只做官網/本地比對，不下載；用於 live
+    probe 或排程驗證，避免測試本身造成檔案異動。
 
     Returns:
         [{"case_number": ..., "client_name": ..., "laf_no": ...,
@@ -2672,6 +3063,7 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
     """
     laf = None
     new_files_found = []
+    only_laf_no = (only_laf_no or "").strip()
 
     try:
         laf = _make_laf_web_automation(log_prefix="LAF-AUDIT-DOWNLOAD")
@@ -2689,6 +3081,8 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             file_list = _split_portal_file_labels(dc.get("file_list") or [])
 
             if not laf_no:
+                continue
+            if only_laf_no and laf_no != only_laf_no:
                 continue
 
             matched_cases = _local_portal_case_matches(all_cases, dc)
@@ -2710,7 +3104,9 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             auto_downloaded_count = 0
             still_missing = list(missing_files)
 
-            if matched_cases:
+            if matched_cases and not auto_download:
+                logger.info("  🧪 %s: dry-run 僅比對缺檔，不下載", laf_no)
+            elif matched_cases:
                 # 取第一個有效的 case_root 作為歸檔目標
                 case_root = ""
                 for mc in matched_cases:
@@ -2728,7 +3124,15 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
                         )
                         if downloaded_paths:
                             moved, move_failed = _move_downloaded_to_case_folder(
-                                downloaded_paths, case_root,
+                                downloaded_paths,
+                                case_root,
+                                {
+                                    "client_name": client,
+                                    "laf_case_number": laf_no,
+                                    "case_type": dc.get("case_type") or "",
+                                    "case_reason": dc.get("case_reason") or "",
+                                    "branch": dc.get("branch") or "",
+                                },
                             )
                             auto_downloaded_count = len(moved)
                             logger.info(
@@ -2769,9 +3173,85 @@ def scan_portal_new_files(all_cases: List[dict]) -> List[dict]:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2808, exc_info=True)
 
     return new_files_found
+
+
+def fetch_laf_cases_for_portal_scan(db) -> List[dict]:
+    """Fetch enough LAF case metadata for portal download de-duplication."""
+    if not db:
+        return []
+    query = """
+        SELECT `id`, `case_number`, `client_name`, `case_type`, `case_stage`,
+               `case_category`, `case_reason`, `status`, `folder_path`,
+               `legal_aid_number`, `laf_case_no`, `application_no`,
+               `legal_aid_status`, `created_date`, `updated_date`
+        FROM `cases`
+        WHERE (`case_category` IN ('法律扶助案件', '法扶案件')
+               OR COALESCE(`legal_aid_number`, '') <> ''
+               OR COALESCE(`laf_case_no`, '') <> ''
+               OR COALESCE(`application_no`, '') <> ''
+               OR `case_reason` LIKE '%法扶%'
+               OR `case_reason` LIKE '%法律扶助%')
+        ORDER BY `case_number` DESC
+    """
+    try:
+        return db.fetch_all(query, (), as_dict=True) or []
+    except Exception as e:
+        logger.error("fetch_laf_cases_for_portal_scan failed: %s", e)
+        return []
+
+
+def run_portal_new_files_scan(
+    *,
+    only_laf_no: str = "",
+    auto_download: bool = False,
+) -> dict:
+    """Run the standalone LAF portal file sweep used by the 6-hour cron job."""
+    db = _get_db()
+    if not db:
+        return {
+            "ok": False,
+            "error": "db_connection_failed",
+            "scanned_cases": 0,
+            "portal_new_files": [],
+        }
+
+    all_cases = fetch_laf_cases_for_portal_scan(db)
+    portal_new_files = scan_portal_new_files(
+        all_cases,
+        only_laf_no=only_laf_no,
+        auto_download=auto_download,
+    )
+    total_auto = sum(int(item.get("auto_downloaded", 0) or 0) for item in portal_new_files)
+    total_missing = sum(int(item.get("new_count", 0) or 0) for item in portal_new_files)
+    action_required = total_missing > 0
+    if action_required:
+        status = "action_required"
+        message = f"法扶入口仍有 {total_missing} 份附件未歸檔，需人工確認或重新下載。"
+    elif total_auto > 0:
+        status = "downloaded"
+        message = f"已自動下載並歸檔 {total_auto} 份法扶入口附件。"
+    else:
+        status = "ok"
+        message = "法扶入口附件已檢查，沒有新的待歸檔檔案。"
+    return {
+        "ok": True,
+        "status": status,
+        "action_required": action_required,
+        "severity": "warning" if action_required else "info",
+        "message": message,
+        "mode": "laf_portal_new_files_scan",
+        "only_laf_no": only_laf_no,
+        "auto_download": auto_download,
+        "scanned_cases": len(all_cases),
+        "matched_or_missing_cases": len(portal_new_files),
+        "portal_auto_downloaded": total_auto,
+        "portal_still_missing": total_missing,
+        "portal_new_files": portal_new_files,
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 # ─── 2d. Portal 暫存/待處理全清單掃描 ────────────────────────────
@@ -2783,7 +3263,7 @@ def _load_draft_state() -> dict:
             with open(_DRAFT_STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2822, exc_info=True)
     return {}
 
 
@@ -2801,7 +3281,7 @@ def _save_draft_state(state: dict):
         try:
             os.remove(_tmp_path)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2840, exc_info=True)
 
 
 def _sanitize_portal_pending_items(items: List[dict], label: str = "") -> List[dict]:
@@ -2829,7 +3309,7 @@ def _sanitize_portal_pending_items(items: List[dict], label: str = "") -> List[d
     return clean
 
 
-def scan_portal_pending_drafts(db=None) -> dict:
+def scan_portal_pending_drafts(db=None, *, read_only: bool = False) -> dict:
     """
     登入法扶 Portal，掃描案件狀態區與既有 workflow 清單頁，
     找出仍有暫存/待處理的案件。
@@ -2837,6 +3317,9 @@ def scan_portal_pending_drafts(db=None) -> dict:
     與上次巡檢結果比對：
     - 上次有、這次消失 → 已送出（auto_resolved），自動回寫 DB
     - 這次仍在 → 繼續提醒
+
+    ``read_only=True`` is for health checks. It may read the portal, but it
+    must not consume or replace the nightly audit baseline.
 
     Returns:
         {
@@ -2859,7 +3342,7 @@ def scan_portal_pending_drafts(db=None) -> dict:
         "error": None,
     }
 
-    prev_state = _load_draft_state()
+    prev_state = {} if read_only else _load_draft_state()
 
     laf = None
     try:
@@ -2901,7 +3384,14 @@ def scan_portal_pending_drafts(db=None) -> dict:
             try:
                 laf.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2940, exc_info=True)
+
+    # Health probes must not consume the nightly baseline. Otherwise a probe
+    # between two nightly audits can hide an auto-resolved case from the audit
+    # that is responsible for its DB transition.
+    if read_only:
+        result["read_only"] = True
+        return result
 
     # 與上次比對，找出已自動消失（已送出）的案件
     cur_closing = {it["applyno"] for it in result["closing_drafts"] if it.get("applyno")}
@@ -3126,10 +3616,10 @@ def format_audit_report(
             lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
 
-    # 有判決書可報結
+    # 有終局文件且狀態待報結：只提醒人工確認，不自動進入口暫存
     can_close = status.get("can_close", [])
     if can_close:
-        lines.append(f"📄 有判決書可報結：{len(can_close)} 件")
+        lines.append(f"📄 待人工確認報結：{len(can_close)} 件")
         for c in can_close:
             lines.append(f"  • {_case_label(c)} {_client_label(c)}")
         lines.append("")
@@ -3214,7 +3704,7 @@ def format_audit_report(
             assigned = c.get("assignment_date") or "日期不明"
             days_since = c.get("days_since_assignment", "?")
             lines.append(f"  • {_case_label(c)} {_client_label(c)} — 派案/建案 {assigned}，已 {days_since} 天")
-        lines.append("  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
+        lines.append("  👉 若已回報，可直接回覆「案號 已回報」或「姓名 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。")
         lines.append("")
 
     progress_suppressed = status.get("progress_suppressed", [])
@@ -3398,8 +3888,18 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
         except Exception as _rc_e:
             logger.warning("Placeholder reconcile 跳過: %s", _rc_e)
 
+    # 2d. 修復誤入待報結：只修未人工鎖定、仍在進行中資料夾且無嚴格終局文件的案件
+    false_closing_repair = repair_false_laf_closing_statuses(db, dry_run=dry_run)
+    if false_closing_repair.get("items"):
+        logger.warning(
+            "法扶待報結誤判修復: repaired=%d checked=%d",
+            false_closing_repair.get("repaired", 0),
+            false_closing_repair.get("checked", 0),
+        )
+
     # 3. 掃描開辦/結案狀態
     status = scan_laf_reporting_status(db)
+    status["false_closing_repair"] = false_closing_repair
     logger.info(
         "狀態統計 — 逾期未開辦:%d, 可開辦:%d, 待報結:%d, 可報結:%d",
         len(status["not_started"]),
@@ -3443,9 +3943,10 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
     else:
         status["portal_new_files"] = []
 
-    # 3d. 可報結案件自動暫存（呼叫既有報結流程）
+    # 3d. 可報結案件自動暫存（預設關閉；人工或明確 env 才允許）
     closing_draft_result = {}
-    if status["can_close"] and not dry_run:
+    _auto_closing_draft = _env_flag("MAGI_LAF_AUTO_CLOSING_DRAFT", "0")
+    if status["can_close"] and not dry_run and _auto_closing_draft:
         closing_draft_result = _run_closing_drafts(max_cases=5)
         status["closing_draft_result"] = closing_draft_result
         logger.info("報結自動暫存結果: processed=%d/%d",
@@ -3463,6 +3964,17 @@ def run_audit(notify: bool = True, dry_run: bool = False) -> dict:
                 if (c.get("legal_aid_number") or c.get("case_number", "")) not in _drafted_laf_nos
             ]
             logger.info("已從 can_close 移除 %d 件已暫存案件", len(_drafted_laf_nos))
+    elif status["can_close"] and not dry_run:
+        closing_draft_result = {
+            "ok": True,
+            "skipped": True,
+            "reason": "auto_closing_draft_disabled",
+            "scanned": len(status["can_close"]),
+            "processed": 0,
+            "items": [],
+        }
+        status["closing_draft_result"] = closing_draft_result
+        logger.info("報結自動暫存預設關閉；夜巡僅列入待人工確認清單。")
 
     # 3e. Portal 暫存/待處理全清單掃描（結案、二階段、開辦）。
     # 先掃 portal，再確認 DB 未開辦但 portal 已無未開辦列時是否可自動修正。
@@ -3731,10 +4243,10 @@ if __name__ == "__main__":
     else:
         # Housekeeping: clean up old exports (>30 days)
         try:
-            from api.server import cleanup_old_exports
+            from api.startup import _cleanup_old_exports as cleanup_old_exports
             cleanup_old_exports(days=30)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3773, exc_info=True)
         result = run_audit(notify=not args.no_notify, dry_run=args.dry_run)
 
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

@@ -12,14 +12,30 @@ import os
 from typing import Any, Dict, List, Optional, Union
 import json
 import logging
+import re
 import time
 import uuid
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 import sys
 
 logger = logging.getLogger("RedPhone")
+
+try:
+    _TAIPEI_TIMEZONE = ZoneInfo("Asia/Taipei")
+except Exception:
+    _TAIPEI_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _taipei_now() -> datetime:
+    return datetime.now(_TAIPEI_TIMEZONE)
+
+
+def _alert_timestamp() -> str:
+    return _taipei_now().strftime("%Y-%m-%d %H:%M:%S（台灣時間）")
 
 # =============================================================================
 # Configuration
@@ -68,6 +84,8 @@ RED_PHONE_DELIVERY_LOG = os.environ.get(
 RED_PHONE_RETRY_COUNT = int(os.environ.get("MAGI_NOTIFY_RETRY_COUNT", "2") or "2")
 RED_PHONE_RETRY_BACKOFF_SEC = float(os.environ.get("MAGI_NOTIFY_RETRY_BACKOFF_SEC", "1.0") or "1.0")
 RED_PHONE_OUTBOX_MAX_RETRIES = int(os.environ.get("MAGI_NOTIFY_OUTBOX_MAX_RETRIES", "24") or "24")
+RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC = float(os.environ.get("MAGI_NOTIFY_OUTBOX_INFO_MAX_AGE_SEC", "21600") or "21600")
+RED_PHONE_OUTBOX_MAX_AGE_SEC = float(os.environ.get("MAGI_NOTIFY_OUTBOX_MAX_AGE_SEC", "86400") or "86400")
 RED_PHONE_TOPIC_MAP_FILE = os.environ.get(
     "MAGI_TELEGRAM_TOPIC_MAP_FILE",
     os.path.join(_AGENT_DIR, "telegram_topic_map.json"),
@@ -287,7 +305,7 @@ def _send_discord_webhook(message: str, webhook_url: str, severity: str) -> bool
         "title": "MAGI ALERT",
         "description": safe_message,
         "color": colors.get(severity, 0xF39C12),
-        "timestamp": datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "footer": {"text": "MAGI Iron Dome"},
     }
     payload = {"embeds": [embed]}
@@ -330,7 +348,7 @@ def _send_discord_bot_message(
             fallback_channel_id=default_channel_id,
         )
         if routed_id == "__SILENT__":
-            return True  # 靜默：不發 DC
+            return False
         if routed_id:
             channel_id = routed_id
     except Exception:
@@ -412,7 +430,7 @@ def send_discord_bot_file(
             fallback_channel_id=default_channel_id,
         )
         if routed_id == "__SILENT__":
-            return True  # 靜默：不發 DC
+            return False
         if routed_id:
             channel_id = routed_id
     except Exception:
@@ -689,6 +707,63 @@ def _canonical_topic_key(key: str) -> str:
     return aliases.get(k, k)
 
 
+def _is_unknown_business_topic_key(key: str) -> bool:
+    k = str(key or "").strip().lower()
+    if not k:
+        return False
+    known = {
+        "general", "filereview", "filereview_payment", "filereview_download", "filereview_apply",
+        "transcript", "laf", "laf_general", "laf_dispatch", "laf_go_live", "laf_closing",
+        "laf_fee", "laf_inquiry", "laf_condition", "laf_progress", "judgment", "judicial_api",
+        "verbatim", "translation", "summary", "market", "check", "nightly", "alert",
+        "filing", "research_daily", "research_interpretation", "research_ethno",
+        "research_humanrights", "research_language", "research_eastasia",
+    }
+    if k in known:
+        return False
+    return k.startswith((
+        "laf_",
+        "filereview_",
+        "file_review_",
+        "research_",
+        "transcript_",
+        "verbatim_",
+        "summary_",
+        "translation_",
+        "judgment_",
+        "filing_",
+        "pdf_",
+    ))
+
+
+DEFAULT_TELEGRAM_FORUM_TOPICS: dict[str, str] = {
+    "check": "MAGI 巡檢",
+    "alert": "MAGI 警報",
+    "nightly": "MAGI 夜間",
+    "filereview": "閱卷總覽",
+    "filereview_payment": "閱卷繳費",
+    "filereview_download": "閱卷下載",
+    "filereview_apply": "閱卷聲請",
+    "laf": "法扶總覽",
+    "laf_general": "法扶巡檢",
+    "laf_dispatch": "法扶派案",
+    "laf_go_live": "法扶開辦",
+    "laf_closing": "法扶報結",
+    "laf_fee": "法扶費用",
+    "laf_inquiry": "法扶疑義",
+    "laf_condition": "法扶附條件",
+    "laf_progress": "法扶進度",
+    "transcript": "筆錄",
+    "judgment": "判決與裁判",
+    "judicial_api": "司法院 API",
+    "verbatim": "逐字稿",
+    "translation": "翻譯",
+    "summary": "摘要",
+    "filing": "歸檔",
+    "market": "市場",
+}
+
+
 def _normalize_topic_map(raw: dict) -> dict[str, int]:
     out: dict[str, int] = {}
     if not isinstance(raw, dict):
@@ -703,6 +778,115 @@ def _normalize_topic_map(raw: dict) -> dict[str, int]:
             continue
         if tid > 0:
             out[ck] = tid
+    return out
+
+
+def _write_topic_map(topic_map: dict[str, int], *, chat_id: str = "", source: str = "ensure") -> None:
+    normalized = _normalize_topic_map(topic_map)
+    os.makedirs(os.path.dirname(RED_PHONE_TOPIC_MAP_FILE), exist_ok=True)
+    tmp = RED_PHONE_TOPIC_MAP_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, RED_PHONE_TOPIC_MAP_FILE)
+
+    state = {
+        "version": 1,
+        "updated_at": datetime.now().isoformat(),
+        "source": source,
+        "chat_id": str(chat_id or ""),
+        "topicMap": normalized,
+    }
+    tmp_state = TELEGRAM_CHANNEL_STATE_FILE + ".tmp"
+    with open(tmp_state, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_state, TELEGRAM_CHANNEL_STATE_FILE)
+
+
+def ensure_telegram_forum_topics(
+    *,
+    topic_names: Optional[dict[str, str]] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Ensure MAGI Telegram forum topics exist and persist their thread IDs.
+
+    Telegram Bot API cannot list existing forum topics, so this helper is
+    intentionally conservative: it only creates topics missing from the local
+    topic map, then records the returned ``message_thread_id`` for routing.
+    """
+
+    token, chat_ids = _get_telegram_config()
+    topic_names = topic_names or DEFAULT_TELEGRAM_FORUM_TOPICS
+    existing = _load_topic_map()
+    out = {
+        "ok": False,
+        "dry_run": bool(dry_run),
+        "chat_id": str(chat_ids[0]) if chat_ids else "",
+        "is_forum": False,
+        "existing_count": len(existing),
+        "created": {},
+        "skipped": {},
+        "errors": [],
+        "topic_map_file": RED_PHONE_TOPIC_MAP_FILE,
+        "state_file": TELEGRAM_CHANNEL_STATE_FILE,
+    }
+    if not token or not chat_ids:
+        out["errors"].append("telegram token/admin ids missing")
+        return out
+
+    chat_id = str(chat_ids[0])
+    try:
+        req = urlrequest.Request(
+            f"https://api.telegram.org/bot{token}/getChat?chat_id={chat_id}",
+            method="GET",
+        )
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        chat = payload.get("result") or {}
+        out["is_forum"] = bool(chat.get("is_forum"))
+        out["chat_title"] = str(chat.get("title") or "")
+        if not out["is_forum"]:
+            out["errors"].append("telegram target chat is not a forum supergroup")
+            return out
+    except Exception as exc:
+        out["errors"].append(f"getChat failed: {type(exc).__name__}: {str(exc)[:200]}")
+        return out
+
+    merged = dict(existing)
+    for raw_key, title in topic_names.items():
+        key = _canonical_topic_key(raw_key)
+        if not key:
+            continue
+        if key in merged and int(merged[key]) > 0:
+            out["skipped"][key] = int(merged[key])
+            continue
+        if dry_run:
+            out["created"][key] = {"title": title, "dry_run": True}
+            continue
+        body = json.dumps({"chat_id": chat_id, "name": str(title or key)[:128]}, ensure_ascii=False).encode("utf-8")
+        try:
+            req = urlrequest.Request(
+                f"https://api.telegram.org/bot{token}/createForumTopic",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=12) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            result = payload.get("result") or {}
+            tid = int(result.get("message_thread_id") or 0)
+            if tid <= 0:
+                raise RuntimeError("missing message_thread_id")
+            merged[key] = tid
+            out["created"][key] = {"title": title, "message_thread_id": tid}
+        except Exception as exc:
+            out["errors"].append(f"{key}: createForumTopic failed: {type(exc).__name__}: {str(exc)[:240]}")
+
+    if not dry_run:
+        _write_topic_map(merged, chat_id=chat_id, source="ensure_telegram_forum_topics")
+    out["topic_map"] = merged
+    out["ok"] = not out["errors"] and (
+        bool(dry_run) or all(_canonical_topic_key(k) in merged for k in topic_names)
+    )
     return out
 
 
@@ -843,12 +1027,40 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
         return "translation"
     if any(k in s for k in ["摘要", "summary", "summarize", "重點整理"]):
         return "summary"
+    file_review_download_signal = any(
+        k in s
+        for k in [
+            "卷宗下載",
+            "下載完成",
+            "已下載",
+            "download",
+            "可下載判定",
+            "可下載通知",
+            "入口列表可下載",
+            "法院端可下載",
+            "待下載",
+        ]
+    )
+    payment_zero_only = bool(
+        re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[：:\s]*0\s*(?:件|封)", s)
+    )
+    payment_positive_count = bool(
+        re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[^0-9]{0,12}[1-9]\d*\s*(?:件|封)", s)
+    )
+    payment_action_text = any(
+        k in s
+        for k in ["繳費單通知", "繳費單 pdf", "逾期未繳", "繳費憑證", "上傳繳費", "待繳費案件"]
+    )
     if any(k in s for k in ["繳費", "payment"]):
-        return "filereview_payment"
+        if not (file_review_download_signal and payment_zero_only and not payment_positive_count and not payment_action_text):
+            return "filereview_payment"
+    if file_review_download_signal:
+        return "filereview_download"
     if any(k in s for k in ["閱卷", "電子卷", "file_review", "file-review", "docket", "可下載", "卷宗", "卷期", "卷下來"]):
         # 閱卷通知優先查繳費
         if any(k in s for k in ["繳費單", "待繳費", "逾期未繳"]):
-            return "filereview_payment"
+            if not (payment_zero_only and not payment_positive_count and not payment_action_text):
+                return "filereview_payment"
         return "filereview"
     if any(k in s for k in ["歸檔", "filing", "pdf_namer", "casper 歸檔"]):
         return "filing"
@@ -868,11 +1080,317 @@ def _infer_topic_key(message: str, source: str, severity: str) -> str:
     return "general"
 
 
+def _effective_notification_topic(
+    message: str,
+    source: str = "",
+    severity: str = "",
+    topic_key: str = "",
+) -> tuple[str, str, str]:
+    """Return (inferred_topic, requested_topic, effective_topic)."""
+    inferred = _canonical_topic_key(_infer_topic_key(message, source, severity))
+    requested = _canonical_topic_key(topic_key)
+    effective = requested or inferred
+    if requested in {"laf", "filereview"} and inferred.startswith(requested + "_"):
+        effective = inferred
+    return inferred, requested, effective
+
+
+def _notification_source_class(source: str = "", topic_key: str = "") -> str:
+    topic = _canonical_topic_key(topic_key)
+    src = re.sub(r"[^a-z0-9_:-]+", "_", str(source or "").strip().lower()).strip("_")
+    if topic in {"check", "alert", "nightly", "judicial_api"} or src in {
+        "business_module_live_check",
+        "nightly_regression",
+        "mock_test",
+        "nightly_health_report",
+        "weekend_resummary",
+        "nightly_distill_gemma",
+    }:
+        return "system"
+    if topic.startswith("filereview") or src.startswith(("file_review", "filereview")):
+        return "file_review"
+    if topic.startswith("laf") or src.startswith("laf"):
+        return "laf"
+    if topic in {"transcript", "verbatim", "summary", "translation", "filing", "judgment", "market"}:
+        return topic
+    return src or topic or "direct"
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        v = str(value or "").strip()
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
+
+
+def _normalize_case_token(value: str) -> str:
+    s = str(value or "").strip().lower()
+    if not s:
+        return ""
+    s = s.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    s = re.sub(r"[\s._,，、:：;；()（）【】\[\]《》<>]+", "", s)
+    s = s.replace("臺", "台")
+    for token in ("年度", "年", "字第", "字", "第", "號"):
+        s = s.replace(token, "")
+    s = re.sub(r"(?<=[^\d])0+(\d+)", r"\1", s)
+    return s
+
+
+_COURT_CASE_RE = re.compile(
+    r"\d{2,3}\s*(?:年度|年)?\s*[\u4e00-\u9fff]{1,10}\s*(?:字)?\s*(?:第)?\s*\d{1,6}\s*(?:號)?"
+)
+_LAF_CASE_RE = re.compile(r"\b\d{6,7}-[A-Za-z]-\d{3}\b")
+_INTERNAL_CASE_RE = re.compile(r"\b20\d{2}-\d{4}\b")
+_PDF_NAME_RE = re.compile(r"[\w\u4e00-\u9fff（）()【】《》「」『』\-_.]+\.pdf", re.IGNORECASE)
+
+
+def _extract_notification_identity_tokens(message: str) -> dict[str, list[str]]:
+    s = str(message or "")
+    court_cases = [_normalize_case_token(x.group(0)) for x in _COURT_CASE_RE.finditer(s)]
+    laf_cases = [x.group(0).upper() for x in _LAF_CASE_RE.finditer(s)]
+    internal_cases = [x.group(0) for x in _INTERNAL_CASE_RE.finditer(s)]
+    pdf_names = []
+    for match in _PDF_NAME_RE.finditer(s):
+        raw_name = re.sub(r"\s+", " ", match.group(0).strip()).lower()
+        raw_name = re.sub(r"^.*[\\/｜:：;；,，)）]", "", raw_name)
+        raw_name = raw_name.lstrip("-•· ")
+        if raw_name:
+            pdf_names.append(raw_name)
+    accounts = [
+        re.sub(r"\D+", "", x)
+        for x in re.findall(r"(?:銷帳編號|轉入帳號|繳費帳號|帳號)[^0-9]{0,10}([0-9]{6,})", s, flags=re.IGNORECASE)
+    ]
+    amounts = [
+        x.replace(",", "")
+        for x in re.findall(r"(?:NT\$|NTD|新臺幣|新台幣|應繳金額|應繳|金額|費用|\$)[^0-9]{0,8}([0-9][0-9,]*)", s, flags=re.IGNORECASE)
+    ]
+    return {
+        "court": _dedupe_keep_order([x for x in court_cases if x]),
+        "laf": _dedupe_keep_order(laf_cases),
+        "internal": _dedupe_keep_order(internal_cases),
+        "pdf": _dedupe_keep_order(pdf_names),
+        "account": _dedupe_keep_order([x for x in accounts if x]),
+        "amount": _dedupe_keep_order([x for x in amounts if x]),
+    }
+
+
+def _notification_event_signature(message: str, source_class: str, topic_key: str) -> str:
+    topic = _canonical_topic_key(topic_key)
+    tokens = _extract_notification_identity_tokens(message)
+
+    def join_tokens(names: list[str]) -> str:
+        parts: list[str] = []
+        for name in names:
+            values = tokens.get(name) or []
+            if values:
+                parts.append(f"{name}={','.join(sorted(values))}")
+        return "|".join(parts)
+
+    if _is_noop_completion_notification(message):
+        quiet_topic = topic or "general"
+        if quiet_topic.startswith("filereview"):
+            quiet_topic = "filereview"
+        return f"noop:{source_class}:{quiet_topic}"
+
+    if topic == "filereview_payment":
+        ident = join_tokens(["court", "laf", "internal", "account", "amount", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "filereview_download":
+        ident = join_tokens(["court", "laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "filereview_apply":
+        ident = join_tokens(["court", "laf", "internal"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "transcript":
+        ident = join_tokens(["court", "laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    if topic == "laf_dispatch":
+        ident = join_tokens(["laf", "internal", "pdf"])
+        return f"{topic}|{ident}" if ident else ""
+    return ""
+
+
+def _normalize_notification_body_for_dedup(message: str) -> str:
+    body = " ".join(str(message or "").strip().split())
+    if not body:
+        return ""
+    body = re.sub(r"\b20\d{2}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\b", "<timestamp>", body)
+    body = re.sub(r"\b\d{8}_\d{6}_[0-9a-f]{6,}\b", "<job_id>", body, flags=re.IGNORECASE)
+    body = re.sub(r"\brp_\d{8}_\d{6}_[0-9a-f]{6,}\b", "<outbox_id>", body, flags=re.IGNORECASE)
+    return body
+
+
+def classify_notification_event(
+    message: str,
+    *,
+    source: str = "",
+    severity: str = "warning",
+    topic_key: str = "",
+) -> dict[str, str]:
+    """Classify a notification into stable topic/source/dedup buckets."""
+    inferred, requested, effective = _effective_notification_topic(
+        message,
+        source=source,
+        severity=severity,
+        topic_key=topic_key,
+    )
+    source_class = _notification_source_class(source, effective)
+    body = _normalize_notification_body_for_dedup(message)
+    event_signature = _notification_event_signature(body, source_class, effective)
+    digest_basis = event_signature or f"body:{body}"
+    digest = hashlib.sha256("\n".join([source_class, effective, digest_basis]).encode("utf-8", "ignore")).hexdigest()
+    return {
+        "source": str(source or "direct"),
+        "source_class": source_class,
+        "inferred_topic": inferred,
+        "requested_topic": requested,
+        "topic_key": effective,
+        "dedup_key": f"{source_class}:{effective}:{digest}",
+        "dedup_hash": digest,
+        "event_signature": event_signature,
+    }
+
+
+_NO_GENERAL_TG_FALLBACK_TOPICS = {
+    "filereview",
+    "filereview_payment",
+    "filereview_download",
+    "filereview_apply",
+    "laf",
+    "laf_dispatch",
+    "laf_go_live",
+    "laf_closing",
+    "laf_fee",
+    "laf_inquiry",
+    "laf_condition",
+    "laf_progress",
+    "transcript",
+}
+
+
+_NOOP_COMPLETION_MARKERS = (
+    "檢查完成",
+    "掃描完成",
+    "判定完成",
+    "巡檢完成",
+    "健康檢查",
+    "狀態掃描完成",
+    "目前無新通知",
+    "無新通知",
+    "沒有新資訊",
+    "沒有新資料",
+    "沒有新",
+    "查無筆錄",
+    "無待下載",
+    "無待繳費",
+    "無需處理",
+    "全部已處理",
+)
+_ACTIONABLE_ERROR_MARKERS = (
+    "探測失敗",
+    "登入失敗",
+    "下載失敗",
+    "上傳失敗",
+    "發送失敗",
+    "授權失敗",
+    "錯誤",
+    "異常",
+    "invalid_grant",
+    "need_interactive_oauth",
+)
+_COUNT_RE = re.compile(r"([0-9]+)\s*(件|封|份|案|個|筆|部|次)")
+
+
+def _has_positive_action_count(message: str) -> bool:
+    s = str(message or "")
+    for match in _COUNT_RE.finditer(s):
+        try:
+            count = int(match.group(1))
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        before = s[max(0, match.start() - 18): match.start()]
+        after = s[match.end(): min(len(s), match.end() + 18)]
+        window = before + match.group(0) + after
+        if any(k in window for k in ("略過", "已歸檔", "已下載略過", "歷史/已完成", "原始")):
+            continue
+        if re.search(r"(?:已通知|已處理|已完成|掃描|巡檢|檢查|查無[^：:]{0,8}|無新|沒有新|總數|案件總數)[：:\s/（(]*$", before):
+            continue
+        if re.match(r"\s*(?:個月|列|row|rows|已通知|已處理|已完成|已略過|略過)", after, flags=re.IGNORECASE):
+            continue
+        return True
+    return False
+
+
+def _is_noop_completion_notification(message: str) -> bool:
+    """True when a periodic completion report has no actionable new items."""
+    s = " ".join(str(message or "").strip().split())
+    if not s:
+        return False
+    s_lower = s.lower()
+    if any(marker in s_lower for marker in _ACTIONABLE_ERROR_MARKERS):
+        return False
+    if _has_positive_action_count(s):
+        return False
+    has_completion_marker = any(marker in s for marker in _NOOP_COMPLETION_MARKERS)
+    has_zero_count = bool(_COUNT_RE.search(s))
+    if has_completion_marker and (has_zero_count or any(k in s for k in ("無新", "沒有新", "無需處理", "查無"))):
+        return True
+    if "0封" in s or "0件" in s or "0 份" in s or "0 案" in s:
+        return has_completion_marker
+    return False
+
+
+def _quiet_suppression_status(
+    message: str,
+    *,
+    severity: str,
+    source: str,
+    topic_key: str,
+) -> Optional[dict]:
+    sev = str(severity or "info").strip().lower()
+    if sev == "critical":
+        return None
+    if not _is_noop_completion_notification(message):
+        return None
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    _append_delivery_log(
+        {
+            "event": "suppressed",
+            "reason": "noop_completion",
+            "source": source,
+            "severity": severity,
+            "topic_key": event["topic_key"],
+            "preview": _preview_text(message),
+        }
+    )
+    return {
+        "telegram": False,
+        "delivered": False,
+        "acked": 0,
+        "total": 0,
+        "queued": False,
+        "outbox_id": "",
+        "error": "",
+        "topic_key": event["topic_key"],
+        "thread_id": 0,
+        "suppressed": True,
+        "suppressed_reason": "noop_completion",
+    }
+
+
 def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str = "") -> tuple[str, Optional[int]]:
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    key = event["topic_key"]
     tmap = _load_topic_map()
     if not tmap:
-        return "", None
-    key = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+        return key, None
     if key in tmap:
         return key, int(tmap[key])
     # Fallback: filereview_payment → filereview, laf_dispatch → laf, judicial_api → judgment, etc.
@@ -888,6 +1406,10 @@ def _resolve_thread_id(message: str, source: str, severity: str, topic_key: str 
     fb = _TG_TOPIC_FALLBACK.get(key, "")
     if fb and fb in tmap:
         return key, int(tmap[fb])
+    if key in _NO_GENERAL_TG_FALLBACK_TOPICS:
+        return key, None
+    if _is_unknown_business_topic_key(key):
+        return key, None
     if "general" in tmap:
         return (key or "general"), int(tmap["general"])
     return key, None
@@ -916,6 +1438,36 @@ def _load_outbox() -> list[dict]:
     return []
 
 
+def _outbox_fingerprint(message: str, severity: str = "", topic_key: str = "", source: str = "") -> str:
+    sev = str(severity or "warning").strip().lower()
+    event = classify_notification_event(
+        message,
+        source=source,
+        severity=sev,
+        topic_key=topic_key,
+    )
+    raw = "\n".join([sev, event["dedup_key"]])
+    return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()
+
+
+def _outbox_entry_age_seconds(entry: dict, now_ts: float) -> float:
+    created = str((entry or {}).get("created_at") or "").strip()
+    if not created:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(created)
+        return max(0.0, now_ts - dt.timestamp())
+    except Exception:
+        return 0.0
+
+
+def _outbox_entry_max_age_seconds(entry: dict) -> float:
+    severity = str((entry or {}).get("severity") or "").strip().lower()
+    if severity in {"info", "notice", "debug"}:
+        return max(60.0, float(RED_PHONE_OUTBOX_INFO_MAX_AGE_SEC))
+    return max(3600.0, float(RED_PHONE_OUTBOX_MAX_AGE_SEC))
+
+
 def _save_outbox(items: list[dict]) -> None:
     try:
         os.makedirs(_AGENT_DIR, exist_ok=True)
@@ -933,22 +1485,54 @@ def _enqueue_outbox(
     source: str,
     last_error: str = "",
     topic_key: str = "",
+    mirror_to_discord: bool = True,
 ) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    effective_topic = event["topic_key"]
+    fingerprint = _outbox_fingerprint(message, severity=severity, topic_key=effective_topic, source=source)
+    outbox = _load_outbox()
+    for existing in outbox:
+        existing_fp = str(existing.get("fingerprint") or "")
+        if not existing_fp:
+            existing_fp = _outbox_fingerprint(
+                str(existing.get("message") or ""),
+                severity=str(existing.get("severity") or ""),
+                topic_key=str(existing.get("topic_key") or ""),
+                source=str(existing.get("source") or ""),
+            )
+            existing["fingerprint"] = existing_fp
+        if existing_fp == fingerprint:
+            existing["updated_at"] = datetime.now().isoformat()
+            existing["last_error"] = str(last_error or existing.get("last_error") or "")[:600]
+            existing["mirror_to_discord"] = bool(existing.get("mirror_to_discord", True)) and bool(mirror_to_discord)
+            _save_outbox(outbox)
+            _append_delivery_log(
+                {
+                    "event": "outbox_dedup",
+                    "entry_id": existing.get("id"),
+                    "source": source,
+                    "severity": severity,
+                    "topic_key": effective_topic,
+                    "preview": _preview_text(message),
+                }
+            )
+            return str(existing.get("id") or "")
     entry = {
         "id": entry_id,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
         "severity": str(severity or "warning"),
         "source": str(source or "direct"),
-        "topic_key": str(topic_key or ""),
+        "topic_key": str(effective_topic or ""),
         "message": str(message or ""),
+        "fingerprint": fingerprint,
+        "mirror_to_discord": bool(mirror_to_discord),
         "attempts": 0,
         "next_retry_at": now_ts,
         "last_error": str(last_error or "")[:600],
     }
-    outbox = _load_outbox()
     outbox.append(entry)
     _save_outbox(outbox)
     return entry_id
@@ -986,28 +1570,10 @@ def _send_telegram_once(
                     body = (e.read() or b"").decode("utf-8", "ignore")
                 except Exception:
                     body = ""
-                can_retry_without_thread = (
-                    bool(thread_id)
-                    and int(getattr(e, "code", 0) or 0) in {400, 403}
-                    and ("message thread not found" in body.lower() or "message_thread_id" in body.lower())
-                )
-                if can_retry_without_thread:
-                    try:
-                        retry_payload = json.dumps({"chat_id": str(chat_id), "text": chunk}, ensure_ascii=False).encode("utf-8")
-                        req2 = urlrequest.Request(
-                            f"https://api.telegram.org/bot{token}/sendMessage",
-                            data=retry_payload,
-                            headers={"Content-Type": "application/json"},
-                            method="POST",
-                        )
-                        with urlrequest.urlopen(req2, timeout=max(4, int(timeout_sec))):
-                            pass
-                        continue
-                    except Exception as retry_e:
-                        errors.append(f"{chat_id}:thread_fallback_failed:{type(retry_e).__name__}")
-                        sent_all = False
-                        break
-                errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
+                if bool(thread_id) and ("message thread not found" in body.lower() or "message_thread_id" in body.lower()):
+                    errors.append(f"{chat_id}:invalid_thread:{thread_id}")
+                else:
+                    errors.append(f"{chat_id}:HTTP{getattr(e, 'code', 'ERR')}")
                 sent_all = False
                 break
             except URLError as e:
@@ -1036,7 +1602,42 @@ def _flush_outbox(max_items: int = 8) -> dict:
     recovered = 0
     checked = 0
     kept = []
+    seen_fingerprints: set[str] = set()
     for entry in outbox:
+        fingerprint = str(entry.get("fingerprint") or "")
+        if not fingerprint:
+            fingerprint = _outbox_fingerprint(
+                str(entry.get("message") or ""),
+                severity=str(entry.get("severity") or ""),
+                topic_key=str(entry.get("topic_key") or ""),
+                source=str(entry.get("source") or ""),
+            )
+            entry["fingerprint"] = fingerprint
+        if fingerprint in seen_fingerprints:
+            _append_delivery_log(
+                {
+                    "event": "outbox_drop",
+                    "entry_id": entry.get("id"),
+                    "reason": "duplicate_pending",
+                    "preview": _preview_text(str(entry.get("message") or "")),
+                }
+            )
+            continue
+        seen_fingerprints.add(fingerprint)
+        age_sec = _outbox_entry_age_seconds(entry, now_ts)
+        max_age_sec = _outbox_entry_max_age_seconds(entry)
+        if age_sec > max_age_sec:
+            _append_delivery_log(
+                {
+                    "event": "outbox_drop",
+                    "entry_id": entry.get("id"),
+                    "reason": "stale",
+                    "age_seconds": round(age_sec, 1),
+                    "max_age_seconds": round(max_age_sec, 1),
+                    "preview": _preview_text(str(entry.get("message") or "")),
+                }
+            )
+            continue
         if checked >= max_items:
             kept.append(entry)
             continue
@@ -1054,6 +1655,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
             source="outbox",
             topic_key=str(entry.get("topic_key") or ""),
             queue_on_fail=False,
+            mirror_to_discord=bool(entry.get("mirror_to_discord", True)),
         )
         if result.get("telegram"):
             recovered += 1
@@ -1128,7 +1730,8 @@ def _mirror_to_discord(
         # "market" 已從 DC 鏡像中移除 (2026-04-20)：股票資訊不發 Discord
         "verbatim", "summary", "translation", "filing",
     }
-    _resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
+    _resolved_topic = event["topic_key"]
     if _resolved_topic and _resolved_topic not in _DC_MIRROR_ALLOWED_TOPICS:
         return False
     # 法扶夜巡完整報告包含下載、缺檔、案號補填等內部維運資訊；
@@ -1137,33 +1740,11 @@ def _mirror_to_discord(
         return False
 
     # 🛑 靜默過濾：非「有新資訊」的定期報告不發 DC (TG 照發)
-    _s = (message or "").strip()
-    _CLEAN_PATTERNS = [
-        "所有法扶案件狀態正常，無需處理",
-        "查無筆錄",
-        "沒有新資訊",
-        "檢查完成",
-        "待繳費：0 件",
-        "待下載：0 件",
-        "可下載通知：0 封",
-        "待歸檔：0 份",
-    ]
-    _HAS_WARNING = any(p in _s for p in ("⚠️", "❌", "失敗", "錯誤", "異常", "逾期", "需處理"))
-    # 如果是「[INFO] 💰 繳費單檢查完成\n- 繳費相關信件：0 封 (已通知 0 封)\n- 入口列表待繳費：0 件」這種
-    # 且沒有實質數字變化（>0），則靜默
-    if (not _HAS_WARNING) and any(p in _s for p in _CLEAN_PATTERNS):
-        # 檢查是否有任何大於 0 的正則匹配（如「待歸檔：6 份」則不靜默）
-        # 這裡用簡易邏輯：如果訊息中有「：0」或「 0 」且沒有大於 0 的數字
-        _has_actual_count = False
-        import re as _re
-        for m in _re.finditer(r"([：\s])([1-9]\d*)\s*(?:件|封|份|案|部|個|次)", _s):
-            _has_actual_count = True
-            break
-        if not _has_actual_count:
-            return False
+    if _is_noop_completion_notification(message):
+        return False
     try:
         return _send_discord_bot_message(
-            message, severity, topic_key=topic_key, source=source
+            message, severity, topic_key=_resolved_topic, source=source
         )
     except Exception as e:
         logger.debug("[RED PHONE] DC mirror failed (non-fatal): %s", e)
@@ -1177,7 +1758,17 @@ def send_telegram_push_with_status(
     source: str = "direct",
     topic_key: str = "",
     queue_on_fail: bool = True,
+    mirror_to_discord: bool = True,
 ) -> dict:
+    quiet_status = _quiet_suppression_status(
+        message,
+        severity=severity,
+        source=source,
+        topic_key=topic_key,
+    )
+    if quiet_status is not None:
+        return quiet_status
+
     token, admin_ids = _get_telegram_config()
     resolved_topic, thread_id = _resolve_thread_id(message, source, severity, topic_key=topic_key)
     if not token or not admin_ids:
@@ -1190,9 +1781,11 @@ def send_telegram_push_with_status(
                 source=source,
                 last_error=err,
                 topic_key=topic_key or resolved_topic,
+                mirror_to_discord=mirror_to_discord,
             )
         return {
             "telegram": False,
+            "delivered": False,
             "acked": 0,
             "total": len(admin_ids),
             "queued": bool(queued_id),
@@ -1228,10 +1821,11 @@ def send_telegram_push_with_status(
                     "total": int(last_status.get("total") or 0),
                 }
             )
-            # Best-effort mirror to Discord (routed channel)
-            _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
+            if mirror_to_discord:
+                _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
             return {
                 "telegram": True,
+                "delivered": True,
                 "acked": len(last_status.get("acked") or []),
                 "total": int(last_status.get("total") or 0),
                 "queued": False,
@@ -1252,6 +1846,7 @@ def send_telegram_push_with_status(
             source=source,
             last_error=last_error,
             topic_key=topic_key or resolved_topic,
+            mirror_to_discord=mirror_to_discord,
         )
     _append_delivery_log(
         {
@@ -1269,6 +1864,7 @@ def send_telegram_push_with_status(
     )
     return {
         "telegram": False,
+        "delivered": False,
         "acked": 0,
         "total": int(last_status.get("total") or len(admin_ids)),
         "queued": bool(queued_id),
@@ -1288,18 +1884,18 @@ def send_telegram_push(message: str) -> bool:
         return False
 
     # --- Global Content Deduplication (24h) ---
+    dedup_key = ""
     try:
         from skills.ops.dedup_db import is_done, mark_done
-        import hashlib
         # 取訊息內容的雜湊，併入當前日期，確保每天至少可發送一次相同的內容（或是跨日重啟時去重）
         # 如果使用者想要更嚴格，可以只用 msg_hash
-        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
-        date_str = datetime.now().strftime("%Y%m%d")
-        dedup_key = f"{date_str}:{msg_hash}"
+        event = classify_notification_event(message, source="direct", severity="warning")
+        date_str = _taipei_now().strftime("%Y%m%d")
+        dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] Deduplicated identical message (already sent today): %s", _preview_text(message))
-            return True
+            return False
         
         # 發送成功後才標記（在 send_telegram_push_with_status 內處理）
     except Exception as e:
@@ -1310,10 +1906,11 @@ def send_telegram_push(message: str) -> bool:
     if status.get("telegram"):
         logger.info("[RED PHONE] Telegram alert sent successfully.")
         # 標記為已發送
-        try:
-            mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
-        except Exception:
-            pass
+        if dedup_key:
+            try:
+                mark_done("alert_content", dedup_key, metadata={"preview": _preview_text(message)})
+            except Exception:
+                pass
     else:
         logger.warning("[RED PHONE] Telegram send failed; queued=%s outbox_id=%s", status.get("queued"), status.get("outbox_id"))
     
@@ -1336,20 +1933,42 @@ def alert_admin(
     # --- Global Content Deduplication (24h) ---
     # We dedup based on the RAW message to avoid timestamp-driven variations.
     dedup_key = None
+    event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
     try:
         from skills.ops.dedup_db import is_done, mark_done
-        import hashlib
-        msg_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
-        date_str = datetime.now().strftime("%Y%m%d")
-        dedup_key = f"{date_str}:{msg_hash}"
+        date_str = _taipei_now().strftime("%Y%m%d")
+        dedup_key = f"{date_str}:{event['dedup_key']}"
         
         if is_done("alert_content", dedup_key):
             logger.info("[RED PHONE] alert_admin: Deduplicated identical message: %s", _preview_text(message))
-            return {"deduplicated": True, "telegram": True, "line": True, "discord": True}
+            _append_delivery_log(
+                {
+                    "event": "deduplicated",
+                    "source": source,
+                    "severity": severity,
+                    "topic_key": event["topic_key"],
+                    "preview": _preview_text(message),
+                }
+            )
+            return {
+                "deduplicated": True,
+                "telegram": False,
+                "delivered": False,
+                "line": False,
+                "discord": False,
+                "telegram_ack": 0,
+                "telegram_total": 0,
+                "outbox_queued": False,
+                "outbox_id": "",
+                "outbox_flushed": 0,
+                "outbox_remaining": len(_load_outbox()),
+                "topic_key": event["topic_key"],
+                "thread_id": 0,
+            }
     except Exception as e:
         logger.debug("[RED PHONE] alert_admin dedup check failed: %s", e)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = _alert_timestamp()
     severity_emoji = {"info": "ℹ️", "warning": "⚠️", "critical": "🚨"}.get(severity, "⚠️")
     formatted_message = f"{severity_emoji} MAGI 警報\n{timestamp}\n\n{message}"
 
@@ -1388,7 +2007,7 @@ def alert_admin(
         "transcript",           # 筆錄下載完成
         "market",               # 股市快報
     }
-    resolved_topic = _canonical_topic_key(topic_key) if topic_key else _infer_topic_key(message, source, severity)
+    resolved_topic = event["topic_key"]
     line_ok = False
     should_line = resolved_topic in _LINE_IMPORTANT_TOPICS or severity == "critical"
     if not should_line:
@@ -1418,6 +2037,7 @@ def alert_admin(
         "line": line_ok,
         "discord": discord_ok,
         "telegram": bool(status.get("telegram")),
+        "delivered": bool(status.get("telegram")) or bool(line_ok),
         "telegram_ack": int(status.get("acked") or 0),
         "telegram_total": int(status.get("total") or 0),
         "outbox_queued": bool(status.get("queued")),

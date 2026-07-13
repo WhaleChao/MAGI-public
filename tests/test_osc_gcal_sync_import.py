@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,52 @@ def _load_gcal_sync_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
+
+
+def test_build_service_uses_authorized_http_timeout(monkeypatch):
+    module = _load_gcal_sync_module()
+    captured = {}
+
+    class FakeHttp:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            captured["http_timeout"] = timeout
+
+    class FakeAuthorizedHttp:
+        def __init__(self, creds, http=None):
+            self.creds = creds
+            self.http = http
+            captured["authorized_http"] = self
+
+    def fake_build(api_name, api_version, **kwargs):
+        captured["build"] = (api_name, api_version, kwargs)
+        return {"service": True}
+
+    api_pkg = types.ModuleType("googleapiclient")
+    api_pkg.__path__ = []
+    discovery_mod = types.ModuleType("googleapiclient.discovery")
+    discovery_mod.build = fake_build
+    api_pkg.discovery = discovery_mod
+    auth_http_mod = types.ModuleType("google_auth_httplib2")
+    auth_http_mod.AuthorizedHttp = FakeAuthorizedHttp
+    httplib2_mod = types.ModuleType("httplib2")
+    httplib2_mod.Http = FakeHttp
+
+    monkeypatch.setitem(sys.modules, "googleapiclient", api_pkg)
+    monkeypatch.setitem(sys.modules, "googleapiclient.discovery", discovery_mod)
+    monkeypatch.setitem(sys.modules, "google_auth_httplib2", auth_http_mod)
+    monkeypatch.setitem(sys.modules, "httplib2", httplib2_mod)
+    monkeypatch.setenv("OSC_GCAL_HTTP_TIMEOUT_SEC", "2")
+    monkeypatch.delenv("MAGI_GCAL_HTTP_TIMEOUT_SEC", raising=False)
+
+    out = module._build_service(object())
+
+    assert out == {"service": True}
+    assert captured["http_timeout"] == 5
+    assert captured["build"][0:2] == ("calendar", "v3")
+    assert captured["build"][2]["http"] is captured["authorized_http"]
+    assert captured["build"][2]["cache_discovery"] is False
+    assert "credentials" not in captured["build"][2]
 
 
 class _FakeRequest:
@@ -125,6 +172,14 @@ def test_import_gcal_events_reads_all_visible_calendars(monkeypatch):
     assert writes[0][1] == "測試"
 
 
+def test_import_gcal_events_classifies_lawyer_visit(monkeypatch):
+    module = _load_gcal_sync_module()
+
+    assert module._classify_todo_type("謝易霖律見") == "律見"
+    assert module._classify_todo_type("謝易霖", "律師接見") == "律見"
+    assert module._classify_todo_type("劉亞箖案抗告末日") == "抗告"
+
+
 def test_import_gcal_events_dry_run_counts_only_osc_owned_events(monkeypatch):
     module = _load_gcal_sync_module()
 
@@ -145,6 +200,58 @@ def test_import_gcal_events_dry_run_counts_only_osc_owned_events(monkeypatch):
 
     assert stats["imported"] == 1
     assert stats["import_skipped"] == 2
+
+
+def test_import_gcal_events_skips_magi_pushed_events_to_prevent_feedback_loop(monkeypatch):
+    module = _load_gcal_sync_module()
+    writes = []
+
+    class MagiPushedEvents(_FakeEventsApi):
+        def list(self, **kwargs):
+            return _FakeRequest(
+                {
+                    "items": [
+                        {
+                            "id": "magi-pushed-1",
+                            "summary": "[2026-0001] 王小明 補正",
+                            "description": "系統案號：2026-0001\n當事人：王小明\n類型：補正\n來源檔案：法院通知.pdf",
+                            "start": {"date": "2026-05-21"},
+                        },
+                        {
+                            "id": "manual-osc-1",
+                            "summary": "[2026-0001] 王小明補正討論",
+                            "description": "同事手動登錄",
+                            "start": {"date": "2026-05-22"},
+                        },
+                    ]
+                }
+            )
+
+    class MagiPushedService(_FakeService):
+        def __init__(self):
+            super().__init__()
+            self.events_api = MagiPushedEvents()
+
+    def fake_osc_exec(sql, params=(), fetch="all"):
+        if "SELECT value FROM settings" in sql:
+            return {"value": "primary"}, []
+        if "SELECT google_calendar_id" in sql:
+            return [], []
+        if "SELECT case_number, client_name FROM cases WHERE case_number=%s" in sql:
+            return {"case_number": params[0], "client_name": "王小明"}, []
+        if "INSERT INTO case_todos" in sql:
+            writes.append(params)
+            return {"lastrowid": len(writes)}, []
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(module, "_osc_exec_sql", fake_osc_exec)
+
+    stats = module.import_gcal_events_to_todos(MagiPushedService(), dry_run=False)
+
+    assert stats["imported"] == 1
+    assert stats["import_skipped"] == 1
+    assert writes[0][7] == "manual-osc-1"
+    assert writes[0][2] == "補正"
 
 
 def test_import_gcal_events_keeps_laf_reportable_manual_events(monkeypatch):
@@ -210,6 +317,7 @@ def test_import_gcal_events_keeps_laf_reportable_manual_events(monkeypatch):
 def test_run_sync_accepts_dict_rows_from_osc_exec(monkeypatch):
     module = _load_gcal_sync_module()
     seen_sql = []
+    monkeypatch.setenv("MAGI_USE_LEGACY_GCAL_SYNC", "1")
 
     monkeypatch.setattr(module, "_load_creds", lambda: type("Creds", (), {"valid": True})())
     monkeypatch.setattr(module, "_build_service", lambda creds: _FakeService())
@@ -238,7 +346,8 @@ def test_run_sync_accepts_dict_rows_from_osc_exec(monkeypatch):
 
     assert stats["pushed"] == 1
     assert stats["errors"] == []
-    assert any("source_file NOT LIKE 'gcal_import%%'" in sql for sql in seen_sql)
+    assert any("COALESCE(source_file, '') NOT LIKE 'gcal_import%%'" in sql for sql in seen_sql)
+    assert any("COALESCE(todo_type, '') <> '行事曆事件'" in sql for sql in seen_sql)
 
 
 def test_push_todo_recreates_stale_google_calendar_event():
@@ -284,6 +393,7 @@ def test_run_sync_updates_db_when_stale_calendar_id_is_replaced(monkeypatch):
     module = _load_gcal_sync_module()
     errors = pytest.importorskip("googleapiclient.errors")
     updates = []
+    monkeypatch.setenv("MAGI_USE_LEGACY_GCAL_SYNC", "1")
 
     class Resp:
         status = 404

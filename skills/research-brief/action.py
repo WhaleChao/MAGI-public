@@ -336,7 +336,11 @@ def task_remove_keyword(namespace: str, keyword: str) -> int:
 
 # ───────── task: fetch + digest ─────────
 
-def _fetch_namespace(ns: Dict[str, Any], seen: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _fetch_namespace(
+    ns: Dict[str, Any],
+    seen: Dict[str, Any],
+    errors: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Fetch all sources for a namespace, filter by keywords, dedupe via seen.
 
@@ -353,6 +357,8 @@ def _fetch_namespace(ns: Dict[str, Any], seen: Dict[str, Any]) -> List[Dict[str,
             raw_entries = fetch_source(src)
         except Exception as e:
             logger.warning("fetch_source failed %s: %s", src.get("url"), e)
+            if errors is not None:
+                errors.append(f"{src.get('url') or 'unknown'}: {type(e).__name__}: {str(e)[:160]}")
             continue
         src_name = src.get("note") or src.get("url", "")
         for ent in raw_entries:
@@ -402,6 +408,7 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
     ingest_seen = _prune_seen(_load_ingest_seen())
     payloads: List[Dict[str, Any]] = []
     accepted_keys: List[str] = []
+    already_ingested = 0
     for e in entries:
         title = str(e.get("title") or "").strip()
         snippet = str(e.get("raw") or e.get("snippet") or "").strip()
@@ -411,6 +418,7 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
         content_hash = _hash_content(title, snippet)
         ikey = _ingest_key(namespace, brief_id, content_hash)
         if ikey in ingest_seen:
+            already_ingested += 1
             continue
         text = f"{title}\n\n{snippet}"[:4000]
         # Keep provenance stable for idempotent source signatures.
@@ -434,7 +442,7 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
         accepted_keys.append(ikey)
 
     if not payloads:
-        return 0
+        return already_ingested
     try:
         result = remember_batch(payloads)
         now = time.time()
@@ -442,10 +450,16 @@ def _ingest_entries_to_memory(namespace: str, entries: List[Dict[str, Any]]) -> 
             ingest_seen[key] = {"ts": now}
         _save_ingest_seen(ingest_seen)
         if isinstance(result, dict):
-            return int(result.get("inserted", len(payloads)))
+            inserted = int(result.get("inserted") or 0)
+            skipped = int(result.get("skipped") or 0)
+            blocked = int(result.get("blocked") or 0)
+            failed = int(result.get("failed") or 0)
+            if result.get("ok") is True and failed == 0 and (inserted + skipped + blocked) >= len(payloads):
+                return already_ingested + len(payloads)
+            return already_ingested + inserted + skipped
         if isinstance(result, int):
-            return result
-        return len(payloads)
+            return already_ingested + result
+        return already_ingested + len(payloads)
     except Exception as e:
         logger.warning("remember_batch failed for ns=%s: %s", namespace, e)
         return 0
@@ -478,10 +492,26 @@ def task_digest(namespace: Optional[str] = None, *, notify: bool = True) -> int:
         if not ns:
             results.append({"namespace": n, "success": False, "error": "not_found"})
             continue
-        entries = _fetch_namespace(ns, seen)
+        fetch_errors: List[str] = []
+        entries = _fetch_namespace(ns, seen, errors=fetch_errors)
+        if fetch_errors and not entries:
+            results.append({
+                "namespace": n,
+                "success": False,
+                "degraded": True,
+                "error": "all_sources_failed",
+                "fetch_errors": fetch_errors[:5],
+            })
+            continue
         topic_key = ns.get("topic_key") or "research_daily"
         if not entries:
-            results.append({"namespace": n, "success": True, "new_entries": 0})
+            results.append({
+                "namespace": n,
+                "success": not bool(fetch_errors),
+                "degraded": bool(fetch_errors),
+                "new_entries": 0,
+                "fetch_errors": fetch_errors[:5],
+            })
             continue
         try:
             digest_text = format_digest(n, entries, keyword_pool=ns.get("keywords", []))
@@ -491,6 +521,7 @@ def task_digest(namespace: Optional[str] = None, *, notify: bool = True) -> int:
             continue
         # Mark seen (new format: {ts, content, url})
         now = time.time()
+        prior_seen_entries = {e["_hash"]: seen.get(e["_hash"]) for e in entries if e.get("_hash")}
         for e in entries:
             seen[e["_hash"]] = {
                 "ts": now,
@@ -503,6 +534,13 @@ def task_digest(namespace: Optional[str] = None, *, notify: bool = True) -> int:
         except Exception as exc:
             logger.warning("memory ingestion failed for %s: %s", n, exc)
             ingested = 0
+        ingest_degraded = bool(entries and ingested < len(entries))
+        if ingest_degraded:
+            for h, prior in prior_seen_entries.items():
+                if prior is None:
+                    seen.pop(h, None)
+                else:
+                    seen[h] = prior
         # Count how many were "content updates" vs brand-new
         updates = sum(1 for e in entries if e.get("_content_changed"))
         brand_new = len(entries) - updates
@@ -538,16 +576,20 @@ def task_digest(namespace: Optional[str] = None, *, notify: bool = True) -> int:
                 logger.warning("notify failed for %s: %s", n, e)
         results.append({
             "namespace": n,
-            "success": True,
+            "success": not ingest_degraded,
+            "degraded": bool(ingest_degraded or fetch_errors),
+            "error": "memory_ingest_failed" if ingest_degraded else "",
             "new_entries": len(entries),
             "brand_new": brand_new,
             "content_updates": updates,
             "ingested_to_memory": ingested,
             "topic_key": topic_key,
             "delivered": delivered,
+            "fetch_errors": fetch_errors[:5],
         })
     _save_seen(seen)
-    return _ok({"success": True, "results": results, "total_namespaces": len(names)})
+    overall_success = all(bool(r.get("success")) for r in results)
+    return _ok({"success": overall_success, "results": results, "total_namespaces": len(names)})
 
 
 def task_query(namespace: str, keyword: str) -> int:

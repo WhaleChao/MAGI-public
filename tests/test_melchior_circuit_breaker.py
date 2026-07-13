@@ -84,9 +84,16 @@ class TestCircuitBreaker(unittest.TestCase):
     def test_resolve_omlx_chat_model_falls_back_to_available_local_model(self):
         resolved = self.mc._resolve_omlx_chat_model(
             "gemma-4-26b-a4b-it-4bit",
+            available_models=["mistral-nemo:12b"],
+        )
+        self.assertEqual(resolved, "mistral-nemo:12b")
+
+    def test_resolve_omlx_chat_model_rejects_disallowed_local_model(self):
+        resolved = self.mc._resolve_omlx_chat_model(
+            "gemma-4-26b-a4b-it-4bit",
             available_models=["Qwen2.5-Coder-14B-Instruct-4bit"],
         )
-        self.assertEqual(resolved, "Qwen2.5-Coder-14B-Instruct-4bit")
+        self.assertNotEqual(resolved, "Qwen2.5-Coder-14B-Instruct-4bit")
 
     def test_chat_omlx_skips_unavailable_model_on_non_default_base(self):
         """Non-default oMLX bases should fail locally when the requested model is absent."""

@@ -33,6 +33,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
 from api.product_runtime import PRODUCT_RUNTIME_PATH, product_profile_report, update_product_runtime
+from api.server_auth import (
+    DEFAULT_POST_LOGIN_TARGET,
+    default_tenant_id,
+    env_truthy,
+    sanitize_login_next,
+    tenant_id_from_user_data,
+)
 from api.case_path_mapper import (
     local_synology_path_candidates,
     preferred_case_roots,
@@ -59,8 +66,9 @@ def _sigchld_handler(_signum, _frame):
 if os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower() not in {"1", "true", "yes", "on"}:
     _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
-# Load Env — always use explicit path to guarantee .env is found regardless of cwd
-load_dotenv(os.path.join(_MAGI_ROOT, ".env"))
+# Load Env — always use explicit path to guarantee .env is found regardless of cwd.
+# Override inherited daemon values so edited .env model routing takes effect on restart.
+load_dotenv(os.path.join(_MAGI_ROOT, ".env"), override=True)
 
 # Validate required config before anything else
 from skills.ops.config import validate_config
@@ -70,7 +78,7 @@ validate_config()
 from logging.handlers import RotatingFileHandler
 from flask import (
     request, abort, render_template, redirect, url_for, flash,
-    jsonify, Response, send_file, send_from_directory,
+    jsonify, Response, send_file, send_from_directory, session,
 )
 from api.line_compat import (
     AudioMessage, FileMessage, ImageMessage, ImageSendMessage,
@@ -146,8 +154,11 @@ except Exception:
     _normalize_output_text = None
 
 # Auth Modules
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+install_mysql_cext_blocker()
+patch_mysql_connector_for_stability()
 import mysql.connector
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 from flask_login import UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -350,14 +361,39 @@ def _require_json_auth(admin: bool = False):
     return None
 
 
-# ---------------------------------------------------------------------------
-# User Model
+def _is_mobile_app_launch_request() -> bool:
+    """Detect native/PWA mobile launch requests that should start from login."""
+
+    requested_with = (request.headers.get("X-Requested-With") or "").strip().lower()
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if requested_with == "tw.local.magi.mobile":
+        return True
+    if "capacitor" in user_agent:
+        return True
+    if "; wv" in user_agent or " version/4.0 chrome/" in user_agent:
+        return True
+    return "mobile" in user_agent and ("safari" in user_agent or "chrome" in user_agent)
+
+
+def _mobile_app_login_redirect():
+    """Start MAGI Mobile from a clean login state instead of a stale dashboard."""
+
+    try:
+        logout_user()
+    except Exception:
+        logger.debug("mobile app logout cleanup failed", exc_info=True)
+    session.clear()
+    return redirect(url_for("login", next="/mobile", mobile_app="1"))
+
+
 # ---------------------------------------------------------------------------
 class User(UserMixin):
-    def __init__(self, id, username, role):
+    def __init__(self, id, username, role, tenant_id=None, tenant_role=None):
         self.id = id
         self.username = username
         self.role = role
+        self.tenant_id = str(tenant_id or default_tenant_id())
+        self.tenant_role = str(tenant_role or role or "viewer")
 
     def is_admin(self):
         return self.role == "admin"
@@ -371,7 +407,13 @@ def load_user(user_id):
             cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
             user_data = cursor.fetchone()
             if user_data:
-                return User(user_data["id"], user_data["username"], user_data["role"])
+                return User(
+                    user_data["id"],
+                    user_data["username"],
+                    user_data["role"],
+                    tenant_id=tenant_id_from_user_data(user_data),
+                    tenant_role=user_data.get("tenant_role") or user_data.get("role"),
+                )
         return None
     except Exception as e:
         logger.error("DB Error: %s", e)
@@ -644,7 +686,7 @@ _TOOLS_API_FALLBACK_PATHS = {
     "melchior", "skills", "collab", "council", "remember", "recall",
     "clients", "meetings", "legal", "alert", "definitions", "laf",
     "iron-dome", "code", "connections", "sages", "shortcut", "jobs",
-    "osc/external", "static/exports", "api/audit_log",
+    "osc/external", "api/audit_log", "static/exports",
 }
 
 
@@ -767,7 +809,9 @@ def _fallback_to_tools_api(error):
 def index():
     if request.method == "POST":
         return callback()
-    return redirect(url_for("dashboard_pages.dashboard"))
+    if _is_mobile_app_launch_request():
+        return _mobile_app_login_redirect()
+    return redirect(DEFAULT_POST_LOGIN_TARGET)
 
 
 @app.route("/favicon.ico")
@@ -777,42 +821,62 @@ def favicon():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    next_target = sanitize_login_next(request.values.get("next", ""))
+    mobile_app_login = request.values.get("mobile_app") == "1" or next_target.startswith("/mobile")
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("login.html")
+            return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG, dictionary=True) as (_conn, cursor):
                 cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
                 user_data = cursor.fetchone()
                 if user_data and check_password_hash(user_data["password_hash"], password):
-                    user = User(user_data["id"], user_data["username"], user_data["role"])
+                    user = User(
+                        user_data["id"],
+                        user_data["username"],
+                        user_data["role"],
+                        tenant_id=tenant_id_from_user_data(user_data),
+                        tenant_role=user_data.get("tenant_role") or user_data.get("role"),
+                    )
                     login_user(user)
-                    return redirect(url_for("dashboard_pages.dashboard"))
+                    session["tenant_id"] = user.tenant_id
+                    if mobile_app_login:
+                        session["magi_mobile_app_auth_at"] = int(time.time())
+                    return redirect(next_target)
                 else:
                     flash("Invalid username or password")
         except Exception as e:
             flash(f"Login Error: {str(e)}")
-    return render_template("login.html")
+    return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
+
+
+@app.route("/mobile-app")
+def mobile_app_entry():
+    return _mobile_app_login_redirect()
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    next_target = sanitize_login_next(request.values.get("next", ""))
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("register.html")
+            return render_template("register.html", next_target=next_target)
         hashed_pw = generate_password_hash(password)
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG) as (conn, cursor):
                 cursor.execute("SELECT COUNT(*) FROM users")
                 count = cursor.fetchone()[0]
+                if count > 0 and not env_truthy("MAGI_ALLOW_PUBLIC_REGISTRATION"):
+                    flash("Registration is disabled. Ask an administrator to create the account.")
+                    return render_template("register.html", next_target=next_target), 403
                 role = "admin" if count == 0 else "user"
                 cursor.execute(
                     "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
@@ -820,10 +884,10 @@ def register():
                 )
                 conn.commit()
             flash(f"Registration successful! You are now an {role}. Please login.")
-            return redirect(url_for("login"))
+            return redirect(url_for("login", next=next_target))
         except mysql.connector.Error as err:
             flash(f"Error: {err}")
-    return render_template("register.html")
+    return render_template("register.html", next_target=next_target)
 
 
 @app.route("/logout")
@@ -918,4 +982,6 @@ _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=False, threaded=True)
+    host = os.environ.get("MAGI_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("MAGI_PORT", "5002") or "5002")
+    app.run(host=host, port=port, debug=False, threaded=True)

@@ -63,7 +63,7 @@
                     │   │  ├─ market-briefing  (股市晨報)   │  │
                     │   │  ├─ magi-autopilot   (自動巡檢)   │  │
                     │   │  ├─ magi-doctor      (自我診斷)   │  │
-                    │   │  └─ ... (60+ skills)              │  │
+                    │   │  └─ ... (48 user-facing skills)              │  │
                     │   └──────────────────────────────────┘  │
                     └──────────────────┬──────────────────────┘
                                        │
@@ -148,8 +148,8 @@
 | MariaDB | 3306 | Persistent storage | Yes |
 | oMLX / Ollama | 8080 | Local LLM inference | Yes |
 | ModernBERT | 8081 | Embedding service | Yes |
-| BALTHASAR | 5002 | Apple Intelligence summarization | No |
-| MELCHIOR | 8080 | GPU vision/code analysis | No |
+| BALTHASAR | 8083 | SmolLM3-3B day-mode assistant endpoint | No |
+| MELCHIOR | 8082 | Phi-4-mini day-mode specialist endpoint | No |
 | KEEPER | 3306 | Remote MariaDB (law_firm_data) | No |
 
 ---
@@ -264,9 +264,9 @@ MAGI/
 │   ├── nodes.json          # Node definitions
 │   └── datastores.json     # DB connections
 ├── gui/                    # GUI (macOS menubar)
-├── skills/                 # 67+ pluggable skill modules
+├── skills/                 # 48 documented user-facing skills plus internal runners
 ├── providers/              # LLM provider abstraction
-├── scripts/                # Operational scripts (60+)
+├── scripts/                # Operational scripts, scheduler helpers, and release gates
 ├── migrations/             # DB schema management
 ├── casper_ecosystem/       # LAF automation subsystem
 ├── tests/                  # 90+ test files

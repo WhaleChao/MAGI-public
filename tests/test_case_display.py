@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from api.case_display import display_case_label, display_client_name, folder_client_name
 
 
@@ -11,6 +13,24 @@ def test_display_client_name_prefers_case_folder_for_likely_typo():
     }
 
     assert display_client_name(record) == "游秀鈴"
+
+
+def test_display_client_name_prefers_folder_for_tai_tai_variant():
+    record = {
+        "case_number": "2025-0084",
+        "client_name": "王臺銘",
+        "folder_path": "/案件/法扶案件/刑事/2025-0084-王台銘-偵查-毒品危害防制條例",
+    }
+
+    assert display_client_name(record) == "王台銘"
+
+
+def test_legacy_legalbridge_uses_shared_name_normalization():
+    mod = pytest.importorskip("casper_ecosystem.law_firm_orchestrators.legalbridge_core")
+    _normalize_person_name_key = mod._normalize_person_name_key
+
+    assert _normalize_person_name_key("遊秀鈴") == _normalize_person_name_key("游秀鈴")
+    assert _normalize_person_name_key("王臺銘") == _normalize_person_name_key("王台銘")
 
 
 def test_folder_client_name_works_from_subfolder_or_file_path():

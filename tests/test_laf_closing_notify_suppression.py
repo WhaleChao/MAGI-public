@@ -23,6 +23,21 @@ class DummyNotifier:
         return True
 
 
+def test_dry_run_notifier_never_loads_or_delivers_real_notifications(monkeypatch):
+    orch = laf_orchestrator.LAFOrchestrator.__new__(laf_orchestrator.LAFOrchestrator)
+    orch.dry_run = True
+    orch._notifier = None
+
+    def fail_if_loaded():
+        raise AssertionError("dry-run must not load the real notifier")
+
+    monkeypatch.setattr(laf_orchestrator, "_get_notifier", fail_if_loaded)
+
+    assert orch.notifier.notify_admin("should remain local", topic_key="laf_closing") is True
+    assert orch.notifier.notify_admin_with_files("should remain local", []) is True
+    assert orch.notifier.send_closing_confirmation("測試", "2026-0000", {}, []) is True
+
+
 def test_closing_suppress_notify_blocks_success_message(monkeypatch):
     orch = laf_orchestrator.LAFOrchestrator(dry_run=False)
     notifier = DummyNotifier()

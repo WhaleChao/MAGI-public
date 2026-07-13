@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import time
 from pathlib import Path
 
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
-from scripts.ops.check_judicial_api_pipeline import build_report, scheduled_day_process_capacity
+from scripts.ops.check_judicial_api_pipeline import backlog_status, build_report, scheduled_day_process_capacity
 
 
 def test_backlog_interpretation_explains_stale_backlog():
@@ -29,7 +31,7 @@ def test_backlog_interpretation_explains_stale_backlog():
     assert report["status"] == "STALE"
     assert "見解庫的新鮮度已落後" in report["headline"]
     assert report["runs_left_at_current_rate"] == 345
-    text = format_backlog_notice("⚠️ 司法院 API 晨間整理", report)
+    text = format_backlog_notice("⚠️ 司法院裁判資料晨間整理", report)
     assert "69,199" in text
     assert "68,999" in text
     assert "品質閘門" in text
@@ -69,6 +71,35 @@ def test_scheduled_day_process_capacity_reads_cron_payloads(tmp_path):
     assert cap["runs_per_day"] == 2
     assert cap["daily_max_docs"] == 2300
     assert cap["avg_batch"] == 1150
+
+
+def test_backlog_status_defaults_to_fast_processed_map_without_rehash(tmp_path):
+    cache_root = tmp_path / "judicial_api"
+    raw_root = cache_root / "raw"
+    raw_root.mkdir(parents=True)
+    done = raw_root / "done.json"
+    done.write_text('{"payload":{"JID":"DONE"}}', encoding="utf-8")
+    pending = raw_root / "pending.json"
+    pending.write_text('{"payload":{"JID":"PENDING"}}', encoding="utf-8")
+    process_state = cache_root / "process_state.json"
+    process_state.write_text(
+        """
+{
+  "processed": {
+    "raw/done.json": "stale-hash-but-fast-health-check-trusts-state"
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    fast = backlog_status(cache_root, process_state, raw_root)
+    deep = backlog_status(cache_root, process_state, raw_root, verify_hashes=True)
+
+    assert fast["raw_total"] == 2
+    assert fast["backlog_count"] == 1
+    assert fast["pending_examples"] == ["raw/pending.json"]
+    assert deep["backlog_count"] == 2
 
 
 def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):
@@ -113,7 +144,54 @@ def test_missing_pull_state_does_not_mask_active_backlog(monkeypatch, tmp_path):
 
     assert report["status"] == "BACKLOG_CATCHING_UP"
     assert report["exit_code"] == 10
-    assert any("raw/process/normalized" in item for item in report["reasons"])
+    assert any("裁判資料檔、整理狀態與轉換結果" in item for item in report["reasons"])
+
+
+def test_aging_backlog_is_warning_when_current_run_is_reducing(monkeypatch, tmp_path):
+    cache_root = tmp_path / "judicial_api"
+    raw_root = cache_root / "raw"
+    normalized_root = cache_root / "normalized"
+    raw_root.mkdir(parents=True)
+    normalized_root.mkdir(parents=True)
+    old_raw = raw_root / "old_case.json"
+    old_raw.write_text('{"payload":{"JID":"OLD"}}', encoding="utf-8")
+    os.utime(old_raw, (time.time() - 36 * 3600, time.time() - 36 * 3600))
+    (raw_root / "new_case.json").write_text('{"payload":{"JID":"NEW"}}', encoding="utf-8")
+    process_state = cache_root / "process_state.json"
+    process_state.write_text(
+        """
+{
+  "updated_at": "2999-01-01T00:00:00",
+  "processed": {},
+  "last_run": {
+    "handled": 1,
+    "backlog_before": 3,
+    "db_upserts": 1,
+    "archive_upserts": 1,
+    "vector_ingested": 0,
+    "summarized": 1,
+    "errors": 0,
+    "max_docs": 1
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("JUDICIAL_API_CACHE_ROOT", str(cache_root))
+    monkeypatch.setenv("JUDICIAL_API_RAW_ROOT", str(raw_root))
+    monkeypatch.setenv("JUDICIAL_API_NORMALIZED_ROOT", str(normalized_root))
+    monkeypatch.setenv("JUDICIAL_API_PROCESS_STATE_PATH", str(process_state))
+    monkeypatch.setenv("JUDICIAL_API_PULL_STATE_PATH", str(cache_root / "missing_pull_state.json"))
+    monkeypatch.setenv("MAGI_JUDICIAL_API_USER", "user")
+    monkeypatch.setenv("MAGI_JUDICIAL_API_PASS", "pass")
+
+    report = build_report()
+
+    assert report["backlog_interpretation"]["status"] == "AGING"
+    assert report["status"] == "BACKLOG_CATCHING_UP"
+    assert report["exit_code"] == 10
+    assert any("跨日老化" in item for item in report["reasons"])
 
 
 def test_extractive_judgment_summary_is_marked_and_source_bound():
@@ -144,3 +222,73 @@ def test_extractive_judgment_summary_is_marked_and_source_bound():
         assert re.sub(r"\s+", "", snippet) in normalized_source
         assert snippet in summary
     assert "民法第184條" in summary
+
+
+def test_judgment_cache_root_falls_back_when_offload_symlink_is_broken(monkeypatch, tmp_path):
+    action_path = Path("skills/judgment-collector/action.py")
+    spec = importlib.util.spec_from_file_location("judgment_action_cache_test", action_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    broken = tmp_path / "judgment_collector"
+    broken.symlink_to(tmp_path / "missing_offload_target")
+    fallback = tmp_path / "judgment_collector_local"
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_NAS_FALLBACK", "/Volumes/MAGI_TEST_MISSING/judgment_collector")
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_FALLBACK", str(fallback))
+
+    assert mod._ensure_cache_root(str(broken)) == str(fallback)
+    assert fallback.is_dir()
+
+
+def test_judgment_cache_root_prefers_configured_nas_before_local_fallback(monkeypatch, tmp_path):
+    from api.domains.judicial_api_cache import ensure_judgment_cache_root
+
+    broken = tmp_path / "judgment_collector"
+    broken.symlink_to(tmp_path / "missing_offload_target")
+    nas = tmp_path / "nas" / "judgment_collector"
+    local = tmp_path / "judgment_collector_local"
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_NAS_FALLBACK", str(nas))
+    monkeypatch.setenv("JUDGMENT_CACHE_ROOT_FALLBACK", str(local))
+
+    assert ensure_judgment_cache_root(str(broken)) == nas
+    assert nas.is_dir()
+    assert not local.exists()
+
+
+def test_pipeline_checker_prefers_fresh_active_cache_over_stale_default(monkeypatch, tmp_path):
+    import scripts.ops.check_judicial_api_pipeline as checker
+
+    stale_root = tmp_path / "stale_nas" / "judicial_api"
+    fresh_root = tmp_path / "judgment_collector_local" / "judicial_api"
+    for root, ts in (
+        (stale_root, "2020-01-01T00:00:00"),
+        (fresh_root, "2999-01-01T00:00:00"),
+    ):
+        (root / "raw").mkdir(parents=True)
+        (root / "normalized").mkdir(parents=True)
+        (root / "pull_state.json").write_text(
+            '{"runs":[{"ts":"' + ts + '","fetched":1,"failed":0,"consecutive_failures":0}]}',
+            encoding="utf-8",
+        )
+        (root / "process_state.json").write_text(
+            '{"updated_at":"' + ts + '","processed":{},"last_run":{"handled":0,"errors":0}}',
+            encoding="utf-8",
+        )
+
+    monkeypatch.delenv("JUDICIAL_API_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("JUDICIAL_API_PULL_STATE_PATH", raising=False)
+    monkeypatch.delenv("JUDICIAL_API_PROCESS_STATE_PATH", raising=False)
+    monkeypatch.delenv("JUDICIAL_API_RAW_ROOT", raising=False)
+    monkeypatch.delenv("JUDICIAL_API_NORMALIZED_ROOT", raising=False)
+    monkeypatch.setenv("MAGI_JUDICIAL_API_USER", "user")
+    monkeypatch.setenv("MAGI_JUDICIAL_API_PASS", "pass")
+    monkeypatch.setattr(checker, "DEFAULT_CACHE_ROOT", stale_root)
+    monkeypatch.setattr(checker, "DEFAULT_JUDGMENT_CACHE_ROOT", tmp_path / "unused_primary")
+    monkeypatch.setattr(checker, "DEFAULT_JUDGMENT_CACHE_FALLBACK", tmp_path / "judgment_collector_local")
+    monkeypatch.setattr(checker, "nas_judgment_cache_candidates", lambda: [tmp_path / "stale_nas"])
+
+    report = checker.build_report()
+
+    assert report["summary"]["cache_root"] == str(fresh_root)
+    assert report["pull"]["latest_ts"] == "2999-01-01T00:00:00"

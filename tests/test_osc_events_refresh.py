@@ -2,10 +2,245 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
+import subprocess
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from scripts.ops import osc_events_refresh
+
+
+@pytest.fixture(autouse=True)
+def _stub_historical_completion(monkeypatch):
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_complete_historical_todos",
+        lambda cutoff, dry_run=False, status="已完成": {
+            "ok": True,
+            "dry_run": bool(dry_run),
+            "cutoff_date": cutoff.isoformat(),
+            "matched": 0,
+            "updated": 0,
+            "status": status,
+        },
+    )
+
+
+def test_todo_done_statuses_match_deleted_and_deduped_contract():
+    statuses = {item.lower() for item in osc_events_refresh._TODO_DONE_STATUSES}
+
+    assert "deleted" in statuses
+    assert "已刪除" in statuses
+    assert "刪除" in statuses
+    assert "calendar_deduped" in statuses
+
+
+def test_active_pdf_todos_filters_past_and_implausible_dates():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {"type": "補正", "date": "2026-05-26", "description": "old"},
+            {"type": "開庭", "date": "2026-05-27", "description": "today"},
+            {"type": "調解", "date": "2028-05-25", "description": "edge"},
+            {"type": "異議", "date": "2028-05-27", "description": "too far"},
+            {"type": "待確認", "date": "", "description": "missing"},
+        ],
+        today=date(2026, 5, 27),
+    )
+
+    assert [x["description"] for x in active] == ["today", "edge"]
+    assert past_skipped == 1
+    assert implausible_skipped == 2
+
+
+def test_active_pdf_todos_filters_expired_tentative_confirmation():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "確認",
+                "date": "2026-06-11",
+                "description": "未載明明確期限，暫定於06/11前確認",
+                "source": "pdf_tentative_no_deadline",
+            }
+        ],
+        today=date(2026, 7, 12),
+    )
+
+    assert active == []
+    assert past_skipped == 1
+    assert implausible_skipped == 0
+
+
+def test_active_pdf_todos_rejects_windows_path_scan_day_fallback():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "上訴",
+                "date": "2026-07-06",
+                "description": "📝 20日內上訴 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\一般案件\2025-0027-林黃阿姐\20250821台北地方法院判決（林黃阿姐等）.pdf",
+            },
+            {
+                "type": "補正",
+                "date": "2026-06-22",
+                "description": "📝 7日內補正 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\2026-0001\20260614 花蓮地方法院通知（請於7日內補正）.pdf",
+            },
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert [x["type"] for x in active] == ["補正"]
+    assert past_skipped == 0
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_undated_pdf_scan_day_fallback():
+    active, past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "上訴",
+                "date": "2026-07-06",
+                "description": "📝 20日內上訴 (06/14文到)",
+                "source_file": r"K:\SynologyDrive\01_案件\一般案件\2025-0108\高檢署處分書.pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert past_skipped == 0
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_explicit_old_roc_date_shifted_to_future():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "開庭",
+                "date": "2026-08-12",
+                "time": "16:00",
+                "description": "⚖️ 8月12日 下午4時00分 開庭",
+                "source_file": "20250814 臺北地方法院114年度消債清字第84號民事裁定（王台銘；主文：債務人王台銘自民國114年8月12日下午4時起開始清算程序）.pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_old_hearing_shifted_to_next_year():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "調解",
+                "date": "2027-03-09",
+                "time": "16:00",
+                "description": "⚖️ 3月9日 下午4時00分 調解",
+                "source_file": r"K:\SynologyDrive\01_案件\2025-0130\20260304 花蓮地方法院115年度司消債調字第24號民事庭通知書(林里；訂3月9日下午4時整調解).pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_old_year_case_and_description_hint():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "調解",
+                "date": "2026-06-17",
+                "time": "14:00",
+                "description": "⚖️ 6月17日下午2時 整調解",
+                "source_file": r"K:\SynologyDrive\01_案件\法扶案件\消費者債務清理\2025-0049-林洋宇-消費者債務清理-更生\09_法院通知或程序裁定\20250407 新北地方法院114年度司消債調字第389號民事執行處函(林洋宇；訂6月17日下午2時調解).pdf",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_active_pdf_todos_rejects_false_shift_from_case_number_or_client_hint():
+    active, _past_skipped, implausible_skipped = osc_events_refresh._active_pdf_todos(
+        [
+            {
+                "type": "開庭",
+                "date": "2026-07-09",
+                "time": "16:00",
+                "description": "⚖️ 7月9日下午4時50分 審理",
+                "source_file": r"C:\\Users\\Public\\法院文件\\notice.pdf",
+                "case_number": "2025-0130",
+                "client_name": "林洋宇",
+            }
+        ],
+        today=date(2026, 6, 14),
+    )
+
+    assert active == []
+    assert implausible_skipped == 1
+
+
+def test_history_cutoff_clamps_google_calendar_lookback():
+    assert osc_events_refresh._clamp_lookback_days_to_cutoff(
+        730,
+        date(2026, 1, 1),
+        today=date(2026, 6, 8),
+    ) == 158
+    assert osc_events_refresh._clamp_lookback_days_to_cutoff(
+        30,
+        date(2026, 1, 1),
+        today=date(2026, 6, 8),
+    ) == 30
+
+
+def test_pdf_calendar_scan_writes_only_active_todos(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    today = date.today()
+    captured: list[dict] = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", tmp_path / "cursor.json")
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [
+                {"type": "補正", "date": (today - timedelta(days=1)).isoformat(), "description": "old"},
+                {"type": "補正", "date": (today + timedelta(days=3)).isoformat(), "description": "future"},
+            ],
+            "events": [{}, {}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda todos, **_kwargs: captured.extend(todos) or {"inserted": len(todos), "updated": 0, "skipped": 0},
+    )
+
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False, force_rebuild=True)
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert result["todo_count"] == 1
+    assert result["past_todo_count"] == 1
+    assert result["write_result"]["inserted"] == 1
+    assert [x["description"] for x in captured] == ["future"]
 
 
 def test_write_latest_serializes_datetime_nested_payload(tmp_path):
@@ -35,6 +270,231 @@ def test_write_latest_serializes_datetime_nested_payload(tmp_path):
     assert data["scan"]["results"][0]["items"][0]["todos"][0]["datetime"] == "2026-05-13T12:00:00+00:00"
 
 
+def test_calendar_source_audit_only_flags_pdf_backed_business_events():
+    assert osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "賴麗卿案陳報末日"}
+    )
+    assert osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "調解", "description": "陳文明調解與審理@宜蘭地院"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "謝易霖律見"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "郭麗卿未結案件進度回報末日"}
+    )
+    assert not osc_events_refresh._calendar_row_likely_needs_pdf_source(
+        {"todo_type": "行事曆事件", "description": "【法扶開辦末日】2026-0045 李秀英"}
+    )
+
+
+def test_calendar_gap_drive_remediation_respects_skip_drive_sync():
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=True),
+    )
+
+    assert out == {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"}
+
+
+def test_drive_sync_before_pdf_force_rebuild_stays_bounded_priority(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "mode": "direct_db_case_sync",
+                    "summary": {"matched_case_folders": 1},
+                    "file_sync_summary": {"drive_missing_in_nas_files": 0},
+                    "execution_summary": {"downloaded": 0},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(osc_events_refresh.subprocess, "run", fake_run)
+
+    out = osc_events_refresh._run_drive_case_sync_before_pdf(
+        SimpleNamespace(dry_run=False, force_rebuild=True, drive_sync_all_cases=False)
+    )
+
+    cmd = captured["cmd"]
+    assert out["ok"] is True
+    assert "--direct-all-cases" not in cmd
+    assert cmd[cmd.index("--direct-priority-case-limit") + 1] == "8"
+    assert cmd[cmd.index("--priority-case-limit") + 1] == "24"
+    assert cmd[cmd.index("--inventory-timeout-sec") + 1] == "420"
+    assert "--no-uploads" in cmd
+    assert captured["timeout"] == 450
+
+
+def test_drive_sync_before_pdf_caps_explicit_all_case_limit(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(osc_events_refresh.subprocess, "run", fake_run)
+
+    out = osc_events_refresh._run_drive_case_sync_before_pdf(
+        SimpleNamespace(
+            dry_run=False,
+            force_rebuild=False,
+            drive_sync_all_cases=True,
+            drive_sync_all_case_limit=64,
+        )
+    )
+
+    cmd = captured["cmd"]
+    assert out["ok"] is True
+    assert "--direct-all-cases" in cmd
+    assert cmd[cmd.index("--direct-all-case-limit") + 1] == "12"
+
+
+def test_calendar_source_audit_rescan_signal_includes_existing_files():
+    assert (
+        osc_events_refresh._calendar_source_audit_downloaded_count(
+            {"drive_remediation": {"execution_summary": {"downloaded": 0, "skipped_existing": 3}}}
+        )
+        == 3
+    )
+
+
+def test_calendar_gap_drive_remediation_respects_calendar_only():
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=False, calendar_only=True),
+    )
+
+    assert out == {"ok": True, "skipped": True, "reason": "calendar_only"}
+
+
+def test_calendar_gap_drive_remediation_has_hard_timeout(monkeypatch):
+    class FakeDriveSync:
+        @staticmethod
+        def run_priority_case_sync(**_kwargs):
+            raise AssertionError("run_priority_case_sync should be interrupted by the outer timeout")
+
+    monkeypatch.setitem(__import__("sys").modules, "api.osc.drive_case_sync", FakeDriveSync)
+    monkeypatch.setenv("OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_TIMEOUT_SEC", "5")
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_pdf_scan_time_limit",
+        lambda seconds: (_ for _ in ()).throw(osc_events_refresh._PdfScanTimeout(f"pdf_scan_timeout:{seconds}s")),
+    )
+
+    out = osc_events_refresh._run_calendar_gap_drive_remediation(
+        [{"case_number": "2025-0001", "description": "補正末日"}],
+        args=SimpleNamespace(dry_run=False, skip_drive_sync=False),
+    )
+
+    assert out["ok"] is False
+    assert out["reason"] == "drive_remediation_timeout"
+    assert out["timeout_sec"] == 5
+    assert out["case_numbers"] == ["2025-0001"]
+
+
+def test_refresh_surfaces_calendar_source_drive_remediation_failure(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+
+    class FakeOscAction:
+        @staticmethod
+        def task_gcal_import(_payload):
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(_payload):
+            return {"ok": True, "inserted": 0, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(_payload):
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda _args: {"ok": True, "updated": 0, "items": []},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_calendar_source_audit",
+        lambda _args: {
+            "ok": True,
+            "calendar_import_only_count": 1,
+            "sample_items": [{"case_number": "2025-0001"}],
+            "drive_remediation": {"ok": False, "reason": "drive_remediation_timeout"},
+        },
+    )
+
+    args = SimpleNamespace(
+        calendar_only=True,
+        scan_only=False,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=True,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert "calendar_source_drive_remediation_failed" in result["warnings"]
+    assert "calendar_import_only_without_pdf_source" not in result["warnings"]
+
+
+def test_refresh_skips_when_canonical_lock_is_held(monkeypatch, tmp_path):
+    from scripts.ops import background_task_locks
+
+    class HeldLock:
+        acquired = False
+        active_owner = {"owner": "daily_governance", "pid": 123}
+
+        def as_dict(self):
+            return {"acquired": False, "active_owner": self.active_owner}
+
+    monkeypatch.setattr(background_task_locks, "acquire_lock", lambda *_args, **_kwargs: HeldLock())
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_load_osc_action_module",
+        lambda: (_ for _ in ()).throw(AssertionError("refresh body should not run")),
+    )
+    out = tmp_path / "latest.json"
+    args = SimpleNamespace(
+        force_rebuild=False,
+        dry_run=False,
+        calendar_only=False,
+        scan_only=False,
+        json_out=str(out),
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "already_running"
+    assert result["active_owner"] == "daily_governance"
+    assert json.loads(out.read_text(encoding="utf-8"))["skipped"] is True
+
+
 def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
     out = tmp_path / "osc_events_refresh_latest.json"
     calls = []
@@ -55,7 +515,60 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
             calls.append(("push", payload))
             return {"ok": True, "inserted": 1, "failed": 0}
 
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    class FakeTranscriptTodo:
+        @staticmethod
+        def _iter_pdf_targets(raw_path, *, limit):
+            calls.append(("transcript_targets", {"raw_path": raw_path, "limit": limit}))
+            return ["transcript-a.pdf"]
+
+        @staticmethod
+        def scan_targets(paths, *, tail_pages):
+            calls.append(("transcript_scan", {"paths": paths, "tail_pages": tail_pages}))
+            return {
+                "ok": True,
+                "scanned": 1,
+                "high_count": 1,
+                "review_count": 0,
+                "errors_count": 0,
+                "items": [{"confidence": "high", "type": "追蹤"}],
+                "errors": [],
+            }
+
+        @staticmethod
+        def apply_high_confidence(items):
+            calls.append(("transcript_apply", {"items": items}))
+            return {"inserted": 1, "updated": 0, "skipped": 0, "past_skipped": 0}
+
     monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(osc_events_refresh, "_load_transcript_todo_module", lambda: FakeTranscriptTodo)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: (
+            calls.append(("pdf_scan", {"limit": args.pdf_limit, "max_pages": args.pdf_max_pages}))
+            or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}}
+        ),
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_calendar_source_audit",
+        lambda args: {"ok": True, "calendar_import_only_count": 0, "sample_items": []},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda args: calls.append(("share_repair", {})) or {"ok": True, "updated": 1, "items": [{"id": 2025, "status": "updated"}]},
+    )
     monkeypatch.delenv("MAGI_GCAL_DEDUP_DRY_RUN", raising=False)
 
     args = SimpleNamespace(
@@ -69,13 +582,610 @@ def test_refresh_pushes_osc_created_todos_to_gcal(monkeypatch, tmp_path):
         lookahead_days=180,
         calendar_limit=25,
         gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=False,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
         json_out=str(out),
+        dry_run=False,
     )
 
     result = osc_events_refresh.run_refresh(args)
 
     assert result["ok"] is True
-    assert [name for name, _ in calls] == ["scan", "import", "push"]
-    assert calls[-1][1]["limit"] == 7
+    assert [name for name, _ in calls] == [
+        "drive_sync",
+        "pdf_scan",
+        "import",
+        "share_repair",
+        "push",
+        "audit",
+        "transcript_targets",
+        "transcript_scan",
+        "transcript_apply",
+        "push",
+    ]
+    assert result["scan"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "legacy_scan_disabled; pdf_calendar_scan is the unified bounded todo scanner",
+    }
+    assert result["pdf_calendar_scan"]["write_result"]["inserted"] == 1
+    assert calls[4][1]["limit"] == 7
+    assert calls[4][1]["repair_todo_ids"] == [2025]
+    assert calls[4][1]["repair_limit"] == 8
+    assert calls[-1][1]["limit"] == 20
+    assert result["transcript_todos"]["write_result"]["inserted"] == 1
     assert result["calendar_push"]["inserted"] == 1
+    assert result["calendar_push_after_transcript"]["inserted"] == 1
+    assert result["calendar_audit"]["ok"] is True
+    assert result["calendar_source_audit"]["calendar_import_only_count"] == 0
     assert os.environ["MAGI_GCAL_DEDUP_DRY_RUN"] == "0"
+    assert result["history_cutoff_date"] == "2026-01-01"
+    assert calls[2][1]["history_cutoff_date"] == "2026-01-01"
+    assert calls[2][1]["lookback_days"] <= 30
+    assert calls[4][1]["history_cutoff_date"] == "2026-01-01"
+
+
+def test_refresh_rescans_and_pushes_after_drive_remediation_downloads(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+    calls = []
+    audit_calls = {"count": 0}
+
+    class FakeOscAction:
+        @staticmethod
+        def task_gcal_import(payload):
+            calls.append(("import", payload))
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(payload):
+            calls.append(("push", payload))
+            return {"ok": True, "inserted": 1, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    def fake_calendar_source_audit(args):
+        audit_calls["count"] += 1
+        calls.append(("source_audit", {"skip_drive_sync": bool(getattr(args, "skip_drive_sync", False))}))
+        if audit_calls["count"] == 1:
+            return {
+                "ok": True,
+                "calendar_import_only_count": 1,
+                "sample_items": [{"case_number": "2025-0122", "description": "張國賢補正"}],
+                "drive_remediation": {"ok": True, "execution_summary": {"downloaded": 2, "failed": 0}},
+            }
+        return {
+            "ok": True,
+            "calendar_import_only_count": 0,
+            "sample_items": [],
+            "drive_remediation": {"ok": True, "skipped": True, "reason": "drive_sync_skipped_by_args"},
+        }
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: calls.append(("pdf_scan", {"limit": args.pdf_limit}))
+        or {"ok": True, "scanned": 1, "write_result": {"inserted": 1, "updated": 0, "skipped": 0}},
+    )
+    monkeypatch.setattr(osc_events_refresh, "_run_calendar_source_audit", fake_calendar_source_audit)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_todo_share_link_repair",
+        lambda args: calls.append(("share_repair", {})) or {"ok": True, "updated": 0, "items": []},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=False,
+        legacy_scan=False,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=300,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert [name for name, _payload in calls] == [
+        "drive_sync",
+        "pdf_scan",
+        "import",
+        "share_repair",
+        "push",
+        "audit",
+        "source_audit",
+        "pdf_scan",
+        "push",
+        "source_audit",
+    ]
+    assert calls[-1][1]["skip_drive_sync"] is True
+    assert result["pdf_calendar_scan_after_drive_remediation"]["write_result"]["inserted"] == 1
+    assert result["calendar_push_after_drive_remediation"]["inserted"] == 1
+    assert result["calendar_source_audit_after_drive_remediation"]["calendar_import_only_count"] == 0
+    assert "calendar_import_only_without_pdf_source" not in result["warnings"]
+
+
+def test_refresh_can_run_legacy_scan_only_when_explicitly_enabled(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+    calls = []
+
+    class FakeOscAction:
+        @staticmethod
+        def task_scan_cases(payload):
+            calls.append(("scan", payload))
+            return {"ok": True, "inserted": 1}
+
+        @staticmethod
+        def task_gcal_import(payload):
+            calls.append(("import", payload))
+            return {"ok": True, "imported": 0}
+
+        @staticmethod
+        def task_gcal_sync(payload):
+            calls.append(("push", payload))
+            return {"ok": True, "inserted": 0, "failed": 0}
+
+        @staticmethod
+        def task_gcal_integrity_audit(payload):
+            calls.append(("audit", payload))
+            return {"ok": True, "summary": {"missing_google_id": 0}}
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: calls.append(("pdf_scan", {"limit": args.pdf_limit})) or {"ok": True, "scanned": 0},
+    )
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_drive_case_sync_before_pdf",
+        lambda args: calls.append(("drive_sync", {})) or {"ok": True, "status": "ok"},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=True,
+        legacy_scan=True,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=30,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=True,
+        skip_calendar_audit=False,
+        skip_drive_sync=False,
+        json_out=str(out),
+        dry_run=False,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert [name for name, _ in calls] == ["scan", "drive_sync", "pdf_scan"]
+    assert result["scan"]["inserted"] == 1
+
+
+def test_refresh_skips_transcript_dry_run_when_remaining_budget_too_small(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+
+    class FakeOscAction:
+        pass
+
+    class FakeTranscriptTodo:
+        @staticmethod
+        def _iter_pdf_targets(raw_path, *, limit):
+            raise AssertionError("dry-run with insufficient remaining budget should not start transcript scan")
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(osc_events_refresh, "_load_transcript_todo_module", lambda: FakeTranscriptTodo)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: {"ok": True, "scanned": 0, "write_result": {"inserted": 0, "updated": 0, "skipped": 0}},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=True,
+        legacy_scan=False,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=30,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=False,
+        skip_calendar_audit=False,
+        json_out=str(out),
+        dry_run=True,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert "transcript_todo_timeout" not in result["warnings"]
+    assert result["transcript_todos"]["ok"] is True
+    assert result["transcript_todos"]["skipped"] is True
+    assert result["transcript_todos"]["reason"] == "transcript_todo_dry_run_budget_too_small"
+
+
+def test_refresh_marks_transcript_timeout_as_warning_when_scan_had_budget(monkeypatch, tmp_path):
+    out = tmp_path / "osc_events_refresh_latest.json"
+
+    class FakeOscAction:
+        pass
+
+    class FakeTranscriptTodo:
+        @staticmethod
+        def _iter_pdf_targets(raw_path, *, limit):
+            raise osc_events_refresh._PdfScanTimeout("transcript_todo_timeout:1s")
+
+    monkeypatch.setattr(osc_events_refresh, "_load_osc_action_module", lambda: FakeOscAction)
+    monkeypatch.setattr(osc_events_refresh, "_load_transcript_todo_module", lambda: FakeTranscriptTodo)
+    monkeypatch.setattr(
+        osc_events_refresh,
+        "_run_pdf_calendar_scan",
+        lambda args: {"ok": True, "scanned": 0, "write_result": {"inserted": 0, "updated": 0, "skipped": 0}},
+    )
+
+    args = SimpleNamespace(
+        calendar_only=False,
+        scan_only=True,
+        legacy_scan=False,
+        max_cases=5,
+        max_files_per_case=10,
+        scan_time_budget_sec=300,
+        force_rebuild=False,
+        lookback_days=30,
+        lookahead_days=180,
+        calendar_limit=25,
+        gcal_push_limit=7,
+        pdf_limit=11,
+        pdf_max_pages=8,
+        skip_pdf_todos=False,
+        transcript_limit=9,
+        transcript_tail_pages=3,
+        skip_transcript_todos=False,
+        skip_calendar_audit=False,
+        json_out=str(out),
+        dry_run=True,
+    )
+
+    result = osc_events_refresh.run_refresh(args)
+
+    assert result["ok"] is True
+    assert "transcript_todo_timeout" in result["warnings"]
+    assert result["transcript_todos"]["ok"] is False
+    assert result["transcript_todos"]["skipped"] is True
+
+
+def test_pdf_calendar_scan_uses_filename_first_in_bulk(monkeypatch):
+    from api.blueprints import osc_pdf
+
+    calls = []
+
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(SimpleNamespace(name="notice.pdf"), "2026-0001", "王小明")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(kwargs)
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "開庭", "date": "2026-06-01", "time": "10:00", "description": "測試"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+    monkeypatch.delenv("OSC_PDF_CALENDAR_BULK_TEXT_ENABLE", raising=False)
+    monkeypatch.delenv("OSC_PDF_CALENDAR_BULK_TEXT_WHEN_FILENAME", raising=False)
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert calls[0]["scan_text"] is True
+    assert calls[0]["text_when_filename"] is True
+    assert calls[0]["include_share_link"] is True
+
+
+def test_pdf_calendar_scan_upgrades_filename_sweep_duplicate_to_text(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    calls = []
+
+    def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
+        return [(pdf, "2026-0001", "測試")]
+
+    monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 1)
+    monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append({"path": str(path), **kwargs})
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "開庭", "date": "2026-07-01", "time": "10:00", "description": "測試"}],
+            "events": [{}],
+        },
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=True, force_rebuild=True, scan_time_budget_sec=0)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["ok"] is True
+    assert result["text_targets"] == 1
+    assert result["text_scanned"] == 1
+    assert result["filename_sweep_scanned"] == 0
+    assert calls[0]["scan_text"] is True
+    assert calls[0]["text_when_filename"] is True
+    assert result["sample_items"][0]["scan_mode"] == "filename_then_text"
+
+
+def test_pdf_calendar_scan_rescans_when_rule_version_changes(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    calls = []
+    old_cache = {
+        "version": 1,
+        "files": {
+            str(pdf): {
+                "mtime": int(pdf.stat().st_mtime),
+                "size": int(pdf.stat().st_size),
+                "todo_count": 0,
+                "rule_version": "old-rule",
+                "scanned_at": "2026-05-26T00:00:00+00:00",
+            }
+        },
+    }
+    cache_path = tmp_path / "pdf_calendar_scan_cache.json"
+    cache_path.write_text(json.dumps(old_cache), encoding="utf-8")
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_RULE_VERSION", "new-rule")
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(str(path))
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [],
+            "events": [],
+        },
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=True)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["scanned"] == 1
+    assert calls == [str(pdf)]
+    updated = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert updated["files"][str(pdf)]["rule_version"] == "new-rule"
+
+
+def test_pdf_calendar_scan_rescans_cached_no_todo_when_text_error_exists(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    cache_path = tmp_path / "pdf_calendar_scan_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "files": {
+                    str(pdf): {
+                        "mtime": int(pdf.stat().st_mtime),
+                        "size": int(pdf.stat().st_size),
+                        "todo_count": 0,
+                        "rule_version": osc_events_refresh.PDF_SCAN_RULE_VERSION,
+                        "text_error": "pdf_scan_timeout:12s",
+                        "scanned_at": "2026-06-01T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_iter_all_case_pdf_targets",
+        lambda limit: [(pdf, "2026-0001", "測試")],
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: calls.append(str(path))
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "補正", "date": "2026-06-10", "time": "", "description": "補正"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert result["scanned"] == 1
+    assert result["cache_skipped"] == 0
+    assert calls == [str(pdf)]
+
+
+def test_pdf_calendar_scan_full_filename_sweep_keeps_text_bounded(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "notice.pdf"
+    text_pdf = tmp_path / "text_notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    text_pdf.write_bytes(b"%PDF-1.4\n")
+    target_calls = []
+    scan_calls = []
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", tmp_path / "cursor.json")
+    monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 123)
+    monkeypatch.setenv("OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT", "50")
+    monkeypatch.delenv("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", raising=False)
+
+    def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
+        target_calls.append({"limit": limit, "case_offset": case_offset, "case_batch": case_batch, "filename_only": filename_only})
+        if filename_only and case_offset == 0 and case_batch == 123:
+            return [(pdf, "2026-0001", "測試")]
+        if not filename_only and case_offset == 0 and case_batch == 40:
+            return [(text_pdf, "2026-0002", "測試二")]
+        raise AssertionError(f"unexpected target call: {target_calls[-1]}")
+
+    monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: scan_calls.append(kwargs)
+        or {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [{"type": "補正", "date": "2026-06-10", "time": "", "description": "補正"}],
+            "events": [{}],
+        },
+    )
+    monkeypatch.setattr(
+        osc_pdf,
+        "_insert_todos_single_machine",
+        lambda *_args, **_kwargs: {"inserted": 1, "updated": 0, "skipped": 0},
+    )
+
+    args = SimpleNamespace(pdf_limit=1, pdf_max_pages=8, dry_run=False)
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert target_calls == [
+        {"limit": 50, "case_offset": 0, "case_batch": 123, "filename_only": True},
+        {"limit": 1, "case_offset": 0, "case_batch": 40, "filename_only": False},
+    ]
+    assert result["full_text_scan"] is False
+    assert result["limit"] == 1
+    assert result["requested_limit"] == 1
+    assert result["case_offset"] == 0
+    assert result["case_batch"] == 40
+    assert result["next_case_offset"] == 40
+    assert result["filename_sweep_targets"] == 1
+    assert result["text_targets"] == 1
+    assert result["filename_sweep_scanned"] == 1
+    assert result["text_scanned"] == 1
+    assert scan_calls[0]["scan_text"] is False
+    assert scan_calls[1]["scan_text"] is True
+
+
+def test_pdf_calendar_full_text_governance_rotates_case_cursor(monkeypatch, tmp_path):
+    from api.blueprints import osc_pdf
+
+    pdf = tmp_path / "text_notice.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    target_calls = []
+    cursor_path = tmp_path / "cursor.json"
+    cursor_path.write_text(json.dumps({"version": 1, "case_offset": 14}), encoding="utf-8")
+
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CACHE_PATH", tmp_path / "cache.json")
+    monkeypatch.setattr(osc_events_refresh, "PDF_SCAN_CURSOR_PATH", cursor_path)
+    monkeypatch.setattr(osc_pdf, "_count_all_case_pdf_case_rows", lambda: 123)
+    monkeypatch.setenv("OSC_PDF_CALENDAR_FULL_TEXT_SCAN", "1")
+    monkeypatch.setenv("OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT", "5")
+    monkeypatch.setenv("OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP", "0")
+    monkeypatch.setenv("OSC_EVENTS_REFRESH_PDF_CASE_BATCH", "7")
+
+    def fake_targets(*, limit, case_offset=0, case_batch=40, filename_only=False):
+        target_calls.append({"limit": limit, "case_offset": case_offset, "case_batch": case_batch, "filename_only": filename_only})
+        return [(pdf, "2026-0002", "測試二")]
+
+    monkeypatch.setattr(osc_pdf, "_iter_all_case_pdf_targets", fake_targets)
+    monkeypatch.setattr(
+        osc_pdf,
+        "_scan_pdf_for_calendar",
+        lambda path, **kwargs: {
+            "case_number": kwargs["case_number"],
+            "client_name": kwargs["client_name"],
+            "todos": [],
+            "events": [],
+        },
+    )
+
+    args = SimpleNamespace(pdf_limit=3, pdf_max_pages=8, dry_run=False, force_rebuild=True, scan_time_budget_sec=0)
+    result = osc_events_refresh._run_pdf_calendar_scan(args)
+
+    assert target_calls == [{"limit": 5, "case_offset": 14, "case_batch": 7, "filename_only": False}]
+    assert result["full_text_scan"] is True
+    assert result["full_text_all_cases"] is False
+    assert result["case_offset"] == 14
+    assert result["case_batch"] == 7
+    assert result["next_case_offset"] == 21
+    assert json.loads(cursor_path.read_text(encoding="utf-8"))["case_offset"] == 21

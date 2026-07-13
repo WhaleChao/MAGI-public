@@ -1,3 +1,25 @@
+        <script>
+            (function () {
+                if (window.__paperclipCasesStandaloneGuard) return;
+                window.__paperclipCasesStandaloneGuard = true;
+                if (window.location.protocol !== "file:") return;
+                const showStandaloneNotice = function () {
+                    const section = document.getElementById("cases");
+                    if (!section || document.getElementById("casesStandaloneNotice")) return;
+                    const notice = document.createElement("div");
+                    notice.id = "casesStandaloneNotice";
+                    notice.className = "status-banner warn";
+                    notice.style.margin = "12px";
+                    notice.textContent = "這是 MAGI 的案件管理片段頁。請從 MAGI /osc 正式入口開啟，資料夾、預覽、下載、上傳、刪除與分享連結才會連到後端服務。";
+                    section.prepend(notice);
+                };
+                if (document.readyState === "loading") {
+                    document.addEventListener("DOMContentLoaded", showStandaloneNotice, { once: true });
+                } else {
+                    showStandaloneNotice();
+                }
+            })();
+        </script>
         <section id="cases" class="view">
             <div class="case-page">
                 <div class="case-hero">
@@ -40,6 +62,7 @@
                             <button class="chip active" data-type="全部">全部分類</button>
                             <button class="chip" data-type="刑事">刑事</button>
                             <button class="chip" data-type="民事">民事</button>
+                            <button class="chip" data-type="法律顧問">法律顧問</button>
                             <button class="chip" data-type="消費者債務清理">消費者債務清理</button>
                             <button class="chip" data-type="行政">行政</button>
                             <button class="chip" data-type="非訟">非訟</button>
@@ -70,8 +93,7 @@
                         <div class="sort-bar" id="caseSortBar">
                             <label>排序</label>
                             <select id="caseSortCol">
-                                <option value="">預設</option>
-                                <option value="case_number">案號</option>
+                                <option value="case_number">案件號碼（新到舊）</option>
                                 <option value="client_name">當事人</option>
                                 <option value="court_name">法院 / 地檢署</option>
                                 <option value="case_type">案件分類</option>
@@ -81,11 +103,11 @@
 	                                <option value="court_division">股別</option>
 	                                <option value="status">狀態</option>
                             </select>
-                            <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▲</button>
+                            <button class="sort-dir-btn" id="caseSortDir" title="切換升降冪">▼</button>
                         </div>
                         <div class="inline-actions">
                             <button class="btn" id="casesImportCsvBtn">匯入 CSV</button>
-                            <button class="btn" id="casesExportCsvBtn">匯出 CSV</button>
+                            <button class="btn" id="casesExportXlsxBtn">匯出 XLSX</button>
                             <button class="btn" id="caseViewToggle">切換表格</button>
                             <input type="file" id="casesImportCsvFile" accept=".csv" style="display:none">
                         </div>
@@ -120,6 +142,11 @@
                             <input id="case_client_id_number" placeholder="A123456789">
                         </div>
                         <div class="field">
+                            <label for="case_lawyer">承辦律師</label>
+                            <input id="case_lawyer" list="caseLawyerOptions" placeholder="留空則依案件分類使用系統預設">
+                            <datalist id="caseLawyerOptions"></datalist>
+                        </div>
+                        <div class="field">
                             <label for="case_category">案件種類</label>
                             <input id="case_category" list="caseCategoryOptions" placeholder="例：一般案件、法律扶助案件">
                             <datalist id="caseCategoryOptions">
@@ -135,6 +162,7 @@
                             <datalist id="caseTypeOptions">
                                 <option value="刑事"></option>
                                 <option value="民事"></option>
+                                <option value="法律顧問"></option>
                                 <option value="消費者債務清理"></option>
                                 <option value="行政"></option>
                                 <option value="非訟"></option>

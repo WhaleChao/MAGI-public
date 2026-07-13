@@ -6,11 +6,14 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from api.routing.route_policy import (
+    direct_skill_run_denial_reason,
     get_skill_min_confidence,
+    is_high_risk_skill,
     is_generic_word_only,
     should_cache_intent,
     should_dispatch_skill,
     build_route_explanation,
+    user_declines_tool_dispatch,
 )
 
 
@@ -96,6 +99,21 @@ def test_cmd_intent_normal_threshold():
 
 def test_iron_dome_never_dispatches():
     assert not should_dispatch_skill("iron_dome_scan", 0.99, "掃描系統安全")
+
+
+def test_user_declines_tool_dispatch_blocks_policy():
+    assert user_declines_tool_dispatch("只是聊天，不要查也不要調工具")
+    assert not should_dispatch_skill("web_search", 0.95, "只是聊天，不要查天氣")
+
+
+def test_direct_skill_run_denies_deprecated_and_high_risk():
+    assert direct_skill_run_denial_reason("pdf-annotator") == "deprecated_skill_must_not_run_directly"
+    assert direct_skill_run_denial_reason("magi-doctor") == "high_risk_skill_must_route_through_policy"
+    assert direct_skill_run_denial_reason("iron_dome") == "high_risk_skill_must_route_through_policy"
+    assert direct_skill_run_denial_reason("pdf") == "high_risk_skill_must_route_through_policy"
+    assert direct_skill_run_denial_reason("run_pdf_tool") == "high_risk_skill_must_route_through_policy"
+    assert direct_skill_run_denial_reason("judicial-web-search") == ""
+    assert is_high_risk_skill("run_magi_doctor")
 
 
 # ── should_cache_intent ──

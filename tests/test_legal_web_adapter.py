@@ -14,6 +14,18 @@ def test_default_legal_web_engine_is_selenium(monkeypatch):
     assert profile["fallback_reason"] == ""
 
 
+def test_v2_legal_portals_default_to_playwright(monkeypatch):
+    from skills.engine.legal_web_adapter import resolve_legal_web_engine
+
+    monkeypatch.delenv("MAGI_USE_SCRAPLING", raising=False)
+    monkeypatch.delenv("MAGI_LEGAL_WEB_ENGINE", raising=False)
+
+    for component in ("file_review_portal", "laf_portal_v2", "judicial_transcript_v2"):
+        profile = resolve_legal_web_engine(component)
+        assert profile["requested_engine"] == "playwright"
+        assert profile["selected_engine"] == "playwright"
+
+
 def test_scrapling_request_falls_back_for_interactive_legal_flow(monkeypatch):
     from skills.engine.legal_web_adapter import resolve_legal_web_engine
 

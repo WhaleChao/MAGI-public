@@ -17,7 +17,7 @@ def test_practical_insight_result_combines_statutes_and_judgments():
             "items": [
                 {
                     "title": "最高法院 114 台上 3753",
-                    "summary_preview": "法院指出，交屋遲延仍應依契約與損害證明審酌。",
+                    "summary_preview": "法院指出，預售屋遲延交屋仍應依契約期限、可歸責事由與損害證明審酌。",
                     "url": "https://judgment.example/1",
                 }
             ],
@@ -35,6 +35,54 @@ def test_practical_insight_result_combines_statutes_and_judgments():
     assert "適用法規" in text
     assert "民法 第184條" in text
     assert "最高法院 114 台上 3753" in text
+
+
+def test_practical_insight_extracts_query_relevant_reasoning():
+    text = judgment_flow.format_practical_insight_result(
+        "預售屋遲延交屋",
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": "最高法院 114年度台上字第3753號",
+                    "summary_preview": "案由與當事人資料，未涉及具體法律見解。",
+                    "full_text_excerpt": (
+                        "程序事項：本件上訴合法。\n\n"
+                        "本院認為，預售屋遲延交屋是否構成債務不履行，應先審酌契約約定之交屋期限、"
+                        "可歸責事由及買受人實際損害；出賣人不得僅以行政流程延宕概括免責。\n\n"
+                        "主文：上訴駁回。"
+                    ),
+                    "url": "https://judgment.example/3753",
+                }
+            ],
+        },
+        {"ok": True, "items": []},
+    )
+
+    assert "核心見解" in text
+    assert "預售屋遲延交屋是否構成債務不履行" in text
+    assert "行政流程延宕概括免責" in text
+    assert "案由與當事人資料" not in text
+
+
+def test_practical_insight_blocks_unrelated_excerpts():
+    text = judgment_flow.format_practical_insight_result(
+        "通譯",
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": "臺灣高等法院 111年度上易字第98號",
+                    "summary_preview": "法院認為，被告提領款項之行為與損害間具相當因果關係，應負損害賠償責任。",
+                    "url": "https://judgment.example/unrelated",
+                }
+            ],
+        },
+        {"ok": True, "items": []},
+    )
+
+    assert "沒有可讀且命中查詢重點" in text
+    assert "臺灣高等法院 111年度上易字第98號" not in text
 
 
 def test_run_judgment_collector_routes_practical_insight(monkeypatch):
@@ -91,11 +139,11 @@ def test_practical_insight_falls_back_to_local_archive(monkeypatch):
             "success": True,
             "source_label": "本地判決庫 fallback",
             "items": [
-                {
-                    "title": "臺灣高等法院 侵權行為損害賠償",
-                    "summary_preview": "本地 archive 摘要。",
-                    "url": "https://judgment.local/1",
-                }
+                    {
+                        "title": "臺灣高等法院 侵權行為損害賠償",
+                        "summary_preview": "法院認為，侵權行為損害賠償責任應審酌加害行為、過失及相當因果關係。",
+                        "url": "https://judgment.local/1",
+                    }
             ],
         },
     )
@@ -113,11 +161,11 @@ def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
                 "success": True,
                 "source_label": "本地實務見解庫",
                 "items": [
-                    {
-                        "title": "本地見解",
-                        "summary_preview": "本地摘要。",
-                        "url": "https://judgment.local/1",
-                    }
+                        {
+                            "title": "本地見解",
+                            "summary_preview": "法院認為，遲延交屋爭議應先審酌買賣契約約定之交屋期限與可歸責事由。",
+                            "url": "https://judgment.local/1",
+                        }
                 ],
             }
         return {"ok": True, "items": []}
@@ -132,11 +180,11 @@ def test_practical_insight_augments_with_taiwan_legal_mcp(monkeypatch):
             "success": True,
             "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
             "items": [
-                {
-                    "title": "MCP 司法院見解",
-                    "summary_preview": "MCP 摘要。",
-                    "url": "https://judgment.judicial.gov.tw/example",
-                }
+                    {
+                        "title": "MCP 司法院見解",
+                        "summary_preview": "法院認為，遲延交屋是否成立債務不履行，應依契約期限與實際損害判斷。",
+                        "url": "https://judgment.judicial.gov.tw/example",
+                    }
             ],
         },
     )
@@ -155,7 +203,7 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
             "items": [
                 {
                     "title": "原搜尋結果",
-                    "summary_preview": "原搜尋摘要。",
+                    "summary_preview": "法院認為，遲延交屋爭議仍應以契約交屋期限與可歸責事由作為判斷核心。",
                     "url": "https://judgment.local/original",
                 }
             ],
@@ -171,11 +219,11 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
             "success": True,
             "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
             "items": [
-                {
-                    "title": "MCP 補強結果",
-                    "summary_preview": "MCP 補強摘要。",
-                    "url": "https://judgment.judicial.gov.tw/example",
-                }
+                    {
+                        "title": "MCP 補強結果",
+                        "summary_preview": "法院認為，遲延交屋之損害賠償範圍應視買受人所受實際損害而定。",
+                        "url": "https://judgment.judicial.gov.tw/example",
+                    }
             ],
         },
     )
@@ -187,6 +235,49 @@ def test_judgment_search_success_also_augments_with_mcp(monkeypatch):
     assert "法律工作流：實務見解檢索代理" in text
 
 
+def test_practical_insight_augments_with_tw_legal_rag(monkeypatch):
+    def _fake_run_skill_json(skill_script, task, timeout_sec):
+        if "judgment-collector" in skill_script:
+            return {
+                "success": True,
+                "source_label": "本地實務見解庫",
+                "items": [
+                        {
+                            "title": "本地見解",
+                            "summary_preview": "法院認為，通譯品質會影響被告理解程序與行使防禦權，法院應具體審查。",
+                            "url": "https://judgment.local/1",
+                        }
+                ],
+            }
+        return {"ok": True, "items": []}
+
+    monkeypatch.setattr(judgment_flow, "_run_skill_json", _fake_run_skill_json)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_enabled", lambda: False)
+    monkeypatch.setattr(judgment_flow, "taiwan_legal_mcp_available", lambda: False)
+    monkeypatch.setattr(judgment_flow, "tw_legal_rag_enabled", lambda: True)
+    tlr_summary = "法院認為通譯或譯文品質會影響被告防禦權與審判程序之適法性；若卷證顯示通譯未能使當事人理解程序內容，法院應具體說明其判斷理由。" * 5
+    monkeypatch.setattr(
+        judgment_flow,
+        "search_practical_judgments_via_tlr",
+        lambda query, limit=3, fulltext_limit=1: {
+            "success": True,
+            "source_label": "Taiwan Legal RAG/TLR 全判決語義檢索",
+            "items": [
+                {
+                    "title": "TLR 全判決見解",
+                    "summary_preview": tlr_summary,
+                    "url": "https://dr-lawbot.com/fullview/example",
+                }
+            ],
+        },
+    )
+
+    text = judgment_flow.run_practical_insight_command(None, "實務見解 通譯", notify=False)
+    assert "本地見解" in text
+    assert "TLR 全判決見解" in text
+    assert "全判決語義檢索" in text
+
+
 def test_format_practical_insight_prefers_non_degraded_items():
     text = judgment_flow.format_practical_insight_result(
         "侵權行為",
@@ -196,7 +287,7 @@ def test_format_practical_insight_prefers_non_degraded_items():
             "items": [
                 {
                     "title": "正常摘要案例",
-                    "summary_preview": "法院認為應依過失與因果關係判斷損害賠償責任。",
+                    "summary_preview": "法院認為，侵權行為應依過失、權利侵害與相當因果關係判斷損害賠償責任。",
                     "url": "https://judgment.local/good",
                     "is_degraded": False,
                 }
@@ -217,7 +308,7 @@ def test_format_practical_insight_prefers_non_degraded_items():
     assert "系統降級回覆" not in text
 
 
-def test_practical_insight_labels_extractive_fast_digest():
+def test_practical_insight_blocks_extractive_fast_digest():
     fast_digest = (
         "## 摘要類型\n"
         "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）\n\n"
@@ -241,5 +332,40 @@ def test_practical_insight_labels_extractive_fast_digest():
         {"ok": True, "items": []},
     )
 
-    assert "抽取式快篩，僅供定位原文" in text
-    assert "引用或生成書狀前請核對裁判全文" in text
+    assert "已阻擋其作為正式實務見解" in text
+    assert "臺灣高等法院 114年度上字第1號" not in text
+    assert "被告應給付原告" not in text
+
+
+def test_local_archive_fast_digest_is_not_authoritative(monkeypatch):
+    fast_digest = (
+        "## 摘要類型\n"
+        "抽取式快篩（主文與理由均取自裁判原文；未經 LLM 改寫）\n\n"
+        "## 主文摘錄\n"
+        "被告應給付原告新臺幣十萬元。\n\n"
+        "## 理由摘錄\n"
+        "法院認為被告應負損害賠償責任。"
+    )
+
+    class FakeDB:
+        def execute(self, _sql, _params=None, fetch=None):
+            return [
+                {
+                    "jid": "J1",
+                    "court_name": "臺灣高等法院",
+                    "case_number": "114年度上字第1號",
+                    "case_type": "侵權行為",
+                    "judgment_date": "2026-01-01",
+                    "summary_text": fast_digest,
+                    "source_url": "https://judgment.local/1",
+                    "crawled_at": "2026-01-01 00:00:00",
+                }
+            ]
+
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: FakeDB())
+
+    result = judgment_flow._search_local_judgment_archive("侵權行為", limit=3)
+
+    assert result["success"] is False
+    assert result["error"] == "no_high_quality_local_archive_matches"
+    assert result["rejected_fast_digest_count"] == 1

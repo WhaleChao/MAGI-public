@@ -93,6 +93,17 @@ class TestNormal:
         names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
         assert "show_toc" in names
 
+    def test_private_watermark_names_are_runtime_configurable(self, monkeypatch):
+        source = ACTION_PY.read_text(encoding="utf-8")
+        assert "喬政翔" not in source
+        assert "林稚芳" not in source
+
+        monkeypatch.setenv("MAGI_BOOKMARKER_WATERMARK_NAMES", "喬政翔,林稚芳")
+        mod = _load_module()
+
+        assert mod._COURT_WATERMARK_LINE_RE.search("喬政翔")
+        assert mod._COURT_WATERMARK_LINE_RE.search("林稚芳")
+
     def test_scan_and_bookmark_missing_file(self):
         """scan_and_bookmark returns failure dict for non-existent file."""
         mod = _load_module()
@@ -171,6 +182,139 @@ class TestBoundary:
             assert label is not None, f"Failed to detect: {text_fragment}"
             assert expected_label in label, f"Expected '{expected_label}' in '{label}' for '{text_fragment}'"
 
+    def test_detect_doc_type_uses_page_title_not_embedded_evidence_reference(self):
+        mod = _load_module()
+        text = (
+            "臺灣花蓮地方檢察署檢察官準備程序暨補充理由書（一）\n"
+            "114年度國蒞字第15號\n"
+            "檢證編號 證據名稱 待證事實\n"
+            "43 法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "46 刑事警察局鑑定書\n"
+            "2 被告警詢筆錄"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "補充理由狀"
+
+    def test_detect_doc_type_handles_ocr_spaced_transcript_title(self):
+        mod = _load_module()
+        text = (
+            "準 備 程 序 筆 錄\n"
+            "公訴人 臺灣花蓮地方檢察署檢察官\n"
+            "被 告 劉信義\n"
+            "上列被告因115年度原侵重訴字第1號案件行準備程序"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "準備程序筆錄"
+
+    def test_detect_doc_type_skips_continuation_reference_pages(self):
+        mod = _load_module()
+        text = (
+            "（續上頁）\n"
+            "43 法務部法醫研究所114年6月5日法醫理字第11400050460號函附"
+            "解剖報告書暨鑑定報告書\n"
+            "44 相驗屍體證明書\n"
+            "45 血清證物鑑定書"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_skips_evidence_table_without_page_title(self):
+        mod = _load_module()
+        text = (
+            "檢證編號 證據名稱 待證事實\n"
+            "80 臺北榮民總醫院玉里分院精神醫學部司法鑑定報告書\n"
+            "81 花蓮縣警察局函\n"
+            "82 刑事告訴狀"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_skips_transcript_internal_evidence_prompt(self):
+        mod = _load_module()
+        text = (
+            "法官問 對於114年度相字第146號卷所附下列證據，有何意見？"
+            "（逐一提示並告以要旨）\n"
+            "一、法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "二、案發現場照片\n"
+            "被告答 請辯護人回答。辯護人答 沒有意見。同意有證據能力。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_skips_judgment_body_reference_to_indictment(self):
+        mod = _load_module()
+        text = (
+            "理 由\n"
+            "本院審酌檢察官起訴書所載犯罪事實，並參酌卷附鑑定報告及證人筆錄，"
+            "認被告所辯不足採。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_prefers_pleading_title_over_attachment_mentions(self):
+        mod = _load_module()
+        text = (
+            "刑事聲請狀\n"
+            "附件清單\n"
+            "一、法醫研究所解剖報告暨鑑定報告\n"
+            "二、相驗屍體證明書"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label == "聲請狀"
+
+    def test_detect_doc_type_does_not_mark_reference_to_record_copy_as_cover(self):
+        mod = _load_module()
+        text = (
+            "查前列鑑定人為偵查協助花蓮地方檢察署就被告精神狀況為鑑定之鑑定人，"
+            "其於鑑定時已閱畢花蓮地方檢察署所提供之本案偵查卷宗影本，"
+            "故有到庭說明必要。"
+        )
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_standalone_transcript_path_detection_excludes_review_folder(self):
+        mod = _load_module()
+        assert mod._is_standalone_transcript_pdf("/case/08_筆錄/20260513 準備程序筆錄.pdf")
+        assert not mod._is_standalone_transcript_pdf("/case/06_閱卷資料/20260513 準備程序筆錄.pdf")
+
+    def test_extract_roc_date_prefers_transcript_date_over_birthdate(self):
+        mod = _load_module()
+        text = (
+            "準 備 程 序 筆 錄\n"
+            "上列被告因115年度原侵重訴字第1號殺人等一案於中華民國115\n"
+            "〇4\n"
+            "年3 月27日上午10時30分在臺灣花蓮地方法院刑事第四法庭行準備程序\n"
+            "被告劉信義 男民國88年4月8日生 身分證統一編號：U122010848號"
+        )
+        assert mod._extract_roc_date(text) == "115.03.27"
+
+    def test_ocr_distorted_continuation_page_is_reference_only(self):
+        mod = _load_module()
+        text = (
+            "(颅上頁）\n"
+            "反應被被告騷擾之事，大家建議被害人封鎖被告的Line。\n"
+            "證人丙於114年5月17日警詢筆錄，並檢附解剖報告書暨鑑定報告書。"
+        )
+        assert mod._is_reference_only_page(text)
+        label, level = mod._detect_doc_type(text)
+        assert label is None
+        assert level == 0
+
+    def test_detect_doc_type_accepts_actual_report_cover(self):
+        mod = _load_module()
+        text = (
+            "法務部法醫研究所解剖報告書暨鑑定報告書\n"
+            "受鑑定人 劉信義\n"
+            "鑑定日期 中華民國114年6月5日"
+        )
+        label, _level = mod._detect_doc_type(text)
+        assert label in {"鑑定報告", "法醫報告"}
+
     def test_roc_date_western_year(self):
         mod = _load_module()
         result = mod._extract_roc_date("2024年3月15日提出")
@@ -191,6 +335,26 @@ class TestBoundary:
         mod = _load_module()
         assert mod._normalize_doc_type("上訴抗告狀") == "上訴/抗告狀"
         assert mod._normalize_doc_type("調解筆錄") == "調解/和解筆錄"
+
+    def test_normalize_toc_hierarchy_promotes_first_level(self):
+        mod = _load_module()
+        toc = [
+            [2, "送達證書", 1],
+            [2, "傳票", 3],
+            [4, "裁定", 5],
+        ]
+        assert mod._normalize_toc_hierarchy(toc) == [
+            [1, "送達證書", 1],
+            [2, "傳票", 3],
+            [3, "裁定", 5],
+        ]
+
+    def test_existing_toc_rebuilds_repeated_noisy_dates(self):
+        mod = _load_module()
+        toc = [[1, "115.05.07 判決", i] for i in range(1, 12)]
+        toc.extend([[1, "114.09.16 聲請狀", 20], [1, "送達證書", 30]])
+        assert mod._existing_toc_needs_rebuild(toc)
+        assert not mod._existing_toc_needs_rebuild([[1, "114.09.16 聲請狀", 1], [1, "裁定", 3]])
 
     def test_classify_no_boundary_single_doc_hint(self):
         mod = _load_module()
@@ -218,6 +382,18 @@ class TestBoundary:
         )
         assert classification == "needs_manual_review"
         assert "multi_doc_signal" in reason
+
+    def test_classify_no_boundary_volume_chunk_uses_filename_bookmark_fallback(self):
+        mod = _load_module()
+        classification, reason = mod._classify_no_boundary_case(
+            pdf_path="/case/臺北刑事_114訴972卷4(游秀鈴)_P285-510_OCR.pdf",
+            page_count=226,
+            meaningful_counts=[80, 90, 70],
+            detected_doc_types=set(),
+            page_texts=["頁首浮水印與聊天紀錄"] * 3,
+        )
+        assert classification == "filename_bookmark_fallback"
+        assert "filename_volume_or_evidence_chunk" in reason
 
 
 # ===================================================================

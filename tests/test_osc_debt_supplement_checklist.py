@@ -8,6 +8,7 @@ from unittest.mock import patch
 import sys
 
 from flask import Flask
+from flask_login import LoginManager, UserMixin, login_user
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -27,11 +28,52 @@ def _load_osc_debt_module():
 def _build_app() -> tuple[Flask, object]:
     app = Flask(__name__)
     app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = True
     app.secret_key = "test"
     mod = _load_osc_debt_module()
 
     app.register_blueprint(mod.osc_debt_bp)
     return app, mod
+
+
+def _build_logged_in_app_with_role(role: str) -> tuple[Flask, object]:
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.config["LOGIN_DISABLED"] = False
+    app.secret_key = "test"
+    login = LoginManager()
+    login.init_app(app)
+    mod = _load_osc_debt_module()
+
+    class TestUser(UserMixin):
+        def __init__(self, user_role: str):
+            self.id = f"{user_role}-user"
+            self.role = user_role
+
+    @login.user_loader
+    def _load_user(_user_id):
+        return TestUser(role)
+
+    @app.route("/login")
+    def _login():
+        login_user(TestUser(role))
+        return "ok"
+
+    app.register_blueprint(mod.osc_debt_bp)
+    return app, mod
+
+
+def test_debt_routes_require_login_by_default():
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.secret_key = "test"
+    mod = _load_osc_debt_module()
+    app.register_blueprint(mod.osc_debt_bp)
+
+    r = app.test_client().get("/api/osc/debt/forms")
+
+    assert r.status_code == 401
+    assert r.get_json()["error"] == "authentication_required"
 
 
 def test_debt_supplement_checklist_writes_case_checklists_not_todos():
@@ -76,3 +118,17 @@ def test_debt_supplement_checklist_requires_case_number():
     assert r.status_code == 400
     assert body["ok"] is False
     assert "case_number" in body["error"]
+
+
+def test_debt_supplement_checklist_requires_operator_when_login_enabled():
+    app, _mod = _build_logged_in_app_with_role("viewer")
+    client = app.test_client()
+    client.get("/login")
+
+    r = client.post(
+        "/api/osc/debt/supplement-checklist",
+        json={"case_no": "113消債更字第1號", "items": [{"category": "戶籍謄本"}]},
+    )
+
+    assert r.status_code == 403
+    assert r.get_json()["error"] == "forbidden"

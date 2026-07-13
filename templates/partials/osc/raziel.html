@@ -1,0 +1,109 @@
+<section id="raziel" class="view">
+    <div class="card">
+        <div class="section-head">
+            <div>
+                <h3>判決捕捉與分類</h3>
+                <div class="section-note">在 MAGI 網頁內用布林搜尋抓判決、依規則擷取原文前後文，並產生 Excel 分類表。前後文預設各 300 字，遇到段落邊界會切在段落內；AI 僅能依原文判讀，不足判斷時會標示無法判斷。</div>
+            </div>
+            <span id="razielReadyBadge" class="badge">檢查中...</span>
+        </div>
+        <div id="razielStatus" class="status-banner" hidden></div>
+        <div class="soft-block">
+            <div class="field-grid cols-2">
+                <div class="field">
+                    <label for="razielKeywordQuery">判決搜尋式</label>
+                    <input id="razielKeywordQuery" placeholder='例如：通譯 或 "會員代表大會" AND 類推適用 AND 民法第56條'>
+                    <span class="helper">可用 AND、OR、NOT、括號、引號；數字大小寫變體由判決分類核心處理。</span>
+                </div>
+                <div class="field">
+                    <label for="razielRuleQuery">分類規則關鍵字</label>
+                    <input id="razielRuleQuery" placeholder="可用 AND / OR / NOT、引號與括號">
+                    <span class="helper">用來先找出關鍵字前後文，再交給規則或 AI 做嚴格分類。</span>
+                </div>
+            </div>
+        </div>
+        <div class="soft-block">
+            <strong>全判決語義檢索補強</strong>
+            <div class="section-note" style="margin-top:6px;">MAGI 會用開源 tw-legal-rag 的 TLR 公開端點補強搜尋與分類預覽。送出前會移除明顯個資與 OSC 案件編號；搜尋式仍請放法律議題、法條、案由或關鍵字，不要放完整個案事實。</div>
+        </div>
+        <div class="soft-block">
+            <div class="field-grid cols-4">
+                <div class="field">
+                    <label for="razielCourts">法院範圍</label>
+                    <input id="razielCourts" placeholder="最高法院, 高等法院, 地方法院">
+                </div>
+                <div class="field">
+                    <label for="razielMaxResults">本次關鍵字抓取上限</label>
+                    <input id="razielMaxResults" type="number" min="1" max="100000" value="2000">
+                </div>
+                <div class="field">
+                    <label for="razielTextDir">原文資料夾</label>
+                    <input id="razielTextDir" placeholder="依關鍵字原文">
+                </div>
+                <div class="field">
+                    <label for="razielPdfDir">PDF 資料夾</label>
+                    <input id="razielPdfDir" placeholder="依關鍵字PDF">
+                </div>
+                <div class="field">
+                    <label for="razielSplitMb">交付分割大小 MB</label>
+                    <input id="razielSplitMb" type="number" min="1" max="5000" value="1900">
+                </div>
+            </div>
+        </div>
+        <div class="soft-block">
+            <div class="field-grid cols-4">
+                <div class="field">
+                    <label for="razielAiProvider">AI 模式</label>
+                    <select id="razielAiProvider">
+                        <option value="nvidia">NVIDIA 雲端</option>
+                        <option value="none">不使用 AI</option>
+                        <option value="embedded">內建本機 AI</option>
+                        <option value="ollama">Ollama</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="razielNvidiaModel">主模型（405B）</label>
+                    <input id="razielNvidiaModel" placeholder="meta/llama-3.1-405b-instruct">
+                </div>
+                <div class="field">
+                    <label for="razielNvidiaLargeFallback">大型備援</label>
+                    <input id="razielNvidiaLargeFallback" placeholder="nvidia/nemotron-3-super-120b-a12b">
+                </div>
+                <div class="field">
+                    <label for="razielNvidiaFallback">最後備援</label>
+                    <input id="razielNvidiaFallback" placeholder="meta/llama-3.3-70b-instruct">
+                </div>
+            </div>
+            <div class="field" style="margin-top:10px;">
+                <label for="razielNvidiaApiKey">雲端 AI 金鑰（留空沿用已設定）</label>
+                <input id="razielNvidiaApiKey" type="password" autocomplete="off" placeholder="貼上新金鑰才會更新；此頁不會回顯既有金鑰">
+            </div>
+            <div class="section-note" style="margin-top:8px;">預設先試 405B；若服務端目前不可用，會依序退到大型備援與最後備援。選擇「不使用 AI」仍可抓判決、保存 TXT/PDF、製作規則分類表。</div>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+            <button class="btn" id="razielStatusBtn">檢查狀態</button>
+            <button class="btn" id="razielSearchBtn">1 搜尋判決</button>
+            <button class="btn warn" id="razielTableBtn">2 抓取原文並產生 Excel</button>
+            <button class="btn primary" id="razielPreviewBtn">3 預覽摘錄</button>
+            <button class="btn" id="razielTlrPreviewBtn">全判決語義預覽</button>
+            <button class="btn primary" id="razielDeliveryBtn">產生交付壓縮檔</button>
+        </div>
+    </div>
+    <div class="card">
+        <div class="section-head">
+            <div>
+                <h3>執行結果</h3>
+                <div class="section-note">結果會保存在本機判決資料庫；可直接下載 Excel、CSV、前後文預覽或交付壓縮檔。</div>
+            </div>
+        </div>
+        <div class="toolbar" style="margin-bottom:8px;">
+            <a class="btn" id="razielDownloadXlsx" href="/api/osc/raziel/file/xlsx">下載 Excel</a>
+            <a class="btn" id="razielDownloadCsv" href="/api/osc/raziel/file/csv">下載 CSV</a>
+            <a class="btn" id="razielDownloadPreview" href="/api/osc/raziel/file/preview">下載前後文預覽</a>
+            <a class="btn" id="razielDownloadReport" href="/api/osc/raziel/file/report">下載補抓報告</a>
+            <a class="btn" id="razielDownloadTlr" href="/api/osc/raziel/file/tlr">下載全判決語義預覽</a>
+        </div>
+        <div id="razielDeliveryLinks" class="soft-block" hidden></div>
+        <pre id="razielOutput" style="white-space:pre-wrap;min-height:220px;">尚未執行。</pre>
+    </div>
+</section>

@@ -39,6 +39,8 @@ PYTHON   = str(VENV_PY) if VENV_PY.exists() else sys.executable
 if str(MAGI_DIR) not in sys.path:
     sys.path.insert(0, str(MAGI_DIR))
 
+from skills.ops import health_probes as _health_probes
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,6 +60,99 @@ def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str, str]:
         return -1, "", f"timeout ({timeout}s)"
     except Exception as e:
         return -2, "", str(e)
+
+
+def _discord_bot_process() -> tuple[bool, str]:
+    """Return whether the Discord bot process is visible to local health probes."""
+    return _health_probes.python_script_process_running("api/discord_bot.py", timeout_sec=5)
+
+
+def _pid_list(pid_text: str) -> list[str]:
+    return [pid.strip() for pid in str(pid_text or "").split(",") if pid.strip()]
+
+
+def ensure_discord_bot_for_regression(wait_sec: int = 25) -> dict:
+    """
+    Nightly regression is a health check, but the health signal is noisy when
+    daemon is between Discord restarts.  Give the bot a short self-heal window
+    before running the suites that require it.
+    """
+    running, pid_text = _discord_bot_process()
+    if running:
+        pids = _pid_list(pid_text)
+        if len(pids) > 1:
+            return {"ok": False, "action": "duplicate_running", "pid": pid_text, "count": len(pids)}
+        return {"ok": True, "action": "already_running", "pid": pid_text}
+
+    script = MAGI_DIR / "api" / "discord_bot.py"
+    if not script.exists():
+        return {"ok": False, "action": "missing_script", "path": str(script)}
+
+    log_path = MAGI_DIR / ".runtime" / "nightly_discord_preflight.log"
+    log_fh = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = log_path.open("a", encoding="utf-8")
+        log_fh.write(f"\n[{datetime.now().isoformat()}] starting discord_bot.py for nightly regression preflight\n")
+        log_fh.flush()
+        proc = subprocess.Popen(
+            [PYTHON, str(script)],
+            cwd=str(MAGI_DIR),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as e:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        return {"ok": False, "action": "start_failed", "error": str(e), "log_path": str(log_path)}
+    finally:
+        if log_fh is not None and not log_fh.closed:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+
+    deadline = time.time() + max(1, wait_sec)
+    while time.time() < deadline:
+        running, pid_text = _discord_bot_process()
+        if running:
+            pids = _pid_list(pid_text)
+            if len(pids) > 1:
+                return {
+                    "ok": False,
+                    "action": "duplicate_running",
+                    "pid": pid_text,
+                    "count": len(pids),
+                    "launcher_pid": proc.pid,
+                    "log_path": str(log_path),
+                }
+            return {
+                "ok": True,
+                "action": "started",
+                "pid": pid_text,
+                "launcher_pid": proc.pid,
+                "log_path": str(log_path),
+            }
+        if proc.poll() is not None:
+            return {
+                "ok": False,
+                "action": "exited_early",
+                "returncode": proc.returncode,
+                "launcher_pid": proc.pid,
+                "log_path": str(log_path),
+            }
+        time.sleep(1)
+
+    return {
+        "ok": False,
+        "action": "start_timeout",
+        "launcher_pid": proc.pid,
+        "log_path": str(log_path),
+    }
 
 
 def _notify(msg: str) -> None:
@@ -343,6 +438,23 @@ def build_report(suites: list[dict]) -> tuple[str, bool]:
     return "\n".join(lines), overall_ok
 
 
+def build_failure_summary(suites: list[dict]) -> str:
+    """Compact stderr summary so cron issue samples show actionable failures."""
+    parts: list[str] = []
+    for suite in suites:
+        if suite.get("ok"):
+            continue
+        label = str(suite.get("label") or suite.get("suite") or "?")
+        failures = [str(item) for item in suite.get("failures") or [] if str(item).strip()]
+        if suite.get("error"):
+            failures.insert(0, str(suite.get("error")))
+        if failures:
+            parts.append(f"{label}: " + "; ".join(failures[:4]))
+        else:
+            parts.append(f"{label}: failed={suite.get('failed', 0)} rc={suite.get('rc', '')}")
+    return " | ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -369,6 +481,30 @@ def main() -> int:
     results: list[dict] = []
 
     start = time.time()
+    preflight = None
+    if any(name in {"system", "channels"} for name in suite_names):
+        preflight = ensure_discord_bot_for_regression()
+        print(
+            "[Preflight] Discord bot: "
+            f"{'ok' if preflight.get('ok') else 'fail'} "
+            f"action={preflight.get('action')} pid={preflight.get('pid', '')}"
+        )
+        if not preflight.get("ok"):
+            results.append(
+                {
+                    "suite": "preflight",
+                    "label": "Discord Bot Preflight",
+                    "ok": False,
+                    "passed": 0,
+                    "failed": 1,
+                    "total": 1,
+                    "failures": [
+                        f"{preflight.get('action') or 'discord_preflight_failed'}"
+                        + (f": {preflight.get('pid')}" if preflight.get("pid") else "")
+                    ],
+                }
+            )
+
     for name in suite_names:
         fn = SUITE_FUNCS.get(name)
         if fn is None:
@@ -396,13 +532,19 @@ def main() -> int:
         out = Path(args.json_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "ok": overall_ok,
+            "success": overall_ok,
             "generated_at": datetime.now().isoformat(),
             "elapsed_sec": elapsed,
             "overall_ok": overall_ok,
+            "preflight": preflight,
             "suites": results,
         }
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"JSON report saved: {out}")
+
+    if not overall_ok:
+        print("nightly_regression_failed: " + build_failure_summary(results), file=sys.stderr)
 
     if not args.no_notify:
         _notify(report_text)

@@ -11,6 +11,12 @@ import fitz  # PyMuPDF
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.ops.background_task_locks import acquire_lock, already_running_status
+
 # Logger Setup
 LOG_FILE = "/tmp/magi_nas_ocr.log"
 logger = logging.getLogger("NasOCRWorker")
@@ -44,9 +50,45 @@ _NAS_HOME_USER = (
 ).strip().strip("/\\") or "home"
 NAS_ROOT = os.environ.get("MAGI_NAS_CASE_ROOT", f"/Volumes/homes/{_NAS_HOME_USER}/01_案件")
 ARCHIVE_SUBDIR = "_Archive_No_OCR"
+NAS_OCR_QUEUE_LOCK_NAME = "nas_pdf_ocr_queue_worker"
+STALE_PROCESSING_MINUTES = int(os.environ.get("MAGI_NAS_OCR_STALE_MINUTES", "180") or "180")
 
 # OCR Tool Path
 OCRMYPDF_BIN = "/opt/homebrew/bin/ocrmypdf"
+
+
+def acquire_nas_ocr_queue_lock(owner: str = "nas_pdf_ocr_worker"):
+    return acquire_lock(
+        NAS_OCR_QUEUE_LOCK_NAME,
+        owner=owner,
+        kind="singleton",
+        blocking=False,
+    )
+
+
+def _empty_worker_counters():
+    return {
+        "processed": 0,
+        "stale_requeued": 0,
+        "missing": 0,
+        "skipped_digital": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+
+
+def _unique_path(path: str) -> str:
+    """Return a non-existing path by appending a timestamp suffix if needed."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    for _ in range(50):
+        candidate = f"{base}_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time() * 1000000) % 1000000:06d}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        time.sleep(0.001)
+    return f"{base}_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}{ext}"
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -157,12 +199,42 @@ def scan_nas_for_pdfs(max_limit=1000, max_depth=5):
     return added
 
 def run_worker(batch_size=20):
+    lock = acquire_nas_ocr_queue_lock()
+    if not lock.acquired:
+        status = already_running_status(lock, status="already_running")
+        status["message"] = "NAS OCR queue worker is already running; skipped this run."
+        logger.info(status["message"])
+        return status
+
+    try:
+        return _run_worker_locked(batch_size=batch_size, counters=_empty_worker_counters())
+    finally:
+        lock.release()
+
+
+def _run_worker_locked(batch_size=20, counters=None):
+    counters = counters or _empty_worker_counters()
     if not ensure_nas_mount():
         logger.error("NAS is not mounted. Exiting worker.")
-        return
+        return {"ok": False, "status": "nas_not_mounted", "skipped": True, **counters}
         
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    stale_minutes = max(1, int(STALE_PROCESSING_MINUTES))
+    c.execute(
+        f"""
+        UPDATE ocr_queue
+        SET status='failed',
+            error_msg=COALESCE(error_msg, '') || ' | stale processing requeued'
+        WHERE status='processing'
+          AND attempt_count < 3
+          AND (last_attempt IS NULL OR last_attempt < datetime('now', '-{stale_minutes} minutes'))
+        """
+    )
+    counters["stale_requeued"] += int(c.rowcount or 0)
+    if counters["stale_requeued"]:
+        logger.warning("Requeued %d stale processing OCR jobs", counters["stale_requeued"])
+        conn.commit()
     # Get pending items
     c.execute("""
         SELECT file_path FROM ocr_queue 
@@ -175,7 +247,7 @@ def run_worker(batch_size=20):
     if not rows:
         logger.info("Queue is empty. Nothing to do.")
         conn.close()
-        return
+        return {"ok": True, "status": "empty", "skipped": False, **counters}
         
     logger.info(f"Processing batch of {len(rows)} files...")
     
@@ -186,9 +258,11 @@ def run_worker(batch_size=20):
         if not os.path.exists(pdf_path):
             c.execute("UPDATE ocr_queue SET status='missing' WHERE file_path=?", (pdf_path,))
             conn.commit()
+            counters["missing"] += 1
             continue
             
         logger.info(f"Processing: {pdf_path}")
+        counters["processed"] += 1
         c.execute("UPDATE ocr_queue SET status='processing', attempt_count=attempt_count+1, last_attempt=datetime('now') WHERE file_path=?", (pdf_path,))
         conn.commit()
         
@@ -197,9 +271,10 @@ def run_worker(batch_size=20):
             logger.info("   -> Skipped (Detected as native digital PDF)")
             c.execute("UPDATE ocr_queue SET status='skipped_digital' WHERE file_path=?", (pdf_path,))
             conn.commit()
+            counters["skipped_digital"] += 1
             continue
             
-        out_path = pdf_path[:-4] + "_OCR.pdf"
+        out_path = _unique_path(pdf_path[:-4] + "_OCR.pdf")
         
         try:
             # Execute ocrmypdf
@@ -231,7 +306,7 @@ def run_worker(batch_size=20):
                 os.makedirs(archive_dir, exist_ok=True)
                 
                 old_filename = os.path.basename(pdf_path)
-                archive_path = os.path.join(archive_dir, old_filename)
+                archive_path = _unique_path(os.path.join(archive_dir, old_filename))
                 
                 try:
                     os.rename(pdf_path, archive_path)
@@ -239,20 +314,25 @@ def run_worker(batch_size=20):
                     logger.warning(f"   -> Failed to move old file: {e}")
                     
                 c.execute("UPDATE ocr_queue SET status='completed' WHERE file_path=?", (pdf_path,))
+                counters["completed"] += 1
             else:
                 error_msg = f"Returncode: {result.returncode}, Stderr: {result.stderr[:200]}"
                 logger.error(f"   -> Failed: {error_msg}")
                 c.execute("UPDATE ocr_queue SET status='failed', error_msg=? WHERE file_path=?", (error_msg, pdf_path,))
+                counters["failed"] += 1
                 
         except subprocess.TimeoutExpired:
             logger.error("   -> Timeout (>20m)")
             c.execute("UPDATE ocr_queue SET status='failed', error_msg='Timeout > 20m' WHERE file_path=?", (pdf_path,))
+            counters["failed"] += 1
         except Exception as e:
             logger.error(f"   -> Exception: {e}")
             c.execute("UPDATE ocr_queue SET status='failed', error_msg=? WHERE file_path=?", (str(e), pdf_path,))
+            counters["failed"] += 1
 
         conn.commit()
     conn.close()
+    return {"ok": counters["failed"] == 0, "status": "completed", "skipped": False, **counters}
 
 if __name__ == "__main__":
     init_db()

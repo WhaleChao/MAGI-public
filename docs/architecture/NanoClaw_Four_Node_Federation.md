@@ -31,7 +31,7 @@
 │工程師 │    │行動秘書  │        │外交官   │    │  智慧史官│
 └───┬───┘    └────┬────┘        └────┬────┘    └────┬────┘
     │AI 編程       │Apple AI ✅       │Apple AI ✅     │Pure DB    
-    │Mistral 12B   │Qwen 14B          │Qwen 7B         │MariaDB 10.11
+    │Mistral 12B   │Gemma/Phi         │SmolLM/Phi      │MariaDB 10.11
     └──────────────┴──────────────────┴────────────────┘
 ```
 
@@ -232,4 +232,3 @@ sequenceDiagram
     *   **自動合併 (Auto-Merge)**: 若達成 **3/3 全票通過** (Melchior 提案 + Casper 同意 + Balthasar 同意)，系統自動執行 `git commit`。
     *   **事後否決 (Git Revert)**: 若 User 收到通知後不滿意，隨時可用 `git revert HEAD` 一鍵回復上一版，確保「永遠可以挽回」。
     *   **爭議裁決**: 若投票結果為「否決」或「僵局」，才會通知 User 介入人工審核。
-

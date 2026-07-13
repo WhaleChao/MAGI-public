@@ -77,6 +77,18 @@ def test_transcript_indexer_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp
     assert "usage:" in capsys.readouterr().out.lower()
 
 
+def test_transcript_todo_extractor_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    exit_code = _run_skill_script(
+        "skills/transcript-todo-extractor/action.py",
+        ["--help"],
+        monkeypatch,
+        tmp_path,
+        patch_case_roots=True,
+    )
+    assert exit_code == 0
+    assert "usage:" in capsys.readouterr().out.lower()
+
+
 def test_pdf_annotator_help_bootstraps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     exit_code = _run_skill_script(
         "skills/pdf-annotator/action.py",

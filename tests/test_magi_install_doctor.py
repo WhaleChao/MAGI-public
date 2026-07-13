@@ -91,15 +91,38 @@ def test_seed_cron_jobs_creates_worldmonitor_and_business_jobs(tmp_path):
     assert "job_worldmonitor_intel" in cron_text
     assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in cron_text
     assert "job_laf_nightly_audit" in cron_text
+    assert "job_laf_pending_scan" in cron_text
+    assert "job_laf_gmail_dispatch_scan" in cron_text
+    assert "laf_gmail_dispatch_scan.py" in cron_text
+    assert "osc-orchestrator/action.py --task laf_pending_scan" in cron_text
+    assert "@MAGI 法扶未開辦掃描" not in cron_text
+    assert "job_laf_portal_new_files_scan" in cron_text
+    assert "laf_portal_new_files_scan.py" in cron_text
+    assert "laf_portal_new_files_scan.py --apply" in cron_text
+    assert "job_business_readiness_snapshot" in cron_text
+    assert "business_readiness_snapshot.py" in cron_text
     assert "job_laf_condition_draft" in cron_text
     assert "job_file_review_check" in cron_text
+    assert "job_file_review_downloadable_probe_dense" in cron_text
+    assert "downloadable_probe" in cron_text
+    assert "\\\"notify\\\":false" in cron_text
     assert "job_transcript_sync" in cron_text
     assert "job_business_module_live_check" in cron_text
+    assert "business_module_live_check.py --json-out" in cron_text
+    assert ".runtime/business_module_live_check_latest.json" in cron_text
+    assert "job_accounting_monthly_bonus" in cron_text
+    assert "accounting_monthly_bonus.py" in cron_text
+    assert "--commit --refresh-import --catch-up --export-xlsx" in cron_text
     assert "job_omlx_profile_guard" in cron_text
+    assert "job_empty_case_shell_cleanup" in cron_text
+    assert "cleanup_synology_empty_case_shells.py" in cron_text
     assert "omlx_switch_model.sh auto" in cron_text
     assert "job_distill_train_gemma" in cron_text
     assert "pdfnamer_docling_layout" in cron_text
     assert "MAGI_PDF_NAMER_DOCLING_ENABLED=1" in cron_text
+    assert "job_nightly_bookmark_regex" in cron_text
+    assert "--write-followup-plan --enqueue-ocr-followups" in cron_text
+    assert "job_nas_pdf_ocr_worker_offpeak" in cron_text
 
 
 def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatch):
@@ -115,6 +138,30 @@ def test_seed_cron_jobs_default_python_matches_safe_process(tmp_path, monkeypatc
     assert f"{tmp_path}/venv/bin/python3" in cron_text
     assert '"id": "job_resource_governor"' in cron_text
     assert '"cron": "20 * * * *"' in cron_text
+
+
+def test_seed_cron_jobs_canonicalizes_existing_magi_root_paths(tmp_path):
+    cron_path = tmp_path / "cron_jobs.json"
+    cron_path.write_text(
+        """
+[
+  {
+    "id": "custom_old_root",
+    "cron": "0 * * * *",
+    "command": "/Users/ai/Desktop/MAGI_v2/venv/bin/python3 /Users/ai/Desktop/MAGI_v2/scripts/custom.py",
+    "enabled": true
+  }
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = seed_jobs(tmp_path, python_path=tmp_path / "venv" / "bin" / "python3")
+    cron_text = cron_path.read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert "/Users/ai/Desktop/MAGI_v2" not in cron_text
+    assert f"{tmp_path}/venv/bin/python3 {tmp_path}/scripts/custom.py" in cron_text
 
 
 def test_seed_cron_jobs_prefers_dotvenv_when_created_by_installer(tmp_path, monkeypatch):

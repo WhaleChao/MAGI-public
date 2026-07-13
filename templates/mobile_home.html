@@ -12,8 +12,9 @@
     <link rel="icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}" type="image/svg+xml">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='mobile/mobile.css') }}?v=20260505-mobile-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
 </head>
-<body>
+<body class="site-mobile">
     <main class="mobile-shell">
         <header class="mobile-hero">
             <div>
@@ -53,7 +54,7 @@
                 <strong>手機後台</strong>
             </a>
             <a class="action-card admin" href="/magi-adjust">
-                <span>NERV 設定</span>
+                <span>狀態中心設定</span>
                 <strong>MAGI 調整</strong>
             </a>
         </section>

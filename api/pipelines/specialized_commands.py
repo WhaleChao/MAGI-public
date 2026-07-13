@@ -16,6 +16,77 @@ logger = logging.getLogger("Orchestrator")
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+_INLINE_SUMMARY_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"請幫我|麻煩幫我|可以幫我|幫我|請直接|請|麻煩|協助我|直接"
+    r")?\s*(?:直接)?\s*"
+    r"(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?|摘要|總結|重點整理|"
+    r"summarize|summarise|summary)"
+    r"(?=$|[\s:：,，；;\n]|以下|下列|這|此|本|待|內容|文字|文章)",
+    re.IGNORECASE,
+)
+_INLINE_SUMMARY_MARKER_RES = (
+    re.compile(r"【\s*(?:待摘要內容|摘要內容|原文|本文)\s*】\s*(?P<body>[\s\S]+)$", re.IGNORECASE),
+    re.compile(r"(?:待摘要內容|摘要內容|原文|本文)\s*[:：]\s*(?P<body>[\s\S]+)$", re.IGNORECASE),
+    re.compile(
+        r"(?:以下|下列)(?:是|為)?(?:需要|待)?(?:摘要|總結|整理)?(?:的)?"
+        r"(?:內容|文字|文章|段落)\s*[:：]?\s*(?P<body>[\s\S]+)$",
+        re.IGNORECASE,
+    ),
+)
+_INLINE_SUMMARY_COMPETING_PREFIX_RE = re.compile(
+    r"^\s*(?:請幫我|麻煩幫我|可以幫我|幫我|請直接|請|麻煩|協助我|直接)?\s*"
+    r"(?:翻譯|全文翻譯|完整翻譯|翻成|翻譯成|translate|查判決|找判決|查法條|查法規|研究|搜尋|search)"
+    r"(?=$|[\s:：,，；;\n]|以下|下列|這|此|內容|文字|文章|成)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_inline_summary_command(message: str) -> bool:
+    text = str(message or "").strip()
+    if not text:
+        return False
+    if _INLINE_SUMMARY_COMPETING_PREFIX_RE.match(text):
+        return False
+    if any(pattern.search(text) for pattern in _INLINE_SUMMARY_MARKER_RES):
+        return True
+    return bool(_INLINE_SUMMARY_PREFIX_RE.match(text))
+
+
+def _clean_inline_summary_body(text: str) -> str:
+    body = str(text or "").strip()
+    body = re.sub(r"^```[^\n]*\n?", "", body).strip()
+    body = re.sub(r"\n?```$", "", body).strip()
+    body = body.strip(" \t\r\n「」『』\"'")
+    return body
+
+
+def _extract_inline_summary_text(orch, message: str) -> str:
+    raw = str(message or "").strip()
+    for pattern in _INLINE_SUMMARY_MARKER_RES:
+        match = pattern.search(raw)
+        if match:
+            return _clean_inline_summary_body(match.group("body"))
+
+    text = orch._strip_intent_prefixes(
+        raw,
+        [
+            r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請直接|請|麻煩|協助我|直接)?\s*",
+            r"^(?:直接)?\s*(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?|摘要|總結|重點整理|summarize|summarise|summary)\s*",
+        ],
+    )
+    text = re.sub(
+        r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請直接|請|麻煩|協助我|直接)?\s*"
+        r"(?:直接)?\s*"
+        r"(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?|摘要|總結|重點整理|summarize|summarise|summary)"
+        r"(?:以下|下列|這段|這篇|此段|此篇|內容|文字|文章)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(r"^[:：,，；;]\s*", "", text).strip()
+    return _clean_inline_summary_body(text)
+
 
 def run_labor_law_command(orch, message: str) -> str:
     try:
@@ -182,7 +253,7 @@ def run_translate_file_command(orch, user_id, message: str) -> str:
                     path = t
                     break
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 184, exc_info=True)
 
     if not path or not os.path.exists(path):
         return f"❌ 找不到檔案：`{path or raw}`"
@@ -301,22 +372,7 @@ def run_inline_summary_command(orch, message: str) -> str:
         return "\n".join(f"- {item}" for item in cleaned[:8])
 
     summary_length = orch._detect_summary_length(message)
-    text = orch._strip_intent_prefixes(
-        message,
-        [
-            r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*",
-            r"^(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?)\s*",
-            r"^(?:摘要|總結|重點整理|summarize|summarise|summary)\s*",
-        ],
-    )
-    text = re.sub(
-        r"^(?:請幫我|麻煩幫我|可以幫我|幫我|請|麻煩|協助我)?\s*"
-        r"(?:短摘要?|詳細摘要?|簡短摘要?|完整摘要?|長摘要?|精簡摘要?|摘要|總結|重點整理|summarize|summarise|summary)\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
-    text = re.sub(r"^[:：,，；;]\s*", "", text).strip()
+    text = _extract_inline_summary_text(orch, message)
     if not text:
         return (
             "❓ 請提供要摘要的內容。\n\n"

@@ -6,6 +6,7 @@ All functions accept `orch` (the Orchestrator instance) instead of `self`.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from pathlib import Path
 from typing import Optional
 
 from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
@@ -21,6 +23,110 @@ from api.thread_pools import io_pool, inference_pool
 from skills.bridge.melchior_bridge import analyze_image
 
 logger = logging.getLogger("Orchestrator")
+
+
+def _magi_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _translation_rebuild_cache_path() -> Path:
+    return _magi_root() / ".runtime" / "translation_rebuild_cache.json"
+
+
+def _file_fingerprint(path: str) -> str:
+    p = Path(path)
+    st = p.stat()
+    h = hashlib.sha256()
+    h.update(str(p.resolve()).encode("utf-8", "ignore"))
+    h.update(str(st.st_size).encode())
+    h.update(str(int(st.st_mtime)).encode())
+    with p.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_translation_rebuild_cache() -> dict:
+    p = _translation_rebuild_cache_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_translation_rebuild_cache(cache: dict) -> None:
+    p = _translation_rebuild_cache_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.debug("translation rebuild cache save skipped", exc_info=True)
+
+
+def _try_rebuild_pdf_translation_delivery(
+    *,
+    pdf_path: str,
+    filename: str,
+    source_text: str,
+    user_id: str,
+) -> str:
+    """Fallback/reuse path for long PDF translation delivery.
+
+    Normal translation is still preferred.  This path is used only when DOCX
+    delivery fails quality checks, so users never receive tiny or corrupted
+    "completed" files for long PDFs.
+    """
+    name = filename or os.path.basename(pdf_path)
+    if not str(name or "").lower().endswith(".pdf"):
+        return ""
+    if not os.path.exists(pdf_path):
+        return ""
+
+    try:
+        threshold = int(os.environ.get("MAGI_FILE_TRANSLATE_REBUILD_MIN_CHARS", "30000") or "30000")
+    except Exception:
+        threshold = 30000
+    if len(source_text or "") < threshold:
+        return ""
+
+    try:
+        from api.handlers.document_handler import validate_translation_docx
+
+        key = _file_fingerprint(pdf_path)
+        cache = _load_translation_rebuild_cache()
+        cached = cache.get(key) if isinstance(cache.get(key), dict) else {}
+        cached_path = str(cached.get("path") or "")
+        if cached_path and os.path.exists(cached_path):
+            gate = validate_translation_docx(cached_path, source_text=source_text, source_name=name)
+            if gate.get("ok"):
+                return f"📄 已使用合格快取輸出 HEAVY 完整雙語對照 DOCX。|||FILE_PATH|||{cached_path}"
+
+        from scripts.ops.rebuild_pdf_translation_docx import rebuild
+
+        result = rebuild(Path(pdf_path), prefix="file_translate_heavy_full_rebuilt")
+        out_path = str(result.get("path") or "")
+        if not (result.get("success") and out_path and os.path.exists(out_path)):
+            logger.warning("translation PDF rebuild failed: %s", result)
+            return ""
+        gate = validate_translation_docx(out_path, source_text=source_text, source_name=name)
+        if not gate.get("ok"):
+            logger.warning("translation PDF rebuild quality gate failed: %s", gate)
+            return ""
+        cache[key] = {
+            "path": out_path,
+            "filename": name,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "result": result,
+            "gate": gate,
+        }
+        _save_translation_rebuild_cache(cache)
+        return f"📄 已自動重建 HEAVY 完整雙語對照 DOCX。|||FILE_PATH|||{out_path}"
+    except Exception:
+        logger.warning("translation PDF rebuild delivery failed", exc_info=True)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +221,9 @@ def handle_payment_proof_from_channel(orch, image_path: str) -> str:
     if not py or not os.path.exists(py):
         py = sys.executable or "python3"
 
-    cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path})
+    # The channel pipeline will send the returned message.  Keep the subprocess
+    # silent to avoid duplicate Discord/LINE notifications on parse failures.
+    cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path, "notify": False})
     logger.info("💰 Calling action.py for payment proof: %s", image_path)
 
     try:
@@ -496,7 +604,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             orch.unregister_heavy_task(_transcribe_task_id)
 
     elif msg_type == "file":
-        filename = attachment.get('filename', '')
+        filename = str(attachment.get("filename") or os.path.basename(path) or "").strip()
         logger.info(f"📄 Routing File: {filename}")
         prompt_lower = (prompt or "").lower()
         wants_translate = any(k in prompt_lower for k in ["翻譯", "translate", "翻成"])
@@ -675,6 +783,13 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         term_glossary=term_glossary,
                         title=(filename or os.path.basename(path)),
                         prefix="file_translate",
+                        user_id=str(user_id or ""),
+                    )
+                if not exported_reply:
+                    exported_reply = _try_rebuild_pdf_translation_delivery(
+                        pdf_path=path,
+                        filename=filename or os.path.basename(path),
+                        source_text=src_text,
                         user_id=str(user_id or ""),
                     )
                 if not exported_reply:

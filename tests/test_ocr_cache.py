@@ -36,6 +36,7 @@ def _reset_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MAGI_OCR_CACHE_ENABLE", "1")
     monkeypatch.setenv("MAGI_OCR_CACHE_TTL_SEC", "3600")   # 預設 1 小時
     monkeypatch.setenv("MAGI_OCR_CACHE_MAX_ENTRIES", "500")
+    monkeypatch.delenv("MAGI_OCR_CACHE_STORE_TEXT", raising=False)
     # 每次 test 都 reload cache module，避免 module-level 狀態殘留
     import importlib
     import skills.engine.ocr.cache as _cache_mod
@@ -86,8 +87,24 @@ def test_put_then_get_same_key(_reset_env):
     assert got is not None
     assert got["success"] is True
     assert got["confidence"] == 0.85
-    assert got["corrected_text"] == "花蓮地方法院判決書（修正）"
+    assert got["corrected_text"] == ""
+    assert got["corrected_text_chars"] == len("花蓮地方法院判決書（修正）")
+    assert len(got["corrected_text_sha256"]) == 64
     assert got["entities_counts"]["case_numbers_found"] == 1
+
+
+def test_put_then_get_text_requires_explicit_opt_in(_reset_env, monkeypatch):
+    cache = _reset_env
+    monkeypatch.setenv("MAGI_OCR_CACHE_STORE_TEXT", "1")
+    import importlib
+    importlib.reload(cache)
+
+    img = _make_image_bytes(12)
+    cache.put(img, _make_dummy_result())
+    got = cache.get(img)
+
+    assert got is not None
+    assert got["corrected_text"] == "花蓮地方法院判決書（修正）"
 
 
 def test_get_different_key_returns_none(_reset_env):
@@ -275,8 +292,38 @@ def test_put_result_and_get_result(_reset_env):
 
     assert got is not None
     assert got.success is True
-    assert got.corrected_text == "法院判決（修正）"
+    assert got.corrected_text == ""
     assert got.confidence == 0.90
+
+
+def test_put_result_with_text_opt_in_restores_text(_reset_env, monkeypatch):
+    cache = _reset_env
+    monkeypatch.setenv("MAGI_OCR_CACHE_STORE_TEXT", "1")
+    import importlib
+    importlib.reload(cache)
+
+    from skills.engine.ocr.ocr_schema import OCRConsensusResult
+
+    result = OCRConsensusResult(
+        success=True,
+        selected_text="法院判決",
+        corrected_text="法院判決（修正）",
+        confidence=0.90,
+        writable=True,
+        warnings=[],
+        critical_conflict=False,
+        provider_results={},
+        entities=None,
+        error=None,
+        duration_sec=2.0,
+    )
+
+    img = _make_image_bytes(13)
+    cache.put_result(img, result)
+    got = cache.get_result(img)
+
+    assert got is not None
+    assert got.corrected_text == "法院判決（修正）"
 
 
 def test_get_result_miss_returns_none(_reset_env):

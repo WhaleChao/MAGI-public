@@ -123,11 +123,11 @@ class InferenceRouter:
     engines = [OMLXEngine(...), OllamaEngine(...)]
 
     MODEL_MAP = {
-        "summary":   {"omlx": "Qwen3.5-9B-4bit",   "ollama": "taide-12b"},
-        "intent":    {"omlx": "Qwen3.5-9B-4bit",   "ollama": "taide-12b"},
+        "summary":   {"omlx": "gemma-4-e4b-it-4bit", "ollama": "taide-12b"},
+        "intent":    {"omlx": "gemma-4-e4b-it-4bit", "ollama": "taide-12b"},
         "tc_review": {"omlx": "TAIDE-12b-mlx-4bit", "ollama": "taide-12b"},
-        "coding":    {"omlx": "Qwen2.5-Coder-14B",  "ollama": "taide-12b"},
-        "vision":    {"omlx": "Qwen3.5-9B-4bit",   "ollama": "taide-12b"},
+        "coding":    {"omlx": "Phi-4-mini-instruct-4bit", "ollama": "taide-12b"},
+        "vision":    {"omlx": "gemma-4-e4b-it-4bit", "ollama": "taide-12b"},
         "embed":     {"omlx": "modernbert-embed-4bit", "ollama": "nomic-embed-text"},
     }
 

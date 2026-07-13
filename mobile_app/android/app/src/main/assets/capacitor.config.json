@@ -1,0 +1,14 @@
+{
+	"appId": "tw.local.magi.mobile",
+	"appName": "MAGI Mobile",
+	"webDir": "www",
+	"server": {
+		"url": "https://example.invalid/mobile-app",
+		"cleartext": false
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchAutoHide": true
+		}
+	}
+}

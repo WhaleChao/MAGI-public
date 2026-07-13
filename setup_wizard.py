@@ -258,14 +258,6 @@ MODEL_CATALOG: list[ModelSpec] = [
         omlx_id="gemma-3-12b-it-4bit",
     ),
     ModelSpec(
-        name="Qwen2.5-Coder-14B-Instruct-4bit",
-        display_name="Qwen 2.5 Coder 14B（程式碼）",
-        size_gb=8.5, min_ram_gb=16, category="code", platform="mlx",
-        description="程式碼產生與分析專用模型",
-        recommended_for="程式碼產生、自動修復、evolution skill",
-        omlx_id="Qwen2.5-Coder-14B-Instruct-4bit",
-    ),
-    ModelSpec(
         name="modernbert-embed-4bit",
         display_name="ModernBERT Embed（向量嵌入）",
         size_gb=0.5, min_ram_gb=8, category="embed", platform="mlx",

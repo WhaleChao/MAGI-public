@@ -82,6 +82,7 @@ def test_confidence_for_match_high_and_low_cases():
 
 def test_classify_event_kind_keywords():
     assert classify_event_kind("準備程序 開庭") == "hearing"
-    assert classify_event_kind("應於10日內補正") == "deadline"
+    assert classify_event_kind("6月18日上午10時辯論", todo_type="辯論") == "hearing"
+    assert classify_event_kind("行審理程序", todo_type="審理") == "hearing"
+    assert classify_event_kind("應於10日內補正") == "deadline_correction"
     assert classify_event_kind("律見 會議") == "meeting"
-

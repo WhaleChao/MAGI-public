@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 import pytest
 
@@ -24,15 +25,33 @@ def _make_scheduler(tmp_path, monkeypatch, jobs):
     return cs.CronScheduler()
 
 
-def test_flag_off_writes_last_run_to_cron_jobs(tmp_path, monkeypatch):
+def test_cron_jobs_definition_write_strips_runtime_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("MAGI_USE_RUNTIME_DIR", "0")
     s = _make_scheduler(tmp_path, monkeypatch, [
-        {"id": "j1", "cron": "* * * * *", "command": "echo a", "desc": "", "enabled": True}
+        {
+            "id": "j1",
+            "cron": "* * * * *",
+            "command": "echo a",
+            "desc": "",
+            "enabled": True,
+            "last_run": "old",
+            "last_success_at": "old",
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "runtime",
+        }
     ])
     s.jobs[0]["last_run"] = "2026-04-19T00:00:00"
+    s.jobs[0]["last_success_at"] = "2026-04-19T00:00:00"
+    s.jobs[0]["returncode"] = 0
     s._save_jobs()
     payload = json.loads((tmp_path / "cron_jobs.json").read_text())
-    assert payload[0]["last_run"] == "2026-04-19T00:00:00"
+    assert payload[0]["id"] == "j1"
+    assert "last_run" not in payload[0]
+    assert "last_success_at" not in payload[0]
+    assert "returncode" not in payload[0]
+    assert "timed_out" not in payload[0]
+    assert "stdout" not in payload[0]
 
 
 def test_flag_on_clears_last_run_in_cron_jobs(tmp_runtime, tmp_path, monkeypatch):
@@ -42,7 +61,8 @@ def test_flag_on_clears_last_run_in_cron_jobs(tmp_runtime, tmp_path, monkeypatch
     s.jobs[0]["last_run"] = "2026-04-19T00:00:00"
     s._save_jobs()
     payload = json.loads((tmp_path / "cron_jobs.json").read_text())
-    assert payload[0]["last_run"] is None
+    assert "last_run" not in payload[0]
+    assert "last_run_minute" not in payload[0]
     assert s.jobs[0]["last_run"] == "2026-04-19T00:00:00"
 
 
@@ -57,8 +77,9 @@ def test_mark_job_run_writes_runtime_state_without_dirtying_cron_jobs(tmp_runtim
     state = json.loads(rd.cron_state().read_text())
     payload = json.loads((tmp_path / "cron_jobs.json").read_text())
     assert state["j1"]["last_run_minute"]
-    assert payload[0]["last_run"] is None
-    assert payload[0]["last_run_minute"] is None
+    assert state["j1"]["last_dispatch_at"]
+    assert "last_run" not in payload[0]
+    assert "last_run_minute" not in payload[0]
     assert s.jobs[0]["last_run_minute"] == state["j1"]["last_run_minute"]
 
 
@@ -95,6 +116,118 @@ def test_check_due_writes_state(tmp_runtime, tmp_path, monkeypatch):
     from api.platforms import runtime_dir as rd
     state = json.loads(rd.cron_state().read_text())
     assert "j1" in state and state["j1"]["last_run"]
+
+
+def test_mark_job_result_writes_success_and_failure_without_dirtying_cron_jobs(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "35 7 * * *", "command": "echo a", "desc": "", "enabled": True}
+    ])
+
+    assert s.mark_job_result("j1", success=True, returncode=0, duration_sec=1.234) is True
+
+    from api.platforms import runtime_dir as rd
+    state = json.loads(rd.cron_state().read_text())
+    payload = json.loads((tmp_path / "cron_jobs.json").read_text())
+    assert state["j1"]["last_success"] is True
+    assert state["j1"]["last_success_at"]
+    assert state["j1"]["returncode"] == 0
+    assert state["j1"]["last_returncode"] == 0
+    assert state["j1"]["last_complete_at"]
+    assert "last_run" not in payload[0]
+
+    assert s.mark_job_result(
+        "j1",
+        success=False,
+        returncode=2,
+        error="boom",
+        stdout_tail="hello",
+        stderr_tail="trace",
+    ) is True
+    state = json.loads(rd.cron_state().read_text())
+    assert state["j1"]["last_success"] is False
+    assert state["j1"]["last_failure_at"]
+    assert state["j1"]["last_error"] == "boom"
+    assert state["j1"]["returncode"] == 2
+
+    assert s.mark_job_result("j1", success=True, returncode=0) is True
+    state = json.loads(rd.cron_state().read_text())
+    assert state["j1"]["last_error"] == ""
+    assert state["j1"]["last_stdout_tail"] == ""
+    assert state["j1"]["last_stderr_tail"] == ""
+
+
+def test_mark_job_result_redacts_case_identity_credentials_and_paths(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "35 7 * * *", "command": "echo a", "desc": "", "enabled": True}
+    ])
+
+    raw = (
+        '{"client_name":"王小明","case_number":"2026-0050",'
+        '"court_case_no":"115年度訴字第123號",'
+        '"folder_path":"/Users/ai/Library/Application Support/MAGI/private",'
+        '"token":"secret-value"}'
+    )
+    assert s.mark_job_result(
+        "j1",
+        success=False,
+        returncode=2,
+        error=raw,
+        stdout_tail=raw,
+        stderr_tail="mail=test@example.com phone=0912-345-678",
+    ) is True
+
+    from api.platforms import runtime_dir as rd
+    payload = json.loads(rd.cron_state().read_text())["j1"]
+    persisted = json.dumps(payload, ensure_ascii=False)
+    for secret in ("王小明", "2026-0050", "115年度訴字第123號", "/Users/ai", "secret-value", "test@example.com", "0912-345-678"):
+        assert secret not in persisted
+    assert "<REDACTED>" in persisted
+
+
+def test_dispatch_start_complete_are_distinct_runtime_markers(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "35 7 * * *", "command": "echo a", "desc": "", "enabled": True}
+    ])
+
+    assert s.mark_job_dispatched("j1") is True
+    assert s.mark_job_started("j1") is True
+    assert s.mark_job_complete("j1", success=True, returncode=0) is True
+
+    from api.platforms import runtime_dir as rd
+    state = json.loads(rd.cron_state().read_text())
+    assert state["j1"]["last_dispatch_at"]
+    assert state["j1"]["last_start_at"]
+    assert state["j1"]["last_complete_at"]
+    payload = json.loads((tmp_path / "cron_jobs.json").read_text())
+    assert not any(key.startswith("last_") for key in payload[0])
+
+
+def test_reconcile_incomplete_jobs_marks_expired_dispatch_interrupted(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "0 1 * * *", "command": "python3 task.py", "desc": "", "enabled": True, "timeout_sec": 60}
+    ])
+    dispatched = datetime(2026, 7, 11, 1, 0, 0)
+    s.mark_job_dispatched("j1", when=dispatched)
+
+    reconciled = s.reconcile_incomplete_jobs(now=dispatched + timedelta(minutes=2))
+
+    assert reconciled == ["j1"]
+    from api.platforms import runtime_dir as rd
+    state = json.loads(rd.cron_state().read_text())["j1"]
+    assert state["last_success"] is False
+    assert state["last_timed_out"] is True
+    assert state["last_returncode"] == 130
+    assert state["last_error"] == "scheduler_completion_missing_after_timeout"
+
+
+def test_reconcile_incomplete_jobs_leaves_fresh_dispatch_running(tmp_runtime, tmp_path, monkeypatch):
+    s = _make_scheduler(tmp_path, monkeypatch, [
+        {"id": "j1", "cron": "0 1 * * *", "command": "python3 task.py", "desc": "", "enabled": True, "timeout_sec": 600}
+    ])
+    dispatched = datetime(2026, 7, 11, 1, 0, 0)
+    s.mark_job_dispatched("j1", when=dispatched)
+
+    assert s.reconcile_incomplete_jobs(now=dispatched + timedelta(minutes=2)) == []
 
 
 def test_flag_off_does_not_create_cron_state(tmp_path, monkeypatch):

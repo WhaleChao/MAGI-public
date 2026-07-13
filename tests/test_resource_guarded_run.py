@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import sys
+import time
+
 from scripts.ops import resource_governor as rg
 from scripts.ops import resource_guarded_run as guarded
 
@@ -53,3 +57,221 @@ def test_explicit_disk_requirement_blocks_even_when_level_is_normal():
     )
     assert blocked is True
     assert reasons == ["disk_free<60GB:44GB"]
+
+
+def test_split_env_prefix_extracts_leading_assignments():
+    env, command = guarded._split_env_prefix(
+        ["FOO=bar", "MAGI_TEST=1", sys.executable, "-c", "print('ok')"]
+    )
+
+    assert env == {"FOO": "bar", "MAGI_TEST": "1"}
+    assert command[:2] == [sys.executable, "-c"]
+
+
+def test_guarded_run_accepts_env_prefix(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.resource_governor, "collect_snapshot", lambda: _decision("normal").snapshot)
+    monkeypatch.setattr(guarded.resource_governor, "classify", lambda _snapshot: _decision("normal"))
+    monkeypatch.setattr(guarded, "_append_event", lambda _payload: None)
+    out_path = tmp_path / "env.json"
+
+    rc = guarded.main(
+        [
+            "--job-id",
+            "test_env_prefix",
+            "--block-at",
+            "critical",
+            "--",
+            "MAGI_TEST_ENV_PREFIX=works",
+            sys.executable,
+            "-c",
+            (
+                "import os, json, pathlib; "
+                f"pathlib.Path({str(out_path)!r}).write_text("
+                "json.dumps({'value': os.environ.get('MAGI_TEST_ENV_PREFIX')}), "
+                "encoding='utf-8')"
+            ),
+        ]
+    )
+
+    assert rc == 0
+    assert json.loads(out_path.read_text(encoding="utf-8"))["value"] == "works"
+
+
+def test_guarded_run_writes_child_json_out_when_resource_blocked(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.resource_governor, "collect_snapshot", lambda: _decision("critical").snapshot)
+    monkeypatch.setattr(guarded.resource_governor, "classify", lambda _snapshot: _decision("critical"))
+    events = []
+    monkeypatch.setattr(guarded, "_append_event", lambda payload: events.append(payload))
+    out_path = tmp_path / "blocked.json"
+
+    rc = guarded.main(
+        [
+            "--job-id",
+            "test_blocked_json_out",
+            "--block-at",
+            "core_only",
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(99)",
+            "--json-out",
+            str(out_path),
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["skipped"] is True
+    assert payload["status"] == "resource_guard_skipped"
+    assert payload["job_id"] == "test_blocked_json_out"
+    assert events[0]["wrote_json_out"] is True
+
+
+def test_guarded_run_timeout_kills_child_process_group(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.resource_governor, "collect_snapshot", lambda: _decision("normal").snapshot)
+    monkeypatch.setattr(guarded.resource_governor, "classify", lambda _snapshot: _decision("normal"))
+    monkeypatch.setattr(guarded, "_append_event", lambda _payload: None)
+    monkeypatch.setattr(guarded, "_mark_drive_sync_guard_timeout", lambda *args, **kwargs: None)
+    marker = tmp_path / "guarded-child-survived.txt"
+    code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable,'-c',"
+        f"\"import pathlib,time; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('alive')\"]); "
+        "time.sleep(30)"
+    )
+
+    rc = guarded.main(
+        [
+            "--job-id",
+            "test_timeout_group",
+            "--block-at",
+            "critical",
+            "--timeout-sec",
+            "1",
+            "--",
+            sys.executable,
+            "-c",
+            code,
+        ]
+    )
+    time.sleep(3.5)
+
+    assert rc == 124
+    assert not marker.exists()
+
+
+def test_drive_timeout_marker_does_not_overwrite_completed_same_pid_status(monkeypatch, tmp_path):
+    drive_dir = tmp_path / "drive_sync"
+    drive_dir.mkdir()
+    status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "ok",
+                "pid": 4321,
+                "finished_at": "2026-06-30T08:13:23+08:00",
+                "status_by_kind": {
+                    "all_files": {
+                        "ok": True,
+                        "status": "ok",
+                        "pid": 4321,
+                        "finished_at": "2026-06-30T08:13:23+08:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+
+    guarded._mark_drive_sync_guard_timeout("job_drive_case_sync_all_files", 3600, child_pid=4321)
+
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+
+
+def test_drive_timeout_marker_writes_timeout_when_no_terminal_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+
+    guarded._mark_drive_sync_guard_timeout("job_drive_case_sync_all_files", 3600, child_pid=4321)
+
+    status_path = tmp_path / "drive_sync" / "drive_case_sync_worker_status_latest.json"
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "timeout"
+    assert payload["pid"] == 4321
+
+
+def test_drive_timeout_marker_drops_previous_success_summaries(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+    drive_dir = tmp_path / "drive_sync"
+    drive_dir.mkdir()
+    status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "ok",
+                "pid": 111,
+                "summary": {"matched_case_folders": 23},
+                "file_sync_summary": {"matched_cases_scanned": 23},
+                "execution_summary": {"downloaded": 3},
+                "active_worker_pid": 999,
+                "previous_status": "direct_all_case_sync_running",
+                "signal": 15,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    guarded._mark_drive_sync_guard_timeout("job_drive_case_sync_all_files", 3600, child_pid=4321)
+
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "timeout"
+    assert "summary" not in payload
+    assert "file_sync_summary" not in payload
+    assert "execution_summary" not in payload
+    assert "active_worker_pid" not in payload
+    assert "previous_status" not in payload
+    assert "signal" not in payload
+
+
+def test_guarded_run_fails_when_drive_status_contract_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(guarded.runtime_dir, "root", lambda: tmp_path)
+    monkeypatch.setattr(guarded.resource_governor, "collect_snapshot", lambda: _decision("normal").snapshot)
+    monkeypatch.setattr(guarded.resource_governor, "classify", lambda _snapshot: _decision("normal"))
+    events = []
+    monkeypatch.setattr(guarded, "_append_event", lambda payload: events.append(payload))
+
+    drive_dir = tmp_path / "drive_sync"
+    drive_dir.mkdir()
+    child_code = (
+        "import json, pathlib, os; "
+        f"p=pathlib.Path({str(drive_dir)!r})/'drive_case_sync_worker_status_latest.json'; "
+        "payload={'ok': False, 'status': 'timeout', 'pid': os.getpid(), "
+        "'worker_kind': 'all_files', 'finished_at': '2026-07-09T08:32:07+08:00', "
+        "'status_by_kind': {'all_files': {'ok': False, 'status': 'timeout', 'pid': os.getpid(), "
+        "'finished_at': '2026-07-09T08:32:07+08:00'}}}; "
+        "p.write_text(json.dumps(payload), encoding='utf-8')"
+    )
+
+    rc = guarded.main(
+        [
+            "--job-id",
+            "job_drive_case_sync_all_files",
+            "--block-at",
+            "critical",
+            "--",
+            sys.executable,
+            "-c",
+            child_code,
+        ]
+    )
+
+    assert rc == 2
+    assert events[-1]["drive_status_contract_failed"] is True
+    assert events[-1]["drive_worker_kind"] == "all_files"
+    assert events[-1]["drive_status"] == "timeout"

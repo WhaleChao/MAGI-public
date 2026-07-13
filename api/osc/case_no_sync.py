@@ -157,6 +157,68 @@ _TYPE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _doc_date_sort_key(filename: str) -> str:
+    m = re.search(r"(20\d{2})(\d{2})(\d{2})", filename or "")
+    if not m:
+        return ""
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
+def _case_no_char_priority(char_type: str) -> int:
+    c = (char_type or "").strip()
+    if not c:
+        return 0
+    if any(k in c for k in ("強處", "聲羈", "偵聲", "國審聲", "科偵控", "限出")):
+        return 10
+    if "聲" in c and "訴" not in c:
+        return 20
+    if c.startswith("國蒞") or c.startswith("偵"):
+        return 30
+    if "上訴" in c:
+        return 100
+    if "訴" in c:
+        return 96
+    if any(k in c for k in ("易", "簡", "小", "消債", "司執", "司促", "家", "訴更")):
+        return 90
+    return 60
+
+
+def _case_no_source_priority(notice: dict) -> int:
+    filename = str(notice.get("filename") or "")
+    path = str(notice.get("path") or "")
+    text = f"{path}/{filename}"
+    if "判決書" in text or "判決" in filename:
+        return 100
+    if "起訴書" in filename:
+        return 92
+    if "法院通知" in text and "程序裁定" not in text:
+        return 70
+    if "程序裁定" in text or "裁定" in filename:
+        return 55
+    if "對方歷次書狀" in text:
+        return 45
+    if "我方歷次書狀" in text:
+        return 40
+    if "電子筆錄" in text or "筆錄" in text:
+        return 35
+    if "回執" in text:
+        return 20
+    return 30
+
+
+def _candidate_sort_key(candidate: dict) -> tuple:
+    notice = candidate.get("notice") or {}
+    extracted = candidate.get("extracted") or {}
+    filename = str(notice.get("filename") or "")
+    return (
+        _case_no_source_priority(notice),
+        _case_no_char_priority(str(extracted.get("char_type") or "")),
+        _doc_date_sort_key(filename),
+        float(notice.get("mtime") or 0),
+        filename,
+    )
+
+
 def verify_filename_for_case(
     filename: str,
     *,
@@ -282,8 +344,10 @@ def sync_case_no_from_notices(
             "errors": ["no_qualifying_notice"],
         }
 
-    # 2. 取 mtime 最新（程序最新階段的裁定通常時間最近）
-    candidates.sort(key=lambda c: c["notice"].get("mtime", 0), reverse=True)
+    # 2. 取最可靠的本案號來源。不能只看 mtime；大型刑事案件常有
+    # 後續程序裁定或卷證檔名仍帶「強處、聲字」等程序案號，若只取
+    # 最新檔會把 DB 從本案訴字/上訴字誤退回程序案號。
+    candidates.sort(key=_candidate_sort_key, reverse=True)
     best = candidates[0]
     new_case_no = best["extracted"]["case_no"]
     new_inst = best["extracted"]["institution"] or best["verification"]["extracted_institution"]

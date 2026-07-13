@@ -13,6 +13,7 @@ import argparse
 import csv
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -23,7 +24,7 @@ from typing import Any
 
 
 MAGI_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TEXT_DIR = Path("/Users/ai/Desktop/最高法院_通譯_TXT")
+DEFAULT_TEXT_DIR = Path(os.environ.get("INTERPRETER_JUDGMENT_BASE_DIR") or "~/Desktop/判決捕捉與分類器").expanduser()
 DEFAULT_LIST_PATH = DEFAULT_TEXT_DIR / "最高法院_通譯_812清單.json"
 DEFAULT_OUTPUT_DIR = DEFAULT_TEXT_DIR / "完整812"
 

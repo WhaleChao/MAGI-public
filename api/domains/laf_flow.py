@@ -67,29 +67,111 @@ def _parse_subprocess_result(stdout_text: str):
     return None, "parse_failed"
 
 
+def _subprocess_payload_succeeded(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("success") is False or data.get("ok") is False:
+        return False
+    nested = data.get("result")
+    if isinstance(nested, dict):
+        if nested.get("success") is False or nested.get("ok") is False:
+            return False
+        if nested.get("success") is True or nested.get("ok") is True:
+            return True
+    if data.get("success") is True or data.get("ok") is True:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # LAF submit pending persistence
 # ---------------------------------------------------------------------------
 
-def load_laf_submit_pending(orch) -> dict:
+_PENDING_TERMINAL_STATUSES = {"submitted", "failed", "cancelled", "expired"}
+
+
+def _pending_stale_timeout_sec(kind: str) -> float:
+    if kind == "laf_progress_submit":
+        raw = os.environ.get("MAGI_LAF_PROGRESS_SUBMIT_STALE_SEC", "")
+    else:
+        raw = os.environ.get("MAGI_LAF_GO_LIVE_SUBMIT_STALE_SEC", "")
+    if not raw:
+        raw = os.environ.get("MAGI_LAF_SUBMIT_STALE_SEC", "3600")
     try:
-        if os.path.exists(orch._laf_submit_pending_file):
-            with open(orch._laf_submit_pending_file, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-            return data if isinstance(data, dict) else {}
+        return max(60.0, float(raw or 3600))
     except Exception:
+        return 3600.0
+
+
+def _recover_pending_entries(data: dict, *, kind: str, now: float | None = None) -> tuple[dict, bool]:
+    """Mark expired/stale entries so failures stay visible instead of disappearing."""
+    if not isinstance(data, dict):
+        return {}, False
+    changed = False
+    ts = float(now if now is not None else time.time())
+    stale_after = _pending_stale_timeout_sec(kind)
+    for token, entry in list(data.items()):
+        if not isinstance(entry, dict):
+            data.pop(token, None)
+            changed = True
+            continue
+        if str(entry.get("kind") or "") != kind:
+            continue
+        status = str(entry.get("status") or "").strip()
+        if status == "pending":
+            exp = float(entry.get("expires_at", 0.0) or 0.0)
+            if exp and ts > exp:
+                entry["status"] = "expired"
+                entry["expired_at"] = ts
+                entry["last_error"] = "confirmation_token_expired"
+                changed = True
+        elif status == "submitting":
+            heartbeat = float(entry.get("heartbeat_at") or entry.get("started_at") or entry.get("confirmed_at") or 0.0)
+            if heartbeat and ts - heartbeat > stale_after:
+                entry["status"] = "failed"
+                entry["failed_at"] = ts
+                entry["recoverable"] = True
+                entry["last_error"] = "stale_submitting_recovered"
+                changed = True
+    return data, changed
+
+
+def _save_pending_path(path: str, data: dict) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data if isinstance(data, dict) else {}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        logging.getLogger(__name__).warning("failed to persist LAF pending state: %s", path, exc_info=True)
+        return False
+
+
+def load_laf_submit_pending(orch) -> dict:
+    path = str(orch._laf_submit_pending_file)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            data = data if isinstance(data, dict) else {}
+            data, changed = _recover_pending_entries(data, kind="laf_go_live_submit")
+            if changed:
+                _save_pending_path(path, data)
+            return data
+    except Exception:
+        setattr(orch, "_laf_submit_pending_last_error", "load_failed")
+        logger.warning("failed to load LAF submit pending file: %s", path, exc_info=True)
         return {}
     return {}
 
 
-def save_laf_submit_pending(orch, data: dict) -> None:
-    try:
-        tmp = orch._laf_submit_pending_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data if isinstance(data, dict) else {}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, orch._laf_submit_pending_file)
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "save_laf_submit_pending", exc_info=True)
+def save_laf_submit_pending(orch, data: dict) -> bool:
+    ok = _save_pending_path(str(orch._laf_submit_pending_file), data)
+    if not ok:
+        setattr(orch, "_laf_submit_pending_last_error", "save_failed")
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -177,13 +259,16 @@ def update_laf_status_after_action(orch, *, case_number: str = "", client_name: 
                 """
                 UPDATE cases
                 SET legal_aid_status = %s,
-                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END
+                    status = CASE WHEN COALESCE(manual_status_lock, 0) = 1 THEN status ELSE %s END,
+                    manual_laf_status_lock = 1,
+                    manual_laf_status_source = %s,
+                    manual_laf_status_at = NOW()
                 WHERE id = %s
                 """,
-                (new_status, next_case_status, row["id"]),
+                (new_status, next_case_status, "chat_command", row["id"]),
             )
         except Exception as inner:
-            if "manual_status_lock" not in str(inner) and "Unknown column" not in str(inner):
+            if "manual_status_lock" not in str(inner) and "manual_laf_status_lock" not in str(inner) and "Unknown column" not in str(inner):
                 raise
             db.execute_write(
                 "UPDATE cases SET legal_aid_status = %s, status = %s WHERE id = %s",
@@ -221,11 +306,14 @@ def register_laf_go_live_submit_pending(orch, *, platform: str, requester_user_i
         "created_at": now,
         "expires_at": now + float(expires_sec),
         "status": "pending",
+        "heartbeat_at": now,
+        "attempts": 0,
+        "last_error": "",
         "payload": payload or {},
         "result_data": result_data or {},
     }
     pending[token] = entry
-    save_laf_submit_pending(orch, pending)
+    entry["persisted"] = save_laf_submit_pending(orch, pending)
     return entry
 
 
@@ -235,17 +323,19 @@ def resolve_laf_go_live_pending_token(orch, platform: str, message: str) -> tupl
     platform_norm = str(platform or "").strip().lower()
 
     now = time.time()
-    removed = []
+    changed = False
     for tk, e in list(pending.items()):
         if not isinstance(e, dict):
-            removed.append(tk)
+            pending.pop(tk, None)
+            changed = True
             continue
         exp = float(e.get("expires_at", 0.0) or 0.0)
-        if exp and now > exp:
-            removed.append(tk)
-    if removed:
-        for tk in removed:
-            pending.pop(tk, None)
+        if str(e.get("status") or "") == "pending" and exp and now > exp:
+            e["status"] = "expired"
+            e["expired_at"] = now
+            e["last_error"] = "confirmation_token_expired"
+            changed = True
+    if changed:
         save_laf_submit_pending(orch, pending)
 
     m = re.search(r"\b([A-F0-9]{6,12})\b", msg.upper())
@@ -338,16 +428,22 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
         ent["status"] = "cancelled"
         ent["cancelled_by"] = str(user_id or "")
         ent["cancelled_at"] = time.time()
+        ent["heartbeat_at"] = ent["cancelled_at"]
         pending[token] = ent
-        save_laf_submit_pending(orch, pending)
+        if not save_laf_submit_pending(orch, pending):
+            return True, f"⚠️ 確認碼 {token} 已取消，但 pending 狀態無法寫入，請人工確認。"
         return True, f"\U0001f6d1 \u5df2\u53d6\u6d88\u958b\u8fa6\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002"
 
     # confirm -> submit in background
     ent["status"] = "submitting"
     ent["confirmed_by"] = str(user_id or "")
     ent["confirmed_at"] = time.time()
+    ent["heartbeat_at"] = ent["confirmed_at"]
+    ent["attempts"] = int(ent.get("attempts") or 0) + 1
+    ent["last_error"] = ""
     pending[token] = ent
-    save_laf_submit_pending(orch, pending)
+    if not save_laf_submit_pending(orch, pending):
+        return True, f"⚠️ 無法持久化開辦送出狀態（確認碼 {token}），未啟動送出，請稍後重試。"
 
     from api.runtime_paths import get_laf_script
 
@@ -378,16 +474,28 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
         timeout_sec = int(os.environ.get("MAGI_LAF_REPORT_TIMEOUT_SEC", "2400") or "2400")
         text = ""
         success = False
+        failure_reason = ""
+        try:
+            pending0 = load_laf_submit_pending(orch)
+            e0 = pending0.get(token_id) if isinstance(pending0, dict) else None
+            if isinstance(e0, dict):
+                e0["heartbeat_at"] = time.time()
+                e0["started_at"] = e0.get("started_at") or e0["heartbeat_at"]
+                pending0[token_id] = e0
+                save_laf_submit_pending(orch, pending0)
+        except Exception:
+            logger.warning("go_live heartbeat update failed", exc_info=True)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
             stdout_text = (proc.stdout or "").strip()
             stderr_text = (proc.stderr or "").strip()
             data, _parse_method = _parse_subprocess_result(stdout_text)
-            if proc.returncode != 0 and not (isinstance(data, dict) and data.get("ok")):
+            if proc.returncode != 0 and not _subprocess_payload_succeeded(data):
                 # \u771f\u6b63\u5931\u6557\uff1areturncode \u975e\u96f6\u4e14 result \u4e5f\u4e0d\u662f ok=True
                 text = f"\u274c \u958b\u8fa6\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {token_id}\uff0ccode={proc.returncode}\uff09\n{(stderr_text or stdout_text)[:1200]}"
+                failure_reason = text
             else:
-                if isinstance(data, dict) and data.get("ok"):
+                if _subprocess_payload_succeeded(data):
                     identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
                     cname = str(identity.get("client_name") or payload_obj.get("client_name") or "").strip()
                     laf_no = str(identity.get("laf_case_number") or payload_obj.get("laf_case_no") or "").strip()
@@ -425,10 +533,13 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
                     if isinstance(data, dict):
                         err = str(data.get("error") or "").strip()
                     text = f"\u274c \u958b\u8fa6\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {token_id}\uff09\uff1a{err or (stdout_text[:500] if stdout_text else 'unknown')}"
+                    failure_reason = text
         except subprocess.TimeoutExpired:
             text = f"\u23f3 \u958b\u8fa6\u9001\u51fa\u903e\u6642\uff08\u78ba\u8a8d\u78bc {token_id}\uff09\uff0c\u8acb\u7a0d\u5f8c\u6aa2\u67e5\u5e73\u53f0\u7d50\u679c\u3002"
+            failure_reason = "timeout"
         except Exception as e:
             text = f"\u274c \u958b\u8fa6\u9001\u51fa\u6d41\u7a0b\u7570\u5e38\uff08\u78ba\u8a8d\u78bc {token_id}\uff09\uff1a{e}"
+            failure_reason = f"{type(e).__name__}: {e}"
 
         try:
             pending2 = load_laf_submit_pending(orch)
@@ -436,6 +547,8 @@ def handle_laf_submit_confirmation_if_any(orch, user_id: str, platform: str, rol
             if isinstance(e2, dict):
                 e2["status"] = "submitted" if success else "failed"
                 e2["finished_at"] = time.time()
+                e2["heartbeat_at"] = e2["finished_at"]
+                e2["last_error"] = "" if success else str(failure_reason or text)[:1200]
                 pending2[token_id] = e2
                 save_laf_submit_pending(orch, pending2)
         except Exception:
@@ -474,20 +587,18 @@ def _load_progress_pending(path: str) -> dict:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f) or {}
-            return data if isinstance(data, dict) else {}
+            data = data if isinstance(data, dict) else {}
+            data, changed = _recover_pending_entries(data, kind="laf_progress_submit")
+            if changed:
+                _save_pending_path(path, data)
+            return data
     except Exception:
-        pass
+        logger.warning("failed to load LAF progress pending file: %s", path, exc_info=True)
     return {}
 
 
-def _save_progress_pending(path: str, data: dict) -> None:
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data if isinstance(data, dict) else {}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch _save_progress_pending", exc_info=True)
+def _save_progress_pending(path: str, data: dict) -> bool:
+    return _save_pending_path(path, data)
 
 
 def register_laf_progress_submit_pending(
@@ -507,11 +618,14 @@ def register_laf_progress_submit_pending(
         "created_at": now,
         "expires_at": now + float(expires_sec),
         "status": "pending",
+        "heartbeat_at": now,
+        "attempts": 0,
+        "last_error": "",
         "payload": payload or {},
         "result_data": result_data or {},
     }
     pending[token] = entry
-    _save_progress_pending(pending_file, pending)
+    entry["persisted"] = _save_progress_pending(pending_file, pending)
     return token
 
 
@@ -543,14 +657,19 @@ def resolve_laf_progress_pending_token(orch, token: str):
     pending_file = _progress_pending_file(orch)
     pending = _load_progress_pending(pending_file)
     now = time.time()
-    # prune expired
-    removed = [
-        tk for tk, e in list(pending.items())
-        if not isinstance(e, dict) or (float(e.get("expires_at", 0) or 0) and now > float(e.get("expires_at", 0) or 0))
-    ]
-    if removed:
-        for tk in removed:
+    changed = False
+    for tk, e in list(pending.items()):
+        if not isinstance(e, dict):
             pending.pop(tk, None)
+            changed = True
+            continue
+        exp = float(e.get("expires_at", 0) or 0)
+        if str(e.get("status") or "") == "pending" and exp and now > exp:
+            e["status"] = "expired"
+            e["expired_at"] = now
+            e["last_error"] = "confirmation_token_expired"
+            changed = True
+    if changed:
         _save_progress_pending(pending_file, pending)
 
     e = pending.get(token)
@@ -593,8 +712,10 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
             ent["status"] = "cancelled"
             ent["cancelled_by"] = str(user_id or "")
             ent["cancelled_at"] = time.time()
+            ent["heartbeat_at"] = ent["cancelled_at"]
             pending[token] = ent
-            _save_progress_pending(pending_file, pending)
+            if not _save_progress_pending(pending_file, pending):
+                return {"handled": True, "message": f"⚠️ 確認碼 {token} 已取消，但 pending 狀態無法寫入，請人工確認。"}
         return {"handled": True, "message": f"\U0001f6d1 \u5df2\u53d6\u6d88\u9032\u5ea6\u56de\u5831\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {token}\uff09\u3002"}
 
     # Confirm
@@ -609,8 +730,12 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
     ent["status"] = "submitting"
     ent["confirmed_by"] = str(user_id or "")
     ent["confirmed_at"] = time.time()
+    ent["heartbeat_at"] = ent["confirmed_at"]
+    ent["attempts"] = int(ent.get("attempts") or 0) + 1
+    ent["last_error"] = ""
     pending[token] = ent
-    _save_progress_pending(pending_file, pending)
+    if not _save_progress_pending(pending_file, pending):
+        return {"handled": True, "message": f"⚠️ 無法持久化進度回報送出狀態（確認碼 {token}），未啟動送出，請稍後重試。"}
 
     skill_python = (os.environ.get("MAGI_SKILL_PYTHON") or "").strip()
     if not skill_python:
@@ -645,33 +770,43 @@ def handle_laf_progress_submit_confirmation_if_any(orch, *, platform: str, user_
         timeout_sec = int(os.environ.get("MAGI_LAF_REPORT_TIMEOUT_SEC", "2400") or "2400")
         success = False
         text_out = ""
+        failure_reason = ""
+        try:
+            pending0 = _load_progress_pending(pending_file)
+            e0 = pending0.get(tok)
+            if isinstance(e0, dict):
+                e0["heartbeat_at"] = time.time()
+                e0["started_at"] = e0.get("started_at") or e0["heartbeat_at"]
+                pending0[tok] = e0
+                _save_progress_pending(pending_file, pending0)
+        except Exception:
+            logger.warning("progress heartbeat update failed", exc_info=True)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, env=env)
             stdout_text = (proc.stdout or "").strip()
-            data = None
-            for line in reversed(stdout_text.splitlines()):
-                try:
-                    data = json.loads(line)
-                    if isinstance(data, dict):
-                        break
-                except Exception:
-                    pass
-            if proc.returncode == 0 and isinstance(data, dict) and data.get("success"):
+            stderr_text = (proc.stderr or "").strip()
+            data, _parse_method = _parse_subprocess_result(stdout_text)
+            if proc.returncode == 0 and _subprocess_payload_succeeded(data):
                 text_out = f"\u2705 \u9032\u5ea6\u56de\u5831\u5df2\u9001\u51fa\uff08\u78ba\u8a8d\u78bc {tok}\uff09"
                 success = True
             else:
-                err = str((data or {}).get("error") or stdout_text[:300]) if data else stdout_text[:300]
+                err = str((data or {}).get("error") or stderr_text[:300] or stdout_text[:300]) if data else (stderr_text[:300] or stdout_text[:300])
                 text_out = f"\u274c \u9032\u5ea6\u56de\u5831\u9001\u51fa\u5931\u6557\uff08\u78ba\u8a8d\u78bc {tok}\uff09\uff1a{err}"
+                failure_reason = text_out
         except subprocess.TimeoutExpired:
             text_out = f"\u23f3 \u9032\u5ea6\u56de\u5831\u9001\u51fa\u903e\u6642\uff08\u78ba\u8a8d\u78bc {tok}\uff09\u3002"
+            failure_reason = "timeout"
         except Exception as exc:
             text_out = f"\u274c \u9032\u5ea6\u56de\u5831\u9001\u51fa\u7570\u5e38\uff08\u78ba\u8a8d\u78bc {tok}\uff09\uff1a{exc}"
+            failure_reason = f"{type(exc).__name__}: {exc}"
         try:
             pending2 = _load_progress_pending(pending_file)
             e2 = pending2.get(tok)
             if isinstance(e2, dict):
                 e2["status"] = "submitted" if success else "failed"
                 e2["finished_at"] = time.time()
+                e2["heartbeat_at"] = e2["finished_at"]
+                e2["last_error"] = "" if success else str(failure_reason or text_out)[:1200]
                 pending2[tok] = e2
                 _save_progress_pending(pending_file, pending2)
         except Exception:

@@ -260,3 +260,16 @@ class TestRoutingHardening:
         from skills.bridge.semantic_router import route
 
         assert route("案件") is None
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "＠HEAVY你可以查天氣嗎？",
+            "@重型：我只是想跟你聊聊天",
+            "@HEAVY 50000",
+        ],
+    )
+    def test_semantic_router_does_not_hijack_chat_or_form_boundaries(self, msg):
+        from skills.bridge.semantic_router import route
+
+        assert route(msg) is None

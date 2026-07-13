@@ -244,8 +244,8 @@ def _translate_text_legacy(
                 return {
                     "success": True,
                     "text": codex_text,
-                    "provider": "openclaw_codex",
-                    "route": "openclaw_codex",
+                    "provider": "codex_direct",
+                    "route": "codex_direct",
                     "model": codex_res.get("model", "gpt-5.4"),
                     "agent": codex_res.get("agent_id", "codex-distributed"),
                 }

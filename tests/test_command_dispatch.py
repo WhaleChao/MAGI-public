@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 from api.help_text import HELP_ALIASES, build_help_text
+from api.pipelines import command_dispatch
 from api.pipelines.command_dispatch import handle_command
 from api.pipelines.message_router import quick_fixed_reply
 
@@ -36,7 +37,7 @@ class TestHandleCommandHelp:
 
     def test_help_aliases(self):
         orc = _make_orchestrator()
-        for alias in ["help", "指令", "說明", "功能", "menu", "指令清單", "你可以做什麼"]:
+        for alias in ["help", "指令", "說明", "功能", "menu", "指令清單", "功能列表"]:
             result = orc._handle_command("user1", alias)
             assert "功能總覽" in result, f"alias '{alias}' did not return help text"
 
@@ -56,7 +57,8 @@ class TestHandleCommandHelp:
 
     def test_help_aliases_are_shared(self):
         assert "指令清單" in HELP_ALIASES
-        assert "你可以做什麼" in HELP_ALIASES
+        assert "功能列表" in HELP_ALIASES
+        assert "你可以做什麼" not in HELP_ALIASES
 
     def test_help_contains_current_command_surface(self):
         result = build_help_text("admin")
@@ -81,6 +83,63 @@ class TestHandleCommandHelp:
         assert "技能進化與系統管理" not in result
         assert "`供應鏈掃描`" not in result
         assert "系統管理、技能進化、供應鏈掃描" in result
+
+
+def test_laf_pending_scan_command_runs_direct_skill(monkeypatch):
+    orc = _make_orchestrator()
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps(
+            {
+                "ok": True,
+                "pending_open": 1,
+                "pending_report": 0,
+                "open_cases": [
+                    {
+                        "case_number": "2026-0001",
+                        "client_name": "測試當事人",
+                        "deadline_info": "剩 2 天",
+                    }
+                ],
+                "report_cases": [],
+            },
+            ensure_ascii=False,
+        )
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(command_dispatch.subprocess, "run", fake_run)
+
+    reply = handle_command(orc, "user1", "法扶未開辦掃描", role="admin", platform="TEST")
+
+    assert "法扶未開辦掃描完成" in reply
+    assert "測試當事人" in reply
+    assert calls
+    assert "osc-orchestrator/action.py" in calls[0][1]
+    assert calls[0][2:] == ["--task", 'laf_pending_scan {"notify": false, "limit": 100}']
+
+
+def test_laf_missing_required_docs_message_keeps_orchestrator_hint():
+    reply = command_dispatch._laf_missing_required_docs_message(
+        {"action_label": "結案"},
+        {
+            "missing": ["結案依據檔案"],
+            "hint": "請移到 10_判決書或終局裁定及處分 後重試。",
+            "misfiled_closing_basis_files": [
+                "/cases/09_法院通知或程序裁定/20260703 清算終結裁定.pdf",
+            ],
+        },
+    )
+
+    assert "缺少文件：結案依據檔案" in reply
+    assert "提示：請移到 10_判決書或終局裁定及處分 後重試。" in reply
+    assert "疑似放錯位置的終局文件" in reply
+    assert "20260703 清算終結裁定.pdf" in reply
 
 
 # ── Draw command ─────────────────────────────────────────────

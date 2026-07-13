@@ -83,3 +83,29 @@ def test_line_clients_enabled_use_v3_compatible_surface(monkeypatch):
 
         stream = line_bot_api.get_message_content("mid")
         assert b"".join(stream.iter_content(2)) == b"abcdef"
+
+
+def test_line_push_budget_read_and_increment_fail_closed(tmp_path, monkeypatch):
+    from api.webhooks import line
+
+    bad_counter = tmp_path / "counter_dir"
+    bad_counter.mkdir()
+    monkeypatch.setattr(line, "_LINE_PUSH_COUNTER_FILE", str(bad_counter))
+
+    assert line._line_push_budget_ok() is False
+    assert line._line_push_budget_increment() is False
+
+
+def test_line_delayed_queue_deduplicates_pending_preview(tmp_path, monkeypatch):
+    from api.webhooks import line
+    import json
+
+    queue_path = tmp_path / "line_delayed_queue.json"
+    monkeypatch.setattr(line, "LINE_DELAY_QUEUE_FILE", str(queue_path))
+
+    line._enqueue_line_delayed("U1", "reply", "line_quota_429", "same result")
+    line._enqueue_line_delayed("U1", "push", "line_quota_active", "same   result")
+
+    items = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert len(items) == 1
+    assert items[0]["preview"] == "same result"

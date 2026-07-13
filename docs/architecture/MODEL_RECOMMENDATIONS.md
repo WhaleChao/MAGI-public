@@ -1,6 +1,11 @@
 # MAGI Non-Distributed Model Recommendations
 
-Last updated: 2026-03-08
+Last updated: 2026-05-19
+
+> Policy note: this historical survey is superseded by MAGI's non-China model
+> policy. Models from Qwen / DeepSeek / GLM / Kimi / MiniMax / Baichuan /
+> Moonshot / InternLM / ChatGLM / Yi families are blocked at runtime and must
+> not be installed, recommended, or selected for legal work.
 
 ## Scope
 
@@ -10,7 +15,7 @@ Excluded from this review:
 
 - `qwen3:30b`
 - `llama3.1:70b`
-- `llama3.1:405b`
+- legacy `llama3.1:405b` / hosted 405B paths
 - `triumvirate-70b`
 - other explicit distributed / 70B-class paths
 
@@ -122,16 +127,13 @@ Observed usage:
 
 Current fit:
 
-- Lightweight general chat model
-- Fine for a separate Balthasar node
-- Not clearly integrated into current mainline Casper-side flows
+- Blocked by current MAGI policy because it belongs to a Chinese model family.
+- Kept here only as historical inventory.
 
 Improvement recommendation:
 
-- If Balthasar remains a separate lightweight node, `qwen2.5:7b` is a reasonable local conversational model.
-- If Balthasar is mostly council-only and summarization is already proxied through Casper, this model should either:
-  - be demoted to node-local utility use only, or
-  - be aligned with the same summary / language-policy stack as Casper
+- Do not install or route tasks to this model.
+- Use Gemma / Mistral / Phi family models from MAGI's allowlist instead.
 
 Concrete changes:
 
@@ -295,22 +297,18 @@ Observed usage:
 
 Current fit:
 
-- This is the most sensible model in the repo for strict OCR-style tasks
+- Retired and blocked by current MAGI policy.
+- macOS Vision is the primary local OCR engine.
 
 Improvement recommendation:
 
-- Promote `glm-ocr:latest` to first choice for:
-  - date stamp extraction
-  - filing stamp reading
-  - seal / receipt text transcription
-  - dense printed text from scan crops
+- Do not promote or re-enable this model.
+- Improve OCR through macOS Vision, RapidOCR, and non-China VLM/OCR candidates only.
 
 Concrete changes:
 
-- Reorder OCR chains to:
-  - `glm-ocr:latest`
-  - `minicpm-v:latest`
-  - `llava:7b`
+- Keep compatibility function names only where needed for migration.
+- Runtime selection must filter this model out.
 - Use OCR prompts that demand literal transcription before interpretation.
 
 ### `llava:7b`
@@ -329,7 +327,7 @@ Current fit:
 Improvement recommendation:
 
 - Keep it as the "always available" last fallback.
-- Do not promote it above `minicpm-v` or `glm-ocr` for document tasks.
+- Do not promote it above macOS Vision / RapidOCR / approved VLMs for document tasks.
 
 Concrete changes:
 
@@ -401,20 +399,18 @@ Observed usage:
 
 Current fit:
 
-- Best role in this repo for lightweight code repair and patch drafting
+- Blocked by current MAGI policy because it belongs to a Chinese model family.
+- Kept here only as historical inventory.
 
 Improvement recommendation:
 
-- Promote it to the primary non-distributed code-fix model.
-- Use it before generic chat models for:
-  - syntax repair
-  - function rewrites
-  - targeted patch generation
+- Do not install or route code tasks to this model.
+- Use Phi / Mistral / Gemma code-capable allowlist models instead.
 
 Concrete changes:
 
-- Make `qwen2.5-coder:7b` the first local codegen choice in autofix and skill generation.
-- Keep `taide-12b` only for harder multi-file reasoning after the small code model fails.
+- Ensure autofix and skill generation call `api.model_config.resolve_text_model()`.
+- Keep blocked-model tests so regressions are caught.
 
 ### `mistral-nemo:12b`
 
@@ -444,10 +440,11 @@ Observed usage:
 
 Current fit:
 
-- Better suited to harder reasoning than routine generation
-- Likely overkill or too slow for ordinary skill scaffolding
+- Blocked by current MAGI policy because it belongs to a Chinese model family.
 
 Improvement recommendation:
+
+- Do not install or route tasks to this model.
 
 - Use only for:
   - hard debugging
@@ -554,13 +551,13 @@ Recommended role split:
   - terminology review
 - `nomic-embed-text`
   - baseline embeddings until benchmark replacement
-- `glm-ocr:latest`
+- macOS Vision / RapidOCR
   - literal OCR extraction
 - `minicpm-v:latest`
   - general vision / doc understanding
 - `llava:7b`
   - degraded last fallback
-- `qwen2.5-coder:7b`
+- Phi / Mistral / Gemma allowlist models
   - local code patching / autofix
 - Whisper / mlx-whisper
   - actual STT
@@ -571,9 +568,9 @@ Current repo behavior still leaves room for bad ordering in some paths.
 
 Recommended default OCR order:
 
-1. `glm-ocr:latest`
-2. `minicpm-v:latest`
-3. `llava:7b`
+1. macOS Vision
+2. RapidOCR
+3. approved non-China VLM fallback
 
 For pdf naming and receipt date extraction, do not put `gemma3` first.
 
@@ -618,9 +615,9 @@ Measure:
 Do these first:
 
 1. Narrow `taide-12b` to high-value reasoning only.
-2. Reorder OCR chains so `glm-ocr` comes before `gemma3` and before generic VLM interpretation.
+2. Keep OCR chains on macOS Vision / RapidOCR before generic VLM interpretation.
 3. Promote TAIDE to a post-edit reviewer for Traditional Chinese legal output.
-4. Make `qwen2.5-coder:7b` the primary local code-fix model.
+4. Make the allowlisted Phi / Mistral / Gemma route the primary local code-fix path.
 5. Add explicit STT model metadata and stop calling text cleanup models "transcribe models".
 6. Benchmark `nomic-embed-text` on a Traditional Chinese legal retrieval set before touching RAG embeddings.
 
@@ -638,8 +635,8 @@ MAGI needs:
 
 If you only implement one routing cleanup, make it this:
 
-- `glm-ocr` for literal OCR
-- `minicpm-v` for vision understanding
+- macOS Vision / RapidOCR for literal OCR
+- approved non-China VLMs for vision understanding
 - `llava:7b` for degraded fallback
 - `llama3.1:8b` for fast text fallback
 - `taide-12b` for final reasoning only

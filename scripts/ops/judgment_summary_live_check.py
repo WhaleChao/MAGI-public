@@ -19,7 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-DEFAULT_CACHE = Path.home() / ".cache" / "judgment_collector" / "judicial_api" / "normalized"
+from api.domains.judicial_api_cache import judicial_api_cache_root
+
+DEFAULT_CACHE = judicial_api_cache_root() / "normalized"
 OUTPUT_PATH = ROOT / ".runtime" / "judgment_summary_live_latest.json"
 
 BAD_MARKERS = (
@@ -80,7 +82,7 @@ def _select_source(cache_root: Path, *, max_chars: int) -> tuple[Path, str]:
     return path, text[:max_chars]
 
 
-def _quality(summary: str, action_mod, case_reason: str) -> tuple[bool, list[str]]:
+def _quality(summary: str, action_mod, case_reason: str, source_text: str) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     text = str(summary or "").strip()
     if len(text) < 80:
@@ -92,6 +94,9 @@ def _quality(summary: str, action_mod, case_reason: str) -> tuple[bool, list[str
             reasons.append(f"bad_marker:{marker}")
     if getattr(action_mod, "_is_degraded_summary")(text, case_reason):
         reasons.append("degraded_summary_detector")
+    support_failure = getattr(action_mod, "_summary_source_support_failure", lambda *_args: "")(text, source_text)
+    if support_failure:
+        reasons.append(f"source_support:{support_failure}")
     if re.search(r"[\u4e00-\u9fff]", text) is None:
         reasons.append("missing_cjk")
     return not reasons, reasons
@@ -113,7 +118,7 @@ def main() -> int:
     started = time.monotonic()
     summary = action._summarize_judgment(source_text, case_reason, timeout_sec=args.timeout)
     elapsed = round(time.monotonic() - started, 2)
-    ok, reasons = _quality(summary, action, case_reason)
+    ok, reasons = _quality(summary, action, case_reason, source_text)
     meta = dict(getattr(action, "_LAST_SUMMARY_META", {}) or {})
 
     result = {

@@ -11,10 +11,14 @@ import json
 import os
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 import time
+import tempfile
 import uuid
-from typing import Dict
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Dict
 
 # === R3: runtime_dir 接入 ===
 try:
@@ -29,23 +33,228 @@ def _use_runtime_dir() -> bool:
     return os.environ.get("MAGI_USE_RUNTIME_DIR", "0").strip().lower() in {"1", "true", "on", "yes"}
 
 
-def _load_cron_state() -> Dict[str, Dict[str, str]]:
+_RUNTIME_FIELD_EXACT = {
+    "result",
+    "stdout",
+    "stderr",
+    "returncode",
+    "timed_out",
+    "duration_sec",
+}
+_RUNTIME_FIELD_PREFIXES = ("last_",)
+
+
+def _cron_state_path() -> Path | None:
+    if _rd is None:
+        return None
+    return _rd.cron_state()
+
+
+@contextmanager
+def _file_lock(path: str | Path):
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        try:
+            import fcntl  # type: ignore
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            fcntl = None  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            try:
+                if fcntl is not None:  # type: ignore[name-defined]
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _atomic_write_json(path: str | Path, payload: Any) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _sanitize_job_definition(job: dict) -> dict:
+    clean = {}
+    for key, value in dict(job or {}).items():
+        key_s = str(key)
+        if key_s in _RUNTIME_FIELD_EXACT:
+            continue
+        if any(key_s.startswith(prefix) for prefix in _RUNTIME_FIELD_PREFIXES):
+            continue
+        clean[key_s] = value
+    return clean
+
+
+def _load_cron_state() -> Dict[str, Dict[str, Any]]:
     if not _use_runtime_dir():
         return {}
-    p = _rd.cron_state()
+    p = _cron_state_path()
+    if p is None:
+        return {}
     if not p.exists():
         return {}
     try:
-        import json as _j
-        return _j.loads(p.read_text(encoding="utf-8")) or {}
+        with _file_lock(p):
+            return json.loads(p.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
 
 
-def _save_cron_state(state: Dict[str, Dict[str, str]]) -> None:
+def _save_cron_state(state: Dict[str, Dict[str, Any]]) -> None:
     if not _use_runtime_dir():
         return
-    _rd.atomic_write_json(_rd.cron_state(), state)
+    p = _cron_state_path()
+    if p is None:
+        return
+    with _file_lock(p):
+        _atomic_write_json(p, state)
+
+
+def _update_cron_state(job_id: str, payload: Dict[str, Any]) -> bool:
+    if not _use_runtime_dir():
+        return False
+    p = _cron_state_path()
+    if p is None:
+        return False
+    with _file_lock(p):
+        try:
+            state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+        previous = dict(state.get(job_id) or {})
+        previous.update(payload)
+        state[job_id] = previous
+        _atomic_write_json(p, state)
+    return True
+
+
+def mark_job_result_from_evidence(
+    job_id: str,
+    *,
+    evidence_at: datetime,
+    success: bool,
+    returncode: int = 0,
+    error: str = "",
+    provenance: str = "",
+    expected_error: str = "",
+) -> bool:
+    """Record an independently verified result without overriding newer work.
+
+    Long-running jobs use this when their own durable state proves completion,
+    even if the scheduler process restarted before collecting the child result.
+    The evidence must be at or after the current dispatch timestamp.
+    """
+    jid = str(job_id or "").strip()
+    if not jid or not isinstance(evidence_at, datetime):
+        return False
+
+    if not _use_runtime_dir():
+        return False
+    state_path = _cron_state_path()
+    if state_path is None:
+        return False
+
+    timestamp = evidence_at.isoformat()
+    payload: Dict[str, Any] = {
+        "last_complete_at": timestamp,
+        "last_result_at": timestamp,
+        "last_success": bool(success),
+        "returncode": int(returncode),
+        "timed_out": False,
+        "last_returncode": int(returncode),
+        "last_timed_out": False,
+        "last_error": "" if success else _tail_text(error, 1200),
+        "last_stdout_tail": "",
+        "last_stderr_tail": "",
+    }
+    if success:
+        payload["last_success_at"] = timestamp
+    else:
+        payload["last_failure_at"] = timestamp
+    if provenance:
+        payload["result_evidence"] = _tail_text(provenance, 160)
+
+    with _file_lock(state_path):
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+            if not isinstance(state, dict):
+                return False
+        except Exception:
+            return False
+        current = dict(state.get(jid) or {})
+        if expected_error and str(current.get("last_error") or "") != expected_error:
+            return False
+        try:
+            dispatched_at = datetime.fromisoformat(
+                str(current.get("last_dispatch_at") or current.get("last_run") or "").replace("Z", "+00:00")
+            )
+        except Exception:
+            return False
+
+        comparable_evidence = evidence_at
+        if dispatched_at.tzinfo is not None and comparable_evidence.tzinfo is None:
+            comparable_evidence = comparable_evidence.astimezone()
+        elif dispatched_at.tzinfo is None and comparable_evidence.tzinfo is not None:
+            comparable_evidence = comparable_evidence.replace(tzinfo=None)
+        if comparable_evidence < dispatched_at:
+            return False
+
+        current.update(payload)
+        state[jid] = current
+        _atomic_write_json(state_path, state)
+    return True
+
+
+_SENSITIVE_JSON_FIELD_RE = re.compile(
+    r'(?i)(["\'](?:client_name|party|applicant|recipient|case_number|court_case_no|court_case_number|folder_path|local_path|path|email|phone|token|password|secret|api[_-]?key)["\']\s*:\s*)["\'][^"\'\r\n]*["\']'
+)
+_CASE_ID_RE = re.compile(r"\b20\d{2}-\d{4,}\b")
+_COURT_CASE_RE = re.compile(r"\b1\d{2}年度[^\s,，。；;\"']{1,28}?字第\d{1,8}號")
+_PHONE_RE = re.compile(r"\b09\d{2}[- ]?\d{3}[- ]?\d{3}\b")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+_CREDENTIAL_RE = re.compile(
+    r"(?i)(token|password|secret|api[_-]?key)([\"':= ]+)[^\s,，。；;\"']+"
+)
+_LOCAL_PATH_RE = re.compile(r"(?:/Users/|/Volumes/)[^\r\n\"']+")
+
+
+def _redact_runtime_text(value: Any) -> str:
+    """Remove case identifiers, credentials, and local paths before state persistence."""
+
+    text = str(value or "")
+    text = _SENSITIVE_JSON_FIELD_RE.sub(r'\1"<REDACTED>"', text)
+    text = _CASE_ID_RE.sub("<CASE_ID>", text)
+    text = _COURT_CASE_RE.sub("<COURT_CASE_NO>", text)
+    text = _PHONE_RE.sub("<PHONE>", text)
+    text = _EMAIL_RE.sub("<EMAIL>", text)
+    text = _CREDENTIAL_RE.sub(r"\1\2<REDACTED>", text)
+    text = _LOCAL_PATH_RE.sub("<LOCAL_PATH>", text)
+    return text
+
+
+def _tail_text(value: Any, limit: int = 1200) -> str:
+    text = _redact_runtime_text(value)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
 
 logger = logging.getLogger("CronScheduler")
 
@@ -60,6 +269,7 @@ _DEFAULT_CATCHUP_SKIP_IDS = {
     "job_obsidian_ingest",
     "job_osc_scan_cases",
     "job_insight_sync",
+    "job_drive_case_sync_bidirectional",
 }
 
 
@@ -100,6 +310,8 @@ class CronScheduler:
             job.setdefault("channel_id", None)
             job.setdefault("last_run", None)
             job.setdefault("last_run_minute", None)
+            job.setdefault("last_dispatch_at", None)
+            job.setdefault("last_dispatch_minute", None)
             job.setdefault("enabled", True)
             normalized.append(job)
         self.jobs = normalized
@@ -127,8 +339,8 @@ class CronScheduler:
             for j in self.jobs:
                 jid = j.get("id")
                 if jid and jid in state:
-                    j["last_run"] = state[jid].get("last_run", j.get("last_run"))
-                    j["last_run_minute"] = state[jid].get("last_run_minute", j.get("last_run_minute"))
+                    for key, value in state[jid].items():
+                        j[key] = value
 
     def _hot_reload_if_changed(self):
         """Reload jobs from disk if the file was modified externally."""
@@ -151,55 +363,49 @@ class CronScheduler:
     def _save_jobs(self):
         """Save jobs to JSON file (merge-safe: preserves externally-added jobs)."""
         try:
-            # Merge: read disk first to preserve jobs added externally since last load
-            disk_jobs = []
-            if os.path.exists(JOB_FILE):
-                try:
-                    with open(JOB_FILE, 'r', encoding='utf-8') as f:
-                        disk_jobs = json.load(f)
-                    if not isinstance(disk_jobs, list):
+            with _file_lock(JOB_FILE):
+                # Merge: read disk first to preserve jobs added externally since last load.
+                disk_jobs = []
+                if os.path.exists(JOB_FILE):
+                    try:
+                        with open(JOB_FILE, 'r', encoding='utf-8') as f:
+                            disk_jobs = json.load(f)
+                        if not isinstance(disk_jobs, list):
+                            disk_jobs = []
+                    except Exception:
                         disk_jobs = []
+
+                # Merge: start with in-memory state, then append any disk-only jobs.
+                # Runtime keys may live in memory while the scheduler is running, but
+                # cron_jobs.json is a definition file and is always written sanitized.
+                merged = list(self.jobs)
+                merged_ids = {j["id"] for j in merged if isinstance(j, dict) and j.get("id")}
+                for dj in disk_jobs:
+                    if not isinstance(dj, dict):
+                        continue
+                    djid = (dj.get("id") or "").strip()
+                    if djid and djid not in merged_ids:
+                        merged.append(dj)
+                        merged_ids.add(djid)
+                        logger.info("🔄 Preserved externally-added job: %s", djid)
+
+                self.jobs = merged
+                payload_jobs = [_sanitize_job_definition(j) for j in self.jobs if isinstance(j, dict)]
+                _atomic_write_json(JOB_FILE, payload_jobs)
+                try:
+                    self._last_file_mtime = os.path.getmtime(JOB_FILE)
                 except Exception:
-                    disk_jobs = []
-
-            # Build lookup of our in-memory jobs (authoritative for last_run etc.)
-            mem_by_id = {j["id"]: j for j in self.jobs if j.get("id")}
-
-            # Merge: start with in-memory state, then append any disk-only jobs
-            merged = list(self.jobs)
-            merged_ids = {j["id"] for j in merged if j.get("id")}
-            for dj in disk_jobs:
-                djid = (dj.get("id") or "").strip()
-                if djid and djid not in merged_ids:
-                    merged.append(dj)
-                    merged_ids.add(djid)
-                    logger.info("🔄 Preserved externally-added job: %s", djid)
-
-            self.jobs = merged
-
-            # --- R3：flag 開時只把「寫到 cron_jobs.json 的 payload」清乾淨。
-            # Do not clear self.jobs here: the in-memory scheduler still needs
-            # last_run_minute to avoid re-detecting the same missed job before a
-            # hot reload occurs.
-            payload_jobs = [dict(j) for j in self.jobs]
-            if _use_runtime_dir():
-                for j in payload_jobs:
-                    j["last_run"] = None
-                    j["last_run_minute"] = None
-
-            with open(JOB_FILE, 'w', encoding='utf-8') as f:
-                json.dump(payload_jobs, f, indent=2, ensure_ascii=False)
+                    pass
         except Exception as e:
             logger.error(f"Failed to save jobs: {e}")
 
-    def mark_job_run(self, job_id: str, *, when: datetime | None = None) -> bool:
-        """Record a run for jobs started outside ``check_due_jobs``.
+    def mark_job_dispatched(self, job_id: str, *, when: datetime | None = None) -> bool:
+        """Record that a cron job was dispatched.
 
         Startup/late catch-up jobs are not discovered by ``check_due_jobs`` and
         used to execute without updating ``cron_state.json``. That made the same
-        morning jobs look missed again after every daemon restart. Marking them
-        at dispatch time keeps catch-up idempotent and matches the existing
-        due-job behavior, which records a run before command execution.
+        morning jobs look missed again after every daemon restart. Dispatch is
+        not completion evidence; health checks must use result/success fields.
         """
         jid = str(job_id or "").strip()
         if not jid:
@@ -209,6 +415,8 @@ class CronScheduler:
         payload = {
             "last_run": now.isoformat(),
             "last_run_minute": now.strftime("%Y-%m-%d %H:%M"),
+            "last_dispatch_at": now.isoformat(),
+            "last_dispatch_minute": now.strftime("%Y-%m-%d %H:%M"),
         }
         changed = False
         for job in self.jobs:
@@ -218,12 +426,134 @@ class CronScheduler:
                 break
         if not changed:
             return False
-        if _use_runtime_dir():
-            state = _load_cron_state()
-            state[jid] = payload
-            _save_cron_state(state)
+        _update_cron_state(jid, payload)
         self._save_jobs()
         return True
+
+    def mark_job_run(self, job_id: str, *, when: datetime | None = None) -> bool:
+        """Backward-compatible alias for dispatch evidence."""
+        return self.mark_job_dispatched(job_id, when=when)
+
+    def mark_job_started(self, job_id: str, *, when: datetime | None = None) -> bool:
+        """Record actual process start separately from dispatch."""
+        jid = str(job_id or "").strip()
+        if not jid:
+            return False
+        now = when or datetime.now()
+        payload = {"last_start_at": now.isoformat()}
+        changed = False
+        for job in self.jobs:
+            if str(job.get("id") or "") == jid:
+                job.update(payload)
+                changed = True
+                break
+        _update_cron_state(jid, payload)
+        self._save_jobs()
+        return changed or _use_runtime_dir()
+
+    def mark_job_result(
+        self,
+        job_id: str,
+        *,
+        success: bool,
+        returncode: int | None = None,
+        timed_out: bool = False,
+        error: str = "",
+        stdout_tail: str = "",
+        stderr_tail: str = "",
+        duration_sec: float | None = None,
+        when: datetime | None = None,
+    ) -> bool:
+        """Record the actual result of a dispatched cron job.
+
+        ``mark_job_run`` intentionally records dispatch before execution so
+        catch-up does not double-launch long jobs. This method is the second
+        half of that contract: it records whether the launched job actually
+        finished successfully.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return False
+        now = when or datetime.now()
+        payload: Dict[str, Any] = {
+            "last_complete_at": now.isoformat(),
+            "last_result_at": now.isoformat(),
+            "last_success": bool(success),
+            "returncode": returncode,
+            "timed_out": bool(timed_out),
+            "last_returncode": returncode,
+            "last_timed_out": bool(timed_out),
+            "last_stdout_tail": _tail_text(stdout_tail, 1200),
+            "last_stderr_tail": _tail_text(stderr_tail, 1200),
+        }
+        if duration_sec is not None:
+            try:
+                payload["last_duration_sec"] = round(float(duration_sec), 3)
+            except Exception:
+                pass
+        if success:
+            payload["last_success_at"] = now.isoformat()
+            payload["last_error"] = ""
+        else:
+            payload["last_failure_at"] = now.isoformat()
+            payload["last_error"] = _tail_text(error, 1200)
+        changed = False
+        for job in self.jobs:
+            if str(job.get("id") or "") == jid:
+                job.update(payload)
+                changed = True
+                break
+
+        if _update_cron_state(jid, payload):
+            changed = True
+        self._save_jobs()
+        return changed
+
+    def mark_job_complete(self, job_id: str, **kwargs) -> bool:
+        """Preferred completion marker; kept separate from dispatch/start."""
+        return self.mark_job_result(job_id, **kwargs)
+
+    def reconcile_incomplete_jobs(self, *, now: datetime | None = None) -> list[str]:
+        """Close expired dispatches which never produced a completion record."""
+
+        self._hot_reload_if_changed()
+        current = now or datetime.now()
+        reconciled: list[str] = []
+        for job in list(self.jobs):
+            job_id = str(job.get("id") or "").strip()
+            try:
+                timeout_sec = int(job.get("timeout_sec") or 0)
+            except Exception:
+                timeout_sec = 0
+            if not job_id or timeout_sec <= 0:
+                continue
+            try:
+                dispatch = datetime.fromisoformat(str(job.get("last_dispatch_at") or "").replace("Z", "+00:00"))
+            except Exception:
+                continue
+            try:
+                complete = datetime.fromisoformat(str(job.get("last_complete_at") or "").replace("Z", "+00:00"))
+            except Exception:
+                complete = None
+            if complete is not None and complete >= dispatch:
+                continue
+            compare_now = current
+            if dispatch.tzinfo is not None and compare_now.tzinfo is None:
+                compare_now = compare_now.astimezone()
+            elif dispatch.tzinfo is None and compare_now.tzinfo is not None:
+                compare_now = compare_now.replace(tzinfo=None)
+            if compare_now <= dispatch + timedelta(seconds=max(60, timeout_sec)):
+                continue
+            if self.mark_job_result(
+                job_id,
+                success=False,
+                returncode=130,
+                timed_out=True,
+                error="scheduler_completion_missing_after_timeout",
+                when=current,
+            ):
+                reconciled.append(job_id)
+        return reconciled
 
     def _normalize_cron_expr(self, cron_expr: str):
         raw = (cron_expr or "").strip().lower()
@@ -412,16 +742,14 @@ class CronScheduler:
                 
                 if is_due and last_run_minute != current_minute_str:
                     due_jobs.append(job)
-                    job["last_run"] = now.isoformat()
-                    job["last_run_minute"] = current_minute_str
-                    # R3: 寫到 cron_state.json，cron_jobs.json 由 strip 腳本清乾淨
-                    if _use_runtime_dir():
-                        st = _load_cron_state()
-                        st[job["id"]] = {
-                            "last_run": job["last_run"],
-                            "last_run_minute": job["last_run_minute"],
-                        }
-                        _save_cron_state(st)
+                    payload = {
+                        "last_run": now.isoformat(),
+                        "last_run_minute": current_minute_str,
+                        "last_dispatch_at": now.isoformat(),
+                        "last_dispatch_minute": current_minute_str,
+                    }
+                    job.update(payload)
+                    _update_cron_state(str(job.get("id") or ""), payload)
 
             except Exception as e:
                 logger.error(f"Error checking job {job['id']}: {e}")
@@ -507,14 +835,14 @@ class CronScheduler:
 
             # Skip if the job already ran at or after this occurrence.
             due_str = most_recent_due.strftime("%Y-%m-%d %H:%M")
-            last_run_minute = job.get("last_run_minute")
-            if last_run_minute and last_run_minute >= due_str:
+            last_dispatch_minute = job.get("last_dispatch_minute") or job.get("last_run_minute")
+            if last_dispatch_minute and last_dispatch_minute >= due_str:
                 continue
 
             missed.append((most_recent_due, job))
             logger.debug(
-                "🔄 Catch-up candidate: %s (due %s, last_run_minute=%s)",
-                job.get("id"), due_str, last_run_minute,
+                "🔄 Catch-up candidate: %s (due %s, last_dispatch_minute=%s)",
+                job.get("id"), due_str, last_dispatch_minute,
             )
 
         # Sort oldest-first so jobs execute in their natural chronological order.

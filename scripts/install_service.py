@@ -19,7 +19,7 @@ from skills.ops.platform_utils import (
     get_service_manager, get_venv_python,
 )
 
-SERVICE_NAME = "com.magi.casper"
+SERVICE_NAME = "com.magi.daemon"
 DAEMON_SCRIPT = os.path.join(PROJECT_ROOT, "daemon.py")
 
 

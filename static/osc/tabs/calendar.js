@@ -22,17 +22,26 @@ function renderCalendarEvents() {
         if (!state.calendarEvents.length) {
             body.innerHTML = `<tr><td colspan="8" class="muted">沒有行事曆事件</td></tr>`;
         } else {
-            body.innerHTML = state.calendarEvents.map(r => `
+            body.innerHTML = state.calendarEvents.map(r => {
+                const isTodoSource = String(r.source_table || "") === "case_todos" || r.todo_id;
+                const editId = Number(r.todo_id || r.id);
+                const sourceLabel = r.source_label ? `｜${esc(r.source_label)}` : "";
+                const actions = isTodoSource
+                    ? `<button class="btn" data-act="todo-edit" data-id="${editId}">編輯</button>
+                    <button class="btn danger" data-act="todo-del" data-id="${editId}">刪除</button>`
+                    : `<button class="btn" data-act="cal-edit" data-id="${editId}">編輯</button>
+                    <button class="btn danger" data-act="cal-del" data-id="${editId}">刪除</button>`;
+                return `
             <tr>
                 <td>${esc(r.start_date)}</td><td>${esc(r.end_date)}</td>
-                <td>${esc(r.title)}</td><td>${esc(r.case_number || "")}</td>
+                <td>${esc(r.title)}${sourceLabel}</td><td>${esc(r.case_number || "")}</td>
                 <td>${esc(r.location || "")}</td><td>${esc(r.is_all_day)}</td>
                 <td>${esc(r.reminder_minutes || 0)}</td>
                 <td class="actions">
-                    <button class="btn" data-act="cal-edit" data-id="${Number(r.id)}">編輯</button>
-                    <button class="btn danger" data-act="cal-del" data-id="${Number(r.id)}">刪除</button>
+                    ${actions}
                 </td>
-            </tr>`).join("");
+            </tr>`;
+            }).join("");
         }
     }
     // Render calendar grid
@@ -103,7 +112,10 @@ function evtPill(e, showTime) {
     const s = parseDate(e.start_date);
     const timeStr = (showTime && s) ? `<span class="evt-time">${fmtTime(s)}</span> ` : '';
     const bg = evtColor(e);
-    return `<div class="cal-evt" style="background:${esc(bg)};color:${eventTextColor(bg)}" title="${esc(e.title)}${e.location ? ' @ '+esc(e.location) : ''}" data-act="cal-edit" data-id="${Number(e.id)}">${timeStr}${esc(e.title)}</div>`;
+    const isTodoSource = String(e.source_table || "") === "case_todos" || e.todo_id;
+    const id = Number(e.todo_id || e.id);
+    const actionAttrs = isTodoSource ? `data-act="todo-edit" data-id="${id}"` : `data-act="cal-edit" data-id="${id}"`;
+    return `<div class="cal-evt" style="background:${esc(bg)};color:${eventTextColor(bg)}" title="${esc(e.title)}${e.location ? ' @ '+esc(e.location) : ''}" ${actionAttrs}>${timeStr}${esc(e.title)}</div>`;
 }
 
 function renderCalMonth(grid, titleEl, d, events) {
@@ -249,7 +261,7 @@ async function saveCalendarEvent() {
         description: p.cal_description,
         raw_data: p.cal_raw_data,
     };
-    if (!body.title || !body.start_date || !body.end_date) return alert("請輸入標題、開始與結束時間");
+    if (!body.title || !body.start_date || !body.end_date) return showAlert("MAGI說", "請輸入標題、開始與結束時間");
     if ((p.cal_id || "").trim()) await api(`/api/osc/calendar/events/${Number(p.cal_id)}`, "PUT", body);
     else await api(`/api/osc/calendar/events`, "POST", body);
     clearFields(["cal_id", "cal_event_id", "cal_title", "cal_case_number", "cal_start_date", "cal_end_date", "cal_location", "cal_color", "cal_is_all_day", "cal_reminder_minutes", "cal_summary", "cal_description", "cal_raw_data"]);
@@ -258,7 +270,7 @@ async function saveCalendarEvent() {
 }
 
 async function delCalendarEvent(id) {
-    if (!confirm(`確定刪除行事曆事件 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除行事曆事件 ${id}？`)) return;
     await api(`/api/osc/calendar/events/${Number(id)}`, "DELETE");
     await loadCalendarEvents();
     await loadMeta();

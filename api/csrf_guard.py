@@ -20,7 +20,7 @@ import os
 import logging
 import secrets
 from functools import wraps
-from flask import request, jsonify, Response, make_response
+from flask import current_app, request, jsonify, Response, make_response
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +97,50 @@ def _has_valid_api_key() -> bool:
     return _check_api_key(key)
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_test_mode() -> bool:
+    """Explicit unit-test mode may bypass CSRF without pretending localhost is trusted."""
+    try:
+        if current_app.config.get("MAGI_CSRF_TEST_MODE") is True:
+            return True
+    except Exception:
+        pass
+    return _env_truthy("MAGI_CSRF_TEST_MODE")
+
+
+def _is_explicit_cli_request() -> bool:
+    """Allow CLI-style requests only when an operator explicitly enables that path."""
+    if not _env_truthy("MAGI_CSRF_ALLOW_CLI"):
+        return False
+    client = (request.headers.get("X-MAGI-Client") or request.headers.get("X-Client") or "").strip().lower()
+    marker = (request.headers.get("X-MAGI-CLI") or "").strip().lower()
+    return client in {"cli", "magi-cli"} and marker in {"1", "true", "yes", "on"}
+
+
+def _is_decorated_csrf_exempt_endpoint() -> bool:
+    endpoint = request.endpoint
+    if not endpoint:
+        return False
+    try:
+        view_func = current_app.view_functions.get(endpoint)
+    except Exception:
+        return False
+    return bool(getattr(view_func, "_csrf_exempt", False))
+
+
 def _should_check_csrf() -> bool:
     """Determine if this request should be checked for CSRF token."""
     # Safe methods (GET, HEAD, OPTIONS) don't need CSRF protection
     if request.method in CSRF_SAFE_METHODS:
+        return False
+
+    if _is_decorated_csrf_exempt_endpoint():
+        return False
+
+    if _is_test_mode():
         return False
 
     # Webhook endpoints are exempt (they use webhook signatures for auth)
@@ -111,9 +151,7 @@ def _should_check_csrf() -> bool:
     if _is_api_endpoint() and _has_valid_api_key():
         return False
 
-    # Localhost internal calls are exempt from CSRF (service-to-service)
-    remote = request.remote_addr or ""
-    if _is_api_endpoint() and remote in ("127.0.0.1", "::1", "localhost"):
+    if _is_api_endpoint() and _is_explicit_cli_request():
         return False
 
     return True
@@ -184,12 +222,15 @@ def csrf_exempt(f):
         def external_webhook():
             ...
     """
+    setattr(f, "_csrf_exempt", True)
+
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Store flag in request context so middleware can skip this endpoint
         request.environ['csrf_exempt'] = True
         return f(*args, **kwargs)
 
+    setattr(decorated_function, "_csrf_exempt", True)
     return decorated_function
 
 
@@ -265,7 +306,7 @@ def middleware_apply_csrf(app):
             return
 
         # Skip if explicitly exempted
-        if request.environ.get('csrf_exempt'):
+        if request.environ.get('csrf_exempt') or _is_decorated_csrf_exempt_endpoint():
             return
 
         valid, reason = validate_csrf_token()

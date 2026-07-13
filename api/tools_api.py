@@ -36,13 +36,18 @@ import sys
 import os
 import json
 import hmac
+import ipaddress
 import logging
 import subprocess
 import time
 import threading
 import re
+import socket
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from functools import wraps
+from typing import Optional
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_from_directory, Response
 from werkzeug.exceptions import HTTPException
 
@@ -50,6 +55,17 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _STARTUP_TS = time.time()
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
+os.environ.setdefault("MYSQL_USE_PURE", "1")
+try:
+    from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+    install_mysql_cext_blocker()
+    patch_mysql_connector_for_stability()
+except Exception:
+    logging.getLogger("tools_api").debug("mysql connector early guard failed", exc_info=True)
+    install_mysql_cext_blocker = None
+    patch_mysql_connector_for_stability = None
 from api.model_config import TEXT_PRIMARY_MODEL
 
 # Auto-reap zombie children (skill subprocesses, etc.)
@@ -71,6 +87,7 @@ if not _STARTUP_HOOKS_DISABLED:
 
 from api.hooks import HookBus
 from api.permissions import (
+    PermissionDecision,
     PermissionEnforcer,
     PermissionMode,
     PermissionPolicy,
@@ -92,12 +109,115 @@ def _to_bool(value, default=False):
     return bool(value)
 
 
+def _host_is_blocked_for_fetch(host: str) -> tuple[bool, str]:
+    normalized = str(host or "").strip().strip("[]").lower()
+    if not normalized:
+        return True, "missing_host"
+    if normalized in {"localhost", "localhost.localdomain"} or normalized.endswith(".localhost"):
+        return True, "localhost"
+
+    def _blocked_ip(value: str) -> tuple[bool, str]:
+        try:
+            ip = ipaddress.ip_address(value)
+        except ValueError:
+            return False, ""
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        if ip.is_loopback:
+            return True, "loopback"
+        if ip.is_private:
+            return True, "private"
+        if ip.is_link_local:
+            return True, "link_local"
+        if ip.is_unspecified:
+            return True, "unspecified"
+        if ip.is_reserved:
+            return True, "reserved"
+        if ip.is_multicast:
+            return True, "multicast"
+        return False, ""
+
+    blocked, reason = _blocked_ip(normalized)
+    if blocked:
+        return True, reason
+
+    try:
+        infos = socket.getaddrinfo(normalized, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False, ""
+    except Exception as exc:
+        return True, f"dns_resolution_error:{type(exc).__name__}"
+
+    for info in infos:
+        sockaddr = info[4]
+        resolved = sockaddr[0] if sockaddr else ""
+        blocked, reason = _blocked_ip(resolved)
+        if blocked:
+            return True, f"resolved_{reason}"
+    return False, ""
+
+
+def _fetch_private_urls_allowed(data: dict) -> bool:
+    if _to_bool(os.environ.get("MAGI_TOOLS_FETCH_ALLOW_PRIVATE"), False):
+        return True
+    if not _to_bool(os.environ.get("MAGI_TOOLS_FETCH_ALLOW_PRIVATE_BY_REQUEST"), False):
+        return False
+    return _to_bool((data or {}).get("allow_private"), False)
+
+
+def _validate_fetch_url(url: str, data: dict) -> tuple[bool, str]:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False, "unsupported_url_scheme"
+    if not parsed.hostname:
+        return False, "missing_url_host"
+    if _fetch_private_urls_allowed(data):
+        return True, ""
+    blocked, reason = _host_is_blocked_for_fetch(parsed.hostname)
+    if blocked:
+        return False, f"private_fetch_blocked:{reason}"
+    return True, ""
+
+
+_SKILL_RUNTIME_MUTATION_ENV = "MAGI_DEV_SKILL_RUNTIME_MUTATIONS"
+
+
+def _skill_runtime_env_opt_in() -> bool:
+    """Runtime skill mutations stay off unless dev/operators explicitly opt in."""
+    return _to_bool(os.environ.get(_SKILL_RUNTIME_MUTATION_ENV), False)
+
+
+def _skill_runtime_default(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _to_bool(os.environ.get(env_name), False)
+    return _skill_runtime_env_opt_in()
+
+
+def _resolve_skill_runtime_flags(data: dict) -> dict:
+    def _flag(key: str, env_name: str) -> bool:
+        if key in data:
+            return _to_bool(data.get(key), False)
+        return _skill_runtime_default(env_name)
+
+    auto_repair = _flag("auto_repair", "MAGI_SKILL_AUTO_REPAIR_DEFAULT")
+    auto_install_deps = _flag("auto_install_deps", "MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+    rollback_on_fail = _flag("rollback_on_fail", "MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT")
+    return {
+        "auto_repair": auto_repair,
+        "auto_install_deps": auto_install_deps,
+        "rollback_on_fail": rollback_on_fail,
+        "mutating_runtime_requested": bool(auto_repair or auto_install_deps or rollback_on_fail),
+        "dev_env_opt_in": _skill_runtime_env_opt_in(),
+    }
+
+
 def _ensure_python_package(import_name: str, pip_name: str) -> bool:
     try:
         __import__(import_name)
         return True
     except ModuleNotFoundError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 99, exc_info=True)
     except Exception:
         return False
 
@@ -136,12 +256,10 @@ else:
 
 # Stability-first default: avoid distributed inference unless explicitly enabled.
 os.environ.setdefault("MAGI_AVOID_DISTRIBUTED", "1")
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 
 # DB connector stability guard:
 # default to pure-python mysql-connector path to avoid C-extension segfaults under threaded load.
-os.environ.setdefault("MAGI_MYSQL_USE_PURE", "1")
-if patch_mysql_connector_for_stability():
+if callable(patch_mysql_connector_for_stability) and patch_mysql_connector_for_stability():
     logging.getLogger("tools_api").info("mysql connector guard enabled (MAGI_MYSQL_USE_PURE=%s)", os.environ.get("MAGI_MYSQL_USE_PURE", "1"))
 
 from skills.research.web_research import search_web, research_topic, fetch_url_content
@@ -173,7 +291,7 @@ def _global_exception_hook(e):
             source="tools_api.errorhandler",
         )
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 175, exc_info=True)
     raise
 
 
@@ -253,13 +371,22 @@ try:
     middleware_apply_csrf(app)
 except ImportError as e:
     logging.getLogger("tools_api").warning(f"Could not load security modules: {e}")
-    # Fallback: no-op decorators
+    # Security must fail closed when auth/CSRF modules are unavailable.
+    def _security_unavailable_response():
+        return jsonify({"error": "security_modules_unavailable"}), 503
+
     def require_role(role):
         def dec(f):
-            return f
+            @wraps(f)
+            def wrapped(*args, **kwargs):
+                return _security_unavailable_response()
+            return wrapped
         return dec
     def require_api_key(f):
-        return f
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            return _security_unavailable_response()
+        return wrapped
     def csrf_exempt(f):
         return f
     def is_admin(user=None):
@@ -286,11 +413,13 @@ def _add_security_headers(response):
 def _discover_runnable_skill_dirs() -> set[str]:
     dirs: set[str] = set()
     try:
+        from skills.catalog import is_public_skill_dir_name
+
         for entry in os.scandir(_SKILLS_ROOT):
             if not entry.is_dir():
                 continue
             name = entry.name
-            if name.startswith(".") or name == "__pycache__":
+            if not is_public_skill_dir_name(name):
                 continue
             if os.path.exists(os.path.join(entry.path, "action.py")):
                 dirs.add(name)
@@ -344,10 +473,19 @@ def _sanitize_definitions_payload(payload: dict) -> dict:
     available_dirs = _discover_runnable_skill_dirs()
     filtered_tools = []
     dropped_run_tools = 0
+    dropped_hidden_tools = 0
 
     for tool in tools:
         if not isinstance(tool, dict):
             continue
+        try:
+            from skills.catalog import is_public_definition_tool
+
+            if not is_public_definition_tool(tool):
+                dropped_hidden_tools += 1
+                continue
+        except Exception:
+            logging.getLogger(__name__).debug("tool definition visibility check failed", exc_info=True)
         endpoint = str(tool.get("endpoint") or "").strip()
         name = str(tool.get("name") or "").strip()
 
@@ -406,6 +544,7 @@ def _sanitize_definitions_payload(payload: dict) -> dict:
         "tools_total": len(tools),
         "tools_exposed": len(filtered_tools),
         "dropped_unrunnable_run_tools": dropped_run_tools,
+        "dropped_hidden_tools": dropped_hidden_tools,
     }
     out["_meta"] = meta
     return out
@@ -422,7 +561,7 @@ def _append_jsonl(path: str, row: dict) -> None:
             from api.events.sinks import rotate_jsonl
             rotate_jsonl(p)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 424, exc_info=True)
     except Exception:
         return
 
@@ -510,7 +649,7 @@ def _record_external_chat_metric(
             if len(lines) > 500:
                 p.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 512, exc_info=True)
 
 
 def _guard_text(s: str, platform: str = "WEB") -> str:
@@ -1085,17 +1224,44 @@ def _external_osc_chat_inner():
     # @heavy opt-in：允許使用者觸發 NVIDIA NIM 重型兜底
     # 注意：不在此剝除前綴，保留到 _chat_inner 自己偵測（P1-2 修）。ThreadPoolExecutor 子 thread
     # 讀不到 request thread 的 flask.g，所以 prompt prefix 是唯一可靠的跨 thread 傳遞方式。
-    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 在 orchestrator sanitize 轉半形
-    heavy_opt_in = False
-    _message_head_lower = message.lstrip().lower()
-    if _message_head_lower.startswith("@heavy ") or _message_head_lower.startswith("@重型 "):
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        import re
+
+        fallback_re = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+        magi_prefix_re = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+        heavy_word_prefix_re = re.compile(
+            r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            magi_match = magi_prefix_re.match(text_inner)
+            if magi_match:
+                rest = text_inner[magi_match.end():]
+                heavy_after_magi = heavy_word_prefix_re.match(rest)
+                if heavy_after_magi:
+                    cleaned = rest[heavy_after_magi.end():].strip()
+                    return True, f"@MAGI {cleaned}".strip()
+            match = fallback_re.match(text_inner)
+            return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
+
+    heavy_opt_in, _ = split_heavy_prefix(message)
+    if heavy_opt_in:
         heavy_opt_in = True
         logging.getLogger(__name__).info("external chat: @heavy opt-in detected, will try NIM fallback")
     try:
         from flask import g as _flask_g
         _flask_g.heavy_opt_in = heavy_opt_in
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1097, exc_info=True)
 
     user_id = str(data.get("user_id") or "external_api_user")
     platform = _infer_external_platform(str(data.get("platform") or ""), user_id=user_id)
@@ -1287,6 +1453,11 @@ def external_osc_ui():
     Minimal web chat UI for OSC external interface.
     Requires API key and uses /osc/external/chat.
     """
+    ok, err = _check_external_api_key()
+    if not ok:
+        code = 503 if "server_misconfigured" in err else 401
+        return jsonify({"success": False, "error": err}), code
+
     html = """<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -1514,6 +1685,7 @@ def sages_status():
 
 # ============== CASPER (搜尋/研究) ==============
 @app.route('/search', methods=['POST'])
+@require_api_key
 def api_search():
     """Web search endpoint."""
     data = request.get_json() or {}
@@ -1545,6 +1717,7 @@ def api_search():
     return jsonify(result)
 
 @app.route('/research', methods=['POST'])
+@require_api_key
 def api_research():
     """Deep research endpoint."""
     data = request.get_json() or {}
@@ -1585,6 +1758,7 @@ def api_research():
     })
 
 @app.route('/fetch', methods=['POST'])
+@require_api_key
 def api_fetch():
     """URL fetch endpoint."""
     data = request.get_json() or {}
@@ -1592,6 +1766,9 @@ def api_fetch():
     
     if not url:
         return jsonify({"error": "Missing 'url' parameter"}), 400
+    valid_url, url_error = _validate_fetch_url(url, data)
+    if not valid_url:
+        return jsonify({"success": False, "error": url_error}), 403
 
     started = _start_tool_event("fetch", {"url": url})
     allowed, decision = _check_tool_access("fetch", command_subject="tool:fetch")
@@ -1616,6 +1793,7 @@ def api_fetch():
 
 # ============== MELCHIOR (視覺分析) ==============
 @app.route('/vision', methods=['POST'])
+@require_api_key
 def api_vision():
     """Melchior vision analysis endpoint."""
     data = request.get_json() or {}
@@ -1627,7 +1805,8 @@ def api_vision():
         return jsonify({"error": "Missing 'image_path' parameter"}), 400
 
     if not os.path.exists(image_path):
-        return jsonify({"error": f"Image not found: {image_path}"}), 404
+        logging.getLogger(__name__).warning("vision image not found: %s", image_path)
+        return jsonify({"error": "image_not_found"}), 404
 
     started = _start_tool_event(
         "vision",
@@ -1687,7 +1866,7 @@ def api_vision():
                         },
                     )
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1689, exc_info=True)
                 _text = _consensus_result.corrected_text or _consensus_result.selected_text or ""
                 _finish_tool_event(
                     "vision",
@@ -1777,6 +1956,7 @@ def api_melchior_health():
 
 
 @app.route('/melchior/skills/sync', methods=['POST'])
+@require_api_key
 def api_melchior_sync_skills():
     """Push current skills bundle to Melchior (/api/skills/sync on Melchior)."""
     data = request.get_json() or {}
@@ -1789,6 +1969,7 @@ def api_melchior_sync_skills():
 
 # ============== BALTHASAR (摘要) ==============
 @app.route('/summarize', methods=['POST'])
+@require_api_key
 def api_summarize():
     """Summarization endpoint (Apple Intelligence first when available, then fallback)."""
     t0 = time.monotonic()
@@ -2164,7 +2345,7 @@ def _shortcut_write_temp(data: bytes, suffix: str) -> str:
         try:
             os.close(fd)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2166, exc_info=True)
         raise
     return path
 
@@ -2245,7 +2426,7 @@ def api_shortcut_ocr():
                             },
                         )
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2247, exc_info=True)
                     _txt = _cs.corrected_text or _cs.selected_text or ""
                     return _shortcut_text_response(_txt)
             except Exception as _ce:
@@ -2278,7 +2459,7 @@ def api_shortcut_ocr():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2280, exc_info=True)
 
 
 @app.route('/shortcut/pdf_text', methods=['POST'])
@@ -2307,7 +2488,7 @@ def api_shortcut_pdf_text():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2309, exc_info=True)
 
 
 @app.route('/shortcut/summarize', methods=['POST'])
@@ -2384,7 +2565,7 @@ def api_shortcut_transcribe():
         try:
             os.unlink(tmp_path)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2386, exc_info=True)
 
 
 # ============== Skills ==============
@@ -2447,6 +2628,52 @@ def api_acquire_skill():
     return jsonify(result)
 
 
+_SKILL_RUN_CONTROL_KEYS = {
+    "skill",
+    "task",
+    "timeout_sec",
+    "auto_repair",
+    "rollback_on_fail",
+    "auto_install_deps",
+    "route_key",
+    "async",
+}
+
+
+def _skill_task_from_request_payload(task: str, data: dict) -> str:
+    """Keep the public /skills/run payload structured while preserving old skills.
+
+    ReAct callers should send {"task": "search", "keywords": "..."} so the
+    tool name and arguments stay separated.  Most MAGI skills still accept a
+    single CLI task string, so the API folds non-control fields into
+    ``task {json}`` only at the execution boundary.
+    """
+    task_arg = (task or "").strip()
+    if "{" in task_arg:
+        return task_arg
+
+    params: dict = {}
+    raw_params = data.get("params")
+    if isinstance(raw_params, dict):
+        params.update({str(k): v for k, v in raw_params.items() if v is not None})
+    elif isinstance(raw_params, str) and raw_params.strip():
+        try:
+            parsed = json.loads(raw_params)
+            if isinstance(parsed, dict):
+                params.update({str(k): v for k, v in parsed.items() if v is not None})
+        except Exception as exc:
+            logger.warning("skills/run ignored invalid params JSON: %s", str(exc)[:160])
+
+    for key, value in data.items():
+        if key in _SKILL_RUN_CONTROL_KEYS or key == "params" or value is None:
+            continue
+        params[str(key)] = value
+
+    if not params:
+        return task_arg
+    return f"{task_arg} {json.dumps(params, ensure_ascii=False)}"
+
+
 @app.route('/skills/run', methods=['POST'])
 @require_api_key
 def api_run_skill():
@@ -2455,14 +2682,23 @@ def api_run_skill():
     Pass ``"async": true`` to enqueue the job and return 202 immediately.
     Poll ``GET /jobs/<job_id>`` for the result.
     """
+    return _run_skill_from_payload(
+        request.get_json() or {},
+        user_id=request.headers.get("X-Api-Key-Id", "api"),
+    )
+
+
+def _run_skill_from_payload(data: dict, *, user_id: str = "api"):
+    """Canonical implementation for skill execution routes."""
     from skills.evolution.skill_genesis import run_skill_action
-    data = request.get_json() or {}
+    data = data if isinstance(data, dict) else {}
     skill = data.get('skill', '')
     task = data.get('task', '')
     timeout_sec = min(180, max(5, int(data.get('timeout_sec', 30))))  # cap 5-180s
-    auto_repair = _to_bool(data.get('auto_repair', True), True)
-    rollback_on_fail = _to_bool(data.get('rollback_on_fail', True), True)
-    auto_install_deps = _to_bool(data.get('auto_install_deps', True), True)
+    runtime_flags = _resolve_skill_runtime_flags(data)
+    auto_repair = runtime_flags["auto_repair"]
+    rollback_on_fail = runtime_flags["rollback_on_fail"]
+    auto_install_deps = runtime_flags["auto_install_deps"]
     route_key = data.get('route_key', '')
     async_mode = _to_bool(data.get('async', False), False)
 
@@ -2471,8 +2707,26 @@ def api_run_skill():
     if not skill:
         return jsonify({"error": "Missing 'skill' parameter"}), 400
 
+    task_for_run = _skill_task_from_request_payload(task, data)
+    runtime_policy = {
+        "auto_repair": auto_repair,
+        "rollback_on_fail": rollback_on_fail,
+        "auto_install_deps": auto_install_deps,
+        "mutating_runtime_requested": runtime_flags["mutating_runtime_requested"],
+        "dev_env_opt_in": runtime_flags["dev_env_opt_in"],
+        "message": (
+            "Runtime mutation requested explicitly or via developer env opt-in."
+            if runtime_flags["mutating_runtime_requested"]
+            else "Runtime mutation defaults are disabled for product/public mode."
+        ),
+    }
+
     tool_name = f"skill:{skill}"
-    started = _start_tool_event(tool_name, {"task": task}, {"route": "skills_run"})
+    started = _start_tool_event(
+        tool_name,
+        {"task": task_for_run, "runtime_policy": runtime_policy},
+        {"route": "skills_run", "runtime_policy": runtime_policy},
+    )
     allowed, decision = _check_tool_access(
         tool_name,
         command_subject=tool_name,
@@ -2480,6 +2734,24 @@ def api_run_skill():
     )
     if not allowed:
         return _tool_denied_response(tool_name, started, decision, {"route": "skills_run"})
+    try:
+        from api.routing.route_policy import direct_skill_run_denial_reason
+
+        route_policy_reason = direct_skill_run_denial_reason(skill)
+    except Exception as exc:
+        logger.warning("skills/run route policy probe failed for %s: %s", skill, exc)
+        route_policy_reason = "route_policy_unavailable"
+    if route_policy_reason:
+        policy_decision = PermissionDecision(
+            allowed=False,
+            reason=f"route_policy_denied:{route_policy_reason}",
+            mode=PermissionMode.PERMISSIVE,
+            subject_kind="command",
+            subject=tool_name,
+            matched_rule="route_policy.skills_run",
+            details=(f"skill={skill}",),
+        )
+        return _tool_denied_response(tool_name, started, policy_decision, {"route": "skills_run", "policy": "route_policy"})
 
     # ── Async path ────────────────────────────────────────────────────────────
     if async_mode:
@@ -2487,13 +2759,13 @@ def api_run_skill():
         job_id = _jq_enqueue(
             job_type="skill_run",
             platform="api",
-            user_id=request.headers.get("X-Api-Key-Id", "api"),
+            user_id=user_id or "api",
             role="operator",
-            user_text=f"{skill}:{task}",
+            user_text=f"{skill}:{task_for_run}",
             chat_id="",
             payload={
                 "skill": skill,
-                "task": task,
+                "task": task_for_run,
                 "timeout_sec": timeout_sec,
                 "auto_repair": auto_repair,
                 "rollback_on_fail": rollback_on_fail,
@@ -2503,7 +2775,7 @@ def api_run_skill():
         )
         _INLINE_EXECUTOR.submit(
             _run_skill_job_background,
-            job_id, skill, task, timeout_sec,
+            job_id, skill, task_for_run, timeout_sec,
             auto_repair, rollback_on_fail, auto_install_deps, route_key,
         )
         return jsonify({
@@ -2511,13 +2783,14 @@ def api_run_skill():
             "queued": True,
             "job_id": job_id,
             "poll_url": f"/jobs/{job_id}",
+            "runtime_policy": runtime_policy,
         }), 202
 
     # ── Sync path (unchanged) ─────────────────────────────────────────────────
     try:
         result = run_skill_action(
             skill,
-            task,
+            task_for_run,
             timeout_sec=timeout_sec,
             auto_repair=auto_repair,
             rollback_on_fail=rollback_on_fail,
@@ -2531,6 +2804,8 @@ def api_run_skill():
             f"skills_run_exception: {exc}",
             metadata={"route": "skills_run"},
         )
+    if isinstance(result, dict):
+        result.setdefault("runtime_policy", runtime_policy)
     _finish_tool_event(
         tool_name,
         started,
@@ -2597,6 +2872,7 @@ def api_get_job(job_id: str):
 
 
 @app.route('/skills/versions', methods=['POST'])
+@require_api_key
 def api_skill_versions():
     """List available snapshots for a skill."""
     from skills.evolution.skill_genesis import list_skill_versions
@@ -2609,6 +2885,7 @@ def api_skill_versions():
 
 
 @app.route('/skills/rollback', methods=['POST'])
+@require_api_key
 def api_skill_rollback():
     """Rollback skill files to a previous snapshot."""
     from skills.evolution.skill_genesis import rollback_skill_version
@@ -2622,6 +2899,7 @@ def api_skill_rollback():
 
 
 @app.route('/skills/release', methods=['GET'])
+@require_api_key
 def api_skill_release_state():
     """Get stable/canary release state."""
     from skills.evolution.skill_genesis import get_skill_release_state
@@ -2633,6 +2911,7 @@ def api_skill_release_state():
 
 
 @app.route('/skills/stable', methods=['POST'])
+@require_api_key
 def api_skill_set_stable():
     """Mark a stable version for a skill."""
     from skills.evolution.skill_genesis import set_stable_skill_version
@@ -2647,6 +2926,7 @@ def api_skill_set_stable():
 
 
 @app.route('/skills/canary/start', methods=['POST'])
+@require_api_key
 def api_skill_canary_start():
     """Start canary release for a specific version."""
     from skills.evolution.skill_genesis import start_canary_release
@@ -2679,6 +2959,7 @@ def api_skill_canary_start():
 
 
 @app.route('/skills/canary/stop', methods=['POST'])
+@require_api_key
 def api_skill_canary_stop():
     """Stop canary release for a skill."""
     from skills.evolution.skill_genesis import stop_canary_release
@@ -2692,6 +2973,7 @@ def api_skill_canary_stop():
 
 
 @app.route('/skills/ci', methods=['POST'])
+@require_api_key
 def api_skill_ci():
     """Run skill CI checks (safety/compile/smoke)."""
     from skills.evolution.skill_genesis import run_skill_ci
@@ -2706,6 +2988,7 @@ def api_skill_ci():
 
 
 @app.route('/skills/events', methods=['GET'])
+@require_api_key
 def api_skill_events():
     """Get skill runtime event summary."""
     from skills.evolution.skill_genesis import get_skill_runtime_stats
@@ -2715,6 +2998,7 @@ def api_skill_events():
 
 
 @app.route('/skills/teach', methods=['POST'])
+@require_api_key
 def api_skill_teach():
     """Teach CASPER a new tip/lesson."""
     from skills.management.auto_skill import AutoSkill
@@ -2734,6 +3018,7 @@ def api_skill_teach():
 
 
 @app.route('/skills/teach/file', methods=['POST'])
+@require_api_key
 def api_skill_teach_file():
     """Teach CASPER from a text/code file."""
     from skills.management.auto_skill import AutoSkill
@@ -2750,6 +3035,7 @@ def api_skill_teach_file():
 
 
 @app.route('/skills/internalize', methods=['POST'])
+@require_api_key
 def api_skill_internalize():
     """Internalize learned knowledge as a runnable skill."""
     from skills.management.auto_skill import AutoSkill
@@ -2771,6 +3057,7 @@ def api_skill_internalize():
 
 
 @app.route('/skills/internalize/codebase', methods=['POST'])
+@require_api_key
 def api_skill_internalize_codebase():
     """Convert codebase Python modules into wrapper skills with incremental index."""
     from skills.management.auto_skill import AutoSkill
@@ -2798,6 +3085,7 @@ def api_skill_internalize_codebase():
 
 
 @app.route('/skills/import/toolsai-auto-skill', methods=['POST'])
+@require_api_key
 def api_import_toolsai_auto_skill():
     """Import knowledge and experience from Toolsai/auto-skill repository."""
     from skills.management.auto_skill import AutoSkill
@@ -2816,6 +3104,7 @@ def api_import_toolsai_auto_skill():
 
 # ============== Iron Dome Dynamic Rules ==============
 @app.route('/iron-dome/patterns', methods=['GET'])
+@require_api_key
 def api_iron_dome_patterns_list():
     """List Iron Dome dynamic patterns."""
     from skills.evolution.skill_genesis import list_iron_dome_patterns
@@ -2831,6 +3120,7 @@ def api_iron_dome_patterns_list():
 
 
 @app.route('/iron-dome/patterns', methods=['POST'])
+@require_api_key
 def api_iron_dome_patterns_add():
     """Add or update an Iron Dome dynamic pattern."""
     from skills.evolution.skill_genesis import add_iron_dome_pattern
@@ -2846,6 +3136,7 @@ def api_iron_dome_patterns_add():
 
 
 @app.route('/iron-dome/auto-harden', methods=['POST'])
+@require_api_key
 def api_iron_dome_auto_harden():
     """Auto-harden Iron Dome scope from an incident text."""
     from skills.evolution.skill_genesis import auto_harden_iron_dome_scope
@@ -2860,6 +3151,7 @@ def api_iron_dome_auto_harden():
 
 
 @app.route('/skills/knowledge/stats', methods=['GET'])
+@require_api_key
 def api_skill_knowledge_stats():
     """Get AutoSkill knowledge base stats."""
     from skills.management.auto_skill import AutoSkill
@@ -2868,6 +3160,7 @@ def api_skill_knowledge_stats():
 
 
 @app.route('/code/autofix', methods=['POST'])
+@require_api_key
 def api_code_autofix():
     """Run autonomous code auto-fix loop for allowed paths."""
     from skills.management.code_autofix import autofix_codebase
@@ -2894,6 +3187,7 @@ def api_code_autofix():
 
 
 @app.route('/code/skill-cycle', methods=['POST'])
+@require_api_key
 def api_code_skill_cycle():
     """Run full automation cycle: code auto-fix + code-to-skill internalization."""
     from scripts.code_skill_cycle import run_cycle
@@ -2903,6 +3197,7 @@ def api_code_skill_cycle():
 
 
 @app.route('/collab/translate', methods=['POST'])
+@require_api_key
 def api_collab_translate():
     """Tri-sage translation route (local-first with resilient fallbacks)."""
     from skills.bridge.tri_sage_collab import translate_text
@@ -2921,6 +3216,7 @@ def api_collab_translate():
 
 
 @app.route('/collab/music', methods=['POST'])
+@require_api_key
 def api_collab_music():
     """Tri-sage music generation route (Melchior first, local fallback)."""
     from skills.bridge.tri_sage_collab import generate_music
@@ -2935,6 +3231,7 @@ def api_collab_music():
 
 
 @app.route('/collab/chat', methods=['POST'])
+@require_api_key
 def api_collab_chat():
     """Tri-sage general chat/generation route (local-first, no hard remote dependency)."""
     import time as _time
@@ -2949,6 +3246,55 @@ def api_collab_chat():
     allow_template_fallback = _to_bool(data.get("allow_template_fallback", True), True)
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
+    try:
+        from api.routing.intent_contract import (
+            KIND_AGENT_TASK,
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_EXPLICIT_TASK,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_REALTIME_ACTION,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        _semantic_decision = classify_intent_contract(prompt)
+        if _semantic_decision.kind in {
+            KIND_HELP_COMMAND,
+            KIND_EXPLICIT_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_TOOL_CAPABILITY,
+            KIND_BUSY_STATUS,
+            KIND_REALTIME_ACTION,
+            KIND_CASUAL_CHAT,
+            KIND_AGENT_TASK,
+            KIND_EXPLICIT_TASK,
+        }:
+            _orch = _get_osc_orchestrator()
+            _reply = _orch.process_message(
+                user_id=str(data.get("user_id") or "collab-chat"),
+                message=prompt,
+                platform=str(data.get("platform") or "COLLAB"),
+                role=str(data.get("role") or "user"),
+            )
+            result = {
+                "success": True,
+                "response": str(_reply or ""),
+                "route": "orchestrator_semantic_preflight",
+                "intent_kind": _semantic_decision.kind,
+                "confidence": _semantic_decision.confidence,
+            }
+            result = _guard_payload_fields(result)
+            return jsonify(result), 200
+    except Exception as _semantic_err:
+        logging.getLogger(__name__).warning("collab semantic preflight failed: %s", _semantic_err)
+        return jsonify({
+            "success": False,
+            "error": f"semantic_preflight_failed: {_semantic_err}",
+            "route": "orchestrator_semantic_preflight_failed",
+        }), 503
     primary_model = (data.get("model") or os.environ.get("MAGI_COLLAB_CHAT_MODEL") or TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
     # Use InferenceGateway — handles oMLX/Ollama/remote fallback internally
     try:
@@ -2976,6 +3322,7 @@ def api_collab_chat():
 
 
 @app.route('/collab/transcribe', methods=['POST'])
+@require_api_key
 def api_collab_transcribe():
     """Tri-sage transcription route."""
     t0 = time.monotonic()
@@ -3011,6 +3358,7 @@ def api_collab_transcribe():
 
 
 @app.route('/council/core/pending', methods=['GET'])
+@require_api_key
 def api_council_core_pending():
     """List pending core-change approvals raised by nightly council."""
     from skills.magi.council_approval import list_pending_core_changes
@@ -3021,6 +3369,7 @@ def api_council_core_pending():
 
 
 @app.route('/council/core/approve', methods=['POST'])
+@require_api_key
 def api_council_core_approve():
     """Approve a pending core change by approval id."""
     from skills.magi.council_approval import resolve_core_change
@@ -3036,6 +3385,7 @@ def api_council_core_approve():
 
 
 @app.route('/council/core/reject', methods=['POST'])
+@require_api_key
 def api_council_core_reject():
     """Reject a pending core change by approval id."""
     from skills.magi.council_approval import resolve_core_change
@@ -3052,6 +3402,7 @@ def api_council_core_reject():
 
 # ============== 記憶系統 (Memory) ==============
 @app.route('/remember', methods=['POST'])
+@require_api_key
 def api_remember():
     """Save content to vector memory database."""
     from skills.memory.mem_bridge import remember
@@ -3069,6 +3420,7 @@ def api_remember():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/recall', methods=['POST'])
+@require_api_key
 def api_recall():
     """Recall relevant memories using vector search."""
     from skills.memory.mem_bridge import recall
@@ -3087,6 +3439,7 @@ def api_recall():
 
 # ============== 律師事務所 (Law Firm) ==============
 @app.route('/clients', methods=['GET'])
+@require_api_key
 def api_query_clients():
     """Query clients by keyword."""
     from skills.law_firm.manage_clients import query_clients
@@ -3096,6 +3449,7 @@ def api_query_clients():
     return jsonify(query_clients(keyword))
 
 @app.route('/clients', methods=['POST'])
+@require_api_key
 def api_add_client():
     """Add a new client."""
     from skills.law_firm.manage_clients import add_client
@@ -3110,6 +3464,7 @@ def api_add_client():
     return jsonify(add_client(code, name, contact, phone, address))
 
 @app.route('/meetings', methods=['GET'])
+@require_api_key
 def api_list_meetings():
     """List upcoming meetings."""
     from skills.law_firm.manage_meetings import list_meetings
@@ -3117,6 +3472,7 @@ def api_list_meetings():
     return jsonify(list_meetings(date_str))
 
 @app.route('/meetings', methods=['POST'])
+@require_api_key
 def api_book_meeting():
     """Book a new meeting."""
     from skills.law_firm.manage_meetings import book_meeting
@@ -3132,6 +3488,7 @@ def api_book_meeting():
 
 # ============== 法律橋接 (Legal Bridge) ==============
 @app.route('/legal/<skill_name>', methods=['POST'])
+@require_api_key
 def api_legal_skill(skill_name):
     """Execute legacy legal automation scripts."""
     from skills.bridge.legal_bridge import execute_skill
@@ -3155,6 +3512,7 @@ def api_legal_skill(skill_name):
     return jsonify({"result": result})
 
 @app.route('/legal', methods=['GET'])
+@require_api_key
 def api_legal_skills_list():
     """List available legal automation skills."""
     from skills.bridge.legal_bridge import SCRIPTS
@@ -3162,6 +3520,7 @@ def api_legal_skills_list():
 
 # ============== 緊急通知 (Red Phone) ==============
 @app.route('/alert', methods=['POST'])
+@require_api_key
 def api_alert():
     """Send alert via LINE and Discord."""
     from skills.ops.red_phone import alert_admin
@@ -3176,6 +3535,7 @@ def api_alert():
 
 # ============== Skill Definitions (Tools API) ==============
 @app.route('/definitions', methods=['GET'])
+@require_api_key
 def api_definitions():
     """Return skill definitions for tool selection."""
     definitions_path = os.path.join(os.path.dirname(__file__), '..', 'skills', 'definitions.json')
@@ -3188,6 +3548,7 @@ def api_definitions():
 
 # ============== 法扶冒煙測試 (只登入、不送出) ==============
 @app.route('/laf/smoke_login', methods=['POST'])
+@require_api_key
 def api_laf_smoke_login():
     """
     Formal-site smoke login test:
@@ -3247,6 +3608,7 @@ def api_laf_smoke_login():
 
 # ============== Audit Log (Iron Dome) ==============
 @app.route('/api/audit_log', methods=['GET'])
+@require_api_key
 def api_list_audit_log():
     """List recent audit log entries for one-click restore UI."""
     from datetime import datetime, timedelta
@@ -3300,6 +3662,7 @@ def api_list_audit_log():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/audit_log/restore/<int:log_id>', methods=['POST'])
+@require_api_key
 def api_restore_from_audit(log_id):
     """Restore data from audit log snapshot (one-click restore)."""
     from api.db_helper import get_cursor

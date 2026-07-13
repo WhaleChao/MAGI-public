@@ -22,9 +22,11 @@ from flask import request, jsonify, current_app
 from flask_login import current_user
 
 logger = logging.getLogger(__name__)
+_QUERY_API_KEY_WARNING_EMITTED = False
 
 # ── Environment Configuration ────────────────────────────────────────
 MAGI_API_KEY = os.environ.get("MAGI_API_KEY", "").strip()
+_INITIAL_MAGI_API_KEY = MAGI_API_KEY
 MAGI_EXTERNAL_API_KEY = os.environ.get("MAGI_EXTERNAL_API_KEY", "").strip()
 REQUIRE_API_KEY = (
     os.environ.get("MAGI_API_KEY_REQUIRED", "1").strip().lower()
@@ -57,9 +59,19 @@ def _check_api_key(provided: str) -> bool:
     """Validate provided API key against configured key(s)."""
     if not provided:
         return False
-    if not MAGI_API_KEY:
+    candidates = [(os.environ.get("MAGI_API_KEY") or "").strip()]
+    if MAGI_API_KEY != _INITIAL_MAGI_API_KEY:
+        candidates.append((MAGI_API_KEY or "").strip())
+    elif not candidates[0]:
+        candidates.append((MAGI_API_KEY or "").strip())
+    expected_keys = [key for key in dict.fromkeys(candidates) if key]
+    if not expected_keys:
         return False
-    return hmac.compare_digest(provided, MAGI_API_KEY)
+    return any(hmac.compare_digest(provided, expected) for expected in expected_keys)
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _extract_api_key() -> str:
@@ -68,16 +80,11 @@ def _extract_api_key() -> str:
 
     Priority:
       1. X-API-Key header
-      2. api_key query parameter
-      3. Authorization: Bearer <key> header
+      2. Authorization: Bearer <key> header
+      3. api_key query parameter, only when MAGI_ALLOW_QUERY_API_KEY=1
     """
     # Header: X-API-Key
     key = (request.headers.get("X-API-Key") or "").strip()
-    if key:
-        return key
-
-    # Query parameter: api_key
-    key = (request.args.get("api_key") or "").strip()
     if key:
         return key
 
@@ -86,12 +93,52 @@ def _extract_api_key() -> str:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
 
+    # Short-term compatibility only. Query string secrets leak through logs,
+    # browser history, referers, and reverse proxy metrics, so this is disabled
+    # unless an operator explicitly opts in.
+    key = (request.args.get("api_key") or "").strip()
+    if key:
+        if not _env_truthy("MAGI_ALLOW_QUERY_API_KEY"):
+            logger.warning(
+                "query string api_key was ignored; set MAGI_ALLOW_QUERY_API_KEY=1 "
+                "only for short-term compatibility"
+            )
+            return ""
+        global _QUERY_API_KEY_WARNING_EMITTED
+        if not _QUERY_API_KEY_WARNING_EMITTED:
+            logger.warning(
+                "query string API key accepted because MAGI_ALLOW_QUERY_API_KEY=1; "
+                "this compatibility path should be removed"
+            )
+            _QUERY_API_KEY_WARNING_EMITTED = True
+        return key
+
     return ""
+
+
+def _formal_saas_mode() -> bool:
+    raw = os.environ.get("MAGI_DEPLOYMENT_MODE", "").strip().lower()
+    return (
+        os.environ.get("MAGI_SAAS_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+        or raw in {"saas", "formal_saas", "managed_saas", "multi_tenant_saas"}
+    )
+
+
+def _tenant_header_matches() -> bool:
+    if not _formal_saas_mode():
+        return True
+    expected = (os.environ.get("MAGI_TENANT_ID") or "").strip()
+    provided = (
+        request.headers.get("X-Tenant-ID")
+        or request.headers.get("X-MAGI-Tenant")
+        or ""
+    ).strip()
+    return bool(expected and provided and hmac.compare_digest(provided, expected))
 
 
 def require_api_key(f):
     """
-    Decorator: Requires valid API key (X-API-Key header or api_key query param).
+    Decorator: Requires valid API key (X-API-Key or Authorization header).
 
     Usage:
         @app.route('/admin/reset', methods=['POST'])
@@ -112,6 +159,10 @@ def require_api_key(f):
         if not _check_api_key(provided):
             _log_access(endpoint, user_id, "none", False, "invalid_api_key")
             return jsonify({"error": "unauthorized: invalid API key"}), 401
+
+        if not _tenant_header_matches():
+            _log_access(endpoint, user_id, "api_key", False, "tenant_mismatch")
+            return jsonify({"error": "forbidden: tenant mismatch"}), 403
 
         _log_access(endpoint, user_id, "api_key", True, "api_key_verified")
         return f(*args, **kwargs)

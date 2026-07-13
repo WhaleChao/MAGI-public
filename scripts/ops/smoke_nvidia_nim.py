@@ -61,7 +61,7 @@ def test_env_config() -> bool:
     if not api_key.startswith("nvapi-"):
         _fail("NVIDIA_NIM_API_KEY", "格式不符（應以 nvapi- 開頭）")
         return False
-    _ok("NVIDIA_NIM_API_KEY", f"{api_key[:12]}...（長度 {len(api_key)}）")
+    _ok("NVIDIA_NIM_API_KEY", f"已設定（長度 {len(api_key)}；不顯示片段）")
 
     enable = os.environ.get("NVIDIA_NIM_ENABLE", "0")
     if enable not in ("1", "true", "yes", "on"):
@@ -172,7 +172,7 @@ def test_nim_config_layer() -> bool:
 
     can_call, reason = _cb_can_call()
     if can_call:
-        _ok("circuit breaker: open")
+        _ok("circuit breaker: closed/ready")
     else:
         _skip("circuit breaker: cooldown active", reason)
 

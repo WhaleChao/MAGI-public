@@ -16,6 +16,19 @@ import sys
 import time
 
 from api.help_text import HELP_ALIASES, build_help_text
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 logger = logging.getLogger("Orchestrator")
 
@@ -27,18 +40,197 @@ _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 # ---------------------------------------------------------------------------
 
 def read_openclaw_primary_model() -> str:
+    return "OpenClaw 已退役，請以 MAGI 推論服務狀態為準"
+
+
+def magi_capability_overview() -> str:
+    return (
+        "✅ **我可以協助您處理 MAGI 裡的主要工作：**\n\n"
+        "• **案件與檔案**：查案件、開資料夾樹、預覽/下載/分享檔案、整理卷證與 PDF。\n"
+        "• **行程與待辦**：查今日/本週行程、開庭與補正提醒、同步 Google Calendar。\n"
+        "• **法律研究**：查判決、查法規/法條、整理實務見解、做判決趨勢分析。\n"
+        "• **文件處理**：摘要、翻譯、OCR、書狀/委任狀/收據等法務文件輔助。\n"
+        "• **系統工具**：檢查 MAGI 狀態、同步 Google Drive、排查服務與 NAS/DB 問題。\n\n"
+        "大型翻譯、長文摘要或複雜法律分析，可以在開頭加 `@heavy` 或 `@重型`，我會優先使用 NVIDIA API。"
+    )
+
+
+_LAF_PROGRESS_REPORTED_KEYWORDS = (
+    "已回報",
+    "已經回報",
+    "已完成回報",
+    "進度已回報",
+    "進度回報已完成",
+)
+
+
+def extract_laf_progress_reported_target(message: str) -> str:
+    """Extract target from messages like '<1130101-A-001 王小明>已回報'."""
+    text = str(message or "").strip()
+    if not text or not any(k in text for k in _LAF_PROGRESS_REPORTED_KEYWORDS):
+        return ""
+    laf_match = re.search(r"\d{6,8}-[A-Za-z]-\d{3}", text)
+    if laf_match:
+        return laf_match.group(0)
+    case_match = re.search(r"\b\d{4}-\d{4}\b", text)
+    if case_match:
+        return case_match.group(0)
+
+    before = re.split(
+        r"(?:進度)?(?:已經|已)(?:完成)?回報|進度回報已完成",
+        text,
+        maxsplit=1,
+    )[0]
+    before = before.strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    if not before:
+        parts = re.split(
+            r"(?:進度)?(?:已經|已)(?:完成)?回報|進度回報已完成",
+            text,
+            maxsplit=1,
+        )
+        if len(parts) > 1:
+            before = parts[1].strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    if not before:
+        return ""
+    name_matches = re.findall(r"[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_. -]{1,40}", before)
+    if name_matches:
+        return name_matches[-1].strip(" \t\r\n<>《》「」『』[]()（），,。；;：:")
+    return before[:40]
+
+
+def handle_laf_progress_reported_message(user_id, message: str) -> Optional[str]:
+    target = extract_laf_progress_reported_target(message)
+    if not target:
+        return None
     try:
-        p = os.path.join(os.path.expanduser("~"), ".openclaw", "openclaw.json")
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            m = (((cfg or {}).get("agents") or {}).get("defaults") or {}).get("model") or {}
-            primary = str(m.get("primary") or "").strip()
-            if primary:
-                return primary
-    except Exception:
-        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "read_openclaw_primary_model", exc_info=True)
-    return "未設定"
+        _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
+        if _orch_dir not in sys.path:
+            sys.path.insert(0, _orch_dir)
+        from laf_nightly_audit import mark_progress_reported
+        result = mark_progress_reported(target, actor=str(user_id or "admin"), note=message)
+    except Exception as e:
+        logger.warning("LAF progress reported cooldown failed: %s", e)
+        return f"❌ 進度回報冷卻設定失敗：{e}"
+
+    if result.get("ok"):
+        case = result.get("case") if isinstance(result.get("case"), dict) else {}
+        name = case.get("client_name") or target
+        laf_no = case.get("laf_case_number") or case.get("case_number") or ""
+        calendar = result.get("calendar") if isinstance(result.get("calendar"), dict) else {}
+        cal_note = "，並已登上行事曆" if calendar.get("google_calendar_id") or calendar.get("todo_id") else ""
+        return f"✅ 已將 {name}{'（' + laf_no + '）' if laf_no else ''} 的進度回報提醒冷卻至 {result.get('cooldown_until')}（60 日）{cal_note}。"
+    if result.get("error") == "ambiguous_target":
+        candidates = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+        lines = [f"⚠️ 找到多筆「{target}」相關法扶案件，請改用法扶案號或案件編號："]
+        for c in candidates[:8]:
+            lines.append(f"  • {c.get('case_number') or '-'} {c.get('client_name') or '-'} {c.get('laf_case_number') or ''}".rstrip())
+        return "\n".join(lines)
+    return f"❌ 找不到 {target} 的法扶案件，無法設定進度回報冷卻。"
+
+
+_OSC_TODO_COMPLETION_SUFFIXES = (
+    "繳費完成",
+    "補正完成",
+    "已完成",
+    "完成了",
+    "繳費了",
+    "補正了",
+    "已繳費",
+    "已補正",
+    "已繳",
+    "已交",
+    "繳了",
+    "交了",
+)
+_OSC_TODO_COMPLETION_PREFIXES = (
+    "幫我關掉",
+    "請關掉",
+    "關掉",
+    "取消提醒",
+    "關閉提醒",
+)
+_OSC_TODO_COMPLETION_BLOCK_TOPICS = {"translation", "summary", "verbatim", "market"}
+_OSC_TODO_COMPLETION_STOP_TARGETS = {
+    "翻譯",
+    "摘要",
+    "逐字稿",
+    "報告",
+    "文件",
+    "資料",
+    "這份",
+    "這個",
+    "那份",
+    "那個",
+    "測試",
+    "功能",
+}
+
+
+def extract_osc_todo_completion_target(message: str) -> str:
+    """Extract a case/person query from "XXX 已完成/繳了/補正了" replies.
+
+    This is deliberately deterministic.  It lets DC/TG/LINE replies close OSC
+    todos through the same DB path as the web UI instead of falling into chat.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    if any(k in text for k in _LAF_PROGRESS_REPORTED_KEYWORDS):
+        return ""
+    if not any(k in text for k in _OSC_TODO_COMPLETION_SUFFIXES) and not any(text.startswith(k) for k in _OSC_TODO_COMPLETION_PREFIXES):
+        return ""
+    cleaned = re.sub(r"^@(?:magi|MAGI)\s*", "", text).strip()
+    for prefix in _OSC_TODO_COMPLETION_PREFIXES:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+    cleaned = cleaned.strip(" \t\r\n<>《》「」『』[]()（）,，。；;：:")
+    for suffix in sorted(_OSC_TODO_COMPLETION_SUFFIXES, key=len, reverse=True):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[:-len(suffix)].strip()
+            break
+    cleaned = re.sub(r"(?:的)?(?:提醒|待辦|警報|通知)$", "", cleaned).strip()
+    cleaned = cleaned.strip(" \t\r\n<>《》「」『』[]()（）,，。；;：:")
+    if not cleaned:
+        return ""
+    if cleaned in _OSC_TODO_COMPLETION_STOP_TARGETS:
+        return ""
+    if len(cleaned) > 80:
+        return ""
+    has_case_no = bool(re.search(r"\b\d{4}-\d{4}\b|\d{6,8}-[A-Za-z]-\d{3}|\d{2,3}年度", cleaned))
+    has_name = bool(re.search(r"[\u4e00-\u9fff]{2,}", cleaned))
+    if not (has_case_no or has_name):
+        return ""
+    return cleaned
+
+
+def _run_court_hearing_done(query: str) -> str:
+    import importlib.util
+
+    action_path = os.path.join(_MAGI_ROOT, "skills", "court-hearing-reminder", "action.py")
+    spec = importlib.util.spec_from_file_location("magi_court_hearing_reminder_action", action_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {action_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return str(mod.task_done(query, notify=False) or "").strip()
+
+
+def handle_osc_todo_completion_message(user_id, message: str, platform: str = "", topic_key: str = "") -> Optional[str]:
+    topic = str(topic_key or "").strip().lower()
+    if topic in _OSC_TODO_COMPLETION_BLOCK_TOPICS or topic.startswith("research_"):
+        return None
+    target = extract_osc_todo_completion_target(message)
+    if not target:
+        return None
+    try:
+        reply = _run_court_hearing_done(target)
+    except Exception as e:
+        logger.warning("OSC todo completion reply failed: %s", e)
+        return f"❌ 待辦狀態更新失敗：{e}"
+    if not reply:
+        return f"❌ 已收到「{target}」的待辦完成回覆，但沒有取得處理結果。"
+    return reply
 
 
 # ── Gibberish report ───────────────────────────────────────────────
@@ -86,7 +278,7 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
             from api.events.sinks import rotate_jsonl
             rotate_jsonl(_GIBBERISH_LOG_PATH)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 150, exc_info=True)
     except Exception as e:
         logger.warning(f"亂碼回報寫入失敗: {e}")
         return "⚠️ 記錄失敗，請稍後重試。"
@@ -104,7 +296,7 @@ def handle_gibberish_report(orch, user_id, message: str, platform: str = "") -> 
                     _GIBBERISH_KEYWORDS.append(gram)
                     logger.info(f"[亂碼學習] 新增關鍵字: {gram}")
     except Exception:
-        pass  # best-effort
+        logger.debug("亂碼關鍵字 best-effort 學習失敗；已保留原始回報紀錄。", exc_info=True)
 
     return f"✅ 已記錄該亂碼回覆，偵測模組會自動學習。感謝回報！"
 
@@ -171,7 +363,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
                 if r.status_code == 200:
                     models = [str(x.get("id") or "") for x in (r.json().get("data") or []) if x.get("id")]
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 235, exc_info=True)
             model_line = ", ".join(models[:3]) if models else "oMLX 8080 未回應"
 
             status = "正常" if (
@@ -210,7 +402,7 @@ def quick_fixed_reply(orch, message: str, role: str = "user") -> Optional[str]:
             if _r.status_code == 200:
                 omlx_models = [m.get("id", "") for m in _r.json().get("data", [])]
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 274, exc_info=True)
         active = ", ".join(omlx_models[:4]) if omlx_models else "oMLX 離線"
         return (
             f"推理引擎：oMLX (port 8080)\n"
@@ -260,7 +452,7 @@ def should_try_nl_route(orch, message: str) -> bool:
 
 
 def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> tuple[bool, str]:
-    """Route natural language to magi-office-ops commands."""
+    """Route natural language to vetted MAGI command scripts."""
     if not nl_router_enabled():
         return False, ""
     if not should_try_nl_route(orch, message):
@@ -276,11 +468,11 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
 
     router_script = os.environ.get(
         "MAGI_NL_ROUTER_SCRIPT",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "skills", "magi-office-ops", "intent_router.py"),
+        "",
     ).strip()
     run_script = os.environ.get(
         "MAGI_NL_RUN_SCRIPT",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "skills", "magi-office-ops", "run.sh"),
+        "",
     ).strip()
 
     if not (router_script and os.path.exists(router_script) and run_script and os.path.exists(run_script)):
@@ -349,7 +541,7 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
                 severity="warning",
             )
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 413, exc_info=True)
     elif role != "admin" and intent not in user_safe_intents:
         return True, orch._postprocess_router_reply("⛔ 這個自然語句命令涉及系統流程，僅管理員可執行。", platform)
 
@@ -357,7 +549,7 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
     env["MAGI_CODE_DIR"] = code_dir
     env["MAGI_ROOT_DIR"] = magi_dir
     env["MAGI_NO_DELETE"] = env.get("MAGI_NO_DELETE", "1") or "1"
-    env["MAGI_PREFER_LOCAL_DB"] = env.get("MAGI_PREFER_LOCAL_DB", "0") or "0"
+    env["MAGI_PREFER_LOCAL_DB"] = env.get("MAGI_PREFER_LOCAL_DB", "1") or "1"
 
     timeout_sec = int(os.environ.get("MAGI_NL_ROUTE_EXEC_TIMEOUT_SEC", "300") or "300")
     async_timeout_sec = int(os.environ.get("MAGI_NL_ROUTE_ASYNC_TIMEOUT_SEC", "2400") or "2400")
@@ -451,8 +643,19 @@ def run_nl_route(orch, user_id: str, message: str, platform: str, role: str) -> 
 def explain_routing(orch, message: str, role: str = "user") -> dict:
     """Explain which internal handler would be invoked for a given text message."""
     from api.routing import build_route_decision
+    from api.routing.intent_contract import (
+        KIND_AGENT_TASK,
+        KIND_CANCEL_REQUEST,
+        KIND_CASUAL_CHAT,
+        KIND_CORRECTION_REQUEST,
+        KIND_EXPLICIT_COMMAND,
+        KIND_META_CAPABILITY,
+        KIND_TOOL_CAPABILITY,
+        classify_intent_contract,
+    )
 
-    msg = (message or "").strip()
+    heavy_opt_in, msg = split_heavy_prefix(message)
+    msg = (msg or "").strip()
     msg_lower = msg.lower()
 
     def _res(
@@ -460,11 +663,14 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
         handler: str = "", *, confidence: float = 1.0,
         reason: str = "", candidates: list[dict] | None = None, intent: str = "",
     ) -> dict:
-        return build_route_decision(
+        decision = build_route_decision(
             action=action, matched=matched, requires_admin=requires_admin,
             handler=handler, confidence=confidence,
             reason=reason or matched, candidates=candidates, intent=intent,
         )
+        if heavy_opt_in:
+            decision["heavy_opt_in"] = True
+        return decision
 
     if ("codex" in msg_lower or "sidecar" in msg_lower or "分散式" in msg) and any(
         kw in msg_lower for kw in ["開啟", "啟用", "打開", "全開", "on", "enable", "關閉", "停用", "關掉", "off", "disable", "狀態", "status", "模式", "help", "幫助"]
@@ -475,6 +681,78 @@ def explain_routing(orch, message: str, role: str = "user") -> dict:
     if msg_lower in HELP_ALIASES:
         return _res(action="help_menu", matched="universal_help",
                      requires_admin=False, handler="api/orchestrator.py:_handle_command('/help')")
+
+    contract = classify_intent_contract(msg)
+    if contract.kind == KIND_EXPLICIT_COMMAND:
+        return _res(
+            action="command_handler",
+            matched="explicit_command_prefix",
+            requires_admin=False,
+            handler="api/orchestrator.py:_handle_command",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_META_CAPABILITY:
+        return _res(
+            action="meta_capability_reply",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_semantic_preflight",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_TOOL_CAPABILITY:
+        return _res(
+            action="tool_capability_reply",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_semantic_preflight",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CASUAL_CHAT:
+        return _res(
+            action="chat_handler",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/orchestrator.py:_handle_chat_async",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CANCEL_REQUEST:
+        return _res(
+            action="control_cancel",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:active_workflow_or_command_dispatch",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_CORRECTION_REQUEST:
+        return _res(
+            action="correction_request",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:stateful_or_conversational_correction",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
+    if contract.kind == KIND_AGENT_TASK:
+        return _res(
+            action="agentic_tool_route",
+            matched="intent_contract",
+            requires_admin=False,
+            handler="api/pipelines/message_pipeline.py:_try_agentic_route",
+            confidence=contract.confidence,
+            reason=contract.reason,
+            intent=contract.kind,
+        )
 
     # Status: require MAGI/system context, not just bare "狀態" which hits case-status questions
     _STATUS_EXACT = {"狀態", "系統狀態", "運作狀態", "節點狀態", "機器狀態", "magi狀態", "magi status",
@@ -560,6 +838,19 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
     若使用者在法扶-開辦頻道發了結案指令，引導到結案頻道。
     若使用者在法扶-開辦頻道發了開辦指令，直接執行（不阻擋）。
     """
+    heavy_opt_in, message = split_heavy_prefix(message)
+    if heavy_opt_in:
+        try:
+            from flask import g as _flask_g, has_app_context as _has_app_context
+            if _has_app_context():
+                _flask_g.heavy_opt_in = True
+        except Exception:
+            logger.debug("topic_fast_path: skipped Flask heavy flag outside request context", exc_info=True)
+
+    todo_completion_reply = handle_osc_todo_completion_message(user_id, message, platform=platform, topic_key=topic_key)
+    if todo_completion_reply:
+        return todo_completion_reply
+
     # ── 筆錄-通知頻道 (transcript) 自動補全 ──
     if topic_key == "transcript":
         _tr_aliases = ["同步筆錄", "筆錄同步", "下載筆錄", "筆錄下載"]
@@ -578,7 +869,9 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             autocompleted = "同步筆錄 " + msg_stripped
             logger.info("[TopicFastPath] transcript autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
             return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
-        # 其他訊息（如一般問題）→ 不攔截
+        # 業務頻道不交給閒聊模型，避免「您好我是 Gemma」型誤答。
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道用來處理**筆錄同步/下載**。請輸入 `同步筆錄 <法院> <案號>`，或貼上法院與案號。"
         return None
 
     # ── 閱卷-繳費頻道 (filereview_payment) 守門 ──
@@ -600,7 +893,8 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         _dl_kws = ["閱卷查核", "可下載", "下載清單"]
         if any(msg_stripped.startswith(kw) for kw in _dl_kws):
             return orch._handle_command(user_id, message, role=role, platform=platform)
-        # 通知頻道，非指令訊息不走 chat engine
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道顯示**閱卷可下載通知**。請輸入 `閱卷查核` 或 `下載清單` 查看目前狀態。"
         return None
 
     # ── 閱卷-聲請頻道 (filereview_apply) 自動補全 ──
@@ -618,7 +912,65 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             autocompleted = "閱卷聲請 " + msg_stripped
             logger.info("[TopicFastPath] filereview_apply autocomplete: '%s' -> '%s'", msg_stripped, autocompleted)
             return orch._handle_command(user_id, autocompleted, role=role, platform=platform)
-        # 其他訊息（如一般問題、確認碼）→ 不攔截，走一般流程
+        if len(msg_stripped) > 1:
+            return "💡 這個頻道用來處理**閱卷聲請**。請輸入 `閱卷聲請 <法院> <案號> <當事人>`。"
+        return None
+
+    # ── 文件產出頻道守門：防止業務頻道掉回閒聊模型 ──
+    _msg_stripped = (message or "").strip()
+    _msg_lower = _msg_stripped.lower()
+    if topic_key == "translation":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["翻譯", "translate", "中翻", "英翻", "日翻", "韓翻"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**翻譯**。請輸入 `翻譯 <文字/網址>`，或上傳檔案後輸入 `翻譯這份檔案`。"
+        return None
+
+    if topic_key == "summary":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["摘要", "summary", "summarize", "總結", "重點整理", "精簡摘要", "詳細摘要"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**摘要**。請輸入 `摘要 <文字/網址>`，或上傳檔案後指定摘要長度。"
+        return None
+
+    if topic_key == "verbatim":
+        if attachment:
+            return None
+        if any(k in _msg_lower for k in ["逐字稿", "聽寫", "轉文字", "transcript", "transcribe", "whisper"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**逐字稿**。請上傳音訊檔，或輸入 `逐字稿 <音訊檔路徑>`。"
+        return None
+
+    if topic_key == "transcript":
+        # handled above; keep this as a safety net if the block is moved later.
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**筆錄同步/下載**。請輸入 `同步筆錄 <法院> <案號>`。"
+        return None
+
+    if topic_key == "judgment":
+        if any(k in _msg_lower for k in ["查判決", "找判決", "搜尋判決", "查裁判", "實務見解", "查法條", "通譯", "分類"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**裁判/實務見解**。請輸入 `查判決 <關鍵字>`、`實務見解 <主題>`，或指定研究分類需求。"
+        return None
+
+    if topic_key == "filing":
+        if any(k in _msg_lower for k in ["歸檔", "命名", "pdf", "掃描", "建立待辦", "待辦", "namer", "filing"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**PDF 命名、歸檔與待辦建立**。請上傳 PDF 或輸入明確的歸檔/待辦指令。"
+        return None
+
+    if topic_key.startswith("research_"):
+        if any(k in _msg_lower for k in ["研究", "爬蟲", "來源", "關鍵字", "摘要", "分類", "抓取", "通譯", "research", "crawl"]):
+            return None
+        if len(_msg_stripped) > 1:
+            return "💡 這個頻道用來處理**研究爬蟲/分類**。請輸入 `研究摘要`、`研究來源`、`研究關鍵字` 或具體抓取/分類指令。"
         return None
 
     # 頻道→允許的動作映射
@@ -646,6 +998,10 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
         except Exception as e:
             logger.error(f"❌ Topic fast path '{topic_key}' error: {e}", exc_info=True)
             return None
+
+    progress_reply = handle_laf_progress_reported_message(user_id, message)
+    if progress_reply:
+        return progress_reply
 
     # 檢查是否為法扶指令
     try:
@@ -692,12 +1048,18 @@ def topic_fast_path(orch, topic_key: str, user_id, message: str, role: str, plat
             logger.info(f"[TopicFastPath] executing: '{message}'")
             return orch._handle_command(user_id, message, role=role, platform=platform)
 
+        msg_stripped = (message or "").strip()
+        if len(msg_stripped) > 1:
+            if topic_key == "laf_progress":
+                return "💡 這個頻道用來確認**法扶進度回報**。可直接輸入 `1131122-E-017 已回報` 或 `謝依穎已回報`。"
+            return f"💡 這個頻道是 **{conf['label']}**。我沒有辨識到可執行的法扶指令，請補上案號/姓名與作業，例如：`1150101-A-001 開辦`、`1150101-A-001 結案`、`1150101-A-001 費用支付`。"
         return None
     except Exception:
-        pass
+        logger.exception("[TopicFastPath] LAF command parse failed")
+        return f"⚠️ {conf['label']} 指令解析失敗，請改用「法扶案號 + 作業」格式，例如 `1150101-A-001 開辦`。"
 
-    # 非法扶指令（一般對話）→ return None 讓正常流程處理
-    return None
+    # 法扶業務頻道不交給一般閒聊模型。
+    return f"💡 這個頻道是 **{conf['label']}**。請輸入可執行的法扶作業指令。"
 
 
 # ── Conversational Intent ──────────────────────────────────────────
@@ -926,6 +1288,7 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
          r"你是誰|你是什麼|自我介紹|介紹.*自己|"
          r"all\s*skills|所有功能|全部功能|功能清單|"
          r"能力清單|能力表|技能表|技能列表|你做得到什麼|"
+         r"你能做到什麼|你能做什麼事|能做到什麼事|能做哪些事|"
          r"capabilities|features|what\s*(?:are|is)\s*(?:you|your)|"
          r"你做了什麼|你可以做什麼|有哪些功能|有哪些技能|"
          r"命令列表|指令列表|指令清單)", "skill_list", None, True),
@@ -1056,7 +1419,7 @@ def try_conversational_intent(orch, message: str, msg_lower: str, user_id, role:
             return orch._get_schedule()
 
         if direct and action == "skill_list":
-            return orch._list_skills()
+            return magi_capability_overview()
 
         if direct and action == "sys_monitor":
             try:

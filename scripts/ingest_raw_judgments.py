@@ -3,13 +3,14 @@
 快速入庫：將 judicial_api/raw/ 下的 JSON 直接寫入 court_judgments 表。
 跳過 LLM 摘要，只存全文。摘要之後用 resummary 補。
 """
-import sys, os, json, glob, hashlib, time
+import sys, os, json, glob, hashlib, time, re
 
 sys.stdout.reconfigure(line_buffering=True)
 _MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR") or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _MAGI_ROOT)
 
 import mysql.connector
+from api.domains.judicial_api_cache import judicial_api_cache_root
 
 _db_password = os.environ.get("MAGI_DB_PASSWORD")
 if not _db_password:
@@ -37,8 +38,9 @@ except Exception:
         "charset": "utf8mb4",
     }
 
-RAW_ROOT = "/Users/ai/.cache/judgment_collector/judicial_api/raw"
-PROCESS_STATE = "/Users/ai/.cache/judgment_collector/judicial_api/process_state.json"
+_JUDICIAL_API_CACHE_ROOT = judicial_api_cache_root()
+RAW_ROOT = str(_JUDICIAL_API_CACHE_ROOT / "raw")
+PROCESS_STATE = str(_JUDICIAL_API_CACHE_ROOT / "process_state.json")
 
 def load_state():
     try:

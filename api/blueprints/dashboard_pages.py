@@ -10,7 +10,8 @@ This blueprint keeps the existing behavior for:
   - /worldmonitor -> /intel
   - /intel -> worldmonitor report index
   - /dashboard
-  - /dashboard/nerv
+  - /status
+  - /dashboard/nerv (legacy compatibility)
   - /magi-adjust
 
 The module is intentionally dependency-light and does not import server.py.
@@ -18,20 +19,22 @@ The module is intentionally dependency-light and does not import server.py.
 
 from __future__ import annotations
 
+import logging
 import json
 import html
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, session, url_for
+from flask_login import current_user, login_required, logout_user
 
 import requests as _requests
 
@@ -39,6 +42,40 @@ dashboard_pages_bp = Blueprint("dashboard_pages", __name__)
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
+
+
+def _is_mobile_app_request() -> bool:
+    requested_with = (request.headers.get("X-Requested-With") or "").strip().lower()
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if requested_with == "tw.local.magi.mobile":
+        return True
+    if "capacitor" in user_agent:
+        return True
+    if "; wv" in user_agent or " version/4.0 chrome/" in user_agent:
+        return True
+    return "mobile" in user_agent and ("safari" in user_agent or "chrome" in user_agent)
+
+
+def _maybe_force_mobile_app_login():
+    if not _is_mobile_app_request():
+        return None
+    if session.get("magi_mobile_app_auth_at"):
+        return None
+    try:
+        logout_user()
+    except Exception:
+        logging.getLogger(__name__).debug("mobile app reauth logout cleanup failed", exc_info=True)
+    session.clear()
+    return redirect(url_for("login", next="/mobile", mobile_app="1"))
+
+
+@dashboard_pages_bp.before_request
+def _force_mobile_app_reauth_before_dashboard_page():
+    if request.endpoint == "dashboard_pages.mobile_manifest":
+        return None
+    if current_user.is_authenticated:
+        return _maybe_force_mobile_app_login()
+    return None
 
 
 def _strip_trailing_dot(value: str) -> str:
@@ -57,7 +94,7 @@ def _load_tailscale_status() -> dict:
             data = json.loads(result.stdout)
             return data if isinstance(data, dict) else {}
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 59, exc_info=True)
     return {}
 
 
@@ -80,7 +117,7 @@ def _load_tailscale_serve_url() -> str:
                 host = _strip_trailing_dot(str(host).split(":")[0])
                 return f"https://{host}" if host else ""
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 82, exc_info=True)
     return ""
 
 
@@ -275,7 +312,7 @@ def _load_worldmonitor_sidecar(entry: Path) -> dict:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 277, exc_info=True)
     return {}
 
 
@@ -477,19 +514,24 @@ def intel_refresh():
 @dashboard_pages_bp.route("/api/skills/run", methods=["POST"])
 @login_required
 def api_skills_run_compat():
-    """Compatibility for the old Global News button; generic skill runs stay on Tools API."""
+    """Main-site compatibility shim for canonical Tools API skill execution."""
     data = request.get_json(silent=True) if request.is_json else None
-    data = data if isinstance(data, dict) else request.form
-    skill = str(data.get("skill") or "").strip()
-    task = str(data.get("task") or "").strip()
-    if skill == "worldmonitor-intel" and task == "collect":
-        ok, message = _run_worldmonitor_collect()
-        return _intel_refresh_response(ok, message)
+    data = data if isinstance(data, dict) else request.form.to_dict(flat=True)
+    try:
+        from api.tools_api import _run_skill_from_payload
+
+        return _run_skill_from_payload(
+            data,
+            user_id=str(getattr(current_user, "id", "") or "main-site"),
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("main-site skills/run compat failed: %s", exc)
     return jsonify({
         "ok": False,
         "error": "unsupported_main_site_skill_route",
-        "message": "主網站只保留全球新聞網舊按鈕相容；其他技能請使用 Tools API /skills/run。",
-    }), 400
+        "canonical_endpoint": "/skills/run",
+        "message": "主網站相容路由無法委派技能執行；請改用 canonical Tools API endpoint /skills/run。",
+    }), 503
 
 
 def _read_json_file(path: Path, default):
@@ -498,8 +540,357 @@ def _read_json_file(path: Path, default):
             with open(path, "r", encoding="utf-8") as fh:
                 return json.load(fh)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 500, exc_info=True)
     return default
+
+
+def _format_report_time(path: Path, payload: dict) -> str:
+    raw = str(payload.get("timestamp") or payload.get("generated_at") or "").strip()
+    if raw:
+        return raw.replace("T", " ")[:19]
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return "尚無紀錄"
+
+
+def _report_timestamp(path: Path, payload: dict) -> float:
+    raw = str(payload.get("timestamp") or payload.get("generated_at") or "").strip()
+    if raw:
+        try:
+            normalized = raw.replace("Z", "+00:00")
+            return datetime.fromisoformat(normalized).timestamp()
+        except Exception:
+            logging.getLogger(__name__).debug("report timestamp parse failed: %s", raw, exc_info=True)
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _report_age_hours(path: Path, payload: dict) -> float | None:
+    ts = _report_timestamp(path, payload)
+    if ts <= 0:
+        return None
+    return max(0.0, (time.time() - ts) / 3600.0)
+
+
+def _is_report_fresh(path: Path, payload: dict, max_age_hours: float) -> bool:
+    age = _report_age_hours(path, payload)
+    return age is not None and age <= max_age_hours
+
+
+def _load_live_health_snapshot() -> dict:
+    try:
+        if current_app.config.get("TESTING") and not os.environ.get("MAGI_INTERNAL_HEALTH_URL"):
+            return {}
+    except RuntimeError:
+        pass
+    url = os.environ.get("MAGI_INTERNAL_HEALTH_URL") or "http://127.0.0.1:5002/health"
+    try:
+        with urllib.request.urlopen(url, timeout=0.8) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _find_report_test(report: dict, *ids: str) -> dict:
+    wanted = {str(item) for item in ids if item}
+    tests = report.get("tests") if isinstance(report.get("tests"), list) else []
+    for item in tests:
+        if isinstance(item, dict) and str(item.get("id") or "") in wanted:
+            return item
+    return {}
+
+
+def _find_smoke_check(report: dict, name: str) -> dict:
+    checks = report.get("checks") if isinstance(report.get("checks"), list) else []
+    for item in checks:
+        if isinstance(item, dict) and str(item.get("name") or "") == name:
+            return item
+    return {}
+
+
+def _state_from_bool(value) -> str:
+    if value is True:
+        return "pass"
+    if value is False:
+        return "fail"
+    return "warn"
+
+
+def _beginner_capability(name: str, status: str, detail: str, action: str = "") -> dict:
+    return {
+        "name": name,
+        "status": status if status in {"pass", "warn", "fail"} else "warn",
+        "detail": str(detail or "尚無最近檢查紀錄"),
+        "action": str(action or ""),
+    }
+
+
+def _build_beginner_dashboard() -> dict:
+    static_dir = _MAGI_ROOT / "static"
+    system_report_path = static_dir / "system_test_report.json"
+    smoke_report_path = static_dir / "integration_smoke_latest.json"
+    magi_status_path = static_dir / "magi_status.json"
+
+    system_report = _read_json_file(system_report_path, {})
+    smoke_report = _read_json_file(smoke_report_path, {})
+    magi_status = _read_json_file(magi_status_path, {})
+    live_health = _load_live_health_snapshot()
+    live_operational = str(live_health.get("status") or "").lower() == "operational"
+    live_op_health = live_health.get("operational_health") if isinstance(live_health.get("operational_health"), dict) else {}
+    live_health_ok = live_operational and live_op_health.get("ok") is not False
+    system_fresh = _is_report_fresh(system_report_path, system_report, 24)
+    smoke_fresh = _is_report_fresh(smoke_report_path, smoke_report, 72)
+
+    system_total = int(system_report.get("total") or 0)
+    system_passed = int(system_report.get("passed") or 0)
+    system_failed = int(system_report.get("failed") or 0)
+    system_ok = system_total > 0 and system_failed == 0 and system_passed == system_total
+    system_tests = system_report.get("tests") if isinstance(system_report.get("tests"), list) else []
+    failed_tests = [item for item in system_tests if isinstance(item, dict) and item.get("pass") is False]
+    blocking_test_ids = {
+        "local_llm",
+        "casper_ollama",
+        "keeper_db",
+        "memory_module",
+        "local_embed",
+        "melchior_remote",
+        "research_module",
+        "iron_dome",
+    }
+    blocking_failures = [
+        item
+        for item in failed_tests
+        if str(item.get("id") or "") in blocking_test_ids
+    ]
+    recovered_schedule_self_test = (
+        live_health_ok
+        and system_failed > 0
+        and failed_tests
+        and all(
+            str(item.get("id") or "") == "autopilot_schedule"
+            and "discord_bot" in str(item.get("detail") or "")
+            for item in failed_tests
+        )
+    )
+
+    main_health = _find_smoke_check(smoke_report, "main_health")
+    embed_health = _find_smoke_check(smoke_report, "embed_service_health")
+    smoke_overall = smoke_report.get("overall_ok") if smoke_fresh else None
+
+    failed_smoke = [] if not smoke_fresh else [
+        {
+            "name": str(item.get("name") or "未命名檢查"),
+            "summary": str(item.get("summary") or "沒有摘要").strip(),
+            "kind": "setup" if "unauthorized" in str(item.get("summary") or "").lower() else "attention",
+        }
+        for item in (smoke_report.get("checks") if isinstance(smoke_report.get("checks"), list) else [])
+        if isinstance(item, dict) and item.get("ok") is False
+    ][:8]
+
+    local_llm = _find_report_test(system_report, "local_llm", "casper_ollama")
+    embed = _find_report_test(system_report, "local_embed", "melchior_remote")
+    db = _find_report_test(system_report, "keeper_db")
+    memory = _find_report_test(system_report, "memory_module")
+    research = _find_report_test(system_report, "research_module")
+    iron_dome = _find_report_test(system_report, "iron_dome")
+    schedule = _find_report_test(system_report, "autopilot_schedule")
+    if live_health_ok and schedule.get("pass") is False and "discord_bot" in str(schedule.get("detail") or ""):
+        schedule = {
+            **schedule,
+            "pass": True,
+            "detail": "即時 health 顯示核心服務與排程守門已恢復；清晨舊自測僅保留為歷史紀錄。",
+        }
+
+    capabilities = [
+        _beginner_capability(
+            "AI 回覆與本機推理",
+            _state_from_bool(local_llm.get("pass")) if local_llm else _state_from_bool(main_health.get("ok")),
+            local_llm.get("detail") or main_health.get("summary") or "",
+            "可先試：摘要一段文字，或詢問一個一般法律問題。",
+        ),
+        _beginner_capability(
+            "案件、資料庫與所務資料",
+            _state_from_bool(db.get("pass")),
+            db.get("detail") or "",
+            "查案件、案件待辦、帳務這類功能需要本機資料庫正常。",
+        ),
+        _beginner_capability(
+            "記憶與知識庫",
+            _state_from_bool(memory.get("pass")),
+            memory.get("detail") or "",
+            "用於回想、知識檢索與部分 RAG 回答。",
+        ),
+        _beginner_capability(
+            "向量搜尋與 Embedding",
+            _state_from_bool(embed.get("pass")) if embed else _state_from_bool(embed_health.get("ok")),
+            embed.get("detail") or embed_health.get("summary") or "",
+            "支撐相似案件、文件與知識庫搜尋。",
+        ),
+        _beginner_capability(
+            "網路研究",
+            _state_from_bool(research.get("pass")),
+            research.get("detail") or "",
+            "最新資訊、新聞與網頁內容仍要看外部來源是否可連。",
+        ),
+        _beginner_capability(
+            "安全守門",
+            _state_from_bool(iron_dome.get("pass")),
+            iron_dome.get("detail") or "",
+            "刪除、送出、外部 portal 操作會被額外限制或要求確認。",
+        ),
+        _beginner_capability(
+            "排程與背景任務",
+            _state_from_bool(schedule.get("pass")),
+            schedule.get("detail") or "",
+            "夜間整理、同步與巡檢依排程器狀態而定。",
+        ),
+    ]
+
+    if live_health_ok:
+        readiness = {
+            "status": "pass",
+            "title": "目前狀態正常",
+            "detail": "即時 health 顯示核心服務可用；舊自測或 smoke 只作歷史證據，不代表當下異常。",
+        }
+    elif system_ok and main_health.get("ok") is True:
+        readiness = {
+            "status": "pass",
+            "title": "今日可開始使用",
+            "detail": "核心推理、資料庫與基礎服務有最近檢查紀錄；高風險流程仍需人工確認。",
+        }
+    elif system_ok:
+        readiness = {
+            "status": "warn",
+            "title": "核心測試通過，仍需看即時健康",
+            "detail": "最近系統測試通過，但整合 smoke 或即時 health 沒有全綠。",
+        }
+    elif system_total > 0 and not blocking_failures:
+        readiness = {
+            "status": "warn",
+            "title": "核心可用，有項目需確認",
+            "detail": "最近自測的核心推理、資料庫與知識功能沒有阻塞失敗；排程、憑證或外部流程請看下方警示。",
+        }
+    else:
+        readiness = {
+            "status": "fail",
+            "title": "先檢查系統再開始",
+            "detail": "最近系統測試不是全數通過，建議先看 NERV 或 /health。",
+        }
+
+    work_lanes = [
+        {
+            "name": "案件與行程",
+            "entry": "/osc",
+            "checks": "資料庫、行事曆、NAS",
+            "examples": ["今天行程", "查案件 2026-0035", "案件待辦"],
+            "risk": "資料不足或同名案件時會要求補資訊。",
+        },
+        {
+            "name": "文件處理",
+            "entry": "/golem",
+            "checks": "OCR、摘要、翻譯、檔案路徑",
+            "examples": ["摘要", "完整翻譯", "OCR"],
+            "risk": "掃描件品質會影響結果，正式文件仍要人工確認。",
+        },
+        {
+            "name": "法律研究",
+            "entry": "/research",
+            "checks": "判決搜尋、法規庫、網路來源",
+            "examples": ["民法184條", "實務見解 侵權行為", "搜尋最高法院 通譯"],
+            "risk": "找不到資料時應回報找不到，不應補編。",
+        },
+        {
+            "name": "法扶、閱卷、筆錄",
+            "entry": "/osc",
+            "checks": "Portal 帳號、API key、人工確認碼",
+            "examples": ["閱卷查核 <法院> <案號>", "下載筆錄 <案號>", "法扶監控"],
+            "risk": "送出、下載與回報屬高風險流程，保留二階段確認。",
+        },
+    ]
+
+    evidence = [
+        {
+            "name": "即時 health",
+            "status": "pass" if live_health_ok else ("fail" if live_health else "warn"),
+            "summary": "目前 operational" if live_health_ok else ("即時 health 顯示需檢查" if live_health else "無法讀取即時 health"),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if live_health else "即時查詢未取得",
+        },
+        {
+            "name": "系統自測",
+            "status": "warn" if recovered_schedule_self_test else (_state_from_bool(system_ok) if system_fresh else "warn"),
+            "summary": (
+                f"{system_passed}/{system_total} 通過；舊失敗已由即時 health 確認恢復"
+                if recovered_schedule_self_test
+                else (f"{system_passed}/{system_total} 通過" if system_total else "尚無報告")
+            ),
+            "time": _format_report_time(system_report_path, system_report),
+        },
+        {
+            "name": "整合 smoke",
+            "status": _state_from_bool(smoke_overall) if smoke_fresh else "warn",
+            "summary": (
+                "全部通過"
+                if smoke_overall is True
+                else ("歷史報告已過期，請以即時 health 為準" if not smoke_fresh else "有項目需檢查")
+            ),
+            "time": _format_report_time(smoke_report_path, smoke_report),
+        },
+        {
+            "name": "節點狀態檔",
+            "status": "pass" if magi_status else "warn",
+            "summary": "已讀取" if magi_status else "尚無狀態檔",
+            "time": _format_report_time(magi_status_path, magi_status if isinstance(magi_status, dict) else {}),
+        },
+    ]
+
+    return {
+        "readiness": readiness,
+        "capabilities": capabilities,
+        "work_lanes": work_lanes,
+        "failed_smoke": failed_smoke,
+        "evidence": evidence,
+        "links": [
+            {"label": "MAGI 對話", "href": "/golem"},
+            {"label": "案件系統", "href": "/osc"},
+            {"label": "系統檢測", "href": "/status"},
+            {"label": "即時 health", "href": "/health"},
+        ],
+    }
+
+
+def _build_status_dashboard() -> dict:
+    dashboard = _build_beginner_dashboard()
+    dashboard.update(
+        {
+            "page_title": "系統檢測 / 狀態中心",
+            "page_label": "MAGI 系統檢測",
+            "mode": "status",
+            "intro": "本頁把最近自測、整合 smoke、節點狀態與即時 health 整理成新手可讀狀態。",
+            "capabilities_action": {"label": "MAGI 調整", "href": "/magi-adjust"},
+            "show_work_lanes": False,
+            "quick_links": [
+                {"label": "即時 health", "href": "/health"},
+                {"label": "SaaS readyz", "href": "/readyz?scope=saas"},
+                {"label": "MAGI 調整", "href": "/magi-adjust"},
+            ],
+            "evidence_links": [
+                {"label": "即時 health", "href": "/health"},
+                {"label": "SaaS readyz", "href": "/readyz?scope=saas"},
+            ],
+            "footer_note": "系統檢測只整理健康狀態與檢查證據；技能、API、遠端操作與進階設定仍在 MAGI 調整頁面處理。",
+            "links": [
+                {"label": "MAGI", "href": "/golem"},
+                {"label": "案件系統", "href": "/osc"},
+                {"label": "MAGI 調整", "href": "/magi-adjust"},
+                {"label": "即時 health", "href": "/health"},
+            ],
+        }
+    )
+    return dashboard
 
 
 def _load_research_dashboard() -> dict:
@@ -577,6 +968,12 @@ def research_panel():
     return render_template("research.html", research=_load_research_dashboard(), user=current_user)
 
 
+@dashboard_pages_bp.route("/research/judgment-classifier")
+@login_required
+def research_judgment_classifier():
+    return render_template("research_judgment_classifier.html", user=current_user)
+
+
 @dashboard_pages_bp.route("/research/rss-preview")
 @login_required
 def research_rss_preview():
@@ -623,6 +1020,20 @@ def dashboard_legacy():
     return redirect(url_for("dashboard_pages.golem_console"))
 
 
+@dashboard_pages_bp.route("/dashboard/beginner")
+@dashboard_pages_bp.route("/start")
+@login_required
+def dashboard_beginner():
+    return render_template("dashboard_beginner.html", user=current_user, dashboard=_build_beginner_dashboard())
+
+
+@dashboard_pages_bp.route("/status")
+@dashboard_pages_bp.route("/dashboard/status")
+@login_required
+def status_center():
+    return render_template("dashboard_beginner.html", user=current_user, dashboard=_build_status_dashboard())
+
+
 @dashboard_pages_bp.route("/dashboard/nerv")
 @dashboard_pages_bp.route("/nerv")
 @dashboard_pages_bp.route("/magi-adjust")
@@ -643,6 +1054,9 @@ def golem_console():
 @dashboard_pages_bp.route("/app")
 @login_required
 def mobile_home():
+    forced = _maybe_force_mobile_app_login()
+    if forced is not None:
+        return forced
     return render_template("mobile_home.html", user=current_user, mobile=_build_mobile_app_config())
 
 
@@ -650,6 +1064,9 @@ def mobile_home():
 @dashboard_pages_bp.route("/app-admin")
 @login_required
 def mobile_admin():
+    forced = _maybe_force_mobile_app_login()
+    if forced is not None:
+        return forced
     return render_template("mobile_admin.html", user=current_user, mobile=_build_mobile_app_config())
 
 
@@ -657,6 +1074,20 @@ def mobile_admin():
 @login_required
 def mobile_config_json():
     return jsonify(_build_mobile_app_config())
+
+
+@dashboard_pages_bp.route("/mobile/sw.js")
+def mobile_service_worker():
+    sw_path = Path(__file__).resolve().parents[2] / "static" / "mobile" / "sw.js"
+    body = sw_path.read_text(encoding="utf-8")
+    return Response(
+        body,
+        mimetype="application/javascript",
+        headers={
+            "Service-Worker-Allowed": "/mobile",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 @dashboard_pages_bp.route("/mobile/manifest.webmanifest")
@@ -668,7 +1099,7 @@ def mobile_manifest():
         "description": "MAGI 與 Paperclip 內部行動入口",
         "id": "/mobile",
         "start_url": "/mobile",
-        "scope": "/",
+        "scope": "/mobile",
         "display": "standalone",
         "orientation": "portrait",
         "theme_color": "#0f766e",
@@ -704,6 +1135,7 @@ _PROXY_PREFIX = "/wa"
 
 @dashboard_pages_bp.route(f"{_PROXY_PREFIX}/", defaults={"path": ""})
 @dashboard_pages_bp.route(f"{_PROXY_PREFIX}/<path:path>", methods=["GET", "POST"])
+@login_required
 def website_admin_proxy(path):
     """Reverse-proxy website admin server so it works over Tailscale funnel."""
     url = f"{_ADMIN_BASE}/{path}"

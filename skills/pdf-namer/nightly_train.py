@@ -33,6 +33,7 @@ if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
 
 # Load .env
 _env_path = os.path.join(MAGI_ROOT, ".env")
@@ -64,6 +65,14 @@ CASE_ROOT = os.environ.get(
 )
 REPORT_PATH = os.path.join(SKILL_DIR, "_nightly_report.json")
 DATE_PREFIX_RE = re.compile(r"^(20\d{6})")
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -98,6 +107,16 @@ def _parse_existing_filename(fn: str) -> dict:
     return info
 
 
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
+
+
 def _normalize_date(d: str) -> Optional[str]:
     """Ensure YYYYMMDD format."""
     if not d:
@@ -111,6 +130,7 @@ def _normalize_date(d: str) -> Optional[str]:
 def _subfolder_label(subfolder: str) -> Optional[str]:
     """Map subfolder name to category label for validation."""
     mapping = {
+        JUDGMENT_FOLDER_LABEL: "判決",
         "判決書": "判決",
         "法院通知或程序裁定": "法院通知",
         "我方歷次書狀": "書狀_我方",
@@ -144,7 +164,9 @@ def collect_samples(
 
     for root, dirs, files in os.walk(case_root):
         # Skip hidden and system dirs
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not _is_synthetic_case_path(os.path.join(root, d))]
+        if _is_synthetic_case_path(root):
+            continue
         subfolder = os.path.basename(root)
         label = _subfolder_label(subfolder)
         if not label:

@@ -4,6 +4,7 @@ from api.handlers.document_handler import (
     export_translation_docx,
     polish_translated_document_text,
     translation_idiom_issues,
+    validate_translation_docx,
 )
 
 
@@ -96,3 +97,25 @@ def test_export_translation_docx_uses_aligned_source_and_translation_chunks(tmp_
     assert "能動性（agency）與責任（responsibility）。" in text
     assert "Addiction and decision makers." in text
     assert "成癮（addiction）與決策者（decision makers）。" in text
+
+
+def test_validate_translation_docx_blocks_timeout_placeholder(tmp_path):
+    from docx import Document
+
+    path = tmp_path / "partial.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "原文"
+    table.rows[0].cells[1].text = "翻譯"
+    table.rows[1].cells[0].text = "Original text"
+    table.rows[1].cells[1].text = "（⚠️ 第 1/1 段翻譯逾時，先保留原文）\nOriginal text"
+    doc.save(path)
+
+    result = validate_translation_docx(
+        str(path),
+        source_text="Original text",
+        translated_text="（⚠️ 第 1/1 段翻譯逾時，先保留原文）\nOriginal text",
+    )
+
+    assert result["ok"] is False
+    assert any(issue.startswith("blocked_terms:") for issue in result["issues"])

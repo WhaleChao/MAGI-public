@@ -34,6 +34,29 @@ from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, get_skill
 # =============================================================================
 # Configuration
 # =============================================================================
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _skill_runtime_env_opt_in() -> bool:
+    return _env_bool("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", False)
+
+
+def _skill_runtime_default(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _env_bool(env_name, False)
+    return _skill_runtime_env_opt_in()
+
+
+def _skill_auto_pip_enabled() -> bool:
+    if "MAGI_SKILL_AUTO_PIP" in os.environ:
+        return _env_bool("MAGI_SKILL_AUTO_PIP", False)
+    return _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+
+
 SKILLS_DIR = f"{_MAGI_ROOT}/skills"
 DEFINITIONS_PATH = os.path.join(SKILLS_DIR, "definitions.json")
 MAX_DEBUG_ROUNDS = int(os.environ.get("MAGI_SKILL_DEBUG_ROUNDS", "2"))
@@ -47,10 +70,10 @@ SKILL_EXEC_CPU_SEC = int(os.environ.get("MAGI_SKILL_EXEC_CPU_SEC", "20"))
 SKILL_ENABLE_PREEXEC = os.environ.get("MAGI_SKILL_ENABLE_PREEXEC", "0").strip().lower() in {"1", "true", "yes", "on"}
 SKILL_PYTHON = str(get_skill_python())
 SKILL_RUNTIME_SITE_PACKAGES = os.environ.get("MAGI_SKILL_RUNTIME_SITE_PACKAGES", f"{_MAGI_ROOT}/.runtime_site_packages")
-SKILL_AUTO_PIP_ENABLED = os.environ.get("MAGI_SKILL_AUTO_PIP", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILL_AUTO_PIP_ENABLED = _skill_auto_pip_enabled()
 SKILL_AUTO_PIP_TIMEOUT_SEC = int(os.environ.get("MAGI_SKILL_AUTO_PIP_TIMEOUT_SEC", "120"))
 SKILL_AUTO_PIP_MAX_PACKAGES = int(os.environ.get("MAGI_SKILL_AUTO_PIP_MAX_PACKAGES", "6"))
-SKILL_AUTO_PIP_ALLOW_ANY = os.environ.get("MAGI_SKILL_AUTO_PIP_ALLOW_ANY", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILL_AUTO_PIP_ALLOW_ANY = os.environ.get("MAGI_SKILL_AUTO_PIP_ALLOW_ANY", "0").strip().lower() in {"1", "true", "yes", "on"}
 SKILL_AUTO_PIP_ALLOWLIST = {
     x.strip().lower()
     for x in os.environ.get(
@@ -601,7 +624,7 @@ def _ensure_skill_runtime_dependencies(
     force_scan: bool = False,
     max_packages: int = SKILL_AUTO_PIP_MAX_PACKAGES,
 ) -> dict:
-    if not SKILL_AUTO_PIP_ENABLED:
+    if not _skill_auto_pip_enabled():
         return {"success": True, "installed": [], "skipped": [], "errors": [], "reason": "auto_pip_disabled"}
 
     modules = _extract_missing_modules(stderr_text)
@@ -1307,10 +1330,13 @@ def _auto_runtime_repair_action(skill_dir: str, need_description: str, max_round
     return {"success": False, "repaired": repaired, "smoke": None, "rounds": max_rounds, "logs": logs, "error": "Unknown runtime repair failure"}
 
 
-def _smoke_test_action(skill_dir: str, timeout_sec: int = 15, auto_install_deps: bool = True) -> dict:
+def _smoke_test_action(skill_dir: str, timeout_sec: int = 15, auto_install_deps: Optional[bool] = None) -> dict:
     action_path = os.path.join(skill_dir, "action.py")
     if not os.path.exists(action_path):
         return {"success": False, "command": "", "stdout": "", "stderr": "action.py not found"}
+
+    if auto_install_deps is None:
+        auto_install_deps = _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
 
     dep_bootstrap = {"success": True, "installed": []}
     if auto_install_deps:
@@ -1923,8 +1949,18 @@ def list_skills() -> list[dict]:
     
     if not os.path.exists(SKILLS_DIR):
         return skills
-    
-    for item in os.listdir(SKILLS_DIR):
+
+    try:
+        from skills.catalog import iter_top_level_skill_dirs
+
+        entries = [entry.name for entry in iter_top_level_skill_dirs(SKILLS_DIR)]
+    except Exception:
+        entries = [
+            item for item in os.listdir(SKILLS_DIR)
+            if not item.startswith(".") and item != "__pycache__"
+        ]
+
+    for item in entries:
         skill_path = os.path.join(SKILLS_DIR, item, "SKILL.md")
         if os.path.exists(skill_path):
             try:
@@ -1956,10 +1992,8 @@ SAFE_MODELS = [
     "mistral-nemo:12b",
     os.environ.get("MAGI_MAIN_MODEL", ""),
     "gemma2:9b",
-    "qwen2.5-coder:7b",
     "phi3.5:3.8b",
     "gemma-3-12b-it-4bit",
-    "deepseek-r1:14b",
     os.environ.get("MAGI_MAIN_MODEL", "")
 ]
 
@@ -2079,7 +2113,7 @@ def request_distributed_skill_generation(prompt: str) -> dict:
         # Distributed model is hosted on Casper (oMLX) which connects to Melchior via RPC
         CASPER_URL = OMLX_HOST + "/v1/chat/completions"
         
-        # We use chat completions for the big model as it might be an instruction-tuned model (e.g., GLM-4, Llama-3-70B-Instruct)
+        # We use chat completions for the big model as it might be an instruction-tuned model.
         response = requests.post(
             CASPER_URL,
             json={
@@ -2129,9 +2163,9 @@ def run_skill_action(
     skill: str,
     task: str,
     timeout_sec: int = 30,
-    auto_repair: bool = True,
-    rollback_on_fail: bool = True,
-    auto_install_deps: bool = True,
+    auto_repair: Optional[bool] = None,
+    rollback_on_fail: Optional[bool] = None,
+    auto_install_deps: Optional[bool] = None,
     route_key: str = "",
 ) -> dict:
     """
@@ -2142,11 +2176,48 @@ def run_skill_action(
     if not skill:
         return {"success": False, "error": "Missing skill folder name"}
 
+    explicit_runtime_flags = {
+        "auto_repair": auto_repair is not None,
+        "rollback_on_fail": rollback_on_fail is not None,
+        "auto_install_deps": auto_install_deps is not None,
+    }
+    if auto_repair is None:
+        auto_repair = _skill_runtime_default("MAGI_SKILL_AUTO_REPAIR_DEFAULT")
+    if rollback_on_fail is None:
+        rollback_on_fail = _skill_runtime_default("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT")
+    if auto_install_deps is None:
+        auto_install_deps = _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+    auto_repair = bool(auto_repair)
+    rollback_on_fail = bool(rollback_on_fail)
+    auto_install_deps = bool(auto_install_deps)
+    runtime_policy = {
+        "auto_repair": auto_repair,
+        "rollback_on_fail": rollback_on_fail,
+        "auto_install_deps": auto_install_deps,
+        "auto_pip_enabled": _skill_auto_pip_enabled(),
+        "effective_auto_pip": bool(auto_install_deps and _skill_auto_pip_enabled()),
+        "explicit_flags": explicit_runtime_flags,
+        "dev_env_opt_in": _skill_runtime_env_opt_in(),
+        "message": (
+            "Runtime mutation requested; audit recorded."
+            if (auto_repair or rollback_on_fail or auto_install_deps)
+            else "Runtime mutation defaults are disabled for product/public mode."
+        ),
+    }
+
+    def _with_runtime_policy(result: dict) -> dict:
+        if isinstance(result, dict):
+            result.setdefault("runtime_policy", runtime_policy)
+        return result
+
+    if auto_repair or rollback_on_fail or auto_install_deps:
+        _record_skill_event("runtime_mutation_policy", skill, "info", runtime_policy["message"], runtime_policy)
+
     timeout_sec = int(timeout_sec or SKILL_EXEC_TIMEOUT_SEC)
     route = _resolve_run_target(skill, route_key=route_key)
     if not route.get("success"):
         _record_skill_event("run", skill, "error", route.get("error", "route resolution failed"))
-        return {"success": False, "error": route.get("error", "route resolution failed")}
+        return _with_runtime_policy({"success": False, "error": route.get("error", "route resolution failed")})
 
     skill_dir = route["skill_dir"]
     channel = route.get("channel", "live")
@@ -2156,7 +2227,7 @@ def run_skill_action(
     action_path = os.path.join(skill_dir, "action.py")
     if not os.path.exists(action_path):
         _record_skill_event("run", skill, "error", f"action.py not found ({channel}:{version_id})")
-        return {"success": False, "error": f"action.py not found in routed target ({channel})"}
+        return _with_runtime_policy({"success": False, "error": f"action.py not found in routed target ({channel})"})
 
     def _attempt():
         task_arg = task or "help"
@@ -2185,6 +2256,16 @@ def run_skill_action(
         traces = []
         if auto_install_deps:
             dep_bootstrap = _ensure_skill_runtime_dependencies(skill_dir, force_scan=True)
+            if dep_bootstrap.get("reason"):
+                traces.append(
+                    {
+                        "cmd": "auto_pip bootstrap",
+                        "rc": 0,
+                        "stdout": "",
+                        "stderr": "",
+                        "skipped": dep_bootstrap.get("reason"),
+                    }
+                )
             if dep_bootstrap.get("installed"):
                 traces.append(
                     {
@@ -2221,6 +2302,16 @@ def run_skill_action(
                     }
                 if auto_install_deps:
                     dep_fix = _ensure_skill_runtime_dependencies(skill_dir, stderr_text=f"{r['stderr']}\n{r['stdout']}")
+                    if dep_fix.get("reason"):
+                        traces.append(
+                            {
+                                "cmd": "auto_pip on_error",
+                                "rc": 0,
+                                "stdout": "",
+                                "stderr": "",
+                                "skipped": dep_fix.get("reason"),
+                            }
+                        )
                     if dep_fix.get("installed"):
                         traces.append(
                             {
@@ -2266,7 +2357,7 @@ def run_skill_action(
         if first.get("success"):
             first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
             _record_skill_event("run", skill, "ok", f"canary success:{version_id}")
-            return first
+            return _with_runtime_policy(first)
         _record_skill_event("run", skill, "error", f"canary failed:{version_id}")
         # fallback immediately to stable/live path to preserve service continuity
         fallback_route = _resolve_run_target(skill, route_key="__stable_fallback__", force_non_canary=True)
@@ -2283,14 +2374,14 @@ def run_skill_action(
                 fallback["canary_result"] = first
                 fallback["usage_tracking"] = _track_skill_usage(skill, fallback, task=task)
                 _record_skill_event("run", skill, "ok" if fallback.get("success") else "error", f"fallback after canary failure -> {fallback_channel}:{fallback_version}")
-                return fallback
+                return _with_runtime_policy(fallback)
         first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
-        return first
+        return _with_runtime_policy(first)
 
     if first.get("success") or not auto_repair:
         first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
         _record_skill_event("run", skill, "ok" if first.get("success") else "error", first.get("error", first.get("command", "")))
-        return first
+        return _with_runtime_policy(first)
 
     snapshot = _snapshot_skill_version(skill_dir, reason="pre_runtime_auto_repair")
     _record_skill_event("run_auto_repair", skill, "info", "runtime failure detected, trying auto repair")
@@ -2301,7 +2392,7 @@ def run_skill_action(
         second["repair"] = repair
         second["usage_tracking"] = _track_skill_usage(skill, second, task=task)
         _record_skill_event("run_auto_repair", skill, "ok" if second.get("success") else "error", "auto repair applied")
-        return second
+        return _with_runtime_policy(second)
 
     rollback_result = None
     if rollback_on_fail and snapshot.get("success"):
@@ -2318,7 +2409,7 @@ def run_skill_action(
     }
     result["usage_tracking"] = _track_skill_usage(skill, result, task=task)
     _record_skill_event("run", skill, "error", result["error"], {"auto_repair": repair.get("error") if isinstance(repair, dict) else str(repair)})
-    return result
+    return _with_runtime_policy(result)
 
 
 def run_skill_ci(skill: str, task: str = "self test", attempt_repair: bool = False) -> dict:

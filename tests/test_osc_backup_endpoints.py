@@ -111,9 +111,11 @@ def test_backup_create_writes_file(tmp_path, app, client):
     written = list(tmp_path.glob("backup_*.json"))
     assert len(written) == 1
     payload = json.loads(written[0].read_text(encoding="utf-8"))
-    assert payload["version"] == 1
+    assert payload["version"] == 2
     assert "tables" in payload
     assert "table_counts" in payload
+    assert payload["integrity"]["algorithm"] == "sha256"
+    assert body["integrity"] == "verified"
 
 
 # ── Test 3: Prune to 7 ────────────────────────────────────────────────────────
@@ -240,7 +242,7 @@ def test_backup_restore_uses_insert_ignore(tmp_path, app, client):
 
         resp = client.post(
             f"/api/osc/backups/backup_20260428_030000_confirm.json/restore",
-            data=json.dumps({"confirm": True}),
+            data=json.dumps({"confirm": True, "allow_unverified": True}),
             content_type="application/json",
         )
 
@@ -253,3 +255,47 @@ def test_backup_restore_uses_insert_ignore(tmp_path, app, client):
     assert len(insert_sqls) >= 1, "At least one INSERT must be issued"
     for sql in insert_sqls:
         assert "IGNORE" in sql.upper(), f"INSERT must use IGNORE, got: {sql}"
+
+
+def test_backup_restore_rejects_tampered_verified_backup(tmp_path, app, client):
+    import api.blueprints.osc_cases as mod
+
+    payload = {
+        "version": 2,
+        "created_at": "2026-07-11T03:00:00+08:00",
+        "label": "test",
+        "tables": {"cases": [{"id": 1, "case_number": "T001"}]},
+        "table_counts": {"cases": 1},
+    }
+    payload["integrity"] = {"algorithm": "sha256", "digest": mod._osc_backup_digest(payload)}
+    payload["tables"]["cases"][0]["case_number"] = "TAMPERED"
+    path = tmp_path / "backup_20260711_030000_tampered.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with patch.object(mod, "_osc_backup_dir", return_value=tmp_path), \
+         patch.object(mod, "_osc_exec") as exec_mock:
+        resp = client.post(
+            f"/api/osc/backups/{path.name}/restore",
+            data=json.dumps({"confirm": True}),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 422
+    assert resp.get_json()["error"] == "backup_checksum_mismatch"
+    exec_mock.assert_not_called()
+
+
+def test_backup_restore_requires_opt_in_for_legacy_unverified_backup(tmp_path, app, client):
+    import api.blueprints.osc_cases as mod
+
+    path = tmp_path / "backup_20260711_030000_legacy.json"
+    path.write_text(json.dumps({"version": 1, "tables": {}, "table_counts": {}}), encoding="utf-8")
+    with patch.object(mod, "_osc_backup_dir", return_value=tmp_path):
+        resp = client.post(
+            f"/api/osc/backups/{path.name}/restore",
+            data=json.dumps({"confirm": True}),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 409
+    assert resp.get_json()["error"] == "legacy_backup_requires_allow_unverified"

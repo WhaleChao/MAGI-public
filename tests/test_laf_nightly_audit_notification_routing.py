@@ -26,7 +26,7 @@ def test_laf_nightly_audit_send_report_splits_progress_for_dc(monkeypatch):
                 "",
                 "⚠️ 進行中逾 18 個月，需確認進度回報：13 件",
                 "  • 1121228-U-017 羅伊辰 — 派案/建案 2023-12-28，已 868 天",
-                "  👉 若已回報，可回覆「<案號/姓名> 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。",
+                "  👉 若已回報，可直接回覆「案號 已回報」或「姓名 已回報」；MAGI 會冷卻 60 天後再提醒，並登上行事曆。",
             ]
         ),
         has_issues=True,

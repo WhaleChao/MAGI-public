@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ dashboard.page_title|default('新手工作台') }} | MAGI</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --ink: #172033;
+      --muted: #607086;
+      --panel: #ffffff;
+      --line: #dbe3ed;
+      --soft: #eef3f7;
+      --blue: #1b65d8;
+      --teal: #0f766e;
+      --green: #137a3d;
+      --amber: #9a6500;
+      --red: #b42318;
+      --shadow: 0 10px 26px rgba(30, 41, 59, 0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(246, 247, 249, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(16px);
+    }
+
+    .topbar-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand strong {
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .nav {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .nav a,
+    .link-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 7px;
+      color: #243247;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .status-band {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .readiness,
+    .quick-actions,
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .readiness {
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .readiness-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    .muted {
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .state::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: currentColor;
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 16%, transparent);
+    }
+
+    .state.pass { color: var(--green); }
+    .state.warn { color: var(--amber); }
+    .state.fail { color: var(--red); }
+
+    .quick-actions {
+      padding: 16px;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
+    .command-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .command {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfd;
+      min-height: 42px;
+    }
+
+    .command code {
+      color: #172033;
+      overflow-wrap: anywhere;
+      font-size: 13px;
+    }
+
+    .command button {
+      border: 1px solid #cbd6e2;
+      background: var(--soft);
+      color: #243247;
+      border-radius: 6px;
+      min-height: 30px;
+      padding: 4px 9px;
+      cursor: pointer;
+    }
+
+    .section {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .lane-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      padding: 12px;
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .item p,
+    .item li {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .item ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 5px;
+    }
+
+    .item .entry {
+      justify-self: start;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: #344256;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .pill.pass {
+      background: #e7f6ec;
+      color: var(--green);
+    }
+
+    .pill.warn {
+      background: #fff2d5;
+      color: var(--amber);
+    }
+
+    .pill.fail {
+      background: #ffe8e4;
+      color: var(--red);
+    }
+
+    .warning-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .warning-row {
+      display: grid;
+      grid-template-columns: minmax(160px, 0.8fr) minmax(0, 1.5fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+      font-size: 13px;
+    }
+
+    .warning-row:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .evidence {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      padding-bottom: 10px;
+    }
+
+    @media (max-width: 980px) {
+      .status-band,
+      .grid,
+      .lane-grid,
+      .evidence {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar-inner {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .nav {
+        justify-content: flex-start;
+      }
+
+      .warning-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main,
+      .topbar-inner {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .brand {
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .readiness-head,
+      .section-head,
+      .item-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      h1 {
+        font-size: 21px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <strong>{{ dashboard.page_label|default('MAGI 新手工作台') }}</strong>
+        <span>{{ user.id }}</span>
+      </div>
+      <nav class="nav" aria-label="主要入口">
+        {% for link in dashboard.links %}
+        <a href="{{ link.href }}">{{ link.label }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="status-band" aria-label="今日狀態">
+      <div class="readiness">
+        <div class="readiness-head">
+          <div>
+            <h1>{{ dashboard.readiness.title }}</h1>
+            <p class="muted">{{ dashboard.readiness.detail }}</p>
+          </div>
+          <span class="state {{ dashboard.readiness.status }}">
+            {% if dashboard.readiness.status == "pass" %}可開始{% elif dashboard.readiness.status == "warn" %}需留意{% else %}先檢查{% endif %}
+          </span>
+        </div>
+        <p class="muted">
+          {{ dashboard.intro|default('本頁根據最近的系統自測、整合 smoke 與節點狀態檔整理；正式送出、批次搬檔、portal 操作仍維持確認流程。') }}
+        </p>
+      </div>
+
+      <aside class="quick-actions" aria-label="常用指令">
+        <div class="section-head">
+          <h2>{% if dashboard.quick_links %}檢查入口{% else %}先試這幾句{% endif %}</h2>
+          <span class="pill">{% if dashboard.quick_links %}即時檢查{% else %}複製到對話{% endif %}</span>
+        </div>
+        {% if dashboard.quick_links %}
+        <div class="command-list">
+          {% for link in dashboard.quick_links %}
+          <a class="link-button" href="{{ link.href }}">{{ link.label }}</a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="command-list">
+          {% for command in ["今天行程", "摘要", "查案件 2026-0035", "民法184條"] %}
+          <div class="command">
+            <code>{{ command }}</code>
+            <button type="button" data-copy="{{ command }}">複製</button>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </aside>
+    </section>
+
+    <section class="section" aria-label="功能驗證">
+      <div class="section-head">
+        <h2>功能是否有最近檢查證據</h2>
+        {% set capability_action = dashboard.capabilities_action|default({"label": "進入系統檢測", "href": "/status"}) %}
+        <a class="link-button" href="{{ capability_action.href }}">{{ capability_action.label }}</a>
+      </div>
+      <div class="grid">
+        {% for item in dashboard.capabilities %}
+        <article class="item">
+          <div class="item-head">
+            <h3>{{ item.name }}</h3>
+            <span class="pill {{ item.status }}">
+              {% if item.status == "pass" %}通過{% elif item.status == "warn" %}需確認{% else %}需處理{% endif %}
+            </span>
+          </div>
+          <p>{{ item.detail }}</p>
+          <p>{{ item.action }}</p>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    {% if dashboard.show_work_lanes is not sameas false %}
+    <section class="section" aria-label="工作入口">
+      <div class="section-head">
+        <h2>依工作選入口</h2>
+        <span class="pill">新手視角</span>
+      </div>
+      <div class="lane-grid">
+        {% for lane in dashboard.work_lanes %}
+        <article class="item">
+          <h3>{{ lane.name }}</h3>
+          <p>{{ lane.checks }}</p>
+          <ul>
+            {% for example in lane.examples %}
+            <li>{{ example }}</li>
+            {% endfor %}
+          </ul>
+          <p>{{ lane.risk }}</p>
+          <a class="entry" href="{{ lane.entry }}">進入</a>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="section" aria-label="需設定或留意">
+      <div class="section-head">
+        <h2>需要設定或留意的項目</h2>
+        <span class="pill warn">{{ dashboard.failed_smoke|length }} 項</span>
+      </div>
+      {% if dashboard.failed_smoke %}
+      <div class="warning-list">
+        {% for item in dashboard.failed_smoke %}
+        <div class="warning-row">
+          <strong>{{ item.name }}</strong>
+          <span class="muted">{{ item.summary }}</span>
+          <span class="pill {% if item.kind == "setup" %}warn{% else %}fail{% endif %}">
+            {% if item.kind == "setup" %}需設定{% else %}需處理{% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">最近 smoke 沒有列出失敗項目。</p>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-label="檢查來源">
+      <div class="section-head">
+        <h2>檢查來源</h2>
+        <div class="nav" aria-label="檢查來源入口">
+          {% if dashboard.evidence_links %}
+          {% for link in dashboard.evidence_links %}
+          <a class="link-button" href="{{ link.href }}">{{ link.label }}</a>
+          {% endfor %}
+          {% else %}
+          <a class="link-button" href="/status">系統檢測</a>
+          <a class="link-button" href="/health">即時 health</a>
+          {% endif %}
+        </div>
+      </div>
+      <div class="evidence">
+        {% for item in dashboard.evidence %}
+        <article class="item">
+          <div class="item-head">
+            <h3>{{ item.name }}</h3>
+            <span class="pill {{ item.status }}">
+              {% if item.status == "pass" %}正常{% elif item.status == "warn" %}未知{% else %}異常{% endif %}
+            </span>
+          </div>
+          <p>{{ item.summary }}</p>
+          <p>{{ item.time }}</p>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <p class="footer-note">
+      {{ dashboard.footer_note|default('新手工作台只整理狀態與入口；真正的案件送出、閱卷確認、批次同步與檔案搬移仍由原本的 MAGI 流程處理。') }}
+    </p>
+  </main>
+
+  <script>
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const value = button.getAttribute("data-copy") || "";
+        try {
+          await navigator.clipboard.writeText(value);
+          button.textContent = "已複製";
+          setTimeout(() => { button.textContent = "複製"; }, 1200);
+        } catch (error) {
+          button.textContent = "選取";
+          const code = button.parentElement.querySelector("code");
+          if (code) {
+            const range = document.createRange();
+            range.selectNodeContents(code);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+        }
+      });
+    });
+  </script>
+</body>
+</html>

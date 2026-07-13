@@ -234,7 +234,6 @@ def test_iron_dome():
 
 def test_autopilot_schedule():
     """Test nightly schedule: cron_jobs.json exists and Discord bot cron scheduler is running."""
-    import subprocess
     try:
         # 1. 檢查 cron_jobs.json 是否存在且有任務
         cron_path = os.path.join(os.environ.get("MAGI_ROOT_DIR", ""), "cron_jobs.json")
@@ -247,12 +246,9 @@ def test_autopilot_schedule():
             enabled = [j for j in jobs if j.get("enabled", True)]
             if enabled:
                 # 2. 檢查 discord_bot.py（內建 cron scheduler）是否在跑
-                bot_alive = subprocess.run(
-                    ["pgrep", "-f", "discord_bot.py"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ).returncode == 0
+                bot_alive, pid_text = _health_probes.python_script_process_running("api/discord_bot.py")
                 if bot_alive:
-                    return {"pass": True, "detail": f"Discord cron scheduler 運行中，{len(enabled)} 個任務啟用"}
+                    return {"pass": True, "detail": f"Discord cron scheduler 運行中，{len(enabled)} 個任務啟用 (pid={pid_text})"}
                 return {"pass": False, "detail": f"cron_jobs.json 有 {len(enabled)} 個任務，但 discord_bot.py 未運行"}
         return {"pass": False, "detail": "cron_jobs.json 不存在"}
     except Exception as e:

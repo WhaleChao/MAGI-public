@@ -129,6 +129,7 @@ def transcribe_audio(audio_path, model_path=DEFAULT_MODEL, language=None,
             "language": result.get("language", "unknown"),
             "segments": segments,
             "provider": "balthasar_local_mlx",
+            "model": model_path,
         }
 
     except Exception as e:

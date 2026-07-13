@@ -6,6 +6,10 @@ can do ``from api.osc.utils import _osc_exec`` or
 ``from api.osc import _osc_exec`` interchangeably.
 """
 
+from __future__ import annotations
+
+import importlib
+
 from api.osc.utils import (  # noqa: F401
     # Database config & connection
     OSC_WEB_DB_CONFIG,
@@ -78,3 +82,33 @@ from api.osc.utils import (  # noqa: F401
     _osc_resolve_existing_local_path_with_candidates,
     _osc_read_reference_document,
 )
+
+_LAZY_SUBMODULES = {
+    "accounting_bonus",
+    "accounting_sheet_import",
+    "case_defaults",
+    "case_folder_schema",
+    "case_intelligence",
+    "case_no_sync",
+    "client_ids",
+    "document_reuse",
+    "draft_learning",
+    "drafts",
+    "drive_case_sync",
+    "folder_utils",
+    "insight_filters",
+    "judicial",
+    "preview",
+    "saas_workbench",
+    "taiwan_legal_mcp",
+    "tw_legal_rag",
+    "utils",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_SUBMODULES:
+        module = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

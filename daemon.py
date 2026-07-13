@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 import json
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any
 
@@ -105,10 +106,13 @@ _ORPHAN_GRACE_SEC = int(os.environ.get("MAGI_ORPHAN_GRACE_SEC", "300") or "300")
 # ── 永不殺清單：reaper 絕對不碰這些進程 ──
 REAPER_NEVER_KILL = (
     "daemon.py",
+    "scripts/ops/run_daemon_no_site.py",
+    "scripts/ops/run_daemon_no_site",
     "api/server.py",
     "api/discord_bot.py",
     "api/line_bot.py",
     "api/telegram_bot.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "skills/ops/cron_scheduler.py",
     "skills/ops/heartbeat.py",
     "rpc-server",
@@ -120,6 +124,11 @@ REAPER_NEVER_KILL = (
     "db_sync_to_remote.py",
     "ingest_raw_judgments.py",
     "resummary_batch.py",
+    "scripts/share_gateway.py",
+    "scripts/share_tunnel_supervisor.py",
+    "scripts/serve_mlx_mtp.py",
+    "scripts/ops/run_menubar_no_site.py",
+    "scripts/ops/run_menubar_no_site",
 )
 
 # ── 每個 worker 的 grace period（秒）──
@@ -136,6 +145,7 @@ REAPER_GRACE_PERIODS = {
     # LAF
     "skills/laf-portal-automation/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_SEC", "2400") or "2400"),
     "skills/laf-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_ORCH_SEC", "2400") or "2400"),
+    "scripts/ops/laf_report_worker.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REPORT_SEC", "3000") or "3000"),
     "skills/laf-withdrawal-report/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_WD_SEC", "1800") or "1800"),
     "skills/laf-refine-case/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REFINE_SEC", "1200") or "1200"),
     # OSC / naming / vdb
@@ -179,6 +189,7 @@ REAPER_SAFE_UTILITIES = (
     "omlx serve", "omlx-magi-start",       # oMLX inference servers (port 8080/8081)
     "magi_menubar.py",                       # Status Bar (macOS menu bar)
     "admin_server.py",                       # Website Admin (port 8088)
+    "osc_shell_nas_helper.py",               # OSC NAS helper (port 5016)
     "benchmark_",                            # benchmark scripts (may run >30min)
     "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
@@ -240,13 +251,16 @@ def _is_night_window() -> bool:
 
 def _expected_omlx_profile_now() -> tuple[str, str]:
     """Return the expected oMLX profile and model keyword for the local time."""
-    import datetime
+    try:
+        from scripts.ops.omlx_profile_policy import expected_profile_now
 
-    now = datetime.datetime.now()
-    minutes = now.hour * 60 + now.minute
-    if 415 <= minutes < 1310:  # 06:55 <= now < 21:50
-        return "day", "e4b"
-    return "night", "26b"
+        return expected_profile_now()
+    except Exception:
+        import datetime
+
+        now = datetime.datetime.now()
+        minutes = now.hour * 60 + now.minute
+        return ("day", "12b") if 395 <= minutes < 1310 else ("night", "26b")
 
 
 def _is_omlx_night_window() -> bool:
@@ -555,8 +569,11 @@ def _load_dotenv(dotenv_path: str, *, override: bool = True) -> None:
     except Exception as e:
         logger.warning(f"⚠️ Failed to load .env: {e}")
 
-def _script_target_from_command(command: str) -> str:
-    c = (command or "").strip()
+def _script_target_from_command(command) -> str:
+    if isinstance(command, (list, tuple)):
+        c = " ".join(str(item) for item in command)
+    else:
+        c = (command or "").strip()
     targets = [
         "api/server.py",
         "api/discord_bot.py",
@@ -573,21 +590,59 @@ _SERVICE_PORT_MAP = {
     "Server": 5002,
     "ToolsAPI": 5003,
 }
+_SERVICE_PORT_TARGETS = {
+    5002: ("api/server.py",),
+    5003: ("api/tools_api.py",),
+    8088: ("admin_server.py",),
+}
+
+
+def _pid_command_line(pid: str | int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _pid_matches_magi_service(pid: str | int, expected_targets: tuple[str, ...] = ()) -> bool:
+    cmdline = _pid_command_line(pid)
+    if not cmdline:
+        return False
+    targets = expected_targets or tuple(t for vals in _SERVICE_PORT_TARGETS.values() for t in vals)
+    if not any(target in cmdline for target in targets):
+        return False
+    root = os.path.dirname(os.path.abspath(__file__))
+    return root in cmdline or any(target in cmdline for target in targets)
+
 
 def _kill_port_occupier(port):
-    """Kill any process occupying the given port."""
+    """Kill old MAGI-owned processes occupying the given port."""
     try:
         result = subprocess.run(["lsof", "-ti", f":{port}"],
                                 capture_output=True, text=True, timeout=5)
         pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+        killed = False
+        expected_targets = _SERVICE_PORT_TARGETS.get(int(port), ())
         for pid in pids:
+            if not _pid_matches_magi_service(pid, expected_targets):
+                logger.warning("⚠️ Port %s occupied by non-MAGI PID %s; leaving it untouched", port, pid)
+                continue
             try:
                 os.kill(int(pid), signal.SIGKILL)
+                killed = True
             except (ProcessLookupError, PermissionError):
                 pass
-        if pids:
+        if killed:
             time.sleep(0.5)
-        return bool(pids)
+        return killed
     except Exception:
         return False
 
@@ -613,14 +668,19 @@ def start_process(name, command):
                 with _processes_lock:
                     our_pids = {str(info["proc"].pid) for info in processes.values() if info.get("proc")}
                 alien_pids = [p for p in pids if p not in our_pids]
-                if alien_pids:
-                    for pid in alien_pids:
+                target = _script_target_from_command(command)
+                killable_pids = [p for p in alien_pids if _pid_matches_magi_service(p, (target,) if target else ())]
+                skipped_pids = [p for p in alien_pids if p not in killable_pids]
+                if skipped_pids:
+                    logger.warning("⚠️ Port %s occupied by non-MAGI PID(s) %s; not killing", port, skipped_pids)
+                if killable_pids:
+                    for pid in killable_pids:
                         try:
                             os.kill(int(pid), signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
                             pass
                     time.sleep(0.5)
-                    logger.info(f"🧹 Cleared port {port} (alien PIDs: {alien_pids})")
+                    logger.info(f"🧹 Cleared port {port} (old MAGI PIDs: {killable_pids})")
             except Exception:
                 pass
 
@@ -635,7 +695,10 @@ def start_process(name, command):
             logger.debug(f"Process Guardian pre-clean skipped for {name}: {e}")
 
         # Avoid shell wrapper process; track the real child process for stable monitoring.
-        argv = shlex.split(command) if isinstance(command, str) else command
+        if isinstance(command, (list, tuple)):
+            argv = [str(item) for item in command]
+        else:
+            argv = shlex.split(command)
         proc = subprocess.Popen(
             argv,
             shell=False,
@@ -777,80 +840,176 @@ def _start_cron_fallback() -> None:
         _cron_fallback_running = True
 
     def _cron_loop():
+        global _cron_fallback_running
         logger.info("⏰ CronScheduler fallback starting (Discord Bot unavailable)...")
+        cron_owner_lock = None
         try:
             sys.path.insert(0, os.path.join(_MAGI_ROOT))
+            from scripts.ops.background_task_locks import SCHEDULER_LOCK_NAME, acquire_lock
+            cron_owner_lock = acquire_lock(
+                SCHEDULER_LOCK_NAME,
+                owner="daemon_cron_fallback",
+                kind="scheduler",
+                blocking=False,
+            )
+            if not cron_owner_lock.acquired:
+                logger.info(
+                    "⏸️ CronScheduler fallback skipped; scheduler owner lock is held by %s pid=%s",
+                    (cron_owner_lock.active_owner or {}).get("owner") or "?",
+                    (cron_owner_lock.active_owner or {}).get("pid") or "?",
+                )
+                with _cron_fallback_lock:
+                    _cron_fallback_running = False
+                return
             from skills.ops.cron_scheduler import CronScheduler
             from api.orchestrator import Orchestrator
             scheduler = CronScheduler()
+            reconciled = scheduler.reconcile_incomplete_jobs()
+            if reconciled:
+                logger.warning(
+                    "⚠️ [CronFallback] Reconciled expired dispatches without completion: %s",
+                    ", ".join(reconciled),
+                )
             orchestrator = Orchestrator()
-            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s")
+            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s (lock=%s)", cron_owner_lock.path)
         except Exception as e:
+            if cron_owner_lock is not None:
+                cron_owner_lock.release()
+            with _cron_fallback_lock:
+                _cron_fallback_running = False
             logger.error("❌ CronScheduler fallback init failed: %s", e)
             return
+
+        fallback_workers = max(1, min(4, int(os.environ.get("MAGI_CRON_FALLBACK_WORKERS", "2") or "2")))
+        executor = ThreadPoolExecutor(max_workers=fallback_workers, thread_name_prefix="magi-cron-fallback")
+        running: dict[str, Any] = {}
+
+        def _run_fallback_job(job: dict[str, Any]) -> None:
+            command = job.get("command", "")
+            job_id = job.get("id", "?")
+            started_at = time.time()
+            logger.info("⏰ [CronFallback] Executing job: %s", job_id)
+            try:
+                scheduler.mark_job_started(str(job_id))
+            except Exception:
+                logger.warning("[CronFallback] start marker failed for %s", job_id, exc_info=True)
+
+            def _record_result(
+                *,
+                success: bool,
+                returncode: int | None = None,
+                timed_out: bool = False,
+                error: str = "",
+                stdout_tail: str = "",
+                stderr_tail: str = "",
+            ) -> None:
+                try:
+                    scheduler.mark_job_result(
+                        str(job_id),
+                        success=success,
+                        returncode=returncode,
+                        timed_out=timed_out,
+                        error=error,
+                        stdout_tail=stdout_tail,
+                        stderr_tail=stderr_tail,
+                        duration_sec=time.time() - started_at,
+                    )
+                except Exception:
+                    logger.debug("CronFallback result write failed", exc_info=True)
+
+            try:
+                if command.startswith("@MAGI"):
+                    try:
+                        clean_cmd = command.replace("@MAGI", "").strip()
+                        response = orchestrator.process_message(
+                            "SYSTEM_CRON", clean_cmd,
+                            platform="DAEMON_CRON", role="admin",
+                        )
+                        if response:
+                            try:
+                                orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                            except Exception:
+                                pass
+                            logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
+                                        job_id, len(response), response)
+                        _record_result(success=True, returncode=0, stdout_tail=str(response or "")[-1200:])
+                    except Exception as exc:
+                        _record_result(success=False, returncode=1, error=f"{type(exc).__name__}: {exc}")
+                        raise
+                    return
+
+                _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
+                if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
+                    logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
+                    _record_result(success=False, returncode=None, error="blocked_suspicious_command")
+                    return
+
+                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
+                result_returncode = -1
+                result_stderr = ""
+                result_stdout = ""
+                result_timed_out = False
+                try:
+                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                    from skills.ops.cron_result_policy import should_log_cron_issue
+
+                    argv = parse_cron_command(command)
+                    from skills.ops.cron_runtime_policy import cron_job_timeout
+
+                    _timeout_sec = cron_job_timeout(job)
+                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT, env_extra=_shell_env)
+                    result_returncode = _sr.returncode
+                    result_stderr = _sr.stderr
+                    result_stdout = _sr.stdout
+                    result_timed_out = bool(getattr(_sr, "timed_out", False))
+                except Exception as _e:
+                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
+                    result_returncode = 1
+                    result_stderr = str(_e)
+                result_success = (not result_timed_out) and int(result_returncode or 0) == 0
+                if result_returncode != 0:
+                    issue_suppressed = False
+                    try:
+                        if should_log_cron_issue(result_returncode, result_stdout or "", result_stderr or "") is False:
+                            issue_suppressed = True
+                    except Exception:
+                        pass
+                    if issue_suppressed:
+                        logger.info(
+                            "ℹ️ [CronFallback] Shell job %s exited %d but issue logging was suppressed by policy",
+                            job_id,
+                            result_returncode,
+                        )
+                    else:
+                        logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
+                                       job_id, result_returncode, (result_stderr or "")[:300])
+                else:
+                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
+                _record_result(
+                    success=result_success,
+                    returncode=int(result_returncode or 0),
+                    timed_out=result_timed_out,
+                    error=(result_stderr or result_stdout or "")[-1200:] if not result_success else "",
+                    stdout_tail=(result_stdout or "")[-1200:],
+                    stderr_tail=(result_stderr or "")[-1200:],
+                )
+            except Exception as je:
+                logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                _record_result(success=False, returncode=1, error=f"{type(je).__name__}: {je}")
 
         while True:
             try:
                 due_jobs = scheduler.check_due_jobs()
                 for job in due_jobs:
-                    command = job.get("command", "")
-                    job_id = job.get("id", "?")
-                    logger.info("⏰ [CronFallback] Executing job: %s", job_id)
-                    try:
-                        if command.startswith("@MAGI"):
-                            clean_cmd = command.replace("@MAGI", "").strip()
-                            response = orchestrator.process_message(
-                                "SYSTEM_CRON", clean_cmd,
-                                platform="DAEMON_CRON", role="admin",
-                            )
-                            if response:
-                                try:
-                                    orchestrator.record_assistant_reply("SYSTEM_CRON", response)
-                                except Exception:
-                                    pass
-                                logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
-                                            job_id, len(response), response)
-                        else:
-                            _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
-                            if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
-                                # ===== R2 Phase 3: SafeProcess 正式路徑（legacy 已清除）=====
-                                result_returncode = -1
-                                result_stdout = ""
-                                result_stderr = ""
-                                try:
-                                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
-                                    argv = parse_cron_command(command)
-                                    _custom_timeout = job.get("timeout_sec")
-                                    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
-                                        _timeout_sec = float(_custom_timeout)
-                                    elif job.get("long_job") is True:
-                                        _timeout_sec = 7200
-                                    else:
-                                        _legacy_long_jobs = {
-                                            "job_transcript_sync",
-                                            "job_file_review_check",
-                                            "job_1772867062892_6cef0b",  # transcript-indexer nightly index
-                                        }
-                                        _timeout_sec = 7200 if job_id in _legacy_long_jobs else 600
-                                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT)
-                                    result_returncode = _sr.returncode
-                                    result_stdout = _sr.stdout
-                                    result_stderr = _sr.stderr
-                                except Exception as _e:
-                                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
-                                    result_returncode = 1
-                                    result_stderr = str(_e)
-                                # ===== R2 Phase 3 end =====
-                                if result_returncode != 0:
-                                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
-                                                   job_id, result_returncode, (result_stderr or "")[:300])
-                                else:
-                                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
-                            else:
-                                logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
-                    except Exception as je:
-                        logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                    job_id = str(job.get("id") or "")
+                    if not job_id:
+                        continue
+                    current = running.get(job_id)
+                    if current and not current.done():
+                        logger.info("⏭️ [CronFallback] Job %s already running; skip overlapping launch", job_id)
+                        continue
+                    running[job_id] = executor.submit(_run_fallback_job, job)
+                    logger.info("🚀 [CronFallback] Job %s dispatched asynchronously", job_id)
             except Exception as loop_err:
                 logger.error("⚠️ [CronFallback] Loop error: %s", loop_err)
             time.sleep(60)
@@ -1689,13 +1848,20 @@ if __name__ == "__main__":
             )
             pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
             if pids:
-                logger.warning(f"🧹 Port {_port} occupied by PID(s) {pids} — killing before startup")
-                for pid in pids:
+                expected_targets = _SERVICE_PORT_TARGETS.get(int(_port), ())
+                killable_pids = [p for p in pids if _pid_matches_magi_service(p, expected_targets)]
+                skipped_pids = [p for p in pids if p not in killable_pids]
+                if skipped_pids:
+                    logger.warning(f"⚠️ Port {_port} occupied by non-MAGI PID(s) {skipped_pids} — not killing")
+                if killable_pids:
+                    logger.warning(f"🧹 Port {_port} occupied by old MAGI PID(s) {killable_pids} — killing before startup")
+                for pid in killable_pids:
                     try:
                         os.kill(int(pid), signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
-                time.sleep(0.5)
+                if killable_pids:
+                    time.sleep(0.5)
         except Exception as e:
             logger.debug(f"Port {_port} cleanup skipped: {e}")
 
@@ -1708,13 +1874,13 @@ if __name__ == "__main__":
         logger.warning(f"⚠️ DB Failover Monitor not started: {e}")
 
     # 1. Start Server (LINE API)
-    start_process("Server", f"{_PYTHON} api/server.py")
+    start_process("Server", [_PYTHON, "api/server.py"])
 
     # 2. Start Discord Bot
-    start_process("Discord", f"{_PYTHON} api/discord_bot.py")
+    start_process("Discord", [_PYTHON, "api/discord_bot.py"])
 
     # 2.5 Start Tools API (external routes / connections checks)
-    start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
+    start_process("ToolsAPI", [_PYTHON, "api/tools_api.py"])
 
     # 2.53 oMLX profile self-heal: reboot after the day switch should not leave
     # 8080 serving the previous night's 26B model.
@@ -1769,10 +1935,10 @@ if __name__ == "__main__":
     # OpenClawCron removed (Phase 0)
 
     # 2.7 File review background worker (auto scan -> download -> archive)
-    start_process("FileReviewAuto", f"{_PYTHON} skills/ops/file_review_auto_worker.py")
+    start_process("FileReviewAuto", [_PYTHON, "skills/ops/file_review_auto_worker.py"])
 
     # 2.8 Heartbeat monitor (node health + Tailscale serve guard)
-    start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
+    start_process("Heartbeat", [_PYTHON, "skills/ops/heartbeat.py"])
 
     # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
     _website_admin = os.path.join(_MAGI_ROOT, "whalechao.github.io/admin/admin_server.py")
@@ -1790,7 +1956,7 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port}")
+            start_process("WebsiteAdmin", [_PYTHON, _website_admin, "--port", str(_wa_port)])
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)

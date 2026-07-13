@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
+import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +33,24 @@ from scripts.ops import resource_governor  # noqa: E402
 
 
 LEVEL_RANK = {"normal": 0, "throttle": 1, "core_only": 2, "critical": 3}
+_DRIVE_RUN_PAYLOAD_KEYS = {
+    "summary",
+    "file_sync_summary",
+    "execution_summary",
+    "drive_folder_summary",
+    "drive_imported_folder_repair",
+    "priority_case_numbers",
+    "all_case_numbers",
+    "limits",
+    "active_worker_pid",
+    "lock_path",
+    "previous_status",
+    "previous_pid",
+    "previous_started_at",
+    "next_step",
+    "stale_lock_audit",
+    "signal",
+}
 
 
 def _append_event(payload: dict[str, Any]) -> None:
@@ -40,10 +62,197 @@ def _append_event(payload: dict[str, Any]) -> None:
     )
 
 
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _drive_status_is_terminal_completion(status: dict[str, Any], *, kind: str, child_pid: int = 0) -> bool:
+    if not isinstance(status, dict) or not status:
+        return False
+    candidates = [status]
+    by_kind = status.get("status_by_kind")
+    if isinstance(by_kind, dict) and isinstance(by_kind.get(kind), dict):
+        candidates.insert(0, by_kind[kind])
+    for candidate in candidates:
+        try:
+            pid = int(candidate.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if child_pid and pid and pid != child_pid:
+            continue
+        status_text = str(candidate.get("status") or "").strip().lower()
+        if not candidate.get("finished_at"):
+            continue
+        if not status_text or "running" in status_text or status_text in {"interrupted", "timeout"}:
+            continue
+        return True
+    return False
+
+
+def _mark_drive_sync_guard_timeout(job_id: str, timeout_sec: int, *, child_pid: int = 0) -> None:
+    if not job_id.startswith("job_drive_case_sync"):
+        return
+    kind = "all_files" if "all_files" in job_id else ("priority" if "bidirectional" in job_id else "inventory")
+    drive_dir = runtime_dir.root() / "drive_sync"
+    status_path = drive_dir / "drive_case_sync_worker_status_latest.json"
+    try:
+        previous = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+        if not isinstance(previous, dict):
+            previous = {}
+    except Exception:
+        previous = {}
+    if _drive_status_is_terminal_completion(previous, kind=kind, child_pid=child_pid):
+        return
+    status = {
+        "ok": False,
+        "status": "timeout",
+        "action_required": False,
+        "pid": int(child_pid or 0),
+        "worker_kind": kind,
+        "message": f"outer_guard_timeout:{timeout_sec}s",
+        "finished_at": _iso_now(),
+        "next_step": "外層 watchdog 已中止卡住的 Drive/NAS 同步；下次排程會重試近期待辦案件。",
+    }
+    status_by_kind = previous.get("status_by_kind")
+    if not isinstance(status_by_kind, dict):
+        status_by_kind = {}
+    status_by_kind = {str(k): dict(v) for k, v in status_by_kind.items() if isinstance(v, dict)}
+    status_by_kind[kind] = status
+    previous_for_merge = {k: v for k, v in previous.items() if k not in _DRIVE_RUN_PAYLOAD_KEYS}
+    merged_status = {**previous_for_merge, **status, "status_by_kind": status_by_kind}
+    _write_json_atomic(status_path, merged_status)
+    _write_json_atomic(drive_dir / f"drive_case_sync_worker_status_{kind}_latest.json", status)
+    state_path = drive_dir / "worker_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        if not isinstance(state, dict):
+            state = {}
+        state["last_status"] = status
+        state["last_summary"] = {"timeout": True, "outer_guard_timeout": True}
+        state_status_by_kind = state.get("status_by_kind")
+        if not isinstance(state_status_by_kind, dict):
+            state_status_by_kind = {}
+        state_status_by_kind[kind] = status
+        state["status_by_kind"] = state_status_by_kind
+        _write_json_atomic(state_path, state)
+        _write_json_atomic(drive_dir / f"worker_state_{kind}.json", state)
+    except Exception:
+        pass
+
+
+def _drive_sync_kind_for_job(job_id: str) -> str:
+    if "all_files" in job_id:
+        return "all_files"
+    if "bidirectional" in job_id:
+        return "priority"
+    return "inventory"
+
+
+def _drive_sync_status_failure_returncode(job_id: str, *, child_pid: int = 0) -> tuple[int | None, dict[str, Any]]:
+    if not job_id.startswith("job_drive_case_sync"):
+        return None, {}
+    kind = _drive_sync_kind_for_job(job_id)
+    status_path = runtime_dir.root() / "drive_sync" / "drive_case_sync_worker_status_latest.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+    except Exception:
+        status = {}
+    if not isinstance(status, dict) or not status:
+        return None, {}
+    candidate = status
+    by_kind = status.get("status_by_kind")
+    if isinstance(by_kind, dict) and isinstance(by_kind.get(kind), dict):
+        candidate = by_kind[kind]
+    try:
+        pid = int(candidate.get("pid") or 0)
+    except Exception:
+        pid = 0
+    if child_pid and pid and pid != child_pid:
+        return None, {}
+    status_text = str(candidate.get("status") or "").strip().lower()
+    blocking_statuses = {"timeout", "interrupted", "partial_failure", "failed", "error", "auth_required"}
+    if (
+        candidate.get("ok") is False
+        or bool(candidate.get("action_required"))
+        or status_text in blocking_statuses
+    ):
+        return 2, {
+            "drive_status_contract_failed": True,
+            "drive_worker_kind": kind,
+            "drive_status": status_text or "",
+            "drive_status_ok": candidate.get("ok"),
+            "drive_action_required": bool(candidate.get("action_required")),
+        }
+    return None, {}
+
+
 def _strip_separator(command: list[str]) -> list[str]:
     if command and command[0] == "--":
         return command[1:]
     return command
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+
+
+def _split_env_prefix(command: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Extract leading KEY=value tokens from guarded cron commands.
+
+    Cron job builders sometimes prepend environment overrides before the
+    executable. ``subprocess.Popen(list)`` does not understand shell-style
+    assignments, so the guard must translate them into the child environment.
+    """
+    env: dict[str, str] = {}
+    idx = 0
+    while idx < len(command) and _ENV_ASSIGNMENT_RE.match(command[idx] or ""):
+        key, value = command[idx].split("=", 1)
+        env[key] = value
+        idx += 1
+    return env, command[idx:]
+
+
+def _find_json_out_path(command: list[str]) -> Path | None:
+    """Return the child command's JSON artifact path when it uses --json-out."""
+    for idx, token in enumerate(command):
+        if token == "--json-out":
+            if idx + 1 < len(command) and command[idx + 1]:
+                return Path(command[idx + 1])
+            return None
+        if token.startswith("--json-out="):
+            value = token.split("=", 1)[1].strip()
+            return Path(value) if value else None
+    return None
+
+
+def _write_blocked_json_out(
+    path: Path,
+    *,
+    args: argparse.Namespace,
+    command: list[str],
+    decision: resource_governor.ResourceDecision,
+    block_reasons: list[str],
+) -> None:
+    payload = {
+        "ok": True,
+        "success": True,
+        "skipped": True,
+        "status": "resource_guard_skipped",
+        "resource_guarded": True,
+        "job_id": args.job_id,
+        "blocked": True,
+        "block_reasons": block_reasons,
+        "decision": asdict(decision),
+        "command": command,
+        "generated_at": _iso_now(),
+    }
+    _write_json_atomic(path, payload)
 
 
 def _should_block(
@@ -82,11 +291,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--require-disk-free-gb", type=float)
     parser.add_argument("--require-free-inactive-gb", type=float)
+    parser.add_argument("--timeout-sec", type=int, default=0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
     command = _strip_separator(args.command)
+    env_prefix, command = _split_env_prefix(command)
     if not command:
         parser.error("missing command after --")
 
@@ -102,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         "job_id": args.job_id,
         "block_at": args.block_at,
         "command": command,
+        "env_prefix_keys": sorted(env_prefix),
         "decision": asdict(decision),
         "blocked": blocked,
         "block_reasons": block_reasons,
@@ -109,6 +321,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if blocked:
         event["returncode"] = 0
+        json_out_path = _find_json_out_path(command)
+        if json_out_path is not None:
+            event["json_out"] = str(json_out_path)
+            try:
+                _write_blocked_json_out(
+                    json_out_path,
+                    args=args,
+                    command=command,
+                    decision=decision,
+                    block_reasons=block_reasons,
+                )
+                event["wrote_json_out"] = True
+            except Exception as exc:
+                event["wrote_json_out"] = False
+                event["json_out_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         _append_event(event)
         message = (
             f"MAGI resource guard skipped {args.job_id}: "
@@ -120,10 +347,39 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
-    proc = subprocess.run(command, check=False)
-    event["returncode"] = int(proc.returncode)
+    child_env = os.environ.copy()
+    child_env.update(env_prefix)
+    proc = subprocess.Popen(command, start_new_session=True, env=child_env)
+    try:
+        returncode = proc.wait(timeout=max(0, int(args.timeout_sec or 0)) or None)
+    except subprocess.TimeoutExpired:
+        event["timeout"] = True
+        event["timeout_sec"] = int(args.timeout_sec or 0)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        returncode = 124
+        _mark_drive_sync_guard_timeout(args.job_id, int(args.timeout_sec or 0), child_pid=proc.pid)
+    if int(returncode) == 0:
+        override_returncode, status_event = _drive_sync_status_failure_returncode(args.job_id, child_pid=proc.pid)
+        if override_returncode is not None:
+            returncode = override_returncode
+            event.update(status_event)
+    event["returncode"] = int(returncode)
     _append_event(event)
-    return int(proc.returncode)
+    return int(returncode)
 
 
 if __name__ == "__main__":

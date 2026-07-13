@@ -2,7 +2,7 @@
 """
 weekend_resummary.py — 週末 NIM 批次重摘要
 
-用 NVIDIA NIM 405B 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
+用 NVIDIA NIM heavy 重新摘要所有已下載的判決全文，同時餵進知識蒸餾管線。
 
 安全機制：
 - PID lock 防止多進程同時跑
@@ -16,7 +16,7 @@ weekend_resummary.py — 週末 NIM 批次重摘要
   MAGI_RESUMMARY_MAX_FAILS         連續失敗中止閾值（預設 15）
   MAGI_RESUMMARY_BACKOFF_THRESHOLD 連續失敗開始 backoff（預設 5）
   MAGI_RESUMMARY_BACKOFF_SEC       backoff 等待秒數（預設 120）
-  MAGI_RESUMMARY_HEAVY=0           切 70B 加速（預設 1=405B）
+  MAGI_RESUMMARY_HEAVY=0           切 70B 加速（預設 1=重型 NIM）
 
 用法：
   python weekend_resummary.py                    # 摘要所有尚未完成的
@@ -36,10 +36,13 @@ import re
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path.home() / "Desktop/MAGI")))
 sys.path.insert(0, str(MAGI_ROOT))
+
+from api.domains.judicial_api_cache import judicial_api_cache_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,15 +51,16 @@ logging.basicConfig(
 logger = logging.getLogger("weekend_resummary")
 
 # ── 路徑 ──────────────────────────────────────────────────────────────
-NORM_ROOT = Path.home() / ".cache/judgment_collector/judicial_api/normalized"
+_JUDICIAL_API_CACHE_ROOT = judicial_api_cache_root()
+NORM_ROOT = _JUDICIAL_API_CACHE_ROOT / "normalized"
 JUDGMENTS_JSON = MAGI_ROOT / "skills/judgment-collector/judgments.json"
-STATE_PATH = Path.home() / ".cache/judgment_collector/resummary_state.json"
-LOCK_PATH = Path.home() / ".cache/judgment_collector/resummary.pid"
+STATE_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary_state.json"
+LOCK_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary.pid"
 
 # ── 參數 ──────────────────────────────────────────────────────────────
 MIN_TEXT_LEN = 1000         # 全文太短跳過（之前 500 太小，短裁定浪費額度）
 INTER_REQUEST_DELAY = 1.5   # NIM 請求間隔（秒；rate limit 較寬，但仍給點 buffer）
-# 2026-05-03：原 120s 過緊，實測 405B p50≈60-80s p99≈110s+，舊值導致大批次 timeout
+# 2026-05-03：原 120s 過緊，實測重型 NIM p50≈60-80s p99≈110s+，舊值導致大批次 timeout
 # 連續觸發 → 5 連敗即斷（8/300 早夭）。所有閾值改 env 可調，預設值放寬。
 SUMMARY_TIMEOUT_SEC = int(os.environ.get("MAGI_RESUMMARY_TIMEOUT_SEC", "240") or "240")
 RESUMMARY_SESSION_ID = "weekend-resummary-batch"  # 獨立 session，避免跟 gateway 主 session 衝突
@@ -64,7 +68,7 @@ BATCH_NOTIFY_EVERY = 50
 MAX_CONSECUTIVE_FAILS = int(os.environ.get("MAGI_RESUMMARY_MAX_FAILS", "15") or "15")
 BACKOFF_THRESHOLD = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_THRESHOLD", "5") or "5")
 BACKOFF_SECONDS = int(os.environ.get("MAGI_RESUMMARY_BACKOFF_SEC", "120") or "120")
-# 405B 為預設（distillation 純度需求）；MAGI_RESUMMARY_HEAVY=0 可切 70B 加速。
+# 重型 NIM 為預設（distillation 純度需求）；MAGI_RESUMMARY_HEAVY=0 可切 70B 加速。
 RESUMMARY_USE_HEAVY = os.environ.get("MAGI_RESUMMARY_HEAVY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
@@ -184,6 +188,72 @@ def _save_state(state: dict) -> None:
     tmp.replace(STATE_PATH)
 
 
+def _completed_run_evidence(state: dict, day: str) -> datetime | None:
+    """Return durable completion time for a fully processed daily batch."""
+    stats = (state.get("stats") or {}).get(day) or {}
+    if stats.get("stopped_by") != "complete":
+        return None
+    candidates: list[datetime] = []
+    completed_at = str(stats.get("completed_at") or "").strip()
+    if completed_at:
+        try:
+            candidates.append(datetime.fromisoformat(completed_at.replace("Z", "+00:00")))
+        except ValueError:
+            pass
+    for value in (state.get("nim_done") or {}).values():
+        if not isinstance(value, dict):
+            continue
+        observed = str(value.get("at") or "").strip()
+        if not observed.startswith(day):
+            continue
+        try:
+            candidates.append(datetime.fromisoformat(observed.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    return max(candidates) if candidates else None
+
+
+def _record_scheduler_success(
+    evidence_at: datetime,
+    *,
+    recover_missing_completion: bool = False,
+) -> bool:
+    """Publish job-owned completion evidence into the scheduler state."""
+    try:
+        from skills.ops.cron_scheduler import mark_job_result_from_evidence
+
+        return mark_job_result_from_evidence(
+            "job_weekend_resummary",
+            evidence_at=evidence_at,
+            success=True,
+            returncode=0,
+            provenance="weekend_resummary:completed_batch",
+            expected_error=(
+                "scheduler_completion_missing_after_timeout"
+                if recover_missing_completion
+                else ""
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Unable to publish scheduler completion evidence: %s", exc)
+        return False
+
+
+def reconcile_scheduler_state(day: str | None = None) -> bool:
+    """Recover a false scheduler timeout from the job's durable daily state."""
+    observed_day = day or datetime.now().strftime("%Y-%m-%d")
+    evidence_at = _completed_run_evidence(_load_state(), observed_day)
+    if evidence_at is None:
+        logger.error("No completed resummary evidence for %s", observed_day)
+        return False
+    recovered = _record_scheduler_success(evidence_at, recover_missing_completion=True)
+    if recovered:
+        logger.info("Recovered scheduler result from completed batch at %s", evidence_at.isoformat())
+    else:
+        logger.error("Scheduler state did not match recoverable completion evidence")
+    return recovered
+
+
 # ── 案由提取 ──────────────────────────────────────────────────────────
 def _extract_case_reason_from_text(text: str) -> str:
     """從判決全文提取案由。"""
@@ -213,7 +283,7 @@ def _load_judgments_reasons() -> dict:
 
 # ── NIM 呼叫 ─────────────────────────────────────────────────────────
 def _nim_summarize(prompt: str) -> tuple:
-    """呼叫 NVIDIA NIM 405B 摘要。
+    """呼叫 NVIDIA NIM heavy 摘要。
 
     Returns: (success, response_text, error_msg)
     """
@@ -223,7 +293,7 @@ def _nim_summarize(prompt: str) -> tuple:
         return False, "", f"InferenceGateway import failed: {e}"
     try:
         gw = InferenceGateway()
-        # heavy=True 強制走 NIM 405B（heavy_fast_path）；
+        # heavy=True 強制走 NIM heavy（heavy_fast_path）；
         # require_pii_scrub 預設由 NVIDIA_NIM_REQUIRE_PII_SCRUB 控制（=1）
         r = gw.chat(
             prompt=prompt,
@@ -236,7 +306,7 @@ def _nim_summarize(prompt: str) -> tuple:
             return False, "", f"unexpected return type: {type(r).__name__}"
         if not r.get("success"):
             return False, "", str(r.get("error") or "unknown")
-        # 只接受走 NIM 的結果；走 oMLX fallback 不算數（因為 405B 才能取代 Codex）
+        # 只接受走 NIM 的結果；走 oMLX fallback 不算數（因為重型 NIM 才能取代 Codex）
         provider = str(r.get("provider") or "")
         if provider != "nvidia_nim":
             return False, "", f"wrong provider: {provider} (expected nvidia_nim)"
@@ -329,7 +399,12 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="限制筆數（0=不限）")
     parser.add_argument("--dry-run", action="store_true", help="模擬模式")
     parser.add_argument("--delay", type=float, default=INTER_REQUEST_DELAY, help="請求間隔秒數")
+    parser.add_argument("--reconcile-cron-state", action="store_true", help="依完成紀錄修復遺失的排程結果")
+    parser.add_argument("--evidence-date", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.reconcile_cron_state:
+        return 0 if reconcile_scheduler_state(args.evidence_date or None) else 1
 
     # PID Lock
     if not _acquire_lock():
@@ -346,7 +421,6 @@ def main():
                                                str(max(50, NIM_DAILY_BUDGET - 200))))
 
     # RunAtLoad 守衛：非手動啟動時，只在有未完成工作時才繼續
-    from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     weekday = datetime.now().weekday()  # 0=Mon, 5=Sat, 6=Sun
     today_stats = state.get("stats", {}).get(today, {})
@@ -383,6 +457,8 @@ def main():
 
     if not entries:
         logger.info("Nothing to do")
+        if not args.dry_run:
+            _record_scheduler_success(datetime.now())
         return 0
 
     logger.info("Starting NIM re-summary of %d judgments (budget_cap=%d)",
@@ -519,16 +595,21 @@ def main():
 
     # 最終儲存
     state["nim_done"] = nim_done
+    completed_at = datetime.now()
+    stopped_by = "shutdown" if _shutdown_requested else (
+        "max_fails" if consecutive_fails >= MAX_CONSECUTIVE_FAILS else "complete"
+    )
     state["stats"][time.strftime("%Y-%m-%d")] = {
         "total": len(entries),
         "success": success_count,
         "fail": fail_count,
         "distill": distill_count,
-        "stopped_by": "shutdown" if _shutdown_requested else (
-            "max_fails" if consecutive_fails >= MAX_CONSECUTIVE_FAILS else "complete"
-        ),
+        "stopped_by": stopped_by,
+        "completed_at": completed_at.isoformat(),
     }
     _save_state(state)
+    if stopped_by == "complete" and not args.dry_run:
+        _record_scheduler_success(completed_at)
 
     elapsed_min = (time.time() - start_time) / 60
     report = (

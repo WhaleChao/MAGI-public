@@ -116,7 +116,20 @@ class TestTranslateSingleChunk:
 
         # Should still return — either partial success or failure with original text
         assert isinstance(result, dict)
+        assert result["success"] is False
+        assert result["error"].startswith("translation_partial_failed:")
         assert result["chunks_total"] >= 1
+
+    def test_output_quality_blocks_timeout_translation_marker(self):
+        from api.handlers.output_quality_handler import detect_output_quality_issue
+
+        issue = detect_output_quality_issue(
+            "translation",
+            "（⚠️ 第 1/2 段翻譯逾時，先保留原文）\nOriginal text",
+            source_chars=2000,
+        )
+
+        assert issue == "off_topic_or_refusal"
 
 
 class TestTranslateMultiChunk:
@@ -161,7 +174,9 @@ class TestTranslateMultiChunk:
                 return _make_gateway_response("正確", model="gemma-4-e4b")
             if task == "translate":
                 if "子段：" in prompt:
-                    return _make_gateway_response("分段翻譯成功")
+                    return _make_gateway_response("English 分段翻譯成功")
+                if prompt.count("English legal text") < 20:
+                    return _make_gateway_response("English 尾段翻譯成功")
                 return _make_gateway_response("", success=False)
             return _make_gateway_response("", success=False)
 
@@ -176,13 +191,13 @@ class TestTranslateMultiChunk:
             "MAGI_FILE_TRANSLATE_GTX_FALLBACK": "0",
             "MAGI_FILE_TRANSLATE_RETRIES": "0",
             "MAGI_FILE_TRANSLATE_SPLIT_RETRY_DEPTH": "1",
-            "MAGI_FILE_TRANSLATE_SPLIT_RETRY_CHARS": "1200",
+            "MAGI_FILE_TRANSLATE_SPLIT_RETRY_CHARS": "200",
         }):
             result = orc._translate_text_complete(long_text)
 
         assert result["success"] is True
-        assert "分段翻譯成功" in result["text"]
-        assert result["chunks_failed"] <= 1
+        assert "English 分段翻譯成功" in result["text"]
+        assert result["chunks_failed"] == 0
 
 
 class TestTranslateGTXFallback:

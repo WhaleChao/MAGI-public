@@ -70,6 +70,7 @@ ai = [
 ]
 mlx = [
     "mlx-vlm>=0.5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-whisper==0.4.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 # Google APIs
 google = [
@@ -101,6 +102,7 @@ all = [
 ]
 
 [project.scripts]
+magi = "bin.cli:main"
 magi-start = "bin.start:main"
 magi-check = "bin.check:main"
 
@@ -112,12 +114,13 @@ exclude = ["tests*", "backups*", "archive*", "_autopilot_runs*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "live: integration tests that hit real DB / produce real files (slower; auto-skip if DB unreachable; use -m 'not live' to exclude in CI without DB)",
+    "live: integration tests that hit real DB, external services, or produce real files; deselected by default unless MAGI_ENABLE_LIVE_TESTS=1, --magi-live, or an explicit -m live expression is used",
 ]
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+    "ignore:aifc was removed in Python 3\\.13.*:DeprecationWarning:speech_recognition",
 ]
 
 [tool.ruff]

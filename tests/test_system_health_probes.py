@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 import subprocess
@@ -17,40 +18,39 @@ MAGI_MARKET_BRIEFING_PATH = MAGI_ROOT / "skills" / "market-briefing" / "action.p
 MAGI_SYSTEM_TEST_PATH = MAGI_ROOT / "skills" / "ops" / "system_test.py"
 
 
-def _load_magi_doctor_module():
-    spec = importlib.util.spec_from_file_location("magi_doctor_test", MAGI_DOCTOR_PATH)
+def _load_module_from_path(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    original_root_env = {key: os.environ.get(key) for key in ("MAGI_ROOT", "MAGI_ROOT_DIR")}
+    os.environ["MAGI_ROOT"] = str(MAGI_ROOT)
+    os.environ["MAGI_ROOT_DIR"] = str(MAGI_ROOT)
+    try:
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        for key, value in original_root_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     return module
+
+
+def _load_magi_doctor_module():
+    return _load_module_from_path("magi_doctor_test", MAGI_DOCTOR_PATH)
 
 
 def _load_worldmonitor_module():
-    spec = importlib.util.spec_from_file_location("worldmonitor_intel_test", MAGI_WORLDMONITOR_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return _load_module_from_path("worldmonitor_intel_test", MAGI_WORLDMONITOR_PATH)
 
 
 def _load_market_briefing_module():
-    spec = importlib.util.spec_from_file_location("market_briefing_test", MAGI_MARKET_BRIEFING_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return _load_module_from_path("market_briefing_test", MAGI_MARKET_BRIEFING_PATH)
 
 
 def _load_system_test_module():
-    spec = importlib.util.spec_from_file_location("system_test_module_test", MAGI_SYSTEM_TEST_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return _load_module_from_path("system_test_module_test", MAGI_SYSTEM_TEST_PATH)
 
 
 def _mock_models_response(status_code=200, models=None):
@@ -67,16 +67,16 @@ def _mock_models_response(status_code=200, models=None):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "mistral-nemo:12b"],
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
     ],
 )
@@ -84,6 +84,46 @@ def test_shared_health_probe_extract_model_labels_normalizes_payloads(payload, e
     from skills.ops import health_probes
 
     assert health_probes.extract_model_labels(payload) == expected
+
+
+def test_shared_health_probe_strips_openai_v1_suffix():
+    from skills.ops import health_probes
+
+    assert health_probes._build_omlx_base_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080"
+    assert health_probes._build_omlx_base_url("http://127.0.0.1:8080/v1/") == "http://127.0.0.1:8080"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/opt/homebrew/bin/python3 api/discord_bot.py",
+        "/opt/homebrew/bin/python3 -S /Users/ai/MAGI_v2/api/discord_bot.py",
+        "/opt/homebrew/bin/python3 -m api.discord_bot",
+    ],
+)
+def test_shared_health_probe_detects_discord_bot_command_shapes(command):
+    from skills.ops import health_probes
+
+    assert health_probes.command_executes_python_script(command, "api/discord_bot.py") is True
+
+
+def test_shared_health_probe_finds_discord_bot_from_ps(monkeypatch):
+    from skills.ops import health_probes
+
+    stdout = "\n".join(
+        [
+            "  100 /opt/homebrew/bin/python3 -S /Users/ai/MAGI_v2/scripts/ops/nightly_regression.py",
+            "  222 /opt/homebrew/bin/python3 api/discord_bot.py",
+            "  333 /bin/zsh -lc rg discord_bot.py",
+        ]
+    )
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(health_probes.subprocess, "run", fake_run)
+
+    assert health_probes.python_script_process_running("api/discord_bot.py") == (True, "222")
 
 
 def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
@@ -117,7 +157,7 @@ def test_shared_health_probe_local_chat_retries_after_timeout(monkeypatch):
 def test_system_test_omlx_uses_models_endpoint(monkeypatch):
     from skills.ops import system_test
 
-    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -147,16 +187,16 @@ def test_system_test_omlx_unreachable(monkeypatch):
     "payload, expected",
     [
         (
-            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "data": [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "Qwen2.5-Coder-14B"}]},
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            {"object": "list", "models": [{"name": "gemma-4-e4b-it-4bit"}, {"model": "mistral-nemo:12b"}]},
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
         (
-            [{"id": "gemma-4-e4b-it-4bit"}, "Qwen2.5-Coder-14B"],
-            ["gemma-4-e4b-it-4bit", "Qwen2.5-Coder-14B"],
+            [{"id": "gemma-4-e4b-it-4bit"}, "mistral-nemo:12b"],
+            ["gemma-4-e4b-it-4bit", "mistral-nemo:12b"],
         ),
     ],
 )
@@ -197,7 +237,7 @@ def test_system_test_run_all_tests_writes_report_under_static(tmp_path, monkeypa
 def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkeypatch):
     module = _load_magi_doctor_module()
 
-    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "Qwen2.5-Coder-14B"}])
+    mock_resp = _mock_models_response(200, [{"id": "gemma-4-e4b-it-4bit"}, {"id": "mistral-nemo:12b"}])
     fake_requests = types.ModuleType("requests")
     fake_requests.get = MagicMock(return_value=mock_resp)
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
@@ -207,7 +247,7 @@ def test_magi_doctor_probe_imports_requests_lazily_and_uses_models_schema(monkey
     assert result["pass"] is True
     assert "2 models" in result["detail"]
     assert "gemma-4-e4b-it-4bit" in result["detail"]
-    assert "Qwen2.5-Coder-14B" in result["detail"]
+    assert "mistral-nemo:12b" in result["detail"]
 
 
 def test_magi_doctor_repair_ollama_uses_models_probe(monkeypatch):

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "suite": "pdf_document_golden_regression",
+  "description": "Executable golden regressions for PDF naming, PDF bookmarking follow-up, and OSC pleading/document reuse bugs. Every case is runnable by scripts/ops/document_golden_regression.py.",
+  "required_categories": [
+    "payment_ocr_naming",
+    "transcript_naming",
+    "judgment_or_final_ruling",
+    "pleading_template_reuse"
+  ],
+  "cases": [
+    {
+      "id": "payment_bill_ocr_naming_text_fixture",
+      "category": "payment_ocr_naming",
+      "title": "繳費單 OCR/命名：規費繳款單應產生閱卷/規費繳款命名並保留案號與當事人",
+      "status": "automated",
+      "pytest": "tests/test_document_golden_regression.py::test_golden_payment_notice_pdf_naming_extracts_fee_deadline",
+      "source_area": "skills/pdf-namer/action.py",
+      "failure_shape": "OCR 只抓到零散規費/繳費文字時，PDF namer 容易降級成泛用收據或文件，導致 OSC 待辦無法識別繳納期限。",
+      "expected_behavior": [
+        "doc_type is 閱卷 or 法院通知/函文 with normalized deadline_type 繳納",
+        "filename contains court case number and party when present",
+        "filename does not use generic 文件/收據 when the text is a court fee payment notice"
+      ]
+    },
+    {
+      "id": "transcript_pdf_naming",
+      "category": "transcript_naming",
+      "title": "筆錄命名：訊問/準備程序/審判筆錄應歸類為筆錄並保留筆錄類型",
+      "status": "automated",
+      "pytest": "tests/test_document_golden_regression.py::test_golden_transcript_pdf_naming_keeps_transcript_kind",
+      "source_area": "skills/pdf-namer/action.py; scripts/ops/repair_transcript_filenames.py",
+      "failure_shape": "筆錄 PDF 或下載後檔名被判為一般書狀/文件，後續 transcript indexer 無法穩定串接。",
+      "expected_behavior": [
+        "doc_type resolves to 筆錄",
+        "filename body contains 訊問筆錄, 準備程序筆錄, 審判筆錄, 調查筆錄, or 勘驗筆錄",
+        "transcript repair helper remains idempotent for already-correct filenames"
+      ]
+    },
+    {
+      "id": "judgment_final_ruling_archive_naming",
+      "category": "judgment_or_final_ruling",
+      "title": "判決書或終局裁定及處分：裁判 PDF 應優先判為判決/裁定並符合裁判資料夾命名",
+      "status": "automated",
+      "pytest": "tests/test_document_golden_regression.py::test_golden_judgment_final_ruling_folder_pdf_naming",
+      "source_area": "skills/pdf-namer/action.py; api/osc/case_folder_schema.py",
+      "failure_shape": "位於判決書或終局裁定及處分資料夾的裁判 PDF 被信封頁、回執或泛用通知誤導，輸出非判決/裁定命名。",
+      "expected_behavior": [
+        "path aliases for canonical and legacy judgment folders are accepted",
+        "doc_type remains 判決 or 裁定 when title/body has裁判 markers",
+        "filename includes court, case number, party if available, and 主文摘要 when extracted"
+      ]
+    },
+    {
+      "id": "pdf_bookmarker_single_doc_no_boundary",
+      "category": "pdf_bookmarker_boundary",
+      "title": "PDF 書籤：單一裁判文件無邊界時應寫入第 1 頁書籤而非永久 no-boundary",
+      "status": "automated",
+      "pytest": "tests/test_weekend_bookmark_batch.py::test_stage1_regex_single_doc_no_boundary_gets_page1_bookmark",
+      "source_area": "scripts/weekend_bookmark_batch.py",
+      "failure_shape": "pdf-bookmarker 對單一判決/裁定掃不到文件邊界時曾只記 no_boundary，後續不會產生任何 TOC。",
+      "expected_behavior": [
+        "classification legitimate_single_doc is converted to a page-1 bookmark",
+        "state records stage1_bookmarks=1",
+        "no_boundary count is not incremented for confirmed single legal documents"
+      ]
+    },
+    {
+      "id": "osc_own_pleading_word_excludes_poa",
+      "category": "pleading_template_reuse",
+      "title": "書狀模板替換：沿用舊書狀索引只收我方歷次書狀內 Word，不受委任狀 Word 干擾",
+      "status": "automated",
+      "pytest": "tests/test_document_golden_regression.py::test_golden_pleading_index_only_indexes_own_pleading_word",
+      "source_area": "api/osc/document_reuse.py; api/blueprints/osc_cases.py",
+      "failure_shape": "文件索引曾把 01_委任狀 內的 Word 檔列入沿用舊書狀候選，使用者可能誤拿委任狀當書狀底稿。",
+      "expected_behavior": [
+        "only .doc/.docx under a path containing 我方歷次書狀 are indexed",
+        "Word temp files and PDF files are excluded",
+        "委任狀 folder Word files are excluded even when filename contains 書狀-like text"
+      ]
+    }
+  ]
+}

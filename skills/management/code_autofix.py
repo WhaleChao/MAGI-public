@@ -154,22 +154,29 @@ def _llm_repair_code(path: str, source: str, error_message: str, task_hint: str,
     except Exception as e:
         return {"success": False, "error": f"requests unavailable: {e}"}
 
-    candidates = [
-        (
-            _omlx_chat_url(),
-            {
-                "model": "qwen2.5-coder:7b",
-                "messages": [
-                    {"role": "system", "content": "You are a precise Python code fixer."},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "temperature": 0.0,
-                "max_tokens": 4096,
-            },
-            ("choices", 0, "message", "content"),
-        ),
-    ]
+    from api.model_config import CODE_MODEL, TEXT_PRIMARY_MODEL, is_disallowed_model
+
+    candidates = []
+    for model_name in (CODE_MODEL, TEXT_PRIMARY_MODEL):
+        model_name = str(model_name or "").strip()
+        if not model_name or is_disallowed_model(model_name):
+            continue
+        candidates.append(
+            (
+                _omlx_chat_url(),
+                {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": "You are a precise Python code fixer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                },
+                ("choices", 0, "message", "content"),
+            )
+        )
     try:
         from skills.evolution.skill_genesis import MELCHIOR_HOST, get_available_melchior_model
 

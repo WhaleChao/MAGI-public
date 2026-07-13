@@ -147,18 +147,19 @@ def test_laf_status_mapping_archives_only_final_closed_status():
     assert _osc_case_status_for_laf_status("已結案") == "已結案"
 
 
-def test_laf_status_endpoint_noop_does_not_write():
+def test_laf_status_endpoint_same_status_adds_manual_laf_lock():
     app = _build_app()
     writes = []
 
     def fake_exec(sql, params=(), fetch="all", **_kw):
-        if "FROM cases WHERE id=%s" in sql:
+        if "FROM cases" in sql and "WHERE id=%s" in sql:
             return {
                 "id": "17",
                 "case_number": "2026-0017",
                 "client_name": "測試人",
                 "status": "進行中",
                 "legal_aid_status": "進行中",
+                "manual_laf_status_lock": 0,
                 "folder_path": "/tmp/case",
             }, {"host": "test"}
         if sql.lstrip().startswith("UPDATE cases"):
@@ -177,8 +178,8 @@ def test_laf_status_endpoint_noop_does_not_write():
     body = r.get_json()
     assert r.status_code == 200
     assert body["ok"] is True
-    assert body["changed"] is False
-    assert writes == []
+    assert body["changed"] is True
+    assert writes == [("進行中", "osc_web", "17")]
 
 
 def test_laf_status_endpoint_final_closed_updates_and_archives():
@@ -186,13 +187,14 @@ def test_laf_status_endpoint_final_closed_updates_and_archives():
     writes = []
 
     def fake_exec(sql, params=(), fetch="all", **_kw):
-        if "FROM cases WHERE id=%s" in sql:
+        if "FROM cases" in sql and "WHERE id=%s" in sql:
             return {
                 "id": "17",
                 "case_number": "2026-0017",
                 "client_name": "測試人",
                 "status": "進行中",
                 "legal_aid_status": "進行中",
+                "manual_laf_status_lock": 0,
                 "folder_path": "/tmp/case",
             }, {"host": "test"}
         if sql.lstrip().startswith("UPDATE cases"):
@@ -217,6 +219,6 @@ def test_laf_status_endpoint_final_closed_updates_and_archives():
     assert r.status_code == 200
     assert body["ok"] is True
     assert body["changed"] is True
-    assert writes == [("已結案", "已結案", "17")]
+    assert writes == [("已結案", "已結案", "osc_web", "17")]
     archive.assert_called_once_with("17")
     log_activity.assert_called_once()

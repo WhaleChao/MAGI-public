@@ -13,17 +13,27 @@ run_sync                : 主入口，回 stats dict
   - MAGI → GCal 推送至 settings.gcal_calendar_id
   - GCal → MAGI 匯入會掃 settings.gcal_import_calendar_ids；未設定時掃使用者可見的所有日曆
   - dry_run=True 時不呼叫任何 GCal write API，也不寫入 DB
-  - 掃未來 30 天內、未刪除的 todo / calendar_event
+  - 預設委派給 action.task_gcal_sync，掃未來 2 年內、未刪除的 todo
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+_MAGI_ROOT = Path(__file__).resolve().parents[2]
+if str(_MAGI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MAGI_ROOT))
+
+from api.osc.calendar_sources import osc_todo_source_sql
+from api.domains.calendar_metadata import decode_calendar_source
+from scripts.ops.token_health_check import google_token_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -53,21 +63,68 @@ def _load_creds():
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
 
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json())
-            TOKEN_PATH.chmod(0o600)
+        with google_token_file_lock(TOKEN_PATH):
+            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                _write_token_atomic(TOKEN_PATH, creds.to_json())
         return creds
     except Exception as exc:
         logger.warning("gcal_sync._load_creds failed: %s", exc)
         return None
 
 
+def _write_token_atomic(path: Path, text: str) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except Exception:
+                pass
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(0o600)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _gcal_http_timeout_sec() -> int:
+    raw = (
+        os.environ.get("MAGI_GCAL_HTTP_TIMEOUT_SEC")
+        or os.environ.get("OSC_GCAL_HTTP_TIMEOUT_SEC")
+        or "30"
+    )
+    try:
+        timeout = int(float(str(raw).strip()))
+    except Exception:
+        timeout = 30
+    return max(5, min(timeout, 120))
+
+
 def _build_service(creds):
     from googleapiclient.discovery import build
+    import google_auth_httplib2
+    import httplib2
 
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+    http = google_auth_httplib2.AuthorizedHttp(
+        creds,
+        http=httplib2.Http(timeout=_gcal_http_timeout_sec()),
+    )
+    return build("calendar", "v3", http=http, cache_discovery=False)
 
 
 def _split_calendar_ids(raw: str | None) -> list[str]:
@@ -131,6 +188,7 @@ def _make_todo_event(todo: dict) -> dict:
     client_name = (todo.get("client_name") or "").strip()
     todo_type = (todo.get("todo_type") or "").strip() or "待辦"
     source_file = (todo.get("source_file") or "").strip()
+    agent_metadata = decode_calendar_source(source_file)
     full_desc = todo.get("description") or ""
     due_str = str(todo.get("todo_date") or todo.get("due_date") or date.today().isoformat())
     todo_time = str(todo.get("todo_time") or "").strip()
@@ -139,12 +197,16 @@ def _make_todo_event(todo: dict) -> dict:
         due_str = due_str.isoformat()
 
     summary_parts = []
+    if agent_metadata and full_desc:
+        summary_parts.append(str(full_desc).replace("\n", " ")[:120])
     if case_number:
-        summary_parts.append(f"[{case_number}]")
+        if not agent_metadata:
+            summary_parts.append(f"[{case_number}]")
     if client_name:
         summary_parts.append(client_name)
-    summary_parts.append(todo_type)
-    if not client_name and full_desc:
+    if not agent_metadata:
+        summary_parts.append(todo_type)
+    if not agent_metadata and not client_name and full_desc:
         summary_parts.append(str(full_desc).replace("\n", " ")[:28])
     summary = " ".join(p for p in summary_parts if p).strip() or "OSC 待辦"
 
@@ -155,7 +217,7 @@ def _make_todo_event(todo: dict) -> dict:
         description_lines.append(f"當事人：{client_name}")
     if todo_type:
         description_lines.append(f"類型：{todo_type}")
-    if source_file:
+    if source_file and not agent_metadata:
         description_lines.append(f"來源檔案：{source_file}")
     if full_desc:
         description_lines.append("")
@@ -172,7 +234,8 @@ def _make_todo_event(todo: dict) -> dict:
     if todo_time:
         start = f"{due_str}T{todo_time}:00+08:00" if len(todo_time) == 5 else f"{due_str}T{todo_time}+08:00"
         try:
-            end_dt = datetime.fromisoformat(start) + timedelta(hours=1)
+            metadata_end = str((agent_metadata or {}).get("end") or "")
+            end_dt = datetime.fromisoformat(metadata_end) if metadata_end else datetime.fromisoformat(start) + timedelta(hours=1)
             end = end_dt.isoformat()
         except Exception:
             end = start
@@ -180,7 +243,15 @@ def _make_todo_event(todo: dict) -> dict:
         event["end"] = {"dateTime": end, "timeZone": "Asia/Taipei"}
     else:
         event["start"] = {"date": due_str}
-        event["end"] = {"date": due_str}
+        metadata_end = str((agent_metadata or {}).get("end") or "")
+        try:
+            end_str = datetime.fromisoformat(metadata_end).date().isoformat() if metadata_end else (datetime.fromisoformat(str(due_str)) + timedelta(days=1)).date().isoformat()
+        except Exception:
+            end_str = due_str
+        event["end"] = {"date": end_str}
+    rrule = str((agent_metadata or {}).get("rrule") or "").strip()
+    if rrule:
+        event["recurrence"] = [rrule]
     return event
 
 
@@ -238,11 +309,32 @@ def _event_start_date_time(event: dict) -> tuple[str, str]:
     return day, (match.group(1) if match else "")
 
 
-def _classify_todo_type(summary: str) -> str:
+def _classify_todo_type(summary: str, description: str = "") -> str:
+    text = f"{summary or ''}\n{description or ''}"
     for kw, todo_type in [
+        ("律見", "律見"),
+        ("律師接見", "律見"),
+        ("接見", "律見"),
+        ("會議", "會議"),
+        ("會面", "會議"),
+        ("開會", "會議"),
+        ("視訊會議", "視訊會議"),
+        ("電話聯繫", "電話聯繫"),
+        ("電聯", "電話聯繫"),
         ("開庭", "開庭"),
+        ("庭期", "開庭"),
         ("期日", "期日"),
         ("調解", "調解"),
+        ("再抗告末日", "再抗告"),
+        ("再抗告期限", "再抗告"),
+        ("上訴末日", "上訴"),
+        ("上訴期限", "上訴"),
+        ("抗告末日", "抗告"),
+        ("抗告期限", "抗告"),
+        ("異議末日", "異議"),
+        ("異議期限", "異議"),
+        ("再議末日", "再議"),
+        ("再議期限", "再議"),
         ("期限", "期限"),
         ("補正", "補正"),
         ("繳費", "繳費"),
@@ -250,11 +342,26 @@ def _classify_todo_type(summary: str) -> str:
         ("筆錄", "筆錄"),
         ("提出", "提出"),
         ("答辯", "答辯"),
+        ("法扶開辦末日", "法扶開辦末日"),
         ("法扶", "法扶"),
     ]:
-        if kw in summary:
+        if kw in text:
             return todo_type
     return "行事曆事件"
+
+
+def _looks_like_magi_pushed_event(summary: str, description: str) -> bool:
+    """Return True for events previously created by MAGI from case_todos.
+
+    These events must not be imported back as `gcal_import` todos; otherwise a
+    missing/stale google_calendar_id can make MAGI show duplicate "行事曆事件"
+    rows and eventually recreate confusing calendar entries.
+    """
+    text = f"{summary or ''}\n{description or ''}"
+    if not _extract_leading_osc_case_number(summary, description):
+        return False
+    signatures = ("系統案號：", "來源檔案：", "類型：")
+    return sum(1 for marker in signatures if marker in text) >= 2
 
 
 def _extract_case_number(summary: str, description: str) -> str:
@@ -287,8 +394,15 @@ def _load_case_identity_cache() -> list[dict[str, str]]:
             SELECT case_number, client_name, start_date, approval_date
             FROM cases
             WHERE COALESCE(client_name, '') != ''
-              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
-            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            ORDER BY
+              CASE
+                WHEN LOWER(COALESCE(status, '')) IN ('closed', 'done')
+                  OR COALESCE(status, '') IN ('已結案', '結案')
+                  OR COALESCE(status, '') LIKE '%已結案%'
+                THEN 1 ELSE 0
+              END,
+              CHAR_LENGTH(client_name) DESC,
+              case_number DESC
             LIMIT 1000
             """,
             fetch="all",
@@ -324,7 +438,6 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
                    case_category, legal_aid_status
             FROM cases
             WHERE COALESCE(client_name, '') != ''
-              AND COALESCE(status, '') NOT IN ('已結案', '結案', 'closed', 'Closed')
               AND (
                     COALESCE(laf_case_no, '') != ''
                  OR COALESCE(application_no, '') REGEXP '^[0-9]{6,8}-[A-Za-z]-[0-9]{3}$'
@@ -333,7 +446,15 @@ def _load_laf_identity_cache() -> list[dict[str, str]]:
                  OR case_reason LIKE '%法律扶助%'
                  OR COALESCE(legal_aid_status, '') != ''
               )
-            ORDER BY CHAR_LENGTH(client_name) DESC, case_number DESC
+            ORDER BY
+              CASE
+                WHEN LOWER(COALESCE(status, '')) IN ('closed', 'done')
+                  OR COALESCE(status, '') IN ('已結案', '結案')
+                  OR COALESCE(status, '') LIKE '%已結案%'
+                THEN 1 ELSE 0
+              END,
+              CHAR_LENGTH(client_name) DESC,
+              case_number DESC
             LIMIT 1000
             """,
             fetch="all",
@@ -547,6 +668,9 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         stats["import_skipped"] += 1
                         continue
                     description = str(event.get("description") or "").strip()
+                    if _looks_like_magi_pushed_event(summary, description):
+                        stats["import_skipped"] += 1
+                        continue
                     start_date, start_time = _event_start_date_time(event)
                     if not start_date:
                         stats["import_skipped"] += 1
@@ -568,7 +692,7 @@ def import_gcal_events_to_todos(service, *, dry_run: bool = False, lookback_days
                         (
                             case_number,
                             client_name,
-                            _classify_todo_type(summary),
+                            _classify_todo_type(summary, description),
                             start_date,
                             start_time or None,
                             summary[:500],
@@ -680,11 +804,40 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     Returns:
         {"pushed": int, "skipped": int, "errors": list[str]}
     """
+    if os.environ.get("MAGI_USE_LEGACY_GCAL_SYNC", "").strip() != "1":
+        try:
+            from action import task_gcal_sync  # type: ignore
+
+            out = task_gcal_sync(
+                {
+                    "dry_run": bool(dry_run),
+                    "limit": int(os.environ.get("OSC_GCAL_SYNC_LIMIT", "120") or 120),
+                    "repair_existing": True,
+                    "repair_limit": int(os.environ.get("OSC_GCAL_SYNC_REPAIR_LIMIT", "120") or 120),
+                    "mirror_imported": True,
+                }
+            )
+            return {
+                **out,
+                "pushed": int(out.get("inserted", 0) or 0) + int(out.get("patched", 0) or 0),
+                "skipped": int(out.get("skipped_implausible", 0) or 0),
+                "errors": [] if out.get("ok") else [str(out.get("error") or "gcal_sync_failed")],
+                "delegated_to": "task_gcal_sync",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "pushed": 0,
+                "skipped": 0,
+                "errors": [f"delegated_sync_failed:{type(exc).__name__}:{str(exc)[:160]}"],
+            }
+
     stats: dict[str, Any] = {"pushed": 0, "skipped": 0, "errors": []}
 
     creds = _load_creds()
     if creds is None or not creds.valid:
         stats["errors"].append("No valid GCal credentials. Run OAuth first.")
+        stats["ok"] = False
         return stats
 
     calendar_id = _get_setting_value("gcal_calendar_id", "primary") or "primary"
@@ -702,14 +855,14 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
     # ── Sync case_todos ───────────────────────────────────────────────────────
     try:
         rows, cols = _osc_exec_sql(
-            """
+            f"""
             SELECT id, case_number, client_name, todo_type, todo_date, todo_time,
                    description, source_file, google_calendar_id
             FROM case_todos
             WHERE todo_date >= %s
               AND todo_date <= %s
               AND (status IS NULL OR status != 'deleted')
-              AND (source_file IS NULL OR source_file NOT LIKE 'gcal_import%%')
+              AND {osc_todo_source_sql()}
             ORDER BY todo_date
             LIMIT 200
             """,
@@ -767,4 +920,7 @@ def run_sync(dry_run: bool = False, conn=None) -> dict:  # noqa: ARG001
             logger.warning("push_todo id=%s failed: %s", todo.get("id"), exc)
             stats["errors"].append(f"todo id={todo.get('id')}: {exc}")
 
+    stats["ok"] = not bool(stats.get("errors") or stats.get("import_errors"))
+    if not stats["ok"]:
+        stats["error"] = "partial_gcal_sync_failure"
     return stats

@@ -119,7 +119,7 @@
 
     .paperclip-menu-btn,
     .paperclip-mobile-home {
-        min-height: 36px;
+        min-height: 44px;
         padding: 0 12px;
         border: 1px solid rgba(56,189,248,0.45);
         border-radius: 8px;
@@ -153,6 +153,31 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .paperclip-mobile-status {
+        min-width: 0;
+        max-width: 34vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #dbeafe;
+        border: 1px solid rgba(148,163,184,0.35);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 11px;
+        font-weight: 800;
+        background: rgba(15,23,42,0.45);
+    }
+
+    .paperclip-mobile-status.ok {
+        color: #bbf7d0;
+        border-color: rgba(34,197,94,0.4);
+    }
+
+    .paperclip-mobile-status.warn {
+        color: #fecaca;
+        border-color: rgba(248,113,113,0.5);
     }
 
     .sidebar-brand,
@@ -264,8 +289,8 @@
     }
 
     #themeToggleBtn {
-        min-height: 36px;
-        min-width: 42px;
+        min-height: 44px;
+        min-width: 44px;
         margin-left: auto;
     }
 
@@ -279,7 +304,7 @@
     input,
     select,
     textarea {
-        min-height: 42px;
+        min-height: 44px;
         font-size: 16px;
     }
 
@@ -338,7 +363,7 @@
     .laf-status-row > .btn,
     .laf-button-grid > .btn {
         flex: 1 1 calc(50% - 6px);
-        min-height: 42px;
+        min-height: 44px;
         min-width: 0;
         text-align: center;
         overflow: hidden;
@@ -346,7 +371,7 @@
     }
 
     .btn {
-        min-height: 42px;
+        min-height: 44px;
         font-size: 14px;
         padding: 9px 11px;
         white-space: normal;
@@ -361,20 +386,31 @@
     .chip-row > .chip,
     .chip {
         flex: 1 1 calc(50% - 6px);
-        min-height: 38px;
+        min-height: 44px;
         padding: 8px 10px;
         white-space: normal;
         text-align: center;
         line-height: 1.25;
     }
 
-    .table-wrap,
-    .calendar-wrap,
-    .msg-box {
-        overflow-x: hidden;
+    .table-wrap {
+        overflow-x: auto;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
     }
 
-    .table-wrap table,
+    .calendar-wrap,
+    .msg-box {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .table-wrap table {
+        min-width: 680px;
+        table-layout: auto;
+        font-size: 12px;
+    }
+
     table {
         min-width: 0;
         table-layout: fixed;
@@ -476,6 +512,12 @@
         min-width: 0;
     }
 
+    .sort-bar .sort-dir-btn {
+        min-width: 44px;
+        min-height: 44px;
+        padding: 8px 10px;
+    }
+
     .card-grid,
     .todo-card-grid,
     .laf-case-summary {
@@ -525,7 +567,7 @@
     }
 
     .case-card .card-actions .btn {
-        min-height: 38px;
+        min-height: 44px;
         font-size: 12px;
         padding: 6px 7px;
         white-space: normal;
@@ -560,7 +602,7 @@
 
     .cal-toolbar .cal-views button {
         flex: 1 1 0;
-        min-height: 38px;
+        min-height: 44px;
     }
 
     .cal-month-grid .cal-day {

@@ -3,7 +3,7 @@
 此 module 保留純粹是為了避免下游 import 爆炸。所有對外函式皆 stub 化。
 
 原功能：OpenClaw Codex OAuth 介面（session lock、feature_enabled、apply_manual_command、public_status_report）
-現狀：全面停用，推理改走 NVIDIA NIM 405B / oMLX（InferenceGateway）。
+現狀：全面停用，推理改走 NVIDIA NIM heavy / oMLX（InferenceGateway）。
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ FEATURE_ALIASES = {
 }
 
 _STUB_MSG = "Codex 已停用，改用 NVIDIA NIM"
-_STUB_STATUS_MSG = "Codex 已停用，目前推理走 NVIDIA NIM 405B / oMLX。"
+_STUB_STATUS_MSG = "Codex 已停用，目前推理走 NVIDIA NIM heavy / oMLX。"
 
 
 # ── Stub 函式（保留簽名，呼叫即返回 disabled）────────────────────────────────

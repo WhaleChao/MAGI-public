@@ -134,7 +134,7 @@ def test_interpreter_skill_is_in_react_run_skill_allowlist():
     assert "interpreter-empirical-classifier" in _ALLOWED_SKILLS
 
 
-def test_run_skill_preserves_params_in_task_payload(monkeypatch):
+def test_run_skill_sends_structured_params_to_tools_api(monkeypatch):
     from skills.bridge import http_pool
     from skills.engine import tool_registry
 
@@ -166,5 +166,6 @@ def test_run_skill_preserves_params_in_task_payload(monkeypatch):
     assert posted["json"]["skill"] == "interpreter-empirical-classifier"
     assert posted["json"]["timeout_sec"] == 120
     assert posted["timeout"] == 130
-    assert posted["json"]["task"].startswith("fetch_and_classify ")
-    assert '"keywords": "最高法院 通譯"' in posted["json"]["task"]
+    assert posted["json"]["task"] == "fetch_and_classify"
+    assert posted["json"]["keywords"] == "最高法院 通譯"
+    assert posted["json"]["max_results"] == 1

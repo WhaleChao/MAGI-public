@@ -1,6 +1,7 @@
 """Integration coverage for the shared LAF submit confirmation entrypoint."""
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -138,6 +139,31 @@ def test_shared_submit_entrypoint_preserves_go_live_tokens(monkeypatch, tmp_path
     assert token in reply
     pending = laf_flow.load_laf_submit_pending(orch)
     assert pending[token]["status"] == "submitting"
+
+
+def test_stale_go_live_submitting_is_recovered_as_failed(monkeypatch, tmp_path):
+    from api.domains import laf_flow
+
+    monkeypatch.setenv("MAGI_LAF_GO_LIVE_SUBMIT_STALE_SEC", "60")
+    orch = _MockOrch(tmp_path)
+    entry = laf_flow.register_laf_go_live_submit_pending(
+        orch,
+        platform="discord",
+        requester_user_id="lawyer1",
+        payload={"laf_case_no": "1140806-A-002", "client_name": "王小明"},
+        result_data={},
+    )
+    token = entry["token"]
+    pending = laf_flow.load_laf_submit_pending(orch)
+    pending[token]["status"] = "submitting"
+    pending[token]["heartbeat_at"] = time.time() - 7200
+    assert laf_flow.save_laf_submit_pending(orch, pending) is True
+
+    recovered = laf_flow.load_laf_submit_pending(orch)
+
+    assert recovered[token]["status"] == "failed"
+    assert recovered[token]["recoverable"] is True
+    assert recovered[token]["last_error"] == "stale_submitting_recovered"
 
 
 def test_go_live_resolver_does_not_fallback_when_message_has_other_token(tmp_path):

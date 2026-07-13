@@ -35,6 +35,54 @@ from typing import Any
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2]))).resolve()
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
+_DOTENV_LOADED = False
+
+
+def _load_runtime_env() -> None:
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(MAGI_ROOT / ".env", override=True)
+    except Exception:
+        pass
+    _DOTENV_LOADED = True
+
+
+def _is_git_worktree(root: Path) -> bool:
+    return (root / ".git").exists()
+
+
+def public_source_root() -> Path:
+    """Return the git checkout used for public release/installability checks.
+
+    Installed runtime trees intentionally contain private caches and usually do
+    not include .git. Public release checks must inspect the candidate source
+    checkout, while live health checks continue to run against MAGI_ROOT.
+    """
+
+    for env_name in ("MAGI_PUBLIC_SOURCE_ROOT_DIR", "MAGI_SOURCE_ROOT_DIR"):
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser().resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    if _is_git_worktree(MAGI_ROOT):
+        return MAGI_ROOT
+
+    for candidate in (
+        Path.home() / "Desktop" / "MAGI_v2",
+        Path.home() / "Library" / "Application Support" / "MAGI" / "source" / "MAGI_v2",
+    ):
+        candidate = candidate.resolve()
+        if _is_git_worktree(candidate):
+            return candidate
+
+    return MAGI_ROOT
 
 
 @dataclass
@@ -124,10 +172,18 @@ def check_installer_dry_run(py: str) -> Check:
 
 
 def check_public_release_audit(py: str, *, strict: bool) -> Check:
+    source_root = public_source_root()
+    if not _is_git_worktree(source_root):
+        return Check(
+            "public_release_audit",
+            False,
+            "fail",
+            f"source checkout is not a git worktree: {source_root}",
+        )
     cmd = [py, "scripts/public_release_audit.py", "--json"]
     if strict:
-        cmd.append("--strict")
-    ok, payload, raw, elapsed = _run_json(cmd, timeout=60)
+        cmd.extend(["--public-isolation", "--strict"])
+    ok, payload, raw, elapsed = _run_json(cmd, timeout=60, cwd=source_root)
     if not ok:
         return Check("public_release_audit", False, "fail", raw, elapsed)
     passed = bool(payload.get("ok"))
@@ -135,11 +191,72 @@ def check_public_release_audit(py: str, *, strict: bool) -> Check:
     return Check("public_release_audit", passed, "pass" if passed else "fail", detail, elapsed)
 
 
+def _snapshot_current_worktree(dest: Path, *, source_root: Path | None = None) -> dict[str, Any]:
+    """Copy the current candidate tree, including uncommitted non-ignored files."""
+    source_root = (source_root or public_source_root()).resolve()
+    proc = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--modified",
+            "--others",
+            "--exclude-standard",
+        ],
+        cwd=source_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or b"git ls-files failed").decode("utf-8", errors="replace")[-500:])
+
+    seen: set[str] = set()
+    copied = 0
+    skipped = 0
+    dest.mkdir(parents=True, exist_ok=True)
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", errors="surrogateescape")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.parts[:1] == (".git",):
+            skipped += 1
+            continue
+        src = source_root / rel_path
+        target = dest / rel_path
+        if not src.exists() or src.is_dir():
+            skipped += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_symlink():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            os.symlink(os.readlink(src), target)
+        else:
+            shutil.copy2(src, target)
+        copied += 1
+    return {"copied_files": copied, "skipped_files": skipped}
+
+
 def check_public_cleanroom_install(py: str) -> Check:
     started = time.time()
+    source_root = public_source_root()
+    if not _is_git_worktree(source_root):
+        return Check(
+            "public_cleanroom_install",
+            False,
+            "fail",
+            f"source checkout is not a git worktree: {source_root}",
+            round(time.time() - started, 3),
+        )
     head_proc = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=MAGI_ROOT,
+        cwd=source_root,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -150,21 +267,14 @@ def check_public_cleanroom_install(py: str) -> Check:
     tmp_root = Path(tempfile.mkdtemp(prefix="magi_public_cleanroom_"))
     worktree = tmp_root / "MAGI-public-cleanroom"
     try:
-        clone = subprocess.run(
-            ["git", "clone", "--local", "--no-hardlinks", "--quiet", str(MAGI_ROOT), str(worktree)],
-            cwd=MAGI_ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=180,
-            check=False,
-        )
-        if clone.returncode != 0:
+        try:
+            snapshot = _snapshot_current_worktree(worktree, source_root=source_root)
+        except Exception as exc:
             return Check(
                 "public_cleanroom_install",
                 False,
                 "fail",
-                f"clone failed: {(clone.stdout or '')[-500:]}",
+                f"worktree snapshot failed: {type(exc).__name__}: {exc}",
                 round(time.time() - started, 3),
             )
 
@@ -208,7 +318,8 @@ def check_public_cleanroom_install(py: str) -> Check:
         summary = wizard.get("summary") if isinstance(wizard.get("summary"), dict) else {}
         passed = ok and bool(wizard.get("ok")) and int(summary.get("fail") or 0) == 0
         detail = (
-            f"head={head} audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
+            f"source={source_root} head={head} files={snapshot.get('copied_files')} "
+            f"audit=errors:{audit.get('errors')} warnings:{audit.get('warnings')} "
             f"wizard_status={wizard.get('status')} pass={summary.get('pass')} skipped={summary.get('skipped')}"
         )
         if not passed:
@@ -351,13 +462,86 @@ def check_model_live_gate(py: str) -> Check:
     return Check("model_live_gate", passed, status, detail, elapsed, artifact=str(MAGI_ROOT / ".runtime" / "model_live_gate_latest.json"))
 
 
+def check_live_conflict_audit(py: str) -> Check:
+    started = time.time()
+    try:
+        from scripts.ops.business_module_live_check import audit_live_conflicts
+    except Exception as exc:
+        return Check("live_conflict_audit", False, "fail", f"import failed: {type(exc).__name__}: {exc}")
+    payload = audit_live_conflicts(MAGI_ROOT)
+    elapsed = round(time.time() - started, 3)
+    errors = int(payload.get("error_count") or 0)
+    warnings = int(payload.get("warning_count") or 0)
+    detail = f"errors={errors} warnings={warnings}"
+    passed = bool(payload.get("ok"))
+    return Check("live_conflict_audit", passed, "pass" if passed else "fail", detail, elapsed)
+
+
+def check_formal_saas_readiness(py: str) -> Check:
+    started = time.time()
+    try:
+        from api.saas_readiness import build_saas_readiness
+    except Exception as exc:
+        return Check("formal_saas_readiness", False, "fail", f"import failed: {type(exc).__name__}: {exc}")
+    payload = build_saas_readiness(root=MAGI_ROOT, db_config={
+        "host": os.environ.get("DB_HOST") or os.environ.get("MYSQL_HOST") or "",
+        "port": int(os.environ.get("DB_PORT") or os.environ.get("MYSQL_PORT") or "3306"),
+        "user": os.environ.get("DB_USER") or os.environ.get("MYSQL_USER") or "",
+        "password": os.environ.get("DB_PASSWORD") or os.environ.get("MYSQL_PASSWORD") or "",
+        "database": os.environ.get("DB_NAME") or "magi_brain",
+    })
+    elapsed = round(time.time() - started, 3)
+    failed = int((payload.get("summary") or {}).get("failed_required") or 0)
+    mode = str(payload.get("mode") or "")
+    detail = f"mode={mode} failed_required={failed} failed_keys={','.join(payload.get('failed_keys') or [])}"
+    if mode != "formal_saas":
+        return Check("formal_saas_readiness", True, "warn", "formal SaaS mode not enabled; " + detail, elapsed)
+    return Check("formal_saas_readiness", bool(payload.get("ok")), "pass" if payload.get("ok") else "fail", detail, elapsed)
+
+
+def live_validation_commands(py: str | None = None) -> dict[str, list[str]]:
+    py = py or _python()
+    return {
+        "production_live": [
+            py,
+            "scripts/ops/run_test_suite.py",
+            "--suite",
+            "production-live",
+            "--json-out",
+            ".runtime/production_live_latest.json",
+        ],
+        "business_modules": [
+            py,
+            "scripts/ops/business_module_live_check.py",
+            "--json",
+            "--json-out",
+            ".runtime/business_module_live_check_latest.json",
+        ],
+        "conflict_audit": [
+            py,
+            "scripts/ops/business_module_live_check.py",
+            "--conflict-audit",
+            "--json-out",
+            ".runtime/live_conflict_audit_latest.json",
+        ],
+        "manual_probe": [
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:${MAGI_SERVER_PORT:-5002}/health",
+        ],
+    }
+
+
 def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db: bool) -> dict[str, Any]:
+    _load_runtime_env()
     py = _python()
     checks = [
         check_doctor(py),
         check_installer_dry_run(py),
         check_public_release_audit(py, strict=strict_public),
         check_public_cleanroom_install(py),
+        check_formal_saas_readiness(py),
+        check_live_conflict_audit(py),
         check_process_hygiene(py),
         check_resource_governor(py),
         check_model_live_gate(py),
@@ -371,9 +555,11 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         "ok": failed == 0,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "root": str(MAGI_ROOT),
+        "public_source_root": str(public_source_root()),
         "python": py,
         "summary": {"pass": passed, "fail": failed, "total": len(checks)},
         "checks": [asdict(c) for c in checks],
+        "live_validation_commands": live_validation_commands(py),
     }
     json_out.parent.mkdir(parents=True, exist_ok=True)
     json_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

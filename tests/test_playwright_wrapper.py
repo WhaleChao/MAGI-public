@@ -15,9 +15,12 @@ from skills.engine.playwright_wrapper import (
     PlaywrightSelect,
     PlaywrightWebDriverWait,
     _convert_script_for_playwright,
+    _is_playwright_browser_missing_error,
     _by_to_selector,
     _PlaywrightSwitchTo,
     _PlaywrightAlert,
+    clear_playwright_health_cache,
+    ensure_playwright_chromium,
     create_playwright_driver,
     By,
     NoAlertPresentException,
@@ -398,3 +401,53 @@ class TestCreatePlaywrightDriver:
         # At minimum confirm the module exposes the function
         from skills.engine.playwright_wrapper import create_playwright_driver as cpd
         assert callable(cpd)
+
+
+# ==============================================================================
+# Playwright browser health / repair
+# ==============================================================================
+
+class TestPlaywrightBrowserHealth:
+    def test_missing_browser_error_is_detected(self):
+        msg = "Executable doesn't exist at /Users/ai/Library/Caches/ms-playwright/chromium"
+        assert _is_playwright_browser_missing_error(msg)
+        assert _is_playwright_browser_missing_error("Please run the following command: playwright install")
+        assert not _is_playwright_browser_missing_error("net::ERR_CONNECTION_CLOSED")
+
+    def test_ensure_chromium_auto_installs_then_rechecks(self, monkeypatch):
+        import skills.engine.playwright_wrapper as pw_mod
+
+        calls = {"health": 0}
+
+        def fake_health(*, cache_ttl_seconds=0, timeout_seconds=5.0):
+            calls["health"] += 1
+            if calls["health"] <= 2:
+                return {"ok": False, "reason": "chromium_not_installed"}
+            return {"ok": True, "detail": "Chromium launch OK"}
+
+        monkeypatch.setattr(pw_mod, "playwright_chromium_health", fake_health)
+        monkeypatch.setattr(pw_mod, "_run_playwright_chromium_install", lambda: {"ok": True, "returncode": 0})
+        clear_playwright_health_cache()
+
+        result = ensure_playwright_chromium(auto_install=True)
+
+        assert result["ok"] is True
+        assert result["install_attempted"] is True
+        assert result["install"]["returncode"] == 0
+
+    def test_ensure_chromium_does_not_install_for_other_failures(self, monkeypatch):
+        import skills.engine.playwright_wrapper as pw_mod
+
+        monkeypatch.setattr(
+            pw_mod,
+            "playwright_chromium_health",
+            lambda **_: {"ok": False, "reason": "chromium_launch_failed"},
+        )
+        install = MagicMock(return_value={"ok": True})
+        monkeypatch.setattr(pw_mod, "_run_playwright_chromium_install", install)
+
+        result = ensure_playwright_chromium(auto_install=True)
+
+        assert result["ok"] is False
+        assert result["install_attempted"] is False
+        install.assert_not_called()

@@ -581,10 +581,10 @@ def _load_magi_config_profiles() -> list[dict]:
 
 def _get_db_config_local_first() -> dict:
     """
-    Prefer local DB profiles when MAGI_PREFER_LOCAL_DB=1.
+    Prefer local DB profiles by default; remote DB use is explicit opt-in.
     Falls back to 127.0.0.1:3307 (Casper local).
     """
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     profiles = _load_magi_config_profiles()
     want = ["Home_Local_Test", "Studio_Local"] if prefer_local else ["Studio_Local", "Home_Local_Test"]
     for name in want:

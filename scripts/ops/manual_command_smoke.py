@@ -85,8 +85,69 @@ def route_checks() -> list[Check]:
 
 def docx_pdf_checks() -> list[Check]:
     checks: list[Check] = []
+    current_docx = ROOT / "docs/guides/MAGI_操作手冊.docx"
+    current_pdf = ROOT / "docs/guides/MAGI_操作手冊.pdf"
+    user_manual = ROOT / "docs/guides/MAGI_一般使用者完整操作手冊_2026-06-26.docx"
     docx = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx"
     pdf = ROOT / "docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf"
+    detailed_docx = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx"
+    detailed_pdf = ROOT / "docs/guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.pdf"
+
+    if not current_docx.exists():
+        checks.append(Check("current_manual_docx_exists", False, "missing", expected=str(current_docx)))
+    else:
+        from docx import Document
+
+        current = Document(current_docx)
+        text = "\n".join(p.text for p in current.paragraphs)
+        required = ["自然語言 Agent", "行事曆", "MAGI 選單列", "37 項 Agent 能力索引"]
+        ok = len(current.inline_shapes) >= 6 and len(current.tables) >= 20 and all(token in text for token in required)
+        checks.append(
+            Check(
+                "current_manual_docx_integrity",
+                ok,
+                f"images={len(current.inline_shapes)} tables={len(current.tables)} required={required}",
+                expected="images>=6 tables>=20 and current agent sections",
+                actual=f"images={len(current.inline_shapes)} tables={len(current.tables)}",
+            )
+        )
+
+    if not current_pdf.exists():
+        checks.append(Check("current_manual_pdf_exists", False, "missing", expected=str(current_pdf)))
+    else:
+        import fitz
+
+        current_pdf_doc = fitz.open(current_pdf)
+        text_chars = sum(len(page.get_text()) for page in current_pdf_doc)
+        ok = current_pdf_doc.page_count >= 15 and text_chars >= 5_000
+        checks.append(
+            Check(
+                "current_manual_pdf_integrity",
+                ok,
+                f"pages={current_pdf_doc.page_count} text_chars={text_chars}",
+                expected="pages>=15 text_chars>=5000",
+                actual=f"pages={current_pdf_doc.page_count} text_chars={text_chars}",
+            )
+        )
+
+    if not user_manual.exists():
+        checks.append(Check("user_manual_docx_exists", False, "missing", expected=str(user_manual)))
+    else:
+        from docx import Document
+
+        d = Document(user_manual)
+        all_text = "\n".join(p.text for p in d.paragraphs)
+        required = ["先看這裡", "跟 MAGI 說話的方式", "常用功能", "附錄：本版功能驗收摘要"]
+        ok = len(d.tables) >= 10 and all(token in all_text for token in required)
+        checks.append(
+            Check(
+                "user_manual_docx_user_first",
+                ok,
+                f"tables={len(d.tables)} paragraphs={len(d.paragraphs)} required={required}",
+                expected="一般使用者導向章節在前，驗收摘要在附錄",
+                actual=f"tables={len(d.tables)}",
+            )
+        )
 
     if not docx.exists():
         checks.append(Check("docx_exists", False, "missing", expected=str(docx)))
@@ -94,13 +155,13 @@ def docx_pdf_checks() -> list[Check]:
         from docx import Document
 
         d = Document(docx)
-        ok = len(d.inline_shapes) >= 6 and len(d.tables) >= 10
+        ok = len(d.inline_shapes) >= 6 and len(d.tables) >= 40 and detailed_docx.exists() and detailed_pdf.exists()
         checks.append(
             Check(
                 "docx_visual_integrity",
                 ok,
                 f"images={len(d.inline_shapes)} tables={len(d.tables)} paragraphs={len(d.paragraphs)}",
-                expected="images>=6 tables>=10",
+                expected="images>=6 tables>=40 detailed_docx/pdf exist",
                 actual=f"images={len(d.inline_shapes)} tables={len(d.tables)}",
             )
         )
@@ -112,7 +173,7 @@ def docx_pdf_checks() -> list[Check]:
 
         doc = fitz.open(pdf)
         page_details: list[str] = []
-        ok = doc.page_count >= 8
+        ok = doc.page_count >= 30
         image_pages = 0
         for idx, page in enumerate(doc, 1):
             text_len = len(page.get_text())
@@ -132,7 +193,7 @@ def docx_pdf_checks() -> list[Check]:
                 "pdf_visual_integrity",
                 ok,
                 "; ".join(page_details),
-                expected="pages>=8 image_pages>=5 text-or-image/page nonblank",
+                expected="pages>=30 image_pages>=5 text-or-image/page nonblank",
                 actual=f"pages={doc.page_count} image_pages={image_pages}",
             )
         )
@@ -142,7 +203,7 @@ def docx_pdf_checks() -> list[Check]:
 def safe_cli_checks() -> list[Check]:
     checks: list[Check] = []
     py = sys.executable
-    ok, tail = run_json([py, "scripts/generate_visual_user_manual_docx.py"], timeout=120)
+    ok, tail = run_json([py, "scripts/generate_detailed_user_manual.py"], timeout=120)
     checks.append(Check("manual_generator", ok, tail, expected="regenerate DOCX/PDF manual", actual="exit=0" if ok else "exit!=0"))
 
     tmp = Path(tempfile.mkdtemp(prefix="magi_manual_command_clean_"))

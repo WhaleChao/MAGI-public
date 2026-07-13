@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-
-import pytest
 
 from skills.engine.ocr.nemotron_mlx.image_processor import self_test
 from skills.engine.ocr.nemotron_mlx.runtime import NemotronRuntime
@@ -14,11 +13,25 @@ from skills.engine.ocr import nemotron_parse_provider
 HF_MODEL_DIR = Path.home() / ".omlx/models-vision/nemotron-parse-v1.2-hf"
 MLX_BF16_DIR = Path.home() / ".omlx/models-vision/nemotron-parse-v1.2-mlx/bf16"
 
+_EMBEDDED_IMAGE_PROCESSING_GOLDEN = {
+    "shape": [1, 3, 2048, 1664],
+    "mean": 0.06537187099456787,
+    "std": 0.2386380136013031,
+    "first_20_values": [0.0] * 20,
+}
 
-def test_nemotron_mlx_image_processor_matches_golden():
-    if not (HF_MODEL_DIR / "golden_outputs.json").is_file():
-        pytest.skip("Nemotron Parse golden_outputs.json not installed locally")
-    result = self_test(HF_MODEL_DIR)
+
+def _golden_model_dir(tmp_path: Path) -> Path:
+    (tmp_path / "golden_outputs.json").write_text(
+        json.dumps({"image_processing": _EMBEDDED_IMAGE_PROCESSING_GOLDEN}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_nemotron_mlx_image_processor_matches_golden(tmp_path):
+    model_dir = HF_MODEL_DIR if (HF_MODEL_DIR / "golden_outputs.json").is_file() else _golden_model_dir(tmp_path)
+    result = self_test(model_dir)
     assert result["ok"], result["errors"]
 
 
@@ -46,9 +59,11 @@ def test_nemotron_mlx_bf16_conversion_manifest_when_present():
     manifest = MLX_BF16_DIR / "conversion_manifest.json"
     weights = MLX_BF16_DIR / "model.safetensors"
     if not manifest.is_file() or not weights.is_file():
-        pytest.skip("Nemotron Parse MLX bf16 conversion not present locally")
-
-    import json
+        app = create_app(MLX_BF16_DIR, HF_MODEL_DIR)
+        data = app.test_client().get("/health").get_json()
+        assert data["loaded"] is False
+        assert data["weights"].endswith("model.safetensors")
+        return
 
     data = json.loads(manifest.read_text(encoding="utf-8"))
     assert data["tensor_count"] == 667

@@ -20,7 +20,6 @@ import ipaddress
 import json
 import os
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -40,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from api.runtime_paths import get_config_path
+from skills.ops.health_probes import python_script_process_running
 
 CONFIG_PATH = get_config_path("config.json")
 
@@ -254,20 +254,9 @@ def _telegram_admin_ids(openclaw_cfg: dict[str, Any]) -> list[str]:
 
 
 def _check_local_process(pattern: str) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", pattern],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and (result.stdout or "").strip():
-            pids = [x.strip() for x in result.stdout.splitlines() if x.strip()]
-            return True, ",".join(pids[:5])
-        return False, ""
-    except Exception:
-        return False, ""
+    if pattern.endswith(".py") or "/" in pattern:
+        return python_script_process_running(pattern, timeout_sec=5)
+    return False, ""
 
 
 def _line_checks(

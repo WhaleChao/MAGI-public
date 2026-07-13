@@ -144,6 +144,44 @@ def test_theme_dark_css_present():
         "Dark theme should override --bg"
 
 
+def test_file_manager_dark_css_overrides_white_panels():
+    """The file manager must not fall back to white panels in dark theme."""
+    css = (ROOT / "static/osc/file-manager.css").read_text(encoding="utf-8")
+    assert "body.theme-dark #fileManager" in css
+    dark_block = css.split("body.theme-dark #fileManager", 1)[1]
+    assert "--card-bg: #0f172a" in dark_block
+    assert "body.theme-dark #fileManager .fm-main" in css
+    assert "body.theme-dark #fileManager .fm-table tbody tr td" in css
+    assert "background: #0f172a" in css
+    assert "color: #e2e8f0" in css
+
+
+def test_file_manager_mobile_css_keeps_entries_and_actions_visible():
+    """Phone layouts must show file rows/actions instead of hiding table columns."""
+    css = (ROOT / "static/osc/file-manager.css").read_text(encoding="utf-8")
+    polish = (ROOT / "static/osc/osc-polish.css").read_text(encoding="utf-8")
+    assert "Mobile-first repairs for the NAS file manager" in css
+    assert "#fileManager .fm-table td" in css
+    assert "display: block !important" in css
+    assert ".fm-file-actions" in css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in css
+    assert ".fm-preview-pdf" in css
+    assert ".fm-preview-mobile-help" in css
+    assert "#fileManager .fm-action-btn" in polish
+    assert "min-height: 40px" in polish
+
+
+def test_file_manager_mobile_js_focuses_file_pane_and_has_pdf_fallback():
+    """Opening a folder on phones should move users to files and make PDF preview obvious."""
+    js = (ROOT / "static/osc/tabs/file_manager.js").read_text(encoding="utf-8")
+    assert "FM_MOBILE_QUERY" in js
+    assert "focusFilePaneOnMobile" in js
+    assert "focusFilePaneOnMobile();" in js
+    assert "renderPdfPreview" in js
+    assert "PDF 可在此上下滑動預覽" in js
+    assert "開新分頁" in js
+
+
 def test_theme_toggle_button_in_osc_html():
     """osc.html must contain themeToggleBtn in header."""
     html = (ROOT / "templates/osc.html").read_text(encoding="utf-8")
@@ -156,6 +194,29 @@ def test_theme_toggle_init_in_events_js():
     assert "function initThemeToggle" in js, "Missing initThemeToggle definition"
     assert "initThemeToggle()" in js, "initThemeToggle not called"
     assert "magi.osc.theme" in js, "Missing localStorage key for theme persistence"
+
+
+def test_osc_mobile_google_like_affordance_contract():
+    """Phone OSC should keep content reachable and global search should actually run."""
+    html = (ROOT / "templates/osc.html").read_text(encoding="utf-8")
+    components = (ROOT / "static/osc/osc-components.css").read_text(encoding="utf-8")
+    responsive = (ROOT / "static/osc/osc-responsive.css").read_text(encoding="utf-8")
+    file_manager = (ROOT / "static/osc/file-manager.css").read_text(encoding="utf-8")
+    events = (ROOT / "static/osc/osc-events.js").read_text(encoding="utf-8")
+
+    assert "osc-responsive.css?v=20260619-google-mobile-v1" in html
+    assert "osc-events.js?v=20260708-local-form-date-v1" in html
+    assert "mobileStatusBadge" in html
+    assert ".table-wrap {\n    overflow-x: auto;" in components
+    assert "-webkit-overflow-scrolling: touch;" in components
+    assert ".table-wrap table {\n        min-width: 680px;" in responsive
+    assert ".sort-bar .sort-dir-btn" in responsive
+    assert "min-height: 44px;" in responsive
+    assert ".fm-toolbar .btn-mini" in file_manager
+    assert "min-height: 44px;" in file_manager
+    assert "function runGlobalCaseSearch" in events
+    search_block = events.split("function runGlobalCaseSearch", 1)[1].split("function initGlobalSearch", 1)[0]
+    assert "loadCases" in search_block
 
 
 # ── Discord admin UI assets ───────────────────────────────────────

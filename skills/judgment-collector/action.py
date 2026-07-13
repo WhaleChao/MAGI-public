@@ -38,15 +38,27 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(PROJECT_ROOT):
+            sys.modules.pop(_module_name, None)
 from api.runtime_paths import get_orch_dir, get_skill_python
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
 from api.domains.judicial_api_backlog import build_backlog_interpretation, format_backlog_notice
+from api.domains.judicial_api_cache import ensure_judgment_cache_root
+from api.domains.judicial_api_policy import judicial_api_env_default
 from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
-from api.osc.insight_filters import is_non_extractable_legal_insight
+from api.osc.insight_filters import is_extractive_fast_judgment_digest, is_non_extractable_legal_insight
 try:
     from dotenv import load_dotenv
 except Exception:
     load_dotenv = None  # type: ignore
+if load_dotenv is not None:
+    try:
+        load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
+    except Exception as _e:
+        logging.getLogger("judgment-collector").debug("load_dotenv skipped: %s", _e)
 try:
     from api.tw_output_guard import normalize_output_text as _normalize_output_text
 except Exception:
@@ -60,13 +72,18 @@ except Exception:
 # Config
 # ---------------------------------------------------------------------------
 CODE_DIR = str(get_orch_dir())
-CACHE_ROOT = os.path.expanduser("~/.cache/judgment_collector")
-os.makedirs(CACHE_ROOT, exist_ok=True)
-if load_dotenv is not None:
-    try:
-        load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
-    except Exception as _e:
-        logging.getLogger("judgment-collector").debug("load_dotenv skipped: %s", _e)
+
+
+def _ensure_cache_root(path_str: str) -> str:
+    """Use the configured cache when healthy, otherwise fall back to local disk.
+
+    Some MAGI hosts used to offload this cache to an external SSD via symlink.
+    When that volume is missing, importing the skill must still work.
+    """
+    return str(ensure_judgment_cache_root(path_str, logger=logging.getLogger("judgment-collector")))
+
+
+CACHE_ROOT = _ensure_cache_root(os.environ.get("JUDGMENT_CACHE_ROOT", "~/.cache/judgment_collector"))
 
 # Cache run directory retention (days)
 CACHE_RETENTION_DAYS = int(os.environ.get("JUDGMENT_CACHE_RETENTION_DAYS", "14"))
@@ -349,8 +366,8 @@ def _get_db_config() -> dict:
     except Exception as _e:
         logging.getLogger("judgment-collector").warning("DB config via osc_headless failed: %s", _e)
 
-    # Prefer local DB when requested (Keeper/主 DB 關機時，避免卡在遠端連線)。
-    prefer_local = _env("MAGI_PREFER_LOCAL_DB", "0").lower() in {"1", "true", "yes", "on"}
+    # Default to local DB; remote/dual-active DB is an explicit opt-in path.
+    prefer_local = _env("MAGI_PREFER_LOCAL_DB", "1").lower() in {"1", "true", "yes", "on"}
 
     # Final fallback: config.json profiles, otherwise empty password.
     c2 = _from_config_json(prefer_local=prefer_local)
@@ -381,13 +398,28 @@ SYNOLOGY_CASE_ROOTS = preferred_case_roots(include_closed=False)
 JDG_API_BASE = _env("JUDICIAL_API_BASE", "https://data.judicial.gov.tw/jdg/api").rstrip("/")
 JDG_API_WINDOW_START_HOUR = int(_env("JUDICIAL_API_WINDOW_START_HOUR", "0") or "0")
 JDG_API_WINDOW_END_HOUR = int(_env("JUDICIAL_API_WINDOW_END_HOUR", "6") or "6")
-JDG_API_NIGHT_MAX_JDOCS = int(_env("JUDICIAL_API_NIGHT_MAX_JDOCS", "25000") or "25000")
-JDG_API_DAY_MAX_PROCESS = int(_env("JUDICIAL_API_DAY_MAX_PROCESS", "200") or "200")
-JDG_API_DAY_SUMMARY_MAX = int(_env("JUDICIAL_API_DAY_SUMMARY_MAX", "80") or "80")
+JDG_API_NIGHT_MAX_JDOCS = int(
+    _env("JUDICIAL_API_NIGHT_MAX_JDOCS", judicial_api_env_default("JUDICIAL_API_NIGHT_MAX_JDOCS", "300")) or "300"
+)
+JDG_API_NIGHT_MAX_DAYS = int(
+    _env("JUDICIAL_API_NIGHT_MAX_DAYS", judicial_api_env_default("JUDICIAL_API_NIGHT_MAX_DAYS", "2")) or "2"
+)
+JDG_API_DAY_MAX_PROCESS = int(
+    _env("JUDICIAL_API_DAY_MAX_PROCESS", judicial_api_env_default("JUDICIAL_API_DAY_MAX_PROCESS", "60")) or "60"
+)
+JDG_API_DAY_SUMMARY_MAX = int(
+    _env("JUDICIAL_API_DAY_SUMMARY_MAX", judicial_api_env_default("JUDICIAL_API_DAY_SUMMARY_MAX", "12")) or "12"
+)
 JDG_API_DAY_SUMMARY_TIMEOUT_SEC = int(_env("JUDICIAL_API_DAY_SUMMARY_TIMEOUT_SEC", "240") or "240")
 JDG_API_DAY_VECTOR_MAX_CHARS = int(_env("JUDICIAL_API_DAY_VECTOR_MAX_CHARS", "12000") or "12000")
-JDG_API_DAY_SUMMARY_MODE = _env("JUDICIAL_API_DAY_SUMMARY_MODE", "llm").lower() or "llm"
-JDG_API_DAY_SKIP_ASSETS = _env("JUDICIAL_API_DAY_SKIP_ASSETS", "0").lower() in {"1", "true", "yes", "on"}
+JDG_API_DAY_SUMMARY_MODE = (
+    _env("JUDICIAL_API_DAY_SUMMARY_MODE", judicial_api_env_default("JUDICIAL_API_DAY_SUMMARY_MODE", "extractive")).lower()
+    or "extractive"
+)
+JDG_API_DAY_SKIP_ASSETS = (
+    _env("JUDICIAL_API_DAY_SKIP_ASSETS", judicial_api_env_default("JUDICIAL_API_DAY_SKIP_ASSETS", "1")).lower()
+    in {"1", "true", "yes", "on"}
+)
 JDG_API_FAST_BACKLOG_THRESHOLD = int(_env("JUDICIAL_API_FAST_BACKLOG_THRESHOLD", "5000") or "5000")
 JDG_API_ROOT = os.path.join(CACHE_ROOT, "judicial_api")
 JDG_API_RAW_ROOT = os.path.join(JDG_API_ROOT, "raw")
@@ -596,22 +628,6 @@ def _load_code_config() -> dict:
         except Exception:
             continue
 
-    # OpenClaw workspace may hold dedicated official Judicial API credentials
-    # even when MAGI's main config only contains ezlawyer record credentials.
-    ai_cfg_path = (
-        os.environ.get("OPENCLAW_AI_CONFIG_PATH")
-        or os.path.expanduser("~/.openclaw/workspace/ai_config.json")
-    )
-    try:
-        if os.path.exists(ai_cfg_path):
-            with open(ai_cfg_path, "r", encoding="utf-8") as f:
-                ai_cfg = json.load(f) or {}
-            if isinstance(ai_cfg, dict):
-                for key in ("judicial_api_user", "judicial_api_pass"):
-                    if (not str(cfg.get(key) or "").strip()) and str(ai_cfg.get(key) or "").strip():
-                        cfg[key] = str(ai_cfg.get(key) or "").strip()
-    except Exception as _e:
-        logger.debug("ai_cfg fallback skipped: %s", _e)
     return cfg
 
 
@@ -856,13 +872,21 @@ def _extractive_judgment_summary(full_text: str, case_reason: str = "", *, max_c
         chunk = re.sub(r"\n{2,}", "\n", chunk).strip(" ：:\n\t")
         return chunk[:limit].strip()
 
-    holding = _section(r"主\s*文", r"(?:事實及理由|事實|理由|中\s*華\s*民\s*國)", 420)
+    holding = _section(
+        r"(?:^|\n)\s*主\s*文\s*(?:\n|$)",
+        r"(?:\n\s*(?:犯罪)?事\s*實|\n\s*(?:事\s*實\s*及\s*理\s*由|理\s*由)|中\s*華\s*民\s*國)",
+        420,
+    )
     reason = ""
-    reason_text = _section(r"(?:事實及理由|理由)", r"中\s*華\s*民\s*國", 1200)
+    reason_text = _section(
+        r"(?:^|\n)\s*(?:事\s*實\s*及\s*理\s*由|理\s*由)\s*(?:\n|$)",
+        r"中\s*華\s*民\s*國",
+        1200,
+    )
     if reason_text:
         signals = (
-            r"(?:本院認為|本院認|本院審酌|經查|惟查|按[，,]|次按|又按|查|準此|是以)"
-            r".{30,260}?(?:。|；)"
+            r"(?:本院認為|本院認|本院審酌|經查|惟查|按[，,]?|次按|再按|又按|查(?=被告|本件|卷|無|有|此|上開|上揭)|準此|是以)"
+            r"[\s\S]{30,360}?(?:。|；)"
         )
         picks = [m.group(0).strip() for m in re.finditer(signals, reason_text)]
         if picks:
@@ -881,7 +905,11 @@ def _extractive_judgment_summary(full_text: str, case_reason: str = "", *, max_c
             first = reason_text[:520].strip()
             reason = f"- {first}" if first else ""
 
-    statutes = sorted(set(re.findall(r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|非訟事件法)?第\d+(?:-\d+)?條(?:之\d+)?", compact)))
+    statute_laws = (
+        "民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|"
+        "消費者債務清理條例|非訟事件法|詐欺犯罪危害防制條例|洗錢防制法"
+    )
+    statutes = sorted(set(re.findall(rf"(?:{statute_laws})第\d+(?:-\d+)?條(?:之\d+)?", compact)))
     statutes_line = "、".join(statutes[:12]) if statutes else "未明確抽得"
     title_line = next((ln.strip() for ln in compact.split("\n") if ln.strip()), "")
 
@@ -891,6 +919,9 @@ def _extractive_judgment_summary(full_text: str, case_reason: str = "", *, max_c
         "",
         "## 主文摘錄",
         holding or (reason_text[:360].strip() if reason_text else compact[:360].strip()),
+        "",
+        "## 實務見解",
+        reason or (reason_text[:520].strip() if reason_text else compact[:360].strip()),
         "",
         "## 理由摘錄",
         reason or "- 未抽得明確理由段落；請開啟全文確認。",
@@ -2074,7 +2105,7 @@ def _update_summary_by_text_path(
     is_degraded: Optional[bool] = None,
 ) -> int:
     """
-    重試摘要成功後回寫 DB，避免佇列改善結果只留在記憶事件、不更新資料庫內容。
+    重試摘要成功後回寫 DB，避免序列改善結果只留在記憶事件、不更新資料庫內容。
     """
     if (not conn) or (not full_text_path) or (not summary_text):
         return 0
@@ -2376,6 +2407,9 @@ def _is_degraded_summary(text: str, expected_reason: str = "") -> bool:
         "timeout",
     ]
     if any(f in s for f in flags):
+        return True
+    if is_extractive_fast_judgment_digest(s) and not re.search(r"##\s*實務見解", s):
+        logger.warning("Extractive fast digest detected; storing as non-authoritative candidate only (len=%d)", len(s))
         return True
     if is_non_extractable_legal_insight(s):
         logger.warning("Non-extractable legal insight placeholder detected in summary (len=%d)", len(s))
@@ -2692,6 +2726,7 @@ def resummary_all(
     dry_run: bool = False,
     notify: bool = True,
     case_reason_filter: str = "",
+    verify_existing_quality: bool = False,
 ) -> dict:
     """
     從 court_judgments 讀取所有有全文的判決，用改善後的 prompt 重新摘要。
@@ -2724,14 +2759,18 @@ def resummary_all(
             "summary, full_text, source_url "
             "FROM court_judgments "
             "WHERE full_text IS NOT NULL AND CHAR_LENGTH(full_text) > 200"
-            # 排除已有良好摘要（含「實務見解」且無 WFGY 殘留）的判決
-            " AND (summary IS NULL OR summary NOT LIKE '%%實務見解%%'"
-            "      OR summary LIKE '%%[2]%%' OR summary LIKE '%%[4]%%')"
             # 排除低價值程序性文書（最高/高等法院除外）
             " AND case_number IS NOT NULL"
             " AND (jid LIKE 'TPS%%' OR jid LIKE 'TPH%%'"
             "      OR case_number NOT REGEXP '司促字|促字第|司票字|票字第|補字第|附民字|續收字|司催字|司消債核字|司執字|司繼字|司聲字|全字第|暫字第|拍字第|司拍字')"
         )
+        if not verify_existing_quality:
+            # 排除已有良好摘要（含「實務見解」且無 WFGY 殘留）的判決。
+            # verify_existing_quality=True 時會逐筆跑來源支持檢查。
+            sql += (
+                " AND (summary IS NULL OR summary NOT LIKE '%%實務見解%%'"
+                "      OR summary LIKE '%%[2]%%' OR summary LIKE '%%[4]%%')"
+            )
         params: list = []
         if case_reason_filter:
             sql += " AND case_type LIKE %s"
@@ -2767,8 +2806,14 @@ def resummary_all(
             skipped += 1
             continue
 
-        # 已有良好摘要（含「## 實務見解」且無 WFGY 殘留）的跳過
-        if old_summary and re.search(r"##\s*實務見解", old_summary) and not re.search(r"\[\d\]\s", old_summary):
+        # 已有良好摘要且可回查來源的才跳過；格式漂亮但不受來源支持者要重跑。
+        if (
+            old_summary
+            and re.search(r"##\s*實務見解", old_summary)
+            and not re.search(r"\[\d\]\s", old_summary)
+            and not _is_degraded_summary(old_summary, case_type)
+            and not _summary_source_support_failure(old_summary, full_text)
+        ):
             logger.info(f"[resummary] {jid} already has good summary, skipping")
             skipped += 1
             continue
@@ -2784,6 +2829,11 @@ def resummary_all(
 
         if not new_summary or _is_degraded_summary(new_summary, case_type):
             logger.info(f"[resummary] {jid} new summary degraded, keeping old")
+            failed += 1
+            continue
+        source_support_error = _summary_source_support_failure(new_summary, full_text)
+        if source_support_error:
+            logger.info(f"[resummary] {jid} new summary not source-supported ({source_support_error}), keeping old")
             failed += 1
             continue
 
@@ -2943,6 +2993,118 @@ def _sanitize_summary(text: str) -> str:
     return s.strip()
 
 
+def _source_support_norm(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).replace("臺", "台")
+
+
+def _opinion_section_text(summary: str) -> str:
+    s = str(summary or "").strip()
+    if not s:
+        return ""
+    match = re.search(r"##\s*實務見解\s*(.*?)(?=\n##\s*|\Z)", s, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    if "實務見解" in s:
+        return s
+    return ""
+
+
+def _summary_source_support_failure(summary: str, source_text: str) -> str:
+    """Return a reason when the generated legal insight is not grounded in source text."""
+    s = _sanitize_summary(summary)
+    source_norm = _source_support_norm(source_text)
+    if not s:
+        return "empty_summary"
+    if not source_norm:
+        return "empty_source"
+
+    summary_norm = _source_support_norm(s)
+    for citation in re.findall(r"最高(?:法院|行政法院)\s*\d{2,3}\s*年度?\s*[\u4e00-\u9fff]{1,6}\s*字?\s*第?\s*\d{1,7}\s*號", s):
+        if _source_support_norm(citation) not in source_norm:
+            return f"unsupported_citation:{citation}"
+
+    opinion = _opinion_section_text(s)
+    if not opinion:
+        return "missing_opinion_section"
+    if is_non_extractable_legal_insight(opinion):
+        return "non_extractable_placeholder"
+
+    candidates: list[str] = []
+    short_candidates: list[str] = []
+    for line in re.split(r"(?:\n+|[。；])", opinion):
+        line = re.sub(r"^\s*(?:[-*•]|[（(]?\d+[）).、])\s*", "", line).strip()
+        if not line or line.startswith("（") or line.startswith("("):
+            continue
+        norm = _source_support_norm(line)
+        cjk_count = len(re.findall(r"[\u4e00-\u9fff]", norm))
+        if cjk_count >= 24:
+            candidates.append(norm)
+        elif cjk_count >= 10:
+            short_candidates.append(norm)
+
+    if not candidates:
+        for norm in short_candidates:
+            if norm in source_norm:
+                return ""
+            windows = [norm[:16], norm[-16:]]
+            if any(len(w) >= 10 and w in source_norm for w in windows):
+                return ""
+        return "no_checkable_opinion_sentence"
+
+    supported = 0
+    unsupported_examples: list[str] = []
+    for norm in candidates:
+        if norm in source_norm:
+            supported += 1
+            continue
+        windows = [norm[:36], norm[max(0, len(norm) // 2 - 18): len(norm) // 2 + 18], norm[-36:]]
+        if any(len(w) >= 24 and w in source_norm for w in windows):
+            supported += 1
+        elif len(unsupported_examples) < 2:
+            unsupported_examples.append(norm[:40])
+
+    ratio = supported / max(1, len(candidates))
+    if supported == 0:
+        return "unsupported_opinion"
+    if ratio < 0.5 and len(candidates) >= 3:
+        return "low_source_support:" + "|".join(unsupported_examples)
+    if "##實務見解" in summary_norm and supported < 1:
+        return "unsupported_opinion"
+    return ""
+
+
+def _summary_is_source_supported(summary: str, source_text: str) -> bool:
+    return not _summary_source_support_failure(summary, source_text)
+
+
+def _score_summary_chunk(chunk: str) -> int:
+    text = str(chunk or "")
+    score = 0
+    score += len(_SUPREME_COURT_CITATION.findall(text)) * 8
+    score += len(re.findall(r"本院(?:按|判斷|認為|審酌|查)", text)) * 4
+    score += len(re.findall(r"(?:惟查|經查|次按|再按|又按|按[，,])", text)) * 3
+    score += len(re.findall(r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法)?第\d+(?:-\d+)?條(?:之\d+)?", text))
+    if re.search(r"理\s*由|事實及理由", text):
+        score += 5
+    if re.search(r"主\s*文", text):
+        score += 1
+    return score
+
+
+def _select_summary_chunk_indices(chunks: list[str], max_chunks: int) -> list[int]:
+    total = len(chunks)
+    if total <= max_chunks:
+        return list(range(total))
+    scored = sorted(
+        ((idx, _score_summary_chunk(chunk)) for idx, chunk in enumerate(chunks)),
+        key=lambda item: (-item[1], item[0]),
+    )
+    chosen = {idx for idx, score in scored[:max_chunks] if score > 0}
+    if not chosen:
+        chosen = {0}
+    return sorted(chosen)
+
+
 # ── 法院見解段落預擷取 ──────────────────────────────────────────────
 
 # 法院見解起始標記（paragraph-level markers）
@@ -3094,7 +3256,15 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
 
     combined_summaries = []
     rk = "judgment-collector:summarize:" + hashlib.sha256(case_reason.encode()).hexdigest()[:8]
-    chunk_slots = min(5, len(chunks))
+    max_chunk_slots = max(1, int(_env("JUDGMENT_SUMMARY_MAX_CHUNKS", "8") or "8"))
+    selected_chunk_indices = _select_summary_chunk_indices(chunks, max_chunk_slots)
+    if len(selected_chunk_indices) < len(chunks):
+        logger.info(
+            "Selected %d/%d source-supported candidate chunks for legal insight extraction",
+            len(selected_chunk_indices),
+            len(chunks),
+        )
+    chunk_slots = len(selected_chunk_indices)
     chunk_route_buf: list[str] = [""] * chunk_slots
     chunk_deg_buf: list[bool] = [True] * chunk_slots
 
@@ -3138,6 +3308,18 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
             "case_reason_context": case_reason,
             "prompt_template": filled_prompt,
         }
+
+        def _candidate_or_error(raw_text: str, route: str) -> tuple[str, str]:
+            candidate = _sanitize_summary(str(raw_text or "").strip())
+            if not candidate:
+                return "", f"{route}:empty"
+            if _is_degraded_summary(candidate, case_reason):
+                return "", f"{route}:degraded"
+            support_error = _summary_source_support_failure(candidate, chunk)
+            if support_error:
+                return "", f"{route}:{support_error}"
+            return candidate, ""
+
         result = _run_skill(
             "insight-refine",
             _skill_json_task("refine", payload),
@@ -3146,9 +3328,14 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
         )
         parsed = _parse_skill_output(result)
         if parsed.get("success"):
-            text = _sanitize_summary((parsed.get("refined_text") or parsed.get("text") or parsed.get("output") or "").strip())
+            text, candidate_err = _candidate_or_error(
+                parsed.get("refined_text") or parsed.get("text") or parsed.get("output") or "",
+                "skill_insight_refine",
+            )
             if text:
                 return idx, text, None, False, "skill_insight_refine"
+            if candidate_err:
+                parsed["error"] = (str(parsed.get("error") or "") + " | " + candidate_err).strip(" |")
 
         chunk_prompt = filled_prompt
         skill_err = parsed.get("error") or "insight_refine_failed"
@@ -3165,7 +3352,7 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
                     prompt=chunk_prompt,
                     timeout_sec=max(60, int(timeout_sec)),
                 )
-                codex_text = _sanitize_summary(str(codex_r.get("text") or "").strip())
+                codex_text, codex_candidate_err = _candidate_or_error(codex_r.get("text") or "", "openclaw_codex")
                 if codex_r.get("success") and codex_text:
                     logger.info(f"Chunk {idx+1} summarized via Codex OAuth")
                     # ── 知識蒸餾：收集高品質 Codex 訓練資料 ──
@@ -3175,11 +3362,11 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
                     except Exception:
                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2637, exc_info=True)  # 收集失敗不影響主流程
                     return idx, codex_text, None, False, "openclaw_codex"
-                skill_err += f" | codex:{codex_r.get('error', 'empty')}"
+                skill_err += f" | codex:{codex_r.get('error') or codex_candidate_err or 'empty'}"
         except Exception as codex_exc:
             skill_err += f" | codex_exc:{codex_exc}"
 
-        # ── NIM fallback：Codex 失敗時走免費 NVIDIA NIM（70B 默認，>20K 字自動 405B）──
+        # ── NIM fallback：Codex 失敗時走免費 NVIDIA NIM（70B 默認，>20K 字自動 heavy）──
         # nim_heavy.run_nim_chat 內建 semaphore (NVIDIA_NIM_MAX_CONCURRENT, 預設 3)、
         # daily budget (NVIDIA_NIM_DAILY_BUDGET, 預設 500)、circuit breaker、PII scrub。
         # 由 NVIDIA_NIM_ENABLE=1 開關；JUDGMENT_NIM_INGEST=1 額外控制 ingestion 是否走 NIM。
@@ -3194,7 +3381,7 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
                     require_pii_scrub=_env("NVIDIA_NIM_REQUIRE_PII_SCRUB", "1") in ("1", "true", "True"),
                 )
                 if nim_r.get("success"):
-                    nim_text = _sanitize_summary(str(nim_r.get("response") or "").strip())
+                    nim_text, nim_candidate_err = _candidate_or_error(nim_r.get("response") or "", "nvidia_nim")
                     if nim_text:
                         logger.info(f"Chunk {idx+1} summarized via NIM ({nim_r.get('model', '')})")
                         try:
@@ -3203,7 +3390,7 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch nim distill", exc_info=True)
                         return idx, nim_text, None, False, "nvidia_nim"
-                skill_err += f" | nim:{nim_r.get('error', 'empty')}"
+                skill_err += f" | nim:{nim_r.get('error') or nim_candidate_err or 'empty'}"
             except Exception as nim_exc:
                 skill_err += f" | nim_exc:{nim_exc}"
 
@@ -3217,12 +3404,17 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
                 force_quality=_env("JUDGMENT_SUMMARY_FORCE_QUALITY", "0") in ("1", "true", "True", "yes", "YES"),
             )
             if g.get("success"):
-                g_text = _sanitize_summary((g.get("response") or g.get("summary") or g.get("text") or "").strip())
+                g_text, g_candidate_err = _candidate_or_error(
+                    g.get("response") or g.get("summary") or g.get("text") or "",
+                    str(g.get("route") or "gateway_dispatch"),
+                )
                 if g_text:
-                    g_deg = bool(g.get("degraded", False) or _is_degraded_summary(g_text))
+                    g_deg = bool(g.get("degraded", False) or _is_degraded_summary(g_text, case_reason))
                     return idx, g_text, None, g_deg, str(g.get("route") or "gateway_dispatch")
 
             g_err = g.get("error", "") if isinstance(g, dict) else ""
+            if not g_err:
+                g_err = g_candidate_err if "g_candidate_err" in locals() else ""
             return idx, None, f"{skill_err} | dispatch:{g_err}", True, "failed"
 
         return idx, None, skill_err, True, "failed"
@@ -3232,7 +3424,10 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
     _chunk_deadline = max(120, int(timeout_sec) * 2)
     # max_workers=1: oMLX max-num-seqs=1, parallel requests just queue and risk timeout cascade
     with ThreadPoolExecutor(max_workers=1) as executor:
-        fut_map = {executor.submit(_summarize_one_chunk, i, chunks[i]): i for i in range(chunk_slots)}
+        fut_map = {
+            executor.submit(_summarize_one_chunk, chunk_idx, chunks[chunk_idx]): slot_idx
+            for slot_idx, chunk_idx in enumerate(selected_chunk_indices)
+        }
         try:
             for f in as_completed(fut_map, timeout=_chunk_deadline):
                 i = fut_map[f]
@@ -3261,9 +3456,18 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
     combined_summaries = [t for t in combined_buf if t]
             
     if not combined_summaries:
+        fallback = _extractive_judgment_summary(full_text, case_reason)
+        support_error = _summary_source_support_failure(fallback, full_text) if fallback else "empty_summary"
+        if fallback and not support_error:
+            _set_last_summary_meta(is_degraded=False, route="extractive_fallback", error="all_chunks_failed")
+            return fallback
         lines = full_text.strip().split("\n")
         preview = "\n".join(lines[:20])
-        _set_last_summary_meta(is_degraded=True, route="preview_fallback", error="all_chunks_failed")
+        _set_last_summary_meta(
+            is_degraded=True,
+            route="preview_fallback",
+            error=f"all_chunks_failed; extractive_fallback:{support_error}",
+        )
         return "(摘要失敗，前 20 行預覽)\n" + preview
 
     if len(combined_summaries) == 1:
@@ -3305,9 +3509,12 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
     if parsed_final.get("success"):
         final_text = _sanitize_summary((parsed_final.get("refined_text") or parsed_final.get("text") or parsed_final.get("output") or "").strip())
         if final_text:
-            is_deg = bool(any(chunk_deg_buf) or _is_degraded_summary(final_text))
-            _set_last_summary_meta(is_degraded=is_deg, route="skill_insight_refine_reduce")
-            return final_text
+            final_support_error = _summary_source_support_failure(final_text, working_text)
+            is_deg = bool(any(chunk_deg_buf) or _is_degraded_summary(final_text, case_reason) or final_support_error)
+            if not is_deg:
+                _set_last_summary_meta(is_degraded=False, route="skill_insight_refine_reduce")
+                return final_text
+            parsed_final["error"] = (str(parsed_final.get("error") or "") + " | final:" + (final_support_error or "degraded")).strip(" |")
 
     gateway = _get_inference_gateway()
     if gateway:
@@ -3321,13 +3528,25 @@ def _summarize_judgment(full_text: str, case_reason: str, timeout_sec: int = 420
         if g_final.get("success"):
             final_text = _sanitize_summary((g_final.get("response") or g_final.get("summary") or g_final.get("text") or "").strip())
             if final_text:
-                is_deg = bool(any(chunk_deg_buf) or g_final.get("degraded", False) or _is_degraded_summary(final_text))
-                _set_last_summary_meta(
-                    is_degraded=is_deg,
-                    route=str(g_final.get("route") or "gateway_chat_reduce"),
-                    error=(parsed_final.get("error") or ""),
+                final_support_error = _summary_source_support_failure(final_text, working_text)
+                is_deg = bool(
+                    any(chunk_deg_buf)
+                    or g_final.get("degraded", False)
+                    or _is_degraded_summary(final_text, case_reason)
+                    or final_support_error
                 )
-                return final_text
+                if not is_deg:
+                    _set_last_summary_meta(
+                        is_degraded=False,
+                        route=str(g_final.get("route") or "gateway_chat_reduce"),
+                        error=(parsed_final.get("error") or ""),
+                    )
+                    return final_text
+                parsed_final["error"] = (
+                    str(parsed_final.get("error") or "")
+                    + " | gateway_final:"
+                    + (final_support_error or "degraded")
+                ).strip(" |")
 
     fallback = "\n\n(系統提示：最終整合失敗，以下為分段重點紀錄)\n" + "\n---\n".join(combined_summaries)
     _set_last_summary_meta(is_degraded=True, route="chunk_concat_fallback", error=(parsed_final.get("error") or "reduce_failed"))
@@ -3593,6 +3812,7 @@ def collect(
     judicial_fallback_error = ""
     # JUDGMENT_SKIP_JIRS=1 disables 司法院API fallback (e.g. during planned maintenance)
     _skip_jirs = _env("JUDGMENT_SKIP_JIRS", "0").lower() in {"1", "true", "yes"}
+    _skip_fill = _env("JUDGMENT_SKIP_JY_FILL", "0").lower() in {"1", "true", "yes"}
     # Track overall time budget from here (includes fill + per-item phases)
     import time as _time
     _collect_start = _time.monotonic()
@@ -3836,10 +4056,13 @@ def collect(
 
     # 6) Notify
     ok_count = len([r for r in results if r.get("success")])
+    usable_count = len([r for r in results if r.get("success") and not r.get("is_degraded")])
+    degraded_count = len([r for r in results if r.get("success") and r.get("is_degraded")])
     notify_text = (
         "📚 判決收集完成 — " + case_reason + "\n"
             "法院: " + courts_display + "\n"
             "收集筆數: " + str(ok_count) + "/" + str(len(items)) + "\n"
+            "可用摘要: " + str(usable_count) + "；降級: " + str(degraded_count) + "\n"
             "報告: " + summary_path + "\n"
         )
     if db_ids:
@@ -3849,7 +4072,7 @@ def collect(
             if r.get("success"):
                 notify_text += "  - " + r["title"][:50] + "\n"
     if retry_queued_count > 0:
-        notify_text += f"摘要重試佇列: +{retry_queued_count}\n"
+        notify_text += f"摘要重試序列: +{retry_queued_count}\n"
     _notify(notify_text, notify)
 
     if conn:
@@ -3858,8 +4081,10 @@ def collect(
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3291, exc_info=True)
 
+    degraded_failure = bool(ok_count > 0 and usable_count == 0)
     return {
-        "success": True,
+        "success": not degraded_failure,
+        "error": "all_judgment_summaries_degraded" if degraded_failure else "",
         "case_reason": case_reason,
         "case_type": case_type,
         "court_level": courts_display,
@@ -3868,6 +4093,8 @@ def collect(
         "archive_dir": archive_dir,
         "summary_path": summary_path,
         "count": ok_count,
+        "usable_count": usable_count,
+        "degraded_count": degraded_count,
         "retry_queued_count": retry_queued_count,
         "db_ids": db_ids,
         "items": results[: max(10, min(120, int(max_results)))],
@@ -3875,7 +4102,7 @@ def collect(
 
 
 # ---------------------------------------------------------------------------
-# Official Judicial API (night pull + day process)
+# Official Judicial data interface (夜間拉取與白天整理)
 # ---------------------------------------------------------------------------
 def _iter_jdg_raw_files() -> list[str]:
     out: list[str] = []
@@ -3884,7 +4111,7 @@ def _iter_jdg_raw_files() -> list[str]:
         return out
     for p in root.glob("*/*.json"):
         try:
-            if p.is_file():
+            if p.is_file() and not p.name.startswith("._"):
                 out.append(str(p))
         except Exception:
             continue
@@ -3895,16 +4122,16 @@ def _iter_jdg_raw_files() -> list[str]:
 def official_api_night_pull(
     *,
     max_jdocs: int = JDG_API_NIGHT_MAX_JDOCS,
-    max_days: int = 0,
+    max_days: int = JDG_API_NIGHT_MAX_DAYS,
     force: bool = False,
     notify: bool = False,
 ) -> dict:
     """
-    司法院裁判書 API 夜間批量拉取。
+    司法院裁判書資料夜間批量拉取。
 
     Parameters:
-        max_jdocs: 本次拉取上限筆數（預設 25000）
-        max_days:  JList 日期上限（0=不限，拉完所有可用日期）
+        max_jdocs: 本次拉取上限筆數（tlr_smart 預設 300；legacy 才是 25000）
+        max_days:  JList 日期上限（tlr_smart 預設 2；0=不限，拉完所有可用日期）
         force:     強制重新拉取已存在的判決
         notify:    完成後通知
     """
@@ -3913,7 +4140,7 @@ def official_api_night_pull(
         return {
             "success": True,
             "skipped": True,
-            "message": "不在司法院 API 服務時段（預設 00:00-06:00）",
+            "message": "不在司法院裁判資料介接服務時段（預設 00:00-06:00）",
             "now_hour": now.hour,
             "auth_success": None,
         }
@@ -3923,7 +4150,7 @@ def official_api_night_pull(
         return {
             "success": True,
             "skipped": True,
-            "message": "略過：未設定司法院裁判 API 專用帳密（judicial_api_user/judicial_api_pass）",
+            "message": "略過：未設定司法院裁判資料專用帳密（judicial_api_user/judicial_api_pass）",
             "reason": "missing_dedicated_judicial_api_credentials",
             "auth_success": None,
         }
@@ -3942,7 +4169,7 @@ def official_api_night_pull(
             "success": True,
             "skipped": True,
             "reason": "judicial_api_night_pull_already_running",
-            "message": "略過：司法院 API 夜間拉取已在執行，避免重複下載與 API/NAS 負載。",
+            "message": "略過：司法院裁判資料夜間拉取已在執行，避免重複下載與系統/NAS 負載。",
             "auth_success": None,
         }
     except Exception as lock_exc:
@@ -4011,7 +4238,7 @@ def official_api_night_pull(
             break
         # 時段保護：若超出服務時段自動停止
         if not _is_jdg_service_window():
-            logger.warning("night_pull: 已超出服務時段，提前結束（fetched=%d）", fetched)
+            logger.warning("night_pull: 已超出服務時段，提前結束（新抓=%d）", fetched)
             break
         if not isinstance(ent, dict):
             continue
@@ -4091,7 +4318,7 @@ def official_api_night_pull(
         # 日期層級日誌
         if len(jids) > 0:
             logger.info(
-                "  date=%s: jids=%d, failed=%d, total_fetched=%d",
+                "  日期=%s：清單筆數=%d，失敗=%d，累計新抓=%d",
                 d, len(jids), date_failed, fetched,
             )
 
@@ -4130,7 +4357,7 @@ def official_api_night_pull(
     _save_json_file(JDG_API_PULL_STATE_PATH, pull_state)
 
     msg = (
-        f"司法院 API 夜間拉取完成：新抓 {fetched}、更新 {updated_existing}、略過 {skipped}、失敗 {failed}、移除標記 {removed}。"
+        f"司法院裁判資料夜間拉取完成：新抓 {fetched}、更新 {updated_existing}、略過 {skipped}、失敗 {failed}、移除標記 {removed}。"
     )
     
     if consecutive_failures >= 3:
@@ -4205,7 +4432,7 @@ def official_api_day_process(
         return {
             "success": True,
             "skipped": True,
-            "message": "目前在夜間 API 時段，白天整理任務自動略過",
+            "message": "目前在司法院裁判資料服務時段，白天整理任務自動略過",
             "now_hour": now.hour,
         }
 
@@ -4214,7 +4441,7 @@ def official_api_day_process(
         return {
             "success": True,
             "skipped": True,
-            "message": "無待整理 API 原始檔",
+            "message": "無待整理的司法院裁判資料檔",
             "backlog_before": 0,
             "backlog_remaining": 0,
         }
@@ -4540,7 +4767,7 @@ def official_api_day_process(
         oldest_age = float(backlog_after_info.get("oldest_backlog_age_hours") or 0.0)
         if backlog_remaining >= max(1, backlog_alert_threshold) or oldest_age >= max(0.5, backlog_age_threshold):
             _notify(
-                format_backlog_notice("⚠️ 司法院 API 晨間整理：backlog 需要判讀", interpretation),
+                format_backlog_notice("⚠️ 司法院裁判資料晨間整理：待整理量需要判讀", interpretation),
                 True,
             )
     if notify:
@@ -4912,6 +5139,10 @@ def daily_crawl(
     # Process each reason
     report_lines = ["🌙 每日判決爬取 — " + datetime.now().strftime("%Y-%m-%d %H:%M")]
     all_results = []
+    success_reasons = 0
+    failed_reasons = 0
+    total_collected = 0
+    failure_samples: list[dict[str, str]] = []
     for item in reasons:
         elapsed = (time.time() - t0)
         if time_budget_sec > 0 and elapsed > float(time_budget_sec):
@@ -4937,22 +5168,43 @@ def daily_crawl(
                 "notify": False,
             }
             result = _collect_with_hard_timeout(collect_payload, hard_timeout_sec=int(effective_timeout) + 60)
-            ok = result.get("count", 0)
-            report_lines.append(
-                "  - " + reason + "（" + _get_court_display(case_type, reason) + "）: "
-                + str(ok) + " 筆判決已收集"
-            )
+            if not bool(result.get("success", True)):
+                failed_reasons += 1
+                err = str(result.get("error") or "collect_failed").strip()
+                failure_samples.append({"reason": reason, "error": err[:180]})
+                report_lines.append("  - " + reason + ": ❌ " + err[:80])
+            else:
+                ok = int(result.get("count") or 0)
+                success_reasons += 1
+                total_collected += ok
+                report_lines.append(
+                    "  - " + reason + "（" + _get_court_display(case_type, reason) + "）: "
+                    + str(ok) + " 筆判決已收集"
+                )
             all_results.append({"reason": reason, "result": result})
         except Exception as e:
+            failed_reasons += 1
+            failure_samples.append({"reason": reason, "error": str(e)[:180]})
             report_lines.append("  - " + reason + ": ❌ " + str(e)[:80])
             all_results.append({"reason": reason, "error": str(e)[:200]})
+
+    all_failed = failed_reasons > 0 and success_reasons == 0
+    partial_failed = failed_reasons > 0 and success_reasons > 0
+    if all_failed:
+        report_lines.append("  - ⚠️ 所有案由查詢皆失敗，未新增實務見解。")
+    elif partial_failed:
+        report_lines.append(f"  - ⚠️ 部分案由失敗：{failed_reasons} 件；成功案由 {success_reasons} 件。")
 
     summary_text = "\n".join(report_lines)
     _eventlog(
         "judgment:daily_crawl:done",
-        ok=True,
+        ok=not all_failed,
         payload={
             "reasons_processed": len(reasons),
+            "success_reasons": success_reasons,
+            "failed_reasons": failed_reasons,
+            "total_collected": total_collected,
+            "failure_samples": failure_samples[:5],
             "reasons": [r.get("reason") for r in reasons][:10],
             "preview": summary_text[:600],
         },
@@ -4965,8 +5217,13 @@ def daily_crawl(
         retry_result = retry_summary_queue_auto(notify=False)
 
     return {
-        "success": True,
+        "success": not all_failed,
+        "error": "all_judgment_reason_searches_failed" if all_failed else "",
         "reasons_processed": len(reasons),
+        "success_reasons": success_reasons,
+        "failed_reasons": failed_reasons,
+        "total_collected": total_collected,
+        "failure_samples": failure_samples[:10],
         "results": all_results,
         "summary_retry": retry_result,
     }
@@ -5148,23 +5405,23 @@ def main() -> int:
         r = daily_crawl()
         return _ok(r)
 
-    if task.startswith("official_api_night_pull") or task.startswith("夜間拉取裁判API"):
-        payload = _load_jsonish(task.replace("official_api_night_pull", "", 1).replace("夜間拉取裁判API", "", 1).strip())
+    if task.startswith("official_api_night_pull") or task.startswith("夜間拉取裁判資料"):
+        payload = _load_jsonish(task.replace("official_api_night_pull", "", 1).replace("夜間拉取裁判資料", "", 1).strip())
         try:
             max_jdocs = int(payload.get("max_jdocs", JDG_API_NIGHT_MAX_JDOCS))
         except Exception:
             max_jdocs = JDG_API_NIGHT_MAX_JDOCS
         try:
-            max_days = int(payload.get("max_days", 7))
+            max_days = int(payload.get("max_days", JDG_API_NIGHT_MAX_DAYS))
         except Exception:
-            max_days = 7
+            max_days = JDG_API_NIGHT_MAX_DAYS
         force = bool(payload.get("force", False))
         notify = bool(payload.get("notify", False))
         r = official_api_night_pull(max_jdocs=max_jdocs, max_days=max_days, force=force, notify=notify)
         return _ok(r)
 
-    if task.startswith("official_api_day_process") or task.startswith("白天整理裁判API"):
-        payload = _load_jsonish(task.replace("official_api_day_process", "", 1).replace("白天整理裁判API", "", 1).strip())
+    if task.startswith("official_api_day_process") or task.startswith("白天整理裁判資料"):
+        payload = _load_jsonish(task.replace("official_api_day_process", "", 1).replace("白天整理裁判資料", "", 1).strip())
         try:
             max_docs = int(payload.get("max_docs", JDG_API_DAY_MAX_PROCESS))
         except Exception:
@@ -5193,8 +5450,8 @@ def main() -> int:
         )
         return _ok(r)
 
-    if task.startswith("official_api_auto") or task.startswith("裁判API自動模式"):
-        payload = _load_jsonish(task.replace("official_api_auto", "", 1).replace("裁判API自動模式", "", 1).strip())
+    if task.startswith("official_api_auto") or task.startswith("裁判資料自動模式"):
+        payload = _load_jsonish(task.replace("official_api_auto", "", 1).replace("裁判資料自動模式", "", 1).strip())
         force = bool(payload.get("force", False))
         notify = bool(payload.get("notify", False))
         r = official_api_auto(force=force, notify=notify)
@@ -5230,14 +5487,22 @@ def main() -> int:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4525, exc_info=True)
         return _ok(r)
 
-    if task.startswith("retry_summary_queue_auto") or task.startswith("重試摘要佇列自動"):
-        payload = _load_jsonish(task.replace("retry_summary_queue_auto", "", 1).replace("重試摘要佇列自動", "", 1).strip())
+    if task.startswith("retry_summary_queue_auto") or task.startswith("重試摘要序列自動"):
+        payload = _load_jsonish(
+            task.replace("retry_summary_queue_auto", "", 1)
+            .replace("重試摘要序列自動", "", 1)
+            .strip()
+        )
         notify = bool(payload.get("notify", False))
         r = retry_summary_queue_auto(notify=notify)
         return _ok(r)
 
-    if task.startswith("retry_summary_queue") or task.startswith("重試摘要佇列"):
-        payload = _load_jsonish(task.replace("retry_summary_queue", "", 1).replace("重試摘要佇列", "", 1).strip())
+    if task.startswith("retry_summary_queue") or task.startswith("重試摘要序列"):
+        payload = _load_jsonish(
+            task.replace("retry_summary_queue", "", 1)
+            .replace("重試摘要序列", "", 1)
+            .strip()
+        )
         try:
             max_items = int(payload.get("max_items", 3))
         except Exception:

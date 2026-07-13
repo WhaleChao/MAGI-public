@@ -1042,7 +1042,7 @@ def get_brain_status():
             gpu_hint = f"\n- **Melchior GPU:** {used_gb:.2f} / {total_gb:.2f} GB"
         return (
             "🧠 **Current Brain:** Distributed (Big Brain)\n"
-            "- **Model:** GLM/Qwen remote stack via Melchior\n"
+            "- **Model:** approved non-China remote stack via Melchior\n"
             f"- **Status:** {api_status}\n"
             f"{model_hint}{gpu_hint}\n"
             "- **Role:** Commander"

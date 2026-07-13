@@ -76,6 +76,12 @@ def test_general_chat_no_tool():
     assert req.tool_hint == ""
 
 
+def test_explicit_no_tool_request_no_tool():
+    req = classify_tool_requirement("只是聊天，不要查案件，也不要調工具")
+    assert req.level == "none"
+    assert "declined" in req.reason
+
+
 def test_query_intent_defaults_optional():
     req = classify_tool_requirement("這是什麼意思", intent="QUERY")
     assert req.level == "optional"
@@ -149,3 +155,57 @@ def test_route_result_as_context_failure():
     ctx = result.as_context()
     assert "失敗" in ctx
     assert "逾時" in ctx
+
+
+def test_production_tool_first_route_uses_registry_before_llm(monkeypatch):
+    from api.pipelines.message_pipeline import _try_tool_first_policy_route
+    from skills.engine.tool_registry import TOOLS
+
+    class _Orch:
+        def __init__(self):
+            self.traces = []
+
+        def _append_route_trace(self, *args, **kwargs):
+            self.traces.append((args, kwargs))
+
+    monkeypatch.setitem(
+        TOOLS,
+        "query_cases",
+        {"fn": lambda query="", **_: f"CASE_TOOL:{query}"},
+    )
+
+    orch = _Orch()
+    reply = _try_tool_first_policy_route(
+        orch,
+        "查一下112年度訴字第1234號案件的進度",
+        intent="QUERY",
+        user_id="u1",
+        platform="LINE",
+    )
+
+    assert reply.startswith("CASE_TOOL:")
+    assert orch.traces[0][0][2] == "tool_first_policy"
+
+
+def test_production_tool_first_route_returns_honest_failure(monkeypatch):
+    from api.pipelines.message_pipeline import _try_tool_first_policy_route
+    from skills.engine.tool_registry import TOOLS
+
+    class _Orch:
+        def _append_route_trace(self, *args, **kwargs):
+            raise AssertionError("failed tool should not trace success")
+
+    monkeypatch.setitem(
+        TOOLS,
+        "query_cases",
+        {"fn": lambda query="", **_: "案件查詢失敗: db down"},
+    )
+
+    reply = _try_tool_first_policy_route(
+        _Orch(),
+        "查一下112年度訴字第1234號案件的進度",
+        intent="QUERY",
+    )
+
+    assert "案件查詢" in reply
+    assert "db down" in reply

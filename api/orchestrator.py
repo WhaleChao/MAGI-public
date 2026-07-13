@@ -15,6 +15,7 @@ from api.thread_pools import io_pool, inference_pool
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 import threading as _threading
 
 from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
@@ -276,19 +277,30 @@ class Orchestrator:
         self._ensure_runtime_foundations()
         # Non-blocking oMLX health check at startup
         try:
-            import urllib.request
             try:
                 from api.routing.service_registry import get_service_url as _gsurl
                 _omlx_base = _gsurl("omlx_inference")
             except Exception:
                 _omlx_base = "http://localhost:8080"
-            _omlx_url = os.environ.get("OMLX_BASE_URL", _omlx_base) + "/v1/models"
-            req = urllib.request.Request(_omlx_url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    logger.info("✅ oMLX reachable at startup")
-                else:
-                    logger.warning(f"⚠️ oMLX returned status {resp.status} at startup — inference may fail")
+            from skills.ops.health_probes import probe_omlx_models
+
+            _probe_base = (
+                os.environ.get("MAGI_OMLX_CHAT_URL")
+                or os.environ.get("OMLX_BASE_URL")
+                or _omlx_base
+            )
+            _probe = probe_omlx_models(timeout_sec=3, base_url=_probe_base)
+            if _probe.get("pass"):
+                _models = ", ".join(str(x) for x in (_probe.get("models") or [])[:3])
+                logger.info("✅ oMLX reachable at startup (%s)", _models or "models available")
+            else:
+                _status = _probe.get("status_code") or "no-status"
+                _error = _probe.get("error") or "empty model list"
+                logger.warning(
+                    "⚠️ oMLX startup probe failed (status=%s, %s) — inference may fail until oMLX is running",
+                    _status,
+                    _error,
+                )
         except Exception as _e:
             logger.warning(f"⚠️ oMLX unreachable at startup ({_e}) — inference may fail until oMLX is running")
         # ── Skill Plugin Registry ─────────────────────────────────────
@@ -1280,8 +1292,28 @@ class Orchestrator:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3928, exc_info=True)
 
         try:
-            return self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            from api.agentic.shadow import observe_start as _observe_agent_start
+
+            _observe_agent_start(str(message or ""))
+        except Exception:
+            logging.getLogger(__name__).debug("agent shadow start telemetry skipped", exc_info=True)
+
+        try:
+            result = self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                _observe_agent_finish(str(message or ""), result)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow completion telemetry skipped", exc_info=True)
+            return result
         except Exception as _fatal:
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                _observe_agent_finish(str(message or ""), None, failed=True)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow failure telemetry skipped", exc_info=True)
             try:
                 from skills.management.issue_tracker import log_issue
 

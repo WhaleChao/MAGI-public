@@ -19,8 +19,10 @@ Coverage:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
+import types
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -41,6 +43,25 @@ def _fail_result() -> dict:
 
 _TEST_API_KEY = "test-api-key-asyncjobs-12345"
 _AUTH_HEADER = {"X-API-Key": _TEST_API_KEY}
+
+
+@pytest.fixture(autouse=True)
+def _tools_api_import_stubs(monkeypatch):
+    """Keep async /skills/run tests isolated from unrelated optional imports."""
+    flask_login = types.ModuleType("flask_login")
+    flask_login.current_user = types.SimpleNamespace(is_authenticated=False, role="")
+    monkeypatch.setitem(sys.modules, "flask_login", flask_login)
+
+    web_research = types.ModuleType("skills.research.web_research")
+    web_research.search_web = lambda query, num_results=5: {"results": []}
+    web_research.research_topic = lambda *args, **kwargs: {"success": True, "results": []}
+    web_research.fetch_url_content = lambda *args, **kwargs: {"success": True, "content": ""}
+    monkeypatch.setitem(sys.modules, "skills.research.web_research", web_research)
+
+    balthasar_bridge = types.ModuleType("skills.bridge.balthasar_bridge")
+    balthasar_bridge.summarize_text = lambda *args, **kwargs: {"success": True, "text": ""}
+    balthasar_bridge.check_health = lambda *args, **kwargs: (False, "stubbed")
+    monkeypatch.setitem(sys.modules, "skills.bridge.balthasar_bridge", balthasar_bridge)
 
 
 @pytest.fixture()
@@ -110,6 +131,144 @@ def test_sync_skill_run_succeeds(ctx):
     data = resp.get_json()
     assert data["success"] is True
     assert "job_id" not in data
+
+
+def test_sync_skill_run_runtime_mutation_defaults_off(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    for name in (
+        "MAGI_DEV_SKILL_RUNTIME_MUTATIONS",
+        "MAGI_SKILL_AUTO_REPAIR_DEFAULT",
+        "MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT",
+        "MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    calls = []
+
+    def _fake_run(skill, task, **kw):
+        calls.append(kw)
+        return _ok_result(skill, task)
+
+    monkeypatch.setattr(sg, "run_skill_action", _fake_run)
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "translator", "task": "help"},
+    )
+
+    assert resp.status_code == 200
+    assert calls[-1]["auto_repair"] is False
+    assert calls[-1]["rollback_on_fail"] is False
+    assert calls[-1]["auto_install_deps"] is False
+    policy = resp.get_json()["runtime_policy"]
+    assert policy["mutating_runtime_requested"] is False
+    assert "disabled" in policy["message"]
+
+
+def test_sync_skill_run_runtime_mutation_env_opt_in(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    monkeypatch.setenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", "1")
+    calls = []
+
+    def _fake_run(skill, task, **kw):
+        calls.append(kw)
+        return _ok_result(skill, task)
+
+    monkeypatch.setattr(sg, "run_skill_action", _fake_run)
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "translator", "task": "help"},
+    )
+
+    assert resp.status_code == 200
+    assert calls[-1]["auto_repair"] is True
+    assert calls[-1]["rollback_on_fail"] is True
+    assert calls[-1]["auto_install_deps"] is True
+    policy = resp.get_json()["runtime_policy"]
+    assert policy["mutating_runtime_requested"] is True
+    assert policy["dev_env_opt_in"] is True
+
+
+def test_sync_skill_run_folds_structured_params_at_execution_boundary(ctx):
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={
+            "skill": "judicial-web-search",
+            "task": "search",
+            "keywords": "最高法院 通譯",
+            "max_results": 3,
+        },
+    )
+    assert resp.status_code == 200
+    output = resp.get_json()["output"]
+    assert output.startswith("done:search ")
+    assert '"keywords": "最高法院 通譯"' in output
+    assert '"max_results": 3' in output
+
+
+def test_sync_skill_run_denies_high_risk_before_runner(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    calls = []
+    denied = {}
+    monkeypatch.setattr(
+        sg,
+        "run_skill_action",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or _ok_result("magi-doctor", "diagnose"),
+    )
+
+    def _capture_denied(_tool, _started, decision, _meta=None):
+        denied["reason"] = decision.reason
+        return {"error": decision.reason}, 403
+
+    monkeypatch.setattr(
+        ctx["tools_api"],
+        "_tool_denied_response",
+        _capture_denied,
+    )
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "magi-doctor", "task": "diagnose"},
+    )
+
+    assert resp.status_code == 403
+    assert "route_policy_denied:high_risk_skill_must_route_through_policy" in denied["reason"]
+    assert calls == []
+
+
+def test_sync_skill_run_denies_deprecated_before_runner(ctx, monkeypatch):
+    import skills.evolution.skill_genesis as sg
+
+    calls = []
+    denied = {}
+    monkeypatch.setattr(
+        sg,
+        "run_skill_action",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or _ok_result("pdf-annotator", "run"),
+    )
+
+    def _capture_denied(_tool, _started, decision, _meta=None):
+        denied["reason"] = decision.reason
+        return {"error": decision.reason}, 403
+
+    monkeypatch.setattr(
+        ctx["tools_api"],
+        "_tool_denied_response",
+        _capture_denied,
+    )
+
+    resp = ctx["client"].post(
+        "/skills/run",
+        json={"skill": "pdf-annotator", "task": "run"},
+    )
+
+    assert resp.status_code == 403
+    assert "route_policy_denied:deprecated_skill_must_not_run_directly" in denied["reason"]
+    assert calls == []
 
 
 def test_sync_skill_run_missing_task_returns_400(ctx):

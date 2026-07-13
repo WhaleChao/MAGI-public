@@ -85,7 +85,7 @@ def tail(text: str, limit: int = 4000) -> str:
     return text[-limit:]
 
 
-def run_check(check: dict[str, Any], *, dry_run: bool) -> CheckResult:
+def run_check(check: dict[str, Any], *, dry_run: bool, suite: str = "") -> CheckResult:
     cid = str(check.get("id") or check.get("name") or "unnamed")
     name = str(check.get("name") or cid)
     command = resolve_command(check.get("command") or [])
@@ -99,9 +99,13 @@ def run_check(check: dict[str, Any], *, dry_run: bool) -> CheckResult:
         return CheckResult(id=cid, name=name, ok=True, skipped=True, command=command, message="dry-run")
 
     env = os.environ.copy()
+    if "live" in (suite or "").lower():
+        env["MAGI_ENABLE_LIVE_TESTS"] = "1"
     extra_env = check.get("env")
     if isinstance(extra_env, dict):
         env.update({str(k): str(v) for k, v in extra_env.items()})
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(MAGI_ROOT) + (os.pathsep + current_pythonpath if current_pythonpath else "")
 
     timeout = int(check.get("timeout_sec") or 300)
     start = time.time()
@@ -174,7 +178,7 @@ def run_suite(matrix: dict[str, Any], matrix_path: Path, suite: str, *, dry_run:
     print(f"checks: {len(checks)}")
     print(f"dry_run: {dry_run}")
     for check in checks:
-        result = run_check(check, dry_run=dry_run)
+        result = run_check(check, dry_run=dry_run, suite=suite)
         report.total += 1
         if result.skipped:
             report.skipped += 1

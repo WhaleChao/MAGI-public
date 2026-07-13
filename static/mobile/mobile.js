@@ -1,5 +1,5 @@
 (function () {
     if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/static/mobile/sw.js").catch(function () {});
+        navigator.serviceWorker.register("/mobile/sw.js", { scope: "/mobile" }).catch(function () {});
     }
 })();

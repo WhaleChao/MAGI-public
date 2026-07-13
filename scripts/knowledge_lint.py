@@ -54,7 +54,18 @@ if MAGI_ROOT not in sys.path:
 logger = logging.getLogger("knowledge_lint")
 
 # ── Config ──────────────────────────────────────────────────────────
-AGENT_DIR = Path(MAGI_ROOT) / ".agent"
+def _resolve_agent_dir() -> Path:
+    raw = (
+        os.environ.get("MAGI_OBSIDIAN_AGENT_DIR")
+        or os.environ.get("MAGI_SHARED_AGENT_DIR")
+        or ""
+    ).strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(MAGI_ROOT) / ".agent"
+
+
+AGENT_DIR = _resolve_agent_dir()
 VAULT_CONFIG_PATH = AGENT_DIR / "obsidian_vault_config.json"
 INDEX_PATH = AGENT_DIR / "obsidian_index.json"
 WIKI_STATE_PATH = AGENT_DIR / "wiki_synthesizer_state.json"
@@ -73,15 +84,32 @@ DUPLICATE_SIM_THRESHOLD = 0.95  # cosine similarity for near-duplicate
 MAX_LLM_CHECKS = 10  # max contradiction checks per run
 DUPLICATE_PLAN_GROUP_LIMIT = 50
 DELETE_BATCH_SIZE = 500
+PRIVATE_LEGAL_PREVIEW_VENDOR = "Law" "snote"
 
 INSIGHT_DEGRADED_MARKERS = (
     "摘要失敗",
     "timeout",
     "逾時",
+    "降級摘要",
     "系統降級回覆",
     "無法擷取",
     "請稍後再試",
     "模型忙碌",
+)
+
+JUDGMENT_SUMMARY_BAD_MARKERS = (
+    "摘要失敗",
+    "前 20 行預覽",
+    f"依據 {PRIVATE_LEGAL_PREVIEW_VENDOR} 預覽摘要",
+    "你是一位精確的法律助理",
+    "判決內文：",
+    "【嚴格規則】",
+    "Thought:",
+    "Action:",
+    "Observation:",
+    "WFGY",
+    "降級摘要",
+    "系統降級回覆",
 )
 
 
@@ -161,6 +189,36 @@ def _is_low_quality_insight(text: str, is_degraded: bool) -> Tuple[bool, str]:
         return True, "degraded_short"
     if len(body_without_placeholders) < 25:
         return True, "substantive_body_too_short"
+    return False, ""
+
+
+def _is_low_quality_judgment_summary(text: str, is_degraded: bool = False) -> Tuple[bool, str]:
+    s = str(text or "").strip()
+    if not s:
+        return True, "empty"
+    if any(marker.lower() in s.lower() for marker in JUDGMENT_SUMMARY_BAD_MARKERS):
+        if "精確的法律助理" in s or "判決內文：" in s or "【嚴格規則】" in s:
+            return True, "prompt_leak"
+        if "Thought:" in s or "Action:" in s or "Observation:" in s or "WFGY" in s:
+            return True, "reasoning_trace_leak"
+        return True, "preview_or_degraded_marker"
+    body = _extract_insight_body(s)
+    placeholder_markers = (
+        "從判決中逐字擷取",
+        "列出判決內文中實際出現",
+        "列出適用法條",
+        "一句話概括本判決",
+    )
+    body_without_placeholders = body
+    for marker in placeholder_markers:
+        body_without_placeholders = body_without_placeholders.replace(marker, "")
+    body_without_placeholders = re.sub(r"[#_（）()：:\s\n\r\t-]+", "", body_without_placeholders)
+    if len(body_without_placeholders) < 25:
+        return True, "substantive_body_too_short"
+    if "實務見解" not in s and "本判決無可擷取之實務見解" not in s:
+        return True, "missing_practice_insight_section"
+    if is_degraded:
+        return True, "degraded_flag"
     return False, ""
 
 
@@ -944,6 +1002,281 @@ def check_insight_quality() -> Dict:
         return {"check": "insight_quality", "status": "error", "error": str(e)}
 
 
+def _count_sql(cur, sql: str) -> int:
+    cur.execute(sql)
+    row = cur.fetchone() or {}
+    if isinstance(row, dict):
+        return int(row.get("c") or row.get("COUNT(*)") or 0)
+    return int(row[0] or 0)
+
+
+def _fetch_judgment_issue_samples(cur, table: str, text_col: str, id_cols: Tuple[str, ...]) -> List[Dict]:
+    id_select = ", ".join(id_cols)
+    degraded_expr = "COALESCE(is_degraded, 0)" if table == "judgment_archive" else "0"
+    where = f"""
+        COALESCE({text_col}, '') <> ''
+        AND (
+            CHAR_LENGTH({text_col}) < 100
+            OR {text_col} NOT LIKE '%實務見解%'
+            OR {text_col} LIKE '%摘要失敗%'
+            OR {text_col} LIKE '%前 20 行預覽%'
+            OR {text_col} LIKE '%依據 {PRIVATE_LEGAL_PREVIEW_VENDOR} 預覽摘要%'
+            OR {text_col} LIKE '%你是一位精確的法律助理%'
+            OR {text_col} LIKE '%判決內文：%'
+            OR {text_col} LIKE '%【嚴格規則】%'
+            OR {text_col} LIKE '%Thought:%'
+            OR {text_col} LIKE '%Action:%'
+            OR {text_col} LIKE '%Observation:%'
+            OR {text_col} LIKE '%WFGY%'
+            OR {text_col} LIKE '%降級摘要%'
+            OR {degraded_expr} <> 0
+        )
+    """
+    cur.execute(
+        f"""
+        SELECT id, {id_select}, {degraded_expr} AS is_degraded,
+               LEFT({text_col}, 180) AS sample,
+               CASE
+                   WHEN {text_col} LIKE '%你是一位精確的法律助理%'
+                        OR {text_col} LIKE '%判決內文：%'
+                        OR {text_col} LIKE '%【嚴格規則】%'
+                        THEN 'prompt_leak'
+                   WHEN {text_col} LIKE '%Thought:%'
+                        OR {text_col} LIKE '%Action:%'
+                        OR {text_col} LIKE '%Observation:%'
+                        OR {text_col} LIKE '%WFGY%'
+                        THEN 'reasoning_trace_leak'
+                   WHEN {text_col} LIKE '%摘要失敗%'
+                        OR {text_col} LIKE '%前 20 行預覽%'
+                        OR {text_col} LIKE '%依據 {PRIVATE_LEGAL_PREVIEW_VENDOR} 預覽摘要%'
+                        OR {text_col} LIKE '%降級摘要%'
+                        THEN 'preview_or_degraded_marker'
+                   WHEN {degraded_expr} <> 0 THEN 'degraded_flag'
+                   WHEN CHAR_LENGTH({text_col}) < 100 THEN 'substantive_body_too_short'
+                   WHEN {text_col} NOT LIKE '%實務見解%' THEN 'missing_practice_insight_section'
+                   ELSE 'unknown'
+               END AS reason
+        FROM {table}
+        WHERE {where}
+        LIMIT 10
+        """
+    )
+    return cur.fetchall()
+
+
+def _summarize_judgment_table(cur, table: str, text_col: str, id_cols: Tuple[str, ...]) -> Dict:
+    text = f"COALESCE({text_col}, '')"
+    has_degraded = table == "judgment_archive"
+    degraded_expr = "COALESCE(is_degraded, 0)" if has_degraded else "0"
+    prompt_condition = (
+        f"{text_col} LIKE '%你是一位精確的法律助理%' "
+        f"OR {text_col} LIKE '%判決內文：%' "
+        f"OR {text_col} LIKE '%【嚴格規則】%' "
+        f"OR {text_col} LIKE '%Thought:%' "
+        f"OR {text_col} LIKE '%Action:%' "
+        f"OR {text_col} LIKE '%Observation:%' "
+        f"OR {text_col} LIKE '%WFGY%'"
+    )
+    preview_condition = (
+        f"{text_col} LIKE '%摘要失敗%' "
+        f"OR {text_col} LIKE '%前 20 行預覽%' "
+        f"OR {text_col} LIKE '%依據 {PRIVATE_LEGAL_PREVIEW_VENDOR} 預覽摘要%' "
+        f"OR {text_col} LIKE '%降級摘要%' "
+        f"OR {text_col} LIKE '%系統降級回覆%'"
+    )
+
+    total = _count_sql(cur, f"SELECT COUNT(*) AS c FROM {table}")
+    missing = _count_sql(cur, f"SELECT COUNT(*) AS c FROM {table} WHERE {text} = ''")
+    too_short = _count_sql(
+        cur,
+        f"SELECT COUNT(*) AS c FROM {table} "
+        f"WHERE {text} <> '' AND CHAR_LENGTH({text_col}) < 100",
+    )
+    preview = _count_sql(cur, f"SELECT COUNT(*) AS c FROM {table} WHERE {preview_condition}")
+    prompt = _count_sql(cur, f"SELECT COUNT(*) AS c FROM {table} WHERE {prompt_condition}")
+    missing_insight = _count_sql(
+        cur,
+        f"SELECT COUNT(*) AS c FROM {table} "
+        f"WHERE {text} <> '' AND {text_col} NOT LIKE '%實務見解%' "
+        f"AND {text_col} NOT LIKE '%本判決無可擷取之實務見解%'",
+    )
+    degraded = (
+        _count_sql(cur, f"SELECT COUNT(*) AS c FROM {table} WHERE {degraded_expr} <> 0")
+        if has_degraded
+        else 0
+    )
+
+    issue_count = too_short + preview + prompt + missing_insight + degraded
+    return {
+        "table": table,
+        "total": total,
+        "missing_summary": missing,
+        "too_short": too_short,
+        "preview_or_degraded_marker": preview,
+        "prompt_or_trace_leak": prompt,
+        "missing_practice_insight_section": missing_insight,
+        "degraded_flagged": degraded,
+        "quality_issue_count": issue_count,
+        "samples": _fetch_judgment_issue_samples(cur, table, text_col, id_cols),
+    }
+
+
+def check_judgment_summary_quality() -> Dict:
+    """Flag low-quality judgment summaries not covered by legal_insights lint."""
+    try:
+        conn = _db_connect("law_firm_data")
+        cur = conn.cursor(dictionary=True)
+        court = _summarize_judgment_table(cur, "court_judgments", "summary", ("jid",))
+        archive = _summarize_judgment_table(cur, "judgment_archive", "summary_text", ("source_jid",))
+        cur.close()
+        conn.close()
+
+        total_issue_count = int(court["quality_issue_count"]) + int(archive["quality_issue_count"])
+        missing_summary_count = int(court["missing_summary"]) + int(archive["missing_summary"])
+        return {
+            "check": "judgment_summary_quality",
+            "status": "warn" if (total_issue_count or missing_summary_count) else "ok",
+            "total_issue_count": total_issue_count,
+            "missing_summary_count": missing_summary_count,
+            "tables": {
+                "court_judgments": court,
+                "judgment_archive": archive,
+            },
+        }
+    except Exception as e:
+        return {"check": "judgment_summary_quality", "status": "error", "error": str(e)}
+
+
+def _parse_note_frontmatter(content: str) -> Dict[str, str]:
+    m = re.match(r"\A---\s*\n(.*?)\n---", str(content or ""), flags=re.DOTALL)
+    if not m:
+        return {}
+    out: Dict[str, str] = {}
+    for raw in m.group(1).splitlines():
+        if ":" not in raw or raw.lstrip().startswith("-"):
+            continue
+        key, value = raw.split(":", 1)
+        out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def _note_section(content: str, heading: str) -> str:
+    m = re.search(rf"##\s+{re.escape(heading)}\s*\n(.+?)(?=\n##\s+|\Z)", str(content or ""), flags=re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+_GENERATED_IMAGE_ARTIFACT_RE = re.compile(
+    r"!\[[^\]\n]*\]\(<[^>\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^>\n]*>\)"
+    r"|!\[[^\]\n]*\]\([^\n)]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n)]*\)",
+    re.IGNORECASE,
+)
+_GENERATED_IMAGE_ARTIFACT_LINE_RE = re.compile(
+    r"(?im)^[^\n]*_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)[^\n]*$"
+)
+
+
+def _generated_image_artifact_count(text: str) -> int:
+    s = str(text or "")
+    return len(_GENERATED_IMAGE_ARTIFACT_RE.findall(s)) + len(
+        re.findall(r"_images[/\\]imageFile\d+\.(?:png|jpe?g|webp)", s, flags=re.IGNORECASE)
+    )
+
+
+def _remove_generated_image_artifacts(text: str) -> str:
+    s = str(text or "")
+    s = _GENERATED_IMAGE_ARTIFACT_RE.sub(" ", s)
+    s = _GENERATED_IMAGE_ARTIFACT_LINE_RE.sub("", s)
+    return s
+
+
+def _obsidian_text_signal(text: str) -> int:
+    image_artifacts = _generated_image_artifact_count(text)
+    image_links = len(re.findall(r"!\[[^\]\n]*\]\(<[^>\n]*>\)|!\[[^\]\n]*\]\([^)]+\)", str(text or "")))
+    cleaned = _remove_generated_image_artifacts(text)
+    cleaned = re.sub(r"!\[[^\]\n]*\]\(<[^>\n]*>\)", "", cleaned)
+    cleaned = re.sub(r"!\[[^\]\n]*\]\([^)]+\)", "", cleaned)
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", cleaned))
+    alnum = len(re.findall(r"[A-Za-z0-9]", cleaned))
+    spaced_digit_noise = len(re.findall(r"(?:\d\s+){2,}\d", cleaned))
+    return cjk * 2 + alnum - (image_links + image_artifacts) * 80 - spaced_digit_noise * 12
+
+
+def check_obsidian_summary_quality(sample_limit: int = 10) -> Dict:
+    """Check generated Obsidian source notes for usable structured summaries."""
+    vault = _get_vault_path()
+    if not vault:
+        return {"check": "obsidian_summary_quality", "status": "skip", "reason": "no vault"}
+    notes_dir = vault / "20_Notes"
+    if not notes_dir.is_dir():
+        return {"check": "obsidian_summary_quality", "status": "skip", "reason": "no 20_Notes"}
+
+    total = 0
+    bad_note_count = 0
+    reasons = Counter()
+    samples: List[Dict[str, str]] = []
+    check_source_exists = os.environ.get("MAGI_KNOWLEDGE_LINT_CHECK_SOURCE_EXISTS", "0").strip() == "1"
+    try:
+        source_exists_limit = int(os.environ.get("MAGI_KNOWLEDGE_LINT_SOURCE_EXISTS_LIMIT", "200") or 200)
+    except ValueError:
+        source_exists_limit = 200
+    source_exists_limit = max(0, source_exists_limit)
+    source_exists_checked = 0
+    source_exists_cache: Dict[str, bool] = {}
+    for note in notes_dir.rglob("summary__*.md"):
+        rel = str(note.relative_to(vault))
+        try:
+            content = note.read_text("utf-8", errors="replace")
+        except Exception:
+            continue
+        total += 1
+        meta = _parse_note_frontmatter(content)
+        note_reasons: List[str] = []
+        if meta.get("summary_schema") != "magi-obsidian-note-v2":
+            note_reasons.append("missing_v2_schema")
+        for heading in ("摘要", "法律/程序意義", "期限與待辦", "爭點與證據", "Full Text"):
+            if not _note_section(content, heading):
+                note_reasons.append(f"missing_section:{heading}")
+        quality = (meta.get("extraction_quality") or "").strip()
+        if quality and quality != "ok":
+            note_reasons.append(f"weak_extraction:{quality}")
+        source_path = (meta.get("source_path") or "").strip()
+        if check_source_exists and source_path:
+            if source_path not in source_exists_cache and source_exists_checked < source_exists_limit:
+                source_exists_checked += 1
+                try:
+                    source_exists_cache[source_path] = Path(source_path).expanduser().exists()
+                except Exception:
+                    source_exists_cache[source_path] = False
+            if source_path in source_exists_cache and not source_exists_cache[source_path]:
+                note_reasons.append("missing_source_file")
+        if _generated_image_artifact_count(content):
+            note_reasons.append("generated_image_refs")
+        full_text = _note_section(content, "Full Text")
+        if full_text and _obsidian_text_signal(full_text) < 120:
+            note_reasons.append("low_text_signal")
+        if note_reasons:
+            bad_note_count += 1
+            for reason in note_reasons:
+                reasons[reason] += 1
+            if len(samples) < sample_limit:
+                samples.append({"path": rel, "reasons": ",".join(note_reasons[:5])})
+
+    issue_count = sum(reasons.values())
+    return {
+        "check": "obsidian_summary_quality",
+        "status": "warn" if issue_count else "ok",
+        "total_notes": total,
+        "bad_notes": bad_note_count,
+        "issue_count": issue_count,
+        "issue_reasons": dict(reasons),
+        "sample_issues": samples,
+        "sample_issue_count": len(samples),
+        "source_exists_check_enabled": check_source_exists,
+        "source_exists_checked": source_exists_checked,
+        "source_exists_limit": source_exists_limit,
+    }
+
+
 def check_wiki_staleness() -> Dict:
     """Check if any wiki pages are outdated (source notes changed)."""
     vault = _get_vault_path()
@@ -968,9 +1301,26 @@ def check_wiki_staleness() -> Dict:
 
     for case_number, case_state in wiki_state.get("cases", {}).items():
         prev_hashes = case_state.get("source_hashes", {})
+        wiki_pages = case_state.get("wiki_pages") or {}
+        required_pages = case_state.get("required_pages") or [
+            "overview",
+            "timeline",
+            "parties",
+            "issues",
+            "evidence",
+            "tasks",
+            "procedural_status",
+        ]
 
         # Check current note hashes
         changed = False
+        missing_pages = []
+        for page in required_pages:
+            rel_page = wiki_pages.get(page) or ""
+            if not rel_page or not (vault / rel_page).exists():
+                missing_pages.append(page)
+        if missing_pages:
+            changed = True
         current_paths = set()
         for md_file in notes_dir.rglob("*.md"):
             # Check if this note belongs to this case
@@ -998,6 +1348,7 @@ def check_wiki_staleness() -> Dict:
                 "case": case_number,
                 "client": case_state.get("client_name", ""),
                 "synthesized_at": case_state.get("synthesized_at", ""),
+                "missing_pages": missing_pages,
             })
         else:
             up_to_date += 1
@@ -1029,7 +1380,17 @@ def check_orphan_notes() -> Dict:
         # Generated diagnostics are useful audit artifacts but poor retrieval
         # corpus material; requiring vector rows for every daily report creates
         # recurring false orphan warnings and pollutes legal retrieval.
-        return str(rel).startswith("MAGI/品質報告/")
+        rel = str(rel)
+        if rel.startswith("MAGI/品質報告/"):
+            return True
+        # 30_Index is the vault navigation layer, not source knowledge.  Treating
+        # it as corpus text makes every case index page look like a missing
+        # vector and pushes irrelevant navigation snippets into legal retrieval.
+        if rel.startswith("30_Index/"):
+            return True
+        if rel.startswith("99_Archive/MAGI_duplicate_notes/"):
+            return True
+        return False
 
     notes_in_index = {
         rel for rel in set(idx.get("notes", {}).keys())
@@ -1057,6 +1418,12 @@ def check_orphan_notes() -> Dict:
     # Notes indexed but with 0 chunks
     zero_chunks = []
     zero_chunks_verified = 0
+    zero_chunks_verify_checked = 0
+    try:
+        zero_chunks_verify_limit = int(os.environ.get("MAGI_KNOWLEDGE_LINT_ZERO_CHUNK_VERIFY_LIMIT", "250") or 250)
+    except ValueError:
+        zero_chunks_verify_limit = 250
+    zero_chunks_verify_limit = max(0, zero_chunks_verify_limit)
     try:
         conn = _db_connect("magi_brain")
     except Exception:
@@ -1066,9 +1433,11 @@ def check_orphan_notes() -> Dict:
             if info.get("chunks", 0) != 0 or path not in actual_notes:
                 continue
             doc_key = str(info.get("doc_key") or "")
-            if doc_key and conn is not None and _vector_rows_for_doc_key(conn, doc_key) > 0:
-                zero_chunks_verified += 1
-                continue
+            if doc_key and conn is not None and zero_chunks_verify_checked < zero_chunks_verify_limit:
+                zero_chunks_verify_checked += 1
+                if _vector_rows_for_doc_key(conn, doc_key) > 0:
+                    zero_chunks_verified += 1
+                    continue
             zero_chunks.append(path)
     finally:
         if conn is not None:
@@ -1083,6 +1452,8 @@ def check_orphan_notes() -> Dict:
         "orphaned_index_entries": len(orphaned_index),
         "zero_chunk_notes": len(zero_chunks),
         "zero_chunk_verified_in_db": zero_chunks_verified,
+        "zero_chunk_verify_checked": zero_chunks_verify_checked,
+        "zero_chunk_verify_limit": zero_chunks_verify_limit,
         "sample_unindexed": sorted(unindexed)[:5],
         "sample_orphaned": sorted(orphaned_index)[:5],
         "sample_zero_chunk": sorted(zero_chunks)[:5],
@@ -1233,6 +1604,8 @@ def _format_report_md(results: List[Dict]) -> str:
     check_labels = {
         "duplicate_vectors": "向量重複",
         "insight_quality": "見解品質",
+        "judgment_summary_quality": "判決摘要品質",
+        "obsidian_summary_quality": "Obsidian 摘要品質",
         "wiki_staleness": "Wiki 時效",
         "orphan_notes": "孤立筆記",
         "contradiction_scan": "矛盾偵測",
@@ -1268,6 +1641,23 @@ def _format_report_md(results: List[Dict]) -> str:
             lines.append(f"- 總見解數: {r.get('total_insights', 0)}")
             lines.append(f"- 健康比例: {r.get('health_pct', 0)}%")
             lines.append(f"- 降級: {r.get('degraded', 0)} | 過短: {r.get('too_short', 0)} | 空白: {r.get('empty', 0)} | 樣板: {r.get('boilerplate', 0)}")
+        elif check == "judgment_summary_quality":
+            lines.append(f"- 品質問題: {r.get('total_issue_count', 0)}")
+            lines.append(f"- 缺摘要 backlog: {r.get('missing_summary_count', 0)}")
+            for table_name, table in (r.get("tables") or {}).items():
+                lines.append(
+                    f"- {table_name}: preview/degraded marker {table.get('preview_or_degraded_marker', 0)} | "
+                    f"prompt/trace leak {table.get('prompt_or_trace_leak', 0)} | "
+                    f"過短 {table.get('too_short', 0)} | 缺實務見解 {table.get('missing_practice_insight_section', 0)} | "
+                    f"degraded flag {table.get('degraded_flagged', 0)}"
+                )
+        elif check == "obsidian_summary_quality":
+            lines.append(f"- 筆記總數: {r.get('total_notes', 0)}")
+            lines.append(f"- 有問題筆記: {r.get('bad_notes', 0)}")
+            for reason, count in sorted((r.get("issue_reasons") or {}).items()):
+                lines.append(f"- {reason}: {count}")
+            for d in r.get("sample_issues", []):
+                lines.append(f"  - {d.get('path', '')}: {d.get('reasons', '')}")
         elif check == "wiki_staleness":
             lines.append(f"- 過時 wiki: {r.get('stale_cases', 0)}")
             lines.append(f"- 最新: {r.get('up_to_date', 0)}")
@@ -1310,6 +1700,16 @@ def _summarize_check(r: Dict) -> str:
         return f"{n} 組重複"
     elif check == "insight_quality":
         return f"{r.get('health_pct', 0)}% 健康 ({r.get('total_insights', 0)} 筆)"
+    elif check == "judgment_summary_quality":
+        issues = int(r.get("total_issue_count", 0) or 0)
+        missing = int(r.get("missing_summary_count", 0) or 0)
+        if issues or missing:
+            return f"品質問題 {issues} / 缺摘要 {missing}"
+        return "判決摘要品質正常"
+    elif check == "obsidian_summary_quality":
+        bad = int(r.get("bad_notes", 0) or 0)
+        total = int(r.get("total_notes", 0) or 0)
+        return f"{bad}/{total} 筆摘要需修復" if bad else "摘要結構正常"
     elif check == "wiki_staleness":
         n = r.get("stale_cases", 0)
         return f"{n} 個 wiki 需更新" if n else "全部最新"
@@ -1340,7 +1740,7 @@ def lint(
 
     # 1. Duplicate vectors (always fast, no LLM)
     if not quiet:
-        print("  [1/5] 向量重複檢查...", end=" ", flush=True)
+        print("  [1/7] 向量重複檢查...", end=" ", flush=True)
     r = check_duplicate_vectors()
     results.append(r)
     if not quiet:
@@ -1348,31 +1748,47 @@ def lint(
 
     # 2. Insight quality (fast, no LLM)
     if not quiet:
-        print("  [2/5] 見解品質檢查...", end=" ", flush=True)
+        print("  [2/7] 見解品質檢查...", end=" ", flush=True)
     r = check_insight_quality()
     results.append(r)
     if not quiet:
         print(f"{'✅' if r['status'] == 'ok' else '⚠️'}")
 
-    # 3. Wiki staleness (fast, no LLM)
+    # 3. Judgment summary quality (fast, no LLM)
     if not quiet:
-        print("  [3/5] Wiki 時效檢查...", end=" ", flush=True)
+        print("  [3/7] 判決摘要品質檢查...", end=" ", flush=True)
+    r = check_judgment_summary_quality()
+    results.append(r)
+    if not quiet:
+        print(f"{'✅' if r['status'] == 'ok' else '⚠️'}")
+
+    # 4. Obsidian source summary quality (fast, no LLM)
+    if not quiet:
+        print("  [4/7] Obsidian 摘要品質檢查...", end=" ", flush=True)
+    r = check_obsidian_summary_quality()
+    results.append(r)
+    if not quiet:
+        print(f"{'✅' if r['status'] == 'ok' else '⚠️'}")
+
+    # 5. Wiki staleness (fast, no LLM)
+    if not quiet:
+        print("  [5/7] Wiki 時效檢查...", end=" ", flush=True)
     r = check_wiki_staleness()
     results.append(r)
     if not quiet:
         print(f"{'✅' if r['status'] == 'ok' else '⚠️'}")
 
-    # 4. Orphan notes (fast, no LLM)
+    # 6. Orphan notes (fast, no LLM)
     if not quiet:
-        print("  [4/5] 孤立筆記檢查...", end=" ", flush=True)
+        print("  [6/7] 孤立筆記檢查...", end=" ", flush=True)
     r = check_orphan_notes()
     results.append(r)
     if not quiet:
         print(f"{'✅' if r['status'] == 'ok' else '⚠️'}")
 
-    # 5. Contradiction scan (uses LLM in full mode)
+    # 7. Contradiction scan (uses LLM in full mode)
     if not quiet:
-        print("  [5/5] 矛盾偵測...", end=" ", flush=True)
+        print("  [7/7] 矛盾偵測...", end=" ", flush=True)
     r = check_contradiction_scan(use_llm=not quick)
     results.append(r)
     if not quiet:

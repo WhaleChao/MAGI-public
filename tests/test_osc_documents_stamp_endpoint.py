@@ -92,8 +92,9 @@ def test_stamp_rejects_unsupported_extension(client, tmp_path, monkeypatch):
     def _candidates(p):
         return [Path(p)] if isinstance(p, str) else [Path(str(p))]
 
-    def _resolve(c):
-        for x in c:
+    def _resolve(path, *, prefer_dir=None):
+        candidates = _candidates(path)
+        for x in candidates:
             if x.exists():
                 return x
         return None
@@ -123,7 +124,7 @@ def test_stamp_success_pdf(client, tmp_path, monkeypatch):
         osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)]
     )
     monkeypatch.setattr(
-        osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0]
+        osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p)
     )
 
     # mock subprocess.run to return successful skill output
@@ -165,7 +166,7 @@ def test_stamp_passes_manual_stamp_center_to_skill(client, tmp_path, monkeypatch
     from api.blueprints import osc_cases
     monkeypatch.setattr(osc_cases, "_osc_is_safe_local_path", lambda p: True)
     monkeypatch.setattr(osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)])
-    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0])
+    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p))
 
     captured = {}
 
@@ -201,7 +202,7 @@ def test_stamp_success_docx_uses_produce(client, tmp_path, monkeypatch):
         osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)]
     )
     monkeypatch.setattr(
-        osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0]
+        osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p)
     )
 
     fake_result = {
@@ -240,7 +241,7 @@ def test_stamp_skill_failure(client, tmp_path, monkeypatch):
         osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)]
     )
     monkeypatch.setattr(
-        osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0]
+        osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p)
     )
 
     fake_result = {
@@ -276,7 +277,7 @@ def test_stamp_preview_returns_last_page_image(client, tmp_path, monkeypatch):
     from api.blueprints import osc_cases
     monkeypatch.setattr(osc_cases, "_osc_is_safe_local_path", lambda p: True)
     monkeypatch.setattr(osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)])
-    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0])
+    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p))
 
     r = client.post("/api/osc/documents/stamp-preview", json={"file_path": str(source)})
     assert r.status_code == 200, r.get_data(as_text=True)
@@ -305,7 +306,7 @@ def test_finalize_pdf_generates_copies_labels_and_evidence(client, tmp_path, mon
     from api.blueprints import osc_cases
     monkeypatch.setattr(osc_cases, "_osc_is_safe_local_path", lambda p: True)
     monkeypatch.setattr(osc_cases, "_osc_local_path_candidates", lambda p: [Path(p)])
-    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda c: c[0])
+    monkeypatch.setattr(osc_cases, "_osc_resolve_existing_local_path", lambda p, **_kw: Path(p))
     monkeypatch.setattr(osc_cases, "_export_file_meta", lambda p: {"success": True, "path": p})
     monkeypatch.setattr(osc_cases, "_osc_log_activity", lambda *a, **k: None)
 

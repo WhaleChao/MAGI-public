@@ -39,7 +39,7 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-from api.case_path_mapper import translate_case_path_to_local
+from api.case_path_mapper import local_case_path_candidates, translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
 
 
@@ -47,7 +47,7 @@ def _safe_print(*args, **kwargs) -> None:
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 49, exc_info=True)
 
 
 def _safe_log_callback(callback, message: str) -> None:
@@ -56,7 +56,7 @@ def _safe_log_callback(callback, message: str) -> None:
     try:
         callback(message)
     except BrokenPipeError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 58, exc_info=True)
 
 
 # Shared browser helper (P2-5: consolidate duplicate _dismiss_password_expiry_alert)
@@ -153,6 +153,56 @@ ddddocr = None
 # ==============================================================================
 _global_transcript_lock = threading.Lock()
 _global_transcript_operation_in_progress = False
+
+
+_TRANSCRIPT_PARSE_EMPTY_MARKERS = {
+    "",
+    "-",
+    "--",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "n.a.",
+    "unknown",
+    "未知",
+    "無",
+    "無法判讀",
+    "無法辨識",
+    "未提供",
+}
+
+
+def _clean_transcript_parse_value(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip()
+
+
+def _valid_transcript_record_date(value: Any) -> bool:
+    text = _clean_transcript_parse_value(value)
+    if text.lower() in _TRANSCRIPT_PARSE_EMPTY_MARKERS:
+        return False
+    if not re.fullmatch(r"\d{8}", text):
+        return False
+    if text == "00000000":
+        return False
+    try:
+        parsed = datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return False
+    return 2020 <= parsed.year <= 2200
+
+
+def _valid_transcript_record_type(value: Any) -> bool:
+    text = _clean_transcript_parse_value(value)
+    if text.lower() in _TRANSCRIPT_PARSE_EMPTY_MARKERS:
+        return False
+    return "筆錄" in text
+
+
+def _record_parse_ready_for_filename(parse_result: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(parse_result, dict):
+        return False
+    return _valid_transcript_record_date(parse_result.get("date")) and _valid_transcript_record_type(parse_result.get("type"))
 
 # ==============================================================================
 # 資料結構
@@ -334,7 +384,7 @@ class CaptchaSolver:
                 try:
                     import ddddocr
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 336, exc_info=True)
 
             if ddddocr:
                 try:
@@ -376,7 +426,7 @@ class CaptchaSolver:
                 try:
                     from rapidocr_onnxruntime import RapidOCR
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 378, exc_info=True)
 
             if RapidOCR:
                 try:
@@ -939,6 +989,9 @@ class CourtRecordDownloader:
         self._last_pdf_fetch_count = 0
         self._last_pdf_known_duplicate_count = 0
         self._last_no_new_files_reason = ""
+        self._last_download_error = ""
+        self.last_login_error_code = ""
+        self.last_login_error_detail = ""
 
         # ★ Cookie 持久化：成功登入後存檔，下次直接沿用 session
         _runtime_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -962,7 +1015,7 @@ class CourtRecordDownloader:
             try:
                 driver.quit()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 964, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1018,7 +1071,7 @@ class CourtRecordDownloader:
                     try:
                         self.driver.add_cookie(c)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1020, exc_info=True)
             self.log(f"  ℹ️ Session cookies 已注入（{len(cookies)} 筆），驗證中...")
             # 導航到已登入頁面確認（15s timeout 避免 stale cookies 造成無限 hang）
             _nav_ok = False
@@ -1037,7 +1090,7 @@ class CourtRecordDownloader:
                     if _ctx is not None and hasattr(_ctx, "clear_cookies"):
                         _ctx.clear_cookies()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1039, exc_info=True)
                 return False
             time.sleep(2)
             if self._has_logout_link():
@@ -1052,9 +1105,9 @@ class CourtRecordDownloader:
                     try:
                         self.driver.delete_all_cookies()
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1054, exc_info=True)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1056, exc_info=True)
             return False
         except Exception as _e:
             self.log(f"  ⚠️ 還原 session cookies 失敗（非致命）: {_e}")
@@ -1215,6 +1268,8 @@ class CourtRecordDownloader:
         # ★ 如果已經登入，直接回傳 True，避免重複登入流程
         if self.logged_in:
             return True
+        self.last_login_error_code = ""
+        self.last_login_error_detail = ""
 
         # 策略：筆錄調閱站常見情況是「不填驗證碼也能登入」。
         # 預設先不碰驗證碼（避免刷新造成欄位清空/stale），只有在系統明確提示需要驗證碼時才啟用 OCR。
@@ -1284,7 +1339,7 @@ class CourtRecordDownloader:
                             _snippet = _html[:2000].replace("\n", " ")
                             self.log(f"  HTML snippet: {_snippet}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1286, exc_info=True)
                         try:
                             import time as _time
                             _dbg_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".runtime", "debug_screenshots")
@@ -1530,7 +1585,7 @@ class CourtRecordDownloader:
                         if "驗證碼" in page_text or "captcha" in page_text.lower():
                             _page_requires_captcha = True
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1532, exc_info=True)
                     if _page_requires_captcha and not need_captcha:
                         need_captcha = True
                         self.log("  ℹ️ 頁面要求驗證碼，下一輪啟用 OCR")
@@ -1538,6 +1593,8 @@ class CourtRecordDownloader:
                     self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
                     
             except Exception as e:
+                self.last_login_error_code = "login_exception"
+                self.last_login_error_detail = f"login_exception: {str(e)[:240]}"
                 self.log(f"登入異常: {e}")
                 traceback.print_exc()
                 # driver.get() timeout 後 driver 可能進入不穩狀態；直接重建以提升成功率
@@ -1549,7 +1606,21 @@ class CourtRecordDownloader:
                 self.driver = None
                 self._random_delay(5 * (attempt + 1), 10 * (attempt + 1))
         
-        self.log("❌ 登入失敗 - 已達最大重試次數")
+        if not self.last_login_error_detail:
+            page_text = " ".join((self._current_page_text(max_chars=1200) or "").split())
+            if self._page_has_unauthorized_marker():
+                self.last_login_error_code = "ezlawyer_not_authorized"
+                self.last_login_error_detail = (
+                    "ezlawyer_not_authorized: 已登入電子筆錄服務網，但目前頁面顯示未授權；"
+                    f"url={self._current_url_safe()[:120]}"
+                )
+            else:
+                self.last_login_error_code = "login_failed"
+                self.last_login_error_detail = (
+                    f"SSO login failed: url={self._current_url_safe()[:120]}"
+                    + (f"; page={page_text[:240]}" if page_text else "")
+                )
+        self.log(f"❌ 登入失敗 - 已達最大重試次數: {self.last_login_error_detail[:160]}")
         return False
     
     def _solve_captcha(self) -> bool:
@@ -1707,7 +1778,7 @@ class CourtRecordDownloader:
                                 _f.write(captcha_img.screenshot_as_png)
                             self.log(f"  📸 驗證碼圖片已存: {_debug_path}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1709, exc_info=True)
 
                     # Melchior 交叉驗證（與 file_review 一致）
                     melchior_text = ""
@@ -1720,7 +1791,7 @@ class CourtRecordDownloader:
                             if melchior_text:
                                 self.log(f"  Melchior 第 {n + 1} 次，melchior_len={len(melchior_text)}")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1722, exc_info=True)
 
                     if len(local_text) >= expected_len and len(melchior_text) >= expected_len:
                         if local_text == melchior_text:
@@ -1777,7 +1848,7 @@ class CourtRecordDownloader:
                     _ci_type = captcha_input.get_attribute("type") or ""
                     self.log(f"  [diag] captcha_input: id={_ci_id!r} name={_ci_name!r} type={_ci_type!r}")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1779, exc_info=True)
                 # ★ 優先用 Playwright native fill()（最可靠，直接設 value + 觸發事件）
                 try:
                     _pw_el = getattr(captcha_input, "_el", None)
@@ -1798,7 +1869,7 @@ class CourtRecordDownloader:
                         captcha_input.click()
                         self._random_delay(0.1, 0.3)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1800, exc_info=True)
                     captcha_input.clear()
                     self._random_delay(0.1, 0.3)
                     for ch in _target:
@@ -1810,7 +1881,7 @@ class CourtRecordDownloader:
                             "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
                             captcha_input)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1812, exc_info=True)
                 # ★ 儲存驗證碼文字，供 pre-submit 保護機制補填用
                 self._last_captcha_text = _target
                 return True
@@ -1825,10 +1896,211 @@ class CourtRecordDownloader:
     def _has_logout_link(self) -> bool:
         """檢查頁面是否有登出連結（表示已登入）"""
         try:
-            self.driver.find_element(By.XPATH, "//a[contains(text(), '登出')]")
+            text = self._current_page_text(max_chars=2000)
+            compact = re.sub(r"\s+", "", text or "")
+            if "會員姓名：尚未登入" in text or "會員姓名:尚未登入" in text or "會員姓名：尚未登入" in compact or "會員姓名:尚未登入" in compact:
+                return False
+        except Exception as e:
+            self.log(f"  登入狀態文字檢查失敗，改用後續方式判斷: {type(e).__name__}")
+        try:
+            self.driver.find_element(By.XPATH, "//a[contains(text(), '登出') or contains(text(), 'Logout')]")
             return True
-        except NoSuchElementException:
-            return False
+        except Exception as e:
+            self.log(f"  登出連結檢查失敗，改用 JS 判斷: {type(e).__name__}")
+        try:
+            found = self.driver.execute_script("""
+                return Array.from(document.querySelectorAll('a')).some(a => {
+                    const text = (a.innerText || a.textContent || '').trim();
+                    const href = (a.href || a.getAttribute('href') || '').toLowerCase();
+                    return text.includes('登出') || text.toLowerCase().includes('logout') || href.includes('logout');
+                });
+            """)
+            if bool(found):
+                return True
+        except Exception as e:
+            self.log(f"  JS 登出連結檢查失敗，改用頁面文字判斷: {type(e).__name__}")
+        try:
+            text = self._current_page_text(max_chars=2000)
+            if "會員姓名" in text and ("會員期限" in text or "電子筆錄調閱" in text):
+                return True
+        except Exception as e:
+            self.log(f"  登入狀態 fallback 文字檢查失敗: {type(e).__name__}")
+        return False
+
+    def _current_url_safe(self) -> str:
+        try:
+            return str(getattr(self.driver, "current_url", "") or "")
+        except Exception:
+            return ""
+
+    def _current_page_text(self, max_chars: int = 8000) -> str:
+        try:
+            return (self.driver.find_element(By.TAG_NAME, "body").text or "")[:max_chars]
+        except Exception:
+            try:
+                return (getattr(self.driver, "page_source", "") or "")[:max_chars]
+            except Exception:
+                return ""
+
+    def _page_has_unauthorized_marker(self) -> bool:
+        """ezlawyer may show a logged-in page that is not authorized for a deep link."""
+        text = self._current_page_text().lower()
+        markers = [
+            "not authorized to access this page",
+            "you are not authorized",
+            "沒有權限",
+            "無權限",
+            "未授權",
+            "未被授權",
+            "未獲授權",
+        ]
+        return any(marker.lower() in text for marker in markers)
+
+    def _search_form_ready(self, timeout_sec: float = 0) -> bool:
+        deadline = time.time() + max(0, float(timeout_sec or 0))
+        while True:
+            try:
+                self.driver.find_element(By.ID, "jud_name")
+                return True
+            except Exception:
+                if time.time() >= deadline:
+                    return False
+                time.sleep(0.25)
+
+    def _wait_for_search_form(self, timeout_ms: int = 15000) -> bool:
+        _page = getattr(self.driver, "_page", None)
+        if _page is not None:
+            try:
+                _page.wait_for_selector("#jud_name", timeout=timeout_ms, state="attached")
+                return True
+            except Exception:
+                return self._search_form_ready(timeout_sec=1)
+        return self._search_form_ready(timeout_sec=max(1, timeout_ms / 1000))
+
+    def _transcript_menu_href(self) -> str:
+        js = """
+            const anchors = Array.from(document.querySelectorAll('a'));
+            const hit = anchors.find(a => {
+                const text = (a.innerText || a.textContent || '').trim();
+                const href = a.href || a.getAttribute('href') || '';
+                return text.includes('電子筆錄調閱') || href.includes('/eb/user/downloadEB');
+            });
+            return hit ? (hit.href || hit.getAttribute('href') || '') : '';
+        """
+        try:
+            href = self.driver.execute_script(js)
+            return str(href or "").strip()
+        except Exception:
+            return ""
+
+    def _click_transcript_menu_entry(self, label: str = "側欄點擊") -> bool:
+        _page = getattr(self.driver, "_page", None)
+        if _page is not None:
+            try:
+                locator = _page.locator("a", has_text="電子筆錄調閱").first
+                locator.click(timeout=5000)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                    return True
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄入口點擊失敗: {str(_ce)[:120]}")
+        else:
+            try:
+                for el in self.driver.find_elements(By.TAG_NAME, "a"):
+                    text = (el.text or "").strip()
+                    href_attr = (el.get_attribute("href") or "").strip()
+                    if "電子筆錄調閱" in text or "/eb/user/downloadEB" in href_attr:
+                        el.click()
+                        if self._wait_for_search_form(timeout_ms=20000):
+                            self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                            return True
+                        break
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄入口點擊失敗: {str(_ce)[:120]}")
+        return False
+
+    def _open_transcript_search_page(self) -> bool:
+        """
+        Open the transcript search form. The ezlawyer site sometimes rejects a
+        direct deep link while the logged-in sidebar still exposes the valid
+        transcript entry, so try the official menu entry as a fallback.
+        """
+        _page = getattr(self.driver, "_page", None)
+
+        def _goto(url: str, label: str) -> bool:
+            try:
+                if _page is not None:
+                    _page.goto(url, timeout=15000, wait_until="commit")
+                else:
+                    self.driver.get(url)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log(f"  ✓ 搜尋頁就緒（{label}）")
+                    return True
+                if self._page_has_unauthorized_marker():
+                    self.log(f"  ⚠️ {label} 顯示未授權頁，改試側欄入口")
+                else:
+                    self.log(f"  ⚠️ {label} 未出現搜尋表單")
+                return False
+            except Exception as _ne:
+                self.log(f"  ⚠️ {label} 導航失敗: {str(_ne)[:120]}")
+                return False
+
+        href = self._transcript_menu_href()
+        if href and not href.lower().startswith("javascript"):
+            self.log(f"  ℹ️ 由目前頁面的電子筆錄入口進入")
+            if _goto(href, "側欄入口"):
+                return True
+        if self._click_transcript_menu_entry("側欄點擊"):
+            return True
+
+        if _goto(self.SEARCH_URL, "直接入口"):
+            return True
+
+        # Direct deep link may bounce to a bare login/access page. Restore the
+        # logged-in user page once and try the sidebar again.
+        user_page = f"{self.BASE_URL}/eb/user/userPage"
+        try:
+            if _page is not None:
+                _page.goto(user_page, timeout=15000, wait_until="commit")
+            else:
+                self.driver.get(user_page)
+            time.sleep(1)
+        except Exception as _ue:
+            self.log(f"  ⚠️ 回到會員頁失敗: {str(_ue)[:120]}")
+
+        href = self._transcript_menu_href()
+        if href and not href.lower().startswith("javascript"):
+            self.log(f"  ℹ️ 由會員頁電子筆錄入口重新進入")
+            if _goto(href, "會員頁側欄入口"):
+                return True
+        if self._click_transcript_menu_entry("會員頁側欄點擊"):
+            return True
+
+        if _page is not None:
+            try:
+                locator = _page.locator("text=電子筆錄調閱").first
+                locator.click(timeout=5000)
+                if self._wait_for_search_form(timeout_ms=20000):
+                    self.log("  ✓ 搜尋頁就緒（文字點擊）")
+                    return True
+            except Exception as _ce:
+                self.log(f"  ⚠️ 電子筆錄文字點擊失敗: {str(_ce)[:120]}")
+
+        if self._page_has_unauthorized_marker():
+            msg = (
+                "ezlawyer_not_authorized: 已登入電子筆錄服務網，但目前帳號/入口未授權存取調閱頁"
+                f"；url={self._current_url_safe()[:120]}"
+            )
+        else:
+            msg = (
+                "transcript_search_page_unavailable: 已登入但找不到電子筆錄搜尋表單"
+                f"；url={self._current_url_safe()[:120]}"
+            )
+        self._last_download_error = msg
+        self.last_login_error_code = "ezlawyer_not_authorized" if msg.startswith("ezlawyer_not_authorized") else "search_page_unavailable"
+        self.last_login_error_detail = msg
+        self.log(f"  ❌ {msg}")
+        return False
     
     def _solve_captcha_with_melchior(self, captcha_img, expected_len: int = 6) -> str:
         """InferenceGateway 備援 OCR — 驗證碼交叉驗證（alphanumeric）"""
@@ -1876,7 +2148,7 @@ class CourtRecordDownloader:
                 try:
                     os.unlink(tmp_path)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1878, exc_info=True)
 
     def get_cases_from_db(self) -> List[CourtCase]:
         """從資料庫取得案件"""
@@ -2002,39 +2274,10 @@ class CourtRecordDownloader:
                 self.log(f"  ⚠️ 無法解析案號: {case.court_case_number}")
                 return False
             
-            # 導航到搜尋頁面
-            # 根因：登入後 ezlawyer userPage 在 $(document).ready 時觸發
-            # alert("密碼超過180天未變更...")（native browser alert）
-            # Playwright wrapper 的 dialog handler 會 dismiss，但 timing 上 alert
-            # 可能仍 pending 阻擋後續 page.goto / evaluate 的 sync API 呼叫
-            # 修法：navigate 前用 CDP 強制清理 dialog 狀態，再用 page.goto wait_until="commit"
-            if self.driver.current_url != self.SEARCH_URL:
-                _nav_ok = False
-                _page = getattr(self.driver, "_page", None)
-                if _page is not None:
-                    # Wrapper 已透過 add_init_script override window.alert/confirm/prompt
-                    # → ezlawyer userPage 的 alert("密碼超過180天未變更...") 不再卡 sync API
-                    # 直接用 page.goto(commit) navigate
-                    try:
-                        _page.goto(self.SEARCH_URL, timeout=15000, wait_until="commit")
-                        _nav_ok = True
-                    except Exception as _ne:
-                        self.log(f"  ⚠️ goto(commit) 失敗: {str(_ne)[:120]}")
-                    if _nav_ok:
-                        try:
-                            _page.wait_for_selector("#jud_name", timeout=20000, state="attached")
-                            self.log(f"  ✓ 搜尋頁就緒")
-                        except Exception as _se:
-                            self.log(f"  ⚠️ #jud_name 等待逾時: {str(_se)[:120]}")
-                else:
-                    # Selenium fallback
-                    try:
-                        self.driver.get(self.SEARCH_URL)
-                        _nav_ok = True
-                    except Exception as _ne:
-                        self.log(f"  ⚠️ driver.get 失敗: {str(_ne)[:120]}")
-                if not _nav_ok:
-                    self.log(f"  ❌ 導航搜尋頁失敗（視為 search 失敗，不視為 no_new_files）")
+            # 導航到搜尋頁面。直接 deep link 在 ezlawyer 偶爾會回 logged-in
+            # unauthorized 頁，需改由側欄「電子筆錄調閱」入口進入。
+            if not self._search_form_ready(timeout_sec=0.5):
+                if not self._open_transcript_search_page():
                     return False
             time.sleep(1)
             
@@ -2180,7 +2423,7 @@ class CourtRecordDownloader:
                     "error": err_msg,
                 })
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2182, exc_info=True)
             return downloaded_files
 
     def _handle_alert(self) -> str:
@@ -2223,7 +2466,7 @@ class CourtRecordDownloader:
             if match:
                 return int(match.group(1))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2225, exc_info=True)
         return fallback_index
 
     def _download_pdf_via_query_form_post(self, datamap_index: int) -> Optional[str]:
@@ -3343,6 +3586,59 @@ class CourtRecordDownloader:
             self.log(f"  ⚠️ 尋找筆錄資料夾失敗: {e}")
             return None
 
+    def _case_local_path_candidates(self, folder_path: str) -> List[str]:
+        paths: List[str] = []
+
+        def _add(path_value: str):
+            p = str(path_value or "").strip()
+            if not p or p in paths:
+                return
+            paths.append(p)
+
+        try:
+            for candidate in local_case_path_candidates(folder_path):
+                _add(candidate)
+        except Exception:
+            logging.getLogger(__name__).debug("transcript path candidate expansion failed", exc_info=True)
+        try:
+            _add(translate_case_path_to_local(folder_path))
+        except Exception:
+            logging.getLogger(__name__).debug("transcript primary path translation failed", exc_info=True)
+        try:
+            if self.db and hasattr(self.db, "translate_path_to_local"):
+                _add(self.db.translate_path_to_local(folder_path))
+        except Exception:
+            logging.getLogger(__name__).debug("transcript db path translation failed", exc_info=True)
+        _add(folder_path)
+        return paths
+
+    def _find_existing_transcript_folder(self, case_folder_path: str) -> Optional[str]:
+        if not case_folder_path or not os.path.exists(case_folder_path):
+            return None
+        try:
+            for item in os.listdir(case_folder_path):
+                item_path = os.path.join(case_folder_path, item)
+                if os.path.isdir(item_path) and "筆錄" in item:
+                    return item_path
+        except Exception:
+            logging.getLogger(__name__).debug("transcript folder probe failed", exc_info=True)
+        return None
+
+    def _all_existing_transcript_folders(self, case: CourtCase, preferred_folder: str = "") -> List[str]:
+        folders: List[str] = []
+
+        def _add(folder_value: str):
+            f = str(folder_value or "").strip()
+            if f and os.path.isdir(f) and f not in folders:
+                folders.append(f)
+
+        _add(preferred_folder)
+        if not getattr(case, "folder_path", ""):
+            return folders
+        for candidate in self._case_local_path_candidates(case.folder_path):
+            _add(self._find_existing_transcript_folder(candidate) or "")
+        return folders
+
     def _generate_record_filename(self, parse_result: Dict[str, Optional[str]], original_filename: str) -> str:
         """
         生成筆錄標準檔名
@@ -3356,6 +3652,10 @@ class CourtRecordDownloader:
         record_type = parse_result.get('type', '筆錄')
         period = parse_result.get('period', '')
         time_str = parse_result.get('time', '')  # 新增: 開庭時間 (格式: 0930)
+
+        if not _record_parse_ready_for_filename(parse_result):
+            self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {original_filename}")
+            return original_filename
         
         # 確保有日期
         if not date_str:
@@ -3406,19 +3706,27 @@ class CourtRecordDownloader:
                 self.log(f"  (請確認該路徑於此電腦是否可存取)")
             return
 
-        # ★★★ 核心改進：掃描案件資料夾內現有檔案的 MD5 ★★★
+        transcript_folders = self._all_existing_transcript_folders(case, preferred_folder=transcript_folder)
+        if not transcript_folders and transcript_folder:
+            transcript_folders = [transcript_folder]
+        if len(transcript_folders) > 1:
+            self.log(f"  🔁 同步檢查 {len(transcript_folders)} 個本機/NAS 映射筆錄資料夾，避免重複下載")
+
+        # ★★★ 核心改進：掃描所有可用映射路徑內現有檔案的 MD5 ★★★
         existing_folder_md5s = {}
         existing_folder_files = {}  # MD5 -> filename mapping
-        if os.path.exists(transcript_folder):
-            for fname in os.listdir(transcript_folder):
+        for scan_folder in transcript_folders:
+            if not os.path.exists(scan_folder):
+                continue
+            for fname in os.listdir(scan_folder):
                 if not fname.lower().endswith('.pdf'):
                     continue
-                fpath = os.path.join(transcript_folder, fname)
+                fpath = os.path.join(scan_folder, fname)
                 try:
                     file_md5 = self._calculate_file_md5(fpath)
                     if file_md5:
                         existing_folder_md5s[file_md5] = fpath
-                        existing_folder_files[file_md5] = fname
+                        existing_folder_files[file_md5] = fpath
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2624, exc_info=True)
         
@@ -3435,8 +3743,9 @@ class CourtRecordDownloader:
                 
                 # 1. 強制覆蓋重複檢查：即使 MD5 相同也繼續處理 -> 改為：若內容相同則跳過不存
                 if md5 and md5 in existing_folder_md5s:
-                    existing_file = existing_folder_files.get(md5, "")
-                    self.log(f"  ℹ️ 資料夾內已存在相同檔案 ({existing_file})，跳過移入")
+                    existing_path = existing_folder_files.get(md5, "") or existing_folder_md5s.get(md5, "")
+                    existing_file = os.path.basename(existing_path) if existing_path else ""
+                    self.log(f"  ℹ️ 已在案件筆錄資料夾/其他映射路徑找到相同檔案 ({existing_file})，跳過移入")
                     
                     # 刪除暫存下載檔
                     try:
@@ -3452,7 +3761,7 @@ class CourtRecordDownloader:
                             'case_number': case.case_number,
                             'court_case_number': case.court_case_number,
                             'downloaded_at': datetime.now().isoformat(),
-                            'size': self._get_file_size_safe(os.path.join(transcript_folder, existing_file))
+                            'size': self._get_file_size_safe(existing_path)
                         }
                     continue
 
@@ -3476,7 +3785,11 @@ class CourtRecordDownloader:
                 
                 # ★★★ 解析 PDF 並重新命名 ★★★
                 parse_result = self._parse_record_pdf(temp_dest)
-                new_filename = self._generate_record_filename(parse_result, original_filename)
+                if _record_parse_ready_for_filename(parse_result):
+                    new_filename = self._generate_record_filename(parse_result, original_filename)
+                else:
+                    self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {os.path.basename(temp_dest)}")
+                    new_filename = os.path.basename(temp_dest)
                 final_dest = os.path.join(transcript_folder, new_filename)
                 
                 # 處理最終檔名衝突
@@ -3742,97 +4055,105 @@ class CourtRecordDownloader:
                 if not case.folder_path:
                     continue
                 
-                local_path = translate_case_path_to_local(case.folder_path)
-                transcript_folder = self.find_transcript_folder(local_path)
-                
-                if not transcript_folder or not os.path.exists(transcript_folder):
+                primary_path = translate_case_path_to_local(case.folder_path)
+                preferred_transcript_folder = self.find_transcript_folder(primary_path)
+                transcript_folders = self._all_existing_transcript_folders(
+                    case,
+                    preferred_folder=preferred_transcript_folder or "",
+                )
+
+                if not transcript_folders:
                     continue
-                
-                pdf_files = [f for f in os.listdir(transcript_folder) if f.lower().endswith('.pdf')]
-                if pdf_files:
-                    self.log(f"  🔍 [{case_idx}/{total_cases}] {case.court_name} {case.court_case_number} - {len(pdf_files)} 份筆錄")
-                
-                for fname in pdf_files:
-                    if max_runtime_sec > 0 and (time.monotonic() - started) > max_runtime_sec:
-                        self.log(f"⏱️ [MD5] 已超過最大執行時間 {max_runtime_sec}s，停止處理此案件之後的檔案。")
-                        break
-                    full_path = os.path.join(transcript_folder, fname)
-                    
-                    # --- Batch Rename Logic ---
-                    if rename_files:
+
+                if len(transcript_folders) > 1:
+                    self.log(f"  🔁 [{case_idx}/{total_cases}] {case.court_case_number} 檢查 {len(transcript_folders)} 個映射筆錄資料夾")
+
+                for transcript_folder in transcript_folders:
+                    pdf_files = [f for f in os.listdir(transcript_folder) if f.lower().endswith('.pdf')]
+                    if pdf_files:
+                        self.log(f"  🔍 [{case_idx}/{total_cases}] {case.court_name} {case.court_case_number} - {len(pdf_files)} 份筆錄")
+
+                    for fname in pdf_files:
+                        if max_runtime_sec > 0 and (time.monotonic() - started) > max_runtime_sec:
+                            self.log(f"⏱️ [MD5] 已超過最大執行時間 {max_runtime_sec}s，停止處理此案件之後的檔案。")
+                            break
+                        full_path = os.path.join(transcript_folder, fname)
+
+                        # --- Batch Rename Logic ---
+                        if rename_files:
+                            try:
+                                # 1. Parse content
+                                # ★ OPTIMIZATION: 若檔名已符合格式 (YYYYMMDD Type(Period).pdf)，跳過解析
+                                # Regex: 8 digits, space, chars, (, chars, ), .pdf
+                                if (
+                                    re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname)
+                                    and not fname.startswith("00000000 ")
+                                ):
+                                    # self.log(f"    ⏭️ 檔名已標準化，略過解析: {fname}")
+                                    continue
+
+                                parse_result = self._parse_record_pdf(full_path)
+                                if _record_parse_ready_for_filename(parse_result):
+                                    # 2. Generate canonical name
+                                    new_name = self._generate_record_filename(parse_result, fname)
+
+                                    if new_name != fname:
+                                        new_full_path = os.path.join(transcript_folder, new_name)
+
+                                        # Handle collision
+                                        if os.path.exists(new_full_path):
+                                            name_part, ext_part = os.path.splitext(new_name)
+                                            counter = 2
+                                            while os.path.exists(new_full_path):
+                                                new_name_idx = f"{name_part}_{counter}{ext_part}"
+                                                new_full_path = os.path.join(transcript_folder, new_name_idx)
+                                                counter += 1
+
+                                        # Rename
+                                        os.rename(full_path, new_full_path)
+                                        self.log(f"    ✏️ 更名: {fname} -> {os.path.basename(new_full_path)}")
+
+                                        # Update pointers
+                                        full_path = new_full_path
+                                        fname = os.path.basename(new_full_path)
+                            except Exception as e:
+                                self.log(f"    ⚠️ 更名失敗 ({fname}): {e}")
+                        # --------------------------
+
                         try:
-                            # 1. Parse content
-                            # ★ OPTIMIZATION: 若檔名已符合格式 (YYYYMMDD Type(Period).pdf)，跳過解析
-                            # Regex: 8 digits, space, chars, (, chars, ), .pdf
-                            if (
-                                re.match(r'^\d{8}\s.+?\(.+\)\.pdf$', fname)
-                                and not fname.startswith("00000000 ")
-                            ):
-                                # self.log(f"    ⏭️ 檔名已標準化，略過解析: {fname}")
-                                continue
+                            stat = os.stat(full_path)
+                            mtime = stat.st_mtime
+                            size = stat.st_size
 
-                            parse_result = self._parse_record_pdf(full_path)
-                            if parse_result.get('date') and parse_result.get('type'):
-                                # 2. Generate canonical name
-                                new_name = self._generate_record_filename(parse_result, fname)
-                                
-                                if new_name != fname:
-                                    new_full_path = os.path.join(transcript_folder, new_name)
-                                    
-                                    # Handle collision
-                                    if os.path.exists(new_full_path):
-                                        name_part, ext_part = os.path.splitext(new_name)
-                                        counter = 2
-                                        while os.path.exists(new_full_path):
-                                            new_name_idx = f"{name_part}_{counter}{ext_part}"
-                                            new_full_path = os.path.join(transcript_folder, new_name_idx)
-                                            counter += 1
-                                    
-                                    # Rename
-                                    os.rename(full_path, new_full_path)
-                                    self.log(f"    ✏️ 更名: {fname} -> {os.path.basename(new_full_path)}")
-                                    
-                                    # Update pointers
-                                    full_path = new_full_path
-                                    fname = os.path.basename(new_full_path)
-                        except Exception as e:
-                            self.log(f"    ⚠️ 更名失敗 ({fname}): {e}")
-                    # --------------------------
+                            # Check cache
+                            cached = file_cache.get(full_path)
+                            md5 = None
 
-                    try:
-                        stat = os.stat(full_path)
-                        mtime = stat.st_mtime
-                        size = stat.st_size
-                        
-                        # Check cache
-                        cached = file_cache.get(full_path)
-                        md5 = None
-                        
-                        if cached and cached.get('mtime') == mtime and cached.get('size') == size:
-                            md5 = cached.get('md5')
-                        else:
-                            md5 = self._calculate_file_md5(full_path)
-                            updated_any = True
-                        
-                        if md5:
-                            # 更新 Cache
-                            new_file_cache[full_path] = {
-                                'mtime': mtime, 'size': size, 'md5': md5
-                            }
-                            
-                            # 更新主 MD5 記錄 (如果不存在)
-                            if md5 not in current_records:
-                                current_records[md5] = {
-                                    'filename': fname,
-                                    'case_number': case.case_number,
-                                    'court_case_number': case.court_case_number,
-                                    'downloaded_at': datetime.now().isoformat(),
-                                    'size': size,
-                                    'source': 'scan'
-                                }
+                            if cached and cached.get('mtime') == mtime and cached.get('size') == size:
+                                md5 = cached.get('md5')
+                            else:
+                                md5 = self._calculate_file_md5(full_path)
                                 updated_any = True
-                    except Exception:
-                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2993, exc_info=True)
+
+                            if md5:
+                                # 更新 Cache
+                                new_file_cache[full_path] = {
+                                    'mtime': mtime, 'size': size, 'md5': md5
+                                }
+
+                                # 更新主 MD5 記錄 (如果不存在)
+                                if md5 not in current_records:
+                                    current_records[md5] = {
+                                        'filename': fname,
+                                        'case_number': case.case_number,
+                                        'court_case_number': case.court_case_number,
+                                        'downloaded_at': datetime.now().isoformat(),
+                                        'size': size,
+                                        'source': 'scan'
+                                    }
+                                    updated_any = True
+                        except Exception:
+                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2993, exc_info=True)
             
             # Save records — 加上 version marker 避免 migration 清空
             current_records["__md5_version__"] = "normalized_v1"
@@ -3974,7 +4295,7 @@ class CourtRecordDownloader:
 
                         # 解析 PDF
                         parse_result = self._parse_record_pdf(full_path)
-                        if not parse_result.get('date') or not parse_result.get('type'):
+                        if not _record_parse_ready_for_filename(parse_result):
                             continue
                         
                         # 生成標準檔名
@@ -4299,7 +4620,7 @@ class TranscriptAutoDownloader:
             except Exception as e:
                 # 這裡若失敗則繼續執行移入，不阻擋流程
                 # self.log(f"  ⚠️ 檢查重複失敗 (跳過): {e}")
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4369, exc_info=True)
 
             # 4. 先移動檔案到筆錄資料夾 (保持原始檔名)
             import shutil
@@ -4318,7 +4639,11 @@ class TranscriptAutoDownloader:
             
             # 5. 解析 PDF 並重新命名
             parse_result = self._parse_record_pdf(temp_dest)
-            new_filename = self._generate_record_filename(parse_result, original_filename)
+            if _record_parse_ready_for_filename(parse_result):
+                new_filename = self._generate_record_filename(parse_result, original_filename)
+            else:
+                self.log(f"  ⚠️ 筆錄解析結果不足，保留原檔名: {os.path.basename(temp_dest)}")
+                new_filename = os.path.basename(temp_dest)
             final_dest = os.path.join(transcript_folder, new_filename)
             
             # 處理最終檔名衝突
@@ -4581,6 +4906,10 @@ class TranscriptAutoDownloader:
         
         # DEBUG: Check for double time bug
         self.log(f"    [FilenameGen] Date={date_str}, Type={record_type}, Period={period}")
+
+        if not _record_parse_ready_for_filename(parse_result):
+            self.log(f"    ⚠️ 筆錄解析結果不足，保留原檔名: {original_filename}")
+            return original_filename
         
         if not date_str:
             # ★★★ BUG FIX: 不再使用下載日期！改用辨識標記 ★★★
@@ -4802,7 +5131,7 @@ class TranscriptAutoDownloader:
 
                     # 直接解析 PDF（會自動使用 Gemini fallback）
                     parse_result = self._parse_record_pdf(full_path)
-                    if not parse_result.get('date') or not parse_result.get('type'):
+                    if not _record_parse_ready_for_filename(parse_result):
                         # 正則和 Gemini 都失敗，跳過
                         continue
                     
@@ -4987,7 +5316,7 @@ class TranscriptAutoDownloader:
                     try:
                         # 解析 PDF
                         parse_result = temp_downloader._parse_record_pdf(full_path)
-                        if not parse_result.get('date') or not parse_result.get('type'):
+                        if not _record_parse_ready_for_filename(parse_result):
                             continue
                         
                         # ★ 檢查是否已經被改名過（非原始下載格式）

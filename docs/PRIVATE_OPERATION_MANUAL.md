@@ -1,6 +1,6 @@
 # MAGI 私有版操作手冊
 
-版本：2026-05-14
+版本：2026-07-02
 適用對象：私有版使用者、事務協作者、維運者
 適用版本：MAGI 私有正式環境
 
@@ -8,7 +8,7 @@
 
 本手冊不記載真實密碼、token、cookie、OAuth 憑證或任何可直接登入外部服務的資訊。若需要設定金鑰，請使用本機 `.env` 或密碼管理工具。
 
-一般使用者每日操作請先閱讀 [MAGI 一般使用者手冊](USER_GUIDE.md)；若要交付文件，請優先使用 [一般使用者圖文操作手冊 DOCX](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 或 [PDF](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.pdf)，另保留 [一般使用者完整操作手冊 DOCX](guides/MAGI_一般使用者完整操作手冊_2026-05-18.docx) 作為純文字詳版。本文件偏向私有版正式環境、法扶、閱卷、NAS、通知與維運細節。
+一般使用者每日操作請先閱讀 [MAGI 一般使用者完整操作手冊 DOCX](guides/MAGI_一般使用者完整操作手冊_2026-06-26.docx)。若需要 Markdown 版，可參考 [MAGI 一般使用者手冊](USER_GUIDE.md)；[超詳細操作手冊](guides/MAGI_一般使用者超詳細操作手冊_2026-05-19.docx) 與 [圖文操作手冊](guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx) 保留作為舊連結相容。本文件偏向私有版正式環境、法扶、閱卷、NAS、通知與維運細節。
 
 ## 目錄
 
@@ -57,11 +57,12 @@
 1. 主機已連網。
 2. NAS 已掛載到正確名稱。
 3. MAGI daemon 正常。
-4. `/health` 顯示主狀態正常。
-5. NERV 顯示資料庫、模型、OCR、向量資料庫、排程正常。
-6. 通知頻道沒有未處理的嚴重錯誤。
-7. 法扶與行事曆最近一次同步時間合理。
-8. 磁碟空間沒有低水位。
+4. `/start` 或 `/dashboard/beginner` 可開啟，方便一般使用者確認今天能做什麼。
+5. `/health` 顯示主狀態正常。
+6. NERV 顯示資料庫、模型、OCR、向量資料庫、排程正常。
+7. 通知頻道沒有未處理的嚴重錯誤。
+8. 法扶與行事曆最近一次同步時間合理。
+9. 磁碟空間沒有低水位。
 
 命令：
 
@@ -83,10 +84,14 @@ cd ~/Desktop/MAGI_v2
 本機常用入口：
 
 ```text
+http://127.0.0.1:5002/start
+http://127.0.0.1:5002/dashboard/beginner
 http://127.0.0.1:5002/
 http://127.0.0.1:5002/health
 http://127.0.0.1:5002/dashboard/nerv
 ```
+
+`/start` 與 `/dashboard/beginner` 是交接、教學與一般使用者的起點；它們用較少術語整理功能就緒狀態。`/dashboard/nerv` 是維運狀態頁，供管理者看模型、DB、OCR、NAS、排程與背景服務。
 
 外網使用 Tailscale 或反向代理時，請以目前 NERV 或主機設定顯示的網址為準。若外網出現 `ERR_CONNECTION_CLOSED`，先檢查：
 
@@ -102,7 +107,7 @@ http://127.0.0.1:5002/dashboard/nerv
 python3 scripts/ops/tailscale_funnel_healthcheck.py --apply
 ```
 
-注意：`/openclaw` 已退役，預期回 404。請使用 MAGI 主頁、NERV 與 `/magi-adjust`。
+注意：`/openclaw` 已退役，預期回 404。請使用 `/start`、MAGI 主頁、NERV 與 `/magi-adjust`。
 
 ## 4. OSC 案件管理
 
@@ -188,7 +193,7 @@ OSC 案件管理是私有版案件資料的核心。案件卡片與清單應至�
 強制執行案件：
 
 - 結尾可能是執行命令，不一定有債權憑證。
-- 放在「判決書」資料夾內的執行命令，可作為結案依據候選。
+- 放在「判決書或終局裁定及處分」資料夾內的執行命令，可作為結案依據候選；歷史案件的「判決書」資料夾仍相容讀取。
 - 若案件類型為清算，歷次程序裁定可能都要上傳。
 - 若只需復權裁定與復權裁定確定證明，僅搬移與上傳這兩類檔案。
 
@@ -236,7 +241,7 @@ OSC 案件管理是私有版案件資料的核心。案件卡片與清單應至�
 
 - 進行中逾期案件應完整列出，不只顯示數字。
 - 使用者可回覆「案號/姓名 已回報」或相似語意。
-- MAGI 應將該案冷卻 60 天。
+- MAGI 應將該案冷卻 90 天。
 - 冷卻後應登上行事曆，提醒下一次回報。
 - 進度回報提醒可發到 DC；一般法扶巡檢不應誤發到 DC 業務頻道。
 
@@ -262,7 +267,7 @@ OSC 案件管理是私有版案件資料的核心。案件卡片與清單應至�
 - 優先使用 PDF 文字層。
 - 沒有文字層才 OCR。
 - 信封頁、封面頁、掃描邊界應先排除。
-- 判決書資料夾、法院通知與程序裁定、對造書狀都要抽樣驗證。
+- 「判決書或終局裁定及處分」資料夾、舊「判決書」資料夾相容路徑、法院通知與程序裁定、對造書狀都要抽樣驗證。
 
 ## 9. PDF、OCR、命名與歸檔
 
@@ -290,6 +295,32 @@ PDF 命名目標：
 - 把不合理日期直接命名。
 - 將繳費單視為閱卷成果。
 - 因為第一頁信封而錯命名整份文件。
+
+### 9.1 私用版 Chandra OCR fallback
+
+Chandra OCR 只供私用版選用，不屬於公開版預設功能。2026-05-20 複查 upstream 後，Chandra OCR 2 的 model card 標籤與 credits 顯示 `qwen3_5` / Qwen 3.5；若事務所政策禁止中國系模型，保持關閉即可。MAGI 不會自動下載模型，也不會在公開版啟用。
+
+啟用前必須同時設定：
+
+```bash
+MAGI_CHANDRA_OCR_ENABLE=1
+MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1
+MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1
+MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1
+MAGI_CHANDRA_CLI=/tmp/magi_chandra_venv/bin/chandra
+MAGI_CHANDRA_OCR_METHOD=vllm
+MAGI_CHANDRA_VLLM_API_BASE=http://127.0.0.1:8000/v1
+```
+
+建議先跑 readiness：
+
+```bash
+python3 scripts/ops/chandra_ocr_healthcheck.py
+MAGI_CHANDRA_OCR_ENABLE=1 MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1 MAGI_CHANDRA_ACCEPT_MODEL_LICENSE=1 MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1 \
+python3 scripts/ops/chandra_ocr_healthcheck.py
+```
+
+若回報 `vLLM unavailable`，代表 MAGI 接線正常，但 Chandra 後端尚未啟動；此時 pdf-namer 仍會使用 macOS Vision / RapidOCR / Tesseract，不會因 Chandra 缺席而故障。`chandra_ocr_healthcheck.py` 不會把 OCR 原文寫入 runtime，只記錄是否可用、字元數與法律實體數量。
 
 ## 10. 書狀產生、範本與學習回饋
 
@@ -453,7 +484,7 @@ NAS 原則：
 - 系統通知：健康、排程、自我修復、磁碟、NAS。
 - 法扶一般：巡檢、缺檔、資料補填。
 - 法扶派案：新派案、開辦、派案附件。
-- 進度回報：逾期案件與 60 天冷卻提醒。
+- 進度回報：逾期案件與 90 天冷卻提醒。
 - 檔案通知：下載、歸檔、筆錄與閱卷。
 - 錯誤通知：需人工介入。
 
@@ -531,12 +562,14 @@ NERV 是私有版狀態頁。每日應看：
 ```bash
 git status --short
 python3 scripts/public_release_audit.py --strict
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
 ```
 
 公開版推送前：
 
 ```bash
 python3 scripts/public_release_audit.py --public-isolation --strict
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
 ```
 
 公開版必須移除：
@@ -639,13 +672,17 @@ python3 scripts/magi_doctor.py --json
 python3 scripts/ops/tailscale_funnel_healthcheck.py --apply
 python3 scripts/public_release_audit.py --strict
 python3 scripts/public_release_audit.py --public-isolation --strict
-./venv/bin/python scripts/ops/commercial_readiness_live.py --strict-public
+python3 scripts/ops/public_push_guard.py --remote origin --profile private --json
+python3 scripts/ops/public_push_guard.py --remote public --profile public --json
+./venv/bin/python scripts/ops/run_test_suite.py --suite commercial-release --json-out .runtime/commercial_release_latest.json
 ```
 
 常用路由：
 
 ```text
 /                       MAGI 主頁
+/start                  新手入口
+/dashboard/beginner     新手儀表板
 /health                 健康狀態
 /dashboard/nerv         NERV 狀態頁
 /magi-adjust            MAGI 調整頁

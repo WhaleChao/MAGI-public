@@ -72,6 +72,24 @@ def test_cache_cleanup_preserves_judicial_collector_backlog(tmp_path, monkeypatc
     assert not stale.exists()
 
 
+def test_playwright_runtime_cache_is_protected(tmp_path, monkeypatch):
+    cache_root = tmp_path / "Library" / "Caches"
+    browser = cache_root / "ms-playwright" / "chromium-1208" / "chrome"
+    stale = cache_root / "throwaway" / "blob"
+    _touch_old(browser)
+    _touch_old(stale)
+    monkeypatch.setattr(wc, "_PROTECTED_PATHS", {cache_root / "ms-playwright"}, raising=True)
+
+    summary = wc.cleanup_target(
+        {"path": cache_root, "atime_days": 14, "label": "user_library_caches"},
+        dry_run=False,
+    )
+
+    assert summary["skipped_protected"] == 1
+    assert browser.exists()
+    assert not stale.exists()
+
+
 def test_omlx_model_and_training_roots_are_protected(tmp_path, monkeypatch):
     omlx = tmp_path / ".omlx"
     model = omlx / "models" / "gemma" / "model.safetensors"
@@ -98,6 +116,22 @@ def test_omlx_model_and_training_roots_are_protected(tmp_path, monkeypatch):
     assert not cache.exists()
 
 
+def test_external_omlx_cache_target_is_cleaned(tmp_path, monkeypatch):
+    external_root = tmp_path / "MAGI" / "omlx_paged_cache"
+    old = external_root / "cache-e4b" / "old.bin"
+    _touch_old(old)
+    monkeypatch.setattr(wc, "_OMLX_EXTERNAL_CACHE_ROOT", external_root, raising=True)
+    monkeypatch.setattr(wc, "_OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE", True, raising=True)
+
+    targets = wc._external_omlx_cache_targets()
+    assert targets and targets[0]["path"] == external_root / "cache-e4b"
+
+    summary = wc.cleanup_target(targets[0], dry_run=False)
+
+    assert summary["deleted_entries"] == 1
+    assert not old.exists()
+
+
 def test_permission_denied_cache_entry_is_skipped_not_error(tmp_path, monkeypatch):
     cache_root = tmp_path / "Library" / "Caches"
     protected = cache_root / "com.apple.Safari"
@@ -115,6 +149,48 @@ def test_permission_denied_cache_entry_is_skipped_not_error(tmp_path, monkeypatc
 
     assert summary["skipped_permission"] == 1
     assert summary["errors"] == []
+
+
+def test_interrupted_cache_root_probe_is_skipped_not_fatal():
+    class BrokenPath:
+        def __str__(self) -> str:
+            return "/broken/cache"
+
+        def exists(self) -> bool:
+            raise InterruptedError("interrupted")
+
+    summary = wc.cleanup_target(
+        {"path": BrokenPath(), "atime_days": 14, "label": "broken_cache"},
+        dry_run=True,
+    )
+
+    assert summary["deleted_entries"] == 0
+    assert summary["skipped_permission"] == 1
+    assert summary["errors"]
+
+
+def test_interrupted_cache_root_iterdir_is_skipped_not_fatal():
+    class BrokenPath:
+        def __str__(self) -> str:
+            return "/broken/cache"
+
+        def exists(self) -> bool:
+            return True
+
+        def is_dir(self) -> bool:
+            return True
+
+        def iterdir(self):
+            raise InterruptedError("interrupted")
+
+    summary = wc.cleanup_target(
+        {"path": BrokenPath(), "atime_days": 14, "label": "broken_cache"},
+        dry_run=True,
+    )
+
+    assert summary["deleted_entries"] == 0
+    assert summary["skipped_permission"] == 1
+    assert summary["errors"]
 
 
 def test_cache_cleanup_preserves_json_bundle_content(tmp_path):

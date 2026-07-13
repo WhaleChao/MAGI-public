@@ -27,8 +27,8 @@
                         </select>
                     </div>
                     <div class="field">
-                        <label for="lafWizardCaseId">案件 ID</label>
-                        <input id="lafWizardCaseId" placeholder="案件 ID（優先）">
+                        <label for="lafWizardCaseId">系統案件</label>
+                        <input id="lafWizardCaseId" placeholder="通常留空；系統帶入時會自動填">
                     </div>
                     <div class="field">
                         <label for="lafWizardCaseNumber">案件編號</label>
@@ -48,9 +48,9 @@
                     </div>
                 </div>
                 <div class="field" style="margin-top:10px;">
-                    <label for="lafWizardFields">進階欄位 JSON</label>
+                    <label for="lafWizardFields">進階欄位</label>
                     <textarea id="lafWizardFields"
-                        placeholder='選填，例如 {"desc":"補充說明","rsm_reqsubj1":"0001"}'></textarea>
+                        placeholder='通常不用填；只有需要補特定官網欄位時才填，例如 {"desc":"補充說明"}'></textarea>
                 </div>
                 <div class="inline-actions" style="margin-top:10px;">
                     <button class="btn" id="lafWizardPreviewBtn">預覽（不寫入）</button>
@@ -65,4 +65,3 @@
                 <div class="insight-full" id="lafWizardResult"></div>
             </div>
         </section>
-

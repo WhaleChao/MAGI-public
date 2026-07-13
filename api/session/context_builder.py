@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from api.session.history import SessionHistory
-from api.session.models import SessionContext, SessionMessage, SessionPendingState, SessionSummary
+from api.session.models import SessionContext, SessionKey, SessionMessage, SessionPendingState, SessionSummary
 from api.session.pending import SessionPendingManager
 from api.session.summary import SessionSummaryManager
 from api.session.store import SessionStore
@@ -37,15 +37,18 @@ class SessionContextBuilder:
 
     def build(
         self,
-        session_id: str,
+        session_id: str | SessionKey,
         *,
         system_prompt: str = "",
         history_limit: Optional[int] = None,
         summary_limit: Optional[int] = None,
+        share_identity: bool = False,
     ) -> SessionContext:
-        raw_history = self.history.list(session_id)
-        summaries = self.summaries.list(session_id)
-        pending = self.pending.get(session_id)
+        resolved_session_id = self.store.session_id_for(session_id, share_identity=share_identity)
+        raw_history = self.history.list(resolved_session_id)
+        summaries = self.summaries.list(resolved_session_id)
+        pending = self.pending.get(resolved_session_id)
+        recent_references = self.store.recent_by_kind(resolved_session_id)
 
         assembled_messages = self.assemble(
             raw_history,
@@ -57,12 +60,13 @@ class SessionContextBuilder:
         )
         rendered_text = self.render_text(assembled_messages)
         return SessionContext(
-            session_id=session_id,
+            session_id=resolved_session_id,
             raw_history=raw_history,
             summaries=summaries,
             pending_state=dict(pending.values) if pending else {},
             assembled_messages=assembled_messages,
             rendered_text=rendered_text,
+            recent_references=recent_references,
         )
 
     def assemble(
@@ -134,33 +138,37 @@ class SessionContextBuilder:
 
     def build_prompt(
         self,
-        session_id: str,
+        session_id: str | SessionKey,
         *,
         system_prompt: str = "",
         history_limit: Optional[int] = None,
         summary_limit: Optional[int] = None,
+        share_identity: bool = False,
     ) -> str:
         return self.build(
             session_id,
             system_prompt=system_prompt,
             history_limit=history_limit,
             summary_limit=summary_limit,
+            share_identity=share_identity,
         ).rendered_text
 
 
 def build_session_context(
-    session_id: str,
+    session_id: str | SessionKey,
     *,
     store: Optional[SessionStore] = None,
     system_prompt: str = "",
     history_limit: Optional[int] = None,
     summary_limit: Optional[int] = None,
+    share_identity: bool = False,
 ) -> SessionContext:
     return SessionContextBuilder(store).build(
         session_id,
         system_prompt=system_prompt,
         history_limit=history_limit,
         summary_limit=summary_limit,
+        share_identity=share_identity,
     )
 
 

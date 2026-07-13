@@ -17,9 +17,9 @@ def test_laf_event_cards_render_detailed_time_lines():
     assert "skipped_payment_only" in js
     assert 'data-act="laf-event-detail"' in js
     assert "<time>${esc(row.date || \"未標示時間\")}</time>" in js
-    assert "gcal_import:" in js
+    assert "oscTodoIsCalendarSource" in js
     assert ".laf-event-lines" in css
     assert ".laf-event-line time" in css
     assert ".laf-event-full-row" in css
     assert 'act === "laf-event-detail"' in events_js
-    assert "laf-activity-stats-v1" in html
+    assert "documents.js?v=20260709-source-helper-v1" in html

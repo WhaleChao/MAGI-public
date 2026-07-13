@@ -5,18 +5,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-if "pytest" in sys.modules:
-    import pytest
-
-    pytest.skip("simulation_test.py is a manual full-system simulation, not a pytest unit test", allow_module_level=True)
+__test__ = False
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from skills.bridge import melchior_client
-from skills.bridge.balthasar_bridge import check_health as check_balthasar, summarize_text
-from skills.bridge.melchior_bridge import analyze_image
-from skills.bridge.watcher_bridge import check_health as check_watcher
 
 try:
     from skills.source_control.git_ops import get_status as check_git
@@ -66,6 +58,8 @@ def _check_local_audit_runtime():
 
 
 def _check_balthasar_runtime():
+    from skills.bridge.balthasar_bridge import check_health as check_balthasar, summarize_text
+
     remote_online, remote_msg = check_balthasar()
     if remote_online:
         return True, f"Remote summary runtime online ({remote_msg})", ""
@@ -80,6 +74,9 @@ def _check_balthasar_runtime():
 
 
 def _check_melchior_runtime():
+    from skills.bridge import melchior_client
+    from skills.bridge.melchior_bridge import analyze_image
+
     if callable(getattr(melchior_client, "_omlx_vision_available", None)) and melchior_client._omlx_vision_available():
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             image_path = f.name
@@ -157,6 +154,8 @@ def run_test():
     # 4. Audit / Security
     print("\n[4/6] Checking Audit / Security Runtime...")
     try:
+        from skills.bridge.watcher_bridge import check_health as check_watcher
+
         is_online, msg = check_watcher()
         if is_online:
             print(f"✅ Watcher Status: {msg}")

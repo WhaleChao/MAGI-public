@@ -20,9 +20,61 @@ def _make_app():
     def dashboard():
         return "dashboard"
 
+    @app.get("/osc")
+    def osc():
+        return "osc"
+
+    @app.get("/status")
+    def status():
+        return "status"
+
+    @app.get("/api/osc/dashboard")
+    def osc_dashboard_api():
+        return "osc-api"
+
+    @app.post("/api/system-test")
+    def system_test_api():
+        return "system-test"
+
+    @app.get("/unknown")
+    def unknown():
+        return "unknown"
+
     @app.get("/health")
     def health():
         return "health"
+
+    @app.get("/livez")
+    def livez():
+        return "livez"
+
+    @app.get("/readyz")
+    def readyz():
+        return "readyz"
+
+    @app.get("/saas-readyz")
+    def saas_readyz():
+        return "saas-readyz"
+
+    @app.get("/login")
+    def login():
+        return "login"
+
+    @app.get("/register")
+    def register():
+        return "register"
+
+    @app.get("/static/magi-site.css")
+    def magi_site_css():
+        return "css"
+
+    @app.get("/lottery")
+    def lottery():
+        return "lottery"
+
+    @app.post("/api/lottery/draw")
+    def lottery_draw():
+        return "draw"
 
     @app.post("/line/webhook")
     def line_webhook():
@@ -63,13 +115,68 @@ def test_cloudflare_tunnel_allows_whitelisted_routes():
     )
     assert response.status_code == 200
 
+    for path in ("/livez", "/readyz", "/saas-readyz"):
+        response = client.get(
+            path,
+            headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+        )
+        assert response.status_code == 200, path
 
-def test_cloudflare_tunnel_blocks_non_whitelisted_routes():
+    response = client.get(
+        "/login",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/register",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/static/magi-site.css",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.get(
+        "/lottery",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+    response = client.post(
+        "/api/lottery/draw",
+        headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+    )
+    assert response.status_code == 200
+
+
+def test_cloudflare_tunnel_allows_authenticated_web_ui_surface():
+    app = _make_app()
+    client = app.test_client()
+
+    for method, path in (
+        ("get", "/dashboard"),
+        ("get", "/osc"),
+        ("get", "/status"),
+        ("get", "/api/osc/dashboard"),
+        ("post", "/api/system-test"),
+    ):
+        response = getattr(client, method)(
+            path,
+            headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
+        )
+        assert response.status_code == 200, path
+
+
+def test_cloudflare_tunnel_still_blocks_unknown_routes():
     app = _make_app()
     client = app.test_client()
 
     response = client.get(
-        "/dashboard",
+        "/unknown",
         headers={"Cf-Connecting-Ip": "1.2.3.4", "X-Forwarded-Host": "demo.trycloudflare.com"},
     )
     assert response.status_code == 403

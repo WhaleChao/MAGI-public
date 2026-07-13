@@ -669,7 +669,7 @@
         },
         {
             "name": "tri_sage_translate",
-            "description": "Translate text via distributed tri-sage pipeline, preferring Melchior Qwen models.",
+            "description": "Translate text via distributed tri-sage pipeline, using only approved non-China models.",
             "endpoint": "/collab/translate",
             "method": "POST",
             "sage": "casper",
@@ -1264,44 +1264,6 @@
                     "task": {
                         "type": "string",
                         "description": "Task instruction for the skill"
-                    }
-                },
-                "required": [
-                    "task",
-                    "skill"
-                ]
-            }
-        },
-        {
-            "name": "pdf_annotate",
-            "description": "Automatically annotate case volume PDFs (閱卷資料) based on learned annotation patterns from 游秀鈴 case. Highlights important facts, contradictions, dates, names, and key testimony. Runs nightly.",
-            "endpoint": "/skills/run",
-            "method": "POST",
-            "keywords": [
-                "自動標籤",
-                "PDF標記",
-                "卷宗標籤",
-                "highlight",
-                "annotate"
-            ],
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "learn|annotate|test|status (default: annotate)"
-                    },
-                    "case": {
-                        "type": "string",
-                        "description": "Case name filter (optional)"
-                    },
-                    "skill": {
-                        "type": "string",
-                        "description": "Skill folder name (default: pdf-annotator)",
-                        "default": "pdf-annotator",
-                        "enum": [
-                            "pdf-annotator"
-                        ]
                     }
                 },
                 "required": [
@@ -2024,34 +1986,6 @@
                             "market-briefing"
                         ],
                         "description": "Skill folder name (default: market-briefing)"
-                    }
-                },
-                "required": [
-                    "task",
-                    "skill"
-                ]
-            }
-        },
-        {
-            "name": "run_pdf_annotator",
-            "description": "依據參考案件 PDF 書籤樣式，使用視覺模組對案件卷宗 PDF 自動建立導覽書籤（目錄）。支援從現有書籤學習命名慣例，或以視覺模型推斷。",
-            "endpoint": "/skills/run",
-            "method": "POST",
-            "parameters": {
-                "skill": "pdf-annotator",
-                "task": {
-                    "type": "string",
-                    "description": "Task payload (JSON or plain text)"
-                },
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "default": "pdf-annotator",
-                        "enum": [
-                            "pdf-annotator"
-                        ],
-                        "description": "Skill folder name (default: pdf-annotator)"
                     }
                 },
                 "required": [

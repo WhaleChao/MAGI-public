@@ -6,9 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Paperclip | MAGI</title>
     <link rel="stylesheet" href="/static/osc/osc-theme.css">
-    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260518-case-sort-v1">
-    <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260518-case-sort-v1">
-    <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260505-file-share-v1">
+    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260621-case-card-modal-v1">
+    <link rel="stylesheet" href="/static/osc/osc-responsive.css?v=20260619-google-mobile-v1">
+    <link rel="stylesheet" href="/static/osc/file-manager.css?v=20260621-case-back-v1">
+    <link rel="stylesheet" href="/static/osc/osc-polish.css?v=20260619-mobile-usability-v1">
 </head>
 
 <body>
@@ -16,6 +17,7 @@
         <div class="paperclip-mobile-bar" aria-label="Paperclip 手機導覽">
             <button id="paperclipMobileMenuBtn" class="paperclip-menu-btn" type="button" aria-expanded="false" aria-controls="paperclipNav">選單</button>
             <div class="paperclip-mobile-title">Paperclip</div>
+            <span id="mobileStatusBadge" class="paperclip-mobile-status">連線中...</span>
             <a class="paperclip-mobile-home" href="/dashboard">MAGI</a>
         </div>
         <div class="sidebar-brand" style="padding: 16px 16px 8px;">
@@ -31,11 +33,7 @@
                 <span class="group-icon">📊</span><span>業務概覽</span>
             </button>
 
-            <button class="tab-btn group-single" data-tab="magiModules">
-                <span class="group-icon">🧩</span><span>MAGI 三模組</span>
-            </button>
-
-            <!-- 案件（5 sub-tab）-->
+            <!-- 案件（6 sub-tab）-->
             <div class="sidebar-group" data-group="case">
                 <button class="group-btn" data-group-toggle="case">
                     <span class="group-icon">📁</span>
@@ -44,6 +42,7 @@
                 </button>
                 <div class="group-children" data-group-children="case" hidden>
                     <button class="tab-btn sub-tab" data-tab="cases"><span class="sub-icon">📋</span> 案件列表</button>
+                    <button class="tab-btn sub-tab" data-tab="fileManager"><span class="sub-icon">🗄</span> 檔案管理</button>
                     <button class="tab-btn sub-tab" data-tab="clients"><span class="sub-icon">👥</span> 當事人</button>
                     <button class="tab-btn sub-tab" data-tab="meetings"><span class="sub-icon">📅</span> 會議紀錄</button>
                     <button class="tab-btn sub-tab" data-tab="calendar"><span class="sub-icon">📆</span> 行事曆</button>
@@ -51,7 +50,7 @@
                 </div>
             </div>
 
-            <!-- 書狀（3 sub-tab + 消債羅伯特連結）-->
+            <!-- 書狀（AI 草擬、沿用、索引、範本、PDF、表單 + 消債羅伯特連結）-->
             <div class="sidebar-group" data-group="document">
                 <button class="group-btn" data-group-toggle="document">
                     <span class="group-icon">✍️</span>
@@ -60,7 +59,8 @@
                 </button>
                 <div class="group-children" data-group-children="document" hidden>
                     <button class="tab-btn sub-tab" data-tab="drafts"><span class="sub-icon">🤖</span> AI 草擬</button>
-                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 書狀索引</button>
+                    <button class="tab-btn sub-tab" data-tab="documentReuse"><span class="sub-icon">↪</span> 沿用舊書狀</button>
+                    <button class="tab-btn sub-tab" data-tab="documents"><span class="sub-icon">📄</span> 文件總索引</button>
                     <button class="tab-btn sub-tab" data-tab="templateFolder"><span class="sub-icon">🗂</span> 範本資料夾</button>
                     <button class="tab-btn sub-tab" data-tab="pdfTools"><span class="sub-icon">📕</span> PDF 工具</button>
                     <button class="tab-btn sub-tab" data-tab="forms"><span class="sub-icon">🖨</span> 委任 / 收據</button>
@@ -104,6 +104,10 @@
                 <span class="group-icon">🧠</span><span>實務見解</span>
             </button>
 
+            <button class="tab-btn group-single" data-tab="raziel">
+                <span class="group-icon">⚖️</span><span>判決捕捉與分類</span>
+            </button>
+
             <!-- 系統設定（單一）-->
             <button class="tab-btn group-single" data-tab="admin">
                 <span class="group-icon">⚙️</span><span>系統設定</span>
@@ -127,10 +131,10 @@
         </header>
 
         {% include "partials/osc/dashboard.html" %}
-        {% include "partials/osc/magiModules.html" %}
         {% include "partials/osc/cases.html" %}
         {% include "partials/osc/laf.html" %}
         {% include "partials/osc/documents.html" %}
+        {% include "partials/osc/documentReuse.html" %}
         {% include "partials/osc/templateFolder.html" %}
         {% include "partials/osc/pdfTools.html" %}
         {% include "partials/osc/drafts.html" %}
@@ -144,6 +148,7 @@
         {% include "partials/osc/calendar.html" %}
         {% include "partials/osc/todos.html" %}
         {% include "partials/osc/insights.html" %}
+        {% include "partials/osc/raziel.html" %}
         {% include "partials/osc/admin.html" %}
         {% include "partials/osc/fileManager.html" %}
 
@@ -157,7 +162,8 @@
                 <div id="wbBody"></div>
             </div>
         </div>
-        <input id="wbFolderUploadInput" type="file" hidden>
+        <input id="wbFolderUploadInput" type="file" multiple hidden>
+        <input id="wbDirectoryUploadInput" type="file" webkitdirectory directory multiple hidden>
         <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
 
         <!-- UX v3 P3: 全域 loading overlay -->
@@ -167,24 +173,25 @@
         </div>
     </div>
 
-    <script src="/static/osc/osc-state.js?v=20260505-case-court-v1"></script>
-    <script src="/static/osc/osc-utils.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/osc-state.js?v=20260628-document-reuse-v1"></script>
+    <script src="/static/osc/osc-utils.js?v=20260709-source-helper-v1"></script>
     <script src="/static/osc/osc-ui.js?v=20260512-overview-merge-v1"></script>
     <script src="/static/osc/osc-grouping.js?v=20260505-paperclip-mobile-v1"></script>
     <script src="/static/osc/osc-mobile.js?v=20260505-paperclip-mobile-v1"></script>
-    <script src="/static/osc/tabs/dashboard.js?v=20260513-todo-source-split-v1"></script>
-    <script src="/static/osc/tabs/saas.js?v=20260512-management-links-v1"></script>
-    <script src="/static/osc/tabs/cases.js?v=20260518-case-sort-v1"></script>
-    <script src="/static/osc/tabs/calendar.js?v=20260504-calendar-todo-contrast-v3"></script>
-    <script src="/static/osc/tabs/todos.js?v=20260513-todo-source-split-v1"></script>
-    <script src="/static/osc/tabs/admin.js"></script>
-    <script src="/static/osc/tabs/drafts.js?v=20260504-insight-filter-v1"></script>
-    <script src="/static/osc/tabs/documents.js?v=20260513-laf-activity-stats-v1-template-folder-v3"></script>
-    <script src="/static/osc/tabs/accounting.js?v=20260508-quotation-form-v1"></script>
+    <script src="/static/osc/tabs/dashboard.js?v=20260709-source-helper-v1"></script>
+    <script src="/static/osc/tabs/saas.js?v=20260709-source-helper-v1"></script>
+    <script src="/static/osc/tabs/cases.js?v=20260621-case-card-modal-v1"></script>
+    <script src="/static/osc/tabs/calendar.js?v=20260709-calendar-union-v1"></script>
+    <script src="/static/osc/tabs/todos.js?v=20260709-source-helper-v1"></script>
+            <script src="/static/osc/tabs/admin.js?v=20260709-gcal-status-v1"></script>
+    <script src="/static/osc/tabs/drafts.js?v=20260628-document-reuse-v3"></script>
+    <script src="/static/osc/tabs/documents.js?v=20260709-source-helper-v1"></script>
+    <script src="/static/osc/tabs/accounting.js?v=20260708-local-month-v1"></script>
     <script src="/static/osc/tabs/insights.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/tabs/raziel.js?v=20260701-osc-shell-v1"></script>
     <script src="/static/osc/tabs/checklists.js"></script>
-    <script src="/static/osc/tabs/file_manager.js?v=20260505-file-share-v2"></script>
-    <script src="/static/osc/osc-events.js?v=20260513-template-folder-v3"></script>
+    <script src="/static/osc/tabs/file_manager.js?v=20260621-case-back-v1"></script>
+            <script src="/static/osc/osc-events.js?v=20260708-local-form-date-v1"></script>
 </body>
 
 </html>

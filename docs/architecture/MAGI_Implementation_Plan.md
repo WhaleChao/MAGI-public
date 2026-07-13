@@ -32,14 +32,14 @@
     *   **角色**: 這是「大腦的引擎」，負責跑模型 (Generative AI)。
     *   **關係**: MAGI (NanoClaw) 呼叫 Ollama API 進行思考。
     *   **各機模型配置**:
-        *   CASPER (Mac Mini): `qwen2.5:14b`, `nomic-embed-text` (推理核心), **`llama-3-taiwan-8b-instruct` (本土顧問)**
-        *   MELCHIOR (Windows): `mistral-nemo:12b`, `qwen2.5-coder:7b` (程式與遊戲)
+        *   CASPER (Mac Mini): `gemma-4-e4b-it-4bit`, `modernbert-embed-4bit` (推理核心), **`llama-3-taiwan-8b-instruct` (本土顧問)**
+        *   MELCHIOR (Windows): `mistral-nemo:12b`, `Phi-4-mini-instruct-4bit` (程式與驗證)
         *   KEEPER (Dell): 🚫 不安裝 / 禁用 Ollama (專注 I/O)
         *   **BALTHASAR (M4 Air 16GB)**:
             *   **雙重模式 (Dual Mode)**:
                 *   **日卓模式 (Day Mode)**: 機會主義同步，處理使用者雜事。
                 *   **夜議模式 (Nightly Council)**: 每日 **03:00 AM** 準時上線，參與三哲人共識會議 (The Vote) 與系統進化。
-            *   **模型**: 回歸 `qwen2.5:14b`，充分利用 M4 NPU 算力。
+            *   **模型**: 使用 MAGI 白名單模型（Gemma / Mistral / Phi 系列），充分利用 Apple Silicon 算力。
 
 3.  **Tailscale**:
     *   **每一台機器** 都要安裝並登入同一個 Tailnet。
@@ -206,4 +206,3 @@ CREATE TABLE users (
 3.  **安全 (Isolation)**:
     *   舊程式碼在容器內運行，**無法破壞 Host OS**。
     *   這比原本的設計更符合 "Iron Dome" 精神。
-

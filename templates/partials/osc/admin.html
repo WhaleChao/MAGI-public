@@ -3,7 +3,57 @@
                 <div class="section-head">
                     <div>
                         <h3>系統設定與資料字典</h3>
-                        <div class="section-note">集中維護 settings、案由模板、法院、法扶分會、使用者設定、案件熱鍵、對造與操作紀錄。</div>
+                        <div class="section-note">集中維護全域設定、案由模板、法院、法扶分會、使用者設定、案件熱鍵、對造與操作紀錄。</div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="card" id="liveValidationSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>Live 驗證</h3>
+                            <div class="section-note">快速檢查核心服務、NAS、Drive、資料庫與模型狀態。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn primary" id="adminLiveValidationRunBtn">立即驗證</button>
+                        </div>
+                    </div>
+                    <div id="adminLiveValidationSummary" class="status-banner" hidden></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>項目</th><th>狀態</th><th>摘要</th></tr></thead>
+                            <tbody id="adminLiveValidationBody"><tr><td colspan="3" class="muted">尚未驗證</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="driveExclusionsSection">
+                    <div class="section-head">
+                        <div>
+                            <h3>Drive / NAS 排除管理</h3>
+                            <div class="section-note">維護不納入 Drive/NAS 案件同步的資料夾相對路徑。</div>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="btn" id="adminDriveExclusionsRefreshBtn">重新整理</button>
+                        </div>
+                    </div>
+                    <div class="field-grid cols-4">
+                        <div class="field" style="grid-column: span 3;">
+                            <label for="adminDriveExclusionPath">相對路徑</label>
+                            <input id="adminDriveExclusionPath" placeholder="例如 法扶案件/Lumi/01.消債/測試案件">
+                        </div>
+                        <div class="field">
+                            <label>操作</label>
+                            <div class="inline-actions">
+                                <button class="btn primary" id="adminDriveExclusionAddBtn">新增排除</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="adminDriveExclusionsStatus" class="helper" style="margin-top:8px"></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>相對路徑</th><th>操作</th></tr></thead>
+                            <tbody id="adminDriveExclusionsBody"><tr><td colspan="2" class="muted">載入中...</td></tr></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -11,31 +61,31 @@
                 <div class="section-head">
                     <div>
                         <h3>📅 Google Calendar 同步</h3>
-                        <div class="section-note">將 Paperclip 待辦事項與行事曆事件同步到 Google Calendar。需先設定 Google OAuth client_id/client_secret。</div>
+                        <div class="section-note">將 Paperclip 待辦事項與行事曆事件同步到 Google Calendar。需先設定 Google 授權資訊。</div>
                     </div>
                 </div>
                 <div class="field-grid cols-3">
                     <div class="field">
-                        <label for="gcalClientId">Client ID</label>
+                        <label for="gcalClientId">Google 用戶端編號</label>
                         <input id="gcalClientId" placeholder="Google Cloud Console 取得">
                     </div>
                     <div class="field">
-                        <label for="gcalClientSecret">Client Secret</label>
+                        <label for="gcalClientSecret">Google 用戶端密鑰</label>
                         <input id="gcalClientSecret" type="password">
                     </div>
                     <div class="field">
-                        <label for="gcalCalendarId">Calendar ID</label>
+                        <label for="gcalCalendarId">主要日曆</label>
                         <input id="gcalCalendarId" placeholder="primary">
                     </div>
                     <div class="field" style="grid-column: span 3;">
-                        <label for="gcalImportCalendarIds">匯入 Calendar IDs</label>
+                        <label for="gcalImportCalendarIds">要讀取的日曆</label>
                         <input id="gcalImportCalendarIds" placeholder="空白＝全部可讀日曆；或填 primary, calendar@example.com">
                     </div>
                 </div>
                 <div class="toolbar">
                     <button class="btn" id="gcalSaveCredsBtn">💾 儲存憑證</button>
                     <button class="btn primary" id="gcalConnectBtn">🔗 連線授權</button>
-                    <button class="btn" id="gcalSyncDryRunBtn">🔍 Dry-run 同步</button>
+                    <button class="btn" id="gcalSyncDryRunBtn">🔍 預覽同步</button>
                     <button class="btn primary" id="gcalSyncBtn">⏫ 立即同步</button>
                     <button class="btn danger" id="gcalDisconnectBtn">❌ 解除授權</button>
                 </div>
@@ -50,14 +100,14 @@
                 </div>
                 <div class="field-grid cols-4">
                     <div class="field" style="grid-column: span 3;">
-                        <label for="discordWebhookUrl">Webhook URL</label>
+                        <label for="discordWebhookUrl">Discord 通知網址</label>
                         <input id="discordWebhookUrl" type="text" placeholder="https://discord.com/api/webhooks/...">
                     </div>
                     <div class="field">
-                        <label>儲存到 settings.discord_webhook_url</label>
+                        <label>操作</label>
                         <div class="inline-actions">
                             <button class="btn primary" id="discordWebhookSaveBtn">💾 儲存</button>
-                            <button class="btn" id="discordWebhookTestBtn">📤 Test 推播</button>
+                            <button class="btn" id="discordWebhookTestBtn">📤 測試推播</button>
                         </div>
                     </div>
                 </div>
@@ -74,7 +124,7 @@
                     <div class="field-grid cols-3">
                         <div class="field" style="grid-column: span 2;">
                             <label for="adminSettingsQ">搜尋</label>
-                            <input id="adminSettingsQ" placeholder="key / value / description">
+                            <input id="adminSettingsQ" placeholder="設定名稱 / 設定值 / 說明">
                         </div>
                         <div class="field">
                             <label>操作</label>
@@ -86,16 +136,16 @@
                     </div>
                     <div class="field-grid cols-3" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminSettingKey">Key</label>
-                            <input id="adminSettingKey" placeholder="Key（必填）">
+                            <label for="adminSettingKey">設定名稱</label>
+                            <input id="adminSettingKey" placeholder="必填，例如 ai_provider">
                         </div>
                         <div class="field">
-                            <label for="adminSettingValue">Value</label>
-                            <input id="adminSettingValue" placeholder="value">
+                            <label for="adminSettingValue">設定值</label>
+                            <input id="adminSettingValue" placeholder="設定值">
                         </div>
                         <div class="field">
-                            <label for="adminSettingDescription">Description</label>
-                            <input id="adminSettingDescription" placeholder="description">
+                            <label for="adminSettingDescription">說明</label>
+                            <input id="adminSettingDescription" placeholder="給人看的用途說明">
                         </div>
                     </div>
                     <div class="toolbar">
@@ -104,7 +154,7 @@
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>Key</th><th>Value</th><th>描述</th><th>更新</th><th>操作</th></tr></thead>
+                            <thead><tr><th>設定名稱</th><th>設定值</th><th>說明</th><th>更新</th><th>操作</th></tr></thead>
                             <tbody id="adminSettingsBody"></tbody>
                         </table>
                     </div>
@@ -135,8 +185,8 @@
                     </div>
                     <div class="field-grid cols-4" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminReasonId">ID</label>
-                            <input id="adminReasonId" placeholder="更新時使用">
+                            <label for="adminReasonId">編輯編號</label>
+                            <input id="adminReasonId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="adminReasonType">案型</label>
@@ -148,7 +198,10 @@
                         </div>
                         <div class="field">
                             <label for="adminReasonCommon">常用</label>
-                            <input id="adminReasonCommon" placeholder="0/1">
+                            <select id="adminReasonCommon">
+                                <option value="1">常用</option>
+                                <option value="0">一般</option>
+                            </select>
                         </div>
                     </div>
                     <div class="toolbar">
@@ -157,7 +210,7 @@
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>ID</th><th>案型</th><th>案由</th><th>常用</th><th>操作</th></tr></thead>
+                            <thead><tr><th>編輯編號</th><th>案型</th><th>案由</th><th>常用</th><th>操作</th></tr></thead>
                             <tbody id="adminReasonBody"></tbody>
                         </table>
                     </div>
@@ -186,8 +239,8 @@
                     </div>
                     <div class="field-grid cols-4" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminCourtId">ID</label>
-                            <input id="adminCourtId" placeholder="更新時使用">
+                            <label for="adminCourtId">編輯編號</label>
+                            <input id="adminCourtId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="adminCourtName">名稱</label>
@@ -235,8 +288,8 @@
                     </div>
                     <div class="field-grid cols-3" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminBranchId">ID</label>
-                            <input id="adminBranchId" placeholder="更新時使用">
+                            <label for="adminBranchId">編輯編號</label>
+                            <input id="adminBranchId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="adminBranchName">名稱</label>
@@ -270,7 +323,7 @@
                     <div class="field-grid cols-4">
                         <div class="field" style="grid-column: span 2;">
                             <label for="adminUserSettingsQ">搜尋</label>
-                            <input id="adminUserSettingsQ" placeholder="hostname / key / value">
+                            <input id="adminUserSettingsQ" placeholder="主機名稱 / 設定名稱 / 設定值">
                         </div>
                         <div class="field">
                             <label>操作</label>
@@ -282,12 +335,12 @@
                     </div>
                     <div class="field-grid cols-4" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminUserSettingId">ID</label>
-                            <input id="adminUserSettingId" placeholder="更新時使用">
+                            <label for="adminUserSettingId">編輯編號</label>
+                            <input id="adminUserSettingId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
-                            <label for="adminUserSettingHost">Hostname</label>
-                            <input id="adminUserSettingHost" placeholder="Hostname（必填）">
+                            <label for="adminUserSettingHost">主機名稱</label>
+                            <input id="adminUserSettingHost" placeholder="必填，例如 aimac-mini">
                         </div>
                         <div class="field">
                             <label for="adminUserSettingKey">設定鍵</label>
@@ -304,7 +357,7 @@
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>Host</th><th>Key</th><th>Value</th><th>操作</th></tr></thead>
+                            <thead><tr><th>主機</th><th>設定名稱</th><th>設定值</th><th>操作</th></tr></thead>
                             <tbody id="adminUserSettingsBody"></tbody>
                         </table>
                     </div>
@@ -319,7 +372,7 @@
                     <div class="field-grid cols-4">
                         <div class="field" style="grid-column: span 2;">
                             <label for="adminMemoryKeywordsQ">搜尋</label>
-                            <input id="adminMemoryKeywordsQ" placeholder="案號 / hotkey / name">
+                            <input id="adminMemoryKeywordsQ" placeholder="案號 / 熱鍵 / 名稱">
                         </div>
                         <div class="field">
                             <label for="adminMemoryCaseFilter">案件編號篩選</label>
@@ -339,16 +392,16 @@
                             <input id="adminMemoryCaseNumber" placeholder="案件編號（必填）">
                         </div>
                         <div class="field">
-                            <label for="adminMemoryHotkey">Hotkey</label>
-                            <input id="adminMemoryHotkey" placeholder="Hotkey（必填）">
+                            <label for="adminMemoryHotkey">熱鍵</label>
+                            <input id="adminMemoryHotkey" placeholder="熱鍵（必填）">
                         </div>
                         <div class="field">
                             <label for="adminMemoryName">名稱</label>
-                            <input id="adminMemoryName" placeholder="name">
+                            <input id="adminMemoryName" placeholder="名稱">
                         </div>
                         <div class="field">
                             <label for="adminMemoryValue">值</label>
-                            <input id="adminMemoryValue" placeholder="value">
+                            <input id="adminMemoryValue" placeholder="替換內容">
                         </div>
                     </div>
                     <div class="toolbar">
@@ -357,7 +410,7 @@
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>案號</th><th>Hotkey</th><th>名稱</th><th>值</th><th>操作</th></tr></thead>
+                            <thead><tr><th>案號</th><th>熱鍵</th><th>名稱</th><th>內容</th><th>操作</th></tr></thead>
                             <tbody id="adminMemoryKeywordsBody"></tbody>
                         </table>
                     </div>
@@ -390,8 +443,8 @@
                     </div>
                     <div class="field-grid cols-4" style="margin-top:10px;">
                         <div class="field">
-                            <label for="adminOpponentId">ID</label>
-                            <input id="adminOpponentId" placeholder="更新時使用">
+                            <label for="adminOpponentId">編輯編號</label>
+                            <input id="adminOpponentId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="adminOpponentCaseNumber">案件編號</label>
@@ -403,12 +456,15 @@
                         </div>
                         <div class="field">
                             <label for="adminOpponentActive">啟用</label>
-                            <input id="adminOpponentActive" placeholder="0/1">
+                            <select id="adminOpponentActive">
+                                <option value="1">啟用</option>
+                                <option value="0">停用</option>
+                            </select>
                         </div>
                     </div>
                     <div class="field" style="margin-top:10px;">
                         <label for="adminOpponentAddress">地址</label>
-                        <textarea id="adminOpponentAddress" placeholder="address"></textarea>
+                        <textarea id="adminOpponentAddress" placeholder="地址"></textarea>
                     </div>
                     <div class="toolbar">
                         <button class="btn primary" id="adminOpponentSaveBtn">儲存對造</button>
@@ -463,11 +519,11 @@
                 <div class="field-grid cols-4">
                     <div class="field" style="grid-column: span 2;">
                         <label for="adminActivityLogsQ">搜尋</label>
-                        <input id="adminActivityLogsQ" placeholder="action / entity / details / user">
+                        <input id="adminActivityLogsQ" placeholder="動作 / 資料類型 / 內容 / 使用者">
                     </div>
                     <div class="field">
                         <label for="adminActivityTypeFilter">實體類型</label>
-                        <input id="adminActivityTypeFilter" placeholder="entity_type（選填）">
+                        <input id="adminActivityTypeFilter" placeholder="資料類型（選填）">
                     </div>
                     <div class="field">
                         <label>操作</label>
@@ -479,7 +535,7 @@
                 </div>
                 <div class="table-wrap">
                     <table>
-                        <thead><tr><th>時間</th><th>動作</th><th>實體</th><th>ID</th><th>使用者</th><th>內容</th><th>操作</th></tr></thead>
+                        <thead><tr><th>時間</th><th>動作</th><th>資料類型</th><th>資料編號</th><th>使用者</th><th>內容</th><th>操作</th></tr></thead>
                         <tbody id="adminActivityLogsBody"></tbody>
                     </table>
                 </div>

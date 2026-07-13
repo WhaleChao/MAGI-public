@@ -46,6 +46,11 @@ from api.autopilot_artifacts import (
     read_kill_reason,
     write_kill_reason,
 )
+from api.domains.judicial_api_policy import (
+    apply_judicial_api_env_defaults,
+    judicial_api_env_default,
+    judicial_api_policy_report,
+)
 
 from api.runtime_paths import (
     ensure_orch_on_sys_path,
@@ -200,9 +205,22 @@ def _resolve_remote_db_endpoint() -> Tuple[str, int]:
 def _set_db_preference_by_reachability(timeout_sec: float = 1.6) -> Dict[str, Any]:
     """
     Enforce DB preference for this run:
-    - remote reachable -> MAGI_PREFER_LOCAL_DB=0
-    - remote unreachable -> MAGI_PREFER_LOCAL_DB=1
+    - local-only mode (default) -> MAGI_PREFER_LOCAL_DB=1
+    - explicit bidirectional DB sync enabled and remote reachable -> MAGI_PREFER_LOCAL_DB=0
+    - explicit bidirectional DB sync enabled but remote unreachable -> MAGI_PREFER_LOCAL_DB=1
     """
+    db_bidir_enabled = str(os.environ.get("MAGI_ENABLE_DB_BIDIR_SYNC", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if not db_bidir_enabled:
+        os.environ["MAGI_PREFER_LOCAL_DB"] = "1"
+        return {
+            "ok": True,
+            "remote_host": "",
+            "remote_port": 0,
+            "remote_reachable": False,
+            "prefer_local_db": "1",
+            "message": "local-only",
+            "error": "",
+        }
     host, port = _resolve_remote_db_endpoint()
     reachable = False
     err = ""
@@ -581,7 +599,7 @@ def _append_jsonl(path: str, obj: Dict[str, Any]) -> None:
 
 def _queue_gcal_oauth_defer(run_dir: str, *, limit: int, parsed: Optional[dict]) -> str:
     """
-    OAuth 未就緒時，將 gcal_sync 延後記錄到佇列，避免 nightly 報錯中斷判讀。
+    OAuth 未就緒時，將 gcal_sync 延後記錄到序列，避免 nightly 報錯中斷判讀。
     """
     item = {
         "ts": datetime.now().isoformat(),
@@ -696,7 +714,7 @@ def _blocker_sig(blockers: list) -> str:
     產生「穩定」的 blockers 簽章，避免因為 stderr/細節字串變動導致每 2 小時都被視為不同事件而洗版。
     規則：
     - 盡量只保留「步驟: 類型」(例如 file_review_preview: reauth_required)
-    - 對 OSC 佇列類訊息，去除數字差異（只保留 pending 狀態）
+    - 對 OSC 序列類訊息，去除數字差異（只保留 pending 狀態）
     - 對 OAuth/權限/驗證碼類，抽出固定 kind
     """
     items = []
@@ -706,8 +724,8 @@ def _blocker_sig(blockers: list) -> str:
             continue
         sl = s.lower()
 
-        # OSC queue: remove variable counts
-        if "osc" in sl and ("佇列" in s or "pending" in sl):
+        # OSC pending sequence: remove variable counts
+        if "osc" in sl and ("序列" in s or "pending" in sl):
             items.append("osc_queue: pending")
             continue
 
@@ -1009,6 +1027,25 @@ def _cmd_timed_out(res: Optional[CmdResult]) -> bool:
 
 def _skill_action(skill: str) -> str:
     return os.path.join(SKILLS_DIR, skill, "action.py")
+
+
+def _cron_job_enabled(job_id: str) -> bool:
+    """Return True when cron_jobs.json has an enabled job with this id."""
+    try:
+        cron_path = os.path.join(MAGI_ROOT_DIR, "cron_jobs.json")
+        with open(cron_path, "r", encoding="utf-8") as fh:
+            jobs = json.load(fh)
+        if not isinstance(jobs, list):
+            return False
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("id") or "").strip() != job_id:
+                continue
+            return bool(job.get("enabled", True))
+    except Exception:
+        logging.getLogger(__name__).debug("cron job lookup failed: %s", job_id, exc_info=True)
+    return False
 
 
 def _stash_cmd_output(run_dir: str, step: str, cmd: list, res: CmdResult) -> None:
@@ -1320,108 +1357,32 @@ def _load_last_line_callback_age_sec() -> Optional[int]:
 def _comm_health_self_test() -> Dict[str, Any]:
     """
     通訊介面自檢：
-    1) OpenClaw channel probe
+    1) MAGI 官方通道 smoke test
     2) LINE 本機 webhook 簽章 smoke test
     3) 最近 callback 新鮮度
     """
     out: Dict[str, Any] = {
         "ok": True,
-        "openclaw_probe": {},
+        "official_channel_smoke": {},
         "line_local_webhook": {},
         "line_last_callback_age_sec": None,
         "warnings": [],
         "errors": [],
     }
 
-    # 1) OpenClaw probe (retry to avoid false negative right after restart)
-    try:
-        probe_retries = max(1, int(os.environ.get("MAGI_OPENCLAW_PROBE_RETRIES", "3") or "3"))
-    except Exception:
-        probe_retries = 3
-    try:
-        probe_retry_wait = max(1, int(os.environ.get("MAGI_OPENCLAW_PROBE_RETRY_WAIT_SEC", "3") or "3"))
-    except Exception:
-        probe_retry_wait = 3
-
-    probe = _run_cmd(["openclaw", "channels", "status", "--probe"], timeout_sec=40)
-    probe_text = (probe.stdout or "") + "\n" + (probe.stderr or "")
-    discord_line = ""
-    for ln in probe_text.splitlines():
-        s = ln.strip()
-        if re.search(r"Discord\s+default\b", s, re.IGNORECASE):
-            discord_line = s
-            break
-    discord_ok = bool(re.search(r"Discord\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-    line_ok = bool(re.search(r"LINE\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-    tg_ok = bool(re.search(r"Telegram\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-
-    attempt = 1
-    while attempt < probe_retries and not (discord_ok and line_ok and tg_ok):
-        time.sleep(probe_retry_wait)
-        probe = _run_cmd(["openclaw", "channels", "status", "--probe"], timeout_sec=40)
-        probe_text = (probe.stdout or "") + "\n" + (probe.stderr or "")
-        for ln in probe_text.splitlines():
-            s = ln.strip()
-            if re.search(r"Discord\s+default\b", s, re.IGNORECASE):
-                discord_line = s
-                break
-        discord_ok = bool(re.search(r"Discord\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        line_ok = bool(re.search(r"LINE\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        tg_ok = bool(re.search(r"Telegram\s+default\b.*\bworks\b", probe_text, re.IGNORECASE))
-        attempt += 1
-    warn_lines = []
-    for ln in probe_text.splitlines():
-        s = ln.strip()
-        if s.startswith("- ") and "not configured" in s.lower():
-            warn_lines.append(s)
-    out["openclaw_probe"] = {
-        "ok": bool(probe.ok and discord_ok and line_ok and tg_ok),
-        "returncode": probe.returncode,
-        "discord_ok": discord_ok,
-        "line_ok": line_ok,
-        "telegram_ok": tg_ok,
-        "attempts": attempt,
-        "warnings": warn_lines[:8],
-    }
-    discord_disabled = (": disabled" in discord_line.lower()) or ("error:disabled" in discord_line.lower())
-    if not discord_ok and discord_disabled:
-        official_discord = _official_discord_selftest(timeout_sec=8)
-        out["official_discord"] = official_discord
-        if official_discord.get("ok"):
-            discord_ok = True
-            out["openclaw_probe"]["discord_ok"] = True
-            out["warnings"].append("openclaw_discord_disabled_using_official_bot")
-    if not (discord_ok and line_ok and tg_ok):
-        official_channels = _official_channel_smoke_selftest(timeout_sec=45)
-        out["official_channel_smoke"] = official_channels
-        recovered = []
-        if not discord_ok and official_channels.get("discord_ok"):
-            discord_ok = True
-            out["openclaw_probe"]["discord_ok"] = True
-            recovered.append("discord")
-        if not line_ok and official_channels.get("line_ok"):
-            line_ok = True
-            out["openclaw_probe"]["line_ok"] = True
-            recovered.append("line")
-        if not tg_ok and official_channels.get("telegram_ok"):
-            tg_ok = True
-            out["openclaw_probe"]["telegram_ok"] = True
-            recovered.append("telegram")
-        if recovered:
-            out["warnings"].append("openclaw_probe_recovered_by_official_channel_smoke:" + ",".join(recovered))
-    out["openclaw_probe"]["ok"] = bool(probe.ok and discord_ok and line_ok and tg_ok)
+    official_channels = _official_channel_smoke_selftest(timeout_sec=45)
+    out["official_channel_smoke"] = official_channels
+    discord_ok = bool(official_channels.get("discord_ok"))
+    line_ok = bool(official_channels.get("line_ok"))
+    tg_ok = bool(official_channels.get("telegram_ok"))
     if not discord_ok:
         out["errors"].append("discord_channel_probe_failed")
     if not line_ok:
         out["errors"].append("line_channel_probe_failed")
     if not tg_ok:
         out["errors"].append("telegram_channel_probe_failed")
-    if warn_lines:
-        if line_ok:
-            # OpenClaw doctor occasionally reports LINE token/secret missing even when probe is healthy.
-            out["warnings"].append("openclaw_line_warning_false_positive")
-        else:
-            out["warnings"].append("openclaw_line_config_warning_present")
+    if official_channels.get("error"):
+        out["warnings"].append(str(official_channels.get("error")))
 
     # 2) Local LINE callback smoke
     local_cb = _line_local_webhook_selftest(timeout_sec=8)
@@ -1622,7 +1583,7 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     reasons = list(pipeline.get("reasons") or [])[:3]
     error = str(pipeline.get("error") or "").strip()
 
-    lines = ["司法院 API 狀態：", f"- 狀態：{status}"]
+    lines = ["司法院裁判資料狀態：", f"- 狀態：{status}"]
 
     cred_sources = [str(x).strip() for x in (credentials.get("sources") or []) if str(x).strip()]
     if credentials:
@@ -1634,28 +1595,28 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     pull_ts = str(pull.get("latest_ts") or "").strip()
     pull_age = pull.get("latest_age_hours")
     if pull_ts or latest_pull:
-        pull_line = f"- 夜拉：{pull_ts or '無成功紀錄'}"
+        pull_line = f"- 夜間拉取：{pull_ts or '無成功紀錄'}"
         if pull_age is not None:
             pull_line += f"（{pull_age}h 前）"
         if latest_pull:
             pull_line += (
-                f" / fetched={latest_pull.get('fetched', '-')}"
-                f" / failed={latest_pull.get('failed', '-')}"
-                f" / skipped={latest_pull.get('skipped', '-')}"
+                f" / 新抓={latest_pull.get('fetched', '-')}"
+                f" / 失敗={latest_pull.get('failed', '-')}"
+                f" / 略過={latest_pull.get('skipped', '-')}"
             )
         cred_source = str(pull.get("credentials_source") or "").strip()
         if cred_source:
-            pull_line += f" / creds={cred_source}"
+            pull_line += f" / 帳密來源={cred_source}"
         lines.append(pull_line)
 
     proc_ts = str(process.get("updated_at") or "").strip()
     proc_age = process.get("updated_age_hours")
     if proc_ts or process:
-        proc_line = f"- 晨整：{proc_ts or '無狀態檔'}"
+        proc_line = f"- 晨間整理：{proc_ts or '無狀態檔'}"
         if proc_age is not None:
             proc_line += f"（{proc_age}h 前）"
         if process.get("processed_entries") is not None:
-            proc_line += f" / processed={process.get('processed_entries', '-')}"
+            proc_line += f" / 已整理={process.get('processed_entries', '-')}"
         lines.append(proc_line)
 
     raw_total = backlog.get("raw_total")
@@ -1663,7 +1624,7 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     oldest_pending = backlog.get("oldest_backlog_age_hours")
     if raw_total is not None or pending is not None:
         headline = str(backlog_interpretation.get("headline") or "").strip()
-        backlog_line = f"- Backlog：pending={pending if pending is not None else '-'} / raw_total={raw_total if raw_total is not None else '-'}"
+        backlog_line = f"- 待整理量：待整理={pending if pending is not None else '-'} / 資料檔總數={raw_total if raw_total is not None else '-'}"
         if oldest_pending is not None:
             backlog_line += f" / 最老約 {oldest_pending}h"
         if headline:
@@ -1676,17 +1637,21 @@ def _format_judicial_api_pipeline_lines(pipeline: Any) -> list[str]:
     normalized_count = normalized.get("count")
     normalized_ts = str(normalized.get("latest_at") or "").strip()
     if normalized_count is not None:
-        norm_line = f"- Normalized：{normalized_count} 份"
+        norm_line = f"- 已轉換文字檔：{normalized_count} 份"
         if normalized_ts:
-            norm_line += f" / latest={normalized_ts}"
+            norm_line += f" / 最新={normalized_ts}"
         lines.append(norm_line)
 
     for item in reasons:
         lines.append(f"- 摘要：{item}")
 
-    pending_examples = [str(x).strip() for x in (backlog.get("pending_examples") or []) if str(x).strip()]
+    pending_examples = [
+        str(x).strip().replace("raw/", "資料檔/")
+        for x in (backlog.get("pending_examples") or [])
+        if str(x).strip()
+    ]
     if pending_examples:
-        lines.append(f"- 待處理示例：{'; '.join(pending_examples[:3])}")
+        lines.append(f"- 待整理資料檔示例：{'; '.join(pending_examples[:3])}")
     if error:
         lines.append(f"- 附註：{error}")
     return lines
@@ -1755,7 +1720,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
         if not s:
             return ""
         s = s.split(":", 1)[0]
-        # e.g. qwen3-30b-instruct.Q4_K_M.gguf -> qwen3
+        # e.g. gemma-4-e4b-it-4bit -> gemma
         m = re.match(r"^([a-z]+[0-9]*(?:\.[0-9]+)?)", s)
         if m:
             return m.group(1)
@@ -1830,14 +1795,21 @@ def _big_brain_health_probe() -> Dict[str, Any]:
             for it in (models_data.get("data") or []):
                 if isinstance(it, dict) and it.get("id"):
                     model_ids.append(str(it.get("id")).strip())
-            # Prefer qwen model on /v1 if available.
+            # Prefer approved non-China models on /v1 if available.
             v1_model = ""
             for m in model_ids:
-                if m.lower().startswith("qwen3"):
+                low_m = m.lower()
+                if any(bad in low_m for bad in ("qwen", "deepseek", "kimi", "minimax", "baichuan", "moonshot", "internlm", "chatglm", "sensetime")) or "glm" in low_m:
+                    continue
+                if any(good in low_m for good in ("gemma", "mistral", "phi", "llama", "smol")):
                     v1_model = m
                     break
-            if not v1_model and model_ids:
-                v1_model = model_ids[0]
+            if not v1_model:
+                for m in model_ids:
+                    low_m = m.lower()
+                    if not (any(bad in low_m for bad in ("qwen", "deepseek", "kimi", "minimax", "baichuan", "moonshot", "internlm", "chatglm", "sensetime")) or "glm" in low_m):
+                        v1_model = m
+                        break
             if v1_model:
                 tried_models.append(v1_model)
                 payload = {
@@ -1862,7 +1834,7 @@ def _big_brain_health_probe() -> Dict[str, Any]:
                     msg = choices[0].get("message")
                     if isinstance(msg, dict):
                         text = str(msg.get("content") or "").strip()
-                        # qwen3 may occasionally output only reasoning tokens first.
+                        # Some reasoning models may output reasoning tokens before content.
                         if not text:
                             text = str(msg.get("reasoning_content") or "").strip()
                 if text:
@@ -2530,9 +2502,10 @@ def _format_comm_notify_lines(parsed: Any) -> list:
     if not isinstance(parsed, dict):
         return []
     lines = []
-    probe = parsed.get("openclaw_probe") if isinstance(parsed.get("openclaw_probe"), dict) else {}
+    probe = parsed.get("official_channel_smoke") if isinstance(parsed.get("official_channel_smoke"), dict) else {}
     discord_ok = bool(probe.get("discord_ok"))
     line_ok = bool(probe.get("line_ok"))
+    telegram_ok = bool(probe.get("telegram_ok"))
     webhook = parsed.get("line_local_webhook") if isinstance(parsed.get("line_local_webhook"), dict) else {}
     line_local_ok = bool(webhook.get("ok"))
     age = parsed.get("line_last_callback_age_sec")
@@ -2544,7 +2517,8 @@ def _format_comm_notify_lines(parsed: Any) -> list:
     lines.append(
         "- 通訊健康："
         f"Discord={'OK' if discord_ok else 'FAIL'} / "
-        f"LINE-probe={'OK' if line_ok else 'FAIL'} / "
+        f"LINE={'OK' if line_ok else 'FAIL'} / "
+        f"Telegram={'OK' if telegram_ok else 'FAIL'} / "
         f"LINE-webhook={'OK' if line_local_ok else 'FAIL'} / "
         f"LINE-callback-age={age_text}"
     )
@@ -2811,7 +2785,7 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
     general_max = max(10, min(general_max, 200))
     try:
         ensure_orch_on_sys_path()
-        import laf_automation_v2 as laf
+        from skills.legal import laf
 
         cfg_path = _load_primary_config_path()
         cfg = _load_json(cfg_path)
@@ -2842,7 +2816,16 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
         if not ok:
             return {"ok": False, "error": "gmail_auth_failed"}
 
-        cases = manager.gmail_monitor.check_emails(max_results=max_results)
+        laf_exists = None
+        if db_manager and hasattr(db_manager, "check_laf_email_exists"):
+            laf_exists = lambda mid: db_manager.check_laf_email_exists(mid)
+            manager.gmail_monitor.processed_exists_func = laf_exists
+
+        cases = manager.gmail_monitor.check_emails(
+            max_results=max_results,
+            check_exists_func=laf_exists,
+            mark_processed=False,
+        )
         out["cases"] = len(cases or [])
         orchestrator = None
         for ci in (cases or []):
@@ -2855,7 +2838,9 @@ def _laf_one_shot(max_results: int = 15, general_max: int = 15) -> Dict[str, Any
                     out["routed"] = int(out.get("routed") or 0) + 1
                 else:
                     # Queue decision logic + attachment handling for first dispatch/opening notices.
-                    manager._on_new_case(ci)
+                    if manager._on_new_case(ci) is False:
+                        raise RuntimeError("laf_on_new_case_failed")
+                manager.gmail_monitor.mark_laf_processed(getattr(ci, "message_id", ""))
             except Exception as e:
                 out["errors"].append(f"on_new_case: {e}")
 
@@ -2994,8 +2979,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_NO_DELETE", "1")
     # DB safety: block destructive SQL in headless/automation paths.
     os.environ.setdefault("MAGI_DB_NO_DELETE", "1")
-    # DB strategy: prefer Keeper/main DB by default; fallback logic lives in each module.
-    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    # DB strategy: the retired remote DB is opt-in only; ordinary automation uses the local MariaDB.
+    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     # Schema guard: detect accidental re-hardening (chk_nb_*) that can break OSC/GUI flows.
     os.environ.setdefault("MAGI_DB_SCHEMA_GUARD_ENABLE", "1")
     # User asked to pause Apple AI usage; prefer non-Apple PDF text extraction.
@@ -3025,9 +3010,10 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_BIG_BRAIN_REQUIRE_DISTRIBUTED", "0")
     # 預設允許非主模型降級，重點是任務可完成與回覆不中斷。
     os.environ.setdefault("MAGI_BIG_BRAIN_REQUIRE_MAIN_MODEL", "0")
-    # 司法院官方 API：夜間拉取、白天整理（由 tick/ nighty 分工）
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", "1")
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+    # 司法院官方 API：預設低負載（TLR 語義檢索優先，本地只做小量增量快取）。
+    apply_judicial_api_env_defaults(os.environ)
+    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_DAY_PROCESS", "1"))
+    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1"))
     # Tick 補強：除了信箱掃描，也要實際到閱卷網站檢查可下載並自動下載。
     os.environ.setdefault("MAGI_ENABLE_FILE_REVIEW_SITE_CHECK_TICK", "1")
     os.environ.setdefault("MAGI_TICK_FILE_REVIEW_SITE_TIMEOUT_SEC", "900")
@@ -3039,7 +3025,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_MINUTES", "180")
     os.environ.setdefault("MAGI_TICK_OSC_QUEUE_FLUSH_TIMEOUT_SEC", "120")
     os.environ.setdefault("MAGI_TICK_SCAN_FOLDER_ASYNC", "1")
-    # OpenClaw 配置守門：卡住時自動校正 timeout/context/concurrency 並重啟 gateway
+    # 退役 OpenClaw 守門保留為顯式 opt-in stub；預設不得觸發舊 runtime。
     os.environ.setdefault("MAGI_OPENCLAW_MODEL_GUARD_RESTART", "1")
     # LAF 深度二次抽取（舊案件文件/信件附件/報表文字）
     os.environ.setdefault("MAGI_LAF_DEEP_EXTRACT_ENABLE", "1")
@@ -3099,7 +3085,13 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 kind = "needs_human"
             results["blockers"].append(f"{step}: {kind}")
 
-    results: Dict[str, Any] = {"ok": True, "steps": {}, "blocked": False, "blockers": []}
+    results: Dict[str, Any] = {
+        "ok": True,
+        "steps": {},
+        "blocked": False,
+        "blockers": [],
+        "judicial_api_load_policy": judicial_api_policy_report(),
+    }
     if _env_on("MAGI_TICK_OPENCLAW_AUTH_GUARD_ENABLE", False):
         try:
             auth_guard = _openclaw_auth_mode_guard()
@@ -3152,8 +3144,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         elif not schema_guard.get("ok", True):
             maybe_block("db_schema_guard", str(schema_guard.get("message", "")))
 
-    # -1) OpenClaw session self-heal（修補 modelApi 缺漏，避免 TG/LINE 偶發不回）
-    if _env_on("MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE", True):
+    # -1) Retired OpenClaw session self-heal；只允許明確 opt-in 的歷史資料修補。
+    if _env_on("MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE", False):
         try:
             sh = _openclaw_session_selfheal(max_files=int(os.environ.get("MAGI_OPENCLAW_SESSION_HEAL_MAX_FILES", "80") or "80"))
         except Exception as e:
@@ -3165,7 +3157,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         results["steps"]["openclaw_session_selfheal"] = {
             "ok": True,
             "skipped": True,
-            "reason": "MAGI_TICK_OPENCLAW_SESSION_SELFHEAL_ENABLE=0",
+            "reason": "OpenClaw deprecated; session self-heal disabled by default",
         }
 
     # -0.5) OpenClaw model guard（避免 context/timeout/並發配置導致任務卡住）
@@ -3235,7 +3227,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 results["blocked"] = True
                 results["blockers"].append("Big Brain 健康探測失敗（分散式與備援皆不穩）")
 
-    # 0.8) 司法院 API 夜間拉取 — 已移至 run_nightly() 中以獨立執行緒在 00:00 準時啟動，不佔 tick 流程
+    # 0.8) 司法院裁判資料夜間拉取 — 已移至 run_nightly() 中以獨立執行緒在 00:00 準時啟動，不佔 tick 流程
 
     # 1) LAF one-shot (email + download + archive)
     # Changed to async background to avoid Head-of-Line Blocking
@@ -3390,8 +3382,8 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     tr_retry_detail: Optional[Dict[str, Any]] = None
                     tr_retry_enabled = os.environ.get("MAGI_TICK_TRANSCRIPT_RETRY_ON_TIMEOUT", "1").strip().lower() in {"1", "true", "yes", "on"}
                     if tr_retry_enabled and (not tr_sync_first.ok) and _cmd_timed_out(tr_sync_first):
-                        # 低負載重試：改用 download_all（略過前置掃描/更名），避免第二次又卡死。
-                        tr_retry_cmd = [VENV_PY, _skill_action("transcript-downloader"), "--task", "download_all"]
+                        # 低負載重試：沿用可續跑分批同步，略過前置 MD5 掃描，避免回到舊的全量一次掃到底。
+                        tr_retry_cmd = [VENV_PY, _skill_action("transcript-downloader"), "--task", "sync_quick"]
                         tr_retry_env = dict(tr_sync_env)
                         tr_retry_env["MAGI_SELENIUM_PAGELOAD_TIMEOUT_SEC"] = str(
                             os.environ.get("MAGI_TICK_TRANSCRIPT_RETRY_PAGELOAD_TIMEOUT_SEC", "30") or "30"
@@ -3405,7 +3397,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                         tr_retry_detail = {
                             "attempted": True,
                             "reason": "timeout",
-                            "mode": "low_load_download_all",
+                            "mode": "low_load_incremental_sync",
                             "ok": tr_retry.ok,
                             "returncode": tr_retry.returncode,
                             "parsed": tr_retry.parsed if isinstance(tr_retry.parsed, dict) else {},
@@ -3467,15 +3459,18 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
             }
         else:
             day_payload = {
-                "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_DAY_MAX_DOCS", "200") or "200"),
-                "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", "80") or "80"),
+                "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_DAY_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_MAX_DOCS", "60")) or "60"),
+                "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_SUMMARY_MAX", "12")) or "12"),
+                "summary_mode": os.environ.get("MAGI_JUDICIAL_API_DAY_SUMMARY_MODE", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_SUMMARY_MODE", "extractive")),
+                "skip_assets": _env_on("MAGI_JUDICIAL_API_DAY_SKIP_ASSETS", True),
+                "vector_ingest": _env_on("MAGI_JUDICIAL_API_DAY_VECTOR_INGEST", False),
                 "force": False,
                 "notify": False,
             }
             jc_day_cmd = [VENV_PY, jc_path, "--task", "official_api_day_process " + json.dumps(day_payload, ensure_ascii=False)]
             jc_day = _run_cmd(
                 jc_day_cmd,
-                timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", "3600") or "3600"),
+                timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_TIMEOUT_SEC", "900")) or "900"),
             )
             _stash_cmd_output(run_dir, "judicial_api_day_process", jc_day_cmd, jc_day)
             results["steps"]["judicial_api_day_process"] = {
@@ -3485,7 +3480,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                 "stderr_tail": (jc_day.stderr or "")[-800:],
             }
             retry_day_process = (
-                os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", "1").strip().lower()
+                os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_ON_BACKLOG", "0")).strip().lower()
                 in {"1", "true", "yes", "on"}
             )
             if jc_day.ok and retry_day_process and isinstance(jc_day.parsed, dict):
@@ -3502,7 +3497,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     retry_payload["force"] = True
                     retry_payload["max_docs"] = min(
                         max(backlog_remaining, int(day_payload.get("max_docs") or 0)),
-                        int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", "400") or "400"),
+                        int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_MAX_DOCS", "120")) or "120"),
                     )
                     jc_day_retry_cmd = [
                         VENV_PY,
@@ -3512,7 +3507,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     ]
                     jc_day_retry = _run_cmd(
                         jc_day_retry_cmd,
-                        timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", "1200") or "1200"),
+                        timeout_sec=int(os.environ.get("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_DAY_RETRY_TIMEOUT_SEC", "600")) or "600"),
                     )
                     _stash_cmd_output(run_dir, "judicial_api_day_process_retry", jc_day_retry_cmd, jc_day_retry)
                     results["steps"]["judicial_api_day_process"]["retry"] = {
@@ -3523,6 +3518,12 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
                     }
             if not jc_day.ok:
                 maybe_block("judicial_api_day_process", str((jc_day.parsed or {}).get("error") or jc_day.stderr or ""))
+    else:
+        results["steps"]["judicial_api_day_process"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "disabled_by_judicial_api_load_policy" if not day_proc_enabled else "script_not_found",
+        }
 
     # 3) PDF namer file pipeline (notify=0, execute=1)
     # Changed to async background
@@ -3630,7 +3631,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
         if remaining_blocking > 0:
             results["blocked"] = True
             results["blockers"].append(
-                f"OSC 待辦佇列尚有 {remaining_blocking} 筆需人工判斷（共 {remaining_total} 筆未入庫；可能是案號歧義）"
+                f"OSC 待辦序列尚有 {remaining_blocking} 筆需人工判斷（共 {remaining_total} 筆未入庫；可能是案號歧義）"
             )
 
     # "ok" means: no human intervention needed (blockers empty).
@@ -3644,7 +3645,7 @@ def run_tick(run_dir: str, *, emit_step_events: bool = True) -> Dict[str, Any]:
 def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_NO_DELETE", "1")
     os.environ.setdefault("MAGI_DB_NO_DELETE", "1")
-    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+    os.environ.setdefault("MAGI_PREFER_LOCAL_DB", "1")
     os.environ.setdefault("MAGI_PDF_TEXT_ENGINE", "pymupdf")
     os.environ.setdefault("MAGI_DISABLE_APPLE_AI", "1")
     os.environ.setdefault("MAGI_SYSTEM_NOTIFY_CHANNEL", "telegram")
@@ -3662,7 +3663,12 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_ENABLE", "1")
     os.environ.setdefault("MAGI_TRANSCRIPT_CAPTCHA_COOLDOWN_MINUTES", "180")
     os.environ.setdefault("MAGI_ENABLE_JUDGMENT_CRAWL", "1")
-    os.environ.setdefault("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+    judicial_api_cron_handles_night_pull = _cron_job_enabled("job_judicial_api_night_pull")
+    if "MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL" not in os.environ:
+        os.environ["MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL"] = (
+            "0" if judicial_api_cron_handles_night_pull else judicial_api_env_default("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1")
+        )
+    apply_judicial_api_env_defaults(os.environ)
     os.environ.setdefault("MAGI_ENABLE_SCAN_FOLDER", "1")
     os.environ.setdefault("MAGI_ENABLE_DB_BIDIR_SYNC", "0")
     os.environ.setdefault("MAGI_ENABLE_DB_DAILY_BACKUP", "1")
@@ -3683,6 +3689,38 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     os.environ.setdefault("OSC_GCAL_RETRY_SLEEP_SEC", "1.0")
     # 判決爬取避免拖死整輪：讓 judgment-collector 內部 time_budget 更保守一點。
     os.environ.setdefault("JUDGMENT_DAILY_TIME_BUDGET_SEC", "900")
+
+    if _env_on("MAGI_NIGHTLY_DIAGNOSTIC_MODE", False):
+        required_skills = {
+            name: os.path.exists(_skill_action(name))
+            for name in (
+                "iron-dome",
+                "osc-orchestrator",
+                "file-review-orchestrator",
+                "transcript-downloader",
+            )
+        }
+        try:
+            configured_budget = int(os.environ.get("MAGI_NIGHTLY_TOTAL_BUDGET_SEC", "28800") or "28800")
+        except (TypeError, ValueError):
+            configured_budget = 0
+        checks = {
+            "runtime_root": Path(MAGI_ROOT_DIR).is_dir(),
+            "run_dir": Path(run_dir).is_dir(),
+            "required_skills": all(required_skills.values()),
+            "positive_budget": configured_budget > 0,
+            "cron_definition": _cron_job_enabled("job_nightly_autopilot"),
+        }
+        return {
+            "ok": all(checks.values()),
+            "diagnostic_mode": True,
+            "non_destructive": True,
+            "checks": checks,
+            "required_skills": required_skills,
+            "configured_budget_sec": configured_budget,
+            "steps": {},
+            "blockers": [name for name, ok in checks.items() if not ok],
+        }
 
     _USER_DEFER_THRESHOLD = int(os.environ.get("MAGI_USER_ACTIVE_THRESHOLD_SEC", "300"))
     _nightly_results_ref: Dict[str, Any] = {"steps": {}}
@@ -3727,9 +3765,13 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         }
         logger.info("nightly: PDF 視覺訓練完成 ok=%s", _pdf_train_res.ok)
 
-    # ── Phase 1: 司法院 API 夜間拉取 — 獨立執行緒，等到 00:00 準時啟動 ──
-    # 司法院 API 是純 HTTP（data.judicial.gov.tw），完全不用 oMLX，可與其他任務並行。
-    _jdg_thread_result: Dict[str, Any] = {"ok": False, "skipped": True}
+    # ── Phase 1: 司法院裁判資料夜間拉取 — 獨立執行緒，等到 00:00 準時啟動 ──
+    # 司法院裁判資料介接是純 HTTP（data.judicial.gov.tw），完全不用 oMLX，可與其他任務並行。
+    _jdg_thread_result: Dict[str, Any] = {
+        "ok": True if judicial_api_cron_handles_night_pull else False,
+        "skipped": True,
+        "reason": "handled_by_cron_job_judicial_api_night_pull" if judicial_api_cron_handles_night_pull else "",
+    }
     _jdg_thread_done = _thr.Event()
     jc_path = _skill_action("judgment-collector")
     jdg_night_enabled = os.environ.get("MAGI_ENABLE_JUDICIAL_API_NIGHT_PULL", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -3754,8 +3796,8 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
                 time.sleep(min(wait_sec + 1, 60))  # 每 60 秒最多重新檢查一次
             logger.info("judicial_api_night_thread: 00:00 服務時段到，開始拉取")
             jdg_payload = {
-                "max_jdocs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", "25000") or "25000"),
-                "max_days": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", "0") or "0"),
+                "max_jdocs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_MAX_JDOCS", "300")) or "300"),
+                "max_days": int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_MAX_DAYS", "2")) or "2"),
                 "force": False,
                 "notify": True,
             }
@@ -3764,7 +3806,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             # P0-12: 不再預設開啟 insecure SSL。若需要請在 .env 中明確設定。
             # jdg_env["JUDICIAL_API_ALLOW_INSECURE_SSL"] = "1"
             jdg_env.setdefault("JUDICIAL_API_ALLOW_INSECURE_SSL", os.environ.get("JUDICIAL_API_ALLOW_INSECURE_SSL", "0"))
-            jdg_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", "5400") or "5400")
+            jdg_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHT_TIMEOUT_SEC", "1800")) or "1800")
             res = _run_cmd(jdg_cmd, timeout_sec=jdg_timeout, env=jdg_env)
             _stash_cmd_output(run_dir, "judicial_api_night_pull", jdg_cmd, res)
             _jdg_thread_result = {
@@ -3785,9 +3827,17 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     if os.path.exists(jc_path) and jdg_night_enabled:
         _jdg_thread = _thr.Thread(target=_judicial_api_night_thread, name="judicial_api_night", daemon=True)
         _jdg_thread.start()
-        logger.info("nightly: 司法院 API 執行緒已啟動，將在 00:00 準時開始拉取")
+        logger.info("nightly: 司法院裁判資料夜間拉取已啟動，將在 00:00 準時開始")
     else:
-        _jdg_thread_result = {"ok": True, "skipped": True, "reason": "disabled or script not found"}
+        _jdg_thread_result = {
+            "ok": True,
+            "skipped": True,
+            "reason": (
+                "handled_by_cron_job_judicial_api_night_pull"
+                if judicial_api_cron_handles_night_pull
+                else "disabled or script not found"
+            ),
+        }
         _jdg_thread_done.set()
 
     # ── Phase 2: 主流程（run_tick 中的各項任務照常執行）──
@@ -3806,10 +3856,18 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
     # 寫入 PDF 視覺訓練結果
     results["steps"]["pdf_nightly_train"] = _pdf_train_result
 
-    # 等待司法院 API 執行緒完成（最多再等 30 分鐘）
+    # 等待司法院裁判資料夜間拉取完成（最多再等 30 分鐘）
     if _jdg_thread is not None and _jdg_thread.is_alive():
-        logger.info("nightly: 等待司法院 API 執行緒完成...")
+        logger.info("nightly: 等待司法院裁判資料夜間拉取完成...")
         _jdg_thread_done.wait(timeout=1800)
+        if _jdg_thread.is_alive() and not _jdg_thread_done.is_set():
+            _jdg_thread_result = {
+                "ok": False,
+                "skipped": False,
+                "reason": "night_pull_thread_timeout",
+                "message": "司法院裁判資料夜間拉取未在 30 分鐘等待期內完成；請改由單一路徑或提高等待時間。",
+                "thread": True,
+            }
     results["steps"]["judicial_api_night_pull"] = _jdg_thread_result
 
     # ── Phase 2.5: 拉取完成後立即整理摘要（夜間有充足 budget）──
@@ -3819,12 +3877,15 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
         pass  # 使用者活躍中，摘要整理自動延後
     elif os.path.exists(jc_path_post) and _post_day_enabled:
         _post_payload = {
-            "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", "400") or "400"),
-            "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", "200") or "200"),
+            "max_docs": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_MAX_DOCS", "80")) or "80"),
+            "summarize_max": int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MAX", "20")) or "20"),
+            "summary_mode": os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MODE", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_SUMMARY_MODE", "extractive")),
+            "skip_assets": _env_on("MAGI_JUDICIAL_API_NIGHTLY_SKIP_ASSETS", True),
+            "vector_ingest": _env_on("MAGI_JUDICIAL_API_NIGHTLY_VECTOR_INGEST", False),
             "force": False,
             "notify": False,
         }
-        _post_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", "7200") or "7200")
+        _post_timeout = int(os.environ.get("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", judicial_api_env_default("MAGI_JUDICIAL_API_NIGHTLY_PROCESS_TIMEOUT_SEC", "1800")) or "1800")
         _post_cmd = [VENV_PY, jc_path_post, "--task", "official_api_day_process " + json.dumps(_post_payload, ensure_ascii=False)]
         logger.info("nightly: 開始整理摘要（max_docs=%d, timeout=%ds）", _post_payload["max_docs"], _post_timeout)
         _post_res = _run_cmd(_post_cmd, timeout_sec=_post_timeout)
@@ -4398,7 +4459,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             },
         )
 
-    # 7) 司法院 API 夜拉 — 已移至 run_nightly() 獨立執行緒，00:00 準時啟動，不排隊
+    # 7) 司法院裁判資料夜間拉取 — 已移至 run_nightly() 獨立執行緒，00:00 準時啟動，不排隊
 
     # 7.2) Judgment crawl（既有案由模式，與官方 API 並行）
     jc_path = _skill_action("judgment-collector")
@@ -4448,7 +4509,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
             str(max(120, repair_timeout)),
         ]
         repair_env = os.environ.copy()
-        repair_env.setdefault("MAGI_PREFER_LOCAL_DB", "0")
+        repair_env.setdefault("MAGI_PREFER_LOCAL_DB", "1")
         _run_budgeted_step(
             "weekend_insight_repair",
             repair_cmd,
@@ -4682,7 +4743,7 @@ def run_nightly(run_dir: str) -> Dict[str, Any]:
                     parsed["deferred"] = True
                     parsed["defer_reason"] = "need_interactive_oauth"
                     parsed["defer_queue_path"] = qpath
-                    parsed["message"] = "Google Calendar OAuth 未就緒，已寫入降級佇列，待授權後補同步。"
+                    parsed["message"] = "Google Calendar OAuth 未就緒，已寫入降級序列，待授權後補同步。"
                     step["ok"] = True
                     step["returncode"] = 0
             except Exception:

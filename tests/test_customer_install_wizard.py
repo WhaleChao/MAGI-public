@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from scripts import customer_install_wizard as wizard
+from scripts import install_magi
 
 
 def _args(tmp_path, **overrides):
@@ -97,3 +98,13 @@ def test_customer_install_wizard_reports_required_config_failure(tmp_path, monke
     assert payload["ok"] is False
     assert payload["status"] == "fail"
     assert payload["summary"]["fail"] == 1
+
+
+def test_installer_optional_plan_installs_playwright_chromium():
+    plan = install_magi.build_install_plan(include_optional=True)
+    names = [step.name for step in plan]
+
+    assert "install_playwright_browsers" in names
+    step = next(step for step in plan if step.name == "install_playwright_browsers")
+    assert step.command[-3:] == ["playwright", "install", "chromium"]
+    assert step.required is False

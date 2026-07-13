@@ -50,6 +50,60 @@ CREATE TABLE IF NOT EXISTS `{_SCHEMA_VERSION_TABLE}` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+_OSC_BASE_TABLES = {"users", "cases", "clients"}
+
+
+class MigrationPreflightError(RuntimeError):
+    """Raised when the migration target database does not match the expected MAGI profile."""
+
+
+def _expected_database_name() -> str:
+    return (
+        os.environ.get("MAGI_MIGRATION_EXPECTED_DB_NAME")
+        or os.environ.get("OSC_DB_NAME")
+        or os.environ.get("MAGI_REMOTE_DB_NAME")
+        or os.environ.get("DB_NAME")
+        or "law_firm_data"
+    ).strip()
+
+
+def _current_database_name(cursor) -> str:
+    cursor.execute("SELECT DATABASE()")
+    row = cursor.fetchone()
+    return str((row or [""])[0] or "").strip()
+
+
+def _information_schema_table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+        """,
+        (table_name,),
+    )
+    row = cursor.fetchone()
+    return bool((row or [0])[0])
+
+
+def _preflight_db_profile(cursor, migration: dict | None = None) -> dict:
+    """Validate that migration is targeting the intended MAGI/OSC database."""
+    current_db = _current_database_name(cursor)
+    expected_db = _expected_database_name()
+    if expected_db and current_db != expected_db:
+        raise MigrationPreflightError(f"database_profile_mismatch: current={current_db!r} expected={expected_db!r}")
+
+    version = str((migration or {}).get("version") or "")
+    if version == "003":
+        missing = sorted(table for table in _OSC_BASE_TABLES if not _information_schema_table_exists(cursor, table))
+        if missing:
+            raise MigrationPreflightError(
+                "tenant_scope_preflight_failed: missing expected OSC base tables "
+                + ", ".join(missing)
+            )
+    return {"ok": True, "database": current_db, "version": version}
+
 
 def _get_db_connection():
     """Get a MySQL connection using MAGI's standard env vars."""
@@ -105,6 +159,43 @@ def _applied_versions(cursor) -> set[str]:
     return {row[0] for row in cursor.fetchall()}
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _current_database(cursor) -> str:
+    cursor.execute("SELECT DATABASE()")
+    row = cursor.fetchone()
+    return str((row[0] if row else "") or "")
+
+
+def _table_exists(cursor, table: str) -> bool:
+    cursor.execute("SHOW TABLES LIKE %s", (table,))
+    return cursor.fetchone() is not None
+
+
+def _require_migration_profile(cursor, migration: dict) -> None:
+    """Fail fast when a migration is about to run against the wrong DB profile."""
+    version = str(migration.get("version") or "")
+    path = str(migration.get("path") or "")
+    if version != "003" and "tenant_scope" not in path:
+        return
+    if _env_truthy("MAGI_ALLOW_CROSS_DB_TENANT_MIGRATION"):
+        logger.warning("MAGI_ALLOW_CROSS_DB_TENANT_MIGRATION=1; skipping tenant migration DB profile guard")
+        return
+
+    current_db = _current_database(cursor)
+    expected_db = (os.environ.get("OSC_DB_NAME") or "law_firm_data").strip()
+    missing = [name for name in ("cases", "clients", "case_todos", "document_index") if not _table_exists(cursor, name)]
+    if current_db != expected_db or missing:
+        raise RuntimeError(
+            "Refusing tenant-scope migration on unexpected DB profile: "
+            f"database={current_db!r}, expected={expected_db!r}, missing_tables={missing}. "
+            "Set DB_NAME/OSC_DB_NAME to the OSC case database, or explicitly set "
+            "MAGI_ALLOW_CROSS_DB_TENANT_MIGRATION=1 after manual verification."
+        )
+
+
 def cmd_status():
     """Show current migration status."""
     conn = _get_db_connection()
@@ -140,7 +231,9 @@ def cmd_upgrade():
             return
 
         for m in pending:
+            _preflight_db_profile(cursor, m)
             logger.info("Applying migration %s: %s", m["version"], m["description"])
+            _require_migration_profile(cursor, m)
             statements = [s.strip() for s in m["up"].split(";") if s.strip()]
             for stmt in statements:
                 cursor.execute(stmt)

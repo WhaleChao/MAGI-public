@@ -720,10 +720,11 @@ def _line_push_budget_ok() -> bool:
             data = {}
         return int(data.get(today, 0)) < _LINE_PUSH_DAILY_LIMIT
     except Exception:
-        return True
+        logger.warning("LINE push budget read failed; failing closed.")
+        return False
 
 
-def _line_push_budget_increment() -> None:
+def _line_push_budget_increment() -> bool:
     """Record one push message for today's budget."""
     today = time.strftime("%Y-%m-%d")
     try:
@@ -736,8 +737,10 @@ def _line_push_budget_increment() -> None:
         data[today] = int(data.get(today, 0)) + 1
         with open(_LINE_PUSH_COUNTER_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
+        return True
     except Exception:
-        _log.debug("silent-catch at %s:%s", __name__, "_line_push_budget_increment", exc_info=True)
+        logger.warning("LINE push budget increment failed; failing closed.", exc_info=True)
+        return False
 
 
 def _line_push_text(user_id: str, text: str, *, is_chat_reply: bool = False) -> bool:
@@ -750,16 +753,28 @@ def _line_push_text(user_id: str, text: str, *, is_chat_reply: bool = False) -> 
                        (user-initiated conversation). Chat replies are never
                        budget-limited — the user should always get a response.
     """
+    safe_text = _normalize_line_output_text(text)
+    if _line_quota_active():
+        _enqueue_line_delayed(
+            user_id=user_id,
+            phase="push",
+            reason="line_quota_active",
+            preview=safe_text[:500],
+        )
+        _fanout_line_delayed_notice(user_id=user_id, phase="push", preview=safe_text)
+        return False
+
     if not is_chat_reply and not _line_push_budget_ok():
         logger.warning("LINE push skipped — daily notification budget exhausted (%d/%d). "
                        "Message will only appear in TG.", _LINE_PUSH_DAILY_LIMIT, _LINE_PUSH_DAILY_LIMIT)
         return False
     ok_all = True
-    safe_text = _normalize_line_output_text(text)
     for part in _chunk_text_for_line(safe_text, limit=4200):
         try:
+            if not is_chat_reply and not _line_push_budget_increment():
+                ok_all = False
+                break
             line_bot_api.push_message(user_id, TextSendMessage(text=part))
-            _line_push_budget_increment()
         except Exception as e:
             logger.error(f"❌ LINE push failed: {e}")
             _handle_line_send_failure(e, user_id=user_id, phase="push")
@@ -920,13 +935,36 @@ def _enqueue_line_delayed(user_id: str, phase: str, reason: str, preview: str) -
             raw = json.loads(Path(LINE_DELAY_QUEUE_FILE).read_text(encoding="utf-8"))
             if isinstance(raw, list):
                 items = raw
+        now = int(time.time())
+        normalized_preview = re.sub(r"\s+", " ", str(preview or "").strip())[:500]
+        uid = str(user_id or "").strip()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status") or "queued") != "queued":
+                continue
+            if str(item.get("user_id") or "").strip() != uid:
+                continue
+            item_preview = re.sub(r"\s+", " ", str(item.get("preview") or "").strip())[:500]
+            if item_preview != normalized_preview:
+                continue
+            if now - int(item.get("ts") or 0) > 1800:
+                continue
+            item["ts"] = now
+            item["phase"] = str(item.get("phase") or phase or "").strip()
+            item["reason"] = str(item.get("reason") or reason or "").strip()
+            Path(LINE_DELAY_QUEUE_FILE).write_text(
+                json.dumps(items, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return
         items.append(
             {
-                "ts": int(time.time()),
-                "user_id": str(user_id or "").strip(),
+                "ts": now,
+                "user_id": uid,
                 "phase": str(phase or "").strip(),
                 "reason": str(reason or "").strip(),
-                "preview": str(preview or "").strip(),
+                "preview": normalized_preview,
                 "status": "queued",
             }
         )
@@ -1139,6 +1177,11 @@ def _line_send_messages(event, user_id: str, messages, prefer_push: bool = False
         logger.warning(f"⚠️ LINE message guard skipped: {guard_err}")
     try:
         if prefer_push:
+            if _line_quota_active():
+                preview = "\n".join(text_parts) if text_parts else ""
+                _enqueue_line_delayed(user_id=user_id, phase="push_messages", reason="line_quota_active", preview=preview[:500])
+                _fanout_line_delayed_notice(user_id=user_id, phase="push_messages", preview=preview)
+                return False
             line_bot_api.push_message(user_id, messages)
             return True
         line_bot_api.reply_message(event.reply_token, messages)
@@ -1147,6 +1190,11 @@ def _line_send_messages(event, user_id: str, messages, prefer_push: bool = False
         logger.warning(f"⚠️ LINE send messages failed, fallback push: {e}")
         _handle_line_send_failure(e, user_id=user_id, phase="reply_messages")
         try:
+            if _line_quota_active():
+                preview = "\n".join(text_parts) if text_parts else ""
+                _enqueue_line_delayed(user_id=user_id, phase="push_messages", reason="line_quota_active", preview=preview[:500])
+                _fanout_line_delayed_notice(user_id=user_id, phase="push_messages", preview=preview)
+                return False
             line_bot_api.push_message(user_id, messages)
             return True
         except Exception as push_err:

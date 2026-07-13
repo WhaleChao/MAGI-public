@@ -2,7 +2,7 @@
             <div class="card">
                 <div class="section-head">
                     <div>
-                        <h3>書狀索引</h3>
+                        <h3>文件總索引</h3>
                         <div class="section-note">集中查找委任狀、收據、法扶資料、法院通知與裁判。上方篩選完後，下方可直接開檔或複製路徑。</div>
                     </div>
                 </div>
@@ -36,8 +36,8 @@
                 <div class="soft-block">
                     <div class="field-grid cols-4">
                         <div class="field">
-                            <label for="docActionCaseId">案件 ID</label>
-                            <input id="docActionCaseId" placeholder="可從案件管理複製">
+                            <label for="docActionCaseId">系統案件</label>
+                            <input id="docActionCaseId" placeholder="通常從案件管理自動帶入">
                         </div>
                         <div class="field" style="grid-column: span 3;">
                             <label>快速動作</label>
@@ -101,8 +101,8 @@
                 <div class="soft-block">
                     <div class="field-grid cols-4">
                         <div class="field">
-                            <label for="docTplId">ID</label>
-                            <input id="docTplId" placeholder="更新時使用">
+                            <label for="docTplId">編輯編號</label>
+                            <input id="docTplId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="docTplType">模板類型</label>
@@ -127,7 +127,7 @@
                     </div>
                     <div class="field" style="margin-top:10px;">
                         <label for="docTplData">模板內容</label>
-                        <textarea id="docTplData" placeholder="可放 JSON 或純文字內容"></textarea>
+                        <textarea id="docTplData" placeholder="模板內容，可填純文字或已整理好的欄位資料"></textarea>
                     </div>
                     <div class="toolbar">
                         <button class="btn primary" id="docTplSaveBtn">儲存模板</button>
@@ -138,7 +138,7 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>ID</th>
+                                <th>編輯編號</th>
                                 <th>類型</th>
                                 <th>當事人</th>
                                 <th>案號</th>
@@ -182,8 +182,8 @@
                 <div class="soft-block">
                     <div class="field-grid cols-4">
                         <div class="field">
-                            <label for="docKwId">ID</label>
-                            <input id="docKwId" placeholder="更新時使用">
+                            <label for="docKwId">編輯編號</label>
+                            <input id="docKwId" placeholder="新增時留空" readonly>
                         </div>
                         <div class="field">
                             <label for="docKwCase">案件編號</label>
@@ -203,7 +203,10 @@
                         </div>
                         <div class="field">
                             <label for="docKwCaseSpecific">案件專用</label>
-                            <input id="docKwCaseSpecific" placeholder="0/1">
+                            <select id="docKwCaseSpecific">
+                                <option value="0">通用</option>
+                                <option value="1">案件專用</option>
+                            </select>
                         </div>
                         <div class="field">
                             <label for="docKwUsageCount">使用次數</label>
@@ -223,7 +226,7 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>ID</th>
+                                <th>編輯編號</th>
                                 <th>案號</th>
                                 <th>關鍵字</th>
                                 <th>分類</th>

@@ -18,10 +18,11 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib import request as _urlreq
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,30 @@ TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC = int(
 TRANSCRIPT_SYNC_MD5_SCAN_MODE = str(
     os.environ.get("MAGI_TRANSCRIPT_SYNC_MD5_SCAN_MODE", "subprocess") or "subprocess"
 ).strip().lower()
+TRANSCRIPT_SYNC_STATE_PATH = Path(
+    os.environ.get(
+        "MAGI_TRANSCRIPT_SYNC_STATE_PATH",
+        f"{MAGI_ROOT}/.agent/transcript_sync_state.json",
+    )
+)
+TRANSCRIPT_SYNC_RUNTIME_DIR = Path(
+    os.environ.get(
+        "MAGI_TRANSCRIPT_SYNC_RUNTIME_DIR",
+        f"{MAGI_ROOT}/.runtime/transcript_sync",
+    )
+)
+TRANSCRIPT_SYNC_LOCK_PATH = Path(
+    os.environ.get(
+        "MAGI_TRANSCRIPT_SYNC_LOCK_PATH",
+        f"{MAGI_ROOT}/.agent/transcript_sync.lock",
+    )
+)
+TRANSCRIPT_SYNC_BATCH_SIZE = int(
+    os.environ.get("MAGI_TRANSCRIPT_SYNC_BATCH_SIZE", "24") or "24"
+)
+TRANSCRIPT_SYNC_CASE_DELAY_SEC = float(
+    os.environ.get("MAGI_TRANSCRIPT_SYNC_CASE_DELAY_SEC", "2") or "2"
+)
 
 logger = logging.getLogger("transcript-downloader")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -280,7 +305,7 @@ def _ok(payload: dict) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BrokenPipeError:
         pass
-    return 0
+    return 1 if payload.get("success") is False else 0
 
 
 def _extract_json_from_output(raw: str) -> Optional[Dict[str, Any]]:
@@ -480,6 +505,34 @@ def _looks_like_captcha_error(msg: str) -> bool:
     return any(k in s for k in keys)
 
 
+def _portal_failure_from_downloader(downloader: Any, default: str = "SSO login failed") -> Tuple[str, str, str]:
+    code = str(getattr(downloader, "last_login_error_code", "") or "").strip()
+    detail = str(getattr(downloader, "last_login_error_detail", "") or "").strip()
+    download_error = str(getattr(downloader, "_last_download_error", "") or "").strip()
+    raw = detail or download_error or default
+    lowered = raw.lower()
+
+    if not code:
+        if raw.startswith("ezlawyer_not_authorized") or "not authorized" in lowered or "未授權" in raw or "無權限" in raw:
+            code = "ezlawyer_not_authorized"
+        elif raw.startswith("transcript_search_page_unavailable") or "search_page_unavailable" in raw:
+            code = "search_page_unavailable"
+        else:
+            code = "login_failed"
+
+    if code == "ezlawyer_not_authorized":
+        msg = "ezlawyer_not_authorized: 已登入電子筆錄服務網，但帳號或入口未授權存取電子筆錄調閱頁。"
+        if raw and raw != msg:
+            msg += " " + raw[:240]
+        return code, msg, "not_authorized"
+    if code == "search_page_unavailable":
+        msg = "transcript_search_page_unavailable: 已登入，但找不到電子筆錄搜尋表單。"
+        if raw and raw != msg:
+            msg += " " + raw[:240]
+        return code, msg, "search_page_unavailable"
+    return code, raw or default, "login_failed"
+
+
 def _payload_contains_captcha(payload) -> bool:
     try:
         if payload is None:
@@ -501,7 +554,7 @@ def _payload_contains_captcha(payload) -> bool:
     return False
 
 
-def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
+def _enqueue_manual_review(action: str, payload: dict, error_msg: str, reason: str = "captcha") -> str:
     ticket = f"tr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.urandom(3).hex()}"
     row = {
         "ticket": ticket,
@@ -509,7 +562,7 @@ def _enqueue_manual_review(action: str, payload: dict, error_msg: str) -> str:
         "status": "pending_manual",
         "action": str(action or "unknown"),
         "payload": payload or {},
-        "reason": "captcha",
+        "reason": str(reason or "captcha"),
         "error": str(error_msg or "")[:500],
     }
     try:
@@ -589,6 +642,319 @@ def _summarize_download_results(results: dict, *, max_cases: int = 0) -> Tuple[s
         "cases": [r for r in case_summaries if int(r.get("file_count") or 0) > 0],
     }
     return "\n".join(lines), summary
+
+
+def _case_identity(case: Any) -> str:
+    parts = [
+        str(getattr(case, "case_number", "") or "").strip(),
+        str(getattr(case, "court_name", "") or "").strip(),
+        str(getattr(case, "court_case_number", "") or "").strip(),
+        str(getattr(case, "case_type", "") or "").strip(),
+        str(getattr(case, "client_name", "") or "").strip(),
+    ]
+    return "|".join(parts)
+
+
+def _case_to_summary(case: Any) -> Dict[str, str]:
+    return {
+        "case_number": str(getattr(case, "case_number", "") or "").strip(),
+        "court_name": str(getattr(case, "court_name", "") or "").strip(),
+        "court_case_number": str(getattr(case, "court_case_number", "") or "").strip(),
+        "case_type": str(getattr(case, "case_type", "") or "").strip(),
+        "client_name": str(getattr(case, "client_name", "") or "").strip(),
+        "folder_path": str(getattr(case, "folder_path", "") or "").strip(),
+    }
+
+
+def _case_sort_key(case: Any) -> Tuple[str, str, str, str]:
+    # Newer MAGI case numbers sort later lexicographically (2026-xxxx > 2025-xxxx).
+    return (
+        str(getattr(case, "case_number", "") or ""),
+        str(getattr(case, "court_case_number", "") or ""),
+        str(getattr(case, "court_name", "") or ""),
+        str(getattr(case, "client_name", "") or ""),
+    )
+
+
+def _load_sync_state() -> Dict[str, Any]:
+    try:
+        if TRANSCRIPT_SYNC_STATE_PATH.exists():
+            data = json.loads(TRANSCRIPT_SYNC_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("cases", {})
+                return data
+    except Exception as e:
+        logger.warning("Transcript sync state load failed: %s", str(e)[:160])
+    return {
+        "version": 1,
+        "cycle": 1,
+        "cycle_started_at": "",
+        "last_cycle_completed_at": "",
+        "cases": {},
+    }
+
+
+def _save_sync_state(state: Dict[str, Any]) -> None:
+    try:
+        TRANSCRIPT_SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        state["updated_at"] = datetime.now().isoformat()
+        tmp = TRANSCRIPT_SYNC_STATE_PATH.with_suffix(TRANSCRIPT_SYNC_STATE_PATH.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(TRANSCRIPT_SYNC_STATE_PATH))
+    except Exception as e:
+        logger.warning("Transcript sync state save failed: %s", str(e)[:160])
+
+
+def _parse_dt_or_zero(value: str) -> datetime:
+    try:
+        if value:
+            return datetime.fromisoformat(str(value))
+    except Exception:
+        pass
+    return datetime.fromtimestamp(0)
+
+
+def _prepare_sync_cycle(state: Dict[str, Any]) -> str:
+    cycle_started_at = str(state.get("cycle_started_at") or "").strip()
+    if not cycle_started_at:
+        cycle_started_at = datetime.now().isoformat()
+        state["cycle_started_at"] = cycle_started_at
+        state.setdefault("cycle", 1)
+    return cycle_started_at
+
+
+def _select_sync_batch(cases: List[Any], state: Dict[str, Any], batch_size: int) -> List[Any]:
+    _prepare_sync_cycle(state)
+    case_state = state.setdefault("cases", {})
+
+    def last_attempt_key(case: Any) -> datetime:
+        ident = _case_identity(case)
+        item = case_state.get(ident) if isinstance(case_state, dict) else {}
+        last_attempt = ""
+        if isinstance(item, dict):
+            last_attempt = str(item.get("last_attempt_at") or item.get("last_success_at") or "")
+        return _parse_dt_or_zero(last_attempt)
+
+    ordered = sorted(cases, key=_case_sort_key, reverse=True)
+    ordered.sort(key=last_attempt_key)
+    if batch_size <= 0:
+        return ordered
+    return ordered[: max(1, int(batch_size))]
+
+
+def _update_cycle_completion(state: Dict[str, Any], cases: List[Any]) -> None:
+    cycle_started_at = _prepare_sync_cycle(state)
+    cycle_start = _parse_dt_or_zero(cycle_started_at)
+    case_state = state.setdefault("cases", {})
+    active_keys = {_case_identity(c) for c in cases}
+
+    # Keep historical entries but mark cases no longer eligible for this product run.
+    for key, item in list(case_state.items()):
+        if isinstance(item, dict):
+            item["eligible"] = key in active_keys
+
+    scanned_this_cycle = 0
+    for key in active_keys:
+        item = case_state.get(key) if isinstance(case_state, dict) else {}
+        last_success = str(item.get("last_success_at") or "") if isinstance(item, dict) else ""
+        if _parse_dt_or_zero(last_success) >= cycle_start:
+            scanned_this_cycle += 1
+
+    state["eligible_cases"] = len(active_keys)
+    state["cycle_scanned_cases"] = scanned_this_cycle
+    if active_keys and scanned_this_cycle >= len(active_keys):
+        state["last_cycle_completed_at"] = datetime.now().isoformat()
+        state["cycle"] = int(state.get("cycle") or 1) + 1
+        state["cycle_started_at"] = datetime.now().isoformat()
+        state["cycle_scanned_cases"] = 0
+
+
+def _record_case_attempt(
+    state: Dict[str, Any],
+    case: Any,
+    *,
+    status: str,
+    success: bool,
+    files: Optional[List[str]] = None,
+    error: str = "",
+) -> None:
+    ident = _case_identity(case)
+    now = datetime.now().isoformat()
+    case_state = state.setdefault("cases", {})
+    item = case_state.get(ident) if isinstance(case_state, dict) else None
+    if not isinstance(item, dict):
+        item = {}
+    item.update(_case_to_summary(case))
+    item.update(
+        {
+            "eligible": True,
+            "last_attempt_at": now,
+            "last_status": str(status or ""),
+            "last_error": str(error or "")[:500],
+            "last_files": [str(x) for x in (files or [])[:20]],
+            "last_downloaded_count": len(files or []),
+        }
+    )
+    if success:
+        item["last_success_at"] = now
+    case_state[ident] = item
+
+
+def _sync_status_payload() -> Dict[str, Any]:
+    state = _load_sync_state()
+    cases = state.get("cases") if isinstance(state.get("cases"), dict) else {}
+    eligible_items = [v for v in cases.values() if isinstance(v, dict) and bool(v.get("eligible", True))]
+    last_completed = str(state.get("last_cycle_completed_at") or "")
+    recent = sorted(
+        eligible_items,
+        key=lambda x: str(x.get("last_attempt_at") or ""),
+        reverse=True,
+    )[:10]
+    lock_info: Dict[str, Any] = {"path": str(TRANSCRIPT_SYNC_LOCK_PATH), "active": False}
+    try:
+        if TRANSCRIPT_SYNC_LOCK_PATH.exists():
+            raw = json.loads(TRANSCRIPT_SYNC_LOCK_PATH.read_text(encoding="utf-8") or "{}")
+            if isinstance(raw, dict):
+                pid = int(raw.get("pid") or 0)
+                lock_info.update(raw)
+                lock_info["active"] = _pid_alive(pid)
+    except Exception:
+        lock_info["error"] = "unreadable_lock"
+    return {
+        "success": True,
+        "state_path": str(TRANSCRIPT_SYNC_STATE_PATH),
+        "cycle": int(state.get("cycle") or 1),
+        "cycle_started_at": str(state.get("cycle_started_at") or ""),
+        "last_cycle_completed_at": last_completed,
+        "eligible_cases": int(state.get("eligible_cases") or len(eligible_items)),
+        "cycle_scanned_cases": int(state.get("cycle_scanned_cases") or 0),
+        "batch_size": max(0, int(TRANSCRIPT_SYNC_BATCH_SIZE)),
+        "lock": lock_info,
+        "recent_attempts": recent,
+    }
+
+
+def _format_transcript_batch_note(results: dict, sync_status: Dict[str, Any]) -> str:
+    if not bool((results or {}).get("batched")):
+        return ""
+    selected = int((results or {}).get("selected_cases") or 0)
+    eligible = int((results or {}).get("eligible_cases") or 0)
+    scanned = int((sync_status or {}).get("cycle_scanned_cases") or 0)
+    status_eligible = int((sync_status or {}).get("eligible_cases") or eligible or 0)
+    remaining = max(0, status_eligible - scanned)
+    note = (
+        f"\n🧭 本輪分批掃描：{selected}/{eligible} 案"
+        f"；目前 cycle 已掃 {scanned}/{status_eligible} 案。"
+    )
+    if remaining:
+        note += f"\n⏭️ 尚餘 {remaining} 案；下輪 sync 會從尚未掃描案件續跑，直到完成全案輪掃。"
+    if (sync_status or {}).get("last_cycle_completed_at"):
+        note += f"\n✅ 最近完成全案輪掃：{sync_status.get('last_cycle_completed_at')}"
+    return note
+
+
+def _transcript_notify_topic(results: dict, summary: dict) -> str:
+    return "transcript" if int((summary or {}).get("downloaded_count") or 0) > 0 else "quiet_cron"
+
+
+def _should_notify_transcript_success(summary: dict, *, md5_warning: str = "") -> bool:
+    if int((summary or {}).get("downloaded_count") or 0) > 0:
+        return True
+    if int((summary or {}).get("downloaded_cases_count") or 0) > 0:
+        return True
+    if int((summary or {}).get("failed_cases_count") or 0) > 0:
+        return True
+    if str(md5_warning or "").strip():
+        return True
+    return False
+
+
+def _write_transcript_sync_report(results: dict, summary: dict, message: str) -> str:
+    runtime_dir = TRANSCRIPT_SYNC_RUNTIME_DIR
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    sync_status = (results or {}).get("sync_status")
+    if not isinstance(sync_status, dict):
+        sync_status = _sync_status_payload()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    payload = {
+        "ok": bool((results or {}).get("success", True)),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "message": str(message or ""),
+        "summary": summary or {},
+        "sync_status": sync_status,
+        "batched": bool((results or {}).get("batched")),
+        "selected_cases": int((results or {}).get("selected_cases") or 0),
+        "eligible_cases": int((results or {}).get("eligible_cases") or 0),
+        "cases": (results or {}).get("cases") or [],
+    }
+    path = runtime_dir / f"transcript_sync_report_{stamp}.json"
+    latest = runtime_dir / "transcript_sync_latest.json"
+    for target in (path, latest):
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(target)
+    try:
+        state = _load_sync_state()
+        state["last_batch_report_path"] = str(path)
+        state["last_batch_latest_path"] = str(latest)
+        state["last_batch_reported_at"] = payload["created_at"]
+        state["last_batch_summary"] = summary or {}
+        _save_sync_state(state)
+    except Exception:
+        logger.debug("failed to update transcript sync report marker", exc_info=True)
+    return str(latest)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _acquire_sync_lock() -> Tuple[bool, str]:
+    try:
+        TRANSCRIPT_SYNC_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if TRANSCRIPT_SYNC_LOCK_PATH.exists():
+            try:
+                data = json.loads(TRANSCRIPT_SYNC_LOCK_PATH.read_text(encoding="utf-8") or "{}")
+            except Exception:
+                data = {}
+            pid = int(data.get("pid") or 0) if isinstance(data, dict) else 0
+            if _pid_alive(pid):
+                return False, f"transcript sync already running pid={pid}"
+            try:
+                TRANSCRIPT_SYNC_LOCK_PATH.unlink()
+            except Exception:
+                pass
+        tmp = TRANSCRIPT_SYNC_LOCK_PATH.with_suffix(".lock.tmp")
+        tmp.write_text(
+            json.dumps({"pid": os.getpid(), "started_at": datetime.now().isoformat()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(str(tmp), str(TRANSCRIPT_SYNC_LOCK_PATH))
+        return True, ""
+    except Exception as e:
+        logger.warning("Transcript sync lock unavailable: %s", type(e).__name__)
+        return False, "sync_lock_unavailable"
+
+
+def _release_sync_lock() -> None:
+    try:
+        if not TRANSCRIPT_SYNC_LOCK_PATH.exists():
+            return
+        data = json.loads(TRANSCRIPT_SYNC_LOCK_PATH.read_text(encoding="utf-8") or "{}")
+        if int(data.get("pid") or 0) == os.getpid():
+            TRANSCRIPT_SYNC_LOCK_PATH.unlink()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -922,21 +1288,23 @@ def cmd_download(case_number: str, out_folder: str = "", headless: bool = True,
             logger.info("Logging into ezlawyer SSO...")
             login_ok = downloader.login()
             if not login_ok:
-                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="SSO login failed", ok=False)
-                msg = "SSO login failed"
+                code, msg, manual_reason = _portal_failure_from_downloader(downloader)
+                _safe_flow_step_status(flow_id, "portal_login", status="failed", detail=msg[:240], ok=False)
                 if os.environ.get("MAGI_TRANSCRIPT_LOGIN_FAIL_QUEUE", "1").strip().lower() in {"1", "true", "yes", "on"}:
                     ticket = _enqueue_manual_review(
                         "download",
                         {"case_number": case_number, "court_name": court_name, "case_type": case_type, "headless": bool(headless)},
                         msg,
+                        reason=manual_reason,
                     )
-                    notify_msg = f"🧩 筆錄登入失敗，已轉人工佇列（ticket={ticket}）。請檢查帳密/驗證狀態後重試。"
+                    notify_msg = f"🧩 筆錄入口失敗，已轉人工佇列（ticket={ticket}）。{msg[:180]}"
                     _notify(notify_msg, notify)
                     out = {
                         "success": False,
                         "error": msg,
+                        "error_code": code,
                         "manual_required": True,
-                        "manual_reason": "login_failed",
+                        "manual_reason": manual_reason,
                         "manual_ticket": ticket,
                     }
                     _eventlog("transcript:download:done", ok=False, payload=out, tags={"case_number": case_number})
@@ -1144,6 +1512,15 @@ def cmd_download_all(headless: bool = True, notify: bool = True, flow_id: str = 
             logger.info("Running download_all (all active cases)...")
             _safe_flow_step_status(flow_id, "portal_query", status="running", detail="download_all")
             results = downloader.download_all() or {}
+            if isinstance(results, dict) and results.get("success") is False:
+                err = str(results.get("error") or "download_all failed")
+                _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=err[:240], ok=False)
+                msg = "❌ 筆錄批次下載失敗: " + err[:200]
+                _notify(msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
+                out = {"success": False, "error": err, "download_results": results}
+                _eventlog("transcript:download_all:done", ok=False, payload=out)
+                return out
             if _payload_contains_captcha(results):
                 _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="captcha detected", ok=False)
                 ticket = _enqueue_manual_review("download_all", {"headless": bool(headless)}, "captcha in download_all results")
@@ -1245,27 +1622,196 @@ def cmd_md5_scan_only(headless: bool = True) -> dict:
         return {"success": False, "error": str(e)[:200]}
 
 
-def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, flow_id: str = "") -> dict:
+def _download_sync_batch(downloader: Any, *, batch_size: int, notify: bool = True) -> Dict[str, Any]:
+    """
+    Incremental all-case sync.
+
+    The old `download_all()` attempted every eligible case in one browser session.
+    That made CAPTCHA/timeout failures lossy: the next run started at the first
+    case again, so tail cases could be starved. This function records every case
+    attempt immediately and always selects the least-recently-scanned cases next.
+    """
+    state = _load_sync_state()
+    _prepare_sync_cycle(state)
+
+    results: Dict[str, Any] = {
+        "success": 0,
+        "failed": 0,
+        "cases": [],
+        "files": [],
+        "batched": True,
+        "state_path": str(TRANSCRIPT_SYNC_STATE_PATH),
+    }
+
+    try:
+        cleanup = downloader.cleanup_download_folder()
+        results["cleanup"] = cleanup
+    except Exception as e:
+        logger.warning("Transcript download cleanup failed: %s", str(e)[:160])
+
+    if not downloader.login():
+        code, msg, manual_reason = _portal_failure_from_downloader(downloader)
+        results.update({"success": False, "error": msg, "error_code": code, "manual_reason": manual_reason})
+        return results
+
+    all_cases = sorted(downloader.get_cases_from_db() or [], key=_case_sort_key, reverse=True)
+    batch = _select_sync_batch(all_cases, state, batch_size=batch_size)
+    results["eligible_cases"] = len(all_cases)
+    results["selected_cases"] = len(batch)
+    results["cycle"] = int(state.get("cycle") or 1)
+    results["cycle_started_at"] = str(state.get("cycle_started_at") or "")
+
+    if not batch:
+        _update_cycle_completion(state, all_cases)
+        _save_sync_state(state)
+        results.update({"success": True, "message": "沒有可同步案件"})
+        return results
+
+    for idx, case in enumerate(batch, start=1):
+        case_label = _case_label(_case_to_summary(case))
+        downloaded_files: List[str] = []
+        status = "no_new_files"
+        error_msg = ""
+        ok = True
+
+        try:
+            downloader._last_download_error = ""
+            downloader._last_no_new_files_reason = ""
+            downloader._last_pdf_fetch_count = 0
+            downloader._last_pdf_known_duplicate_count = 0
+        except Exception:
+            pass
+
+        try:
+            logger.info("Transcript batch %s/%s: %s", idx, len(batch), case_label)
+            downloaded_files = downloader.download_record(case) or []
+            error_msg = str(getattr(downloader, "_last_download_error", "") or "").strip()
+            if error_msg and not downloaded_files:
+                ok = False
+                status = "search_failed"
+            elif downloaded_files:
+                status = "downloaded"
+                downloader.move_to_case_folder(case, downloaded_files)
+                results["files"].extend(downloaded_files)
+            elif str(getattr(downloader, "_last_no_new_files_reason", "") or "") == "known_duplicates":
+                status = "known_duplicates"
+            else:
+                status = "no_new_files"
+        except Exception as exc:
+            ok = False
+            error_msg = str(exc)[:300]
+            status = "failed"
+
+        _record_case_attempt(
+            state,
+            case,
+            status=status,
+            success=ok,
+            files=[str(x) for x in downloaded_files],
+            error=error_msg,
+        )
+        _update_cycle_completion(state, all_cases)
+        _save_sync_state(state)
+
+        if ok:
+            results["success"] = int(results.get("success") or 0) + 1
+        else:
+            results["failed"] = int(results.get("failed") or 0) + 1
+
+        results["cases"].append(
+            {
+                **_case_to_summary(case),
+                "files": [str(x) for x in downloaded_files],
+                "success": bool(ok),
+                "status": status,
+                "error": error_msg,
+            }
+        )
+
+        if error_msg and _looks_like_captcha_error(error_msg):
+            ticket = _enqueue_manual_review(
+                "sync_batch",
+                {
+                    "case": _case_to_summary(case),
+                    "batch_size": int(batch_size),
+                    "eligible_cases": len(all_cases),
+                },
+                error_msg,
+            )
+            msg = f"🧩 筆錄分批同步遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
+            _notify(msg, notify)
+            results.update(
+                {
+                    "success": False,
+                    "error": error_msg,
+                    "manual_required": True,
+                    "manual_reason": "captcha",
+                    "manual_ticket": ticket,
+                    "message": msg,
+                    "skipped_remaining_cases": max(0, len(batch) - idx),
+                }
+            )
+            return results
+
+        if TRANSCRIPT_SYNC_CASE_DELAY_SEC > 0 and idx < len(batch):
+            time.sleep(TRANSCRIPT_SYNC_CASE_DELAY_SEC)
+
+    _update_cycle_completion(state, all_cases)
+    _save_sync_state(state)
+    failed_count = int(results.get("failed") or 0)
+    if failed_count > 0:
+        results["success"] = False
+        results["error"] = f"transcript batch failed for {failed_count} case(s)"
+    else:
+        results["success"] = True
+    results["sync_status"] = _sync_status_payload()
+    return results
+
+
+def cmd_sync(
+    rename: bool = True,
+    headless: bool = True,
+    notify: bool = True,
+    flow_id: str = "",
+    run_md5_scan: bool = True,
+) -> dict:
     """Full sync: MD5 scan -> download all -> rename all transcripts."""
-    _eventlog("transcript:sync:start", payload={"rename": bool(rename), "headless": bool(headless)})
-    os.environ.setdefault("MAGI_EZLAWYER_SOLVE_CAPTCHA", "0")
-    os.environ.setdefault("MAGI_EZLAWYER_ASSUME_CAPTCHA_REQUIRED", "0")
-    os.environ.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")
-    _ensure_local_cases_schema()
-    cfg = _load_config()
-    creds = _get_credentials(cfg)
-    if not creds["username"] or not creds["password"]:
-        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="missing credentials", ok=False)
-        out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
+    lock_acquired, lock_reason = _acquire_sync_lock()
+    if not lock_acquired:
+        if lock_reason.startswith("transcript sync already running"):
+            _safe_flow_step_status(flow_id, "portal_query", status="skipped", detail=lock_reason, ok=True, skipped=True)
+            out = {"success": True, "skipped": True, "reason": lock_reason, "message": "筆錄同步已有執行中程序，本輪略過以避免重複登入。"}
+            _eventlog("transcript:sync:done", ok=True, payload=out)
+            return out
+        _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="sync_lock_unavailable", ok=False)
+        out = {
+            "success": False,
+            "error": "sync_lock_unavailable",
+            "reason": lock_reason or "sync_lock_unavailable",
+            "message": "筆錄同步鎖不可用，未執行資料庫、Portal 或下載流程。",
+        }
         _eventlog("transcript:sync:done", ok=False, payload=out)
         return out
 
-    cancelled = _check_flow_cancelled(flow_id, "case_scan")
-    if cancelled:
-        _eventlog("transcript:sync:done", ok=False, payload=cancelled)
-        return cancelled
-
     try:
+        _eventlog("transcript:sync:start", payload={"rename": bool(rename), "headless": bool(headless)})
+        os.environ.setdefault("MAGI_EZLAWYER_SOLVE_CAPTCHA", "0")
+        os.environ.setdefault("MAGI_EZLAWYER_ASSUME_CAPTCHA_REQUIRED", "0")
+        os.environ.setdefault("MAGI_ALLOW_HUMAN_CAPTCHA_FALLBACK", "0")
+        _ensure_local_cases_schema()
+        cfg = _load_config()
+        creds = _get_credentials(cfg)
+        if not creds["username"] or not creds["password"]:
+            _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="missing credentials", ok=False)
+            out = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_RECORD_USERNAME/PASSWORD in .env"}
+            _eventlog("transcript:sync:done", ok=False, payload=out)
+            return out
+
+        cancelled = _check_flow_cancelled(flow_id, "case_scan")
+        if cancelled:
+            _eventlog("transcript:sync:done", ok=False, payload=cancelled)
+            return cancelled
+
         mod = _ensure_imports()
         db = _get_db_manager(cfg)
 
@@ -1279,22 +1825,25 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
         )
 
         try:
-            logger.info("Running full sync (MD5 scan + download + rename)...")
+            logger.info("Running full sync (MD5 scan + incremental download + rename)...")
             _safe_flow_step_status(flow_id, "case_scan", status="running", detail="scan_case_folders_for_md5")
             md5_warning = ""
-            if TRANSCRIPT_SYNC_MD5_SCAN_MODE == "inline":
-                scan_result = cmd_md5_scan_only(headless=headless)
-                if not scan_result.get("success"):
-                    md5_warning = str(scan_result.get("error") or "md5 scan failed")
+            if not run_md5_scan:
+                scan_result = {"success": True, "skipped": True, "reason": "run_md5_scan=False"}
             else:
-                scan_result = _run_md5_scan_subprocess(timeout_sec=TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)
-                if scan_result.get("timed_out"):
-                    md5_warning = (
-                        f"MD5 掃描逾時（>{int(scan_result.get('timeout_sec') or TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)}s）"
-                        "，改以下載流程接續；下輪 sync 會再補掃。"
-                    )
-                elif not scan_result.get("success"):
-                    md5_warning = str(scan_result.get("error") or "md5 scan failed")
+                if TRANSCRIPT_SYNC_MD5_SCAN_MODE == "inline":
+                    scan_result = cmd_md5_scan_only(headless=headless)
+                    if not scan_result.get("success"):
+                        md5_warning = str(scan_result.get("error") or "md5 scan failed")
+                else:
+                    scan_result = _run_md5_scan_subprocess(timeout_sec=TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)
+                    if scan_result.get("timed_out"):
+                        md5_warning = (
+                            f"MD5 掃描逾時（>{int(scan_result.get('timeout_sec') or TRANSCRIPT_SYNC_MD5_SCAN_TIMEOUT_SEC)}s）"
+                            "，改以下載流程接續；下輪 sync 會再補掃。"
+                        )
+                    elif not scan_result.get("success"):
+                        md5_warning = str(scan_result.get("error") or "md5 scan failed")
             if md5_warning:
                 _safe_flow_step_status(
                     flow_id,
@@ -1313,25 +1862,48 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
                 _eventlog("transcript:sync:done", ok=False, payload=cancelled)
                 return cancelled
 
-            _safe_flow_step_status(flow_id, "portal_query", status="running", detail="sync download_all")
-            results = downloader.download_all() or {}
-            if _payload_contains_captcha(results):
+            _safe_flow_step_status(
+                flow_id,
+                "portal_query",
+                status="running",
+                detail=f"sync incremental batch size={max(0, int(TRANSCRIPT_SYNC_BATCH_SIZE))}",
+            )
+            if int(TRANSCRIPT_SYNC_BATCH_SIZE) > 0:
+                results = _download_sync_batch(
+                    downloader,
+                    batch_size=max(1, int(TRANSCRIPT_SYNC_BATCH_SIZE)),
+                    notify=notify,
+                )
+            else:
+                results = downloader.download_all() or {}
+            if bool(results.get("manual_required")) or _payload_contains_captcha(results):
                 _safe_flow_step_status(flow_id, "portal_query", status="failed", detail="captcha detected", ok=False)
-                ticket = _enqueue_manual_review(
+                ticket = str(results.get("manual_ticket") or "").strip() or _enqueue_manual_review(
                     "sync",
                     {"rename": bool(rename), "headless": bool(headless)},
                     "captcha in sync download results",
                 )
-                msg = f"🧩 筆錄同步遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。"
+                msg = str(results.get("message") or f"🧩 筆錄同步遇到 CAPTCHA，已轉人工佇列（ticket={ticket}）。")
                 _notify(msg, notify)
                 _mark_notify_step(flow_id, notify=notify, detail=msg)
                 out = {
                     "success": False,
-                    "error": "captcha detected",
+                    "error": str(results.get("error") or "captcha detected"),
                     "manual_required": True,
                     "manual_reason": "captcha",
                     "manual_ticket": ticket,
+                    "partial": True,
+                    "download_results": results,
                 }
+                _eventlog("transcript:sync:done", ok=False, payload=out)
+                return out
+            if results.get("success") is False:
+                err = str(results.get("error") or "transcript sync failed")
+                _safe_flow_step_status(flow_id, "portal_query", status="failed", detail=err[:240], ok=False)
+                msg = "❌ 筆錄同步失敗: " + err[:200]
+                _notify(msg, notify)
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
+                out = {"success": False, "error": err, "download_results": results}
                 _eventlog("transcript:sync:done", ok=False, payload=out)
                 return out
             dl_msg, summary = _summarize_download_results(results)
@@ -1359,12 +1931,27 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
                 _safe_flow_step_status(flow_id, "rename", status="skipped", detail="rename disabled", ok=True, skipped=True)
 
             suffix = "（含更名）" if rename else ""
-            msg = f"🔄 筆錄全同步完成{suffix}\n{dl_msg}"
+            batch_note = ""
+            if bool(results.get("batched")):
+                sync_status = results.get("sync_status") if isinstance(results.get("sync_status"), dict) else _sync_status_payload()
+                batch_note = _format_transcript_batch_note(results, sync_status)
+            msg = f"🔄 筆錄全同步完成{suffix}\n{dl_msg}{batch_note}"
             if md5_warning:
                 msg += f"\n⚠️ {md5_warning}"
-            _notify(msg, notify, topic_key="transcript" if int(summary.get("downloaded_count") or 0) > 0 else "quiet_cron")
-            _mark_notify_step(flow_id, notify=notify, detail=msg)
-            out = {"success": True, "message": msg}
+            report_path = _write_transcript_sync_report(results, summary, msg)
+            topic_key = _transcript_notify_topic(results, summary)
+            should_notify = _should_notify_transcript_success(summary, md5_warning=md5_warning)
+            if notify and should_notify:
+                _notify(msg, True, topic_key=topic_key)
+            _mark_notify_step(flow_id, notify=notify and should_notify, detail=msg)
+            out = {
+                "success": True,
+                "message": msg,
+                "transcript_sync_report": report_path,
+                "notify_topic": topic_key,
+                "notified": bool(notify and should_notify),
+                "notify_suppressed_reason": "" if should_notify else "no_new_transcripts",
+            }
             out.update(summary)
             _eventlog("transcript:sync:done", ok=True, payload=out)
             return out
@@ -1398,6 +1985,8 @@ def cmd_sync(rename: bool = True, headless: bool = True, notify: bool = True, fl
         out = {"success": False, "error": error_msg}
         _eventlog("transcript:sync:done", ok=False, payload=out)
         return out
+    finally:
+        _release_sync_lock()
 
 
 def cmd_rename(notify: bool = True) -> dict:
@@ -1576,6 +2165,8 @@ def main() -> int:
                 'download {"case_number":"...","court_name":"臺灣臺東地方法院","case_type":"刑事"}',
                 "download_all",
                 "sync",
+                "sync_quick",
+                "sync_status",
                 "md5_scan",
                 "rename",
             ],
@@ -1609,15 +2200,15 @@ def main() -> int:
             errors.append("missing judicial.record_password in config.json")
         checks["credentials"] = bool(creds["username"] and creds["password"])
 
-        # DB probe (non-blocking)
+        # DB probe is deliberately read-only. Schema migration belongs to sync
+        # and download paths, never to a health check.
         try:
-            _ensure_local_cases_schema()
             db = _get_db_manager(cfg)
             checks["db"] = db is not None
             if not db:
-                warnings.append("db_manager unavailable; transcript dedup will use JSON fallback")
+                errors.append("db_manager unavailable; transcript dedup cannot be verified")
         except Exception as e:
-            warnings.append("db probe failed: " + str(e)[:80])
+            errors.append("db probe failed: " + str(e)[:80])
             checks["db"] = False
 
         # ezlawyer site reachability (HEAD, no login)
@@ -1641,15 +2232,22 @@ def main() -> int:
                 _reason = getattr(_tls_e, "reason", _tls_e)
                 if not isinstance(_reason, _ssl.SSLCertVerificationError):
                     raise
-                # This is a no-login reachability probe. Some local Python installs
-                # miss the ezlawyer CA chain, so confirm network reachability without
-                # turning the business health check red.
-                _fallback_ctx = _ssl._create_unverified_context()
-                with _urllib_req.urlopen(_req, timeout=10, context=_fallback_ctx) as _resp:
+                # Python 3.14 enables OpenSSL's X509 strict extension checks.
+                # ezlawyer's currently deployed certificate omits Subject Key
+                # Identifier even though its chain and hostname validate. Retry
+                # without that extra extension rule, never with verification off.
+                strict_flag = getattr(_ssl, "VERIFY_X509_STRICT", 0)
+                if not strict_flag or "Missing Subject Key Identifier" not in str(_reason):
+                    raise
+                _compat_ctx = _ctx
+                _compat_ctx.verify_flags &= ~strict_flag
+                with _urllib_req.urlopen(_req, timeout=10, context=_compat_ctx) as _resp:
                     checks["site_reachable"] = _resp.status < 500
-                    checks["site_tls_verified"] = False
+                    checks["site_tls_verified"] = True
+                    checks["site_tls_compatibility"] = "missing_subject_key_identifier"
+                    warnings.append("ezlawyer 憑證缺少 Subject Key Identifier；已保留鏈與主機名稱驗證")
         except Exception as e:
-            warnings.append("ezlawyer site unreachable: " + str(e)[:80])
+            errors.append("ezlawyer site unreachable: " + str(e)[:80])
             checks["site_reachable"] = False
 
         ok = len(errors) == 0
@@ -1665,7 +2263,6 @@ def main() -> int:
     if task == "db_probe":
         # Verify DB connectivity and whether we have eligible cases (no website login).
         try:
-            _ensure_local_cases_schema()
             mod = _ensure_imports()
             cfg = _load_config()
             db = _get_db_manager(cfg)
@@ -1697,6 +2294,9 @@ def main() -> int:
             return _ok({"success": True, "eligible_cases": len(cases), "sample": sample})
         except Exception as e:
             return _ok({"success": False, "error": str(e)[:200]})
+
+    if task in {"sync_status", "status"}:
+        return _ok(_sync_status_payload())
 
     if task.startswith("download_all"):
         flow_id = _safe_create_flow_mirror("download_all")
@@ -1732,6 +2332,12 @@ def main() -> int:
     if task in ("sync", "筆錄同步", "全同步"):
         flow_id = _safe_create_flow_mirror("sync", metadata={"rename": True})
         r = cmd_sync(flow_id=flow_id)
+        _safe_finalize_flow(flow_id, r)
+        return _ok(r)
+
+    if task in ("sync_quick", "sync_batch", "quick_sync"):
+        flow_id = _safe_create_flow_mirror("sync", metadata={"rename": True, "run_md5_scan": False})
+        r = cmd_sync(flow_id=flow_id, run_md5_scan=False)
         _safe_finalize_flow(flow_id, r)
         return _ok(r)
 

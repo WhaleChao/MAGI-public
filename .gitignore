@@ -27,6 +27,8 @@ verify_*.py
 *.aiff
 test_*.jpg
 test_*.png
+/*.pdf
+tmp/
 
 .cache/
 archive/
@@ -34,6 +36,10 @@ reports/
 static/exports/
 static/images/gen_*.png
 static/system_test_report.json
+static/laf_portal_new_files_latest.json
+static/*_latest.json
+static/*_state.json
+static/*.jsonl
 nightly_core_change_pending.json
 nightly_council_agenda.md
 nightly_council_minutes.md
@@ -186,7 +192,13 @@ build/
 .smoke_outputs/
 .magi_doc_runs/
 magi.egg-info/
-bin/
+chromedriver/
+bin/*
+!bin/__init__.py
+!bin/_runtime.py
+!bin/check.py
+!bin/cli.py
+!bin/start.py
 dist/
 *.pickle*
 config.json.pre_*
@@ -210,6 +222,8 @@ CIRCULAR_IMPORTS_DETAILS.txt
 !docs/guides/MAGI_一般使用者圖文操作手冊_2026-05-19.docx
 # 消債 5 種書類 docx 範本必須入庫（無此檔則 /api/osc/debt/generate 全失敗）
 !templates/debt_templates/*.docx
+# 法扶委任狀 DOCX 範本必須入庫（一般版、原民中心版）
+!templates/laf_poa/*.docx
 
 # ============================
 # MAGI_v2 額外排除
@@ -335,6 +349,8 @@ scratch/
 # Runtime metrics & auto-generated reports (2026-04-20)
 static/external_chat_metrics.jsonl
 static/nightly_regression_latest.json
+static/knowledge_lint_latest.json
 skills/pdf-namer/_learned_filename_rules.json
 skills/pdf-namer/_nightly_report.json
+skills/pdf-namer/db_rules_cache.json
 .backup/
