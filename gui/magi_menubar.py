@@ -1162,17 +1162,27 @@ if _HAS_APPKIT:
                 self._line(28, y, width - 28, y, major if y % 96 == 30 else minor, 0.45)
 
         @objc.python_method
-        def _section(self, x: float, y: float, w: float, h: float, title: str, accent):
+        def _section(self, x: float, y: float, w: float, h: float, title: str, accent, *, prominent=False, edge=""):
             self._chamfered(
                 x,
                 y,
                 w,
                 h,
-                8,
-                fill=self._color("071319", 0.91),
-                stroke=self._color("278B88", 0.76),
-                line_width=1.1,
+                14 if prominent else 8,
+                fill=self._color("071117", 0.96),
+                stroke=accent.colorWithAlphaComponent_(0.90 if prominent else 0.68),
+                line_width=1.6 if prominent else 1.0,
             )
+            if prominent:
+                self._chamfered(
+                    x + 7,
+                    y + 7,
+                    w - 14,
+                    h - 14,
+                    9,
+                    stroke=self._color("35F5E8", 0.22),
+                    line_width=0.7,
+                )
             self._line(x + 10, y + 38, x + w - 10, y + 38, self._color("35F5E8", 0.34), 0.8)
             self._line(x + 10, y + 38, x + 62, y + 38, accent, 1.8)
             self._line(x + 7, y + 10, x + 7, y + 30, accent, 2.2)
@@ -1187,6 +1197,12 @@ if _HAS_APPKIT:
                     1,
                     fill=self._color("35F5E8", 0.70 - i * 0.16),
                 )
+            if edge == "left":
+                self._line(x, y + 36, x, y + h - 36, self._color("35F5E8", 0.78), 2.0)
+                self._line(x + 5, y + 50, x + 5, y + h - 50, self._color("35F5E8", 0.18), 0.8)
+            elif edge == "right":
+                self._line(x + w, y + 36, x + w, y + h - 36, self._color("35F5E8", 0.78), 2.0)
+                self._line(x + w - 5, y + 50, x + w - 5, y + h - 50, self._color("35F5E8", 0.18), 0.8)
 
         @objc.python_method
         def _dashboard_state_color(self, state: str):
@@ -1341,7 +1357,6 @@ if _HAS_APPKIT:
         @objc.python_method
         def _business_modules(self):
             cache = getattr(self, "_status_cache", {}) or {}
-            self._status_regions = []
             live = cache.get("business_live", {}) if isinstance(cache, dict) else {}
             modules = live.get("modules", {}) if isinstance(live, dict) else {}
             if isinstance(modules, dict) and modules:
@@ -1374,53 +1389,63 @@ if _HAS_APPKIT:
             amber = self._color("FFC857")
             red = self._color("FF5F5F")
             muted = self._color("8AA3A4")
+            self._status_regions = []
 
-            self._rounded(0, 0, width, height, 0, fill=self._color("02070B", 0.99))
-            self._chamfered(8, 8, width - 16, height - 16, 22, fill=self._color("101A21", 0.99), stroke=self._color("53636C", 0.92), line_width=1.5)
-            self._chamfered(20, 20, width - 40, height - 40, 12, fill=self._color("051219", 0.97), stroke=self._color("21837F", 0.52), line_width=1.1)
+            self._rounded(0, 0, width, height, 0, fill=self._color("030507", 0.99))
+            self._chamfered(7, 7, width - 14, height - 14, 26, fill=self._color("181D21", 0.99), stroke=self._color("71808A", 0.88), line_width=1.6)
+            self._chamfered(20, 20, width - 40, height - 40, 15, fill=self._color("060C10", 0.98), stroke=self._color("288A88", 0.56), line_width=1.1)
             self._scan_field(width, height)
-            self._hud_brackets(27, 27, width - 54, height - 54, self._color("35F5E8", 0.58), 22)
+            self._hud_brackets(27, 27, width - 54, height - 54, self._color("35F5E8", 0.64), 28)
 
-            self._line(18, 90, 18, height - 90, self._color("58707A", 0.62), 1.0)
-            self._line(width - 18, 90, width - 18, height - 90, self._color("58707A", 0.62), 1.0)
-            for y in range(112, int(height) - 110, 72):
-                self._line(14, y, 22, y, self._color("35F5E8", 0.48), 1.0)
-                self._line(width - 22, y, width - 14, y, self._color("35F5E8", 0.48), 1.0)
-
-            for i in range(4):
-                self._rounded(42 + i * 16, 42, 10, 4, 1, fill=self._color("35F5E8", 0.82 - i * 0.12))
-            for i in range(6):
-                self._rounded(width - 124 + i * 13, 42, 8, 4, 1, fill=self._color("35F5E8", 0.82 - i * 0.09))
+            self._line(17, 102, 17, height - 84, self._color("64747D", 0.72), 1.2)
+            self._line(width - 17, 102, width - 17, height - 84, self._color("64747D", 0.72), 1.2)
+            for y in range(126, int(height) - 98, 58):
+                self._line(12, y, 23, y, self._color("35F5E8", 0.58), 1.1)
+                self._line(width - 23, y, width - 12, y, self._color("35F5E8", 0.58), 1.1)
 
             overall = _overall_state(cache)
             overall_label = OVERALL_WAITING_TEXT if overall == "waiting" else _label_for_state(overall, OPERATIONAL_TEXT)
-            self._line(width / 2 - 196, 52, width / 2 - 78, 52, self._color("35F5E8", 0.52), 1.0)
-            self._line(width / 2 + 78, 52, width / 2 + 196, 52, self._color("35F5E8", 0.52), 1.0)
-            self._chamfered(width / 2 - 72, 28, 144, 43, 8, fill=self._color("071A21", 0.94), stroke=self._color("35F5E8", 0.68), line_width=1.1)
-            self._draw_text("MAGI", 0, 32, width, 42, size=34, color=cyan, weight=0.78, align=NSCenterTextAlignment, mono=True)
-            self._draw_text(f"整體狀態：{overall_label}", 0, 74, width, 22, size=14, color=self._dashboard_state_color(overall), weight=0.65, align=NSCenterTextAlignment)
             readiness = cache.get("business_readiness", {}) if isinstance(cache, dict) else {}
             summary = readiness.get("summary", {}) if isinstance(readiness, dict) else {}
             attention_count = int(summary.get("attention") or 0)
             waiting_count = int(summary.get("waiting") or 0)
             summary_color = red if attention_count else (amber if waiting_count else green)
-            summary_text = f"業務需處理 {attention_count} 項　待確認 {waiting_count} 項"
-            self._draw_text(summary_text, 0, 96, width, 18, size=11.5, color=summary_color, weight=0.6, align=NSCenterTextAlignment)
-            self._line(40, 118, width - 40, 118, self._color("31F6E2", 0.52), 1.0)
+
+            # 左右狀態艙夾住中央 MAGI 主控標誌。
+            self._chamfered(38, 39, 254, 56, 10, fill=self._color("0A141A", 0.96), stroke=self._color("4B626B", 0.92), line_width=1.1)
+            self._line(46, 47, 46, 87, self._dashboard_state_color(overall), 2.4)
+            self._dot(57, 58, 7, self._dashboard_state_color(overall).colorWithAlphaComponent_(0.15))
+            self._dot(60, 61, 4, self._dashboard_state_color(overall))
+            self._draw_text("全系統狀態", 79, 50, 180, 16, size=10.5, color=muted, weight=0.55)
+            self._draw_text(overall_label, 79, 66, 180, 22, size=15, color=self._dashboard_state_color(overall), weight=0.72)
+
+            self._chamfered(width / 2 - 154, 24, 308, 76, 14, fill=self._color("081B22", 0.98), stroke=self._color("35F5E8", 0.82), line_width=1.5)
+            self._chamfered(width / 2 - 142, 32, 284, 60, 9, stroke=self._color("35F5E8", 0.24), line_width=0.7)
+            self._draw_text("MAGI", 0, 38, width, 47, size=39, color=cyan, weight=0.80, align=NSCenterTextAlignment, mono=True)
+
+            self._chamfered(width - 292, 39, 254, 56, 10, fill=self._color("0A141A", 0.96), stroke=self._color("4B626B", 0.92), line_width=1.1)
+            self._line(width - 46, 47, width - 46, 87, summary_color, 2.4)
+            self._dot(width - 76, 58, 7, summary_color.colorWithAlphaComponent_(0.15))
+            self._dot(width - 73, 61, 4, summary_color)
+            self._draw_text("業務待辦", width - 260, 50, 170, 16, size=10.5, color=muted, weight=0.55, align=NSRightTextAlignment)
+            self._draw_text(f"需處理 {attention_count}・待確認 {waiting_count}", width - 260, 66, 170, 22, size=14, color=summary_color, weight=0.72, align=NSRightTextAlignment)
+            self._line(42, 109, width - 42, 109, self._color("31F6E2", 0.62), 1.1)
+            self._line(width / 2 - 84, 109, width / 2 + 84, 109, self._color("D8F7F4", 0.70), 2.0)
 
             margin = 28
-            gap = 18
-            top_y = 124
-            top_h = 318
-            left_w = 272
-            center_w = 390
+            gap = 14
+            top_y = 120
+            main_bottom = 676
+            left_w = 260
+            center_w = 416
             right_w = width - margin * 2 - left_w - center_w - gap * 2
             left_x = margin
             center_x = left_x + left_w + gap
             right_x = center_x + center_w + gap
 
-            # 核心服務
-            self._section(left_x, top_y, left_w, top_h, "核心服務", cyan)
+            # 左翼：核心服務與資源模型。
+            core_h = 260
+            self._section(left_x, top_y, left_w, core_h, "核心服務", cyan, edge="left")
             db_state = "ok" if (cache.get("db", {}) or {}).get("local") else "attention"
             zombies, _z_detail = cache.get("zombies", (0, "")) if isinstance(cache, dict) else (0, "")
             zombie_state = "ok" if int(zombies or 0) == 0 else "attention"
@@ -1433,68 +1458,69 @@ if _HAS_APPKIT:
                 ("殭屍程序", "無" if zombie_state == "ok" else f"{zombies}個", zombie_state, "未偵測到殭屍程序。" if zombie_state == "ok" else str(_z_detail or f"偵測到 {zombies} 個殭屍程序。")),
             ]
             for i, row in enumerate(service_rows):
-                self._draw_status_row(left_x + 14, top_y + 52 + i * 36, left_w - 28, row[0], row[1], row[2], 104, 30, row[3])
+                self._draw_status_row(left_x + 14, top_y + 47 + i * 34, left_w - 28, row[0], row[1], row[2], 98, 28, row[3])
 
-            # 即時紀錄
-            self._section(center_x, top_y, center_w, top_h, "即時紀錄", cyan)
+            resource_y = top_y + core_h + gap
+            resource_h = main_bottom - resource_y
+            self._section(left_x, resource_y, left_w, resource_h, "資源與模型", cyan, edge="left")
+            resource_rows = self._memory_rows(cache) + self._engine_rows(cache)
+            for i, row in enumerate(resource_rows[:6]):
+                self._draw_status_row(left_x + 14, resource_y + 47 + i * 36, left_w - 28, row[0], row[1], row[2], 126, 29)
+
+            # 中央主視窗：即時事件流與網路硬碟。
+            live_h = 350
+            self._section(center_x, top_y, center_w, live_h, "即時紀錄", cyan, prominent=True)
             live_events = _format_live_events(cache)
             for i, event in enumerate(live_events):
-                self._draw_log_row(center_x + 16, top_y + 48 + i * 31, center_w - 32, event, highlighted=i == len(live_events) - 1)
-            self._line(center_x + 24, top_y + 284, center_x + center_w - 24, top_y + 284, self._color("31F6E2", 0.58), 1.0)
-            live_events = _format_live_events(cache)
+                self._draw_log_row(center_x + 16, top_y + 48 + i * 36, center_w - 32, event, highlighted=i == len(live_events) - 1)
+            self._line(center_x + 24, top_y + 304, center_x + center_w - 24, top_y + 304, self._color("31F6E2", 0.58), 1.0)
             pulse_points = cache.get("live_pulse_points") if isinstance(cache, dict) else None
             if not isinstance(pulse_points, list):
                 pulse_points = _live_pulse_points(live_events)
-            base_x, base_y = center_x + 190, top_y + 294
+            base_x, base_y = center_x + 244, top_y + 312
             for idx, point in enumerate(pulse_points):
                 self._rounded(base_x + idx * 9, base_y + 22 - point, 5, point, 1.5, fill=self._color("31F6E2", 0.70))
             checked_at = ""
             live = cache.get("business_live", {}) if isinstance(cache, dict) else {}
             if isinstance(live, dict):
                 checked_at = live.get("checked_at", "")
-            self._draw_text(f"資料脈衝　最近檢查 {checked_at or '--:--'}", center_x + 24, top_y + 296, 156, 18, size=10.5, color=muted, mono=True)
+            self._draw_text(f"事件流　最近檢查 {checked_at or '--:--'}", center_x + 24, top_y + 315, 200, 18, size=10.5, color=muted, mono=True)
 
-            # 任務模組與目前業務待辦
-            self._section(right_x, top_y, right_w, TASK_MODULE_SECTION_HEIGHT, "任務模組", cyan)
+            nas_y = top_y + live_h + gap
+            nas_h = main_bottom - nas_y
+            self._section(center_x, nas_y, center_w, nas_h, "網路硬碟", cyan, prominent=True)
+            nas_rows = self._nas_rows(cache)
+            nas_step = min(32.0, max(25.0, (nas_h - 50) / max(1, len(nas_rows[:5]))))
+            for i, row in enumerate(nas_rows[:5]):
+                self._draw_status_row(center_x + 16, nas_y + 45 + i * nas_step, center_w - 32, row[0], row[1], row[2], 172, min(27, nas_step - 3))
+
+            # 右翼：任務模組、業務待辦與背景監控。
+            task_h = TASK_MODULE_SECTION_HEIGHT
+            self._section(right_x, top_y, right_w, task_h, "任務模組", cyan, edge="right")
             modules = self._business_modules()
             for i, (label, info) in enumerate(modules.items()):
                 state = str(info.get("state") or "waiting")
                 value = str(info.get("label") or _label_for_state(state, OPERATIONAL_TEXT))
                 row_y, row_h = _task_module_row_geometry(i)
-                self._draw_status_row(right_x + 14, top_y + row_y, right_w - 28, label, value, state, 96, row_h)
+                detail = str(info.get("detail") or f"{label}目前顯示：{value}")
+                self._draw_status_row(right_x + 14, top_y + row_y, right_w - 28, label, value, state, 96, row_h, detail)
 
-            factory_y = top_y + 164
-            self._section(right_x, factory_y, right_w, top_h - 164, "業務待辦", amber)
+            factory_y = top_y + task_h + gap
+            factory_h = 174
+            readiness_accent = red if attention_count else (amber if waiting_count else green)
+            self._section(right_x, factory_y, right_w, factory_h, "業務待辦", readiness_accent, edge="right")
             readiness_items = readiness.get("items", {}) if isinstance(readiness, dict) else {}
-            for i, (label, info) in enumerate(readiness_items.items()):
+            readiness_rows = list(readiness_items.items())
+            readiness_step = min(25.0, max(20.0, (factory_h - 48) / max(1, len(readiness_rows))))
+            for i, (label, info) in enumerate(readiness_rows):
                 state = str(info.get("state") or "waiting")
                 value = str(info.get("label") or CHECK_WAITING_TEXT)
                 detail = _business_readiness_detail(str(label), info)
-                self._draw_status_row(right_x + 14, factory_y + 44 + i * 22, right_w - 28, label, value, state, 86, 21, detail)
+                self._draw_status_row(right_x + 14, factory_y + 43 + i * readiness_step, right_w - 28, label, value, state, 94, min(22, readiness_step - 2), detail)
 
-            # 資源、模型、NAS、背景監控
-            bottom_y = 454
-            bottom_h = 230
-            resource_w = 356
-            nas_w = 300
-            monitor_w = width - margin * 2 - resource_w - nas_w - gap * 2
-            resource_x = margin
-            nas_x = resource_x + resource_w + gap
-            monitor_x = nas_x + nas_w + gap
-
-            self._section(resource_x, bottom_y, resource_w, bottom_h, "資源與模型", cyan)
-            resource_rows = self._memory_rows(cache) + self._engine_rows(cache)
-            for i, row in enumerate(resource_rows[:6]):
-                self._draw_status_row(resource_x + 14, bottom_y + 42 + i * 22, resource_w - 28, row[0], row[1], row[2], 150, 21)
-
-            self._section(nas_x, bottom_y, nas_w, bottom_h, "網路硬碟", cyan)
-            nas_rows = self._nas_rows(cache)
-            for i, row in enumerate(nas_rows[:5]):
-                self._draw_status_row(nas_x + 14, bottom_y + 44 + i * 27, nas_w - 28, row[0], row[1], row[2], 116, 24)
-            if len(nas_rows) > 5:
-                self._draw_text(f"其餘分卷 {len(nas_rows) - 5} 個", nas_x + 18, bottom_y + 150, nas_w - 36, 16, size=10.5, color=muted, align=NSCenterTextAlignment)
-
-            self._section(monitor_x, bottom_y, monitor_w, bottom_h, "背景監控", cyan)
+            monitor_y = factory_y + factory_h + gap
+            monitor_h = main_bottom - monitor_y
+            self._section(right_x, monitor_y, right_w, monitor_h, "背景監控", cyan, edge="right")
             monitor_rows = []
             monitors = cache.get("monitors", {}) if isinstance(cache, dict) else {}
             for display_name, _pattern in MONITOR_THREADS:
@@ -1521,7 +1547,7 @@ if _HAS_APPKIT:
             )
             for i, row in enumerate(monitor_rows[:9]):
                 detail = row[3] if len(row) > 3 else ""
-                self._draw_status_row(monitor_x + 14, bottom_y + 42 + i * 21, monitor_w - 28, row[0], row[1], row[2], 92, 18, detail)
+                self._draw_status_row(right_x + 14, monitor_y + 42 + i * 18, right_w - 28, row[0], row[1], row[2], 92, 17, detail)
 
             # 操作列
             commands = [
