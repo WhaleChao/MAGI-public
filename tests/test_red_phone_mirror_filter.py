@@ -160,6 +160,30 @@ def test_outbox_preserves_topic_key(tmp_path, monkeypatch):
     assert data[0]["topic_key"] == "check"
 
 
+def test_outbox_preserves_disabled_discord_mirror_on_retry(tmp_path, monkeypatch):
+    outbox_path = tmp_path / "outbox.json"
+    monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))
+    monkeypatch.setattr(red_phone, "RED_PHONE_DELIVERY_LOG", str(tmp_path / "delivery.jsonl"))
+    red_phone._enqueue_outbox(
+        "法扶結案已完成存檔",
+        severity="info",
+        source="laf_closing",
+        topic_key="laf_closing",
+        mirror_to_discord=False,
+    )
+    calls = []
+    monkeypatch.setattr(
+        red_phone,
+        "send_telegram_push_with_status",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or {"telegram": True},
+    )
+
+    result = red_phone._flush_outbox(max_items=1)
+
+    assert result["recovered"] == 1
+    assert calls[0][1]["mirror_to_discord"] is False
+
+
 def test_outbox_deduplicates_same_pending_message(tmp_path, monkeypatch):
     outbox_path = tmp_path / "outbox.json"
     monkeypatch.setattr(red_phone, "RED_PHONE_OUTBOX_FILE", str(outbox_path))

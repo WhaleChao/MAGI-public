@@ -280,7 +280,14 @@ def _notify(message: str, *, topic_key: str, file_path: str = "") -> dict[str, A
         status["discord_text_error"] = str(exc)[:200]
     try:
         from skills.ops.red_phone import send_telegram_push_with_status
-        tg = send_telegram_push_with_status(message, severity="info", source=topic_key, topic_key=topic_key, queue_on_fail=True)
+        tg = send_telegram_push_with_status(
+            message,
+            severity="info",
+            source=topic_key,
+            topic_key=topic_key,
+            queue_on_fail=True,
+            mirror_to_discord=False,
+        )
         status["telegram_text"] = bool(isinstance(tg, dict) and (tg.get("telegram") or tg.get("queued")))
     except Exception as exc:
         status["telegram_text_error"] = str(exc)[:200]

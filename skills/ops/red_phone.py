@@ -1471,6 +1471,7 @@ def _enqueue_outbox(
     source: str,
     last_error: str = "",
     topic_key: str = "",
+    mirror_to_discord: bool = True,
 ) -> str:
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
@@ -1491,6 +1492,7 @@ def _enqueue_outbox(
         if existing_fp == fingerprint:
             existing["updated_at"] = datetime.now().isoformat()
             existing["last_error"] = str(last_error or existing.get("last_error") or "")[:600]
+            existing["mirror_to_discord"] = bool(existing.get("mirror_to_discord", True)) and bool(mirror_to_discord)
             _save_outbox(outbox)
             _append_delivery_log(
                 {
@@ -1512,6 +1514,7 @@ def _enqueue_outbox(
         "topic_key": str(effective_topic or ""),
         "message": str(message or ""),
         "fingerprint": fingerprint,
+        "mirror_to_discord": bool(mirror_to_discord),
         "attempts": 0,
         "next_retry_at": now_ts,
         "last_error": str(last_error or "")[:600],
@@ -1638,6 +1641,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
             source="outbox",
             topic_key=str(entry.get("topic_key") or ""),
             queue_on_fail=False,
+            mirror_to_discord=bool(entry.get("mirror_to_discord", True)),
         )
         if result.get("telegram"):
             recovered += 1
@@ -1740,6 +1744,7 @@ def send_telegram_push_with_status(
     source: str = "direct",
     topic_key: str = "",
     queue_on_fail: bool = True,
+    mirror_to_discord: bool = True,
 ) -> dict:
     quiet_status = _quiet_suppression_status(
         message,
@@ -1762,6 +1767,7 @@ def send_telegram_push_with_status(
                 source=source,
                 last_error=err,
                 topic_key=topic_key or resolved_topic,
+                mirror_to_discord=mirror_to_discord,
             )
         return {
             "telegram": False,
@@ -1801,8 +1807,8 @@ def send_telegram_push_with_status(
                     "total": int(last_status.get("total") or 0),
                 }
             )
-            # Best-effort mirror to Discord (routed channel)
-            _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
+            if mirror_to_discord:
+                _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
             return {
                 "telegram": True,
                 "delivered": True,
@@ -1826,6 +1832,7 @@ def send_telegram_push_with_status(
             source=source,
             last_error=last_error,
             topic_key=topic_key or resolved_topic,
+            mirror_to_discord=mirror_to_discord,
         )
     _append_delivery_log(
         {

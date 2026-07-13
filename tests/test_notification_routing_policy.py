@@ -223,6 +223,44 @@ def test_zero_new_transcript_scan_is_quiet_and_not_queued(tmp_path, monkeypatch)
     assert not outbox_path.exists()
 
 
+def test_telegram_push_can_skip_discord_mirror(monkeypatch):
+    mirror_calls = []
+    monkeypatch.setattr(red_phone, "_get_telegram_config", lambda: ("token", [123]))
+    monkeypatch.setattr(red_phone, "_resolve_thread_id", lambda *_args, **_kwargs: ("laf_closing", 2818))
+    monkeypatch.setattr(
+        red_phone,
+        "_send_telegram_once",
+        lambda *_args, **_kwargs: {"ok_any": True, "acked": [123], "total": 1, "error": ""},
+    )
+    monkeypatch.setattr(red_phone, "_append_delivery_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        red_phone,
+        "_mirror_to_discord",
+        lambda *args, **kwargs: mirror_calls.append((args, kwargs)) or True,
+    )
+
+    result = red_phone.send_telegram_push_with_status(
+        "法扶結案已完成存檔",
+        severity="info",
+        source="laf_closing",
+        topic_key="laf_closing",
+        mirror_to_discord=False,
+    )
+
+    assert result["telegram"] is True
+    assert mirror_calls == []
+
+    default_result = red_phone.send_telegram_push_with_status(
+        "法扶結案已完成存檔",
+        severity="info",
+        source="laf_closing",
+        topic_key="laf_closing",
+    )
+
+    assert default_result["telegram"] is True
+    assert len(mirror_calls) == 1
+
+
 def test_telegram_business_parent_topics_do_not_fall_back_to_general(monkeypatch):
     monkeypatch.setattr(red_phone, "_load_topic_map", lambda: {"general": 999})
 

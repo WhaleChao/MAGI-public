@@ -1,6 +1,7 @@
 import json
 
 from scripts.ops import laf_report_worker as worker
+from skills.ops import red_phone
 
 
 def test_parse_sentinel_result():
@@ -51,3 +52,27 @@ def test_format_missing_docs_failure_is_actionable():
     )
     assert "缺少文件：結案依據文件" in msg
     assert "放入對應案件資料夾" in msg
+
+
+def test_notify_sends_discord_once_and_disables_telegram_mirror(monkeypatch):
+    discord_calls = []
+    telegram_calls = []
+
+    monkeypatch.setattr(
+        red_phone,
+        "_send_discord_bot_message",
+        lambda *args, **kwargs: discord_calls.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        red_phone,
+        "send_telegram_push_with_status",
+        lambda *args, **kwargs: telegram_calls.append((args, kwargs)) or {"telegram": True},
+    )
+
+    result = worker._notify("法扶結案已完成存檔", topic_key="laf_closing")
+
+    assert result["discord_text"] is True
+    assert result["telegram_text"] is True
+    assert len(discord_calls) == 1
+    assert len(telegram_calls) == 1
+    assert telegram_calls[0][1]["mirror_to_discord"] is False
