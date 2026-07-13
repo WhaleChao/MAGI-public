@@ -1105,6 +1105,28 @@ if _HAS_APPKIT:
                 path.stroke()
 
         @objc.python_method
+        def _chamfered(self, x: float, y: float, w: float, h: float, cut: float = 7, *,
+                       fill=None, stroke=None, line_width: float = 1.0):
+            cut = max(0.0, min(float(cut), w / 3.0, h / 3.0))
+            path = NSBezierPath.bezierPath()
+            path.moveToPoint_(NSMakePoint(x + cut, y))
+            path.lineToPoint_(NSMakePoint(x + w - cut, y))
+            path.lineToPoint_(NSMakePoint(x + w, y + cut))
+            path.lineToPoint_(NSMakePoint(x + w, y + h - cut))
+            path.lineToPoint_(NSMakePoint(x + w - cut, y + h))
+            path.lineToPoint_(NSMakePoint(x + cut, y + h))
+            path.lineToPoint_(NSMakePoint(x, y + h - cut))
+            path.lineToPoint_(NSMakePoint(x, y + cut))
+            path.closePath()
+            if fill is not None:
+                fill.setFill()
+                path.fill()
+            if stroke is not None:
+                stroke.setStroke()
+                path.setLineWidth_(line_width)
+                path.stroke()
+
+        @objc.python_method
         def _line(self, x1: float, y1: float, x2: float, y2: float, color, width: float = 1.0):
             path = NSBezierPath.bezierPath()
             path.moveToPoint_(NSMakePoint(x1, y1))
@@ -1115,32 +1137,56 @@ if _HAS_APPKIT:
 
         @objc.python_method
         def _dot(self, x: float, y: float, r: float, color):
-            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(x, y, r * 2, r * 2)).fill()
             color.setFill()
+            NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(x, y, r * 2, r * 2)).fill()
+
+        @objc.python_method
+        def _hud_brackets(self, x: float, y: float, w: float, h: float, color, arm: float = 18):
+            self._line(x, y + arm, x, y, color, 1.4)
+            self._line(x, y, x + arm, y, color, 1.4)
+            self._line(x + w - arm, y, x + w, y, color, 1.4)
+            self._line(x + w, y, x + w, y + arm, color, 1.4)
+            self._line(x, y + h - arm, x, y + h, color, 1.4)
+            self._line(x, y + h, x + arm, y + h, color, 1.4)
+            self._line(x + w - arm, y + h, x + w, y + h, color, 1.4)
+            self._line(x + w, y + h - arm, x + w, y + h, color, 1.4)
+
+        @objc.python_method
+        def _scan_field(self, width: float, height: float):
+            minor = self._color("72E8DC", 0.035)
+            major = self._color("72E8DC", 0.065)
+            for x in range(32, int(width) - 31, 64):
+                self._line(x, 28, x, height - 28, major, 0.55)
+                self._line(x + 32, 28, x + 32, height - 28, minor, 0.45)
+            for y in range(30, int(height) - 29, 24):
+                self._line(28, y, width - 28, y, major if y % 96 == 30 else minor, 0.45)
 
         @objc.python_method
         def _section(self, x: float, y: float, w: float, h: float, title: str, accent):
-            self._rounded(
+            self._chamfered(
                 x,
                 y,
                 w,
                 h,
                 8,
-                fill=self._color("071619", 0.82),
-                stroke=self._color("1F8F86", 0.72),
+                fill=self._color("071319", 0.91),
+                stroke=self._color("278B88", 0.76),
                 line_width=1.1,
             )
-            self._rounded(
-                x + 8,
-                y + 8,
-                w - 16,
-                30,
-                5,
-                fill=self._color("08292C", 0.72),
-                stroke=accent,
-                line_width=0.8,
-            )
-            self._draw_text(title, x + 18, y + 12, w - 36, 20, size=14, color=accent, weight=0.7)
+            self._line(x + 10, y + 38, x + w - 10, y + 38, self._color("35F5E8", 0.34), 0.8)
+            self._line(x + 10, y + 38, x + 62, y + 38, accent, 1.8)
+            self._line(x + 7, y + 10, x + 7, y + 30, accent, 2.2)
+            self._draw_text(title, x + 18, y + 10, w - 70, 20, size=14, color=accent, weight=0.72)
+            for i in range(3):
+                tick_w = 12 if i == 0 else 6
+                self._rounded(
+                    x + w - 48 + i * 12,
+                    y + 16,
+                    tick_w,
+                    3,
+                    1,
+                    fill=self._color("35F5E8", 0.70 - i * 0.16),
+                )
 
         @objc.python_method
         def _dashboard_state_color(self, state: str):
@@ -1177,8 +1223,10 @@ if _HAS_APPKIT:
                 "failed": self._color("FF5F5F"),
             }.get(state, self._color("FFC857"))
             text_y = y + max(2, (row_h - 18) / 2)
-            self._rounded(x, y, w, row_h, 4, fill=self._color("0B2024", 0.78), stroke=self._color("215A5B", 0.54))
-            self._rounded(x + 10, y + max(6, (row_h - 9) / 2), 9, 9, 4.5, fill=color)
+            self._chamfered(x, y, w, row_h, 3, fill=self._color("0A1B22", 0.88), stroke=self._color("31505A", 0.58), line_width=0.7)
+            self._line(x + 3, y + 6, x + 3, y + row_h - 6, color, 1.8)
+            self._dot(x + 10, y + max(5, (row_h - 11) / 2), 5.5, color.colorWithAlphaComponent_(0.16))
+            self._dot(x + 12, y + max(7, (row_h - 7) / 2), 3.5, color)
             self._draw_text(label, x + 28, text_y, w - value_w - 38, 18, size=12.0, color=self._color("E9F5F1"), weight=0.45)
             self._draw_text(self._compact(value, 18), x + w - value_w - 10, text_y, value_w, 18, size=11.3, color=color, weight=0.7, align=NSRightTextAlignment)
             self._status_regions.append(
@@ -1197,11 +1245,14 @@ if _HAS_APPKIT:
         def _draw_log_row(self, x, y, w, event, highlighted=False):
             state = str(event.get("state") or "waiting")
             color = self._dashboard_state_color(state)
-            fill = self._color("0B3034", 0.92 if highlighted else 0.62)
-            stroke = self._color("31F6E2", 0.72 if highlighted else 0.25)
-            self._rounded(x, y, w, 31, 4, fill=fill, stroke=stroke, line_width=1.0)
-            self._draw_text(event.get("time", "--:--"), x + 12, y + 8, 48, 16, size=11.5, color=self._color("31F6E2"), mono=True)
-            self._rounded(x + 68, y + 10, 10, 10, 5, fill=color)
+            fill = self._color("0A252C", 0.96 if highlighted else 0.72)
+            stroke = self._color("31F6E2", 0.78 if highlighted else 0.30)
+            self._chamfered(x, y, w, 31, 4, fill=fill, stroke=stroke, line_width=1.0 if highlighted else 0.7)
+            self._line(x + 5, y + 6, x + 5, y + 25, stroke, 1.5)
+            self._draw_text(event.get("time", "--:--"), x + 14, y + 8, 48, 16, size=11.5, color=self._color("31F6E2"), mono=True)
+            self._line(x + 64, y + 6, x + 64, y + 25, self._color("31F6E2", 0.28), 0.7)
+            self._dot(x + 72, y + 10, 5, color.colorWithAlphaComponent_(0.16))
+            self._dot(x + 74, y + 12, 3, color)
             self._draw_text(event.get("source", ""), x + 88, y + 7, 126, 17, size=12.2, color=self._color("E9F5F1"), weight=0.45)
             self._draw_text(event.get("label", CHECK_WAITING_TEXT), x + w - 114, y + 7, 96, 17, size=11.8, color=color, weight=0.65, align=NSRightTextAlignment)
 
@@ -1324,17 +1375,28 @@ if _HAS_APPKIT:
             red = self._color("FF5F5F")
             muted = self._color("8AA3A4")
 
-            self._rounded(0, 0, width, height, 0, fill=self._color("040B10", 0.98))
-            self._rounded(10, 10, width - 20, height - 20, 16, fill=self._color("071217", 0.98), stroke=self._color("3D5963", 0.95), line_width=1.5)
-            self._rounded(24, 24, width - 48, height - 48, 10, fill=self._color("06191D", 0.92), stroke=self._color("1F8F86", 0.42), line_width=1.1)
+            self._rounded(0, 0, width, height, 0, fill=self._color("02070B", 0.99))
+            self._chamfered(8, 8, width - 16, height - 16, 22, fill=self._color("101A21", 0.99), stroke=self._color("53636C", 0.92), line_width=1.5)
+            self._chamfered(20, 20, width - 40, height - 40, 12, fill=self._color("051219", 0.97), stroke=self._color("21837F", 0.52), line_width=1.1)
+            self._scan_field(width, height)
+            self._hud_brackets(27, 27, width - 54, height - 54, self._color("35F5E8", 0.58), 22)
 
-            for i, color in enumerate((cyan, cyan, green, green)):
-                self._rounded(42 + i * 16, 42, 10, 5, 2, fill=color)
+            self._line(18, 90, 18, height - 90, self._color("58707A", 0.62), 1.0)
+            self._line(width - 18, 90, width - 18, height - 90, self._color("58707A", 0.62), 1.0)
+            for y in range(112, int(height) - 110, 72):
+                self._line(14, y, 22, y, self._color("35F5E8", 0.48), 1.0)
+                self._line(width - 22, y, width - 14, y, self._color("35F5E8", 0.48), 1.0)
+
+            for i in range(4):
+                self._rounded(42 + i * 16, 42, 10, 4, 1, fill=self._color("35F5E8", 0.82 - i * 0.12))
             for i in range(6):
-                self._rounded(width - 124 + i * 13, 42, 8, 5, 2, fill=cyan if i < 5 else green)
+                self._rounded(width - 124 + i * 13, 42, 8, 4, 1, fill=self._color("35F5E8", 0.82 - i * 0.09))
 
             overall = _overall_state(cache)
             overall_label = OVERALL_WAITING_TEXT if overall == "waiting" else _label_for_state(overall, OPERATIONAL_TEXT)
+            self._line(width / 2 - 196, 52, width / 2 - 78, 52, self._color("35F5E8", 0.52), 1.0)
+            self._line(width / 2 + 78, 52, width / 2 + 196, 52, self._color("35F5E8", 0.52), 1.0)
+            self._chamfered(width / 2 - 72, 28, 144, 43, 8, fill=self._color("071A21", 0.94), stroke=self._color("35F5E8", 0.68), line_width=1.1)
             self._draw_text("MAGI", 0, 32, width, 42, size=34, color=cyan, weight=0.78, align=NSCenterTextAlignment, mono=True)
             self._draw_text(f"整體狀態：{overall_label}", 0, 74, width, 22, size=14, color=self._dashboard_state_color(overall), weight=0.65, align=NSCenterTextAlignment)
             readiness = cache.get("business_readiness", {}) if isinstance(cache, dict) else {}
@@ -1473,7 +1535,9 @@ if _HAS_APPKIT:
             self._button_regions = []
             for i, (text, action) in enumerate(commands):
                 x = 30 + i * (button_w + 8)
-                self._rounded(x, button_y, button_w, 38, 6, fill=self._color("0B2024", 0.88), stroke=self._color("31F6E2", 0.52), line_width=1.0)
+                self._chamfered(x, button_y, button_w, 38, 6, fill=self._color("0A1B22", 0.94), stroke=self._color("31F6E2", 0.58), line_width=1.0)
+                self._line(x + 10, button_y + 5, x + button_w - 10, button_y + 5, self._color("31F6E2", 0.24), 0.7)
+                self._line(x + 6, button_y + 10, x + 6, button_y + 28, self._color("31F6E2", 0.68), 1.2)
                 self._draw_text(text, x, button_y + 10, button_w, 18, size=12.5, color=self._color("E9F5F1"), weight=0.55, align=NSCenterTextAlignment)
                 self._button_regions.append(((x, button_y, button_w, 38), action))
             if self._action_notice:
