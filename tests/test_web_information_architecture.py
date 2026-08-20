@@ -42,7 +42,10 @@ def test_research_and_sentencing_share_the_same_primary_navigation():
 
 
 def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
-    page = _read("docs/MAGI_V3_維修百科全書_rc627.html")
+    # Verify the immutable asset that is actually bundled and served by
+    # /manual.  The authoring copy under docs/ is useful to repository readers
+    # but is intentionally outside the production release allowlist.
+    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc627.html")
 
     assert '<html lang="zh-Hant" data-magi-theme="cyber">' in page
     assert 'localStorage.getItem("magi.ui.theme.v1")' in page
