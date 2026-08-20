@@ -54,8 +54,6 @@ logger = logging.getLogger("weekend_resummary")
 # ── 路徑 ──────────────────────────────────────────────────────────────
 _JUDICIAL_API_CACHE_ROOT = judicial_api_cache_root()
 NORM_ROOT = _JUDICIAL_API_CACHE_ROOT / "normalized"
-_LEGACY_JUDGMENTS_JSON = MAGI_ROOT / "skills/judgment-collector/judgments.json"
-JUDGMENTS_JSON = get_judgments_json_path()
 STATE_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary_state.json"
 LOCK_PATH = _JUDICIAL_API_CACHE_ROOT.parent / "resummary.pid"
 
@@ -315,10 +313,16 @@ def _extract_case_reason_from_text(text: str) -> str:
 
 
 def _load_judgments_reasons() -> dict:
+    # Resolve the mutable, deployment-bound export only when the batch actually
+    # needs it.  A sealed release must remain safe to import for certification,
+    # health discovery, and CLI help even when production state bindings are
+    # intentionally absent.  The resolver still fails closed when this function
+    # is called without the required sealed-release bindings.
+    judgments_json = get_judgments_json_path()
     mapping = {}
-    if JUDGMENTS_JSON.exists():
+    if judgments_json.exists():
         try:
-            data = json.loads(JUDGMENTS_JSON.read_text("utf-8"))
+            data = json.loads(judgments_json.read_text("utf-8"))
             for j in data:
                 title = j.get("title", "")
                 reason = j.get("case_reason", "")

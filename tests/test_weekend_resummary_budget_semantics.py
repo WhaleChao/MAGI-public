@@ -1,13 +1,57 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 from scripts import weekend_resummary
 from skills.ops.cron_result_policy import (
     classify_cron_result,
     terminal_schedule_deferral_reason,
 )
+
+
+def test_sealed_release_import_defers_mutable_judgment_binding(tmp_path) -> None:
+    """Formal V2 discovery may import the module without LIVE state bindings."""
+
+    root = Path(__file__).resolve().parents[1]
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "release-manifest.json").write_text("{}\n", encoding="utf-8")
+    env = dict(os.environ)
+    env["MAGI_ROOT_DIR"] = str(sealed)
+    env["PYTHONPATH"] = str(root)
+    for name in (
+        "MAGI_JUDGMENTS_JSON_PATH",
+        "MAGI_SHARED_STATE_DIR",
+        "MAGI_V3_SHARED_STATE_DIR",
+    ):
+        env.pop(name, None)
+    code = """
+from magi_v3.external_inputs import ExternalInputError
+from scripts import weekend_resummary
+print("imported")
+try:
+    weekend_resummary._load_judgments_reasons()
+except ExternalInputError:
+    print("binding_required_on_use")
+else:
+    raise SystemExit("sealed mutable binding did not fail closed on use")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["imported", "binding_required_on_use"]
 
 
 def test_nim_daily_budget_stops_immediately_as_checkpointed_deferral() -> None:
