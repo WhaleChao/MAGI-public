@@ -269,6 +269,33 @@ def test_bounded_repair_never_resets_or_exposes_another_port(monkeypatch):
     assert all("reset" not in call for call in calls)
 
 
+def test_public_ingress_refresh_is_bounded_and_ordered(monkeypatch):
+    calls = []
+    monkeypatch.setattr(MODULE, "_tailscale_bin", lambda: "/fixture/tailscale")
+    monkeypatch.setattr(
+        MODULE,
+        "_run",
+        lambda args, **_kwargs: calls.append(args) or {"ok": True, "returncode": 0, "stdout": "", "stderr": ""},
+    )
+    scope = {
+        "ok": True,
+        "repair_allowed": True,
+        "reason_code": "approved_scope",
+        "approved": {"host": "magi.example.test", "path": "/", "proxy": "http://127.0.0.1:5002"},
+    }
+
+    result = MODULE._refresh_public_ingress(scope)
+
+    assert result["status"] == "applied"
+    assert calls == [
+        ["/fixture/tailscale", "debug", "restun"],
+        ["/fixture/tailscale", "debug", "rebind"],
+        ["/fixture/tailscale", "debug", "force-netmap-update"],
+        ["/fixture/tailscale", "funnel", "--bg", "--yes", "http://127.0.0.1:5002"],
+    ]
+    assert all("reset" not in call and "down" not in call and "up" not in call for call in calls)
+
+
 def test_partial_public_dns_is_amber_and_reasserts_only_approved_target(monkeypatch):
     monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
     monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
@@ -376,7 +403,7 @@ def test_authentication_boundary_failure_never_changes_funnel(monkeypatch):
     assert result["actions"] == []
 
 
-def test_canonical_dns_route_prevents_false_red_when_all_edge_pins_reject_tls(monkeypatch):
+def test_tailnet_dns_success_cannot_mask_public_edge_failure(monkeypatch):
     monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
     monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
     monkeypatch.setattr(
@@ -419,10 +446,71 @@ def test_canonical_dns_route_prevents_false_red_when_all_edge_pins_reject_tls(mo
 
     result = MODULE.check(apply=False)
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
     assert result["canonical_dns_probes"][0]["ok"] is True
-    assert boundary_calls == [{"use_dns_route": True}]
-    assert "diagnostic evidence" in result["reason"]
+    assert result["canonical_dns_is_tailnet_only"] is True
+    assert boundary_calls == []
+    assert result["reason"] == "all public Funnel probes failed"
+
+
+def test_apply_refreshes_bindings_then_requires_public_edge_recovery(monkeypatch):
+    monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
+    monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        MODULE,
+        "_load_funnel_status",
+        lambda: {
+            "ok": True,
+            "data": {
+                "TCP": {"443": {"HTTPS": True}},
+                "Web": {"magi.example.test:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:5002"}}}},
+                "AllowFunnel": {"magi.example.test:443": True},
+            },
+        },
+    )
+    monkeypatch.setattr(MODULE, "_public_ips", lambda _host: ["203.0.113.8"])
+    edge_results = iter(
+        [
+            {"ok": False, "http_code": 0, "stderr": "tls closed"},
+            {"ok": True, "http_code": 200, "stderr": ""},
+        ]
+    )
+    monkeypatch.setattr(MODULE, "_probe", lambda *_args: next(edge_results))
+    mobile_results = iter(
+        [
+            {"ok": False, "probes": [{"ok": False, "http_code": 0}]},
+            {"ok": True, "probes": [{"ok": True, "http_code": 302}]},
+        ]
+    )
+    monkeypatch.setattr(MODULE, "_probe_mobile_entry_targets", lambda *_args: next(mobile_results))
+    monkeypatch.setattr(MODULE, "_probe_dns_route", lambda *_args: {"ok": True, "http_code": 200, "route": "public_dns"})
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_mobile_entry_targets_dns",
+        lambda *_args: {"ok": True, "probes": [{"ok": True, "http_code": 302, "route": "public_dns"}]},
+    )
+    monkeypatch.setattr(MODULE, "_public_dns_matrix", lambda _host: {"ok": True, "partial": False, "checks": []})
+    repairs = []
+    monkeypatch.setattr(
+        MODULE,
+        "_refresh_public_ingress",
+        lambda scope: repairs.append(scope) or {"action": "refresh_public_ingress", "status": "applied"},
+    )
+    monkeypatch.setattr(MODULE.time, "sleep", lambda _seconds: None)
+    boundary_calls = []
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_security_boundaries",
+        lambda *_args, **kwargs: boundary_calls.append(kwargs) or {"ok": True, "checks": [], "route": "edge_pinned"},
+    )
+
+    result = MODULE.check(apply=True)
+
+    assert result["status"] == "recovered"
+    assert len(repairs) == 1
+    assert result["canonical_dns_is_tailnet_only"] is True
+    assert result["reprobes"][0]["ok"] is True
+    assert boundary_calls == [{"use_dns_route": False}]
 
 
 def test_canonical_dns_failure_remains_red_when_edge_pins_also_fail(monkeypatch):

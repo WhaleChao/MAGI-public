@@ -5,8 +5,10 @@ Local MagicDNS can resolve a Funnel host to the node's 100.x Tailnet address.
 That proves tailnet access, but not public Funnel reachability.  This check
 queries public DNS over UDP and TCP, probes each public ingress IP with
 ``curl --resolve``, verifies the public/authentication boundary, and may only
-reassert the single approved root proxy.  It never resets Funnel, adds a path,
-or publishes any port other than HTTPS 443 to MAGI web on localhost:5002.
+refresh Tailscale's NAT/socket/control bindings before reasserting the single
+approved root proxy.  It never resets Funnel, takes Tailscale down, adds a
+path, or publishes any port other than HTTPS 443 to MAGI web on
+localhost:5002.
 """
 from __future__ import annotations
 
@@ -876,6 +878,63 @@ def _reassert_approved_funnel(scope: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _refresh_public_ingress(scope: dict[str, Any]) -> dict[str, Any]:
+    """Refresh only the approved Funnel's live ingress bindings.
+
+    A long-running macOS network extension can retain a stale NAT/socket or
+    control-plane binding while ``funnel status`` still reports the expected
+    rule.  These debug operations do not log out, take the tailnet down, reset
+    Serve/Funnel configuration, or alter the approved proxy scope.
+    """
+
+    approved = scope.get("approved") if isinstance(scope, dict) else None
+    if not scope.get("repair_allowed") or not isinstance(approved, dict):
+        return {
+            "action": "refresh_public_ingress",
+            "status": "blocked",
+            "reason_code": str(scope.get("reason_code") or "scope_not_approved"),
+        }
+    if approved != {
+        "host": str(approved.get("host") or ""),
+        "path": APPROVED_FUNNEL_PATH,
+        "proxy": APPROVED_FUNNEL_PROXY,
+    }:
+        return {
+            "action": "refresh_public_ingress",
+            "status": "blocked",
+            "reason_code": "approved_target_contract_mismatch",
+        }
+
+    ts = _tailscale_bin()
+    steps = (
+        ("restun", [ts, "debug", "restun"]),
+        ("rebind", [ts, "debug", "rebind"]),
+        ("netmap_refresh", [ts, "debug", "force-netmap-update"]),
+    )
+    results: list[dict[str, Any]] = []
+    for name, command in steps:
+        result = _run(command, timeout=15)
+        results.append({"step": name, "result": result})
+        if not result.get("ok"):
+            return {
+                "action": "refresh_public_ingress",
+                "status": "failed",
+                "reason_code": f"{name}_failed",
+                "target": approved,
+                "steps": results,
+            }
+
+    funnel = _reassert_approved_funnel(scope)
+    results.append({"step": "funnel_reassert", "result": funnel})
+    return {
+        "action": "refresh_public_ingress",
+        "status": "applied" if funnel.get("status") == "applied" else "failed",
+        "reason_code": "bindings_refreshed" if funnel.get("status") == "applied" else "funnel_reassert_failed",
+        "target": approved,
+        "steps": results,
+    }
+
+
 def check(apply: bool = False) -> dict[str, Any]:
     _load_dotenv()
     status = _load_funnel_status()
@@ -1011,24 +1070,18 @@ def check(apply: bool = False) -> dict[str, Any]:
 
     public_ok = any(p.get("ok") for p in probes)
     mobile_ok = payload["mobile_entry"].get("ok")
-    canonical_fallback = False
     if not public_ok or mobile_ok is False:
         payload["canonical_dns_probes"] = [
             _probe_dns_route(target["host"], target["path"])
             for target in targets
         ]
         payload["canonical_mobile_entry"] = _probe_mobile_entry_targets_dns(targets)
-        canonical_public_ok = any(p.get("ok") for p in payload["canonical_dns_probes"])
-        canonical_mobile_ok = payload["canonical_mobile_entry"].get("ok")
-        canonical_fallback = bool(canonical_public_ok and canonical_mobile_ok is not False)
-        public_ok = bool(public_ok or canonical_public_ok)
-        if mobile_ok is False:
-            mobile_ok = canonical_mobile_ok
+        payload["canonical_dns_is_tailnet_only"] = True
     if public_ok and mobile_ok is not False:
         payload["security_boundary"] = _probe_security_boundaries(
             targets,
             ips_by_host,
-            use_dns_route=canonical_fallback,
+            use_dns_route=False,
         )
         if payload["security_boundary"].get("ok") is not True:
             payload.update(
@@ -1053,22 +1106,16 @@ def check(apply: bool = False) -> dict[str, Any]:
             _append_unique(payload["next_actions"], "Wait for the public DNS negative-cache TTL, then verify Cloudflare and Google DNS again.")
             return _observe_local_dns(payload, [target["host"] for target in targets], apply=apply)
         reason = "public Funnel and mobile entry probes succeeded" if mobile_ok is True else "public Funnel probe succeeded"
-        if canonical_fallback:
-            reason += "; edge-pinned probes retained as diagnostic evidence"
         payload.update({"status": "ok", "reason": reason})
         return _observe_local_dns(payload, [target["host"] for target in targets], apply=apply)
     if public_ok and mobile_ok is False:
         payload.update({"status": "failed", "reason": "public Funnel probe succeeded, but mobile entry/login probe failed"})
         _add_repair_guidance(payload, targets)
         return payload
-    if mobile_ok is True:
-        payload.update({"status": "ok", "reason": "mobile entry public probe succeeded"})
-        return _observe_local_dns(payload, [target["host"] for target in targets], apply=apply)
-
     payload.update({"status": "failed", "reason": "all public Funnel probes failed"})
     if apply:
-        payload["actions"].append(_reassert_approved_funnel(scope))
-        time.sleep(1.5)
+        payload["actions"].append(_refresh_public_ingress(scope))
+        time.sleep(5.0)
         reprobes: list[dict[str, Any]] = []
         re_ips_by_host: dict[str, list[str]] = {}
         for target in targets:
@@ -1080,23 +1127,18 @@ def check(apply: bool = False) -> dict[str, Any]:
         payload["mobile_entry_after_repair"] = _probe_mobile_entry_targets(targets, re_ips_by_host)
         repaired_public = any(p.get("ok") for p in reprobes)
         repaired_mobile = payload["mobile_entry_after_repair"].get("ok") is not False
-        repaired_via_dns = False
         if not repaired_public or not repaired_mobile:
             payload["canonical_dns_reprobes"] = [
                 _probe_dns_route(target["host"], target["path"])
                 for target in targets
             ]
             payload["canonical_mobile_entry_after_repair"] = _probe_mobile_entry_targets_dns(targets)
-            dns_public = any(p.get("ok") for p in payload["canonical_dns_reprobes"])
-            dns_mobile = payload["canonical_mobile_entry_after_repair"].get("ok") is not False
-            repaired_via_dns = bool(dns_public and dns_mobile)
-            repaired_public = bool(repaired_public or dns_public)
-            repaired_mobile = bool(repaired_mobile or dns_mobile)
+            payload["canonical_dns_is_tailnet_only"] = True
         if repaired_public and repaired_mobile:
             payload["security_boundary_after_repair"] = _probe_security_boundaries(
                 targets,
                 re_ips_by_host,
-                use_dns_route=repaired_via_dns,
+                use_dns_route=False,
             )
         boundary_repaired = (payload.get("security_boundary_after_repair") or {}).get("ok") is True
         payload["status"] = "recovered" if repaired_public and repaired_mobile and boundary_repaired else "failed_after_repair"
