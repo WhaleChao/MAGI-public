@@ -323,6 +323,10 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
         workspace,
         cwd=v2_root,
         v2_compat=True,
+        v2_compat_inputs={
+            "cron_jobs_sha256": "b" * 64,
+            "cron_jobs_source_sha256": "c" * 64,
+        },
     )
 
     environment = observed["env"]
@@ -330,7 +334,11 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
     assert observed["cwd"] == v2_root
     assert set(environment) == {
         name
-        for name in (*certification.V2_COMPAT_ENV_ALLOWLIST, "MAGI_V3_PYTEST_TRANSCRIPT")
+        for name in (
+            *certification.V2_COMPAT_ENV_ALLOWLIST,
+            *certification.V2_COMPAT_SAFE_CRON_ENV.values(),
+            "MAGI_V3_PYTEST_TRANSCRIPT",
+        )
         if name in environment
     }
     assert "MAGI_AGENT_DIR" not in environment
@@ -338,6 +346,8 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
     assert "MAGI_CRON_JOBS_FILE" not in environment
     assert "MAGI_CRON_JOBS_SHA256" not in environment
     assert "MAGI_CRON_JOBS_SOURCE_SHA256" not in environment
+    assert environment["MAGI_V2_COMPAT_CRON_SNAPSHOT_SHA256"] == "b" * 64
+    assert environment["MAGI_V2_COMPAT_CRON_SOURCE_SHA256"] == "c" * 64
     assert environment["MAGI_V3_OFFLINE_CERTIFICATION"] == "1"
     assert environment[certification.SEATBELT_CHILD_ENV] == "1"
 

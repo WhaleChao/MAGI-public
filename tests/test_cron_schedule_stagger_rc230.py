@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 
 from scripts.seed_cron_jobs import business_jobs, operational_jobs
@@ -66,14 +67,26 @@ def test_schedule_evidence_bindings_follow_the_staggered_cron_snapshot() -> None
         )
     )
 
-    assert policy["cron_jobs_sha256"] == cron_sha
-    assert baseline["source_evidence"]["job_definitions_sha256"] == cron_sha
-    assert baseline["source_evidence"]["logical_definition_sha256"] == logical_sha
+    bound_snapshot_sha = os.environ.get("MAGI_V2_COMPAT_CRON_SNAPSHOT_SHA256")
+    bound_source_sha = os.environ.get("MAGI_V2_COMPAT_CRON_SOURCE_SHA256")
+    if bound_snapshot_sha is not None or bound_source_sha is not None:
+        assert isinstance(bound_snapshot_sha, str) and len(bound_snapshot_sha) == 64
+        assert isinstance(bound_source_sha, str) and len(bound_source_sha) == 64
+        assert cron_sha == bound_snapshot_sha
+        assert policy["cron_jobs_sha256"] == bound_source_sha
+    else:
+        assert policy["cron_jobs_sha256"] == cron_sha
+    source_sha = policy["cron_jobs_sha256"]
+    assert baseline["source_evidence"]["job_definitions_sha256"] == source_sha
     assert baseline["source_evidence"]["runtime_source_evidence_receipt_sha256"] == (
         _source_evidence_receipt_sha256(baseline["source_evidence"])
     )
-    assert registry["release_binding"]["cron_jobs_source_sha256"] == cron_sha
-    assert registry["release_binding"]["logical_definition_sha256"] == logical_sha
+    assert registry["release_binding"]["cron_jobs_source_sha256"] == source_sha
+    assert registry["release_binding"]["logical_definition_sha256"] == (
+        baseline["source_evidence"]["logical_definition_sha256"]
+    )
+    if cron_sha == source_sha:
+        assert baseline["source_evidence"]["logical_definition_sha256"] == logical_sha
     assert registry["release_binding"]["inherited_baseline_sha256"] == hashlib.sha256(
         baseline_path.read_bytes()
     ).hexdigest()

@@ -11,6 +11,7 @@ import pytest
 from magi_v3.selfhost import (
     SCHEMA,
     SelfHostError,
+    _rebase_cron_token,
     activate_release,
     active_release,
     build_service_plan,
@@ -392,6 +393,45 @@ def test_distribution_rebases_canonical_v3_shared_runtime_path(tmp_path: Path) -
     assert str(
         Path(config["paths"]["runtime_dir"]) / "reprocess_insights_latest.json"
     ) in rendered
+
+
+def test_cron_rebase_maps_only_canonical_shared_agent_root_and_descendants(
+    tmp_path: Path,
+) -> None:
+    layout, config = _config(tmp_path / "installed", "Windows")
+    source = tmp_path / "source"
+    release = layout.releases_dir / "r1"
+    private_home = "/" + "Users" + "/example"
+    shared_agent = (
+        private_home
+        + "/Library/Application Support/MAGI/runtime/MAGI_v3/shared/agent"
+    )
+    expected_agent = Path(config["paths"]["data_dir"]) / "agent"
+
+    assert _rebase_cron_token(
+        f"MAGI_OBSIDIAN_AGENT_DIR={shared_agent}",
+        source=source,
+        release_root=release,
+        python_executable=venv_python(layout),
+        config=config,
+    ) == f"MAGI_OBSIDIAN_AGENT_DIR={expected_agent}"
+    assert _rebase_cron_token(
+        f"MAGI_AGENT_LOG={shared_agent}/logs/worker.log",
+        source=source,
+        release_root=release,
+        python_executable=venv_python(layout),
+        config=config,
+    ) == f"MAGI_AGENT_LOG={expected_agent / 'logs' / 'worker.log'}"
+
+    with pytest.raises(SelfHostError, match="unportable absolute path"):
+        _rebase_cron_token(
+            f"MAGI_PRIVATE_STATE={private_home}/Library/Application Support/"
+            "MAGI/runtime/MAGI_v3/shared/private",
+            source=source,
+            release_root=release,
+            python_executable=venv_python(layout),
+            config=config,
+        )
 
 
 def test_portable_deployment_layer_contains_no_private_machine_path() -> None:

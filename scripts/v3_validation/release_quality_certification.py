@@ -62,6 +62,10 @@ V2_COMPAT_CRON_ENV = (
     "MAGI_CRON_JOBS_SHA256",
     "MAGI_CRON_JOBS_SOURCE_SHA256",
 )
+V2_COMPAT_SAFE_CRON_ENV = {
+    "cron_jobs_sha256": "MAGI_V2_COMPAT_CRON_SNAPSHOT_SHA256",
+    "cron_jobs_source_sha256": "MAGI_V2_COMPAT_CRON_SOURCE_SHA256",
+}
 FORMAL_PRODUCER_STATE_PATHS = {
     "MAGI_RUNTIME_DIR": "runtime",
     "MAGI_AGENT_DIR": "agent",
@@ -226,12 +230,25 @@ def _transcript_run(
     *,
     cwd: Path = ROOT,
     v2_compat: bool = False,
+    v2_compat_inputs: Mapping[str, str] | None = None,
     v3_runtime_binding: RuntimeBinding | None = None,
 ) -> dict[str, Any]:
     transcript = workspace / f"pytest-{hashlib.sha256(canonical_bytes(list(targets))).hexdigest()[:12]}.json"
     env = dict(os.environ)
     if v2_compat:
         env = {name: env[name] for name in V2_COMPAT_ENV_ALLOWLIST if name in env}
+        if v2_compat_inputs is not None:
+            for evidence_key, environment_key in V2_COMPAT_SAFE_CRON_ENV.items():
+                digest = v2_compat_inputs.get(evidence_key)
+                if (
+                    not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                ):
+                    raise ReleaseQualityCertificationError(
+                        "V2 compatibility cron transcript binding is invalid"
+                    )
+                env[environment_key] = digest
     elif v3_runtime_binding is not None:
         if not v3_runtime_binding.certifying:
             raise ReleaseQualityCertificationError(
@@ -601,6 +618,7 @@ def run_certification(workspace: Path) -> dict[str, Any]:
         workspace,
         cwd=v2_root,
         v2_compat=True,
+        v2_compat_inputs=v2_compat_inputs,
     )
     _verify_v2_compat_mirror(v2_root, release_files)
     _verify_v2_compat_cron(v2_root / "cron_jobs.json", v2_compat_inputs["cron_jobs_sha256"])

@@ -947,18 +947,37 @@ def _rebase_cron_token(
             mapped = value
         else:
             mapped = ""
-            marker_destinations: tuple[tuple[str, Path], ...] = (
+            canonical_shared_destinations: tuple[tuple[str, Path], ...] = (
                 (
-                    "/MAGI/runtime/MAGI_v3/shared/runtime/",
+                    "/MAGI/runtime/MAGI_v3/shared/runtime",
                     Path(str(paths["runtime_dir"])),
                 ),
+                (
+                    "/MAGI/runtime/MAGI_v3/shared/agent",
+                    Path(str(paths["data_dir"])) / "agent",
+                ),
+            )
+            for marker, destination_root in canonical_shared_destinations:
+                marker_index = normalized.rfind(marker)
+                if marker_index < 0:
+                    continue
+                relative = normalized[marker_index + len(marker):]
+                if relative and not relative.startswith("/"):
+                    continue
+                mapped = str(
+                    destination_root.joinpath(
+                        *[part for part in relative.split("/") if part]
+                    )
+                )
+                break
+            marker_destinations: tuple[tuple[str, Path], ...] = (
                 ("/.runtime/", Path(str(paths["runtime_dir"]))),
-            ("/.agent/", Path(str(paths["data_dir"])) / "agent"),
-            ("/exports/", Path(str(paths["exports_dir"]))),
-            ("/_metrics/", Path(str(paths["runtime_dir"])) / "_metrics"),
-            ("/_autopilot_runs/", Path(str(paths["runtime_dir"])) / "_autopilot_runs"),
-            ("/static/", Path(str(paths["data_dir"])) / "static"),
-        )
+                ("/.agent/", Path(str(paths["data_dir"])) / "agent"),
+                ("/exports/", Path(str(paths["exports_dir"]))),
+                ("/_metrics/", Path(str(paths["runtime_dir"])) / "_metrics"),
+                ("/_autopilot_runs/", Path(str(paths["runtime_dir"])) / "_autopilot_runs"),
+                ("/static/", Path(str(paths["data_dir"])) / "static"),
+            )
         if not mapped:
             for marker, destination_root in marker_destinations:
                 if marker in normalized:
