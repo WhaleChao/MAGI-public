@@ -25,7 +25,12 @@ MAGI 是一套本機優先的 AI 作業平台，以明確工具契約、持久�
 - LIVE business、function、Doctor、guardian、Funnel 全綠。
 - Cookie Cutter 三個合成案例通過 printable、manifold、no-persist、no-external 驗證。
 
-完整公開架構、排程、健康、安全與發行說明請見[公版技術手冊](docs/MAGI_V3_技術手冊_rc627_公版.md)。
+自行維修請優先使用：
+
+- [MAGI V3 維修百科全書 PDF（203 頁）](docs/MAGI_V3_維修百科全書_rc627.pdf)
+- [百科全書可維護 Markdown](docs/MAGI_V3_維修百科全書_rc627.md)
+- [逐檔 SHA／行號／符號原始碼索引](docs/MAGI_V3_原始碼索引_rc627.json)
+- [公版技術手冊](docs/MAGI_V3_技術手冊_rc627_公版.md)
 
 發布前請執行：
 
