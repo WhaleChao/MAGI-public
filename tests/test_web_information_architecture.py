@@ -16,6 +16,7 @@ def test_desktop_home_prioritises_workflows_over_engineering_controls():
     assert 'href="/osc">案件與文件</a>' in page
     assert 'href="/sentencing-trends">判決趨勢</a>' in page
     assert 'href="/status">系統檢測</a>' in page
+    assert 'href="/manual" target="_blank" rel="noopener">維修百科</a>' in page
     assert 'class="nav-more"' in page
     assert 'href="/osc?tab=todos"' in page
     assert 'href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"' in page
@@ -33,10 +34,25 @@ def test_research_and_sentencing_share_the_same_primary_navigation():
         assert 'href="/sentencing-trends"' in page
         assert 'href="/research"' in page
         assert 'href="/status">系統檢測</a>' in page
+        assert 'href="/manual" target="_blank" rel="noopener">維修百科</a>' in page
         assert 'href="/mobile">手機</a>' in page
         assert 'class="skip-link"' in page
     assert 'href="/research" aria-current="page"' in research
     assert 'href="/sentencing-trends" aria-current="page"' in sentencing
+
+
+def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
+    page = _read("docs/MAGI_V3_維修百科全書_rc627.html")
+
+    assert '<html lang="zh-Hant" data-magi-theme="cyber">' in page
+    assert 'localStorage.getItem("magi.ui.theme.v1")' in page
+    assert 'localStorage.setItem("magi.ui.theme.v1", theme)' in page
+    assert 'id="themeToggleBtn"' in page
+    assert 'id="manual-search"' in page
+    assert 'id="manual-toc"' in page
+    assert 'href="/manual/pdf"' in page
+    assert 'href="/manual/source-index.json"' in page
+    assert "__MANUAL_BODY__" not in page
 
 
 def test_mobile_home_exposes_direct_work_routes_without_desktop_detour():

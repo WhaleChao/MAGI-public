@@ -164,6 +164,48 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     assert b"mobile-admin https://magi.tailnet.test" in response.data
 
 
+def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeypatch):
+    import api.blueprints.dashboard_pages as pages
+
+    root = tmp_path / "release"
+    docs = root / "docs"
+    docs.mkdir(parents=True)
+    payloads = {
+        "MAGI_V3_維修百科全書_rc627.html": b"<!doctype html><title>MAGI manual</title>",
+        "MAGI_V3_維修百科全書_rc627.pdf": b"%PDF-1.4\n%%EOF\n",
+        "MAGI_V3_維修百科全書_rc627.md": "# 維修百科\n".encode(),
+        "MAGI_V3_原始碼索引_rc627.json": b'{"schema":"magi.source-index/v1"}',
+    }
+    for name, data in payloads.items():
+        (docs / name).write_bytes(data)
+    monkeypatch.setattr(pages, "_MAGI_ROOT", root)
+
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    app = _make_app(template_dir)
+
+    @app.route("/login")
+    def login():
+        return "login"
+
+    client = app.test_client()
+    for url in ("/manual", "/manual/pdf", "/manual/markdown", "/manual/source-index.json"):
+        assert client.get(url).status_code in {302, 401}
+
+    expected = {
+        "/manual": payloads["MAGI_V3_維修百科全書_rc627.html"],
+        "/manual/pdf": payloads["MAGI_V3_維修百科全書_rc627.pdf"],
+        "/manual/markdown": payloads["MAGI_V3_維修百科全書_rc627.md"],
+        "/manual/source-index.json": payloads["MAGI_V3_原始碼索引_rc627.json"],
+    }
+    for url, body in expected.items():
+        response = client.get(url, headers={"X-User-ID": "u1"})
+        assert response.status_code == 200
+        assert response.data == body
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
 def test_dashboard_templates_expose_system_detection_entry():
     root = Path(__file__).resolve().parents[1]
 

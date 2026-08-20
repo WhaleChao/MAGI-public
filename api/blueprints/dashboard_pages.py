@@ -11,6 +11,7 @@ This blueprint keeps the existing behavior for:
   - /intel -> worldmonitor report index
   - /dashboard
   - /status
+  - /manual and its fixed documentation assets
   - /dashboard/nerv (legacy compatibility)
   - /magi-adjust
 
@@ -34,7 +35,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, abort, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_required, logout_user
 
 import requests as _requests
@@ -43,6 +44,30 @@ dashboard_pages_bp = Blueprint("dashboard_pages", __name__)
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
+_MAINTENANCE_MANUAL_ASSETS = {
+    "html": ("MAGI_V3_維修百科全書_rc627.html", "text/html; charset=utf-8"),
+    "pdf": ("MAGI_V3_維修百科全書_rc627.pdf", "application/pdf"),
+    "markdown": ("MAGI_V3_維修百科全書_rc627.md", "text/markdown; charset=utf-8"),
+    "source-index.json": ("MAGI_V3_原始碼索引_rc627.json", "application/json"),
+}
+
+
+def _maintenance_manual_response(kind: str):
+    filename, mimetype = _MAINTENANCE_MANUAL_ASSETS[kind]
+    docs_root = (_MAGI_ROOT / "docs").resolve()
+    path = docs_root / filename
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != docs_root:
+        abort(404)
+    response = send_file(
+        path,
+        mimetype=mimetype,
+        conditional=True,
+        max_age=0,
+        download_name=filename,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def _mutable_static_dir() -> Path:
@@ -172,6 +197,7 @@ def _build_mobile_app_config() -> dict:
         {"label": "判決趨勢", "path": "/sentencing-trends", "kind": "info"},
         {"label": "全球新聞網", "path": "/intel", "kind": "info"},
         {"label": "研究", "path": "/research", "kind": "info"},
+        {"label": "維修百科", "path": "/manual", "kind": "info"},
         {"label": "系統檢測", "path": "/status", "kind": "info"},
         {"label": "MAGI 調整", "path": "/magi-adjust", "kind": "admin"},
         {"label": "手機後台", "path": "/mobile-admin", "kind": "admin"},
@@ -1148,6 +1174,30 @@ def magi_adjust():
 @login_required
 def golem_console():
     return render_template("golem_console.html", user=current_user)
+
+
+@dashboard_pages_bp.route("/manual")
+@login_required
+def maintenance_manual():
+    return _maintenance_manual_response("html")
+
+
+@dashboard_pages_bp.route("/manual/pdf")
+@login_required
+def maintenance_manual_pdf():
+    return _maintenance_manual_response("pdf")
+
+
+@dashboard_pages_bp.route("/manual/markdown")
+@login_required
+def maintenance_manual_markdown():
+    return _maintenance_manual_response("markdown")
+
+
+@dashboard_pages_bp.route("/manual/source-index.json")
+@login_required
+def maintenance_manual_source_index():
+    return _maintenance_manual_response("source-index.json")
 
 
 @dashboard_pages_bp.route("/mobile")

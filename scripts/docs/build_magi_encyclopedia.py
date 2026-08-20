@@ -28,6 +28,7 @@ BRANCH = "release/rc627-technical-manual-20260821"
 BUILD_DATE = "2026-08-21"
 
 GENERATED_NAMES = {
+    "docs/MAGI_V3_維修百科全書_rc627.html",
     "docs/MAGI_V3_維修百科全書_rc627.md",
     "docs/MAGI_V3_維修百科全書_rc627.pdf",
     "docs/MAGI_V3_原始碼索引_rc627.json",
@@ -847,18 +848,246 @@ def render_pdf(markdown: Path, output: Path, reference_doc: Path) -> dict[str, A
         return {"heading_pages": pages, "intermediate_docx_bytes": docx.stat().st_size}
 
 
+def render_html(markdown: Path, output: Path) -> None:
+    """Build a self-contained MAGI-themed HTML manual for web and file:// use."""
+    pandoc = shutil.which("pandoc")
+    if not pandoc:
+        raise RuntimeError("pandoc is required to render HTML")
+    fragment = subprocess.run(
+        [pandoc, "--from=gfm+raw_html", "--to=html5", str(markdown)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    template = r'''<!doctype html>
+<html lang="zh-Hant" data-magi-theme="cyber">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>MAGI V3 維修百科全書</title>
+  <script>
+    (() => {
+      let value = "cyber";
+      try { value = localStorage.getItem("magi.ui.theme.v1") || "cyber"; } catch (_) {}
+      document.documentElement.dataset.magiTheme = ["forest", "light"].includes(value) ? "forest" : "cyber";
+    })();
+  </script>
+  <style>
+    :root {
+      --radius: 14px; --ease: 160ms ease; --ok: #22c55e; --warn: #f59e0b;
+      --bad: #ef4444; --header-h: 66px; --sidebar-w: 292px;
+      font-family: "PingFang TC", "Noto Sans TC", Inter, system-ui, sans-serif;
+    }
+    :root[data-magi-theme="cyber"] {
+      color-scheme: dark; --bg: #02060d; --bg-alt: #06111f;
+      --surface: rgba(5, 20, 34, .94); --surface-strong: #081d2b;
+      --surface-raised: #0b2636; --text: #edfeff; --muted: #9bcbd0;
+      --line: rgba(0,238,255,.38); --accent: #00efff; --accent-2: #ff3bd4;
+      --accent-soft: rgba(0,239,255,.13); --code: #01040a;
+      --shadow: 0 22px 60px rgba(0,0,0,.56), 0 0 34px rgba(0,239,255,.08);
+      --grid: radial-gradient(circle at 14% 16%, rgba(255,59,212,.12), transparent 28%),
+        radial-gradient(circle at 84% 72%, rgba(0,239,255,.11), transparent 34%),
+        linear-gradient(rgba(0,239,255,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,239,255,.035) 1px, transparent 1px);
+    }
+    :root[data-magi-theme="forest"] {
+      color-scheme: light; --bg: #f3f5ed; --bg-alt: #e9eee2;
+      --surface: rgba(255,255,250,.96); --surface-strong: #fffefa;
+      --surface-raised: #edf2e9; --text: #1f3028; --muted: #66766d;
+      --line: rgba(58,91,71,.24); --accent: #236844; --accent-2: #a6652a;
+      --accent-soft: rgba(35,104,68,.10); --code: #f7f8f2;
+      --shadow: 0 16px 40px rgba(45,66,51,.11);
+      --grid: radial-gradient(circle at 8% 8%, rgba(86,126,91,.10), transparent 34%);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; background: var(--bg); }
+    body { margin: 0; min-height: 100vh; color: var(--text); background: var(--bg); background-image: var(--grid); background-size: 28px 28px; }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    button, input { font: inherit; }
+    .skip-link { position: fixed; left: 16px; top: 8px; z-index: 100; transform: translateY(-160%); padding: 8px 12px; border-radius: 8px; background: var(--accent); color: var(--bg); }
+    .skip-link:focus { transform: translateY(0); }
+    .topbar { position: fixed; z-index: 30; inset: 0 0 auto 0; min-height: var(--header-h); display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px clamp(14px,3vw,34px); background: color-mix(in srgb,var(--surface) 92%,transparent); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); }
+    .brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+    .brand strong { color: var(--accent); letter-spacing: .12em; font-size: 1.03rem; }
+    .brand span { color: var(--muted); font-size: .78rem; white-space: nowrap; }
+    .topnav { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .topnav a, .topnav button { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-strong); color: var(--text); text-decoration: none; cursor: pointer; }
+    .topnav a:hover, .topnav button:hover { background: var(--accent-soft); border-color: var(--accent); }
+    .layout { display: grid; grid-template-columns: var(--sidebar-w) minmax(0,1fr); min-height: 100vh; padding-top: var(--header-h); }
+    .sidebar { position: fixed; top: var(--header-h); bottom: 0; width: var(--sidebar-w); overflow: auto; padding: 18px 14px 28px; background: color-mix(in srgb,var(--surface) 96%,transparent); border-right: 1px solid var(--line); }
+    .search-label { display: grid; gap: 7px; color: var(--muted); font-size: .78rem; }
+    .search-label input { width: 100%; min-height: 40px; padding: 9px 11px; color: var(--text); background: var(--surface-strong); border: 1px solid var(--line); border-radius: 9px; outline: none; }
+    .search-label input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .search-status { min-height: 20px; margin: 7px 0; color: var(--muted); font-size: .75rem; }
+    .search-results { display: none; gap: 7px; margin: 0 0 14px; }
+    .search-results.active { display: grid; }
+    .search-result { display: grid; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; background: var(--surface-strong); }
+    .search-result strong { color: var(--accent); font-size: .78rem; }
+    .search-result span { color: var(--muted); font-size: .72rem; line-height: 1.35; }
+    .toc { display: grid; gap: 3px; margin-top: 10px; }
+    .toc a { display: block; padding: 7px 9px; border-left: 2px solid transparent; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: .78rem; line-height: 1.35; }
+    .toc a:hover, .toc a.active { color: var(--text); background: var(--accent-soft); border-left-color: var(--accent); }
+    .main { min-width: 0; grid-column: 2; padding: clamp(18px,3vw,42px); }
+    .manual-shell { max-width: 1120px; margin: 0 auto; padding: clamp(22px,4vw,54px); background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); }
+    .manual-content { line-height: 1.78; overflow-wrap: anywhere; }
+    .manual-content > h1:first-of-type { color: var(--accent); margin-top: 0; font-size: clamp(1.75rem,4vw,3rem); }
+    h1, h2, h3, h4 { scroll-margin-top: calc(var(--header-h) + 18px); line-height: 1.3; }
+    h1 { margin: 2.4em 0 .75em; padding-bottom: .35em; color: var(--accent); border-bottom: 1px solid var(--line); font-size: clamp(1.55rem,2.6vw,2.2rem); }
+    h2 { margin: 2em 0 .65em; color: color-mix(in srgb,var(--accent) 78%,var(--text)); font-size: 1.45rem; }
+    h3 { margin: 1.7em 0 .55em; color: var(--accent-2); font-size: 1.17rem; }
+    p, li { max-width: 88ch; }
+    blockquote { margin: 1.2em 0; padding: 12px 16px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0; }
+    hr { margin: 2.5rem 0; border: 0; border-top: 1px solid var(--line); }
+    code { padding: .12em .35em; color: color-mix(in srgb,var(--accent) 82%,var(--text)); background: var(--accent-soft); border-radius: 5px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: .88em; }
+    pre { max-width: 100%; overflow: auto; padding: 16px; color: var(--text); background: var(--code); border: 1px solid var(--line); border-radius: 12px; line-height: 1.5; box-shadow: inset 0 0 24px color-mix(in srgb,var(--accent) 4%,transparent); }
+    pre code { padding: 0; color: inherit; background: transparent; }
+    table { display: block; width: 100%; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1.2rem 0; font-size: .88rem; }
+    th, td { min-width: 120px; padding: 9px 11px; vertical-align: top; text-align: left; border: 1px solid var(--line); }
+    th { position: sticky; top: var(--header-h); z-index: 2; color: var(--accent); background: var(--surface-strong); }
+    tr:nth-child(even) td { background: color-mix(in srgb,var(--surface-raised) 55%,transparent); }
+    mark { padding: 0 .08em; color: #111827; background: #ffe36e; border-radius: 3px; }
+    .back-top { position: fixed; right: 18px; bottom: 18px; z-index: 20; width: 44px; height: 44px; border: 1px solid var(--line); border-radius: 50%; color: var(--text); background: var(--surface-strong); cursor: pointer; box-shadow: var(--shadow); }
+    @media (max-width: 900px) {
+      :root { --header-h: 112px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .topnav { width: 100%; flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; padding-bottom: 2px; }
+      .layout { display: block; }
+      .sidebar { position: static; width: auto; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+      .toc { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .main { padding: 12px; }
+      .manual-shell { padding: 20px 16px; border-radius: 14px; }
+    }
+    @media (max-width: 520px) {
+      .brand span { display: none; }
+      .toc { grid-template-columns: 1fr; }
+      .topnav a, .topnav button { min-height: 36px; padding: 6px 9px; font-size: .8rem; }
+    }
+    @media print {
+      .topbar, .sidebar, .back-top { display: none !important; }
+      .layout { display: block; padding: 0; }
+      .main { padding: 0; }
+      .manual-shell { max-width: none; padding: 0; border: 0; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#manual-content">跳至百科內容</a>
+  <header class="topbar">
+    <div class="brand"><strong>MAGI</strong><span>V3 維修百科全書 · rc627</span></div>
+    <nav class="topnav" aria-label="百科操作">
+      <a href="/golem" data-local-href="#manual-content">MAGI 首頁</a>
+      <a href="/manual/pdf" data-local-href="./MAGI_V3_維修百科全書_rc627.pdf" target="_blank" rel="noopener">PDF</a>
+      <a href="/manual/markdown" data-local-href="./MAGI_V3_維修百科全書_rc627.md">Markdown</a>
+      <a href="/manual/source-index.json" data-local-href="./MAGI_V3_原始碼索引_rc627.json" target="_blank" rel="noopener">原始碼索引</a>
+      <button type="button" id="themeToggleBtn" aria-label="切換日夜模式">☾ 夜</button>
+    </nav>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" aria-label="百科導覽">
+      <label class="search-label" for="manual-search">搜尋百科<input id="manual-search" type="search" placeholder="功能、錯誤、檔名、函式…" autocomplete="off"></label>
+      <div class="search-status" id="search-status">輸入兩個字開始搜尋</div>
+      <div class="search-results" id="search-results"></div>
+      <nav class="toc" id="manual-toc" aria-label="章節目錄"></nav>
+    </aside>
+    <main class="main">
+      <article class="manual-shell manual-content" id="manual-content">__MANUAL_BODY__</article>
+    </main>
+  </div>
+  <button type="button" class="back-top" id="back-top" aria-label="回到頁首">↑</button>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const themeButton = document.getElementById("themeToggleBtn");
+      const normalize = value => ["forest", "light"].includes(value) ? "forest" : "cyber";
+      const applyTheme = (value, persist = true) => {
+        const theme = normalize(value);
+        root.dataset.magiTheme = theme;
+        document.body.classList.toggle("theme-dark", theme === "cyber");
+        themeButton.textContent = theme === "cyber" ? "☾ 夜" : "☀ 日";
+        themeButton.title = theme === "cyber" ? "切換為日" : "切換為夜";
+        themeButton.setAttribute("aria-label", themeButton.title);
+        if (persist) try { localStorage.setItem("magi.ui.theme.v1", theme); } catch (_) {}
+      };
+      applyTheme(root.dataset.magiTheme, false);
+      themeButton.addEventListener("click", () => applyTheme(root.dataset.magiTheme === "cyber" ? "forest" : "cyber"));
+
+      if (location.protocol === "file:") {
+        document.querySelectorAll("[data-local-href]").forEach(link => link.setAttribute("href", link.dataset.localHref));
+      }
+      document.querySelectorAll("#manual-content a[href^='http']").forEach(link => {
+        link.target = "_blank"; link.rel = "noopener noreferrer";
+      });
+
+      const headings = [...document.querySelectorAll("#manual-content h1")];
+      const toc = document.getElementById("manual-toc");
+      headings.forEach((heading, index) => {
+        if (!heading.id) heading.id = `manual-section-${index + 1}`;
+        const link = document.createElement("a");
+        link.href = `#${heading.id}`;
+        link.textContent = heading.textContent;
+        toc.appendChild(link);
+      });
+
+      const searchable = [...document.querySelectorAll("#manual-content h1, #manual-content h2, #manual-content h3, #manual-content p, #manual-content li, #manual-content tr, #manual-content pre")]
+        .map((node, index) => {
+          if (!node.id) node.id = `manual-hit-${index + 1}`;
+          return { node, text: (node.textContent || "").replace(/\s+/g, " ").trim() };
+        }).filter(item => item.text);
+      const input = document.getElementById("manual-search");
+      const status = document.getElementById("search-status");
+      const results = document.getElementById("search-results");
+      const renderSearch = () => {
+        const query = input.value.trim().toLocaleLowerCase("zh-Hant");
+        results.replaceChildren();
+        if (query.length < 2) {
+          results.classList.remove("active"); status.textContent = "輸入兩個字開始搜尋"; return;
+        }
+        const matches = searchable.filter(item => item.text.toLocaleLowerCase("zh-Hant").includes(query)).slice(0, 60);
+        status.textContent = matches.length ? `顯示前 ${matches.length} 筆結果` : "找不到相符內容";
+        results.classList.toggle("active", matches.length > 0);
+        matches.forEach(item => {
+          const link = document.createElement("a"); link.className = "search-result"; link.href = `#${item.node.id}`;
+          const title = document.createElement("strong"); title.textContent = item.node.tagName.toLowerCase();
+          const snippet = document.createElement("span"); snippet.textContent = item.text.slice(0, 150);
+          link.append(title, snippet); results.appendChild(link);
+        });
+      };
+      input.addEventListener("input", renderSearch);
+      input.addEventListener("keydown", event => {
+        if (event.key === "Escape") { input.value = ""; renderSearch(); input.blur(); }
+      });
+
+      const tocLinks = [...toc.querySelectorAll("a")];
+      const observer = new IntersectionObserver(entries => {
+        entries.filter(entry => entry.isIntersecting).forEach(entry => {
+          tocLinks.forEach(link => link.classList.toggle("active", link.hash === `#${entry.target.id}`));
+        });
+      }, { rootMargin: "-20% 0px -72% 0px" });
+      headings.forEach(heading => observer.observe(heading));
+      document.getElementById("back-top").addEventListener("click", () => scrollTo({ top: 0, behavior: "smooth" }));
+    })();
+  </script>
+</body>
+</html>
+'''
+    output.write_text(template.replace("__MANUAL_BODY__", fragment), encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--repo", default="MAGI-v3")
     parser.add_argument("--reference-doc", type=Path, required=True)
     parser.add_argument("--page-map", type=Path)
+    parser.add_argument("--html", action="store_true")
     parser.add_argument("--render", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     docs = root / "docs"
     docs.mkdir(exist_ok=True)
     index_path = docs / "MAGI_V3_原始碼索引_rc627.json"
+    html_path = docs / "MAGI_V3_維修百科全書_rc627.html"
     md_path = docs / "MAGI_V3_維修百科全書_rc627.md"
     pdf_path = docs / "MAGI_V3_維修百科全書_rc627.pdf"
 
@@ -883,11 +1112,14 @@ def main() -> int:
             page_map = fresh
         md_path.write_text(build_markdown(root, args.repo, records, routes, page_map), encoding="utf-8")
         render_info = render_pdf(md_path, pdf_path, args.reference_doc)
+    if args.html or args.render:
+        render_html(md_path, html_path)
 
     result = {
         "ok": True,
         "markdown": str(md_path),
         "index": str(index_path),
+        "html": str(html_path) if html_path.exists() else "",
         "pdf": str(pdf_path) if pdf_path.exists() else "",
         "records": len(records),
         "python_files": sum(record.extension == ".py" for record in records),
@@ -895,6 +1127,7 @@ def main() -> int:
         "routes": len(routes),
         "markdown_sha256": sha256_file(md_path),
         "index_sha256": sha256_file(index_path),
+        "html_sha256": sha256_file(html_path) if html_path.exists() else "",
         "pdf_sha256": sha256_file(pdf_path) if pdf_path.exists() else "",
         "render": render_info,
     }

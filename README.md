@@ -32,6 +32,7 @@ MAGI treats model output as one component in a larger evidence chain. Side effec
 ## Documentation
 
 - [MAGI V3 maintenance encyclopedia (PDF, 203 pages)](docs/MAGI_V3_維修百科全書_rc627.pdf)
+- [MAGI V3 maintenance encyclopedia (self-contained HTML)](docs/MAGI_V3_維修百科全書_rc627.html)
 - [Maintainable encyclopedia source (Markdown)](docs/MAGI_V3_維修百科全書_rc627.md)
 - [Machine-readable source index](docs/MAGI_V3_原始碼索引_rc627.json)
 - [Public technical manual](docs/MAGI_V3_技術手冊_rc627_公版.md)
