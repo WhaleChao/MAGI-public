@@ -46995,7 +46995,7 @@
           "line": 2737,
           "end_line": 2805,
           "signature": "_to_mac_path(folder: str)",
-          "summary": "Convert Windows Z:/Y: path to macOS local path."
+          "summary": "Convert a Windows drive-letter path to a macOS local path."
         },
         {
           "qualname": "_to_mac_path._closed_fallback_roots",
@@ -207930,7 +207930,7 @@
           "kind": "function",
           "line": 24,
           "end_line": 38,
-          "signature": "_device(mount: str='/Volumes/MAGI_PHYSICAL_TEST')",
+          "signature": "_device(mount: str='<physical-test-mount>')",
           "summary": ""
         },
         {
