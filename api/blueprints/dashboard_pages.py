@@ -54,9 +54,9 @@ _MAINTENANCE_MANUAL_ASSETS = {
 
 def _maintenance_manual_response(kind: str):
     filename, mimetype = _MAINTENANCE_MANUAL_ASSETS[kind]
-    docs_root = (_MAGI_ROOT / "docs").resolve()
-    path = docs_root / filename
-    if path.is_symlink() or not path.is_file() or path.resolve().parent != docs_root:
+    assets_root = (_MAGI_ROOT / "magi_v3" / "manual_assets").resolve()
+    path = assets_root / filename
+    if path.is_symlink() or not path.is_file() or path.resolve().parent != assets_root:
         abort(404)
     response = send_file(
         path,

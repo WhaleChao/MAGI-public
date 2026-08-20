@@ -168,8 +168,8 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
     import api.blueprints.dashboard_pages as pages
 
     root = tmp_path / "release"
-    docs = root / "docs"
-    docs.mkdir(parents=True)
+    assets = root / "magi_v3" / "manual_assets"
+    assets.mkdir(parents=True)
     payloads = {
         "MAGI_V3_維修百科全書_rc627.html": b"<!doctype html><title>MAGI manual</title>",
         "MAGI_V3_維修百科全書_rc627.pdf": b"%PDF-1.4\n%%EOF\n",
@@ -177,7 +177,7 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
         "MAGI_V3_原始碼索引_rc627.json": b'{"schema":"magi.source-index/v1"}',
     }
     for name, data in payloads.items():
-        (docs / name).write_bytes(data)
+        (assets / name).write_bytes(data)
     monkeypatch.setattr(pages, "_MAGI_ROOT", root)
 
     template_dir = tmp_path / "templates"
