@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json as _json
+import os as _os
 from pathlib import Path
 from typing import Optional
 
@@ -17,8 +18,15 @@ def _resolve_root(root: Optional[str] = None) -> Path:
     return get_magi_root_dir().resolve()
 
 
+def _resolve_runtime_dir(root: Optional[str] = None) -> Path:
+    configured = (_os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _resolve_root(root) / ".runtime"
+
+
 def get_autopilot_runtime_dir(root: Optional[str] = None, ensure: bool = False) -> Path:
-    runtime_dir = _resolve_root(root) / _AUTOPILOT_RUNTIME_REL
+    runtime_dir = _resolve_runtime_dir(root) / _AUTOPILOT_RUNTIME_REL.name
     if ensure:
         runtime_dir.mkdir(parents=True, exist_ok=True)
     return runtime_dir
@@ -29,7 +37,9 @@ def get_kill_reason_path(pid: int, root: Optional[str] = None) -> Path:
 
 
 def get_legacy_kill_reason_path(pid: int, root: Optional[str] = None) -> Path:
-    return _resolve_root(root) / f"_autopilot_kill_reason_{int(pid)}"
+    configured = (_os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    base = _resolve_runtime_dir(root) if configured else _resolve_root(root)
+    return base / f"_autopilot_kill_reason_{int(pid)}"
 
 
 def get_kill_log_path(root: Optional[str] = None) -> Path:
@@ -77,7 +87,8 @@ def cleanup_stale_kill_reason_files(root: Optional[str] = None, max_age_seconds:
     removed = 0
     runtime_dir = get_autopilot_runtime_dir(root=root, ensure=True)
     candidates = list(runtime_dir.glob("kill_reason_*.txt"))
-    candidates.extend(_resolve_root(root).glob("_autopilot_kill_reason_*"))
+    legacy_parent = get_legacy_kill_reason_path(0, root=root).parent
+    candidates.extend(legacy_parent.glob("_autopilot_kill_reason_*"))
     for path in candidates:
         try:
             if now - path.stat().st_mtime > max_age_seconds:

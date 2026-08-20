@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>判決捕捉與分類 — MAGI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260520-judgment-classifier-v1">
+    <link rel="stylesheet" href="/static/osc/osc-components.css?v=20260520-judgment-classifier-v1">
+    <style>
+        :root {
+            --panel: var(--surface);
+            --panel-2: var(--surface-2);
+            --text: var(--ink);
+            --accent: var(--green);
+            --ok: #22c55e;
+            --danger: var(--red);
+            --sidebar-bg: #17211d;
+            --sidebar-text: #e7f1ea;
+            --sidebar-accent: var(--green);
+        }
+        body { overflow: auto; display: block; }
+        .judgment-shell { width: min(1200px, calc(100% - 40px)); }
+        .judgment-hero {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 20px 0 14px;
+            border-bottom: 1px solid var(--line);
+        }
+        .judgment-hero h2 {
+            margin-top: 8px;
+            font-size: clamp(1.7rem, 3vw, 2.7rem);
+            line-height: 1.1;
+        }
+        .judgment-hero p {
+            max-width: 760px;
+            margin-top: 8px;
+            color: var(--muted);
+            line-height: 1.65;
+        }
+        #raziel {
+            display: grid;
+            gap: 12px;
+            padding: 14px 0 28px;
+        }
+        #raziel .card {
+            width: 100%;
+        }
+        @media (max-width: 760px) {
+            .judgment-shell { width: min(100% - 20px, 1200px); }
+            .judgment-hero { display: grid; align-items: stretch; }
+        }
+    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
+</head>
+<body class="site-console" data-raziel-standalone="1">
+    <header class="topbar">
+        <div>
+            <div class="eyebrow">MAGI</div>
+            <h1>判決捕捉與分類</h1>
+        </div>
+        <nav class="topnav" aria-label="判決捕捉與分類頁面導覽">
+            <a href="/dashboard">回到 MAGI</a>
+            <a href="/research">研究</a>
+            <a href="/intel">全球新聞網</a>
+            <a href="/osc">Paperclip</a>
+        </nav>
+    </header>
+
+    <main class="console-shell judgment-shell">
+        <section class="judgment-hero">
+            <div>
+                <span class="system-pill">研究工具</span>
+                <h2>判決捕捉與分類</h2>
+                <p>設定搜尋式、法院範圍與分類規則後，MAGI 會呼叫判決分類核心抓取原文與 PDF，並輸出可核對的前後文預覽與 Excel 分類表。</p>
+            </div>
+            <span id="judgmentAiBadge" class="system-pill">AI 依原文判讀</span>
+        </section>
+
+        {% include "partials/osc/raziel.html" %}
+    </main>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+    <script src="/static/osc/osc-state.js?v=20260520-judgment-classifier-v1"></script>
+    <script src="/static/osc/osc-utils.js?v=20260506-web-reply-v1"></script>
+    <script src="/static/osc/osc-ui.js?v=20260512-overview-merge-v1"></script>
+    <script src="/static/osc/tabs/raziel.js?v=20260520-judgment-classifier-v1"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            if (typeof initRazielControls === "function") {
+                initRazielControls({ autoload: true });
+            }
+        });
+    </script>
+</body>
+</html>

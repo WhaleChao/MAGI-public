@@ -5,6 +5,7 @@ import os
 import glob
 import sys
 import logging
+from pathlib import Path
 from flask import Flask, request, jsonify
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -12,7 +13,7 @@ app = Flask(__name__)
 logger = logging.getLogger("CasperSiriBridge")
 
 # Configuration
-SESSIONS_DIR = "/Users/ai/.openclaw/agents/main/sessions"
+SESSIONS_DIR = str(Path.home() / ".openclaw" / "agents" / "main" / "sessions")
 
 def get_latest_session_id():
     """Find the most recently updated session ID from sessions.json."""

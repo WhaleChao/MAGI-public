@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>法官量刑與判決趨勢 — MAGI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260815-sentencing-v2">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260815-sentencing-v2"></script>
+    <style>
+        .trend-shell{max-width:1440px;margin:0 auto;padding:24px}.trend-panel{border:1px solid color-mix(in srgb,var(--magi-accent,#45e6d0) 36%,transparent);border-radius:18px;background:color-mix(in srgb,var(--magi-panel,#07191c) 88%,transparent);padding:20px;box-shadow:0 18px 60px rgba(0,0,0,.16)}
+        .trend-form{display:grid;grid-template-columns:repeat(7,minmax(130px,1fr));gap:12px;align-items:end}.trend-form label{display:grid;min-width:0;gap:7px;font-size:.88rem}.trend-form input,.trend-form select{width:100%;min-width:0;min-height:42px;border:1px solid color-mix(in srgb,var(--magi-accent,#45e6d0) 30%,transparent);border-radius:10px;padding:8px 10px;background:var(--magi-surface,#0c2428);color:var(--magi-text,#e8fffb)}.trend-form button{min-height:42px;border:0;border-radius:10px;background:var(--magi-accent,#45e6d0);color:#02231f;font-weight:800;cursor:pointer}.trend-note{margin:14px 0 0;color:var(--magi-muted,#a5c7c1);font-size:.9rem}
+        .trend-status{margin:16px 0;padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--magi-accent,#45e6d0) 9%,transparent)}.trend-status[data-kind="error"]{border:1px solid #ff6b78;color:#ffccd1}.trend-status[data-kind="busy"]{border:1px solid #e5b54a;color:#ffe5a8}
+        .trend-summary{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin:16px 0}.metric{padding:14px;border-radius:14px;background:color-mix(in srgb,var(--magi-panel,#07191c) 82%,var(--magi-accent,#45e6d0) 6%);border:1px solid color-mix(in srgb,var(--magi-accent,#45e6d0) 22%,transparent)}.metric strong{display:block;font-size:1.45rem}.metric span{font-size:.78rem;color:var(--magi-muted,#a5c7c1)}
+        .trend-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);gap:16px}.trend-list{display:grid;gap:12px}.trend-card{padding:16px;border-radius:14px;border:1px solid color-mix(in srgb,var(--magi-accent,#45e6d0) 20%,transparent);background:color-mix(in srgb,var(--magi-panel,#07191c) 90%,transparent)}.trend-card h3{margin:0 0 6px}.trend-meta,.trend-small{color:var(--magi-muted,#a5c7c1);font-size:.86rem}.trend-tags{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.trend-tags span{padding:4px 8px;border-radius:999px;background:color-mix(in srgb,var(--magi-accent,#45e6d0) 12%,transparent);font-size:.8rem}.trend-card[data-eligible="false"]{border-color:#e5b54a}.trend-card a{color:var(--magi-accent,#45e6d0)}.trend-side h2{font-size:1rem}.trend-side .trend-card{margin-bottom:12px}.empty{padding:28px;text-align:center;color:var(--magi-muted,#a5c7c1)}
+        @media(max-width:1000px){.trend-form{grid-template-columns:repeat(2,minmax(0,1fr))}.trend-summary{grid-template-columns:repeat(3,1fr)}.trend-grid{grid-template-columns:1fr}}
+        @media(max-width:600px){.trend-shell{padding:12px}.trend-form{grid-template-columns:1fr}.trend-summary{grid-template-columns:1fr 1fr}.trend-form button{grid-column:1/-1}.topnav{gap:8px}.metric strong{font-size:1.15rem}}
+    </style>
+</head>
+<body class="site-console">
+<a class="skip-link" href="#trend-main">跳至主要內容</a>
+<header class="topbar">
+    <div><div class="eyebrow">MAGI / JUDGMENT</div><h1>法官量刑與判決趨勢</h1></div>
+    <nav class="topnav" aria-label="MAGI 主要導覽"><a href="/golem">首頁</a><a href="/osc">案件與文件</a><a href="/sentencing-trends" aria-current="page">判決趨勢</a><a href="/research">研究</a><a href="/status">系統檢測</a><a href="/mobile">手機</a></nav>
+</header>
+<main class="trend-shell" id="trend-main">
+    <section class="trend-panel">
+        <form id="trend-form" class="trend-form">
+            <label>法院<input id="trend-court" name="court" list="trend-court-options" autocomplete="off" placeholder="輸入新北即可帶入新北地方法院"><datalist id="trend-court-options"></datalist></label>
+            <label>法官<input name="judge" autocomplete="off" placeholder="例：蘇珈漪"></label>
+            <label>法官條件<select name="judge_scope"><option value="last_listed">末位列名法官（建議）</option><option value="participating">任一參與判決法官</option></select></label>
+            <label>案由／罪名<input name="offense" autocomplete="off" placeholder="例：公共危險"></label>
+            <label>判決日起（民國）<input id="trend-date-from-roc" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：民國115年8月17日"><input id="trend-date-from" type="hidden" name="date_from"></label>
+            <label>判決日迄（民國）<input id="trend-date-to-roc" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：民國115年8月17日"><input id="trend-date-to" type="hidden" name="date_to"></label>
+            <button type="submit">查詢判決趨勢</button>
+        </form>
+        <p class="trend-note">日期請輸入民國年月日，例如「民國115年8月17日」或「115/8/17」。法院欄位共用 MAGI 法院清單；輸入地名即可帶入法院全名。參與判決法官只從裁判簽署區確認，並另標示末位列名法官；這是列名順序辨識，不取代裁判原文記載的正式職務。個別宣告刑、附表刑度與定應執行刑分開統計。本機資料與 MCP 共同搜尋；MCP 裁判只有在官方 JID、司法院網址、全文與刑度都重新核對通過後才會納入統計。
+        </p>
+    </section>
+    <div id="trend-status" class="trend-status" hidden role="status" aria-live="polite"></div>
+    <section id="trend-summary" class="trend-summary" hidden aria-label="查詢摘要"></section>
+    <section id="trend-results" class="trend-grid" hidden>
+        <div><div id="trend-list" class="trend-list"></div></div>
+        <aside class="trend-side"><div id="trend-stats"></div><div id="trend-mcp"></div></aside>
+    </section>
+</main>
+<script>
+(() => {
+  const form=document.getElementById('trend-form'),courtInput=document.getElementById('trend-court'),courtOptions=document.getElementById('trend-court-options'),dateFromRoc=document.getElementById('trend-date-from-roc'),dateToRoc=document.getElementById('trend-date-to-roc'),dateFrom=document.getElementById('trend-date-from'),dateTo=document.getElementById('trend-date-to'),status=document.getElementById('trend-status'),summary=document.getElementById('trend-summary'),results=document.getElementById('trend-results'),list=document.getElementById('trend-list'),stats=document.getElementById('trend-stats'),mcp=document.getElementById('trend-mcp');
+  let courts=[],courtTimer=0;
+  const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n};
+  const clear=n=>{while(n.firstChild)n.removeChild(n.firstChild)};
+  const metric=(value,label)=>{const n=el('div','metric');n.append(el('strong','',value),el('span','',label));return n};
+  const months=v=>v===null||v===undefined?'無可統計數值':`${v} 個月`;
+  const officialUrl=value=>{try{const u=new URL(value);return u.protocol==='https:' && (u.hostname.endsWith('judicial.gov.tw')||u.hostname.endsWith('judicial.gov.tw.'))?u.href:''}catch(_){return ''}};
+  function setStatus(text,kind){status.textContent=text;status.dataset.kind=kind||'';status.hidden=!text}
+  function renderGroup(title,data){const card=el('section','trend-card');card.append(el('h2','',title));const rows=[['筆數',data.count],['中位數',months(data.median_months)],['第 1 四分位數',months(data.q1_months)],['第 3 四分位數',months(data.q3_months)],['範圍',data.min_months===null?'無可統計數值':`${data.min_months}–${data.max_months} 個月`]];for(const [k,v] of rows){card.append(el('p','trend-small',`${k}：${v}`))}return card}
+  function rocDate(value){const text=String(value||'').trim(),m=text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\b|T|\s)/);if(!m)return text;const y=Number(m[1]),mo=Number(m[2]),d=Number(m[3]);if(!Number.isInteger(y)||mo<1||mo>12||d<1||d>31)return text;return `民國${y-1911}年${mo}月${d}日`}
+  function rocInputToIso(value){const text=String(value||'').trim().replace(/\s+/g,'');if(!text)return'';const m=text.match(/^(?:民國)?(\d{1,3})(?:年|[./-])(\d{1,2})(?:月|[./-])(\d{1,2})(?:日)?$/);if(!m)return null;const roc=Number(m[1]),mo=Number(m[2]),d=Number(m[3]),year=roc+1911;if(roc<1||mo<1||mo>12||d<1||d>31)return null;const check=new Date(Date.UTC(year,mo-1,d));if(check.getUTCFullYear()!==year||check.getUTCMonth()!==mo-1||check.getUTCDate()!==d)return null;return `${String(year).padStart(4,'0')}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`}
+  function syncRocDates(){const from=rocInputToIso(dateFromRoc.value),to=rocInputToIso(dateToRoc.value);if(from===null){setStatus('判決日起格式不正確，請輸入民國年月日，例如民國115年8月17日。','error');return false}if(to===null){setStatus('判決日迄格式不正確，請輸入民國年月日，例如民國115年8月17日。','error');return false}if(from&&to&&from>to){setStatus('判決日起不得晚於判決日迄。','error');return false}dateFrom.value=from;dateTo.value=to;return true}
+  function renderItem(item){const card=el('article','trend-card');card.dataset.eligible=item.statistics_eligible?'true':'false';card.append(el('h3','',`${item.court||'未載法院'} ${item.case_number||item.jid}`));card.append(el('p','trend-meta',`${item.judgment_date_display||rocDate(item.judgment_date)||'未載日期'} · ${item.issue||item.case_type||'未載案由'}`));card.append(el('p','trend-small',`參與判決法官：${(item.participating_judges||[]).join('、')||'簽署區未完整'}`));card.append(el('p','trend-small',`末位列名法官：${item.last_listed_judge||'無法確認'}（依裁判簽署區順序）`));const tags=el('div','trend-tags');tags.append(el('span','',item.statistics_eligible?'已納入統計':'未納入統計'));if(item.external_verified)tags.append(el('span','','MCP 官方全文已核對'));if(item.appendix_referenced)tags.append(el('span','',item.appendix_complete?'附表已核對':'附表不完整'));card.append(tags);if(!item.statistics_eligible)card.append(el('p','trend-small',item.exclusion_reason));for(const sentence of item.sentences||[])card.append(el('p','',`宣告刑：${sentence.text}`));for(const sentence of item.appendix_sentences||[])card.append(el('p','',`附表刑度：${sentence.text}`));if(item.execution_sentence)card.append(el('p','',`定應執行刑：${item.execution_sentence.text}`));const href=officialUrl(item.source_url);if(href){const a=el('a','','開啟官方來源');a.href=href;a.target='_blank';a.rel='noopener noreferrer';card.append(a)}return card}
+  const norm=value=>String(value||'').replace(/\s+/g,'').replaceAll('台','臺').replace(/^臺灣/,'').replace(/地方法院$/,'').replace(/高等法院$/,'');
+  function completeCourt(){const query=norm(courtInput.value);if(!query)return;const matches=courts.filter(name=>norm(name).includes(query));if(matches.length===1)courtInput.value=matches[0]}
+  async function loadCourts(){try{const response=await fetch('/api/osc/courts?limit=2000',{credentials:'same-origin',headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok||!data.ok)return;courts=[...new Set((data.items||[]).map(item=>String(item.name||'').trim()).filter(Boolean))];clear(courtOptions);for(const name of courts){const option=document.createElement('option');option.value=name;courtOptions.append(option)}}catch(_){/* 保留手動輸入 */}}
+  courtInput.addEventListener('change',completeCourt);
+  courtInput.addEventListener('blur',completeCourt);
+  courtInput.addEventListener('input',()=>{window.clearTimeout(courtTimer);courtTimer=window.setTimeout(completeCourt,240)});
+  loadCourts();
+  form.addEventListener('submit',async ev=>{ev.preventDefault();completeCourt();if(!syncRocDates())return;const params=new URLSearchParams(new FormData(form));if(!params.get('court')&&!params.get('judge')&&!params.get('offense')){setStatus('請至少輸入法院、法官或案由其中一項。','error');return}setStatus('正在核對本機裁判庫與 MCP 官方全文…','busy');summary.hidden=true;results.hidden=true;try{const response=await fetch(`/api/sentencing-trends/search?${params}`,{credentials:'same-origin',headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'查詢失敗');clear(summary);summary.append(metric(data.candidate_count,'本機候選'),metric(data.matched_count,'符合條件'),metric(data.local_eligible_count,'本機納入'),metric(data.mcp_verified_count,'MCP 核實納入'),metric(data.appendix_complete_count,'附表完整'),metric(data.appendix_incomplete_count,'附表待核對'));clear(list);if(data.items.length){for(const item of data.items)list.append(renderItem(item))}else list.append(el('div','empty','找不到符合條件的已核對裁判。'));clear(stats);stats.append(renderGroup('個別宣告刑（含附表）',data.statistics.declared_terms),renderGroup('最後定應執行刑',data.statistics.execution_terms));clear(mcp);const mc=el('section','trend-card');mc.append(el('h2','',`MCP 候選（${data.mcp.items.length}）`),el('p','trend-small',`官方全文已核實並納入 ${data.mcp.verified_count||0} 筆；其餘只供發現。`));for(const item of data.mcp.items){mc.append(el('p','trend-small',item.title||item.case_number||'待核對裁判'))}mcp.append(mc);setStatus(data.notice,'');summary.hidden=false;results.hidden=false}catch(_){setStatus('量刑裁判查詢暫時無法完成，請稍後再試。','error')}});
+})();
+</script>
+</body>
+</html>

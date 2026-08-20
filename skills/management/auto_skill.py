@@ -13,13 +13,14 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, legacy_code_enabled
+from skills.overlay import ensure_overlay_skill, skill_overlay_dir
 
 # Knowledge Base Paths
 KB_DIR = os.path.expanduser("~/.magi/auto_skill")
 KB_FILE = os.path.join(KB_DIR, "knowledge.json")
 CODE_INDEX_FILE = os.path.join(KB_DIR, "code_internalization_index.json")
 MAGI_ROOT = str(get_magi_root_dir())
-SKILLS_ROOT = f"{MAGI_ROOT}/skills"
+SKILLS_ROOT = str(skill_overlay_dir())
 LEGACY_CODE_ROOT = str(get_legacy_code_root())
 ALLOWED_READ_ROOTS = [MAGI_ROOT]
 if legacy_code_enabled():
@@ -416,8 +417,7 @@ class AutoSkill:
             return {"success": False, "message": "沒有可內化的知識，請先教我內容。"}
 
         slug = _slugify(skill_name or "casper-learned-skill")
-        skill_dir = os.path.join(SKILLS_ROOT, slug)
-        os.makedirs(skill_dir, exist_ok=True)
+        skill_dir = str(ensure_overlay_skill(slug))
 
         skill_desc = (description or "Internalized skill generated from CASPER learned experiences.").strip()
         now = datetime.now().strftime("%Y-%m-%d")
@@ -613,8 +613,7 @@ if __name__ == "__main__":
     ) -> Dict:
         rel = os.path.relpath(source_file, source_root)
         rel_display = rel.replace("\\", "/")
-        skill_dir = os.path.join(SKILLS_ROOT, skill_name)
-        os.makedirs(skill_dir, exist_ok=True)
+        skill_dir = str(ensure_overlay_skill(skill_name))
 
         skill_desc = (
             f"Functional skill generated from CODE file `{rel_display}`. "
@@ -1398,12 +1397,12 @@ if __name__ == "__main__":
                 from skills.ops.red_phone import alert_admin
 
                 summary = (
-                    "Auto-Skill Daily Import Summary\n"
-                    f"repo: {repo_url}\n"
-                    f"learned: {learned}\n"
-                    f"files: {len(imported_files)}\n"
-                    f"skipped: {len(skipped)}\n"
-                    f"time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    "MAGI 外部知識匯入結果\n"
+                    f"新增知識：{learned}\n"
+                    f"檢查檔案：{len(imported_files)}\n"
+                    f"略過檔案：{len(skipped)}\n"
+                    "說明：來源同步不等於自我進化；只有新增內容通過安全與品質閘門後才計入能力。\n"
+                    f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 notify = alert_admin(summary, severity="info", topic_key="nightly")
                 result["dc_notify"] = notify

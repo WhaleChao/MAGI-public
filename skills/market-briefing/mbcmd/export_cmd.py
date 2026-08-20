@@ -59,7 +59,10 @@ def _cmd_export(state: Dict[str, Any], mode: str = "deep") -> str:
 
     now = _tz_now()
     date_str = now.strftime("%Y%m%d")
-    export_dir = _MAGI_ROOT / "static" / "exports"
+    mutable_static = Path(
+        os.environ.get("MAGI_MUTABLE_STATIC_DIR") or str(_MAGI_ROOT / "static")
+    ).expanduser()
+    export_dir = Path(os.environ.get("MAGI_EXPORTS_DIR") or mutable_static / "exports").expanduser()
     export_dir.mkdir(parents=True, exist_ok=True)
     xlsx_path = str(export_dir / f"market_briefing_{date_str}.xlsx")
 

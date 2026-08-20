@@ -23,7 +23,10 @@ REMOTE_PASS = os.environ.get("MAGI_SYNC_REMOTE_PASS", "")
 DB_NAME = "law_firm_data"
 SYNC_INTERVAL = 600  # 10 minutes
 DUMP_PATH = "/tmp/law_firm_data_sync.sql"
-BACKUP_DIR = "/Users/ai/Desktop/DATA/db_backups"
+BACKUP_DIR = os.environ.get(
+    "MAGI_DB_SYNC_BACKUP_DIR",
+    os.path.expanduser("~/Desktop/DATA/db_backups"),
+)
 BACKUP_MAX_AGE = 72 * 3600  # 72 hours
 
 running = True

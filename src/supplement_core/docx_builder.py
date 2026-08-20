@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from .exceptions import SupplementError
+from api.law_firm_contact import CONTACT_PLACEHOLDERS, resolve_lawyer_contact
 
 logger = logging.getLogger("docx_builder")
 
@@ -28,7 +29,7 @@ def _default_template_path() -> str:
     if magi_root:
         p = Path(magi_root) / "data" / "templates" / "D_supplement.docx"
     else:
-        # src/supplement_core/docx_builder.py → MAGI_v2/
+        # src/supplement_core/docx_builder.py → current MAGI release root
         p = Path(__file__).parent.parent.parent / "data" / "templates" / "D_supplement.docx"
     return str(p)
 
@@ -303,6 +304,7 @@ def build_supplement_docx(
         "C1": None,
         "C2": None,
         "C3": None,
+        **resolve_lawyer_contact(case_meta),
     }
 
     # D1~D15
@@ -350,8 +352,13 @@ def build_supplement_docx(
     doc.save(output_path)
     logger.info("docx 已儲存：%s", output_path)
 
-    # 回傳 filled_fields（只取有值的，None 不列）
-    filled_fields_display = {k: v for k, v in filled.items() if v is not None}
+    # 回傳 filled_fields（只取有值的，None 不列）。律師聯絡資料只屬於
+    # 產出的書狀，不應進入 API/evidence 可序列化的結果。
+    filled_fields_display = {
+        key: value
+        for key, value in filled.items()
+        if value is not None and key not in CONTACT_PLACEHOLDERS
+    }
 
     return {
         "output_path": output_path,

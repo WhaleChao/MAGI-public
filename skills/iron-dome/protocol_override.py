@@ -10,6 +10,8 @@ Requires human approval to commit the changes to disk.
 import os
 import sys
 import json
+import shutil
+import tempfile
 from datetime import datetime
 import logging
 
@@ -20,14 +22,16 @@ if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
 from api.runtime_paths import ensure_orch_on_sys_path
+from skills.overlay import effective_skill_dir, ensure_overlay_skill, skill_overlay_dir
 
 ensure_orch_on_sys_path()
 
 from line_notifier import LAFNotifier
 
 logger = logging.getLogger("protocol-override")
-PENDING_FILE = f"{_MAGI_ROOT}/.agent/iron_dome_pending_override.json"
-SKILLS_DIR = f"{_MAGI_ROOT}/skills"
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", str(_MAGI_ROOT / ".agent"))).expanduser()
+PENDING_FILE = str(_AGENT_DIR / "iron_dome_pending_override.json")
+SKILLS_DIR = str(skill_overlay_dir())
 
 def _load_pending() -> dict:
     if os.path.exists(PENDING_FILE):
@@ -47,12 +51,20 @@ def clear_override():
     if os.path.exists(PENDING_FILE):
         os.remove(PENDING_FILE)
 
+
+def _write_override_file(file_path: Path, content: str) -> None:
+    with file_path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+
 def request_override(skill_name: str, files: dict, reason: str = "") -> dict:
     """
     Called when a system agent attempts to overwrite a skill's files.
     files: {"action.py": "new content...", "SKILL.md": "new content..."}
     """
-    skill_dir = os.path.join(SKILLS_DIR, skill_name)
+    try:
+        skill_dir = str(effective_skill_dir(skill_name))
+    except ValueError as exc:
+        return {"blocked": True, "message": str(exc)}
     
     # If the skill does NOT exist yet, it's a creation, not an override.
     # Protocol Overrides only apply to modifying EXISTING core capabilities.
@@ -96,34 +108,102 @@ def approve_override() -> dict:
         
     skill_name = pending["skill_name"]
     files = pending.get("files", {})
-    
-    skill_dir = os.path.join(SKILLS_DIR, skill_name)
-    os.makedirs(skill_dir, exist_ok=True)
-    
-    committed = []
+
+    if not isinstance(files, dict) or not files:
+        return {"success": False, "message": "待審核內容沒有可寫入檔案。"}
+    validated: list[tuple[str, str]] = []
     for filename, content in files.items():
-        # Prevent directory traversal attacks
-        safe_filename = os.path.basename(filename) 
-        file_path = os.path.join(skill_dir, safe_filename)
+        safe_filename = os.path.basename(str(filename or ""))
+        if (
+            safe_filename != filename
+            or safe_filename in {"", ".", "..", ".overlay-seed.json"}
+            or not isinstance(content, str)
+        ):
+            return {"success": False, "message": f"不安全的覆寫檔案：{filename}"}
+        validated.append((safe_filename, content))
+
+    try:
+        skill_path = ensure_overlay_skill(skill_name)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    overlay_root = skill_path.parent
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=f".{skill_name}.approval.", dir=str(overlay_root)))
+        backup = Path(tempfile.mkdtemp(prefix=f".{skill_name}.approval-backup.", dir=str(overlay_root)))
+        backup.rmdir()
+    except Exception as exc:
+        if "stage" in locals():
+            shutil.rmtree(stage, ignore_errors=True)
+        return {"success": False, "message": f"無法建立安全覆寫區，提案仍保留：{exc}"}
+    committed = [filename for filename, _content in validated]
+    swapped = False
+    try:
+        shutil.copytree(skill_path, stage, dirs_exist_ok=True, symlinks=False)
+        for safe_filename, content in validated:
+            _write_override_file(stage / safe_filename, content)
+        if backup.exists() or backup.is_symlink():
+            raise ValueError("stale_override_backup")
+        skill_path.replace(backup)
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            committed.append(safe_filename)
-        except Exception as e:
-            logger.error(f"Failed to write {safe_filename}: {e}")
-            
-    clear_override()
-    
-    notifier = LAFNotifier()
-    notifier.notify_admin(
-        f"✅ [Iron Dome] 已授權覆寫技能 `{skill_name}`。",
-        topic_key="alert",
-        source="iron_dome",
-    )
-    
+            stage.replace(skill_path)
+            swapped = True
+        except Exception:
+            backup.replace(skill_path)
+            raise
+    except Exception as exc:
+        logger.error("Iron Dome override transaction failed for %s: %s", skill_name, exc)
+        if swapped and backup.exists():
+            failed_tree = overlay_root / f".{skill_name}.failed-approval"
+            if failed_tree.exists():
+                shutil.rmtree(failed_tree, ignore_errors=True)
+            if skill_path.exists():
+                skill_path.replace(failed_tree)
+            backup.replace(skill_path)
+            shutil.rmtree(failed_tree, ignore_errors=True)
+        elif backup.exists() and not skill_path.exists():
+            backup.replace(skill_path)
+        shutil.rmtree(stage, ignore_errors=True)
+        return {
+            "success": False,
+            "message": f"覆寫失敗，提案仍保留：{exc}",
+            "committed": [],
+        }
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+
+    # The swap is the commit point. Backup cleanup must not turn a complete
+    # write into a reported partial failure or trigger a destructive rollback.
+    try:
+        shutil.rmtree(backup)
+    except Exception as exc:
+        logger.warning("Iron Dome committed override but backup cleanup failed: %s", exc)
+
+    try:
+        clear_override()
+    except Exception as exc:
+        logger.error("Iron Dome override committed but proposal cleanup failed: %s", exc)
+        return {
+            "success": False,
+            "message": f"覆寫已套用但提案清除失敗，未發送成功通知：{exc}",
+            "committed": committed,
+        }
+
+    try:
+        notifier = LAFNotifier()
+        notifier.notify_admin(
+            f"✅ [Iron Dome] 已授權覆寫技能 `{skill_name}`。",
+            topic_key="alert",
+            source="iron_dome",
+        )
+    except Exception as exc:
+        logger.error("Iron Dome success notification failed: %s", exc)
+
     return {
         "success": True, 
-        "message": f"成功覆寫技能 {skill_name} 的檔案: {', '.join(committed)}"
+        "message": f"成功覆寫技能 {skill_name} 的檔案: {', '.join(committed)}",
+        "committed": committed,
     }
 
 if __name__ == "__main__":

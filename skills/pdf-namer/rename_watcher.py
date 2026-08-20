@@ -20,6 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+_SKILL_CODE_DIR = Path(__file__).resolve().parent
+if str(_SKILL_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_CODE_DIR))
+
+from state_paths import prepare_write, read_path, state_path
+
 sys.stdout.reconfigure(line_buffering=True)
 
 logger = logging.getLogger("RenameWatcher")
@@ -28,13 +34,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 # 路徑
 MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SKILL_DIR = os.path.join(MAGI_ROOT, "skills", "pdf-namer")
-CORRECTIONS_PATH = os.path.join(SKILL_DIR, "_corrections.json")
-TRAINING_DATA_PATH = os.path.join(SKILL_DIR, "training_data.json")
-SNAPSHOT_PATH = os.path.join(SKILL_DIR, "_rename_snapshot.json")
-RENAME_LOG_PATH = os.path.join(SKILL_DIR, "_rename_log.json")
+CORRECTIONS_PATH = state_path("_corrections.json")
+TRAINING_DATA_PATH = state_path("training_data.json")
+SNAPSHOT_PATH = state_path("_rename_snapshot.json")
+RENAME_LOG_PATH = state_path("_rename_log.json")
 
 # 案件資料夾根目錄（動態解析，含 stale mount 防護）
 def _init_case_roots() -> list:
+    explicit = os.environ.get("MAGI_NAS_CASE_ROOT") or os.environ.get("MAGI_V3_CASE_ROOT")
+    if explicit:
+        return [str(Path(explicit).expanduser())]
     try:
         from api.case_path_mapper import preferred_case_roots
         roots = preferred_case_roots(include_closed=False)
@@ -49,6 +58,24 @@ def _init_case_roots() -> list:
     ]
 
 CASE_ROOTS = _init_case_roots()
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+
+
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
 
 # PDF 命名格式
 DATE_PREFIX_RE = re.compile(r"^(20\d{6})\s")
@@ -149,7 +176,9 @@ def scan_pdfs(case_root: str) -> Dict[int, dict]:
     """掃描所有 PDF，建立 inode → 檔案資訊 的對照表"""
     result = {}
     for root, dirs, files in os.walk(case_root):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and not _is_synthetic_case_path(os.path.join(root, d))]
+        if _is_synthetic_case_path(root):
+            continue
         subfolder = os.path.basename(root)
         if subfolder in _SKIP_SUBFOLDERS or "閱卷" in subfolder or "筆錄" in subfolder:
             continue
@@ -175,8 +204,9 @@ def scan_pdfs(case_root: str) -> Dict[int, dict]:
 def load_snapshot() -> Dict[int, dict]:
     """載入上次的 snapshot"""
     try:
-        if os.path.exists(SNAPSHOT_PATH):
-            with open(SNAPSHOT_PATH, "r", encoding="utf-8") as f:
+        snapshot_read_path = read_path("_rename_snapshot.json")
+        if snapshot_read_path.exists():
+            with open(snapshot_read_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             # JSON key 是 string，轉回 int
             return {int(k): v for k, v in data.items()}
@@ -189,7 +219,7 @@ def save_snapshot(snapshot: Dict[int, dict]):
     """儲存 snapshot"""
     # 只存最近的（避免檔案太大）
     data = {str(k): v for k, v in snapshot.items()}
-    with open(SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+    with open(prepare_write(SNAPSHOT_PATH), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
 
@@ -265,8 +295,9 @@ def append_correction(learning: dict):
     """寫入 _corrections.json"""
     corrections = []
     try:
-        if os.path.exists(CORRECTIONS_PATH):
-            with open(CORRECTIONS_PATH, "r", encoding="utf-8") as f:
+        corrections_read_path = read_path("_corrections.json")
+        if corrections_read_path.exists():
+            with open(corrections_read_path, "r", encoding="utf-8") as f:
                 corrections = json.load(f) or []
     except Exception:
         corrections = []
@@ -285,7 +316,7 @@ def append_correction(learning: dict):
 
     # 保留最近 500 筆
     corrections = corrections[-500:]
-    with open(CORRECTIONS_PATH, "w", encoding="utf-8") as f:
+    with open(prepare_write(CORRECTIONS_PATH), "w", encoding="utf-8") as f:
         json.dump(corrections, f, ensure_ascii=False, indent=2)
 
 
@@ -293,8 +324,9 @@ def append_training_data(learning: dict):
     """寫入 training_data.json"""
     training = []
     try:
-        if os.path.exists(TRAINING_DATA_PATH):
-            with open(TRAINING_DATA_PATH, "r", encoding="utf-8") as f:
+        training_read_path = read_path("training_data.json")
+        if training_read_path.exists():
+            with open(training_read_path, "r", encoding="utf-8") as f:
                 training = json.load(f) or []
     except Exception:
         training = []
@@ -319,7 +351,7 @@ def append_training_data(learning: dict):
     existing_fns = {t.get("filename") for t in training}
     if entry["filename"] not in existing_fns:
         training.append(entry)
-        with open(TRAINING_DATA_PATH, "w", encoding="utf-8") as f:
+        with open(prepare_write(TRAINING_DATA_PATH), "w", encoding="utf-8") as f:
             json.dump(training, f, ensure_ascii=False, indent=2)
         return True
     return False
@@ -329,8 +361,9 @@ def log_rename(learning: dict):
     """記錄更名歷史"""
     log = []
     try:
-        if os.path.exists(RENAME_LOG_PATH):
-            with open(RENAME_LOG_PATH, "r", encoding="utf-8") as f:
+        rename_log_read_path = read_path("_rename_log.json")
+        if rename_log_read_path.exists():
+            with open(rename_log_read_path, "r", encoding="utf-8") as f:
                 log = json.load(f) or []
     except Exception:
         log = []
@@ -343,7 +376,7 @@ def log_rename(learning: dict):
         "corrections": learning["corrections"],
     })
     log = log[-200:]
-    with open(RENAME_LOG_PATH, "w", encoding="utf-8") as f:
+    with open(prepare_write(RENAME_LOG_PATH), "w", encoding="utf-8") as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
 
 

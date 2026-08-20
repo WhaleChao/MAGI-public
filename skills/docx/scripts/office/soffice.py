@@ -15,10 +15,18 @@ Usage:
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
 from pathlib import Path
+
+
+SOFFICE_FALLBACKS = (
+    Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+    Path("/opt/libreoffice/program/soffice"),
+    Path("/usr/lib/libreoffice/program/soffice"),
+)
 
 
 def get_soffice_env() -> dict:
@@ -34,7 +42,21 @@ def get_soffice_env() -> dict:
 
 def run_soffice(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     env = get_soffice_env()
-    return subprocess.run(["soffice"] + args, env=env, **kwargs)
+    return subprocess.run([str(_soffice_binary())] + args, env=env, **kwargs)
+
+
+def _soffice_binary() -> Path:
+    """Resolve LibreOffice even when a sealed subprocess has a minimal PATH."""
+
+    discovered = shutil.which("soffice")
+    if discovered:
+        candidate = Path(discovered)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    for candidate in SOFFICE_FALLBACKS:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise FileNotFoundError("LibreOffice soffice executable was not found")
 
 
 

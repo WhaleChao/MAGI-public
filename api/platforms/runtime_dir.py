@@ -24,22 +24,53 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-_MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", "/Users/ai/Desktop/MAGI_v2")).resolve()
-_DEFAULT = _MAGI_ROOT / ".runtime"
 _mkdir_lock = threading.Lock()
+_CODE_ROOT = Path(__file__).resolve().parents[2]
+
+
+@contextmanager
+def _append_lock(path: Path):
+    """Serialize append+rotation across MAGI processes using a sidecar lock."""
+
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        try:
+            from magi_v3 import fcntl_compat as fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            fcntl = None  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            try:
+                if fcntl is not None:  # type: ignore[name-defined]
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
 
 
 def _enabled() -> bool:
     return os.environ.get("MAGI_USE_RUNTIME_DIR", "0").strip().lower() in {"1", "true", "on", "yes"}
 
 
+def _magi_root() -> Path:
+    return Path(
+        os.environ.get("MAGI_ROOT_DIR")
+        or os.environ.get("MAGI_ROOT")
+        or str(_CODE_ROOT)
+    ).expanduser().resolve()
+
+
 def root() -> Path:
     """回傳 runtime root；若 flag off 仍回 default path 方便查。"""
     override = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
-    p = Path(override).resolve() if override else _DEFAULT
+    p = Path(override).expanduser().resolve() if override else _magi_root() / ".runtime"
     with _mkdir_lock:
         p.mkdir(parents=True, exist_ok=True)
     return p
@@ -107,17 +138,37 @@ def atomic_append_jsonl(
     with _mkdir_lock:
         path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, ensure_ascii=False)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-    # rotate
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        if len(lines) > rotate_at:
-            tail = lines[-keep_tail:]
-            atomic_write_json_lines(path, tail)
-    except FileNotFoundError:
-        pass
+    with _append_lock(path):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+        if rotate_at > 0 and keep_tail > 0:
+            tail, overflow = _read_jsonl_tail(path, max_lines=rotate_at + 1)
+            if overflow or len(tail) > rotate_at:
+                atomic_write_json_lines(path, tail[-keep_tail:])
+
+
+def _read_jsonl_tail(path: Path, *, max_lines: int) -> tuple[list[str], bool]:
+    """Read only the bounded tail needed for rotation, never the whole JSONL."""
+
+    if max_lines <= 0:
+        return [], False
+    chunks: list[bytes] = []
+    newline_count = 0
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        cursor = handle.tell()
+        while cursor > 0 and newline_count <= max_lines:
+            size = min(64 * 1024, cursor)
+            cursor -= size
+            handle.seek(cursor)
+            chunk = handle.read(size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    raw = b"".join(reversed(chunks))
+    lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+    overflow = cursor > 0 or len(lines) > max_lines
+    return lines[-max_lines:], overflow
 
 
 def atomic_write_json_lines(path: Path, lines: Sequence[str]) -> None:

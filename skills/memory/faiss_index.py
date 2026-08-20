@@ -16,12 +16,14 @@ Usage:
 import json
 import logging
 import os
-import fcntl
+from magi_v3 import fcntl_compat as fcntl
+import hashlib
+import shutil
 import threading
 import time
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 with warnings.catch_warnings():
     warnings.filterwarnings(
@@ -46,12 +48,18 @@ logger = logging.getLogger("FAISSIndex")
 
 # Defaults
 DIM = 768
+_SHARED_STATE_DIR = (os.environ.get("MAGI_SHARED_STATE_DIR") or "").strip()
 INDEX_DIR = os.environ.get(
     "FAISS_INDEX_DIR",
-    str(Path(__file__).parent / "index_cache"),
+    str(Path(_SHARED_STATE_DIR).expanduser() / "memory" / "index_cache")
+    if _SHARED_STATE_DIR
+    else str(Path(__file__).parent / "index_cache"),
 )
 INDEX_FILE = "mem_index.faiss"
 IDMAP_FILE = "mem_idmap.npy"
+ACTIVE_MANIFEST_FILE = "active_generation.json"
+GENERATION_MANIFEST_FILE = "generation_manifest.json"
+GENERATIONS_DIR = "generations"
 
 # Thresholds for auto-scaling
 TIER_IVF_THRESHOLD = 100_000
@@ -69,6 +77,26 @@ PQ_NBITS = 8
 NPROBE_OVERRIDE = int(os.environ.get("FAISS_NPROBE", "0")) or 0
 
 
+def active_generation_paths(index_dir: str | Path = INDEX_DIR) -> dict[str, Path]:
+    """Return committed artifact paths without consulting staging generations."""
+
+    root = Path(index_dir)
+    active = json.loads((root / ACTIVE_MANIFEST_FILE).read_text(encoding="utf-8"))
+    generation = str(active.get("active_generation") or "")
+    if (
+        active.get("schema_version") != 1
+        or not generation
+        or "/" in generation
+        or generation.startswith(".")
+    ):
+        raise ValueError("active FAISS generation manifest is invalid")
+    directory = root / GENERATIONS_DIR / generation
+    return {
+        name: directory / name
+        for name in (INDEX_FILE, IDMAP_FILE, "meta.json", GENERATION_MANIFEST_FILE)
+    }
+
+
 class FAISSMemoryIndex:
     """Thread-safe singleton FAISS index with auto-scaling."""
 
@@ -83,7 +111,7 @@ class FAISSMemoryIndex:
                     cls._instance = cls(dim=dim)
         return cls._instance
 
-    def __init__(self, dim: int = DIM):
+    def __init__(self, dim: int = DIM, *, load_existing: bool = True):
         self.dim = dim
         self._index: Optional[faiss.Index] = None
         self._id_map: List[int] = []        # position → doc_id
@@ -91,11 +119,12 @@ class FAISSMemoryIndex:
         self._rw_lock = threading.Lock()
         self._dirty = False
         self._index_type = "none"
+        self._publish_fault_hook: Optional[Callable[[str], None]] = None
 
         os.makedirs(INDEX_DIR, exist_ok=True)
 
         # Try loading from disk
-        if not self._load_from_disk():
+        if not load_existing or not self._load_from_disk():
             # Start with empty flat index
             self._index = faiss.IndexFlatIP(self.dim)
             self._index_type = "flat"
@@ -302,6 +331,170 @@ class FAISSMemoryIndex:
         self.save_to_disk()
         return n
 
+    def build_from_db_streaming(
+        self,
+        db_config: dict,
+        *,
+        batch_size: int = 512,
+        training_sample_size: int = 20_000,
+        low_memory_ivfpq_threshold: int = 250_000,
+        publish: bool = True,
+    ) -> dict[str, int | str]:
+        """Build a fresh index without retaining every MariaDB vector in Python.
+
+        The legacy builder first accumulated a list of all JSON vectors and then
+        copied it into a NumPy array.  At production scale that overlapped the
+        old on-disk index, PyMuPDF and the ingest worker.  This builder trains on
+        one bounded sample, streams fixed-size batches into a fresh index, and
+        is intended for a dedicated post-ingest maintenance process.
+        """
+
+        import mysql.connector
+
+        batch_size = max(32, min(int(batch_size), 4096))
+        training_sample_size = max(2_000, min(int(training_sample_size), 50_000))
+        low_memory_ivfpq_threshold = max(
+            TIER_IVF_THRESHOLD, int(low_memory_ivfpq_threshold)
+        )
+        conn = mysql.connector.connect(**db_config, connection_timeout=10)
+        count_cursor = conn.cursor()
+        try:
+            count_cursor.execute("SELECT COUNT(*) FROM vectors")
+            row = count_cursor.fetchone()
+            declared_total = int(row[0] if row else 0)
+        finally:
+            count_cursor.close()
+        if declared_total <= 0:
+            conn.close()
+            self._index = faiss.IndexFlatIP(self.dim)
+            self._index_type = "flat"
+            self._id_map = []
+            self._doc_to_pos = {}
+            self._dirty = True
+            if publish and not self.save_to_disk():
+                raise RuntimeError("empty streamed FAISS index publish failed")
+            return {
+                "declared_rows": 0,
+                "indexed_rows": 0,
+                "invalid_rows": 0,
+                "training_rows": 0,
+                "max_batch_rows": 0,
+                "index_type": "flat",
+            }
+
+        def valid_vectors(rows: list[tuple]) -> tuple[list[int], np.ndarray, int]:
+            ids: list[int] = []
+            vectors: list[list[float]] = []
+            invalid = 0
+            for row in rows:
+                try:
+                    doc_id = int(row[0]) if len(row) > 1 else 0
+                    raw = row[1] if len(row) > 1 else row[0]
+                    vector = json.loads(raw) if isinstance(raw, str) else raw
+                    array = np.asarray(vector, dtype=np.float32)
+                    if array.shape != (self.dim,) or not np.isfinite(array).all():
+                        raise ValueError("invalid vector")
+                    ids.append(doc_id)
+                    vectors.append(array.tolist())
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    invalid += 1
+            if not vectors:
+                return ids, np.empty((0, self.dim), dtype=np.float32), invalid
+            matrix = np.asarray(vectors, dtype=np.float32)
+            faiss.normalize_L2(matrix)
+            finite = np.isfinite(matrix).all(axis=1)
+            if not finite.all():
+                invalid += int((~finite).sum())
+                ids = [doc_id for doc_id, keep in zip(ids, finite) if keep]
+                matrix = matrix[finite]
+            return ids, matrix, invalid
+
+        training_rows = 0
+        if declared_total < TIER_IVF_THRESHOLD:
+            index: faiss.Index = faiss.IndexFlatIP(self.dim)
+            index_type = "flat"
+        else:
+            training_cursor = conn.cursor()
+            try:
+                training_cursor.execute(
+                    "SELECT doc_id, embedding FROM vectors ORDER BY doc_id LIMIT %s",
+                    (min(declared_total, training_sample_size),),
+                )
+                training_raw = training_cursor.fetchall()
+            finally:
+                training_cursor.close()
+            _training_ids, training, _training_invalid = valid_vectors(training_raw)
+            training_rows = len(training)
+            if training_rows < 256:
+                conn.close()
+                raise RuntimeError("insufficient valid training vectors for bounded FAISS rebuild")
+            if declared_total < low_memory_ivfpq_threshold:
+                nlist = min(IVF_NLIST, max(1, training_rows // 40))
+                index_type = "ivf_flat"
+                quantizer = faiss.IndexFlatIP(self.dim)
+                index = faiss.IndexIVFFlat(
+                    quantizer, self.dim, nlist, faiss.METRIC_INNER_PRODUCT
+                )
+            else:
+                nlist = min(
+                    IVFPQ_NLIST,
+                    max(256, min(int(declared_total**0.5), training_rows // 40)),
+                )
+                index_type = "ivf_pq"
+                quantizer = faiss.IndexFlatIP(self.dim)
+                index = faiss.IndexIVFPQ(
+                    quantizer,
+                    self.dim,
+                    nlist,
+                    PQ_M,
+                    PQ_NBITS,
+                    faiss.METRIC_INNER_PRODUCT,
+                )
+            index.train(training)
+            del training
+
+        stream_cursor = conn.cursor(buffered=False)
+        indexed_ids: list[int] = []
+        invalid_rows = 0
+        max_batch_rows = 0
+        try:
+            stream_cursor.execute("SELECT doc_id, embedding FROM vectors ORDER BY doc_id")
+            while True:
+                rows = stream_cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                max_batch_rows = max(max_batch_rows, len(rows))
+                ids, vectors, invalid = valid_vectors(rows)
+                invalid_rows += invalid
+                if not ids:
+                    continue
+                index.add(vectors)
+                indexed_ids.extend(ids)
+        finally:
+            stream_cursor.close()
+            conn.close()
+
+        if index.ntotal != len(indexed_ids) or len(indexed_ids) != len(set(indexed_ids)):
+            raise RuntimeError("streamed FAISS index/id-map consistency check failed")
+        with self._rw_lock:
+            self._index = index
+            self._id_map = indexed_ids
+            # The dedicated builder exits after publishing. Avoid a second large
+            # Python dictionary here; normal readers reconstruct it on load.
+            self._doc_to_pos = {}
+            self._index_type = index_type
+            self._dirty = True
+        if publish and not self.save_to_disk():
+            raise RuntimeError("streamed FAISS index publish failed")
+        return {
+            "declared_rows": declared_total,
+            "indexed_rows": len(indexed_ids),
+            "invalid_rows": invalid_rows,
+            "training_rows": training_rows,
+            "max_batch_rows": max_batch_rows,
+            "index_type": index_type,
+        }
+
     def _create_index_for_scale(self, n: int, vecs: np.ndarray) -> faiss.Index:
         """Create the right index type based on data size."""
         if n < TIER_IVF_THRESHOLD:
@@ -353,85 +546,294 @@ class FAISSMemoryIndex:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save_to_disk(self) -> bool:
-        """Save index + id map to disk (atomic: write tmp then rename)."""
-        idx_tmp = map_tmp_file = meta_tmp = None
+    @staticmethod
+    def _sha256_path(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _fsync_directory(path: str) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _publish_fault(self, point: str) -> None:
+        hook = getattr(self, "_publish_fault_hook", None)
+        if hook is not None:
+            hook(point)
+
+    def _generation_manifest(self, generation_dir: str, generation: str) -> dict[str, Any]:
+        files: dict[str, dict[str, Any]] = {}
+        for name in (INDEX_FILE, IDMAP_FILE, "meta.json"):
+            path = os.path.join(generation_dir, name)
+            files[name] = {
+                "sha256": self._sha256_path(path),
+                "size": os.path.getsize(path),
+            }
+        return {
+            "schema_version": 1,
+            "generation": generation,
+            "index_type": self._index_type,
+            "total": int(self._index.ntotal),
+            "dim": int(self.dim),
+            "files": files,
+        }
+
+    def _load_generation(
+        self,
+        generation: str,
+        *,
+        expected_manifest_sha256: str = "",
+    ) -> tuple[Any, list[int], str]:
+        if not generation or "/" in generation or generation.startswith("."):
+            raise ValueError("invalid FAISS generation name")
+        directory = os.path.join(INDEX_DIR, GENERATIONS_DIR, generation)
+        manifest_path = os.path.join(directory, GENERATION_MANIFEST_FILE)
+        if expected_manifest_sha256 and self._sha256_path(manifest_path) != expected_manifest_sha256:
+            raise ValueError("FAISS generation manifest hash mismatch")
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != 1
+            or manifest.get("generation") != generation
+            or manifest.get("dim") != self.dim
+            or not isinstance(manifest.get("total"), int)
+            or not isinstance(manifest.get("files"), dict)
+        ):
+            raise ValueError("FAISS generation manifest identity is invalid")
+        for name in (INDEX_FILE, IDMAP_FILE, "meta.json"):
+            row = manifest["files"].get(name)
+            path = os.path.join(directory, name)
+            if (
+                not isinstance(row, dict)
+                or row.get("size") != os.path.getsize(path)
+                or row.get("sha256") != self._sha256_path(path)
+            ):
+                raise ValueError(f"FAISS generation artifact mismatch: {name}")
+        index = faiss.read_index(os.path.join(directory, INDEX_FILE))
+        id_map = np.load(os.path.join(directory, IDMAP_FILE)).tolist()
+        with open(os.path.join(directory, "meta.json"), encoding="utf-8") as handle:
+            meta = json.load(handle)
+        total = int(manifest["total"])
+        if (
+            index.d != self.dim
+            or index.ntotal != total
+            or len(id_map) != total
+            or len(id_map) != len(set(id_map))
+            or meta.get("total") != total
+            or meta.get("dim") != self.dim
+            or meta.get("index_type") != manifest.get("index_type")
+        ):
+            raise ValueError("FAISS generation index/id-map/meta consistency failed")
+        return index, [int(value) for value in id_map], str(manifest.get("index_type") or "flat")
+
+    def save_to_disk(
+        self, *, precommit_validator: Callable[[], bool] | None = None
+    ) -> bool:
+        """Publish one complete generation through a single manifest commit point."""
+        staging_dir = generation_dir = ""
+        active_committed = False
         try:
             os.makedirs(INDEX_DIR, exist_ok=True)
-            idx_path = os.path.join(INDEX_DIR, INDEX_FILE)
-            map_path = os.path.join(INDEX_DIR, IDMAP_FILE)
-            meta_path = os.path.join(INDEX_DIR, "meta.json")
+            generations_root = os.path.join(INDEX_DIR, GENERATIONS_DIR)
+            os.makedirs(generations_root, exist_ok=True)
             lock_path = os.path.join(INDEX_DIR, ".faiss_index.write.lock")
-
-            # Atomic write: unique tmp file → rename to prevent corruption on SIGKILL.
-            # The file lock protects the shared FAISS cache when multiple ingest jobs run.
-            suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
-            idx_tmp = idx_path + suffix
-            # np.save auto-appends .npy, so use .tmp without .npy extension
-            map_tmp_base = os.path.join(INDEX_DIR, f"mem_idmap{suffix}")
-            map_tmp_file = map_tmp_base + ".npy"  # np.save will create this
-            meta_tmp = meta_path + suffix
-
+            generation = f"g-{time.time_ns()}-{os.getpid()}-{threading.get_ident()}"
+            staging_dir = os.path.join(generations_root, f".{generation}.tmp")
+            generation_dir = os.path.join(generations_root, generation)
             with self._rw_lock:
                 with open(lock_path, "a") as lock_fh:
                     fcntl.flock(lock_fh, fcntl.LOCK_EX)
                     try:
-                        faiss.write_index(self._index, idx_tmp)
-                        np.save(map_tmp_base, np.array(self._id_map, dtype=np.int64))
+                        os.mkdir(staging_dir)
+                        index_path = os.path.join(staging_dir, INDEX_FILE)
+                        idmap_path = os.path.join(staging_dir, IDMAP_FILE)
+                        meta_path = os.path.join(staging_dir, "meta.json")
+                        faiss.write_index(self._index, index_path)
+                        with open(index_path, "rb") as handle:
+                            os.fsync(handle.fileno())
+                        self._publish_fault("index_written")
+                        with open(idmap_path, "wb") as handle:
+                            np.save(handle, np.array(self._id_map, dtype=np.int64))
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        self._publish_fault("idmap_written")
                         meta = {
                             "index_type": self._index_type,
-                            "total": self._index.ntotal,
-                            "dim": self.dim,
+                            "total": int(self._index.ntotal),
+                            "dim": int(self.dim),
                             "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "generation": generation,
                         }
-                        with open(meta_tmp, "w") as f:
+                        with open(meta_path, "x", encoding="utf-8") as f:
                             json.dump(meta, f)
-
-                        # Atomic rename (all-or-nothing on POSIX)
-                        os.replace(idx_tmp, idx_path)
-                        os.replace(map_tmp_file, map_path)
-                        os.replace(meta_tmp, meta_path)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        self._publish_fault("meta_written")
+                        manifest = self._generation_manifest(staging_dir, generation)
+                        manifest_path = os.path.join(staging_dir, GENERATION_MANIFEST_FILE)
+                        with open(manifest_path, "x", encoding="utf-8") as handle:
+                            json.dump(manifest, handle, sort_keys=True, separators=(",", ":"))
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        self._publish_fault("generation_manifest_written")
+                        self._fsync_directory(staging_dir)
+                        os.replace(staging_dir, generation_dir)
+                        staging_dir = ""
+                        self._fsync_directory(generations_root)
+                        self._publish_fault("generation_renamed")
+                        if (
+                            precommit_validator is not None
+                            and precommit_validator() is not True
+                        ):
+                            raise RuntimeError(
+                                "FAISS generation failed its precommit validator"
+                            )
+                        active_path = os.path.join(INDEX_DIR, ACTIVE_MANIFEST_FILE)
+                        previous = ""
+                        previous_manifest_sha256 = ""
+                        if os.path.exists(active_path):
+                            try:
+                                with open(active_path, encoding="utf-8") as handle:
+                                    previous_active = json.load(handle)
+                                    previous = str(
+                                        previous_active.get("active_generation") or ""
+                                    )
+                                    previous_manifest_sha256 = str(
+                                        previous_active.get("generation_manifest_sha256")
+                                        or ""
+                                    )
+                            except Exception:
+                                previous = ""
+                                previous_manifest_sha256 = ""
+                        active = {
+                            "schema_version": 1,
+                            "active_generation": generation,
+                            "previous_generation": previous,
+                            "previous_generation_manifest_sha256": previous_manifest_sha256,
+                            "generation_manifest_sha256": self._sha256_path(
+                                os.path.join(generation_dir, GENERATION_MANIFEST_FILE)
+                            ),
+                            "total": int(self._index.ntotal),
+                            "dim": int(self.dim),
+                        }
+                        active_tmp = os.path.join(
+                            INDEX_DIR,
+                            f".{ACTIVE_MANIFEST_FILE}.{generation}.tmp",
+                        )
+                        with open(active_tmp, "x", encoding="utf-8") as handle:
+                            json.dump(active, handle, sort_keys=True, separators=(",", ":"))
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(active_tmp, active_path)
+                        active_committed = True
+                        self._publish_fault("active_manifest_replaced")
+                        self._fsync_directory(INDEX_DIR)
+                        self._publish_fault("directory_fsynced")
+                        keep = {generation, previous} - {""}
+                        for name in os.listdir(generations_root):
+                            if name.startswith("g-") and name not in keep:
+                                shutil.rmtree(
+                                    os.path.join(generations_root, name),
+                                    ignore_errors=True,
+                                )
+                        self._fsync_directory(generations_root)
                     finally:
                         fcntl.flock(lock_fh, fcntl.LOCK_UN)
-
                 self._dirty = False
-
-            size_mb = os.path.getsize(idx_path) / 1e6
-            logger.info("Saved FAISS index to %s (%.1f MB)", idx_path, size_mb)
+            size_mb = os.path.getsize(os.path.join(generation_dir, INDEX_FILE)) / 1e6
+            logger.info("Published FAISS generation %s (%.1f MB)", generation, size_mb)
             return True
         except Exception as e:
             logger.error("Failed to save index: %s", e)
-            # Clean up tmp files
-            for tmp in [idx_tmp, map_tmp_file, meta_tmp]:
-                try:
-                    if tmp:
-                        os.unlink(tmp)
-                except OSError:
-                    pass
+            if staging_dir:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+            if generation_dir and not active_committed:
+                shutil.rmtree(generation_dir, ignore_errors=True)
             return False
 
     def _load_from_disk(self) -> bool:
-        """Load index + id map from disk."""
+        """Load one verified generation; fall back without mixing artifacts."""
         idx_path = os.path.join(INDEX_DIR, INDEX_FILE)
         map_path = os.path.join(INDEX_DIR, IDMAP_FILE)
         meta_path = os.path.join(INDEX_DIR, "meta.json")
-
-        if not os.path.exists(idx_path) or not os.path.exists(map_path):
-            return False
-
+        active_path = os.path.join(INDEX_DIR, ACTIVE_MANIFEST_FILE)
+        lock_path = os.path.join(INDEX_DIR, ".faiss_index.write.lock")
         try:
-            self._index = faiss.read_index(idx_path)
-            self._id_map = np.load(map_path).tolist()
-            self._doc_to_pos = {did: i for i, did in enumerate(self._id_map)}
-
-            # Load metadata
-            if os.path.exists(meta_path):
-                with open(meta_path) as f:
-                    meta = json.load(f)
-                self._index_type = meta.get("index_type", "flat")
-            else:
-                self._index_type = "flat"
-
+            os.makedirs(INDEX_DIR, exist_ok=True)
+            with open(lock_path, "a") as lock_fh:
+                fcntl.flock(lock_fh, fcntl.LOCK_SH)
+                try:
+                    loaded = None
+                    if os.path.exists(active_path):
+                        try:
+                            with open(active_path, encoding="utf-8") as handle:
+                                active = json.load(handle)
+                            if (
+                                not isinstance(active, dict)
+                                or active.get("schema_version") != 1
+                                or active.get("dim") != self.dim
+                            ):
+                                raise ValueError("active FAISS manifest is invalid")
+                            candidates = [
+                                (
+                                    str(active.get("active_generation") or ""),
+                                    str(active.get("generation_manifest_sha256") or ""),
+                                ),
+                                (
+                                    str(active.get("previous_generation") or ""),
+                                    str(
+                                        active.get(
+                                            "previous_generation_manifest_sha256"
+                                        )
+                                        or ""
+                                    ),
+                                ),
+                            ]
+                        except Exception:
+                            generation_root = os.path.join(INDEX_DIR, GENERATIONS_DIR)
+                            candidates = [
+                                (name, "")
+                                for name in sorted(os.listdir(generation_root), reverse=True)
+                                if name.startswith("g-")
+                            ] if os.path.isdir(generation_root) else []
+                        for generation, manifest_sha in candidates:
+                            if not generation:
+                                continue
+                            try:
+                                loaded = self._load_generation(
+                                    generation,
+                                    expected_manifest_sha256=manifest_sha,
+                                )
+                                break
+                            except Exception as exc:
+                                logger.error(
+                                    "Rejected FAISS generation %s: %s", generation, exc
+                                )
+                    elif os.path.exists(idx_path) and os.path.exists(map_path):
+                        index = faiss.read_index(idx_path)
+                        id_map = np.load(map_path).tolist()
+                        meta = {}
+                        if os.path.exists(meta_path):
+                            with open(meta_path, encoding="utf-8") as handle:
+                                meta = json.load(handle)
+                        if index.d != self.dim or index.ntotal != len(id_map):
+                            raise ValueError("legacy FAISS index/id-map consistency failed")
+                        loaded = (index, id_map, str(meta.get("index_type") or "flat"))
+                    if loaded is None:
+                        return False
+                    self._index, self._id_map, self._index_type = loaded
+                    self._doc_to_pos = {
+                        did: i for i, did in enumerate(self._id_map)
+                    }
+                finally:
+                    fcntl.flock(lock_fh, fcntl.LOCK_UN)
             logger.info(
                 "Loaded FAISS index from disk: %d vectors, type=%s",
                 self._index.ntotal, self._index_type,
@@ -494,7 +896,10 @@ class FAISSMemoryIndex:
         If so, rebuild it completely from MariaDB to purge phantom/deleted memories.
         Returns True if rebuilt.
         """
-        meta_path = os.path.join(INDEX_DIR, "meta.json")
+        try:
+            meta_path = str(active_generation_paths(INDEX_DIR)["meta.json"])
+        except Exception:
+            meta_path = os.path.join(INDEX_DIR, "meta.json")
         try:
             if os.path.exists(meta_path):
                 with open(meta_path) as f:

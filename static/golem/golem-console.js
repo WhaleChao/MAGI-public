@@ -37,6 +37,10 @@
     function initThemeToggle() {
         const button = $("themeToggleBtn");
         if (!button) return;
+        if (window.MAGITheme) {
+            window.MAGITheme.apply(window.MAGITheme.current(), false);
+            return;
+        }
         const readStoredTheme = () => {
             try {
                 return localStorage.getItem(THEME_STORAGE_KEY);
@@ -54,9 +58,9 @@
         const applyTheme = (theme) => {
             const dark = theme === "dark";
             document.body.classList.toggle("theme-dark", dark);
-            button.textContent = dark ? "☀️" : "🌙";
-            button.setAttribute("aria-label", dark ? "切換日間模式" : "切換夜間模式");
-            button.title = dark ? "切換日間模式" : "切換夜間模式";
+            button.textContent = dark ? "☾ 夜" : "☀ 日";
+            button.setAttribute("aria-label", dark ? "目前為夜，切換為日" : "目前為日，切換為夜");
+            button.title = dark ? "切換為日" : "切換為夜";
         };
         const saved = readStoredTheme() || "light";
         applyTheme(saved);
@@ -183,7 +187,10 @@
     }
 
     async function fetchJson(url, options) {
-        const response = await fetch(url, options);
+        const request = window.MAGICsrf && typeof window.MAGICsrf.fetch === "function"
+            ? window.MAGICsrf.fetch
+            : window.fetch.bind(window);
+        const response = await request(url, options || {});
         const text = await response.text();
         let data = {};
         try {
@@ -192,6 +199,9 @@
             data = { ok: false, error: text || String(error) };
         }
         if (!response.ok) {
+            if (data.code === "csrf_validation_failed") {
+                throw new Error("安全驗證未能更新，請重新整理頁面後再試；已輸入的內容仍會保留。");
+            }
             throw new Error(data.error || data.message || `HTTP ${response.status}`);
         }
         return data;
@@ -587,6 +597,7 @@
             appendMagiReply(data);
             if (state) state.textContent = "就緒";
         } catch (error) {
+            input.value = text;
             appendMagiMessage("system", `送出失敗：${error.message}`);
             if (state) state.textContent = "需檢查";
         }

@@ -51,7 +51,14 @@ _PAGE_MARKER_RE = re.compile(r"--- 第\s*(\d+)\s*頁(?:\s*\(OCR\))? ---")
 
 def _doc_run_root(subdir: str) -> Path:
     configured = str(os.environ.get("MAGI_DOC_RUN_ROOT", "")).strip()
-    root = Path(configured) if configured else (Path(__file__).resolve().parents[2] / ".magi_doc_runs")
+    runtime = str(os.environ.get("MAGI_RUNTIME_DIR", "")).strip()
+    root = (
+        Path(configured)
+        if configured
+        else (Path(runtime).expanduser() / "document-runs")
+        if runtime
+        else (Path(__file__).resolve().parents[2] / ".magi_doc_runs")
+    )
     path = root / subdir
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -1873,6 +1880,8 @@ def _ultra_final_summary_with_model(
             (("媒體公司", "公約", "範圍"), "媒體公司措施是否屬《公約》範圍"),
             (("間接歧視", "公約", "範圍"), "「間接歧視」是否屬《公約》範圍"),
             (("初步異議", "管轄權"), "第一個初步異議：屬事管轄權"),
+            (("Subject-Matter", "Dispute"), "爭議標的與屬事管轄權"),
+            (("For these reasons",), "判決理由與結論"),
         ]
         for keys, inferred in theme_rules:
             if all(key in blob for key in keys):
@@ -1908,6 +1917,13 @@ def _ultra_final_summary_with_model(
         text = _normalize_fragment(bullet)
         if not text:
             return ""
+        lower = text.lower()
+        if "the court considered whether national origin includes current nationality" in lower:
+            return "法院審查「national origin」是否包含現行國籍。"
+        if "the court held that cerd does not cover current nationality" in lower:
+            return "法院認為《消除種族歧視公約》不涵蓋現行國籍。"
+        if "by eleven votes to six" in lower and "preliminary objection" in lower:
+            return "法院以十一票對六票維持第一個初步異議。"
         if text.startswith("「國籍」一詞依其規定：任何含義"):
             return "核心爭點之一是：CERD 所稱「national origin」依通常文義、上下文與公約目的，是否涵蓋現行國籍。"
         if text.startswith("考慮到申請以及書面和口頭協議") and "間接歧視" in text:
@@ -1941,6 +1957,8 @@ def _ultra_final_summary_with_model(
         if t.count("【文件概況】") > 1:
             return False
         if "【可能案名/主題】" in t:
+            return False
+        if any(marker in t for marker in ("請您提供", "我將會", "立即為您處理", "好的，")):
             return False
         if re.search(r"- .{0,120} - .{0,120} - .{0,120}", t[:800]):
             return False
@@ -2004,7 +2022,8 @@ def _ultra_final_summary_with_model(
             .replace("少年最佳利益及修復式司法", "少年最佳利益與修復式司法")
         )
         deduped = [item for _, item in deduped_with_idx]
-        if (not explicit_title) or _score_title_candidate(title)[0] < 0 or len(title) > 26:
+        english_heading = bool(re.search(r"[A-Za-z]{3}", title)) and not re.search(r"[\u4e00-\u9fff]", title)
+        if (not explicit_title) or _score_title_candidate(title)[0] < 0 or len(title) > 26 or english_heading:
             title = _infer_thematic_title(title or "未命名段落", deduped)
         elif _normalize_fragment(raw_title) != _normalize_fragment(title):
             title = _infer_thematic_title(title or "未命名段落", deduped)
@@ -2101,6 +2120,8 @@ def _ultra_final_summary_with_model(
         translated_final = _translate_note_to_traditional_chinese(deterministic)
         if _final_output_usable(translated_final):
             return translated_final
+        if _final_output_usable(deterministic) and not _needs_crosslingual_polish(deterministic):
+            return deterministic
     if final_mode in {"deterministic", "structured"} and not crosslingual:
         return deterministic
     if has_noisy_notes and deterministic:

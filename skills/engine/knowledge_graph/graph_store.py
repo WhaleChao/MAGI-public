@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -8,8 +11,16 @@ import networkx as nx
 
 
 class GraphStore:
-    _LOAD_CACHE: Dict[str, Dict[str, Any]] = {}
+    _LOAD_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     _CACHE_STATS: Dict[str, int] = {"hits": 0, "misses": 0}
+    _CACHE_LOCK = threading.RLock()
+
+    @classmethod
+    def _cache_max_entries(cls) -> int:
+        try:
+            return max(1, int(os.environ.get("MAGI_GRAPH_CACHE_MAX_ENTRIES", "8") or "8"))
+        except (TypeError, ValueError):
+            return 8
 
     def __init__(self, graph: Optional[nx.DiGraph] = None) -> None:
         self.graph = graph or nx.DiGraph()
@@ -74,22 +85,29 @@ class GraphStore:
             return cls()
         cache_key = str(source.resolve())
         stat = source.stat()
-        cached = cls._LOAD_CACHE.get(cache_key)
-        if cached and cached.get("mtime_ns") == stat.st_mtime_ns and cached.get("size") == stat.st_size:
-            cls._CACHE_STATS["hits"] += 1
-            return cls(cached["graph"].copy())
-        cls._CACHE_STATS["misses"] += 1
+        with cls._CACHE_LOCK:
+            cached = cls._LOAD_CACHE.get(cache_key)
+            if cached and cached.get("mtime_ns") == stat.st_mtime_ns and cached.get("size") == stat.st_size:
+                cls._LOAD_CACHE.move_to_end(cache_key)
+                cls._CACHE_STATS["hits"] += 1
+                return cls(cached["graph"].copy())
+            cls._CACHE_STATS["misses"] += 1
         data = json.loads(source.read_text(encoding="utf-8"))
         graph = nx.node_link_graph(data, directed=True)
-        cls._LOAD_CACHE[cache_key] = {
-            "mtime_ns": stat.st_mtime_ns,
-            "size": stat.st_size,
-            "graph": graph,
-        }
+        with cls._CACHE_LOCK:
+            cls._LOAD_CACHE[cache_key] = {
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+                "graph": graph,
+            }
+            cls._LOAD_CACHE.move_to_end(cache_key)
+            while len(cls._LOAD_CACHE) > cls._cache_max_entries():
+                cls._LOAD_CACHE.popitem(last=False)
         return cls(graph.copy())
 
     @classmethod
     def cache_stats(cls):
         # type: () -> Dict[str, int]
         """Return cache hit/miss counters."""
-        return dict(cls._CACHE_STATS)
+        with cls._CACHE_LOCK:
+            return dict(cls._CACHE_STATS)

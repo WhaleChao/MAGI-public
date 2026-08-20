@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "id": "cases.manage",
+      "domain": "cases",
+      "intent": "Create, list, and update OSC case records.",
+      "tool": "api/blueprints/osc_cases.py:osc_cases_api",
+      "side_effect": ["db_write"],
+      "verify": "Require an API success response and the persisted case state.",
+      "human_handling": "Stop on validation or identity conflicts and request operator review."
+    },
+    {
+      "id": "cases.close",
+      "domain": "cases",
+      "intent": "Close a case through the guarded OSC case workflow.",
+      "tool": "api/blueprints/osc_cases.py:osc_case_close_api",
+      "side_effect": ["db_write", "local_write"],
+      "verify": "Require the close response and resulting case status.",
+      "human_handling": "Do not retry an uncertain close; inspect the case history with an operator."
+    },
+    {
+      "id": "clients.manage",
+      "domain": "clients",
+      "intent": "Create, list, and update client records through OSC.",
+      "tool": "api/blueprints/osc_cases.py:osc_clients_api",
+      "side_effect": ["db_write"],
+      "verify": "Require an API success response and the persisted client record.",
+      "human_handling": "Escalate duplicate or ambiguous client identity matches for review."
+    },
+    {
+      "id": "calendar.events",
+      "domain": "calendar",
+      "intent": "Create, list, and update calendar events in OSC.",
+      "tool": "api/blueprints/osc_cases.py:osc_calendar_events_api",
+      "side_effect": ["db_write"],
+      "verify": "Require the returned event state and conflict checks before completion.",
+      "human_handling": "Hold ambiguous dates or conflicting events for operator confirmation."
+    },
+    {
+      "id": "todos.manage",
+      "domain": "todos",
+      "intent": "Create, list, and update case todo records.",
+      "tool": "api/blueprints/osc_cases.py:osc_todos_api",
+      "side_effect": ["db_write"],
+      "verify": "Require an API success response and the resulting todo status.",
+      "human_handling": "Leave uncertain deadlines open for operator triage."
+    },
+    {
+      "id": "documents.finalize",
+      "domain": "documents",
+      "intent": "Finalize prepared document artifacts through the OSC workflow.",
+      "tool": "api/blueprints/osc_cases.py:osc_documents_finalize_api",
+      "side_effect": ["local_write", "db_write"],
+      "verify": "Require successful artifact generation and its registered output state.",
+      "human_handling": "Preserve source artifacts and route failed finalization for review."
+    },
+    {
+      "id": "files.upload",
+      "domain": "files",
+      "intent": "Upload a case file through the guarded OSC file endpoint.",
+      "tool": "api/blueprints/osc_cases.py:osc_file_upload_api",
+      "side_effect": ["local_write", "db_write"],
+      "verify": "Require the upload response and stored file metadata.",
+      "human_handling": "Do not replace an uncertain upload; retain the source file for operator review."
+    },
+    {
+      "id": "nas.mount_guard",
+      "domain": "nas",
+      "intent": "Check and restore configured NAS share availability.",
+      "tool": "api/nas_mount_guard.py:ensure_nas_mounts",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require each configured share to report available after the guard run.",
+      "human_handling": "Stop on unavailable shares and request storage or network remediation."
+    },
+    {
+      "id": "drive.upload",
+      "domain": "drive",
+      "intent": "Upload planned NAS files to managed Drive folders.",
+      "tool": "api/osc/drive_case_sync.py:execute_nas_to_drive_uploads",
+      "side_effect": ["external_write", "local_write"],
+      "verify": "Require each upload result to be successful and free of partial failures.",
+      "human_handling": "Keep failed transfers for operator reconciliation before another upload."
+    },
+    {
+      "id": "drive.download",
+      "domain": "drive",
+      "intent": "Download planned Drive files to managed NAS folders.",
+      "tool": "api/osc/drive_case_sync.py:execute_drive_to_nas_downloads",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require each download result to be successful and preserve the target file checks.",
+      "human_handling": "Route partial transfers or path conflicts for operator reconciliation."
+    },
+    {
+      "id": "laf.portal_draft",
+      "domain": "laf",
+      "intent": "Prepare a legal-aid portal draft without treating a failed result as complete.",
+      "tool": "skills/laf-orchestrator/action.py:task_portal_action",
+      "side_effect": ["portal_write", "external_notify"],
+      "verify": "Require the orchestrator JSON success flag and the portal draft result.",
+      "human_handling": "Stop on failure and route the draft for operator review before retrying."
+    },
+    {
+      "id": "laf.portal_submit",
+      "domain": "laf",
+      "intent": "Submit a legal-aid portal action after the required confirmation flow.",
+      "tool": "skills/laf-orchestrator/action.py:task_portal_submit",
+      "side_effect": ["portal_write"],
+      "verify": "Require JSON success and a confirmed portal submission response.",
+      "human_handling": "Do not repeat an uncertain submission; obtain operator confirmation and inspect the portal record."
+    },
+    {
+      "id": "laf.preview_counts",
+      "domain": "laf",
+      "intent": "Read case activity counts without changing the portal.",
+      "tool": "skills/laf-orchestrator/action.py:task_preview_counts",
+      "side_effect": ["read_only"],
+      "verify": "Require a parsed JSON identity and counts payload.",
+      "human_handling": "Ask an operator to resolve an ambiguous case identity."
+    },
+    {
+      "id": "file_review.downloadable_probe",
+      "domain": "file_review",
+      "intent": "Inspect downloadable file-review work without downloading or changing state.",
+      "tool": "skills/file-review-orchestrator/action.py:cmd_downloadable_probe",
+      "side_effect": ["external_read"],
+      "verify": "Require a successful portal probe; diagnostics cannot replace the portal result.",
+      "human_handling": "Stop for missing dependencies or credentials and request operator remediation."
+    },
+    {
+      "id": "file_review.apply",
+      "domain": "file_review",
+      "intent": "Prepare or submit a file-review application through the portal workflow.",
+      "tool": "skills/file-review-orchestrator/action.py:cmd_apply",
+      "side_effect": ["portal_write", "local_write", "external_notify"],
+      "verify": "Require the returned success state and portal workflow evidence before reporting completion.",
+      "human_handling": "Keep uncertain applications in the confirmation workflow for operator review."
+    },
+    {
+      "id": "file_review.download",
+      "domain": "file_review",
+      "intent": "Download approved file-review materials into the managed workspace.",
+      "tool": "skills/file-review-orchestrator/action.py:cmd_download",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require the download result to report success and preserve its status record.",
+      "human_handling": "Stop bulk work when the case scope is uncertain and ask an operator to select the case."
+    },
+    {
+      "id": "transcript.case_download",
+      "domain": "transcript",
+      "intent": "Download transcripts for one identified case.",
+      "tool": "skills/transcript-downloader/action.py:cmd_download",
+      "side_effect": ["external_read", "local_write", "db_write", "external_notify"],
+      "verify": "Require the explicit success result and downloaded-file summary.",
+      "human_handling": "Route portal authentication or captcha failures to the manual review queue."
+    },
+    {
+      "id": "transcript.sync",
+      "domain": "transcript",
+      "intent": "Synchronize transcripts with locking, deduplication, and optional rename processing.",
+      "tool": "skills/transcript-downloader/action.py:cmd_sync",
+      "side_effect": ["external_read", "local_write", "db_write", "external_notify"],
+      "verify": "Require a successful sync result and batch summary after the sync lock is acquired.",
+      "human_handling": "Fail closed when the sync lock is unavailable; route captcha and portal failures for review."
+    },
+    {
+      "id": "transcript.index",
+      "domain": "transcript",
+      "intent": "Index transcript documents for later retrieval.",
+      "tool": "skills/transcript-indexer/action.py:cmd_index",
+      "side_effect": ["local_write", "db_write"],
+      "verify": "Require the index result to report processed and failed counts.",
+      "human_handling": "Keep unreadable transcript files for operator repair instead of marking them indexed."
+    },
+    {
+      "id": "transcript.forensic_verify",
+      "domain": "transcript",
+      "intent": "Autonomously watch and listen to a court or prosecutor recording, correct its full transcript against a manually corrected excerpt, and generate a new DOCX through two independent local-model passes.",
+      "tool": "skills/forensic-transcript-verifier/action.py:execute",
+      "side_effect": ["local_write"],
+      "verify": "Require two local visual passes, independent original/filtered ASR sources, exact excerpt-baseline matching, no cross-speaker time overlap, no uncovered high-confidence speech, a valid rendered DOCX, and retained audit artifacts.",
+      "human_handling": "MAGI performs the technical video, audio, speaker, text, merge, and DOCX workflow; a qualified human makes only the final legal filing decision and reviews explicitly unresolved markers."
+    },
+    {
+      "id": "transcription.audio",
+      "domain": "transcription",
+      "intent": "Convert a supplied audio recording into text with the local speech engine.",
+      "tool": "skills/apple/apple_intelligence.py:transcribe_audio",
+      "side_effect": ["read_only"],
+      "verify": "Require an explicit success result and nonempty transcript text.",
+      "human_handling": "Request a usable recording or operator transcription when speech recognition fails."
+    },
+    {
+      "id": "translation.document",
+      "domain": "translation",
+      "intent": "Translate supplied text or document content through the translation workflow.",
+      "tool": "skills/translator/action.py:translate_core",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require a successful translation result and requested output artifact when exporting.",
+      "human_handling": "Route terminology or quality conflicts to an operator before delivery."
+    },
+    {
+      "id": "ocr.consensus",
+      "domain": "ocr",
+      "intent": "Combine available OCR provider results into a confidence-aware transcription.",
+      "tool": "skills/engine/ocr/consensus.py:run_consensus",
+      "side_effect": ["read_only"],
+      "verify": "Require a consensus result with confidence and provider evidence.",
+      "human_handling": "Escalate low-confidence legal text for manual verification."
+    },
+    {
+      "id": "legal_statutes.search",
+      "domain": "legal_statutes",
+      "intent": "Search the legal statute knowledge source for a requested provision.",
+      "tool": "skills/statutes-vdb/action.py:task_search",
+      "side_effect": ["read_only"],
+      "verify": "Require a structured search result with source references.",
+      "human_handling": "Ask an operator to verify an ambiguous or missing provision."
+    },
+    {
+      "id": "judgments.collect",
+      "domain": "judgments",
+      "intent": "Collect and store judicial decisions through the judgment workflow.",
+      "tool": "skills/judgment-collector/action.py:collect",
+      "side_effect": ["external_read", "local_write", "db_write", "external_notify"],
+      "verify": "Require a successful collection result and stored judgment summary status.",
+      "human_handling": "Keep retrieval or summary failures visible for legal research review."
+    },
+    {
+      "id": "research.fetch",
+      "domain": "research",
+      "intent": "Fetch configured research sources into a managed research namespace.",
+      "tool": "skills/research-brief/action.py:task_fetch",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require a successful fetch result with source and ingestion counts.",
+      "human_handling": "Review unavailable sources or unexpected content before publishing a brief."
+    },
+    {
+      "id": "drafting.generate",
+      "domain": "drafting",
+      "intent": "Generate a case drafting artifact through the OSC drafting endpoint.",
+      "tool": "api/blueprints/osc_cases.py:osc_drafts_generate_api",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require the generated draft response and its output artifact metadata.",
+      "human_handling": "Treat drafts as reviewable work product and require operator approval before use."
+    },
+    {
+      "id": "accounting.transactions",
+      "domain": "accounting",
+      "intent": "Manage accounting transactions through the protected OSC endpoint.",
+      "tool": "api/blueprints/osc_accounting.py:osc_accounting_transactions_api",
+      "side_effect": ["db_write"],
+      "verify": "Require an API success response and recalculated transaction state.",
+      "human_handling": "Escalate accounting discrepancies for operator reconciliation."
+    },
+    {
+      "id": "quotation.manage",
+      "domain": "quotation",
+      "intent": "Create, list, and update quotations through OSC.",
+      "tool": "api/blueprints/osc_cases.py:osc_quotations_api",
+      "side_effect": ["db_write", "local_write"],
+      "verify": "Require an API success response and the persisted quotation state.",
+      "human_handling": "Hold uncertain pricing or recipient details for operator confirmation."
+    },
+    {
+      "id": "memory.capture_rules",
+      "domain": "memory",
+      "intent": "Capture an approved user rule through the memory confirmation flow.",
+      "tool": "api/domains/memory_flow.py:maybe_capture_user_rules",
+      "side_effect": ["db_write"],
+      "verify": "Require the memory flow result to confirm the approved capture state.",
+      "human_handling": "Do not store ambiguous instructions; request explicit user confirmation."
+    },
+    {
+      "id": "obsidian.writeback",
+      "domain": "obsidian",
+      "intent": "Write an approved note into the configured Obsidian vault.",
+      "tool": "skills/obsidian/action.py:task_writeback",
+      "side_effect": ["local_write"],
+      "verify": "Require the writeback result and the resulting note path metadata.",
+      "human_handling": "Preserve the source content and route vault conflicts for review."
+    },
+    {
+      "id": "realtime.query",
+      "domain": "realtime",
+      "intent": "Answer a supported real-time weather or market query.",
+      "tool": "skills/engine/realtime_data_gateway.py:handle_realtime_query",
+      "side_effect": ["external_read"],
+      "verify": "Require a structured provider response with a recognized query class.",
+      "human_handling": "Report unavailable or unsupported real-time data without fabricating a result."
+    },
+    {
+      "id": "web.upload_task",
+      "domain": "web",
+      "intent": "Process a direct web upload task and create its requested delivery artifacts.",
+      "tool": "api/blueprints/web_runtime.py:_run_direct_web_upload_text_task",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require a successful task response and the declared web artifact metadata.",
+      "human_handling": "Return validation failures to the web operator instead of publishing incomplete artifacts."
+    },
+    {
+      "id": "models.live_gate",
+      "domain": "models",
+      "intent": "Check the active model profile and required local inference endpoints.",
+      "tool": "scripts/ops/model_live_gate.py:build_report",
+      "side_effect": ["external_read"],
+      "verify": "Require the model gate report to satisfy the expected profile and endpoint checks.",
+      "human_handling": "Keep a failed model gate visible for operator recovery rather than changing profiles automatically."
+    },
+    {
+      "id": "system.acceptance",
+      "domain": "system",
+      "intent": "Run the MAGI acceptance boundary across configured checks.",
+      "tool": "scripts/ops/magi_acceptance_gate.py:run_acceptance",
+      "side_effect": ["external_read", "local_write"],
+      "verify": "Require a green acceptance status with no blocking failed gates.",
+      "human_handling": "Leave failed gates actionable for operator triage and do not infer readiness."
+    },
+    {
+      "id": "backup.create",
+      "domain": "backup",
+      "intent": "Create a managed database backup with integrity metadata.",
+      "tool": "skills/ops/database/backup_restore.py:run_backup",
+      "side_effect": ["local_write"],
+      "verify": "Require successful backup metadata with a checksum and output path.",
+      "human_handling": "Keep failed backups visible for operator storage or database recovery."
+    },
+    {
+      "id": "backup.restore",
+      "domain": "backup",
+      "intent": "Restore a verified database backup only after explicit confirmation and a pre-restore backup.",
+      "tool": "skills/ops/database/backup_restore.py:run_restore",
+      "side_effect": ["database_restore", "db_write", "local_write"],
+      "verify": "Require backup integrity verification, a successful pre-restore backup, and a successful restore result.",
+      "rollback": "Restore the pre-restore backup through the same confirmed recovery procedure."
+    },
+    {
+      "id": "notifications.telegram_delivery",
+      "domain": "notifications",
+      "intent": "Deliver a guarded operational notification and retain a retryable outbox entry on failure.",
+      "tool": "skills/ops/red_phone.py:send_telegram_push_with_status",
+      "side_effect": ["external_notify", "local_write"],
+      "verify": "Inspect delivered, acknowledged, queued, and error status fields.",
+      "human_handling": "Use the outbox retry path when delivery is not acknowledged."
+    }
+  ]
+}

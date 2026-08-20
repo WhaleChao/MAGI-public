@@ -25,7 +25,9 @@ import json
 import re
 import shutil
 import sys
+import time
 import zipfile
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -163,6 +165,181 @@ def test_dashboard_pending_todos_excludes_completed_statuses(client):
     assert "cancelled" in sql
 
 
+def test_osc_accounting_window_uses_25_to_24_period():
+    from api.osc.utils import _osc_accounting_window
+
+    start, end = _osc_accounting_window(date(2026, 7, 8))
+    assert start == date(2026, 6, 25)
+    assert end == date(2026, 7, 24)
+
+    start, end = _osc_accounting_window(date(2026, 7, 25))
+    assert start == date(2026, 7, 25)
+    assert end == date(2026, 8, 24)
+
+
+def test_accounting_period_frontend_uses_local_dates_and_25_to_24_label():
+    accounting_js = (ROOT / "static" / "osc" / "tabs" / "accounting.js").read_text(encoding="utf-8")
+    accounting_html = (ROOT / "templates" / "partials" / "osc" / "accounting.html").read_text(encoding="utf-8")
+    osc_html = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
+
+    assert ".toISOString().slice(0, 10)" not in accounting_js
+    assert ".toISOString().slice(0, 7)" not in accounting_js
+    assert "accountingLocalISOMonth(new Date())" in accounting_js
+    assert "now.getDate() >= 25" in accounting_js
+    assert "new Date(y, m, 25)" in accounting_js
+    assert "new Date(y, m + 1, 24)" in accounting_js
+    assert "套用本期 25~24" in accounting_html
+    assert "accounting.js?v=20260708-local-month-v1" in osc_html
+
+
+def test_forms_frontend_uses_local_date_default():
+    osc_events_js = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
+    osc_html = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
+
+    assert ".toISOString().slice(0, 10)" not in osc_events_js
+    assert "fmtDate(new Date())" in osc_events_js
+    assert "osc-events.js?v=20260815-deep-link-v1" in osc_html
+
+
+def test_dashboard_revenue_uses_accounting_summary_window_and_amount_logic(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM case_transactions" in sql:
+            calls.append((sql, params, fetch))
+            if "COUNT(*) AS tx_count" in sql:
+                return {
+                    "tx_count": 4,
+                    "income_total": 137000,
+                    "expense_total": 8000,
+                    "net_total": 129000,
+                }, {"host": "127.0.0.1"}
+            return [], {"host": "127.0.0.1"}
+        return _make_fake_exec()(sql, params, fetch)
+
+    with (
+        patch("api.blueprints.osc_cases._osc_accounting_window", return_value=(date(2026, 6, 25), date(2026, 7, 24))),
+        patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec),
+    ):
+        r = client.get("/api/osc/dashboard")
+
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["window"] == {"start_date": "2026-06-25", "end_date": "2026-07-24"}
+    assert payload["stats"]["monthly_revenue"] == 137000
+    assert payload["stats"]["monthly_expense"] == 8000
+    total_sql, total_params, _fetch = calls[0]
+    assert "type LIKE '收入%%' THEN ABS(amount)" in total_sql
+    assert "type='收入'" not in total_sql
+    assert total_params == ("2026-06-25", "2026-07-24")
+
+
+def test_dashboard_case_stats_and_recent_cases_use_effective_status_logic(client):
+    case_count_sqls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "SELECT COUNT(*) AS c FROM cases" in sql:
+            case_count_sqls.append(sql)
+            return {"c": len(case_count_sqls)}, {"host": "127.0.0.1"}
+        if "FROM cases" in sql and fetch == "all":
+            return [
+                {
+                    "id": 1,
+                    "case_number": "1150706-J-003",
+                    "client_name": "王曄芯",
+                    "case_category": "法律扶助案件",
+                    "case_type": "刑事",
+                    "case_reason": "詐欺等",
+                    "laf_case_no": "1150706-J-003",
+                    "application_no": "1150706-J-003",
+                    "legal_aid_status": "已結案，待送出",
+                    "status": "結案中",
+                    "folder_path": "",
+                }
+            ], {"host": "127.0.0.1"}
+        return _make_fake_exec()(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/dashboard")
+
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["recent_cases"][0]["effective_status"] == "已結案，待送出"
+    joined = "\n".join(case_count_sqls)
+    assert "legal_aid_status" in joined
+    assert "folder_path" in joined
+    assert "待送出" in joined
+    assert "COALESCE(laf_case_no, '') <> ''" in joined
+    assert "status IN ('已結案', '已結案，待報結')" not in joined
+
+
+def test_todos_api_returns_backend_is_done_for_deleted_and_deduped(client):
+    rows = [
+        {"id": 1, "case_number": "A", "todo_type": "開庭", "status": "deleted"},
+        {"id": 2, "case_number": "B", "todo_type": "行事曆事件", "status": "calendar_deduped"},
+        {"id": 3, "case_number": "C", "todo_type": "補正", "status": "待處理"},
+    ]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"case_todos": rows})):
+        r = client.get("/api/osc/todos")
+
+    assert r.status_code == 200
+    items = r.get_json()["items"]
+    assert [item["is_done"] for item in items] == [True, True, False]
+
+
+def test_calendar_events_endpoint_unions_calendar_source_todos(client):
+    rows_by_table = {
+        "calendar_events": [
+            {
+                "id": 10,
+                "event_id": "cal-10",
+                "title": "實體開庭",
+                "summary": "",
+                "description": "",
+                "start_date": "2026-07-20 10:00:00",
+                "end_date": "2026-07-20 11:00:00",
+                "case_number": "2026-0001",
+            }
+        ],
+        "case_todos": [
+            {
+                "id": 20,
+                "case_number": "2026-0002",
+                "client_name": "",
+                "todo_type": "開會",
+                "todo_date": "2026-07-21",
+                "todo_time": "09:30",
+                "description": "Google 匯入",
+                "status": "",
+                "source_file": "gcal_import:primary",
+            },
+            {
+                "id": 21,
+                "case_number": "2026-0003",
+                "client_name": "",
+                "todo_type": "行事曆事件",
+                "todo_date": "2026-07-22",
+                "todo_time": "",
+                "description": "本地行事曆待辦",
+                "status": "",
+                "source_file": "",
+            },
+        ],
+    }
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec(rows_by_table)):
+        r = client.get("/api/osc/calendar/events?limit=20")
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["source_counts"] == {"calendar_events": 1, "gcal_import": 1, "calendar_todo": 1}
+    by_source = {item["source_kind"]: item for item in body["items"]}
+    assert by_source["calendar_events"]["source_table"] == "calendar_events"
+    assert by_source["gcal_import"]["source_table"] == "case_todos"
+    assert by_source["calendar_todo"]["todo_id"] == 21
+
+
 def test_todo_mark_completed_sets_completed_date_and_reopen_clears_it(client):
     calls = []
 
@@ -173,14 +350,14 @@ def test_todo_mark_completed_sets_completed_date_and_reopen_clears_it(client):
     with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
         r = client.put("/api/osc/todos/7", json={"status": "已完成"})
     assert r.status_code == 200
-    sql = calls[-1][0]
+    sql = next(sql for sql, _params, _fetch in calls if "UPDATE case_todos SET" in sql)
     assert "completed_date=COALESCE(completed_date, NOW())" in sql
 
     calls.clear()
     with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
         r = client.put("/api/osc/todos/7", json={"status": "待處理"})
     assert r.status_code == 200
-    sql = calls[-1][0]
+    sql = next(sql for sql, _params, _fetch in calls if "UPDATE case_todos SET" in sql)
     assert "completed_date=NULL" in sql
 
 
@@ -195,7 +372,34 @@ def test_paperclip_todo_complete_buttons_are_visible_in_all_todo_surfaces():
     assert 'data-act="todo-complete"' in cases_js
     assert 'data-act="todo-reopen"' in cases_js
     assert "wbRenderTodoActions(t)" in cases_js
-    assert "20260513-todo-source-split-v1" in osc_html
+    assert "osc-utils.js?v=20260814-readonly-fetch-retry-v1" in osc_html
+    assert "dashboard.js?v=20260709-source-helper-v1" in osc_html
+    assert "todos.js?v=20260709-source-helper-v1" in osc_html
+    assert "calendar.js?v=20260709-calendar-union-v1" in osc_html
+    assert "documents.js?v=20260715-file-routes-v2" in osc_html
+    assert "admin.js?v=20260709-gcal-status-v1" in osc_html
+
+
+def test_todo_frontend_uses_backend_done_flag_and_complete_fallback_statuses():
+    todos_js = (ROOT / "static/osc/tabs/todos.js").read_text(encoding="utf-8")
+
+    assert "row.is_done" in todos_js
+    assert "oscTodoSourceKey" in todos_js
+    assert "deleted" in todos_js
+    assert "已刪除" in todos_js
+    assert "calendar_deduped" in todos_js
+
+
+def test_dashboard_and_upload_errors_do_not_fail_silently():
+    dashboard_js = (ROOT / "static/osc/tabs/dashboard.js").read_text(encoding="utf-8")
+    utils_js = (ROOT / "static/osc/osc-utils.js").read_text(encoding="utf-8")
+
+    assert "renderDashboardLoadError" in dashboard_js
+    assert "oscTodoIsCalendarSource" in dashboard_js
+    assert "載入失敗" in dashboard_js
+    api_form_block = utils_js.split("async function apiForm", 1)[1].split("const _oscNaturalCollator", 1)[0]
+    assert 'redirect: "manual"' in api_form_block
+    assert "_handleSessionExpired()" in api_form_block
 
 
 def test_laf_closed_scope_includes_final_laf_status(client):
@@ -227,6 +431,7 @@ LIST_ENDPOINTS = [
     "/api/osc/clients",
     "/api/osc/todos",
     "/api/osc/calendar/events",
+    "/api/osc/hearing-conflicts",
     "/api/osc/quotations",
     "/api/osc/quotation-templates",
     "/api/osc/accounting/transactions",
@@ -256,7 +461,8 @@ def test_list_endpoint_reachable(client, endpoint):
 
     fake = _make_fake_exec()
     with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake), \
-         patch("api.osc.utils._osc_exec", side_effect=fake):
+         patch("api.osc.utils._osc_exec", side_effect=fake), \
+         patch("api.osc.hearing_conflict_runtime._osc_exec", side_effect=fake):
         r = client.get(endpoint)
     assert r.status_code == 200, f"{endpoint} 回 {r.status_code}: {r.get_data(as_text=True)[:300]}"
 
@@ -359,8 +565,9 @@ def test_template_folder_uses_folder_open_action():
     assert 'id="templateFolder"' in html
     assert 'data-act="template-folder-open"' in js
     assert 'data-act="wb-file-share"' in js
-    assert 'fileContentUrl(path, true)' in js
-    assert 'fileContentUrl(path)' in js
+    assert 'data-act="osc-file-preview"' in js
+    assert 'data-act="osc-file-download"' in js
+    assert 'fileContentUrl(' not in js
     assert 'if (act === "template-folder-open") return await loadTemplateFolder' in events
 
 
@@ -401,6 +608,7 @@ def test_cases_endpoint_uses_effective_laf_status_for_display(client):
 
     assert r.status_code == 200
     item = r.get_json()["items"][0]
+    assert item["effective_status"] == "已結案"
     assert item["status_display"] == "已結案"
     assert item["case_type_display"] == "消費者債務清理"
     assert item["case_reason_display"] == "更生"
@@ -423,8 +631,50 @@ def test_cases_endpoint_treats_unclosed_laf_status_as_active(client):
 
     assert r.status_code == 200
     item = r.get_json()["items"][0]
-    assert item["status_display"] == "進行中"
-    assert item["effective_status"] == "進行中"
+
+
+def test_cases_endpoint_labels_civil_legal_consultant(client):
+    rows = [{
+        "id": "case-consultant",
+        "case_number": "2026-0998",
+        "client_name": "測試顧問公司",
+        "case_type": "民事",
+        "case_category": "一般案件",
+        "case_reason": "法律顧問契約",
+        "case_stage": "",
+        "notes": "",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\民事\法律顧問\2026-0998-測試顧問公司",
+        "status": "進行中",
+        "legal_aid_status": "",
+    }]
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    item = r.get_json()["items"][0]
+    assert item["case_type_display"] == "民事｜法律顧問"
+
+
+def test_cases_endpoint_filters_legal_consultant_inside_civil(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "FROM cases" in sql:
+            calls.append((sql, params))
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.get("/api/osc/cases?limit=5&case_type=法律顧問")
+
+    assert r.status_code == 200
+    sql, params = calls[-1]
+    assert "case_type = %s" in sql
+    assert "case_reason LIKE %s" in sql
+    assert "folder_path LIKE %s" in sql
+    assert "法律顧問" in params
+    assert "民事" in params
+    assert "%顧問%" in params
 
 
 def test_cases_csv_export_uses_external_case_type_display(client):
@@ -473,7 +723,256 @@ def test_cases_active_scope_excludes_laf_closing_and_closed(client):
     assert "已結案，待送出" in sql
     assert "已結案，待報結" in sql
     assert "未結案" in sql
+    assert "folder_path" in sql
+    assert "10_結案" in sql
     assert "NOT" in sql
+
+
+def test_case_create_replaces_demo_lawyer_with_setting_default(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if "SELECT value FROM settings" in sql:
+            return {"value": "正式承辦律師"}, {"host": "127.0.0.1"}
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    payload = {
+        "id": "web-test-lawyer",
+        "case_number": "2026-9999",
+        "client_name": "測試當事人",
+        "case_category": "一般案件",
+        "lawyer": "範例律師",
+        "auto_create_folder": False,
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", return_value="正式承辦律師"):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    insert_sql, insert_params = calls[0]
+    assert "lawyer" in insert_sql
+    assert "正式承辦律師" in insert_params
+    assert "範例律師" not in insert_params
+
+
+def test_case_create_strips_suspected_marker_before_db_insert(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    payload = {
+        "id": "web-test-suspected-reason",
+        "case_number": "2026-0071",
+        "client_name": "李滿金",
+        "case_category": "法律扶助案件",
+        "case_type": "刑事",
+        "case_stage": "一審",
+        "case_reason": "涉詐欺、洗錢防制法",
+        "auto_create_folder": False,
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    _insert_sql, insert_params = calls[0]
+    assert "詐欺、洗錢防制法" in insert_params
+    assert "涉詐欺、洗錢防制法" not in insert_params
+
+
+def test_consumer_debt_case_defaults_to_debt_lawyer(client):
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            calls.append((sql, params))
+            return {"rowcount": 1, "lastrowid": 1}, {"host": "127.0.0.1"}
+        return _make_fake_exec({"cases": []})(sql, params, fetch)
+
+    def fake_setting(key, default=""):
+        values = {
+            "default_lawyer": "一般承辦律師",
+            "default_specialist": "消債承辦律師",
+        }
+        return values.get(key, default)
+
+    payload = {
+        "id": "web-test-debt-lawyer",
+        "case_number": "2026-9998",
+        "client_name": "測試消債當事人",
+        "case_category": "法律扶助案件",
+        "case_type": "消費者債務清理",
+        "case_reason": "更生",
+        "auto_create_folder": False,
+    }
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=fake_exec), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", side_effect=fake_setting):
+        r = client.post("/api/osc/cases", json=payload)
+
+    assert r.status_code == 200
+    assert calls
+    insert_sql, insert_params = calls[0]
+    assert "lawyer" in insert_sql
+    assert "消債承辦律師" in insert_params
+    assert "一般承辦律師" not in insert_params
+
+
+def test_case_list_replaces_existing_demo_lawyer_with_setting_default(client):
+    rows = [
+        {
+            "id": "demo-lawyer-row",
+            "case_number": "2026-9997",
+            "client_name": "測試列表當事人",
+            "case_category": "法律扶助案件",
+            "case_type": "消費者債務清理",
+            "case_stage": "其他",
+            "case_reason": "更生",
+            "lawyer": "範例律師",
+            "status": "進行中",
+            "legal_aid_status": "未開辦",
+            "folder_path": "Z:\\lumi63181107\\01_案件\\法扶案件\\消費者債務清理\\2026-9997-測試列表當事人-消費者債務清理-更生",
+        }
+    ]
+
+    def fake_setting(key, default=""):
+        values = {
+            "default_lawyer": "一般承辦律師",
+            "default_debt_lawyer": "消債承辦律師",
+        }
+        return values.get(key, default)
+
+    with patch("api.blueprints.osc_cases._osc_exec", side_effect=_make_fake_exec({"cases": rows})), \
+         patch("api.blueprints.osc_cases._osc_get_setting_value", side_effect=fake_setting):
+        r = client.get("/api/osc/cases?limit=5")
+
+    assert r.status_code == 200
+    payload = r.get_json()
+    assert payload["items"][0]["lawyer"] == "消債承辦律師"
+
+
+def test_cases_duplicate_upsert_does_not_reopen_closed_laf_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        sql_text = sql or ""
+        if sql_text.startswith("INSERT INTO cases"):
+            raise Exception("1062 Duplicate entry")
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path" in sql_text:
+            return {
+                "id": "case-closed",
+                "status": "進行中",
+                "legal_aid_status": "已結案",
+                "manual_status_lock": 1,
+                "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\刑事\2025-0078-陳瀚-刑事二審-洗錢防制法",
+                "lawyer": "正式承辦律師",
+            }, {"host": "127.0.0.1"}
+        if sql_text.startswith("UPDATE cases SET"):
+            updates.append((sql_text, params))
+            return {"rowcount": 1}, {"host": "127.0.0.1"}
+        return {"rowcount": 0}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda _id: {"ok": True, "skipped": True})
+
+    r = client.post("/api/osc/cases", json={
+        "case_number": "2025-0078",
+        "client_name": "陳瀚",
+        "case_category": "法律扶助案件",
+        "case_type": "刑事",
+        "case_stage": "刑事二審",
+        "case_reason": "洗錢防制法",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\刑事\2025-0078-陳瀚-刑事二審-洗錢防制法",
+    })
+
+    assert r.status_code == 200
+    assert updates
+    sql, params = updates[0]
+    assert "status=%s" in sql
+    assert "folder_path" not in sql
+    assert "已結案" in params
+
+
+def test_cases_duplicate_upsert_does_not_reopen_archived_general_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    updates = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        sql_text = sql or ""
+        if sql_text.startswith("INSERT INTO cases"):
+            raise Exception("1062 Duplicate entry")
+        if "SELECT id, status, legal_aid_status, manual_status_lock, folder_path" in sql_text:
+            return {
+                "id": "case-archived",
+                "status": "進行中",
+                "legal_aid_status": "未開辦",
+                "manual_status_lock": 0,
+                "folder_path": r"Y:\lumi\03_工作資料\10_結案\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+                "lawyer": "正式承辦律師",
+            }, {"host": "127.0.0.1"}
+        if sql_text.startswith("UPDATE cases SET"):
+            updates.append((sql_text, params))
+            return {"rowcount": 1}, {"host": "127.0.0.1"}
+        return {"rowcount": 0}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_auto_archive_closed_case", lambda _id: {"ok": True, "skipped": True})
+
+    r = client.post("/api/osc/cases", json={
+        "case_number": "2026-0019",
+        "client_name": "黃語玲",
+        "case_category": "一般案件",
+        "case_type": "民事",
+        "case_stage": "一審",
+        "case_reason": "給付資遣費等",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+    })
+
+    assert r.status_code == 200
+    assert updates
+    sql, params = updates[0]
+    assert "status=%s" in sql
+    assert "folder_path" not in sql
+    assert "已結案" in params
+
+
+def test_case_effective_status_treats_archive_path_as_closed():
+    from api.blueprints.osc_cases import _osc_effective_case_status, _osc_should_archive_case_row
+
+    row = {
+        "status": "進行中",
+        "legal_aid_status": "未開辦",
+        "folder_path": r"Y:\lumi\03_工作資料\10_結案\一般案件\民事\2026-0019-黃語玲-一審-給付資遣費等",
+    }
+    assert _osc_effective_case_status(row) == "已結案"
+    assert _osc_should_archive_case_row(row) is True
+
+
+def test_laf_effective_status_uses_laf_workflow_status():
+    from api.blueprints.osc_cases import _osc_effective_case_status, _osc_case_api_row
+
+    row = {
+        "case_category": "法律扶助案件",
+        "case_reason": "消費者債務清理事件",
+        "status": "進行中",
+        "legal_aid_status": "未開辦",
+        "folder_path": r"Z:\lumi63181107\01_案件\法扶案件\民事\2026-0045-測試-一審-消費者債務清理",
+    }
+    assert _osc_effective_case_status(row) == "未開辦"
+    assert _osc_case_api_row(row)["status_display"] == "未開辦"
+
+    row["legal_aid_status"] = "進行中"
+    assert _osc_effective_case_status(row) == "進行中"
 
 
 @pytest.mark.parametrize(
@@ -504,14 +1003,19 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     html = (ROOT / "templates" / "partials" / "osc" / "cases.html").read_text(encoding="utf-8")
     page = (ROOT / "templates" / "osc.html").read_text(encoding="utf-8")
     js = (ROOT / "static" / "osc" / "tabs" / "cases.js").read_text(encoding="utf-8")
+    events_js = (ROOT / "static" / "osc" / "osc-events.js").read_text(encoding="utf-8")
 
     assert "進行中 / 結案中" not in html
     assert "結案中 / 已結案" not in html
     assert 'data-scope="pending_report">待報結' in html
     assert 'data-scope="pending_submit">待送出' in html
     assert 'data-type="消費者債務清理"' in html
+    assert 'data-type="法律顧問"' in html
+    assert '<option value="法律顧問">' in html
     assert 'data-kind="消費者債務清理"' not in html
-    assert "法扶 / " in js
+    assert "法扶｜" in js
+    assert "isLegalConsultantCaseRow" in js
+    assert "民事｜法律顧問" in js
     assert "function isFinalClosingStatusText" in js
     assert "function isFinalClosedStatusText" in js
     assert 'text.includes("未結案")' in js
@@ -521,13 +1025,26 @@ def test_cases_ui_uses_unambiguous_status_and_laf_badge_labels():
     assert ">結案</button>" in js
     assert "一鍵結案" not in js
     assert "case-close-btn" in js
-    assert "20260518-case-sort-v1" in page
+    assert "file_manager.js?v=20260816-upload-idempotent-v1" in page
+    assert "tabs/cases.js?v=20260715-file-routes-v2" in page
     assert "case_type_display" in js
     assert "case_reason_display" in js
     assert "const editorCaseType = caseDisplayType(c)" in js
     assert 'id="case_case_number" placeholder="儲存時由 MAGI 自動產生" readonly' in html
     assert 'id="case_application_no" type="hidden"' in html
     assert 'for="case_court_division">股別' in html
+    assert 'id="wbFolderUploadInput" type="file" multiple hidden' in page
+    assert 'id="wbDirectoryUploadInput" type="file" webkitdirectory directory multiple hidden' in page
+    assert "/api/osc/files/upload-multi" in js
+    assert 'data-act="wb-folder-upload-dir"' in js
+    assert 'data-act="wb-folder-trash"' in js
+    assert "trashWorkbenchEntry" in js
+    assert "relative_paths" in js
+    assert "handleFolderUploadFiles(files)" in events_js
+    assert "wbDirectoryUploadInput" in events_js
+    assert "可將多個檔案拖拉到這裡上傳" in js
+    assert 'addEventListener("drop"' in js
+    assert 'data-act="wb-folder-rename"' in js
     assert 'id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly' in js
     assert "wb_case_court_division" in js
 
@@ -579,7 +1096,186 @@ def test_cases_post_generates_osc_number_syncs_laf_and_keeps_division(client, mo
     assert inserted["case_number"] == "2026-0099"
     assert inserted["laf_case_no"] == "1150101-E-001"
     assert inserted["application_no"] == "1150101-E-001"
+    assert inserted["court_case_no"] == "115年度建字第1號"
+    assert inserted["court_case_number"] == "115年度建字第1號"
     assert inserted["court_division"] == "義股"
+
+
+def test_case_put_syncs_legacy_court_case_number_to_canonical(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    calls = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        calls.append((sql, params, fetch))
+        if fetch == "one":
+            return {
+                "id": "case-1",
+                "case_number": "2025-0007",
+                "client_name": "張偉銘",
+                "case_category": "法律扶助案件",
+                "case_type": "刑事",
+                "case_reason": "傷害致死",
+                "folder_path": "",
+                "manual_status_lock": 0,
+            }, {"host": "127.0.0.1"}
+        return {"rowcount": 1}, {"host": "127.0.0.1"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+
+    r = client.put("/api/osc/cases/case-1", json={"court_case_number": "114年度原訴字第24號"})
+
+    assert r.status_code == 200
+    update_sql, update_params, _ = next(c for c in calls if c[0].startswith("UPDATE cases SET"))
+    assert "court_case_no=%s" in update_sql
+    assert "court_case_number=%s" in update_sql
+    cols = [part.split("=")[0] for part in re.search(r"UPDATE cases SET (.*?) WHERE", update_sql).group(1).split(",")]
+    updated = dict(zip(cols, update_params))
+    assert updated["court_case_no"] == "114年度原訴字第24號"
+    assert updated["court_case_number"] == "114年度原訴字第24號"
+
+
+def test_cases_post_does_not_default_to_folder_creation_for_manual_new_case(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    folders = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            return {"rowcount": 1, "lastrowid": None}, {"host": "127.0.0.1"}
+        if fetch == "all":
+            return [], {"host": "127.0.0.1"}
+        if fetch == "one":
+            return None, {"host": "127.0.0.1"}
+        return {"rowcount": 1}, {"host": "127.0.0.1"}
+
+    def fake_folder(row_id, payload, case_category):
+        folders.append((row_id, dict(payload), case_category))
+        return {"ok": True, "path": f"/tmp/{payload['case_number']}-測試"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_generate_case_number", lambda: "2026-0101")
+    monkeypatch.setattr(mod, "_osc_auto_create_folder_for_case", fake_folder)
+
+    r = client.post("/api/osc/cases", json={
+        "client_name": "謝易霖測試",
+        "case_category": "一般案件",
+        "case_type": "刑事",
+        "case_stage": "偵查",
+        "case_reason": "兒童及少年性剝削防制條例",
+    })
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert "folder" not in body
+    assert folders == []
+
+
+def test_cases_post_does_not_create_folder_when_expected_path_missing_without_opt_in(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    folders = []
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if sql.startswith("INSERT INTO cases"):
+            return {"rowcount": 1, "lastrowid": None}, {"host": "127.0.0.1"}
+        if fetch == "all":
+            return [], {"host": "127.0.0.1"}
+        if fetch == "one":
+            return None, {"host": "127.0.0.1"}
+        return {"rowcount": 1}, {"host": "127.0.0.1"}
+
+    def fake_folder(row_id, payload, case_category):
+        folders.append((row_id, dict(payload), case_category))
+        return {"ok": True, "path": f"/tmp/{payload['case_number']}-測試"}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_generate_case_number", lambda: "2026-0102")
+    monkeypatch.setattr(mod, "_osc_resolve_existing_local_path", lambda *a, **k: "")
+    monkeypatch.setattr(mod, "_osc_auto_create_folder_for_case", fake_folder)
+
+    r = client.post("/api/osc/cases", json={
+        "client_name": "謝易霖測試二",
+        "case_category": "一般案件",
+        "case_type": "刑事",
+        "case_stage": "偵查",
+        "case_reason": "兒童及少年性剝削防制條例",
+        "folder_path": r"Z:\lumi63181107\01_案件\一般案件\刑事\2026-0102-謝易霖測試二-偵查-兒童及少年性剝削防制條例",
+    })
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert "folder" not in body
+    assert folders == []
+
+
+def test_open_folder_route_does_not_auto_create_missing_folder(client, monkeypatch):
+    import api.blueprints.osc_cases as mod
+
+    def fake_exec(sql, params=(), fetch="none"):
+        if fetch == "one" and "FROM cases" in sql:
+            return {
+                "id": "case-1",
+                "case_number": "2026-0103",
+                "client_name": "謝易霖",
+                "case_category": "一般案件",
+                "case_type": "刑事",
+                "case_stage": "偵查",
+                "case_reason": "測試",
+                "folder_path": "",
+            }, {"host": "127.0.0.1"}
+        return {"rowcount": 0}, {"host": "127.0.0.1"}
+
+    def fail_ensure(_row):
+        raise AssertionError("open/folder routes must not create folders")
+
+    def fake_effective(_row, update_db=False):
+        assert update_db is False
+        return {"folder_path": "", "local_folder": "", "source": "empty", "updated": False}
+
+    monkeypatch.setattr(mod, "_osc_exec", fake_exec)
+    monkeypatch.setattr(mod, "_osc_ensure_active_case_folder", fail_ensure)
+    monkeypatch.setattr(mod, "_osc_effective_case_folder_for_row", fake_effective)
+
+    r = client.post("/api/osc/cases/case-1/open-folder")
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["error_kind"] == "folder_path_empty"
+
+
+def test_case_creation_root_never_falls_back_to_cloudstorage(monkeypatch):
+    import api.blueprints.osc_cases as mod
+    import api.nas_mount_guard as nas_mount_guard
+
+    cloud_root = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"
+    monkeypatch.setattr(mod, "_osc_case_creation_roots", lambda: [cloud_root])
+    monkeypatch.setattr(mod.os.path, "isdir", lambda path: path == cloud_root)
+    monkeypatch.setattr(nas_mount_guard, "ensure_nas_mounts", lambda: None)
+    monkeypatch.setattr(mod, "_osc_record_case_root_outage", lambda roots: {"first_seen": mod.time.time(), "roots": roots})
+
+    result = mod._osc_select_case_creation_root()
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["reason"] == "mount_required"
+    assert result["error"] == "nas_case_root_not_mounted"
+
+
+def test_synthetic_case_folder_creation_guard_blocks_production_root():
+    import api.blueprints.osc_cases as mod
+
+    result = mod._osc_case_folder_creation_guard(
+        {"case_number": "2026-9998", "client_name": "測試消債當事人"},
+        "/Volumes/homes/lumi63181107/01_案件",
+    )
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert result["reason"] == "synthetic_case_production_root_blocked"
 
 
 def test_cases_legacy_category_still_maps_to_case_kind(client):
@@ -766,6 +1462,27 @@ def test_file_content_chinese_pdf_has_mobile_safe_ascii_filename(client, tmp_pat
     assert "%E6%A5%8A%E6%9B%89%E7%90%B3-%E6%A1%88.pdf" in cd
 
 
+def test_file_content_special_path_is_query_encoded_and_keeps_inline_headers(client, tmp_path):
+    pdf = tmp_path / "卷證 #1 & 50%.pdf"
+    payload = b"%PDF-special-path"
+    pdf.write_bytes(payload)
+
+    with patch("api.blueprints.osc_cases._osc_local_path_candidates", return_value=[str(pdf)]), \
+         patch("api.blueprints.osc_cases._osc_is_safe_local_path", return_value=True):
+        r = client.get(
+            "/api/osc/files/content",
+            query_string={"path": str(pdf), "inline": "1"},
+        )
+
+    assert r.status_code == 200
+    assert r.data == payload
+    assert r.content_type.startswith("application/pdf")
+    assert r.headers["Content-Disposition"].startswith("inline")
+    assert "filename*=UTF-8''" in r.headers["Content-Disposition"]
+    assert "%23" in r.headers["Content-Disposition"]
+    assert "%26" in r.headers["Content-Disposition"]
+
+
 def test_file_content_head_uses_stat_without_staging(client, tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
 
@@ -803,6 +1520,16 @@ def test_file_content_prefers_hydrated_volume_candidate_over_dataless_cloud(clie
 
     assert r.status_code == 200
     assert r.data == b"%PDF-volume-copy"
+
+
+def test_file_content_candidate_priority_prefers_hydrated_local_sync_over_volume(monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    cloud = "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件/卷證.pdf"
+    volume = "/Volumes/homes/lumi63181107/01_案件/卷證.pdf"
+    monkeypatch.setattr(mod, "_osc_is_dataless_file", lambda _path: False)
+
+    assert sorted([volume, cloud], key=mod._osc_file_download_candidate_priority) == [cloud, volume]
 
 
 def test_large_file_content_stages_nas_file_when_direct_read_deadlocks(client, tmp_path, monkeypatch):
@@ -862,6 +1589,66 @@ def test_large_file_content_uses_system_cp_when_python_read_keeps_deadlocking(cl
     assert r.status_code == 200
     assert r.data == payload
     assert attempts["n"] >= 1
+
+
+def test_network_file_falls_back_to_system_copy_when_local_helper_is_down(tmp_path, monkeypatch):
+    """5016 is an optimization; its absence must not break preview/download."""
+    from api.blueprints import osc_cases as mod
+
+    source = tmp_path / "nas-file.pdf"
+    payload = b"%PDF-helper-down-fallback"
+    source.write_bytes(payload)
+    helper_calls = {"n": 0}
+
+    def unavailable_helper(_path, *, timeout=None):
+        assert timeout and timeout <= 120
+        helper_calls["n"] += 1
+        raise OSError("helper stage failed: connection refused")
+
+    def system_copy(_source, target, expected_size=None, *, deadline=None):
+        assert expected_size is None
+        assert deadline and deadline > time.monotonic()
+        Path(target).write_bytes(payload)
+        return True
+
+    monkeypatch.setattr(mod, "_osc_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod, "_osc_stage_file_with_helper", unavailable_helper)
+    monkeypatch.setattr(mod, "_osc_copy_with_system_cp", system_copy)
+
+    staged = mod._osc_stage_file_with_retry(str(source), max_attempts=2)
+    try:
+        assert Path(staged).read_bytes() == payload
+        assert helper_calls["n"] == 1
+    finally:
+        Path(staged).unlink(missing_ok=True)
+
+
+def test_network_file_staging_has_one_end_to_end_deadline(tmp_path, monkeypatch):
+    from api.blueprints import osc_cases as mod
+
+    source = tmp_path / "nas-file.pdf"
+    source.write_bytes(b"%PDF")
+    helper_calls = {"n": 0}
+    clock = iter([0.0, 0.0, 2.0])
+
+    monkeypatch.setenv("PAPERCLIP_FILE_STAGE_DEADLINE_SEC", "1")
+    monkeypatch.setattr(mod, "_osc_is_network_nas_path", lambda _path: True)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: next(clock))
+
+    def unavailable_helper(_path, *, timeout=None):
+        helper_calls["n"] += 1
+        raise OSError("helper unavailable")
+
+    monkeypatch.setattr(mod, "_osc_stage_file_with_helper", unavailable_helper)
+    monkeypatch.setattr(
+        mod,
+        "_osc_copy_with_system_cp",
+        lambda *_args, **_kwargs: False,
+    )
+
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        mod._osc_stage_file_with_retry(str(source), max_attempts=8)
+    assert helper_calls["n"] == 1
 
 
 def test_file_content_stages_even_when_source_stat_deadlocks(client, tmp_path, monkeypatch):
@@ -974,7 +1761,18 @@ def test_debt_schema_returns_fields(client):
     assert r.status_code == 200
 
 
-def test_debt_source_status_uses_bundled_source(client):
+def test_debt_source_status_uses_bundled_source(client, tmp_path, monkeypatch):
+    shared_state = tmp_path / "shared"
+    address_book = shared_state / "debt" / "address-book"
+    address_book.mkdir(parents=True)
+    (address_book / "all adress - bank.csv").write_text(
+        "name,address\n合成銀行,合成市測試路一號\n", encoding="utf-8"
+    )
+    (address_book / "all adress - company.csv").write_text(
+        "name,address\n合成公司,合成市測試路二號\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MAGI_V3_SHARED_STATE_DIR", str(shared_state))
+    monkeypatch.setenv("MAGI_DEBT_ADDRESS_BOOK_DIR", str(address_book))
     r = client.get("/api/osc/debt/source-status")
     assert r.status_code == 200
     body = r.get_json()
@@ -1019,6 +1817,7 @@ def test_debt_auto_import_selected_docs_and_candidates(client, tmp_path, monkeyp
     _write_debt_asset_doc(asset, "12345")
     _write_debt_creditor_doc(creditor, "67890", "測試銀行")
     monkeypatch.setattr(mod, "_export_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(mod, "_debt_osc_exec", lambda *args, **kwargs: ([], {"host": "unit"}))
 
     r = client.get("/api/osc/debt/import-candidates")
     assert r.status_code == 200
@@ -1039,6 +1838,87 @@ def test_debt_auto_import_selected_docs_and_candidates(client, tmp_path, monkeyp
     assert body["max_bank"] == "測試銀行"
 
 
+def test_debt_auto_import_upload_uses_secure_temp_filename(client, monkeypatch):
+    import api.debt_document_generator as gen
+
+    seen = {}
+
+    def fake_auto_import_from_docs(asset_statement_path="", creditor_list_path=""):
+        seen["asset"] = asset_statement_path
+        seen["creditor"] = creditor_list_path
+        return {"asset_total": 1, "debt_total": 2}
+
+    monkeypatch.setattr(gen, "auto_import_from_docs", fake_auto_import_from_docs)
+    r = client.post(
+        "/api/osc/debt/auto-import",
+        data={"asset_doc": (BytesIO(b"not a real docx"), "../../escape.docx")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body["ok"] is True
+    assert seen["asset"]
+    assert Path(seen["asset"]).name.endswith("escape.docx")
+    assert ".." not in Path(seen["asset"]).name
+
+
+def test_file_manager_chunk_requires_base_path_on_every_chunk(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    monkeypatch.setattr(mod, "_CHUNK_TMP_DIR", tmp_path / "chunks")
+    r = client.post(
+        "/api/osc/files/upload-chunked",
+        data={
+            "session_id": "sessmissingbase",
+            "chunk_index": "0",
+            "total_chunks": "2",
+            "filename": "large.pdf",
+            "chunk": (BytesIO(b"abc"), "large.pdf.part0"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 404
+    assert r.get_json()["error"] == "base_not_found_or_not_allowed"
+
+
+def test_file_manager_chunk_rejects_oversize_before_finalize(client, tmp_path, monkeypatch):
+    from api.blueprints import osc_files as mod
+
+    base = tmp_path / "fm-root"
+    base.mkdir()
+    monkeypatch.setenv("PAPERCLIP_FILEMANAGER_TEST_BASE", str(base))
+    monkeypatch.setattr(mod, "_CHUNK_TMP_DIR", tmp_path / "chunks")
+    monkeypatch.setattr(mod, "_MAX_UPLOAD_BYTES_PER_FILE", 5)
+    r = client.post(
+        "/api/osc/files/upload-chunked",
+        data={
+            "session_id": "sessoversize",
+            "chunk_index": "0",
+            "total_chunks": "2",
+            "filename": "large.pdf",
+            "base_path": str(base),
+            "relative_path": "",
+            "chunk": (BytesIO(b"abcdef"), "large.pdf.part0"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 413
+    assert r.get_json()["error"] == "file_too_large"
+
+
+def test_labor_law_parse_files_rejects_paths_outside_allowed_roots(client, tmp_path):
+    outside = tmp_path / "attendance.xlsx"
+    outside.write_bytes(b"not really xlsx")
+    r = client.post(
+        "/api/osc/labor-law/parse-files",
+        json={"file_paths": [str(outside)]},
+    )
+    assert r.status_code == 400
+    body = r.get_json()
+    assert body["ok"] is False
+    assert body["error"] == "file_paths_not_allowed"
+
+
 def test_debt_generate_word_files_and_bank_json_record(client, tmp_path, monkeypatch):
     from api import debt_document_generator as gen
     from api.blueprints import osc_debt as mod
@@ -1047,6 +1927,13 @@ def test_debt_generate_word_files_and_bank_json_record(client, tmp_path, monkeyp
     shutil.copytree(Path(gen._TEMPLATE_DIR), template_dir)
     export_dir = tmp_path / "exports"
     export_dir.mkdir()
+    shared_state = tmp_path / "shared"
+    address_book = shared_state / "debt" / "address-book"
+    address_book.mkdir(parents=True)
+    for filename in gen._REQUIRED_ADDRESS_BOOK_FILES:
+        shutil.copy2(Path(gen._LEGACY_TEMPLATE_DIR) / filename, address_book / filename)
+    monkeypatch.setenv("MAGI_V3_SHARED_STATE_DIR", str(shared_state))
+    monkeypatch.setenv("MAGI_DEBT_ADDRESS_BOOK_DIR", str(address_book))
     monkeypatch.setattr(gen, "_TEMPLATE_DIR", str(template_dir))
     monkeypatch.setattr(mod, "_export_dir", lambda: str(export_dir))
 
@@ -1108,7 +1995,7 @@ def test_debt_generate_word_files_and_bank_json_record(client, tmp_path, monkeyp
     assert imported["debt_total"] == 67890
     assert imported["max_bank"] == "測試銀行"
 
-    address_json = template_dir / "all adress - bank.json"
+    address_json = address_book / "all adress - bank.json"
     assert address_json.exists()
     bank_data = json.loads(address_json.read_text(encoding="utf-8"))
     assert any(item["name"] == "測試銀行" and item["address"] == "台北市測試路100號" for item in bank_data["items"])
@@ -1119,6 +2006,7 @@ def test_generated_exports_can_use_paperclip_download_and_share(client, tmp_path
     from api.blueprints import osc_files as files_mod
 
     monkeypatch.setattr(files_mod, "_SHARE_STORE_PATH", tmp_path / "shares.json")
+    monkeypatch.setenv("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL", "https://share.invalid")
     export_dir = ROOT / "exports"
     export_dir.mkdir(exist_ok=True)
     generated = export_dir / "消債下載分享測試.docx"
@@ -1271,8 +2159,12 @@ def test_backup_list_endpoint(client):
 # ── 11. Google Calendar status endpoint ───────────────────────────────────────
 
 
-def test_gcal_status_endpoint(client):
+def test_gcal_status_endpoint(client, tmp_path, monkeypatch):
     """GCal status 應該回 connected=false（測試環境無 token.json）。"""
+    import api.blueprints.osc_gcal as osc_gcal
+
+    monkeypatch.delenv("MAGI_GOOGLE_CALENDAR_TOKEN_PATH", raising=False)
+    monkeypatch.setattr(osc_gcal, "TOKEN_PATH", tmp_path / "missing_google_calendar_token.json")
     r = client.get("/api/osc/gcal/status")
     assert r.status_code == 200
     body = r.get_json()
@@ -1283,11 +2175,14 @@ def test_gcal_status_endpoint(client):
 # ── 12. heartbeat / status JSON 端點 ─────────────────────────────────────────
 
 
-def test_magi_status_json_has_no_legacy_db_ip():
+def test_magi_status_json_has_no_legacy_db_ip(tmp_path, monkeypatch):
     """static/magi_status.json 不該再有舊 NAS IP（2026-04-30 修復後驗證）。"""
-    status_path = ROOT / "static" / "magi_status.json"
-    if not status_path.exists():
-        pytest.skip("magi_status.json 尚未生成（heartbeat 未執行過）")
+    from skills.ops import heartbeat
+
+    status_path = tmp_path / "magi_status.json"
+    monkeypatch.setattr(heartbeat, "STATUS_FILE", str(status_path))
+    monkeypatch.setattr(heartbeat, "check_ping", lambda _ip: False)
+    heartbeat.update_status()
     raw = status_path.read_text(encoding="utf-8")
     # 完整禁止舊的 desktop-jj06fa3 IP
     legacy_ip = "100." "121." "61." "74"

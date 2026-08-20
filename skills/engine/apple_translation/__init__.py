@@ -26,6 +26,12 @@ _BUILD_SCRIPT = _THIS_DIR / "_sidecar" / "build.sh"
 
 # Default CLI timeout (seconds). Swift bootstrap + translation + teardown.
 _DEFAULT_TIMEOUT_SEC = float(os.environ.get("MAGI_APPLE_TRANSLATION_TIMEOUT_SEC", "10.0"))
+# The Swift sidecar has its own 15-second hard stop.  A five-second probe can
+# misclassify a healthy, cold Translation framework immediately after a MAGI
+# restart.  Wait long enough to receive the sidecar's real terminal result.
+_PROBE_TIMEOUT_SEC = float(
+    os.environ.get("MAGI_APPLE_TRANSLATION_PROBE_TIMEOUT_SEC", "18.0")
+)
 
 # Exit code -> stable error key. Keep in sync with main.swift.
 _EXIT_CODE_MAP: Dict[int, str] = {
@@ -89,9 +95,10 @@ def is_available() -> Tuple[bool, str]:
     otherwise a short stable error key.
 
     Result is cached after the first call (session-scoped).  The probe runs
-    a real short translation with a 5-second timeout so that a binary that
-    exists but hangs (e.g. language packs not installed) is detected
-    correctly and tests are skipped rather than timing out after 15 s.
+    a real short translation with a bounded timeout so that a binary that
+    exists but hangs is detected correctly.  The default is slightly longer
+    than the sidecar's own 15-second safety stop to avoid false failures during
+    a cold Translation framework start.
     """
     global _SIDECAR_PROBE_CACHE
     if _SIDECAR_PROBE_CACHE is not None:
@@ -112,7 +119,7 @@ def is_available() -> Tuple[bool, str]:
             [str(_SIDECAR_BIN), "zh-Hant", "en"],
             input="測試".encode("utf-8"),
             capture_output=True,
-            timeout=5.0,
+            timeout=_PROBE_TIMEOUT_SEC,
         )
         if proc.returncode == 0:
             _SIDECAR_PROBE_CACHE = True, ""

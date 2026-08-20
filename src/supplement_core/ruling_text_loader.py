@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from magi_v3.external_inputs import bound_shared_directory
+
 from .exceptions import SupplementError
 
 
@@ -50,7 +52,13 @@ def _magi_root() -> Path:
 
 def _cache_dir() -> Path:
     """回傳 cache 目錄（自動 mkdir -p）。"""
-    d = _magi_root() / "runtime" / "supplement_cache"
+    runtime = bound_shared_directory(
+        _magi_root(),
+        env_name="MAGI_RUNTIME_DIR",
+        shared_leaf="runtime",
+        source_fallback=str(_magi_root() / "runtime"),
+    )
+    d = runtime / "supplement_cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

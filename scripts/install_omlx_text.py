@@ -18,12 +18,48 @@ from pathlib import Path
 LABEL = "com.magi.omlx"
 
 
+def _enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def run(*args: str) -> None:
     subprocess.run(list(args), check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def build_launch_agent_plist(project_root: Path, runtime_root: Path) -> dict:
     log_path = Path("/opt/homebrew/var/log/omlx.log")
+    unified_runtime = os.environ.get("OMLX_GEMMA4_UNIFIED_RUNTIME", "0")
+    environment = {
+        "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "MAGI_RUNTIME_DIR": str(runtime_root),
+        "OMLX_TEXT_BASE_PATH": os.environ.get("OMLX_TEXT_BASE_PATH", str(Path.home() / ".omlx")),
+        "OMLX_TEXT_MODEL_DIR": os.environ.get("OMLX_TEXT_MODEL_DIR", str(Path.home() / ".omlx" / "models-text")),
+        "OMLX_TEXT_PORT": os.environ.get("OMLX_TEXT_PORT", "8080"),
+        "OMLX_TEXT_MAX_MODEL_MEMORY": os.environ.get("OMLX_TEXT_MAX_MODEL_MEMORY", "16GB"),
+        "OMLX_TEXT_MAX_PROCESS_MEMORY": os.environ.get("OMLX_TEXT_MAX_PROCESS_MEMORY", "17GB"),
+        "OMLX_TEXT_MAX_NUM_SEQS": os.environ.get("OMLX_TEXT_MAX_NUM_SEQS", "1"),
+        "OMLX_TEXT_COMPLETION_BATCH_SIZE": os.environ.get("OMLX_TEXT_COMPLETION_BATCH_SIZE", "1"),
+        "OMLX_TEXT_INITIAL_CACHE_BLOCKS": os.environ.get("OMLX_TEXT_INITIAL_CACHE_BLOCKS", "2"),
+        "OMLX_TEXT_DISABLE_CACHE": os.environ.get("OMLX_TEXT_DISABLE_CACHE", "0"),
+        "OMLX_TEXT_HOT_CACHE_MAX_SIZE": os.environ.get("OMLX_TEXT_HOT_CACHE_MAX_SIZE", "512MB"),
+        "OMLX_TEXT_MAX_TOKENS": os.environ.get("OMLX_TEXT_MAX_TOKENS", "8192"),
+        "OMLX_TEXT_MAX_CONTEXT_WINDOW": os.environ.get("OMLX_TEXT_MAX_CONTEXT_WINDOW", "8192"),
+        "OMLX_GEMMA4_UNIFIED_RUNTIME": unified_runtime,
+        "OMLX_GEMMA4_UNIFIED_WRAPPER": os.environ.get(
+            "OMLX_GEMMA4_UNIFIED_WRAPPER",
+            str(Path.home() / ".omlx" / "bin" / "omlx-gemma4-unified-serve"),
+        ),
+    }
+    # The normal Homebrew oMLX process imports no MAGI release code.  Writing
+    # either a release root or release-specific Python path while that overlay
+    # is disabled creates a stale dependency after every atomic release
+    # switch.  Only bind them when the unified overlay is explicitly enabled.
+    if _enabled(unified_runtime):
+        environment["MAGI_ROOT_DIR"] = str(project_root)
+        environment["MAGI_OMLX_GEMMA4_PYTHON"] = os.environ.get(
+            "MAGI_OMLX_GEMMA4_PYTHON",
+            str(project_root / "venv" / "bin" / "python3"),
+        )
     return {
         "Label": LABEL,
         "ProgramArguments": ["/bin/bash", os.environ.get("OMLX_TEXT_START_SCRIPT", "/opt/homebrew/bin/omlx-magi-start-text")],
@@ -31,23 +67,7 @@ def build_launch_agent_plist(project_root: Path, runtime_root: Path) -> dict:
         "KeepAlive": True,
         "ThrottleInterval": 15,
         "WorkingDirectory": str(Path.home()),
-        "EnvironmentVariables": {
-            "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "MAGI_ROOT_DIR": str(project_root),
-            "MAGI_RUNTIME_DIR": str(runtime_root),
-            "OMLX_TEXT_BASE_PATH": os.environ.get("OMLX_TEXT_BASE_PATH", str(Path.home() / ".omlx")),
-            "OMLX_TEXT_MODEL_DIR": os.environ.get("OMLX_TEXT_MODEL_DIR", str(Path.home() / ".omlx" / "models-text")),
-            "OMLX_TEXT_PORT": os.environ.get("OMLX_TEXT_PORT", "8080"),
-            "OMLX_TEXT_MAX_MODEL_MEMORY": os.environ.get("OMLX_TEXT_MAX_MODEL_MEMORY", "16GB"),
-            "OMLX_TEXT_MAX_PROCESS_MEMORY": os.environ.get("OMLX_TEXT_MAX_PROCESS_MEMORY", "17GB"),
-            "OMLX_TEXT_MAX_NUM_SEQS": os.environ.get("OMLX_TEXT_MAX_NUM_SEQS", "1"),
-            "OMLX_TEXT_COMPLETION_BATCH_SIZE": os.environ.get("OMLX_TEXT_COMPLETION_BATCH_SIZE", "1"),
-            "OMLX_TEXT_INITIAL_CACHE_BLOCKS": os.environ.get("OMLX_TEXT_INITIAL_CACHE_BLOCKS", "2"),
-            "OMLX_TEXT_DISABLE_CACHE": os.environ.get("OMLX_TEXT_DISABLE_CACHE", "0"),
-            "OMLX_TEXT_HOT_CACHE_MAX_SIZE": os.environ.get("OMLX_TEXT_HOT_CACHE_MAX_SIZE", "512MB"),
-            "OMLX_TEXT_MAX_TOKENS": os.environ.get("OMLX_TEXT_MAX_TOKENS", "8192"),
-            "OMLX_TEXT_MAX_CONTEXT_WINDOW": os.environ.get("OMLX_TEXT_MAX_CONTEXT_WINDOW", "8192"),
-        },
+        "EnvironmentVariables": environment,
         "StandardOutPath": str(log_path),
         "StandardErrorPath": str(log_path),
         "Nice": 1,

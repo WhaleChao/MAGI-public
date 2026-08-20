@@ -16,8 +16,9 @@ from typing import Any
 logger = logging.getLogger("FeedbackLoop")
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2])))
-FEEDBACK_PATH = MAGI_ROOT / ".agent" / "routing_feedback.json"
-PROMPT_STATS_PATH = MAGI_ROOT / ".agent" / "prompt_stats.json"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
+FEEDBACK_PATH = AGENT_DIR / "routing_feedback.json"
+PROMPT_STATS_PATH = AGENT_DIR / "prompt_stats.json"
 MAX_ENTRIES = 1000  # 最多保留的回饋紀錄
 
 

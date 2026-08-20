@@ -149,8 +149,9 @@ def _add_stamp_image_to_last_page(doc, stamp_image, stamp_center=None):
             from PIL import Image
 
             img = Image.open(stamp_image).convert("RGBA")
+            data = img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata()
             pixels = []
-            for r, g, b, a in img.getdata():
+            for r, g, b, a in data:
                 if r > 245 and g > 245 and b > 245:
                     pixels.append((r, g, b, 0))
                 else:

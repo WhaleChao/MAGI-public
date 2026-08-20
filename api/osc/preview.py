@@ -34,10 +34,22 @@ from typing import Optional
 
 _log = logging.getLogger(__name__)
 
-CACHE_DIR = Path(os.path.expanduser("~/.cache/paperclip-preview"))
+_runtime_dir = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+_default_cache_dir = (
+    Path(_runtime_dir).expanduser() / "cache" / "paperclip-preview"
+    if _runtime_dir
+    else Path(os.path.expanduser("~/.cache/paperclip-preview"))
+)
+CACHE_DIR = Path(
+    os.environ.get("MAGI_OSC_PREVIEW_CACHE_DIR") or _default_cache_dir
+).expanduser()
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB
+_default_cache_max_bytes = 1024 * 1024 * 1024 if os.environ.get("MAGI_V3_RELEASE_ID") else 5 * 1024 * 1024 * 1024
+CACHE_MAX_BYTES = max(
+    64 * 1024 * 1024,
+    int(os.environ.get("MAGI_OSC_PREVIEW_CACHE_MAX_BYTES") or _default_cache_max_bytes),
+)
 LIBREOFFICE_TIMEOUT_SEC = 60
 SIPS_TIMEOUT_SEC = 30
 

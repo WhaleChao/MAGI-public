@@ -20,7 +20,11 @@ MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, MAGI_ROOT)
 sys.path.insert(0, os.path.join(MAGI_ROOT, "skills", "osc-orchestrator"))
 
-OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_osc_todos_latest.json")
+RUNTIME_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_RUNTIME_DIR", "").strip())
+    or os.path.join(MAGI_ROOT, ".runtime")
+)
+OUTPUT_PATH = os.path.join(RUNTIME_DIR, "benchmark_osc_todos_latest.json")
 THRESHOLD = 0.90
 
 # (filename_containing_deadline_text, expected_type, expected_days)
@@ -44,6 +48,21 @@ TEST_CASES = [
 
 
 def main():
+    adapter = os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") or ""
+    fixture_root = os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or ""
+    if adapter:
+        root = os.path.realpath(fixture_root)
+        if not (
+            adapter == "real_entrypoint_dry_run_v1"
+            and os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") == "1"
+            and os.environ.get("MAGI_V3_SCHEDULE_NO_NETWORK") == "1"
+            and os.environ.get("MAGI_V3_SCHEDULE_NO_NOTIFY") == "1"
+            and os.path.isfile(os.path.join(root, ".magi-v3-schedule-fixture"))
+        ):
+            raise SystemExit("invalid schedule realism adapter")
+        output_path = os.path.join(root, "benchmark-output", "benchmark_osc_todos.json")
+    else:
+        output_path = OUTPUT_PATH
     try:
         from osc_headless.todos import extract_todos_from_filename
     except ImportError:
@@ -71,6 +90,7 @@ def main():
 
     rate = hits / total if total else 0.0
     summary = {
+        "success": rate >= THRESHOLD,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "total": total,
         "hits": hits,
@@ -86,10 +106,11 @@ def main():
             return obj.isoformat()
         raise TypeError(f"Not serializable: {type(obj)}")
 
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2, default=_default_serial)
 
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, default=_default_serial))
     print(f"\n[benchmark] deadline_extraction_rate={rate:.1%} (threshold={THRESHOLD:.0%})")
     if rate < THRESHOLD:
         print(f"[FAIL] {hits}/{total} matched, below threshold.")

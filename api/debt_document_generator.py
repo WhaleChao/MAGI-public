@@ -22,17 +22,26 @@ MAGI 消費者債務清理文件產生器 (Debt Document Generator)
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import os
 import re
+import tempfile
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
+
+from magi_v3.external_inputs import bound_shared_directory
+from api.law_firm_contact import resolve_lawyer_contact
 
 logger = logging.getLogger("DebtDocumentGenerator")
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+_EXPORTS_DIR = os.path.abspath(
+    os.environ.get("MAGI_EXPORTS_DIR", "").strip() or os.path.join(_MAGI_ROOT, "exports")
+)
 _ROBOT_SOURCE_DIR = os.environ.get(
     "MAGI_DEBT_ROBOT_SOURCE_DIR",
     os.path.join(_MAGI_ROOT, "integrations", "debt_robot"),
@@ -43,6 +52,16 @@ _ROBOT_DOCUMENT_DIR = os.environ.get(
 )
 _LEGACY_TEMPLATE_DIR = os.path.join(_MAGI_ROOT, "templates", "debt_templates")
 _TEMPLATE_DIR = _ROBOT_DOCUMENT_DIR if os.path.isdir(_ROBOT_DOCUMENT_DIR) else _LEGACY_TEMPLATE_DIR
+_ADDRESS_BOOK_FILES = (
+    "all adress - bank.csv",
+    "all adress - bank.json",
+    "all adress - company.csv",
+    "all adress - company.json",
+)
+_REQUIRED_ADDRESS_BOOK_FILES = (
+    "all adress - bank.csv",
+    "all adress - company.csv",
+)
 _REQUIRED_ROBOT_MODULES = {
     "application": "01_A.py",
     "asset_statement": "02_B.py",
@@ -56,8 +75,6 @@ _REQUIRED_ROBOT_DOCUMENTS = (
     "B.docx",
     "C.docx",
     "D.docx",
-    "all adress - bank.csv",
-    "all adress - company.csv",
 )
 _REQUIRED_ROBOT_RUNTIME_FILES = (
     "src/supplement_core/__init__.py",
@@ -65,25 +82,96 @@ _REQUIRED_ROBOT_RUNTIME_FILES = (
 )
 
 
+def get_debt_address_book_dir() -> Path:
+    """Resolve mutable addresses while preserving the historical V2 fallback."""
+
+    return bound_shared_directory(
+        _MAGI_ROOT,
+        env_name="MAGI_DEBT_ADDRESS_BOOK_DIR",
+        shared_leaf="debt/address-book",
+        source_fallback=_TEMPLATE_DIR,
+    )
+
+
+def _read_address_text(path: Path) -> str:
+    """Read one address file without following a symlink outside shared state."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        with os.fdopen(descriptor, "r", encoding="utf-8", newline="") as handle:
+            descriptor = -1
+            return handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_address_text(path: Path, text: str) -> None:
+    """Atomically publish one private address file inside the bound directory."""
+
+    address_dir = get_debt_address_book_dir()
+    if path.parent != address_dir:
+        raise ValueError("address file escaped its bound directory")
+    address_dir.mkdir(parents=True, exist_ok=True)
+    # Re-resolve after mkdir so a concurrently introduced directory symlink is
+    # rejected before any temporary file is created.
+    if get_debt_address_book_dir() != address_dir:
+        raise ValueError("address directory binding changed")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".address-book-", suffix=".tmp", dir=address_dir
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
 def get_robot_source_status() -> dict[str, Any]:
     """回傳 OSC 消債羅伯特源碼與文件模板路徑狀態。"""
     modules = {key: os.path.join(_ROBOT_SOURCE_DIR, name) for key, name in _REQUIRED_ROBOT_MODULES.items()}
     documents = {name: os.path.join(_ROBOT_DOCUMENT_DIR, name) for name in _REQUIRED_ROBOT_DOCUMENTS}
+    address_dir = get_debt_address_book_dir()
+    address_files = {name: str(address_dir / name) for name in _ADDRESS_BOOK_FILES}
     runtime_files = {name: os.path.join(_MAGI_ROOT, name) for name in _REQUIRED_ROBOT_RUNTIME_FILES}
     missing_modules = [key for key, path in modules.items() if not os.path.exists(path)]
     missing_documents = [name for name, path in documents.items() if not os.path.exists(path)]
+    missing_address_files = [
+        name for name, path in address_files.items() if not os.path.exists(path)
+    ]
+    missing_required_address_files = [
+        name for name in _REQUIRED_ADDRESS_BOOK_FILES if name in missing_address_files
+    ]
     missing_runtime_files = [name for name, path in runtime_files.items() if not os.path.exists(path)]
     return {
-        "ok": not missing_modules and not missing_documents and not missing_runtime_files,
+        "ok": (
+            not missing_modules
+            and not missing_documents
+            and not missing_required_address_files
+            and not missing_runtime_files
+        ),
         "source_dir": _ROBOT_SOURCE_DIR,
         "document_dir": _ROBOT_DOCUMENT_DIR,
         "template_dir": _TEMPLATE_DIR,
+        "address_book_dir": str(address_dir),
         "legacy_template_dir": _LEGACY_TEMPLATE_DIR,
         "modules": modules,
         "documents": documents,
+        "address_files": address_files,
         "runtime_files": runtime_files,
         "missing_modules": missing_modules,
         "missing_documents": missing_documents,
+        "missing_address_files": missing_address_files,
+        "missing_required_address_files": missing_required_address_files,
         "missing_runtime_files": missing_runtime_files,
     }
 
@@ -587,12 +675,13 @@ def load_address_data() -> dict:
     改善：原本分散在 03_C.py 的 CSV 讀取邏輯，統一為單一函式。
     """
     address_map = {}
+    address_book_dir = get_debt_address_book_dir()
     for filename in ["all adress - bank.json", "all adress - company.json"]:
-        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        filepath = address_book_dir / filename
         if not os.path.exists(filepath):
             continue
         try:
-            raw = json.loads(open(filepath, encoding="utf-8").read() or "[]")
+            raw = json.loads(_read_address_text(filepath) or "[]")
             items = raw.get("items", []) if isinstance(raw, dict) else raw
             for item in items or []:
                 if not isinstance(item, dict):
@@ -604,12 +693,12 @@ def load_address_data() -> dict:
         except Exception as e:
             logger.warning("讀取地址 JSON 失敗 %s: %s", filename, e)
     for filename in ["all adress - bank.csv", "all adress - company.csv"]:
-        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        filepath = address_book_dir / filename
         if not os.path.exists(filepath):
             logger.warning("地址 CSV 不存在: %s", filepath)
             continue
         try:
-            with open(filepath, newline='', encoding='utf-8') as f:
+            with io.StringIO(_read_address_text(filepath), newline="") as f:
                 reader = csv.reader(f)
                 header = next(reader, None)  # skip header
                 for row in reader:
@@ -625,13 +714,14 @@ def get_address_options() -> dict:
     banks = []
     companies = []
     seen = {"bank": set(), "company": set()}
+    address_book_dir = get_debt_address_book_dir()
 
     for filename, target, key in [("all adress - bank.json", banks, "bank"), ("all adress - company.json", companies, "company")]:
-        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        filepath = address_book_dir / filename
         if not os.path.exists(filepath):
             continue
         try:
-            raw = json.loads(open(filepath, encoding="utf-8").read() or "[]")
+            raw = json.loads(_read_address_text(filepath) or "[]")
             items = raw.get("items", []) if isinstance(raw, dict) else raw
             for item in items or []:
                 if not isinstance(item, dict):
@@ -646,11 +736,11 @@ def get_address_options() -> dict:
 
     for filename, target in [("all adress - bank.csv", banks), ("all adress - company.csv", companies)]:
         key = "bank" if "bank" in filename else "company"
-        filepath = os.path.join(_TEMPLATE_DIR, filename)
+        filepath = address_book_dir / filename
         if not os.path.exists(filepath):
             continue
         try:
-            with open(filepath, newline='', encoding='utf-8') as f:
+            with io.StringIO(_read_address_text(filepath), newline="") as f:
                 reader = csv.reader(f)
                 next(reader, None)
                 for row in reader:
@@ -666,11 +756,11 @@ def get_address_options() -> dict:
 
 def _save_address_to_json(creditor_name: str, address: str, csv_type: str = "bank") -> bool:
     filename = "all adress - bank.json" if csv_type == "bank" else "all adress - company.json"
-    filepath = os.path.join(_TEMPLATE_DIR, filename)
+    filepath = get_debt_address_book_dir() / filename
     payload = {"version": 1, "kind": csv_type, "items": []}
     if os.path.exists(filepath):
         try:
-            raw = json.loads(open(filepath, encoding="utf-8").read() or "{}")
+            raw = json.loads(_read_address_text(filepath) or "{}")
             if isinstance(raw, list):
                 payload["items"] = raw
             elif isinstance(raw, dict):
@@ -691,9 +781,10 @@ def _save_address_to_json(creditor_name: str, address: str, csv_type: str = "ban
     if not updated:
         payload["items"].append({"name": creditor_name, "address": address, "type": csv_type, "updated_at": now})
     payload["updated_at"] = now
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    _write_address_text(
+        filepath,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
     return True
 
 
@@ -718,7 +809,7 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
         是否成功保存
     """
     filename = "all adress - bank.csv" if csv_type == "bank" else "all adress - company.csv"
-    filepath = os.path.join(_TEMPLATE_DIR, filename)
+    filepath = get_debt_address_book_dir() / filename
 
     try:
         json_ok = _save_address_to_json(creditor_name, address, csv_type)
@@ -728,17 +819,16 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
 
     try:
         if not os.path.exists(filepath):
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            with open(filepath, "w", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow(["name", "address"])
-
-        # 讀取現有資料
-        existing_rows = []
-        with open(filepath, newline='', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            for row in reader:
-                existing_rows.append(row)
+            existing_rows = []
+            header = ["name", "address"]
+        else:
+            # 讀取現有資料
+            existing_rows = []
+            with io.StringIO(_read_address_text(filepath), newline="") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                for row in reader:
+                    existing_rows.append(row)
 
         # 檢查是否已存在
         for row in existing_rows:
@@ -754,11 +844,12 @@ def save_address_to_csv(creditor_name: str, address: str, csv_type: str = "bank"
             existing_rows.append([creditor_name, address])
 
         # 寫回 CSV
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if header:
-                writer.writerow(header)
-            writer.writerows(existing_rows)
+        output = io.StringIO(newline="")
+        writer = csv.writer(output)
+        if header:
+            writer.writerow(header)
+        writer.writerows(existing_rows)
+        _write_address_text(filepath, output.getvalue())
 
         logger.info("地址已保存: %s -> [REDACTED]", creditor_name[:1] + "**")
         return True
@@ -785,6 +876,7 @@ def generate_application(data: dict[str, Any]) -> "Document":
       - execution_case_no: 執行案號
       - application_court: 聲請法院名稱
       - attachments: 附件名稱（文字）
+      - lawyer_name / LAWYER_NAME: 受任律師姓名（可省略，改採公開設定）
     """
     from docx import Document
 
@@ -803,16 +895,20 @@ def generate_application(data: dict[str, Any]) -> "Document":
     exec_case_no = data.get("execution_case_no", "")
     app_court = data.get("application_court", "")
     attachments = data.get("attachments", "")
+    lawyer_name = resolve_lawyer_contact(
+        data,
+        requested_fields=("LAWYER_NAME",),
+    )["LAWYER_NAME"]
 
     # 表格映射（改善：原本是 table1/table2/... 硬編碼索引）
     table_mapping = [
-        (0, [(0, 1, name), (0, 2, address)]),                    # 姓名、地址
+        (0, [(0, 1, name), (0, 2, address), (1, 1, lawyer_name)]),  # 姓名、地址、律師
         (1, [(0, 2, asset_total), (1, 2, debt_total)]),          # 資產、債務
         (2, [(0, 0, max_bank)]),                                  # 最大債權銀行
         (3, [(0, 0, exec_court or "無"), (0, 1, exec_case_no)]), # 執行法院
         (4, [(0, 0, app_court)]),                                 # 聲請法院
         (5, [(1, 0, attachments)]),                               # 附件
-        (6, [(0, 2, name)]),                                      # 具狀人
+        (6, [(0, 2, name), (1, 2, lawyer_name)]),                  # 具狀人、律師
     ]
 
     for table_idx, cells in table_mapping:
@@ -1039,7 +1135,7 @@ def merge_debt_pdfs(file_paths: list[str], output_path: Optional[str] = None,
 
     if not output_path:
         stamp = datetime.now().strftime("%Y%m%d")
-        export_dir = os.path.join(_MAGI_ROOT, "exports")
+        export_dir = _EXPORTS_DIR
         os.makedirs(export_dir, exist_ok=True)
         output_path = os.path.join(export_dir, f"{stamp}_消費者債務清理調解聲請狀及附件.pdf")
 
@@ -1114,8 +1210,16 @@ def _apply_inputs_to_doc_improved(doc, values: dict, paragraph_hint_map: dict):
         changed = False
         for key in sorted(vals, key=len, reverse=True):
             val = vals[key]
-            if val is not None and re.search(rf"\b{re.escape(key)}\b", new_text):
-                new_text = re.sub(rf"\b{re.escape(key)}\b", val, new_text)
+            contact_field = key.startswith("LAWYER_")
+            matched = key in new_text if contact_field else re.search(
+                rf"\b{re.escape(key)}\b", new_text
+            )
+            if val is not None and matched:
+                new_text = (
+                    new_text.replace(key, val)
+                    if contact_field
+                    else re.sub(rf"\b{re.escape(key)}\b", val, new_text)
+                )
                 changed = True
         if not changed:
             return
@@ -1367,6 +1471,7 @@ def generate_report(data: dict[str, Any]) -> "Document":
     # 簡單文字欄位
     for key in ["A1", "A2", "A3", "A4"]:
         values[key] = str(data.get(key, "") or "").strip()
+    values.update(resolve_lawyer_contact(data))
 
     # 長文欄位（改善：原本用 QTextEdit 的 default text，現在用 data 直接帶入）
     for key in ["B1", "B2", "B3", "D2"]:
@@ -1594,6 +1699,11 @@ def generate_supplement(data: dict[str, Any]) -> "Document":
     doc.add_paragraph()
     doc.add_paragraph("此致")
     doc.add_paragraph(court or "臺灣地方法院")
+    contact = resolve_lawyer_contact(data)
+    doc.add_paragraph(f"受任律師：{contact['LAWYER_NAME']}")
+    doc.add_paragraph(f"地址：{contact['LAWYER_ADDRESS']}")
+    doc.add_paragraph(f"電話：{contact['LAWYER_PHONE']}")
+    doc.add_paragraph(f"手機：{contact['LAWYER_MOBILE']}")
     doc.add_paragraph(_roc_date_str())
 
     return doc
@@ -1623,7 +1733,7 @@ def generate_all_documents(base_data: dict[str, Any], output_dir: Optional[str] 
     from docx import Document
 
     if output_dir is None:
-        output_dir = os.path.join(_MAGI_ROOT, "exports")
+        output_dir = _EXPORTS_DIR
     os.makedirs(output_dir, exist_ok=True)
 
     results = {}
@@ -1719,6 +1829,7 @@ def get_form_schema(form_type: str) -> dict:
             "fields": [
                 {"key": "name", "label": "聲請人姓名", "type": "text", "required": True},
                 {"key": "address", "label": "聲請人地址", "type": "text", "required": True},
+                {"key": "lawyer_name", "label": "律師姓名", "type": "text"},
                 {"key": "asset_total", "label": "資產總價值", "type": "number", "default": "0"},
                 {"key": "debt_total", "label": "債務總金額", "type": "number", "default": "0"},
                 {"key": "max_creditor_bank", "label": "最大債權銀行", "type": "text"},
@@ -1811,6 +1922,10 @@ def get_form_schema(form_type: str) -> dict:
                 {"key": "A2", "label": "案號", "type": "text"},
                 {"key": "A3", "label": "股別", "type": "text"},
                 {"key": "A4", "label": "聲請人名稱", "type": "text", "required": True},
+                {"key": "lawyer_name", "label": "律師姓名", "type": "text"},
+                {"key": "lawyer_address", "label": "律師地址", "type": "text"},
+                {"key": "lawyer_phone", "label": "律師電話", "type": "text"},
+                {"key": "lawyer_mobile", "label": "律師手機", "type": "text"},
                 {"key": "B1", "label": "聲請人借款原因", "type": "textarea",
                  "default": "聲請人因OO原因而陸續向債權人商借款項，以解其燃眉之急，然因債務及利息循環增生，以致聲請人陷入難以償還之境地，故僅能向 鈞院聲請更生。"},
                 {"key": "B2", "label": "調解不成立原因", "type": "textarea",
@@ -1847,6 +1962,10 @@ def get_form_schema(form_type: str) -> dict:
                 {"key": "applicant", "label": "聲請人", "type": "text", "required": True},
                 {"key": "procedure", "label": "程序", "type": "select", "options": ["更生", "清算"]},
                 {"key": "brief_no", "label": "書狀序號", "type": "number", "default": "1"},
+                {"key": "lawyer_name", "label": "律師姓名", "type": "text"},
+                {"key": "lawyer_address", "label": "律師地址", "type": "text"},
+                {"key": "lawyer_phone", "label": "律師電話", "type": "text"},
+                {"key": "lawyer_mobile", "label": "律師手機", "type": "text"},
                 {"key": "items", "label": "補件項目", "type": "table",
                  "columns": [
                      {"key": "category", "label": "補件類別", "type": "text"},

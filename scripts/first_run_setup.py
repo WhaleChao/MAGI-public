@@ -77,8 +77,8 @@ def _write_env_from_example(env_path: Path = ENV_FILE, *, overwrite: bool = Fals
     replacements = {
         "FLASK_SECRET_KEY=<random-hex-string>": f"FLASK_SECRET_KEY={secrets.token_hex(32)}",
         "MAGI_API_KEY=<random-hex-string>": f"MAGI_API_KEY={secrets.token_hex(32)}",
-        "MAGI_ROOT_DIR=/path/to/MAGI_v2": f"MAGI_ROOT_DIR={REPO_ROOT}",
-        "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/.venv/bin/python": f"MAGI_SKILL_PYTHON={REPO_ROOT / '.venv' / 'bin' / 'python'}",
+        "MAGI_ROOT_DIR=/path/to/MAGI": f"MAGI_ROOT_DIR={REPO_ROOT}",
+        "MAGI_SKILL_PYTHON=/path/to/MAGI/.venv/bin/python": f"MAGI_SKILL_PYTHON={REPO_ROOT / '.venv' / 'bin' / 'python'}",
     }
     for old, new in replacements.items():
         text = text.replace(old, new)

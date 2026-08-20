@@ -24,7 +24,10 @@ import sys
 import time
 from pathlib import Path
 
-MODEL_PATH = "/Users/ai/.omlx/models-vision/nemotron-parse-v1.2-hf"
+MODEL_PATH = os.environ.get(
+    "MAGI_NEMOTRON_PARSE_MODEL_PATH",
+    str(Path.home() / ".omlx" / "models-vision" / "nemotron-parse-v1.2-hf"),
+)
 PROMPT_TOKEN_IDS = [2, 0, 50004, 50008, 50001, 50010]
 
 

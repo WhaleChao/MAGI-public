@@ -26,7 +26,12 @@ from skills.bridge.shared_utils.text_utils import clean_text as _clean_text
 VENV_PY = os.environ.get("JUDICIAL_VENV_PY", f"{_MAGI_ROOT}/.venv_judicial/bin/python").strip()
 CHROME_PATH = os.environ.get("JUDICIAL_CHROME_PATH", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").strip()
 BASE = "https://judgment.judicial.gov.tw/FJUD/Default_AD.aspx"
-CACHE_DIR = os.environ.get("JUDICIAL_CACHE_DIR", f"{_MAGI_ROOT}/.cache/judicial_web_search").strip()
+_RUNTIME_DIR = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+_LEGACY_CACHE_DIR = f"{_MAGI_ROOT}/.cache/judicial_web_search"
+CACHE_DIR = os.environ.get(
+    "JUDICIAL_CACHE_DIR",
+    os.path.join(_RUNTIME_DIR, "cache", "judicial_web_search") if _RUNTIME_DIR else _LEGACY_CACHE_DIR,
+).strip()
 JDG_API_BASE = os.environ.get("JUDICIAL_API_BASE", "https://data.judicial.gov.tw/jdg/api").rstrip("/")
 urllib3.disable_warnings()
 
@@ -523,7 +528,7 @@ def _search_impl(
     case_word: str = "",
     case_no: str = "",
 ) -> dict:
-    if _prefer_http_fetch():
+    if _prefer_http_fetch() or not os.path.exists(VENV_PY):
         http_result = _search_http_impl(
             keywords=keywords,
             max_results=max_results,
@@ -1077,6 +1082,8 @@ def _fetch_text_impl(url: str, headless: bool = True, timeout_sec: int = 45, max
         text = _normalize_judicial_text(_clean_text(text))
         if "查無資料" in text or "系統忙碌" in text:
             return {"success": False, "error": "site returned error page", "hint": text[:200]}
+        if len(text) < 80 or ("裁判字號" not in text and "主文" not in text and "理由" not in text):
+            return {"success": False, "error": "playwright_empty_or_unrecognized", "hint": text[:200]}
 
         # Write full text to a cache file to avoid JSON stdout truncation by the skill runner.
         try:
@@ -1144,7 +1151,7 @@ def main() -> int:
 
     # If we're running inside the dedicated venv, or if HTTP-form fetching is enabled,
     # execute logic directly in the current interpreter.
-    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1" or _prefer_http_fetch():
+    if os.environ.get("JUDICIAL_USE_VENV", "").strip() == "1" or _prefer_http_fetch() or not os.path.exists(VENV_PY):
         if task == "self_test":
             return _ok(_self_test_impl())
         if task.startswith("search"):

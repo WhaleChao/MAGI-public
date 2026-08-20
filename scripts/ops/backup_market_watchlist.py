@@ -31,8 +31,14 @@ if str(_ROOT) not in sys.path:
 
 logger = logging.getLogger("backup_market_watchlist")
 
-WATCHLIST_PATH = _ROOT / ".agent" / "market_watchlist.json"
-BACKUP_DIR = _ROOT / ".runtime" / "backups" / "market_watchlist"
+AGENT_DIR = Path(
+    os.environ.get("MAGI_AGENT_DIR", "").strip() or _ROOT / ".agent"
+).expanduser()
+RUNTIME_DIR = Path(
+    os.environ.get("MAGI_RUNTIME_DIR", "").strip() or _ROOT / ".runtime"
+).expanduser()
+WATCHLIST_PATH = AGENT_DIR / "market_watchlist.json"
+BACKUP_DIR = RUNTIME_DIR / "backups" / "market_watchlist"
 RETENTION_DAYS = int(os.environ.get("MAGI_WATCHLIST_BACKUP_RETENTION_DAYS", "90"))
 SHRINK_ALERT_THRESHOLD = float(os.environ.get("MAGI_WATCHLIST_SHRINK_ALERT_RATIO", "0.5"))
 

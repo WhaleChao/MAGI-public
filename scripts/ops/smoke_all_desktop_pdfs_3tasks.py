@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(_MAGI_ROOT)
-DESKTOP = Path("/Users/ai/Desktop")
+DESKTOP = Path.home() / "Desktop"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

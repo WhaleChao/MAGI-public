@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _THIS_DIR = Path(__file__).resolve().parent
 _MAGI_ROOT = _THIS_DIR.parents[1]
-_DATA_DIR = _MAGI_ROOT / "data" / "moj_bilingual"
+_SHARED_STATE_DIR = (os.environ.get("MAGI_SHARED_STATE_DIR") or "").strip()
+_DATA_DIR = (
+    Path(_SHARED_STATE_DIR).expanduser() / "translator" / "moj_bilingual"
+    if _SHARED_STATE_DIR
+    else _MAGI_ROOT / "data" / "moj_bilingual"
+)
 _DB_PATH = _DATA_DIR / "termbase.sqlite"
 _FAISS_PATH = _DATA_DIR / "termbase.faiss"
 _TIER2_PATH = _DATA_DIR / "legal_academic_terms.json"

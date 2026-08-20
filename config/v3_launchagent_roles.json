@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "role": "gateway",
+      "label": "com.magi.v3.gateway",
+      "entrypoint_module": "magi_v3.gateway",
+      "ports": [5002, 5003],
+      "ownership_domains": [
+        "production_ingress",
+        "webhook_consumers",
+        "external_api"
+      ]
+    },
+    {
+      "role": "control",
+      "label": "com.magi.v3.control",
+      "entrypoint_module": "magi_v3.control",
+      "ports": [8088],
+      "ownership_domains": [
+        "control_plane",
+        "scheduler",
+        "durable_ledger_writer"
+      ]
+    },
+    {
+      "role": "supervisor",
+      "label": "com.magi.v3.supervisor",
+      "entrypoint_module": "magi_v3.supervisor_service",
+      "ports": [],
+      "ownership_domains": [
+        "worker_processes",
+        "resource_leases"
+      ]
+    }
+  ]
+}

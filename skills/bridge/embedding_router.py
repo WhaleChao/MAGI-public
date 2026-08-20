@@ -47,6 +47,8 @@ except ImportError:
 
 logger = logging.getLogger("EmbeddingRouter")
 
+from skills.overlay import effective_definitions_path, skill_overlay_dir
+
 # --- Configuration ---
 _OMLX_BASE = (
     os.environ.get("EMBEDDING_ROUTER_OMLX_URL")
@@ -60,10 +62,17 @@ _GUIDED_THRESH = float(os.environ.get("EMBEDDING_ROUTER_GUIDED_THRESH", "0.55") 
 _EMBED_TIMEOUT = 4  # seconds per embedding request
 _BATCH_SIZE = 8  # max texts per embedding API call
 
-_DEFINITIONS_PATH = os.path.join(os.path.dirname(__file__), "..", "definitions.json")
+_INITIAL_DEFINITIONS_PATH = str(effective_definitions_path())
+_DEFINITIONS_PATH = _INITIAL_DEFINITIONS_PATH
+
+
+def _definitions_path() -> str:
+    if _DEFINITIONS_PATH != _INITIAL_DEFINITIONS_PATH:
+        return _DEFINITIONS_PATH
+    return str(effective_definitions_path())
 _CACHE_DIR = os.environ.get(
     "EMBEDDING_ROUTER_CACHE_DIR",
-    os.path.join(os.path.dirname(__file__), ".embed_cache"),
+    str(skill_overlay_dir() / ".embed-cache"),
 )
 
 # Skills that should never be auto-dispatched
@@ -153,7 +162,7 @@ _EXTRA_PHRASES: Dict[str, List[str]] = {
         "資遣費", "特休", "severance", "annual leave",
     ],
     "run_judgment_trend": [
-        "判決趨勢", "趨勢分析", "案由分析", "案由統計",
+        "判決趨勢", "量刑趨勢", "法官量刑趨勢", "趨勢分析", "案由分析", "案由統計",
         "判決統計", "見解趨勢", "裁判趨勢", "判決分析",
         "judgment trend", "case trend analysis",
     ],
@@ -337,7 +346,7 @@ class EmbeddingRouter:
             self._ready = len(self._skill_vectors) > 0
             # Record definitions.json mtime for auto-rebuild detection
             try:
-                self._definitions_mtime = os.path.getmtime(_DEFINITIONS_PATH)
+                self._definitions_mtime = os.path.getmtime(_definitions_path())
             except OSError:
                 pass
             self._last_mtime_check = time.monotonic()
@@ -359,7 +368,7 @@ class EmbeddingRouter:
             return
         self._last_mtime_check = now
         try:
-            current_mtime = os.path.getmtime(_DEFINITIONS_PATH)
+            current_mtime = os.path.getmtime(_definitions_path())
             if current_mtime > self._definitions_mtime:
                 logger.info("🔄 definitions.json changed, auto-rebuilding embedding cache")
                 self.rebuild_cache()
@@ -476,7 +485,7 @@ class EmbeddingRouter:
 
     def _load_skills(self) -> Dict[str, str]:
         """Load skill name → description from definitions.json."""
-        p = Path(_DEFINITIONS_PATH)
+        p = Path(_definitions_path())
         if not p.exists():
             return {}
         data = json.loads(p.read_text(encoding="utf-8"))

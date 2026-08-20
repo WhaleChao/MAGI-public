@@ -1,0 +1,227 @@
+{
+  "schema_version": 1,
+  "hardware_profile": {
+    "model": "Mac mini Mac16,10",
+    "chip": "Apple M4",
+    "cpu_cores": 10,
+    "gpu_cores": 10,
+    "unified_memory_mb": 24576
+  },
+  "measured_v2_baseline_2026_07_14": {
+    "system_memory_pressure_free_percent": 81,
+    "swap_used_mb": 1007,
+    "magi_related_rss_total_mb": 2844,
+    "magi_related_rss_sampled_upper_mb": 3240,
+    "magi_related_metal_aware_footprint_mb": 7100,
+    "v2_application_plane_footprint_mb": 604,
+    "main_model_process_rss_mb": 2098,
+    "main_model_process_footprint_mb": 5903,
+    "main_model_metal_mb": 4980,
+    "main_api_footprint_mb": 201,
+    "tools_api_footprint_mb": 65,
+    "discord_footprint_mb": 87,
+    "menubar_footprint_mb": 100,
+    "main_livez_ms": 3,
+    "main_readyz_ms": 48,
+    "tools_livez_ms": 2
+  },
+  "budgets": {
+    "v3_release_core_idle": {
+      "components": ["gateway_control_scheduler", "channel_adapter", "native_menubar"],
+      "max_footprint_mb": 256,
+      "max_average_cpu_percent": 1.0,
+      "max_p95_cpu_percent": 3.0,
+      "heavy_framework_imports": 0
+    },
+    "total_magi_deep_idle": {
+      "description": "Excludes MariaDB, NAS mount and host-level IME/memory watchdog; includes unloaded oMLX endpoint shells.",
+      "max_footprint_mb": 512,
+      "max_loaded_models": 0,
+      "max_python_service_processes": 3,
+      "max_background_heavy_workers": 0
+    },
+    "interactive_session": {
+      "max_loaded_primary_models": 1,
+      "max_background_heavy_workers": 0,
+      "max_browser_workers": 0,
+      "foreground_memory_reserve_mb": 8192,
+      "max_magi_metal_footprint_mb": 7168
+    },
+    "total_magi_active": {
+      "soft_footprint_mb": 10240,
+      "hard_footprint_mb": 12288,
+      "soft_metal_mb": 6656,
+      "hard_metal_mb": 8192,
+      "must_not_exceed_matched_v2_for_same_workload": true
+    },
+    "formal_review_exception": {
+      "max_loaded_text_models": 2,
+      "requires_pressure_state": "green",
+      "requires_explicit_high_risk_task": true,
+      "reviewers_run_sequentially": true,
+      "foreground_memory_reserve_mb": 8192
+    },
+    "background_batch": {
+      "max_heavy_workers": 2,
+      "max_browser_workers": 1,
+      "max_cpu_percent_of_machine": 200,
+      "qos": "background",
+      "interactive_preempts": true
+    }
+  },
+  "pressure_states": {
+    "green": {
+      "minimum_pressure_free_percent": 35,
+      "minimum_estimated_available_mb": 8192,
+      "admit": ["interactive", "due_portal", "batch", "maintenance"]
+    },
+    "guarded": {
+      "trigger_any": ["pressure_free_percent_below_35", "estimated_available_mb_below_8192", "thermal_state_fair_or_worse"],
+      "admit": ["interactive", "due_portal"],
+      "actions": ["defer_batch", "stop_prewarm", "unload_reviewer_models", "shrink_caches"]
+    },
+    "critical": {
+      "trigger_any": ["pressure_free_percent_below_20", "estimated_available_mb_below_4096", "thermal_state_serious_or_critical"],
+      "admit": ["interactive_light", "health", "cancel"],
+      "actions": ["cancel_background_process_groups", "close_browsers", "unload_all_noninteractive_models", "flush_checkpoints", "preserve_ime_and_windowserver"]
+    }
+  },
+  "workload_priority": [
+    {"class": "P0", "description": "safety_control_webhook_ack_commit_receipt", "priority": 100, "preemptible": false},
+    {"class": "P1", "description": "interactive_business_confirmation_urgent_notification", "priority": 90, "preemptible": false},
+    {"class": "P2", "description": "deadline_schedule_mail_portal_token", "priority": 70, "preemptible": true},
+    {"class": "P3", "description": "batch_business_drive_nas_ocr_index", "priority": 40, "preemptible": true},
+    {"class": "P4", "description": "maintenance_benchmark_cleanup_resummary", "priority": 10, "preemptible": true}
+  ],
+  "scheduler": {
+    "global_heavy_tokens": 2,
+    "global_browser_tokens": 1,
+    "light_pool_min": 0,
+    "light_pool_max": 2,
+    "light_worker_max_jobs": 20,
+    "light_worker_idle_ttl_seconds": 60,
+    "reserved_p0_light_slots": 1,
+    "reserved_notification_recovery_slots": 1,
+    "fair_queue_weights": {"P0": 8, "P1": 8, "P2": 4, "P3": 2, "P4": 1},
+    "aging_enabled": true,
+    "p1_browser_queue_p95_seconds": 120,
+    "p2_deadline_success_ratio": 0.99,
+    "p3_backlog_drain_hours": 24,
+    "p4_max_pending_per_coalesce_key": 1,
+    "integration_lanes": ["short_google_calendar_token", "mail", "drive_nas_scan", "obsidian_index"]
+  },
+  "disk_policy": {
+    "ocr_start_minimum_free_gb": 80,
+    "drive_start_minimum_free_gb": 30,
+    "throttle_below_free_gb": 50,
+    "core_only_below_free_gb": 30,
+    "critical_below_free_gb": 15,
+    "sqlite_wal_max_mb": 256,
+    "sqlite_busy_timeout_ms": 5000,
+    "disk_full_and_fsync_error_must_be_fault_tested": true
+  },
+  "notification_policy": {
+    "respect_retry_after": true,
+    "provider_rate_limit_required": true,
+    "ttl_required": true,
+    "collapse_key_required_for_repeated_state": true,
+    "quiet_hours_supported": true,
+    "dead_letter_queue_required": true,
+    "recovery_summary_instead_of_storm": true
+  },
+  "model_lifecycle": {
+    "primary_model_ttl_seconds": {"base": 600, "maximum": 1800},
+    "extend_ttl_only_on_real_user_activity": true,
+    "scheduled_prewarm_seconds": 60,
+    "ui_focus_may_prewarm": true,
+    "health_checks_must_not_prewarm": true,
+    "reviewer_models_default": "unloaded",
+    "embedding_model_default": "unloaded",
+    "unload_order": ["reviewer", "embedding", "primary"],
+    "cold_request_ack_deadline_ms": 200,
+    "target_warm_request_ratio": 0.95
+  },
+  "worker_lifecycle": {
+    "default": "one_job_one_process",
+    "process_group_required": true,
+    "deadline_propagation_required": true,
+    "checkpoint_before_preemption": true,
+    "browser_close_required": true,
+    "cache_bounds_required": true,
+    "no_python_global_unbounded_cache": true,
+    "max_warm_worker_ttl_seconds": 300
+  },
+  "performance_slo": {
+    "gateway_livez_p95_ms": 10,
+    "gateway_added_overhead_p95_ms": 5,
+    "gateway_added_overhead_p99_ms": 10,
+    "gateway_readyz_p95_ms": 100,
+    "deterministic_command_p95_ms": 250,
+    "context_assemble_p95_ms": 100,
+    "memory_warm_retrieval_p95_ms": 500,
+    "memory_cold_retrieval_p95_ms": 1500,
+    "interactive_queue_p95_ms": 100,
+    "workflow_durable_accept_p95_ms": 500,
+    "workflow_plan_visible_p95_ms": 1000,
+    "workflow_progress_gap_p95_ms": 5000,
+    "cold_request_ack_p95_ms": 200,
+    "warm_chat_ttft_regression_ratio_max": 0.05,
+    "warm_chat_tokens_per_second_regression_ratio_max": 0.03,
+    "batch_throughput_regression_ratio_max": 0.05,
+    "task_success_rate_regression_ratio_max": 0.0,
+    "legal_quality_regression_ratio_max": 0.0,
+    "worker_footprint_return_to_baseline_seconds": 30,
+    "worker_metal_return_to_baseline_seconds": 60,
+    "worker_process_group_exit_seconds": 10,
+    "swapout_growth_mb_per_30_min_max": 64,
+    "ime_candidate_window_failures_allowed": 0
+  },
+  "measurement_rules": {
+    "memory": ["footprint", "memory_pressure", "vm_stat", "IOAccelerator_or_Metal_footprint"],
+    "rss_alone_is_insufficient": true,
+    "compare_same_corpus_and_machine_state": true,
+    "report_warm_and_cold_latency_separately": true,
+    "measure_p50_p95_p99": true,
+    "minimum_offline_replay_days": 7,
+    "minimum_isolated_live_validation_runs": 3
+  },
+  "authoritative_resource_window": {
+    "schema": "magi.v3.authoritative-resource-window-policy/v1",
+    "required_outer_gate_status": "provisional_16_of_19_passed",
+    "required_outer_gate_counts": {
+      "required": 16,
+      "passed": 16,
+      "failed": 0,
+      "missing": 0,
+      "invalid": 0
+    },
+    "required_raw_sample_sources": [
+      "/bin/ps",
+      "/usr/sbin/lsof",
+      "/usr/sbin/ioreg",
+      "/usr/bin/powermetrics"
+    ],
+    "per_process_gpu_source": "/usr/bin/powermetrics --show-process-gpu",
+    "per_process_gpu_permission_required": true,
+    "seatbelt_network_and_live_state_denial_required": true,
+    "production_composition_required": true,
+    "shared_direct_model_backend_forbidden": true,
+    "one_time_plan_consumption_required": true,
+    "minimum_model_tokens_per_second_ratio": 0.95,
+    "minimum_application_plane_footprint_reduction_ratio": 0.25,
+    "negative_control_seconds": 30,
+    "v2_reference_seconds": 60,
+    "v3_deep_idle_seconds": 1800,
+    "sample_interval_seconds_max": 10,
+    "agx_drift_tolerance_bytes": 67108864
+  },
+  "release_ownership": {
+    "maximum_active_magi_releases": 1,
+    "simultaneous_v2_v3_daemons_forbidden": true,
+    "isolated_live_validation_is_one_shot": true,
+    "same_host_isolated_live_validation_requires_v2_fully_stopped": true,
+    "isolated_live_validation_may_own_production_ingress_scheduler_or_writers": false,
+    "cutover_requires_v2_fully_stopped": true,
+    "rollback_requires_v3_fully_stopped": true
+  }
+}

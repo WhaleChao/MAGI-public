@@ -31,6 +31,7 @@ ENV_AUTOGEN_HEADER = "# ── MAGI 安裝精靈自動偵測設定（可手動�
 
 OMLX_MODEL_SOURCES = {
     "gemma-4-e4b-it-4bit": "mlx-community/gemma-4-e4b-it-4bit",
+    "gemma-4-12B-it-4bit": "mlx-community/gemma-4-12B-it-4bit",
     "gemma-4-26b-a4b-it-4bit": "mlx-community/gemma-4-26b-a4b-it-4bit",
     "modernbert-embed-4bit": "mlx-community/modernbert-embed-4bit",
     "Phi-4-mini-instruct-4bit": "mlx-community/Phi-4-mini-instruct-4bit",
@@ -298,7 +299,8 @@ def select_runtime_plan(profile: HardwareProfile, *, force_provider: str = "", i
         raise ValueError(f"unsupported provider: {provider}")
 
     if provider == "omlx":
-        primary = _env_override("MAGI_INSTALL_OMLX_PRIMARY_MODEL", "gemma-4-e4b-it-4bit")
+        default_primary = "gemma-4-e4b-it-4bit"
+        primary = _env_override("MAGI_INSTALL_OMLX_PRIMARY_MODEL", default_primary)
         embedding = _env_override("MAGI_INSTALL_OMLX_EMBED_MODEL", "modernbert-embed-4bit")
         heavy = _env_override("MAGI_INSTALL_OMLX_HEAVY_MODEL", "gemma-4-26b-a4b-it-4bit")
         heavy_enabled = include_heavy or profile.memory_gb >= 48
@@ -447,8 +449,8 @@ def _run_or_plan(
     steps.append(result)
 
 
-def _utility_install_command(dep: AuxiliaryDependency) -> list[str]:
-    system = platform.system()
+def _utility_install_command(dep: AuxiliaryDependency, *, profile: HardwareProfile) -> list[str]:
+    system = profile.os_name or platform.system()
     if dep.key == "mariadb":
         if system == "Windows":
             return ["winget", "install", "--id", "MariaDB.Server", "-e", "--accept-package-agreements", "--accept-source-agreements"]
@@ -474,8 +476,8 @@ def _utility_install_command(dep: AuxiliaryDependency) -> list[str]:
     return ["echo", f"請安裝 {dep.title}"]
 
 
-def _utility_start_command(dep: AuxiliaryDependency) -> list[str]:
-    system = platform.system()
+def _utility_start_command(dep: AuxiliaryDependency, *, profile: HardwareProfile) -> list[str]:
+    system = profile.os_name or platform.system()
     if dep.key == "mariadb":
         if system == "Darwin" and _which("brew"):
             return [_which("brew"), "services", "start", "mariadb"]
@@ -486,14 +488,14 @@ def _utility_start_command(dep: AuxiliaryDependency) -> list[str]:
     return []
 
 
-def _build_utility_steps(*, execute: bool, allow_system_install: bool) -> list[BootstrapStep]:
+def _build_utility_steps(*, profile: HardwareProfile, execute: bool, allow_system_install: bool) -> list[BootstrapStep]:
     steps: list[BootstrapStep] = []
     for dep in UTILITY_DEPENDENCIES:
         found = _which_any(dep.executables)
         if found:
             steps.append(BootstrapStep(f"utility:{dep.key}", dep.title, "pass", f"found {found}", required=dep.required))
         else:
-            install_cmd = _utility_install_command(dep)
+            install_cmd = _utility_install_command(dep, profile=profile)
             can_execute = allow_system_install and execute and install_cmd and install_cmd[0] != "echo"
             if can_execute:
                 result = _run(install_cmd, timeout=2400, required=dep.required)
@@ -514,7 +516,7 @@ def _build_utility_steps(*, execute: bool, allow_system_install: bool) -> list[B
                 )
 
         if dep.key == "mariadb" and (found or (steps and steps[-1].status == "pass")):
-            start_cmd = _utility_start_command(dep)
+            start_cmd = _utility_start_command(dep, profile=profile)
             if start_cmd:
                 _run_or_plan(
                     steps,
@@ -558,16 +560,16 @@ def build_steps(
     ]
     python = venv_python(repo_dir)
     if install_utilities:
-        steps.extend(_build_utility_steps(execute=execute, allow_system_install=allow_system_install))
+        steps.extend(_build_utility_steps(profile=profile, execute=execute, allow_system_install=allow_system_install))
     else:
         steps.append(_step_skipped("utility", "安裝外部輔助套件", "skipped by --skip-utilities", next_action="MariaDB 與 Tailscale 需另行安裝。"))
 
     if plan.provider == "ollama":
         ollama = _which("ollama")
         if not ollama:
-            if platform.system() == "Windows":
+            if profile.os_name == "Windows":
                 install_cmd = ["winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements", "--accept-source-agreements"]
-            elif platform.system() == "Darwin" and _which("brew"):
+            elif profile.os_name == "Darwin" and _which("brew"):
                 install_cmd = [_which("brew"), "install", "ollama"]
             else:
                 install_cmd = ["echo", "Install Ollama from https://ollama.com/download"]
@@ -722,8 +724,8 @@ def _seed_env_from_example(repo_dir: Path, env_path: Path) -> bool:
     replacements = {
         "FLASK_SECRET_KEY=<random-hex-string>": f"FLASK_SECRET_KEY={secrets.token_hex(32)}",
         "MAGI_API_KEY=<random-hex-string>": f"MAGI_API_KEY={secrets.token_hex(32)}",
-        "MAGI_ROOT_DIR=/path/to/MAGI_v2": f"MAGI_ROOT_DIR={repo_dir}",
-        "MAGI_SKILL_PYTHON=/path/to/MAGI_v2/.venv/bin/python": f"MAGI_SKILL_PYTHON={venv_python(repo_dir)}",
+        "MAGI_ROOT_DIR=/path/to/MAGI": f"MAGI_ROOT_DIR={repo_dir}",
+        "MAGI_SKILL_PYTHON=/path/to/MAGI/.venv/bin/python": f"MAGI_SKILL_PYTHON={venv_python(repo_dir)}",
     }
     for old, new in replacements.items():
         text = text.replace(old, new)

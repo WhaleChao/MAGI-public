@@ -36,17 +36,17 @@ This skill allows CASPER to automate reporting tasks on the LAF Portal by readin
 
 ## Simulator (Offline Training Site)
 
-- Entry: `file:///Users/ai/Desktop/code/laf_training_simulator/index.html`
-- Optional server: `/Users/ai/Desktop/code/laf_training_simulator/server.py` (default port `8080`)
-- Latest QA screenshots captured by automation: `/Users/ai/Desktop/code/laf_training_simulator/_qa/`
+- Entry: `${MAGI_ROOT_DIR}/laf_training_simulator/index.html`
+- Optional server: `${MAGI_ROOT_DIR}/laf_training_simulator/server.py` (default port `8080`)
+- Latest QA screenshots captured by automation: `${MAGI_DATA_DIR}/laf_training_simulator/qa/`
 - Snapshot simulator (built from official smoke HTML/PNG):  
-  `file:///Users/ai/Desktop/code/laf_training_simulator/snapshot_simulator.html`
+  `${MAGI_ROOT_DIR}/laf_training_simulator/snapshot_simulator.html`
 - Build snapshot dataset:
-  - `python3 /Users/ai/Desktop/code/laf_training_simulator/build_snapshot_simulator.py`
-  - `python3 /Users/ai/Desktop/code/laf_training_simulator/train_casper_from_snapshots.py`
+  - `${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT_DIR}/laf_training_simulator/build_snapshot_simulator.py`
+  - `${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT_DIR}/laf_training_simulator/train_casper_from_snapshots.py`
 - Training payload for CASPER:
-  - `/Users/ai/Desktop/code/laf_training_simulator/snapshot_data/casper_laf_training.json`
-  - `/Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/references/snapshot_training.json`
+  - `${MAGI_ROOT_DIR}/laf_training_simulator/snapshot_data/casper_laf_training.json`
+  - `${MAGI_ROOT}/skills/laf-portal-automation/references/snapshot_training.json`
 
 ## Natural Language Commands (zh-TW)
 
@@ -69,9 +69,9 @@ This skill allows CASPER to automate reporting tasks on the LAF Portal by readin
 ## Router CLI（訓練匹配）
 
 - 列出已載入樣本：
-  - `python /Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/action.py --list`
+  - `${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT}/skills/laf-portal-automation/action.py --list`
 - 以自然語言匹配回報流程：
-  - `python /Users/ai/Desktop/MAGI_v2/skills/laf-portal-automation/action.py --query "幫我做開案回報，當事人是蕭仁俊（只填寫不送出）"`
+  - `${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT}/skills/laf-portal-automation/action.py --query "幫我做開案回報，當事人是蕭仁俊（只填寫不送出）"`
 
 ## Capability: Case Type & Document Validation
 - **Input**: Case Directory in `01_案件/法扶案件/`.
@@ -264,7 +264,7 @@ CASPER 依 workflow 套用不同上傳策略：
 
 1. `inquiry / withdrawal / closing`
    - `04_我方歷次書狀`（含子資料夾）所有檔案轉 PDF 後上傳
-   - `10_判決書`（含子資料夾）所有 PDF 上傳
+   - `10_判決書或終局裁定及處分`（含子資料夾）所有 PDF 上傳；舊 `10_判決書` 仍相容讀取
 2. `condition`（二階段）
    - **只上傳**「調解不成立證明書」
 3. `fee`（訴訟中費用支付）

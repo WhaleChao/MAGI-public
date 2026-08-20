@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,8 +17,10 @@ from typing import Any, Dict, List, Optional
 # ── 路徑推導 ─────────────────────────────────────────────────────
 _SKILL_DIR = Path(__file__).resolve().parent.parent  # market-briefing/
 _MAGI_ROOT = _SKILL_DIR.parents[1]
-_AGENT_DIR = _MAGI_ROOT / ".agent"
+_LEGACY_AGENT_DIR = _MAGI_ROOT / ".agent"
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR") or str(_LEGACY_AGENT_DIR)).expanduser()
 STATE_PATH = _AGENT_DIR / "market_watchlist.json"
+_LEGACY_STATE_PATH = _LEGACY_AGENT_DIR / "market_watchlist.json"
 
 # ── Stop words (duplicated to avoid circular import) ─────────────
 STOP_WORDS = {
@@ -166,7 +169,10 @@ def _resolve_tokens(text: str) -> List[WatchItem]:
 
 
 def _load_state() -> Dict[str, Any]:
-    state = _load_json_ws(STATE_PATH, dict(_DEFAULT_STATE))
+    read_path = STATE_PATH
+    if not read_path.exists() and STATE_PATH.resolve(strict=False) != _LEGACY_STATE_PATH.resolve(strict=False):
+        read_path = _LEGACY_STATE_PATH
+    state = _load_json_ws(read_path, dict(_DEFAULT_STATE))
     if not isinstance(state, dict):
         state = dict(_DEFAULT_STATE)
     for k, v in _DEFAULT_STATE.items():

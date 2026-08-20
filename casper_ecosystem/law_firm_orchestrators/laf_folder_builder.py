@@ -18,6 +18,8 @@ import re
 import json
 import logging
 import sys
+import errno
+import time
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 
@@ -34,6 +36,7 @@ from api.case_path_mapper import (
     translate_local_path_to_canonical,
 )
 from api.laf_case_classifier import is_administrative_laf_reason, normalize_laf_case_type
+from skills.bridge.shared_utils.judgment_folder_names import judgment_folder_name
 
 CONFIG_PATH = str(get_config_path("config.json"))
 
@@ -48,10 +51,18 @@ STANDARD_SUBFOLDERS = [
     "07_證據資料",
     "08_筆錄",
     "09_法院通知或程序裁定",
-    "10_判決書",
+    judgment_folder_name(10),
     "11_回執",
     "12_信件往返",
 ]
+
+_TRANSIENT_MKDIR_ERRNOS = {
+    errno.EAGAIN,
+    errno.EBUSY,
+    errno.EDEADLK,
+    errno.EIO,
+    errno.ETIMEDOUT,
+}
 
 
 class LAFFolderBuilder:
@@ -110,7 +121,7 @@ class LAFFolderBuilder:
                 self.mac_smb_base = m.get("mac_smb_prefix", "")  # smb://MAGI_NAS_HOST/homes/...
 
         # Derive local mount path from smb path
-        # smb://MAGI_NAS_HOST/homes/<user>/01_案件 → /Users/ai/SynologyDrive/01_案件
+        # SMB active-case root → the current user's SynologyDrive case root.
         # But the actual local path depends on how the user has mounted it.
         # We'll try a few common patterns:
         self._detect_local_mount()
@@ -186,9 +197,9 @@ class LAFFolderBuilder:
 
         # Create the folder + subfolders
         try:
-            os.makedirs(local_path, exist_ok=True)
+            self._safe_makedirs(local_path)
             for sub in STANDARD_SUBFOLDERS:
-                os.makedirs(os.path.join(local_path, sub), exist_ok=True)
+                self._safe_makedirs(os.path.join(local_path, sub))
 
             logger.info("✅ Created case folder: %s", local_path)
             logger.info("   DB canonical path: %s", canonical_path)
@@ -201,7 +212,7 @@ class LAFFolderBuilder:
     def get_local_path_from_canonical(self, canonical_path: str) -> str:
         """
         Convert Z: canonical path to local macOS path.
-        Z:/<active-share>/01_案件/法扶案件/... → /Users/ai/SynologyDrive/01_案件/法扶案件/...
+        Z:/<active-share>/01_案件/法扶案件/... → <configured-local-root>/01_案件/法扶案件/...
         """
         return translate_case_path_to_local(canonical_path)
 
@@ -210,6 +221,50 @@ class LAFFolderBuilder:
         folder_name = self._build_folder_name(case_info)
         local_path = self._get_local_path(folder_name, case_info)
         return os.path.isdir(local_path)
+
+    def _safe_makedirs(self, path: str) -> None:
+        """Create NAS-backed folders with bounded retry for transient SMB failures."""
+        attempts = max(1, int(os.environ.get("MAGI_NAS_MKDIR_RETRIES", "4") or "4"))
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                os.makedirs(path, exist_ok=True)
+                return
+            except OSError as e:
+                last_error = e
+                msg = str(e).lower()
+                transient = (
+                    e.errno in _TRANSIENT_MKDIR_ERRNOS
+                    or "timed out" in msg
+                    or "deadlock" in msg
+                    or "resource temporarily unavailable" in msg
+                )
+                if not transient or attempt >= attempts:
+                    raise
+                logger.warning(
+                    "NAS mkdir transient failure (%s/%s): %s — %s",
+                    attempt,
+                    attempts,
+                    path,
+                    e,
+                )
+                self._refresh_mount_for_retry(path)
+                time.sleep(min(8.0, 1.5 * attempt))
+        if last_error:
+            raise last_error
+
+    def _refresh_mount_for_retry(self, path: str) -> None:
+        if self.experiment_base_dir:
+            return
+        marker_path = str(path or "")
+        if "/Volumes/" not in marker_path and "SynologyDrive" not in marker_path:
+            return
+        try:
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+            self._detect_local_mount()
+        except Exception as e:
+            logger.warning("NAS mount refresh before mkdir retry failed: %s", e)
 
     # ------------------------------------------------------------------
     # Private
@@ -317,7 +372,7 @@ class LAFFolderBuilder:
     def _local_to_canonical(self, local_path: str) -> str:
         """
         Convert local macOS path to canonical Z: path for DB.
-        /Users/ai/SynologyDrive/01_案件/法扶案件/... → Z:/<active-share>/01_案件/法扶案件/...
+        <configured-local-root>/01_案件/法扶案件/... → Z:/<active-share>/01_案件/法扶案件/...
         """
         # 實驗環境：直接回傳本機路徑（避免寫入 DB 的 Z: 路徑）
         if self.experiment_base_dir:

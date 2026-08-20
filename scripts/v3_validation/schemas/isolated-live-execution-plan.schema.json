@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/isolated-live-execution-plan.schema.json",
+  "title": "MAGI V3 isolated LIVE execution plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "operation",
+    "release_manifest",
+    "deploy_manifest",
+    "deploy_prepared_marker",
+    "offline_gate_report",
+    "token_sha256",
+    "probes"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "operation": {"const": "isolated_live_validation"},
+    "release_manifest": {"$ref": "#/$defs/bound_artifact"},
+    "deploy_manifest": {"$ref": "#/$defs/bound_artifact"},
+    "deploy_prepared_marker": {"$ref": "#/$defs/bound_artifact"},
+    "offline_gate_report": {"$ref": "#/$defs/bound_artifact"},
+    "token_sha256": {"$ref": "#/$defs/sha256"},
+    "probes": {
+      "type": "array",
+      "minItems": 9,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/probe"},
+      "allOf": [
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5002/livez"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5002/readyz"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5002/validation/ping"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5003/livez"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5003/readyz"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5003/validation/ping"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5003/validation/osc/document-preview"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:5003/validation/osc/document-download"}}, "required": ["url"]}},
+        {"contains": {"properties": {"url": {"const": "http://127.0.0.1:8088/health"}}, "required": ["url"]}}
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "bound_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url"],
+      "properties": {
+        "method": {"enum": ["GET", "HEAD"]},
+        "url": {
+          "enum": [
+            "http://127.0.0.1:5002/livez",
+            "http://127.0.0.1:5002/readyz",
+            "http://127.0.0.1:5002/validation/ping",
+            "http://127.0.0.1:5002/validation/osc/document-preview",
+            "http://127.0.0.1:5002/validation/osc/document-download",
+            "http://127.0.0.1:5003/livez",
+            "http://127.0.0.1:5003/readyz",
+            "http://127.0.0.1:5003/validation/ping",
+            "http://127.0.0.1:5003/validation/osc/document-preview",
+            "http://127.0.0.1:5003/validation/osc/document-download",
+            "http://127.0.0.1:8088/health",
+            "http://127.0.0.1:8088/validation/ping"
+          ]
+        }
+      }
+    }
+  }
+}

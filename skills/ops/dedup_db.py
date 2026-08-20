@@ -27,6 +27,25 @@ logger = logging.getLogger("DedupDB")
 _conn_local = threading.local()
 
 
+def _load_runtime_environment() -> str:
+    """Load the deployment-bound secret file without overriding V3 bindings."""
+
+    try:
+        from dotenv import load_dotenv
+        from api.runtime_paths import dotenv_override_allowed, get_env_file
+
+        env_path = get_env_file()
+        if env_path.is_file():
+            load_dotenv(
+                str(env_path),
+                override=dotenv_override_allowed(),
+            )
+            return str(env_path)
+    except Exception as exc:
+        logger.debug("dedup runtime environment load skipped: %s", exc)
+    return ""
+
+
 def _get_conn():
     """取得 thread-local DB 連線，支援 failover（遠端→本地）。"""
     conn = getattr(_conn_local, "conn", None)
@@ -37,16 +56,9 @@ def _get_conn():
         except Exception:
             _conn_local.conn = None
 
-    # --- Ensure .env is loaded ---
-    from pathlib import Path
-    _proj_root = Path(__file__).resolve().parent.parent.parent
-    _env_path = _proj_root / ".env"
-    if _env_path.exists():
-        try:
-            from dotenv import load_dotenv
-            load_dotenv(str(_env_path))
-        except ImportError:
-            pass
+    # Sealed V3 releases intentionally contain no ``.env``.  Credentials are
+    # supplied through the deployment-bound external environment file.
+    _load_runtime_environment()
 
     import mysql.connector
 

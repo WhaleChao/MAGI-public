@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import signal
+import shlex
 import subprocess
 import sys
 import time
@@ -54,6 +55,9 @@ STUCK_THRESHOLDS = {
     "action.py": 3600,       # skill action 最多 1 小時
     "autopilot": 7200,       # autopilot tick 最多 2 小時
     "worker": 3600,          # worker 最多 1 小時
+    "scripts/drive_case_sync_worker.py": 5400,  # cron resource_guarded timeout is 4800s
+    "scripts/ops/resource_guarded_run.py": 5400,
+    "skills/transcript-downloader/action.py": 7500,  # cron timeout is 7200s
 }
 
 DEFAULT_STUCK_SEC = 3600
@@ -61,11 +65,25 @@ DEFAULT_STUCK_SEC = 3600
 # 這些服務預期可由 launchd 或 MAGI CLI 以 PPID=1 常駐執行；
 # 不應被當作孤兒或卡死程序，否則週報會反覆誤報。
 MANAGED_LONG_RUNNING_SCRIPTS = [
+    "api/server.py",
+    "api/discord_bot.py",
+    "scripts/ops/run_daemon_no_site.py",
+    "scripts/ops/run_menubar_no_site.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "gui/magi_menubar.py",
     "scripts/ops/memory_watchdog.py",
     "scripts/share_gateway.py",
     "scripts/share_tunnel_supervisor.py",
     "scripts/serve_mlx_mtp.py",
+]
+
+# These jobs are intentionally detached from request/cron parents so user-facing
+# actions can return immediately. They are still bounded by scan_stuck().
+EXPECTED_DETACHED_JOB_MARKERS = [
+    "download_worker",
+    "scripts/drive_case_sync_worker.py",
+    "scripts/ops/resource_guarded_run.py",
+    "skills/transcript-downloader/action.py",
 ]
 
 
@@ -75,9 +93,11 @@ MANAGED_LONG_RUNNING_SCRIPTS = [
 def _ps_all() -> List[Dict[str, Any]]:
     """取得所有程序列表（使用 ps，不依賴 psutil）。"""
     try:
+        env = os.environ.copy()
+        env.setdefault("COLUMNS", "4096")
         out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,stat=,etime=,command="],
-            capture_output=True, text=True, timeout=10,
+            ["ps", "axww", "-o", "pid=,ppid=,stat=,etime=,command="],
+            capture_output=True, text=True, timeout=10, env=env,
         )
         lines = (out.stdout or "").strip().splitlines()
     except Exception as e:
@@ -147,6 +167,102 @@ def _is_managed_long_running(cmd: str) -> bool:
     return any(marker in (cmd or "") for marker in MANAGED_LONG_RUNNING_SCRIPTS)
 
 
+def _is_expected_detached_job(cmd: str) -> bool:
+    return any(marker in (cmd or "") for marker in EXPECTED_DETACHED_JOB_MARKERS)
+
+
+def _v3_pid_directory() -> str:
+    bound = str(os.environ.get("MAGI_V3_PID_FILE") or "").strip()
+    if bound:
+        return os.path.dirname(bound)
+    runtime = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    if runtime:
+        return os.path.join(os.path.dirname(os.path.dirname(runtime)), "pids")
+    return ""
+
+
+def _is_managed_v3_launchd_role(proc: Dict[str, Any]) -> bool:
+    """Accept only a receipt-bound V3 launchd role, never a command-line lookalike."""
+
+    command = str(proc.get("command") or "")
+    role_by_marker = {
+        "run_module('magi_v3.control'": "control",
+        'run_module("magi_v3.control"': "control",
+        "run_module('magi_v3.gateway'": "gateway",
+        'run_module("magi_v3.gateway"': "gateway",
+        "run_module('magi_v3.supervisor_service'": "supervisor",
+        'run_module("magi_v3.supervisor_service"': "supervisor",
+    }
+    role = next((value for marker, value in role_by_marker.items() if marker in command), "")
+    pid_dir = _v3_pid_directory()
+    if not role or not pid_dir:
+        return False
+    try:
+        receipt_path = os.path.join(pid_dir, f"{role}.pid")
+        with open(receipt_path, "r", encoding="utf-8") as handle:
+            receipt = json.load(handle)
+        pid = int(proc.get("pid") or 0)
+        group = int(receipt.get("process_group") or 0)
+        release_id = str(receipt.get("release_id") or "")
+        return bool(
+            receipt.get("schema_version") == 1
+            and receipt.get("role") == role
+            and int(receipt.get("pid") or 0) == pid
+            and group == pid
+            and os.getpgid(pid) == group
+            and release_id
+            and release_id == str(os.environ.get("MAGI_V3_RELEASE_ID") or "")
+            and f".magi-{release_id}-owner" in command
+            and str(receipt.get("release_root") or "").endswith("/" + release_id)
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _command_executes_python_script(cmd: str, script: str) -> bool:
+    """Return True only when the Python process command actually runs script."""
+    try:
+        parts = shlex.split(cmd or "")
+    except ValueError:
+        parts = str(cmd or "").split()
+    if not parts:
+        return False
+    exe = os.path.basename(parts[0]).lower()
+    if "python" not in exe:
+        return False
+    script_norm = script.replace("\\", "/")
+    module_name = script_norm.replace("/", ".").removesuffix(".py")
+    idx = 1
+    while idx < len(parts):
+        arg = parts[idx]
+        if arg == "-m" and idx + 1 < len(parts):
+            if parts[idx + 1] == module_name:
+                return True
+            idx += 2
+            continue
+        if arg.startswith("-"):
+            idx += 1
+            continue
+        norm = arg.replace("\\", "/")
+        if norm == script_norm or norm.endswith("/" + script_norm):
+            return True
+        idx += 1
+    return False
+
+
+def _duplicate_keep_key(proc: Dict[str, Any]) -> tuple[int, int]:
+    """Prefer daemon-managed singleton children; otherwise keep the newest."""
+    ppid = int(proc.get("ppid") or 0)
+    return (0 if ppid > 1 else 1, _etime_to_seconds(str(proc.get("etime") or "")))
+
+
+def _stuck_threshold_for_command(cmd: str) -> int:
+    for key, val in sorted(STUCK_THRESHOLDS.items(), key=lambda item: len(item[0]), reverse=True):
+        if key in cmd:
+            return val
+    return DEFAULT_STUCK_SEC
+
+
 def _safe_kill(pid: int, sig: int = signal.SIGTERM) -> bool:
     """安全發送訊號，返回是否成功。"""
     try:
@@ -171,12 +287,17 @@ def scan_zombies(procs: List[Dict]) -> List[Dict]:
                 if pp["pid"] == p["ppid"]:
                     parent_cmd = pp["command"][:120]
                     break
+            is_magi = _is_magi_process(parent_cmd)
+            # MAGI health should not fail because the host app (for example
+            # Codex while we are developing) has an unrelated zombie child.
+            if not is_magi:
+                continue
             zombies.append({
                 "pid": p["pid"],
                 "ppid": p["ppid"],
                 "etime": p["etime"],
                 "parent_command": parent_cmd,
-                "is_magi": _is_magi_process(parent_cmd),
+                "is_magi": is_magi,
             })
     return zombies
 
@@ -228,16 +349,20 @@ def clean_zombies(zombies: List[Dict]) -> List[Dict]:
 def scan_duplicates(procs: List[Dict]) -> List[Dict]:
     """偵測 MAGI 關鍵程序的重複實例。"""
     issues = []
+    current_pid = os.getpid()
     for script in SINGLETON_SCRIPTS:
         matches = []
         for p in procs:
+            if p.get("pid") == current_pid:
+                continue
             if "Z" in p["stat"]:
                 continue
-            if script in p["command"] and "python" in p["command"].lower():
+            if _command_executes_python_script(p["command"], script):
                 matches.append(p)
         if len(matches) > 1:
-            # 按啟動時間排序，最新的保留
-            matches.sort(key=lambda x: _etime_to_seconds(x["etime"]))
+            # Prefer daemon-managed children over ad-hoc orphan launches, then
+            # keep the newest remaining process.
+            matches.sort(key=_duplicate_keep_key)
             issues.append({
                 "script": script,
                 "count": len(matches),
@@ -282,6 +407,8 @@ def scan_orphans(procs: List[Dict]) -> List[Dict]:
             continue
         if "python" not in p["command"].lower():
             continue
+        if _is_managed_v3_launchd_role(p):
+            continue
         if _is_managed_long_running(p["command"]):
             continue
         # 父程序不存在或為 launchd
@@ -292,6 +419,10 @@ def scan_orphans(procs: List[Dict]) -> List[Dict]:
             # 排除 jedi language server 等 IDE 程序
             if "jedi" in p["command"] or "language-server" in p["command"]:
                 continue
+            if _is_expected_detached_job(p["command"]):
+                elapsed = _etime_to_seconds(p["etime"])
+                if elapsed <= _stuck_threshold_for_command(p["command"]):
+                    continue
             orphans.append({
                 "pid": p["pid"],
                 "ppid": p["ppid"],
@@ -312,6 +443,8 @@ def scan_stuck(procs: List[Dict]) -> List[Dict]:
             continue
         if "python" not in p["command"].lower():
             continue
+        if _is_managed_v3_launchd_role(p):
+            continue
         if _is_managed_long_running(p["command"]):
             continue
         # 排除常駐程序
@@ -322,11 +455,7 @@ def scan_stuck(procs: List[Dict]) -> List[Dict]:
             continue
 
         elapsed = _etime_to_seconds(p["etime"])
-        threshold = DEFAULT_STUCK_SEC
-        for key, val in STUCK_THRESHOLDS.items():
-            if key in p["command"]:
-                threshold = val
-                break
+        threshold = _stuck_threshold_for_command(p["command"])
 
         if elapsed > threshold:
             stuck.append({

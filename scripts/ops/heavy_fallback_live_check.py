@@ -3,13 +3,15 @@
 
 This check intentionally uses only synthetic prompts. It verifies:
 - @heavy / @重型 reaches the heavy path and produces a usable answer.
-- If NVIDIA NIM fails, MAGI falls back to an available local route without
-  returning the synthetic "busy" placeholder as a successful legal answer.
-- In strict heavy mode, MAGI can fail closed instead of silently downgrading.
+- If NVIDIA NIM fails, explicit heavy requests fail closed and never silently
+  downgrade to a local model.
+- Strict heavy mode preserves the same fail-closed rule after retries.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import json
 import os
 import sys
@@ -31,10 +33,16 @@ BAD_FALLBACK_MARKERS = (
 
 
 def _load_env() -> None:
-    env_path = ROOT / ".env"
+    env_path = Path(
+        os.environ.get("MAGI_ENV_FILE", "").strip() or ROOT / ".env"
+    ).expanduser()
     if not env_path.exists():
         return
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
+    payload = env_path.read_bytes()
+    expected_sha = os.environ.get("MAGI_ENV_FILE_SHA256", "").strip().lower()
+    if expected_sha and hashlib.sha256(payload).hexdigest() != expected_sha:
+        raise RuntimeError("MAGI_ENV_FILE SHA-256 mismatch")
+    for raw in payload.decode("utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -112,6 +120,12 @@ def run_checks(*, run_live_nim: bool) -> dict:
             allow_synthetic_fallback=False,
         )
         ok, detail = _assert_usable_success("heavy_prefix_live", result)
+        if ok and result.get("route") != "nvidia_nim":
+            ok = False
+            detail = (
+                "heavy_prefix_live: declared NVIDIA route was not used "
+                f"(actual={result.get('route')})"
+            )
         checks.append({
             "name": "heavy_prefix_live",
             "ok": ok,
@@ -120,13 +134,14 @@ def run_checks(*, run_live_nim: bool) -> dict:
             "result": _compact_result(result),
         })
 
+    nim_heavy = importlib.import_module("skills.bridge.nim_heavy")
     forced_fail = {"success": False, "error": "forced_nim_failure_for_fallback_check", "response": ""}
     with _temporary_env({
         "NVIDIA_NIM_ENABLE": "1",
         "MAGI_HEAVY_STRICT_NIM": "0",
         "INFERENCE_ALLOW_TEXT_FALLBACK": "0",
     }):
-        with patch("skills.bridge.nim_heavy.run_nim_chat", return_value=forced_fail):
+        with patch.object(nim_heavy, "run_nim_chat", return_value=forced_fail):
             started = time.monotonic()
             result = gateway.chat(
                 "@heavy 請用繁體中文說明民法第184條侵權行為，限三點。",
@@ -134,12 +149,14 @@ def run_checks(*, run_live_nim: bool) -> dict:
                 timeout=60,
                 allow_synthetic_fallback=False,
             )
-    ok, detail = _assert_usable_success("nim_failure_local_fallback", result)
-    if ok and result.get("route") == "nvidia_nim":
-        ok = False
-        detail = "fallback did not leave nvidia_nim route after forced NIM failure"
+    ok = (
+        result.get("success") is False
+        and result.get("route") == "nvidia_nim_heavy_failed"
+        and not result.get("synthetic_fallback")
+    )
+    detail = "ok" if ok else "explicit heavy failure must not execute a local model"
     checks.append({
-        "name": "nim_failure_local_fallback",
+        "name": "nim_failure_fail_closed",
         "ok": ok,
         "detail": detail,
         "elapsed_sec": round(time.monotonic() - started, 2),
@@ -153,7 +170,7 @@ def run_checks(*, run_live_nim: bool) -> dict:
         "MAGI_HEAVY_STRICT_NIM_ALLOW_FALLBACK": "0",
         "INFERENCE_ALLOW_TEXT_FALLBACK": "0",
     }):
-        with patch("skills.bridge.nim_heavy.run_nim_chat", return_value=forced_fail):
+        with patch.object(nim_heavy, "run_nim_chat", return_value=forced_fail):
             started = time.monotonic()
             result = gateway.chat(
                 "@heavy 請用繁體中文說明民法第184條侵權行為，限三點。",

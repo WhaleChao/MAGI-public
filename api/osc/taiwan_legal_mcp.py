@@ -15,9 +15,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from api.runtime_paths import get_runtime_dir
+
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_ROOT = _MAGI_ROOT / ".runtime" / "mcp-taiwan-legal-db"
-_DEFAULT_CACHE = _MAGI_ROOT / ".runtime" / "taiwan_legal_mcp" / "cache.sqlite3"
+_DEFAULT_ROOT = get_runtime_dir() / "mcp-taiwan-legal-db"
+_DEFAULT_CACHE = get_runtime_dir() / "taiwan_legal_mcp" / "cache.sqlite3"
 _TOOLS = {
     "search_judgments",
     "get_judgment",

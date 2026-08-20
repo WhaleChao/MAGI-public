@@ -11,8 +11,8 @@
   + 寫 settings.gcal_client_id / gcal_client_secret 到 MAGI DB
 
 使用：
-    /Users/ai/Desktop/MAGI_v2/venv/bin/python3 \
-        /Users/ai/Desktop/MAGI_v2/scripts/ops/osc_gcal_port_from_paperclip.py
+    "${MAGI_PYTHON_EXECUTABLE}" \
+        "${MAGI_ROOT}/scripts/ops/osc_gcal_port_from_paperclip.py"
 """
 from __future__ import annotations
 
@@ -26,10 +26,11 @@ PAPERCLIP_TOKEN = Path("/Applications/Paperclip.app/Contents/MacOS/token.pickle"
 PAPERCLIP_CREDS = Path("/Applications/Paperclip.app/Contents/MacOS/credentials.json")
 
 MAGI_TOKEN = Path.home() / ".magi" / "google" / "token.json"
+MAGI_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
-    sys.path.insert(0, "/Users/ai/Desktop/MAGI_v2")
+    sys.path.insert(0, str(MAGI_ROOT))
 
     if not PAPERCLIP_TOKEN.exists():
         print(f"❌ PaperClip token.pickle 不存在: {PAPERCLIP_TOKEN}")

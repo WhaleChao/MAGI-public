@@ -8,19 +8,22 @@ version = "1.0.0"
 description = "Multi-Agent Governance Infrastructure"
 requires-python = ">=3.12"
 readme = "README.md"
-license-files = ["LICENSE"]
 
 # P0-07: Core dependencies（從 requirements.txt 遷移）
 dependencies = [
     "flask>=3.0",
     "Flask-Login>=0.6",
     "Werkzeug>=3.0",
+    "waitress>=3.0.2",
     "python-dotenv>=1.0",
     "requests>=2.31",
     "aiohttp>=3.9",
     "mysql-connector-python>=8.2",
     "psutil>=5.9",
     "flask-cors>=4.0",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +73,7 @@ ai = [
 ]
 mlx = [
     "mlx-vlm>=0.5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-whisper==0.4.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 # Google APIs
 google = [
@@ -94,6 +98,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.3",
+    "jsonschema>=4.20",
 ]
 # 完整安裝
 all = [
@@ -101,23 +106,26 @@ all = [
 ]
 
 [project.scripts]
+magi = "bin.cli:main"
 magi-start = "bin.start:main"
 magi-check = "bin.check:main"
+magi-selfhost = "scripts.magi_selfhost:main"
 
 [tool.setuptools.packages.find]
-include = ["api*", "skills*", "bin*"]
+include = ["api*", "skills*", "bin*", "magi_v3*"]
 exclude = ["tests*", "backups*", "archive*", "_autopilot_runs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "live: integration tests that hit real DB / produce real files (slower; auto-skip if DB unreachable; use -m 'not live' to exclude in CI without DB)",
+    "live: integration tests that hit real DB, external services, or produce real files; deselected by default unless MAGI_ENABLE_LIVE_TESTS=1, --magi-live, or an explicit -m live expression is used",
 ]
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+    "ignore:aifc was removed in Python 3\\.13.*:DeprecationWarning:speech_recognition",
 ]
 
 [tool.ruff]

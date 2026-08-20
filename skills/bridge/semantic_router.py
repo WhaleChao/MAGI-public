@@ -33,11 +33,21 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from skills.overlay import effective_definitions_path
+
 logger = logging.getLogger("SemanticRouter")
 
-_DEFINITIONS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "definitions.json"
-)
+_INITIAL_DEFINITIONS_PATH = str(effective_definitions_path())
+_DEFINITIONS_PATH = _INITIAL_DEFINITIONS_PATH
+
+
+def _definitions_path() -> str:
+    # Tests and operators may explicitly override the module constant.  The
+    # default remains dynamic so a definitions overlay created after import is
+    # observed on the next cache reload.
+    if _DEFINITIONS_PATH != _INITIAL_DEFINITIONS_PATH:
+        return _DEFINITIONS_PATH
+    return str(effective_definitions_path())
 
 # Tunable thresholds
 _ROUTE_THRESHOLD = float(os.environ.get("SEMANTIC_ROUTER_THRESHOLD", "0.22") or "0.22")
@@ -61,6 +71,12 @@ _BLACKLISTED_SKILLS = {
     "iron_dome_scan",   # safety-critical
     "drop_table",       # should never be routed
 }
+_PDF_DEPRECATED_ROUTE_HINT = "舊的 PDF 自動標籤路由已退役；若要替 PDF 加書籤請改用 pdf-bookmarker，若要命名或歸檔請改用 pdf-namer。"
+_DEPRECATED_ROUTE_PATTERNS = [
+    r"pdf\s*(?:標籤|標記|annotate|annotation)",
+    r"(?:卷宗|閱卷).*?(?:標籤|標記|highlight|annotate)",
+    r"(?:自動標籤|自動標記)",
+]
 
 # Generated clarification/fallback skills are useful for recovery flows, but they
 # should not participate in normal semantic routing. They add noise and can steal
@@ -121,10 +137,6 @@ _PHRASE_HINTS: List[Tuple[str, str, float]] = [
     ("在法庭上說",     "transcript_query",        0.46),
     ("被告說",         "transcript_query",        0.44),
     ("證人說",         "transcript_query",        0.44),
-    # PDF annotation
-    ("PDF標籤",        "pdf_annotate",            0.52),
-    ("卷宗標記",       "pdf_annotate",            0.50),
-    ("自動標籤",       "pdf_annotate",            0.48),
     # Stock briefing — watchlist management
     ("追蹤以下股票",   "stock_briefing",          0.56),
     ("追蹤股票",       "stock_briefing",          0.54),
@@ -204,13 +216,20 @@ _SOFT_PHRASE_HINTS = {
 def _load_skills() -> List[Dict]:
     """Load and cache skill descriptors from definitions.json."""
     try:
-        p = Path(_DEFINITIONS_PATH)
+        p = Path(_definitions_path())
         if not p.exists():
             return []
         data = json.loads(p.read_text(encoding="utf-8"))
         tools = data.get("tools") or []
         skills = []
         for t in tools:
+            try:
+                from skills.catalog import is_public_definition_tool
+
+                if not is_public_definition_tool(t, include_deprecated=False):
+                    continue
+            except Exception:
+                pass
             name = str(t.get("name") or "").strip()
             if not name or name in _BLACKLISTED_SKILLS:
                 continue
@@ -365,9 +384,46 @@ def route(message: str) -> Optional[Dict]:
     skills = _get_skills()
     if not skills:
         return None
+    skill_names = {str(s.get("name") or "") for s in skills}
 
-    msg_text = (message or "").lower()
-    msg_tokens = _tokenize(message)
+    raw_message = str(message or "")
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(raw_message):
+            return None
+    except Exception:
+        pass
+    try:
+        from api.routing.command_prefixes import strip_heavy_prefix
+        from api.routing.intent_contract import (
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_STATEFUL_REPLY,
+            KIND_TOOL_CAPABILITY,
+            classify_intent_contract,
+        )
+
+        clean_message = strip_heavy_prefix(raw_message)
+        decision = classify_intent_contract(clean_message)
+        if decision.kind in {
+            KIND_BUSY_STATUS,
+            KIND_CASUAL_CHAT,
+            KIND_EXPLICIT_COMMAND,
+            KIND_HELP_COMMAND,
+            KIND_META_CAPABILITY,
+            KIND_STATEFUL_REPLY,
+            KIND_TOOL_CAPABILITY,
+        }:
+            return None
+    except Exception:
+        clean_message = raw_message
+
+    msg_text = (clean_message or "").lower()
+    msg_tokens = _tokenize(clean_message)
     if not msg_tokens:
         return None
 
@@ -377,6 +433,8 @@ def route(message: str) -> Optional[Dict]:
     matched_hard_phrase: Dict[str, str] = {}
     for phrase, skill_name, bonus in _PHRASE_HINTS:
         if skill_name in _BLACKLISTED_SKILLS:
+            continue
+        if skill_name not in skill_names:
             continue
         if phrase in msg_text:
             # Only record the best (longest/highest) bonus per skill
@@ -392,9 +450,7 @@ def route(message: str) -> Optional[Dict]:
         best_phrase_skill = max(hard_phrase_bonus, key=lambda k: hard_phrase_bonus[k])
         best_phrase_conf = hard_phrase_bonus[best_phrase_skill]
         if best_phrase_conf >= _ROUTE_THRESHOLD:
-            logger.debug(
-                f"SemanticRouter[phrase]: '{message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})"
-            )
+            logger.debug(f"SemanticRouter[phrase]: '{clean_message[:60]}' → {best_phrase_skill} ({best_phrase_conf:.3f})")
             return {
                 "skill": best_phrase_skill,
                 "confidence": round(best_phrase_conf, 3),
@@ -423,11 +479,11 @@ def route(message: str) -> Optional[Dict]:
         {"skill": name, "score": round(score, 3), "method": "semantic"}
         for score, name in scores[:3]
     ]
-    if _is_soft_ambiguous_message(message) and effective_score < (_ROUTE_THRESHOLD + 0.12):
+    if _is_soft_ambiguous_message(clean_message) and effective_score < (_ROUTE_THRESHOLD + 0.12):
         return None
 
     if effective_score >= _ROUTE_THRESHOLD:
-        logger.debug(f"SemanticRouter: '{message[:60]}' → {best_name} ({effective_score:.3f})")
+        logger.debug(f"SemanticRouter: '{clean_message[:60]}' → {best_name} ({effective_score:.3f})")
         return {
             "skill": best_name,
             "confidence": round(effective_score, 3),
@@ -438,12 +494,23 @@ def route(message: str) -> Optional[Dict]:
 
     # --- Phase 3: LLM fallback for ambiguous mid-range scores ---
     if _LLM_ENABLED and best_score >= _LLM_THRESHOLD:
-        result = _llm_route(message, [s["name"] for s in skills])
+        result = _llm_route(clean_message, [s["name"] for s in skills])
         if result:
             result.setdefault("candidates", top_candidates)
             return result
 
     return None
+
+
+def deprecated_route_hint(message: str) -> str:
+    """Return a user-facing hint for deprecated semantic routes."""
+    text = str(message or "").strip().lower()
+    if not text:
+        return ""
+    for pattern in _DEPRECATED_ROUTE_PATTERNS:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return _PDF_DEPRECATED_ROUTE_HINT
+    return ""
 
 
 def _llm_route(message: str, skill_names: List[str]) -> Optional[Dict]:
@@ -508,7 +575,6 @@ _SKILL_TO_TRIGGER: Dict[str, str] = {
     "memory_search":        "@MAGI 記憶搜尋 {msg}",
     "transcript_query":     "@MAGI 筆錄查詢 {msg}",
     "transcript_index":     "@MAGI 索引筆錄",
-    "pdf_annotate":         "@MAGI 自動標籤 {msg}",
     "stock_briefing":       "@MAGI 股市晨報 --mode technical {msg}",
     "labor_law_calc":       "@MAGI 加班費計算 {msg}",
 }

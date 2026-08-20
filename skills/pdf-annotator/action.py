@@ -65,8 +65,9 @@ MAX_PAGES_PER_CALL = int(os.environ.get("ANNOTATION_MAX_PAGES", "3") or "3")
 PAGE_DPI = int(os.environ.get("ANNOTATION_DPI", "150") or "150")
 OUT_SUFFIX = os.environ.get("ANNOTATION_OUT_SUFFIX", "_bookmarked")
 
-SCHEMA_PATH = MAGI_ROOT / ".agent" / "annotation_schema.json"
-STATE_PATH = MAGI_ROOT / ".agent" / "annotation_state.json"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
+SCHEMA_PATH = AGENT_DIR / "annotation_schema.json"
+STATE_PATH = AGENT_DIR / "annotation_state.json"
 
 # ── Bookmark category keywords (used for naming bookmarks) ────────────────────
 _BOOKMARK_CATEGORIES = [

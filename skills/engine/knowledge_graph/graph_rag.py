@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Dict, List
 
+from api.runtime_paths import get_runtime_dir
+
 from .entity_extractor import extract_entities
 from .graph_store import GraphStore
 
@@ -10,7 +12,7 @@ from .graph_store import GraphStore
 def _default_graph_path() -> str:
     return os.environ.get(
         "MAGI_GRAPH_STORE_PATH",
-        "/Users/ai/Desktop/MAGI_v2_architecture_graph.json",
+        str(get_runtime_dir() / "architecture_graph.json"),
     )
 
 

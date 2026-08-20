@@ -1,0 +1,2770 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>國考練習｜MAGI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --line: #d8e0ec;
+      --text: #152238;
+      --muted: #5d6c82;
+      --accent: #0ea5e9;
+      --accent-dark: #0369a1;
+      --soft: #eef8fd;
+      --warn-bg: #fff8e8;
+      --warn: #9a5a00;
+      --danger: #b42318;
+      --success: #087a55;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main { width: min(1180px, calc(100vw - 32px)); margin: 30px auto 64px; }
+    header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { margin: 0 0 7px; font-size: clamp(28px, 5vw, 44px); letter-spacing: 0; }
+    h2, h3, p { margin-top: 0; }
+    p { color: var(--muted); line-height: 1.7; }
+    a { color: var(--accent-dark); }
+    .header-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
+    .privacy-badge, .back-link {
+      display: inline-flex; align-items: center; min-height: 38px; padding: 8px 12px;
+      border: 1px solid var(--line); border-radius: 8px; background: #fff; text-decoration: none;
+      color: #304258; font-size: 14px; font-weight: 800;
+    }
+    .privacy-badge { background: #edfdf6; border-color: #a8e1ca; color: #087a55; }
+    [hidden] { display: none !important; }
+    .mode-switch {
+      position: sticky; top: 10px; z-index: 20; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px; margin: 0 0 18px; padding: 7px; border: 1px solid var(--line); border-radius: 10px;
+      background: rgba(244,247,251,.94); box-shadow: 0 8px 24px rgba(15,23,42,.08); backdrop-filter: blur(10px);
+    }
+    .mode-button { min-height: 56px; background: #fff; color: #304258; border: 1px solid var(--line); font-size: 17px; }
+    .mode-button:hover { background: #eef8fd; color: var(--accent-dark); }
+    .mode-button.active { background: var(--accent-dark); color: #fff; border-color: var(--accent-dark); }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 14px 34px rgba(15,23,42,.07); }
+    .form-panel { overflow: hidden; }
+    .form-head { padding: 20px 24px 12px; background: linear-gradient(135deg, rgba(14,165,233,.10), rgba(255,255,255,0) 44%), #fff; }
+    .form-head h2 { margin-bottom: 6px; font-size: 20px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px 24px 22px; }
+    label { display: block; color: #304258; font-size: 14px; font-weight: 800; }
+    input, select, textarea {
+      width: 100%; margin-top: 7px; border: 1px solid #b9c6d8; border-radius: 8px; background: #fff;
+      color: var(--text); font: inherit; padding: 10px 11px;
+    }
+    textarea { min-height: 190px; resize: vertical; line-height: 1.65; }
+    input:focus, select:focus, textarea:focus { outline: 3px solid rgba(14,165,233,.18); border-color: var(--accent); }
+    .source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+    .source-card { padding: 21px; min-width: 0; }
+    .source-card + .source-card { border-left: 1px solid var(--line); }
+    .source-card:nth-child(odd) { border-left: 0; }
+    .source-card:nth-child(n+3) { border-top: 1px solid var(--line); }
+    .source-card h3 { margin-bottom: 4px; font-size: 18px; }
+    .source-card > p { min-height: 48px; margin-bottom: 12px; font-size: 13px; }
+    .file-box { margin-top: 10px; padding: 11px; border: 1px dashed #a9b7ca; border-radius: 8px; background: #fbfdff; }
+    .file-box input { margin: 0; padding: 0; border: 0; background: transparent; font-size: 13px; }
+    .reference-options { margin-bottom: 10px; }
+    .priority-card { background: linear-gradient(135deg, #fff8e8, #fff 54%); }
+    .source-priority { display: inline-flex; margin-bottom: 8px; padding: 4px 8px; border-radius: 999px; background: #ffe9af; color: #774900; font-size: 12px; font-weight: 900; }
+    .form-foot { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 17px 24px; border-top: 1px solid var(--line); background: #fbfdff; }
+    .form-foot p { margin: 0; font-size: 13px; }
+    .review-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .review-step { padding: 13px 18px; background: #f8fbfe; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .review-step b { display: block; margin-bottom: 2px; color: var(--text); font-size: 14px; }
+    .review-core { padding: 22px 24px 24px; }
+    .review-settings { display: grid; grid-template-columns: 1.25fr .75fr; gap: 14px; }
+    .automatic-policy { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 13px; margin-top: 16px; padding: 16px 17px; border: 1px solid #a8e1ca; border-radius: 10px; background: #f0fbf6; }
+    .automatic-policy-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; background: #087a55; color: #fff; font-size: 20px; font-weight: 900; }
+    .automatic-policy h3 { margin: 0 0 5px; font-size: 17px; }
+    .automatic-policy p { margin: 0; color: #315c4c; font-size: 13px; line-height: 1.65; }
+    .engine-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 9px; color: #304258; font-size: 13px; font-weight: 800; }
+    .engine-badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; background: #e7e8ff; color: #3932a7; font-size: 12px; font-weight: 900; }
+    .answer-entry { margin-top: 18px; padding: 19px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .answer-entry h3 { margin-bottom: 5px; }
+    .answer-entry p { margin-bottom: 10px; font-size: 13px; }
+    .answer-entry textarea { min-height: 300px; }
+    .computer-exam-policy { margin: 14px 0; padding: 14px 15px; border: 1px solid #9bc5e8; border-radius: 10px; background: #eef7ff; }
+    .computer-exam-policy-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .computer-exam-policy h4 { margin: 0; color: #194e78; font-size: 15px; }
+    .computer-exam-policy a { font-size: 12px; font-weight: 800; }
+    .computer-exam-policy ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 20px; margin: 10px 0 0; padding-left: 20px; color: #315b79; font-size: 13px; line-height: 1.55; }
+    .answer-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 12px 0 8px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+    .answer-toolbar button { min-height: 34px; padding: 7px 10px; border: 1px solid #b9c6d8; background: #fff; color: #304258; font-size: 13px; }
+    .answer-toolbar button:hover { background: #eaf6fd; color: var(--accent-dark); }
+    .answer-toolbar-separator { width: 1px; height: 24px; background: var(--line); }
+    .answer-limit-panel { margin-top: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+    .answer-limit-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px 18px; flex-wrap: wrap; color: #304258; font-size: 13px; }
+    .answer-limit-summary strong { color: var(--accent-dark); font-size: 15px; }
+    .answer-pages { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 9px; }
+    .answer-page { height: 7px; border-radius: 99px; background: #d9e2ed; }
+    .answer-page.active { background: var(--accent); }
+    .answer-limit-warning { min-height: 20px; margin-top: 7px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .answer-limit-warning.warning { color: var(--warn); }
+    .answer-limit-warning.error { color: var(--danger); }
+    .answer-submit-dock { position: sticky; bottom: 12px; z-index: 14; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 13px 14px; border: 1px solid #8ac7e9; border-radius: 11px; background: rgba(238,248,253,.97); box-shadow: 0 10px 28px rgba(15,23,42,.15); backdrop-filter: blur(10px); }
+    .answer-submit-dock b { display: block; margin-bottom: 2px; color: #184866; }
+    .answer-submit-dock span { color: #4c6578; font-size: 12px; }
+    #review-button { min-width: 230px; }
+    .exam-dialog { width: min(760px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 26px 80px rgba(2,8,23,.35); }
+    .exam-dialog::backdrop { background: rgba(2,8,23,.62); }
+    .exam-dialog-head, .exam-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .exam-dialog-head h3 { margin: 0; }
+    .exam-dialog-body { max-height: 65vh; overflow: auto; padding: 18px; }
+    .exam-dialog-preview { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }
+    .exam-dialog-foot { border-top: 1px solid var(--line); border-bottom: 0; }
+    .exam-dialog .secondary { border: 1px solid var(--line); background: #fff; color: #304258; }
+    .advanced-import { border-top: 1px solid var(--line); }
+    .advanced-import > summary { padding: 16px 24px; background: #f8fafc; }
+    .advanced-import .meta-grid { padding-top: 18px; }
+    .advanced-note { margin: 0; padding: 15px 24px 0; color: var(--muted); font-size: 13px; }
+    .submit-copy { display: grid; gap: 8px; min-width: 0; }
+    .hosted-review-note { max-width: 650px; padding: 10px 12px; border: 1px solid #a8c9e8; border-radius: 8px; background: #eef7ff; color: #264766; font-size: 13px; font-weight: 700; line-height: 1.55; }
+    button {
+      flex: 0 0 auto; border: 0; border-radius: 8px; padding: 12px 19px; background: var(--accent);
+      color: #fff; font-weight: 900; font-size: 16px; cursor: pointer;
+    }
+    button:hover { background: var(--accent-dark); }
+    button:disabled { background: #a8b5c4; cursor: wait; }
+    .notice { padding: 14px 18px; border-top: 1px solid #f0d6a6; background: var(--warn-bg); color: var(--warn); font-size: 13px; line-height: 1.6; }
+    .status { display: none; margin-top: 18px; padding: 16px 18px; border-left: 4px solid var(--accent); background: #fff; border-radius: 6px; box-shadow: 0 8px 22px rgba(15,23,42,.06); font-weight: 800; }
+    .status.error { border-color: var(--danger); color: var(--danger); }
+    .results { display: none; margin-top: 18px; }
+    .score-grid { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, .7fr)); gap: 10px; margin-bottom: 14px; }
+    .metric { min-width: 0; padding: 15px 16px; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+    .metric span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 12px; }
+    .metric b { font-size: 19px; overflow-wrap: anywhere; }
+    .score-main { background: linear-gradient(135deg, #eaf8fe, #fff); }
+    .score-main b { font-size: 30px; color: var(--accent-dark); }
+    .score-track { height: 8px; margin-top: 11px; overflow: hidden; border-radius: 99px; background: #dfeaf3; }
+    .score-fill { height: 100%; width: 0; background: var(--accent); transition: width .45s ease; }
+    .result-panel { margin-top: 14px; overflow: hidden; }
+    .section-head { padding: 17px 20px; border-bottom: 1px solid var(--line); background: #f8fafc; }
+    .section-head h2 { margin: 0; font-size: 19px; }
+    .section-body { padding: 19px 20px; }
+    .lead { margin: 0; color: var(--text); font-size: 16px; line-height: 1.8; }
+    .issue-list, .diagnostic-list, .framework-list, .rewrite-list, .drill-list { display: grid; gap: 11px; }
+    .issue, .diagnostic, .framework-item, .rewrite, .drill {
+      padding: 14px 15px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+    }
+    .issue-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .issue-top h3 { margin: 0; font-size: 16px; }
+    .issue-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .badge { display: inline-flex; align-items: center; white-space: nowrap; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 900; }
+    .badge.covered { background: #dff8ed; color: #087a55; }
+    .badge.partial { background: #fff3ce; color: #8b5c00; }
+    .badge.missing, .badge.incorrect { background: #fee8e7; color: #b42318; }
+    .badge.official { background: #e7e8ff; color: #3932a7; }
+    .badge.supplementary { background: #edf2f7; color: #506075; }
+    .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding-top: 7px; line-height: 1.65; }
+    .kv b { color: #3d5069; font-size: 13px; }
+    .kv span { color: #26384f; overflow-wrap: anywhere; }
+    .excerpt { margin-top: 8px; padding: 10px 12px; border-left: 3px solid #9dcde3; background: #f4f9fc; color: #33455f; line-height: 1.65; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .subpanel { padding: 17px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .subpanel h3 { margin-bottom: 12px; font-size: 17px; }
+    .framework-item h3, .rewrite h3, .drill h3 { margin: 0 0 8px; font-size: 16px; }
+    .framework-item ol, .simple-list { margin: 7px 0 0; padding-left: 21px; color: #304258; line-height: 1.7; }
+    .empty { margin: 0; color: var(--muted); font-style: italic; }
+    details { border-top: 1px solid var(--line); }
+    summary { padding: 14px 20px; cursor: pointer; color: #304258; font-weight: 900; background: #fbfdff; }
+    .details-body { padding: 4px 20px 18px; }
+    .small-meta { color: var(--muted); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+    .footer-note { margin-top: 14px; padding: 14px 16px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .progress-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 15px; }
+    .progress-chip { padding: 12px 13px; border: 1px solid var(--line); border-radius: 8px; background: #fbfdff; }
+    .progress-chip span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+    .progress-chip b { font-size: 17px; }
+    .history-list { display: grid; gap: 8px; }
+    .history-row { display: grid; grid-template-columns: 92px 130px minmax(120px, 1fr) 90px; align-items: center; gap: 10px; font-size: 13px; }
+    .history-bar { height: 10px; overflow: hidden; border-radius: 99px; background: #e2eaf2; }
+    .history-bar > span { display: block; height: 100%; background: var(--accent); }
+    .progress-callout { margin-top: 14px; padding: 12px 14px; border-left: 3px solid var(--success); background: #effaf6; color: #215543; line-height: 1.65; }
+    .choice-hero { overflow: hidden; }
+    .choice-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: #fbfdff; }
+    .choice-summary .metric { box-shadow: none; }
+    .choice-source { margin: 0; padding: 13px 22px; border-bottom: 1px solid #bfe7d7; background: #effaf6; color: #215543; font-size: 13px; line-height: 1.6; }
+    .choice-setup { padding: 20px 22px; }
+    .choice-setup-grid { display: grid; grid-template-columns: 1fr 1.4fr .7fr .8fr .7fr; gap: 12px; align-items: end; }
+    .choice-start-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 17px; }
+    .choice-start-row p { margin: 0; font-size: 13px; }
+    .choice-status { margin-top: 14px; padding: 12px 14px; border-left: 4px solid var(--accent); background: #f7fbfe; color: #304258; font-weight: 800; }
+    .choice-status.error { border-color: var(--danger); color: var(--danger); background: #fff7f6; }
+    .choice-workspace { margin-top: 18px; overflow: hidden; }
+    .choice-progress-head { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--line); background: #f8fafc; }
+    .choice-progress-head p { margin: 4px 0 0; font-size: 13px; }
+    .choice-progress-track { height: 9px; margin-top: 10px; overflow: hidden; border-radius: 99px; background: #dfeaf3; }
+    .choice-progress-track span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
+    .choice-session-score { min-width: 110px; text-align: right; }
+    .choice-session-score b { display: block; font-size: 24px; color: var(--accent-dark); }
+    .choice-session-score span { color: var(--muted); font-size: 12px; }
+    .choice-question { padding: 24px; }
+    .choice-question-meta { margin-bottom: 10px; color: var(--muted); font-size: 13px; font-weight: 800; }
+    .choice-question h2 { margin-bottom: 18px; font-size: 21px; line-height: 1.65; }
+    .choice-options { display: grid; gap: 10px; }
+    .choice-option { display: grid; grid-template-columns: 38px 1fr; gap: 10px; align-items: start; width: 100%; padding: 13px 14px; text-align: left; background: #fff; color: var(--text); border: 1px solid #b9c6d8; font-weight: 700; line-height: 1.55; }
+    .choice-option:hover { background: var(--soft); color: var(--text); border-color: var(--accent); }
+    .choice-option.selected { border-color: var(--accent-dark); background: #eaf8fe; box-shadow: inset 0 0 0 1px var(--accent-dark); }
+    .choice-option.correct { border-color: var(--success); background: #e7f9f1; color: #075f43; }
+    .choice-option.wrong { border-color: var(--danger); background: #fff0ef; color: #8e1d14; }
+    .choice-letter { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 999px; background: #e8eef5; font-weight: 900; }
+    .choice-answer-feedback { margin-top: 15px; padding: 14px 16px; border-left: 4px solid var(--success); background: #effaf6; color: #215543; line-height: 1.65; }
+    .choice-answer-feedback.wrong { border-color: var(--danger); background: #fff7f6; color: #8e1d14; }
+    .choice-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; }
+    .choice-secondary { background: #e7eef5; color: #304258; }
+    .choice-secondary:hover { background: #d8e4ef; color: #1c3047; }
+    .choice-maintenance { margin-top: 18px; overflow: hidden; }
+    .choice-maintenance > summary {
+      display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: center;
+      padding: 17px 20px; list-style: none; background: #f8fafc;
+    }
+    .choice-maintenance > summary::-webkit-details-marker { display: none; }
+    .maintenance-toggle {
+      display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%;
+      background: var(--soft); color: var(--accent-dark); font-size: 20px; font-weight: 900;
+    }
+    .maintenance-toggle::before { content: '+'; }
+    .choice-maintenance[open] .maintenance-toggle::before { content: '−'; }
+    .maintenance-summary-copy strong { display: block; color: var(--text); font-size: 17px; }
+    .maintenance-summary-copy small { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; font-weight: 650; line-height: 1.5; }
+    .choice-maintenance .section-body { display: grid; grid-template-columns: 1.25fr .75fr; gap: 18px; }
+    .choice-import-grid { display: grid; grid-template-columns: .55fr 1.45fr; gap: 10px; }
+    .choice-import-files { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    .choice-import-files label { padding: 12px; border: 1px dashed #a9b7ca; border-radius: 8px; background: #fbfdff; }
+    .choice-import-files input { padding: 0; border: 0; }
+    .choice-import-action { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+    .choice-import-status { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .document-list { max-height: 320px; overflow: auto; display: grid; gap: 9px; }
+    .document-row { padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; }
+    .document-row b { display: block; margin-bottom: 5px; font-size: 13px; }
+    .document-links { display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+    .essay-bank-panel { margin-bottom: 18px; overflow: hidden; }
+    .essay-bank-source { margin: 0; padding: 13px 22px; border-top: 1px solid #bfe7d7; border-bottom: 1px solid #bfe7d7; background: #effaf6; color: #215543; font-size: 13px; line-height: 1.65; }
+    .essay-bank-controls { display: grid; grid-template-columns: .7fr 1.3fr .55fr auto; gap: 12px; align-items: end; padding: 18px 22px 14px; }
+    .essay-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 22px 12px; }
+    .essay-bank-count { min-width: 150px; color: var(--muted); font-size: 13px; font-weight: 800; }
+    .essay-pager { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+    .essay-pager span { min-width: 78px; color: var(--muted); text-align: center; font-size: 13px; font-weight: 800; }
+    .essay-pager button { width: auto; padding: 8px 12px; font-size: 13px; }
+    .essay-bank-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 4px 22px 22px; }
+    .essay-card { display: flex; min-width: 0; flex-direction: column; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .essay-card h3 { margin: 7px 0 8px; font-size: 17px; line-height: 1.5; }
+    .essay-card-meta, .essay-card-policy { font-size: 12px; font-weight: 800; }
+    .essay-card-meta { color: var(--accent-dark); }
+    .essay-card-policy { margin-bottom: 10px; color: var(--warn); }
+    .essay-card-preview { display: -webkit-box; min-height: 65px; margin-bottom: 12px; overflow: hidden; color: #42556d; font-size: 13px; line-height: 1.65; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+    .essay-card-links { display: flex; gap: 12px; flex-wrap: wrap; margin: auto 0 13px; font-size: 13px; }
+    .essay-card button { width: 100%; }
+    .essay-selected { margin: 14px 24px 4px; padding: 14px 16px; border: 1px solid #9bd7c2; border-radius: 8px; background: #effaf6; }
+    .essay-selected-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .essay-selected-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .essay-selected h3 { margin: 0 0 5px; font-size: 16px; }
+    .essay-selected p { margin: 0; font-size: 13px; }
+    .essay-selected button { padding: 8px 11px; background: #dce9e4; color: #215543; font-size: 13px; }
+    .essay-selected-question { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .essay-selected-links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+    .workflow-strip { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; margin: -4px 0 18px; }
+    .workflow-step { padding: 13px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: #304258; font-size: 13px; line-height: 1.55; }
+    .workflow-step b { display: block; margin-bottom: 3px; color: var(--accent-dark); font-size: 14px; }
+    .random-queue { display: grid; gap: 9px; padding: 0 22px 18px; }
+    .random-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid #9bd7c2; border-radius: 8px; background: #effaf6; }
+    .random-row p { margin: 3px 0 0; font-size: 12px; }
+    .random-row button { padding: 8px 12px; font-size: 13px; }
+    .essay-family-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0 22px 18px; }
+    .essay-family-button { min-height: 74px; padding: 12px 14px; border: 1px solid var(--line); background: #fff; color: var(--ink); text-align: left; }
+    .essay-family-button b, .essay-family-button span { display: block; }
+    .essay-family-button b { margin-bottom: 4px; font-size: 15px; }
+    .essay-family-button span { color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.45; }
+    .essay-family-button[aria-selected="true"] { border-color: var(--brand); background: #effaf6; box-shadow: inset 0 0 0 1px var(--brand); color: var(--accent-dark); }
+    .source-catalog-panel { overflow: hidden; border-top: 1px solid var(--line); }
+    .source-view-head { padding: 18px 22px 0; }
+    .source-view-head h3 { margin: 0 0 5px; font-size: 18px; }
+    .source-view-head p { margin: 0; color: var(--muted); font-size: 13px; }
+    .source-catalog-controls { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)) auto auto; gap: 10px; align-items: end; padding: 16px 22px 12px; }
+    .source-paper-list { display: grid; gap: 9px; padding: 0 22px 20px; }
+    .source-paper { padding: 13px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .source-paper b { display: block; margin-bottom: 5px; }
+    .source-paper-links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+    .source-paper-note { margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .law-school-coverage { margin: 0 22px 18px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .law-school-coverage summary { cursor: pointer; padding: 12px 14px; font-weight: 750; color: var(--ink); }
+    .law-school-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 12px 12px; }
+    .law-school-card { border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; background: #fbfaf7; }
+    .law-school-card b { display: block; font-size: 13px; }
+    .law-school-card span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .law-school-card a { display: inline-block; margin-top: 5px; font-size: 12px; }
+    .coverage-direct { border-left: 4px solid var(--brand); }
+    .coverage-pending { border-left: 4px solid #c2882e; }
+    .coverage-none { border-left: 4px solid #a8a29a; }
+    .trend-hero { overflow: hidden; }
+    .trend-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 18px 22px; border-bottom: 1px solid var(--line); background: #fbfdff; }
+    .trend-policy { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 13px; margin: 18px 22px 0; padding: 15px 16px; border: 1px solid #9bc5e8; border-radius: 10px; background: #eef7ff; }
+    .trend-policy-mark { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; background: var(--accent-dark); color: #fff; font-weight: 900; }
+    .trend-policy h3 { margin: 0 0 4px; font-size: 16px; }
+    .trend-policy p { margin: 0; font-size: 13px; line-height: 1.6; }
+    .trend-controls { display: grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap: 12px; align-items: end; padding: 18px 22px; }
+    .trend-legend { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 22px 18px; color: var(--muted); font-size: 12px; }
+    .trend-status { margin: 0 22px 18px; padding: 12px 14px; border-left: 4px solid var(--accent); background: #f7fbfe; color: #304258; font-weight: 800; }
+    .trend-list { display: grid; gap: 14px; margin-top: 18px; }
+    .trend-card { overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 10px 28px rgba(15,23,42,.06); }
+    .trend-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 20px 14px; border-bottom: 1px solid var(--line); }
+    .trend-card-head h2 { margin: 3px 0 4px; font-size: 20px; }
+    .trend-card-head p { margin: 0; font-size: 13px; }
+    .trend-badges { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+    .trend-badge { display: inline-flex; align-items: center; min-height: 27px; padding: 4px 9px; border-radius: 999px; font-size: 12px; font-weight: 900; white-space: nowrap; }
+    .trend-badge.verified { background: #dff8ed; color: #087a55; }
+    .trend-badge.radar { background: #fff3ce; color: #8b5c00; }
+    .trend-badge.attention { background: #e7e8ff; color: #3932a7; }
+    .trend-card-body { display: grid; grid-template-columns: 1.15fr .85fr; gap: 20px; padding: 18px 20px 20px; }
+    .trend-card-body h3 { margin: 0 0 8px; font-size: 15px; }
+    .trend-card-body p { margin-bottom: 14px; color: var(--text); }
+    .trend-points { margin: 0 0 16px; padding-left: 21px; color: #304258; line-height: 1.7; }
+    .trend-outline { padding: 14px 15px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafc; }
+    .trend-outline ol { margin: 0; padding-left: 21px; color: #304258; line-height: 1.7; }
+    .trend-amendments, .trend-debate-map { margin: 0 0 18px; }
+    .trend-amendments > h3, .trend-debate-map > h3 { font-size: 17px; }
+    .trend-change-card, .trend-controversy, .trend-view-lane { margin-top: 10px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+    .trend-change-card h4, .trend-controversy h4, .trend-view-lane h4 { margin: 0 0 10px; color: var(--ink); font-size: 14px; }
+    .trend-change-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .trend-change-part { padding: 10px 11px; border-radius: 7px; background: #fff; border: 1px solid var(--line); line-height: 1.6; }
+    .trend-change-part b { display: block; margin-bottom: 4px; color: var(--accent-dark); font-size: 12px; }
+    .trend-current-law { margin-top: 10px; border-top: 1px dashed var(--line); }
+    .trend-current-law summary { cursor: pointer; padding-top: 10px; color: var(--accent-dark); font-weight: 800; }
+    .trend-current-law p { margin: 8px 0 0; padding: 10px 11px; border-radius: 7px; background: #fff; white-space: pre-wrap; line-height: 1.65; }
+    .trend-positions { display: grid; gap: 8px; }
+    .trend-position, .trend-view { padding: 10px 11px; border-left: 3px solid var(--accent); border-radius: 0 7px 7px 0; background: #fff; }
+    .trend-position b, .trend-view b { display: block; margin-bottom: 3px; }
+    .trend-position p, .trend-view p { margin: 0 0 5px; }
+    .trend-attribution { color: var(--muted); font-size: 12px; font-weight: 750; }
+    .trend-view-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .trend-view-list { display: grid; gap: 8px; }
+    .trend-source-links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; }
+    .trend-source-links a { font-weight: 800; }
+    .trend-missing { margin: 0; padding: 10px 11px; border: 1px dashed var(--line); border-radius: 7px; color: var(--muted); font-size: 13px; }
+    .trend-exam-tip { margin: 10px 0 0 !important; padding: 9px 10px; border-left: 3px solid var(--warn); background: var(--warn-bg); font-size: 13px; }
+    .trend-sources { display: grid; gap: 8px; }
+    .trend-source { padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 13px; line-height: 1.55; }
+    .trend-source b { display: block; margin-bottom: 2px; }
+    .trend-related { display: grid; gap: 8px; margin-top: 14px; }
+    .trend-related button { width: 100%; padding: 9px 11px; text-align: left; background: #e7eef5; color: #304258; font-size: 13px; }
+    .trend-related button:hover { background: var(--soft); color: var(--accent-dark); }
+    .trend-risk { margin-top: 13px; padding: 10px 11px; border-left: 3px solid var(--warn); background: var(--warn-bg); color: var(--warn); font-size: 12px; line-height: 1.55; }
+    .source-card.question-card { order: 1; }
+    .source-card.answer-card { order: 2; }
+    .source-card.basis-card { order: 3; }
+    .source-card.reference-card { order: 4; }
+    .basis-mode { margin-bottom: 12px; }
+    .basis-explanation { padding: 10px 12px; border-left: 3px solid var(--accent); background: #f4f9fc; color: #304258; font-size: 13px; line-height: 1.6; }
+    .server-locked { background: #f1f5f9; color: #506075; }
+    /* Keep the practice page on MAGI's shared forest/cyber visual system. */
+    .site-exam-tutor .privacy-badge,
+    .site-exam-tutor .back-link {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .privacy-badge {
+      background: color-mix(in srgb, var(--magi-ok) 11%, var(--magi-surface-strong));
+      border-color: color-mix(in srgb, var(--magi-ok) 45%, var(--magi-line));
+      color: var(--magi-ok);
+    }
+    .site-exam-tutor .mode-switch {
+      background: color-mix(in srgb, var(--magi-surface) 94%, transparent);
+      border-color: var(--magi-line);
+      box-shadow: var(--magi-shadow);
+    }
+    .site-exam-tutor .mode-button {
+      background: var(--magi-surface-strong) !important;
+      border-color: var(--magi-line) !important;
+      color: var(--magi-text) !important;
+      box-shadow: none !important;
+    }
+    .site-exam-tutor .mode-button:hover {
+      background: var(--magi-accent-soft) !important;
+      border-color: var(--magi-accent) !important;
+      color: var(--magi-accent) !important;
+    }
+    .site-exam-tutor .mode-button.active {
+      background: var(--magi-accent) !important;
+      border-color: var(--magi-accent) !important;
+      color: var(--magi-bg) !important;
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--magi-bg) 32%, transparent) !important;
+    }
+    .site-exam-tutor .form-head {
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--magi-accent) 13%, transparent), transparent 46%),
+        var(--magi-surface-strong);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .form-head h2,
+    .site-exam-tutor .priority-card h3,
+    .site-exam-tutor .essay-selected h3 {
+      color: var(--magi-text) !important;
+      text-shadow: none !important;
+    }
+    .site-exam-tutor .form-head p,
+    .site-exam-tutor .priority-card p,
+    .site-exam-tutor .essay-selected p {
+      color: var(--magi-muted) !important;
+    }
+    .site-exam-tutor label,
+    .site-exam-tutor .workflow-step,
+    .site-exam-tutor .kv span,
+    .site-exam-tutor .simple-list,
+    .site-exam-tutor summary {
+      color: var(--magi-text) !important;
+    }
+    .site-exam-tutor :where(
+      .workflow-step,
+      .metric,
+      .status,
+      .section-head,
+      .issue,
+      .diagnostic,
+      .framework-item,
+      .rewrite,
+      .drill,
+      .subpanel,
+      .progress-chip,
+      .file-box,
+      .choice-import-files label,
+      .document-row,
+      .essay-card,
+      .source-paper,
+      .law-school-coverage,
+      .law-school-card,
+      .review-step,
+      .answer-entry
+    ) {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .choice-import-files label {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor :where(.form-foot, .choice-summary, .choice-progress-head, summary) {
+      background: color-mix(in srgb, var(--magi-surface-strong) 88%, var(--magi-accent-soft));
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor :where(.choice-source, .essay-bank-source) {
+      background: var(--magi-accent-soft);
+      border-color: color-mix(in srgb, var(--magi-accent) 42%, var(--magi-line));
+      color: var(--magi-text);
+    }
+    .site-exam-tutor :where(.choice-status, .basis-explanation, .excerpt) {
+      background: color-mix(in srgb, var(--magi-accent) 9%, var(--magi-surface-strong));
+      border-color: var(--magi-accent);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .automatic-policy {
+      background: color-mix(in srgb, var(--magi-ok) 10%, var(--magi-surface-strong));
+      border-color: color-mix(in srgb, var(--magi-ok) 52%, var(--magi-line));
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .automatic-policy :where(h3, p, .engine-line) { color: var(--magi-text) !important; }
+    .site-exam-tutor .engine-badge {
+      background: color-mix(in srgb, var(--magi-accent) 18%, var(--magi-surface-strong));
+      color: var(--magi-accent);
+    }
+    .site-exam-tutor .hosted-review-note {
+      background: var(--magi-accent-soft);
+      border-color: color-mix(in srgb, var(--magi-accent) 45%, var(--magi-line));
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .review-steps,
+    .site-exam-tutor .advanced-import { border-color: var(--magi-line); }
+    .site-exam-tutor .choice-maintenance > summary {
+      background: color-mix(in srgb, var(--magi-surface-strong) 88%, var(--magi-accent-soft));
+      border-color: var(--magi-line);
+    }
+    .site-exam-tutor .maintenance-toggle {
+      background: var(--magi-accent-soft);
+      color: var(--magi-accent);
+    }
+    .site-exam-tutor .maintenance-summary-copy strong { color: var(--magi-text); }
+    .site-exam-tutor .maintenance-summary-copy small { color: var(--magi-muted); }
+    .site-exam-tutor .advanced-import > summary {
+      background: color-mix(in srgb, var(--magi-surface-strong) 88%, var(--magi-accent-soft));
+      border-color: var(--magi-line);
+      color: var(--magi-text) !important;
+    }
+    .site-exam-tutor .advanced-note { color: var(--magi-muted); }
+    .site-exam-tutor :where(.progress-callout, .choice-answer-feedback, .random-row, .essay-selected) {
+      background: color-mix(in srgb, var(--magi-ok) 10%, var(--magi-surface-strong));
+      border-color: color-mix(in srgb, var(--magi-ok) 52%, var(--magi-line));
+      color: var(--magi-text) !important;
+    }
+    .site-exam-tutor :where(.choice-status.error, .choice-answer-feedback.wrong) {
+      background: color-mix(in srgb, var(--magi-bad) 10%, var(--magi-surface-strong));
+      border-color: var(--magi-bad);
+      color: var(--magi-bad);
+    }
+    .site-exam-tutor .priority-card,
+    .site-exam-tutor .notice {
+      background: color-mix(in srgb, var(--magi-warn) 10%, var(--magi-surface-strong));
+      border-color: color-mix(in srgb, var(--magi-warn) 48%, var(--magi-line));
+      color: var(--magi-text) !important;
+    }
+    .site-exam-tutor .source-priority {
+      background: color-mix(in srgb, var(--magi-warn) 22%, var(--magi-surface-strong));
+      color: var(--magi-warn);
+    }
+    .site-exam-tutor .score-main {
+      background: linear-gradient(135deg, var(--magi-accent-soft), var(--magi-surface-strong));
+    }
+    .site-exam-tutor :where(.score-main b, .choice-session-score b, .essay-card-meta, .workflow-step b) {
+      color: var(--magi-accent) !important;
+    }
+    .site-exam-tutor .choice-option {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .choice-option:hover,
+    .site-exam-tutor .choice-option.selected {
+      background: var(--magi-accent-soft);
+      border-color: var(--magi-accent);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .choice-option.correct {
+      background: color-mix(in srgb, var(--magi-ok) 12%, var(--magi-surface-strong));
+      border-color: var(--magi-ok);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .choice-option.wrong {
+      background: color-mix(in srgb, var(--magi-bad) 12%, var(--magi-surface-strong));
+      border-color: var(--magi-bad);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .choice-letter,
+    .site-exam-tutor :where(.choice-secondary, .essay-selected button, .server-locked) {
+      background: var(--magi-accent-soft);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor :where(.score-track, .history-bar, .choice-progress-track) {
+      background: color-mix(in srgb, var(--magi-line) 62%, transparent);
+    }
+    .site-exam-tutor .essay-card-preview,
+    .site-exam-tutor .kv b,
+    .site-exam-tutor .source-paper-note,
+    .site-exam-tutor .law-school-card span {
+      color: var(--magi-muted);
+    }
+    .site-exam-tutor .essay-selected-question {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .essay-family-button,
+    .site-exam-tutor .source-paper,
+    .site-exam-tutor .law-school-coverage {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .essay-family-button[aria-selected="true"] {
+      background: var(--magi-accent-soft);
+      border-color: var(--magi-accent);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor .essay-selected a,
+    .site-exam-tutor .document-links a,
+    .site-exam-tutor .source-paper-links a {
+      color: var(--magi-accent) !important;
+    }
+    .site-exam-tutor .coverage-direct { border-left-color: var(--magi-accent); }
+    .site-exam-tutor :where(.trend-card, .trend-source, .trend-outline, .trend-change-card, .trend-controversy, .trend-view-lane, .trend-change-part, .trend-current-law p, .trend-position, .trend-view) {
+      background: var(--magi-surface-strong);
+      border-color: var(--magi-line);
+      color: var(--magi-text);
+    }
+    .site-exam-tutor :where(.trend-summary, .trend-card-head) {
+      background: color-mix(in srgb, var(--magi-surface-strong) 88%, var(--magi-accent-soft));
+      border-color: var(--magi-line);
+    }
+    .site-exam-tutor .trend-policy {
+      background: var(--magi-accent-soft);
+      border-color: color-mix(in srgb, var(--magi-accent) 45%, var(--magi-line));
+    }
+    .site-exam-tutor .trend-policy :where(h3, p),
+    .site-exam-tutor .trend-card-body :where(h3, p, li),
+    .site-exam-tutor .trend-source { color: var(--magi-text) !important; }
+    .site-exam-tutor .trend-status { background: var(--magi-accent-soft); border-color: var(--magi-accent); color: var(--magi-text); }
+    .site-exam-tutor .trend-related button { background: var(--magi-accent-soft); color: var(--magi-text); }
+    .site-exam-tutor .trend-risk { background: color-mix(in srgb, var(--magi-warn) 10%, var(--magi-surface-strong)); color: var(--magi-text); }
+    .site-exam-tutor .trend-exam-tip {
+      background: color-mix(in srgb, var(--magi-warn) 12%, var(--magi-surface-strong));
+      border-left-color: var(--magi-warn);
+      color: var(--magi-text) !important;
+    }
+    .site-exam-tutor .trend-current-law p {
+      background: color-mix(in srgb, var(--magi-surface-strong) 92%, var(--magi-accent-soft));
+      border: 1px solid var(--magi-line);
+      color: var(--magi-text) !important;
+    }
+    @media (max-width: 980px) {
+      .meta-grid { grid-template-columns: 1fr 1fr; }
+      .source-grid { grid-template-columns: 1fr; }
+      .source-card + .source-card { border-left: 0; border-top: 1px solid var(--line); }
+      .source-card > p { min-height: auto; }
+      .score-grid { grid-template-columns: 1fr 1fr; }
+      .choice-setup-grid { grid-template-columns: 1fr 1fr; }
+      .choice-maintenance .section-body { grid-template-columns: 1fr; }
+      .essay-bank-list { grid-template-columns: 1fr; }
+      .workflow-strip { grid-template-columns: 1fr; }
+      .essay-family-switch { grid-template-columns: 1fr; }
+      .source-catalog-controls { grid-template-columns: 1fr 1fr; }
+      .law-school-grid { grid-template-columns: 1fr 1fr; }
+      .trend-card-body { grid-template-columns: 1fr; }
+      .trend-change-grid, .trend-view-grid { grid-template-columns: 1fr; }
+      .trend-controls { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      main { width: min(100vw - 20px, 1180px); margin-top: 70px; }
+      header, .form-foot { align-items: flex-start; flex-direction: column; }
+      .computer-exam-policy ul { grid-template-columns: 1fr; }
+      .answer-submit-dock { position: static; align-items: stretch; flex-direction: column; }
+      #review-button { width: 100%; min-width: 0; }
+      .header-actions { justify-content: flex-start; }
+      .meta-grid, .score-grid, .two-col { grid-template-columns: 1fr; }
+      .choice-summary { grid-template-columns: 1fr 1fr; }
+      .choice-setup-grid, .choice-import-grid, .choice-import-files { grid-template-columns: 1fr; }
+      .choice-start-row, .choice-import-action { align-items: stretch; flex-direction: column; }
+      .essay-bank-controls { grid-template-columns: 1fr; }
+      .essay-list-toolbar { align-items: flex-start; flex-direction: column; }
+      .essay-pager { width: 100%; justify-content: space-between; }
+      .source-catalog-controls { grid-template-columns: 1fr; }
+      .law-school-grid { grid-template-columns: 1fr; }
+      .mode-switch { grid-template-columns: 1fr; position: static; }
+      .trend-summary { grid-template-columns: 1fr 1fr; }
+      .trend-controls { grid-template-columns: 1fr; }
+      .trend-card-head { flex-direction: column; }
+      .trend-badges { justify-content: flex-start; }
+      .random-row { grid-template-columns: 1fr; }
+      .essay-bank-count { text-align: left; }
+      .essay-selected-head { align-items: flex-start; flex-direction: column; }
+      .essay-selected-actions { width: 100%; }
+      .choice-actions { flex-direction: column; }
+      .progress-summary { grid-template-columns: 1fr 1fr; }
+      .history-row { grid-template-columns: 70px 1fr 64px; }
+      .history-row time { display: none; }
+      .review-steps, .review-settings { grid-template-columns: 1fr; }
+      .automatic-policy { grid-template-columns: 1fr; }
+      .review-core { padding-left: 16px; padding-right: 16px; }
+      .meta-grid, .form-head, .source-card, .form-foot { padding-left: 16px; padding-right: 16px; }
+      button { width: 100%; }
+      .kv { grid-template-columns: 1fr; gap: 2px; }
+    }
+  </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+  <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
+</head>
+<body class="site-lottery site-exam-tutor">
+  <main>
+    <header>
+      <div>
+        <h1>國考練習</h1>
+      </div>
+      <div class="header-actions">
+        <span class="privacy-badge">免登入・保留進度</span>
+        <a class="back-link" href="/lottery">抽獎</a>
+        <a class="back-link" href="/cookie-cutter">線稿轉餅乾切模</a>
+        <a class="back-link" href="/">回 MAGI</a>
+      </div>
+    </header>
+
+    <nav class="mode-switch" aria-label="練習模式">
+      <button type="button" class="mode-button active" data-mode="choice">選擇題練習</button>
+      <button type="button" class="mode-button" data-mode="essay">申論題練習</button>
+      <button type="button" class="mode-button" data-mode="trends">趨勢分析</button>
+    </nav>
+    <section id="choice-panel" class="mode-panel" data-mode-panel="choice">
+      <section class="panel choice-hero">
+        <div class="form-head">
+          <h2>歷屆選擇題練習</h2>
+          <p>選好科目與題數後，跨年度隨機組題；單選、複選自動辨識，答錯立即進入錯題複習。</p>
+        </div>
+        <div class="choice-summary">
+          <div class="metric"><span>可練習題數</span><b id="choice-bank-count">載入中</b></div>
+          <div class="metric"><span>涵蓋年度</span><b id="choice-bank-years">—</b></div>
+          <div class="metric"><span>最新年度</span><b id="choice-bank-latest">—</b></div>
+          <div class="metric"><span>個人錯題待複習</span><b id="choice-wrong-count">填代號後顯示</b></div>
+        </div>
+        <div class="choice-setup">
+          <div class="choice-setup-grid">
+            <label>練習者代號
+              <input id="choice-alias" maxlength="40" placeholder="例如：小林" autocomplete="off">
+            </label>
+            <label>科目
+              <select id="choice-subject"><option value="">全部科目</option></select>
+            </label>
+            <label>年度
+              <select id="choice-year"><option value="">全部年度</option></select>
+            </label>
+            <label>練習內容
+              <select id="choice-practice-mode">
+                <option value="all">全部題目</option>
+                <option value="wrong">只練錯題</option>
+              </select>
+            </label>
+            <label>題數
+              <select id="choice-limit">
+                <option value="10">10 題</option>
+                <option value="25" selected>25 題</option>
+                <option value="50">50 題</option>
+                <option value="0">符合條件全部</option>
+              </select>
+            </label>
+          </div>
+          <div class="choice-start-row">
+            <p id="choice-overall">代號用來保存錯題與練習進度。</p>
+            <button id="choice-start" type="button">跨年度隨機組題</button>
+          </div>
+          <div id="choice-status" class="choice-status" role="status" aria-live="polite" hidden></div>
+        </div>
+      </section>
+
+      <section id="choice-workspace" class="panel choice-workspace" hidden>
+        <div class="choice-progress-head">
+          <div>
+            <b id="choice-progress-label">第 1 題</b>
+            <p id="choice-progress-meta"></p>
+            <div class="choice-progress-track"><span id="choice-progress-fill"></span></div>
+          </div>
+          <div class="choice-session-score"><b id="choice-session-score">0 / 0</b><span>本次答對</span></div>
+        </div>
+        <div class="choice-question">
+          <div id="choice-question-meta" class="choice-question-meta"></div>
+          <h2 id="choice-question-text"></h2>
+          <div id="choice-options" class="choice-options"></div>
+          <div id="choice-answer-feedback" class="choice-answer-feedback" hidden></div>
+          <div class="choice-actions">
+            <button id="choice-submit" type="button" disabled>送出本題</button>
+            <button id="choice-next" type="button" class="choice-secondary" hidden>下一題</button>
+          </div>
+        </div>
+      </section>
+
+      <details class="panel choice-maintenance" id="choice-maintenance">
+        <summary>
+          <span class="maintenance-toggle" aria-hidden="true"></span>
+          <span class="maintenance-summary-copy"><strong>題庫維護與考選部原始檔</strong><small>年度題庫自動更新已啟用；一般練習不需要開啟這裡。</small></span>
+        </summary>
+        <div class="section-body">
+          <div class="choice-status" id="choice-auto-sync-status">題庫每週更新；也可在此手動匯入題答 PDF。</div>
+          <form id="choice-import-form">
+            <p>選擇同一科目的試題與答案 PDF，匯入後會更新同年度題庫。</p>
+            <div class="choice-import-grid">
+              <label>民國年度
+                <input name="choice_year" inputmode="numeric" placeholder="例如：115">
+              </label>
+              <label>科目
+                <select name="choice_subject_key" required>
+                  <option value="">請選科目</option>
+                  <option value="1B">綜合法學（一）憲法、行政法、國際公私法</option>
+                  <option value="1A">綜合法學（一）刑法、刑訴、法律倫理</option>
+                  <option value="2A">綜合法學（二）民法、民事訴訟法</option>
+                  <option value="2B">綜合法學（二）公司法、保險法等</option>
+                </select>
+              </label>
+            </div>
+            <div class="choice-import-files">
+              <label>試題 PDF
+                <input name="choice_question_file" type="file" accept=".pdf" required>
+              </label>
+              <label>標準答案 PDF
+                <input name="choice_answer_file" type="file" accept=".pdf" required>
+              </label>
+            </div>
+            <div class="choice-import-action">
+              <button id="choice-import-button" type="submit">匯入並更新題庫</button>
+              <span id="choice-import-status" class="choice-import-status">匯入後即可在內網練習。</span>
+            </div>
+          </form>
+          <div>
+            <h3>考選部原始題答</h3>
+            <p>需要核對時可直接開啟歷年試題、答案或更正表。</p>
+            <div id="choice-documents" class="document-list"></div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section id="trends-panel" class="mode-panel" data-mode-panel="trends" hidden>
+      <section class="panel trend-hero">
+        <div class="form-head">
+          <h2>法律考點趨勢分析</h2>
+          <p>依科目查看修法、憲法判決與實務爭議。</p>
+        </div>
+        <div class="trend-summary">
+          <div class="metric"><span>目前收錄</span><b id="trend-total">載入中</b></div>
+          <div class="metric"><span>已驗證考點</span><b id="trend-verified">—</b></div>
+          <div class="metric"><span>即時爭議雷達</span><b id="trend-radar">—</b></div>
+        </div>
+        <div class="trend-controls">
+          <label>科目
+            <select id="trend-subject"><option value="">全部科目</option></select>
+          </label>
+          <label>資料狀態
+            <select id="trend-filter-status"><option value="">全部</option><option value="verified">已驗證考點</option><option value="radar">即時爭議雷達</option></select>
+          </label>
+          <label>搜尋爭點
+            <input id="trend-query" type="search" placeholder="例如：羈押、溯及既往、虛擬資產">
+          </label>
+          <button id="trend-search" type="button">套用</button>
+        </div>
+        <div class="trend-legend">
+          <span class="trend-badge verified">官方已確認</span>
+          <span class="trend-badge radar">待確認</span>
+        </div>
+        <div id="trend-status" class="trend-status" role="status" aria-live="polite">載入中……</div>
+      </section>
+      <div id="trend-list" class="trend-list" aria-live="polite"></div>
+    </section>
+
+    <section class="panel essay-bank-panel mode-panel" data-mode-panel="essay" hidden>
+      <div class="form-head">
+        <h2>先選考試，再找一題開始練習</h2>
+        <p>選擇考試類別，再依年度與科目找題。</p>
+      </div>
+      <div class="essay-family-switch" role="tablist" aria-label="申論題考試類別">
+        <button class="essay-family-button" type="button" role="tab" data-essay-family="judicial_bar" aria-selected="true"><b>司法官／律師第二試</b><span id="judicial-bar-count">逐題題庫載入中……</span></button>
+        <button class="essay-family-button" type="button" role="tab" data-essay-family="judicial_personnel" aria-selected="false"><b>司法三、四等</b><span id="judicial-personnel-count">官方試卷載入中……</span></button>
+        <button class="essay-family-button" type="button" role="tab" data-essay-family="law_graduate_school" aria-selected="false"><b>法律研究所</b><span id="law-graduate-count">各校試卷載入中……</span></button>
+      </div>
+      <div id="essay-curated-view">
+        <p class="essay-bank-source">選題後可直接作答；分數依每題實際配分。</p>
+        <div class="essay-bank-controls">
+        <label>年度
+          <select id="essay-bank-year"><option value="">全部年度</option></select>
+        </label>
+        <label>科目
+          <select id="essay-bank-subject"><option value="">全部科目</option></select>
+        </label>
+        <label>組題數
+          <select id="essay-random-limit"><option value="1">1 題</option><option value="3" selected>3 題</option><option value="5">5 題</option></select>
+        </label>
+        <button id="essay-random" type="button">隨機組題</button>
+        </div>
+        <div id="essay-random-queue" class="random-queue" hidden></div>
+        <div class="essay-list-toolbar">
+        <div id="essay-bank-count" class="essay-bank-count">題庫載入中……</div>
+        <nav class="essay-pager" aria-label="申論題題庫分頁">
+          <button id="essay-page-previous" type="button" class="choice-secondary" disabled>上一頁</button>
+          <span id="essay-page-status">第 1 / 1 頁</span>
+          <button id="essay-page-next" type="button" class="choice-secondary" disabled>下一頁</button>
+        </nav>
+        </div>
+        <div id="essay-bank-list" class="essay-bank-list" aria-live="polite"></div>
+      </div>
+
+      <div id="essay-source-view" class="source-catalog-panel" hidden>
+      <div class="source-view-head">
+        <h3 id="source-view-title">官方試卷</h3>
+        <p id="source-view-note">選擇條件後會自動顯示可在內網開啟的本機試卷。</p>
+      </div>
+      <select id="source-family" hidden aria-hidden="true"><option value="judicial_personnel">司法三、四等</option><option value="law_graduate_school">法律研究所</option></select>
+      <div class="source-catalog-controls">
+        <label id="source-institution-label">學校<select id="source-institution" disabled><option value="">全部法律學門校系</option></select></label>
+        <label id="source-level-label">等別<select id="source-level"><option value="">三、四等</option><option value="三">三等</option><option value="四">四等</option></select></label>
+        <label>科目<select id="source-subject"><option value="">全部科目</option></select></label>
+        <label>年度<select id="source-year"><option value="">跨年度</option></select></label>
+        <label>每頁／抽取份數<select id="source-limit"><option>3</option><option selected>5</option><option>10</option><option>20</option><option>50</option></select></label>
+        <button id="source-browse" type="button">套用篩選</button>
+        <button id="source-random" type="button">隨機抽試卷</button>
+      </div>
+      <div id="source-catalog-status" class="essay-bank-source">題庫來源載入中……</div>
+      <details class="law-school-coverage">
+        <summary id="law-school-coverage-summary">法律學門 38 校覆蓋狀態</summary>
+        <div id="law-school-grid" class="law-school-grid"></div>
+      </details>
+      <div id="source-paper-list" class="source-paper-list"></div>
+      <div class="choice-actions">
+        <button id="source-previous" type="button" class="choice-secondary" disabled>上一頁</button>
+        <span id="source-page-status">尚未載入題卷</span>
+        <button id="source-next" type="button" class="choice-secondary" disabled>下一頁</button>
+      </div>
+      </div>
+    </section>
+
+    <section id="essay-review-panel" class="panel form-panel mode-panel" data-mode-panel="essay" hidden>
+      <form id="review-form">
+        <input name="essay_bank_uid" type="hidden">
+        <div class="form-head">
+          <h2>申論題練習</h2>
+        </div>
+        <div id="essay-selected" class="essay-selected" hidden>
+          <div class="essay-selected-head">
+            <div>
+              <h3 id="essay-selected-title">已選歷屆題</h3>
+              <p id="essay-selected-note"></p>
+            </div>
+            <div class="essay-selected-actions">
+              <button id="essay-back-to-bank" type="button">回題庫換題</button>
+              <button id="essay-selected-clear" type="button">使用自備題目（進階）</button>
+            </div>
+          </div>
+          <div id="essay-selected-question" class="essay-selected-question"></div>
+          <div id="essay-selected-links" class="essay-selected-links"></div>
+        </div>
+        <div class="review-steps" aria-label="申論練習步驟">
+          <div class="review-step"><b>1. 上方選一題</b>題目、實際配分與評分尺會自動帶入。</div>
+          <div class="review-step"><b>2. 貼上你的作答</b>保留標題與段落，才能檢查架構。</div>
+          <div class="review-step"><b>3. 送出批改</b>查看逐爭點、架構、涵攝與重寫建議。</div>
+        </div>
+
+        <div class="review-core">
+          <div class="review-settings">
+            <label>練習者名稱
+              <input name="student_alias" maxlength="40" placeholder="例如：小林（只用來區分這台電腦上的進步紀錄）" required>
+            </label>
+            <label>批改方式
+              <select name="grading_mode">
+                <option value="practice">教學練習（建議）</option>
+                <option value="exam">考場嚴格（標準更嚴）</option>
+              </select>
+            </label>
+          </div>
+
+          <section class="automatic-policy" aria-label="自動批改設定">
+            <div class="automatic-policy-icon" aria-hidden="true">✓</div>
+            <div>
+              <h3 id="auto-rubric-title">評分標準已自動載入</h3>
+              <p id="basis-explanation">直接作答即可，不需要另外設定。</p>
+            </div>
+          </section>
+
+          <section class="answer-entry answer-card">
+            <h3>你的作答</h3>
+            <p>直接在下方作答，或上傳已寫好的答案檔案。</p>
+            <section id="computer-exam-policy" class="computer-exam-policy" aria-label="司法官律師電腦應試規範">
+              <div class="computer-exam-policy-head">
+                <h4>司法官／律師第二試電腦應試規範已自動套用</h4>
+                <a href="https://wwwc.moex.gov.tw/Main/content/wfrmContent.aspx?menu_id=6451" target="_blank" rel="noopener">考選部應考人專區</a>
+              </div>
+              <ul>
+                <li>每題最多 5,200 字、8 頁</li>
+                <li>每頁按 26 行、每行 25 字估算</li>
+                <li>每 10 秒自動儲存，也可手動儲存</li>
+                <li>進入第 8 頁警示；超過 8 頁不得送出</li>
+                <li>提供復原、重做、四階層編號及預覽</li>
+                <li>送出前依正式介面進行兩次確認</li>
+              </ul>
+            </section>
+            <div class="answer-toolbar" aria-label="電腦作答工具列">
+              <button type="button" data-answer-command="undo" aria-label="復原上一步">復原</button>
+              <button type="button" data-answer-command="redo" aria-label="重做下一步">重做</button>
+              <span class="answer-toolbar-separator" aria-hidden="true"></span>
+              <button type="button" data-answer-prefix="一、">一、</button>
+              <button type="button" data-answer-prefix="(一)">(一)</button>
+              <button type="button" data-answer-prefix="1.">1.</button>
+              <button type="button" data-answer-prefix="(1)">(1)</button>
+              <span class="answer-toolbar-separator" aria-hidden="true"></span>
+              <button id="answer-save" type="button">立即儲存</button>
+              <button id="answer-preview" type="button">預覽作答</button>
+            </div>
+            <textarea id="student-answer" name="answer_text" aria-label="考生答案文字" placeholder="在此開始作答……"></textarea>
+            <div id="answer-limit-panel" class="answer-limit-panel">
+              <div class="answer-limit-summary">
+                <strong id="answer-character-count">0 / 5,200 字</strong>
+                <span id="answer-page-count">第 1 / 8 頁</span>
+                <span id="answer-save-status">尚未儲存</span>
+              </div>
+              <div id="answer-pages" class="answer-pages" aria-label="作答頁數"></div>
+              <div id="answer-limit-warning" class="answer-limit-warning" role="status" aria-live="polite">尚有 5,200 字可用。</div>
+            </div>
+            <div class="file-box">
+              <label>也可上傳已寫好的答案檔案（選填）
+                <input name="answer_file" type="file" aria-label="上傳考生答案檔案（選填）" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp">
+              </label>
+            </div>
+            <div class="answer-submit-dock">
+              <div><b>作答完成了嗎？</b><span>司法官／律師題送出前會確認兩次。</span></div>
+              <button id="review-button" type="submit">完成作答，送出批改</button>
+            </div>
+          </section>
+        </div>
+
+        <details id="custom-question-details" class="advanced-import">
+          <summary>進階：匯入自備題目（使用上方歷屆題庫時不必開啟）</summary>
+          <p class="advanced-note">這裡只供題庫外的新題目維護使用。一般練習不需要填年度、配分、評分標準或擬答。</p>
+          <input name="rubric_basis" id="rubric-basis" type="hidden" value="official">
+          <div class="meta-grid">
+            <label>考試類別
+              <select name="exam_name">
+                <option>司法官／律師第二試</option>
+                <option>高考三級</option>
+                <option>地方特考</option>
+                <option>司法特考</option>
+                <option>法律研究所</option>
+                <option>其他國家考試</option>
+              </select>
+            </label>
+            <label>年度
+              <input name="year" inputmode="numeric" placeholder="例如：115">
+            </label>
+            <label>科目
+              <input name="subject" placeholder="例如：刑法與刑事訴訟法">
+            </label>
+            <label>本題實際配分
+              <input name="max_score" type="number" min="1" max="300" placeholder="依題目卷填寫；不可預設 100">
+            </label>
+            <label>法律版本／基準日（選填）
+              <input name="law_as_of" placeholder="例如：以 115 年考試當時法規為準">
+            </label>
+          </div>
+          <div class="source-grid">
+            <section class="source-card question-card">
+              <h3>自備題目</h3>
+              <p>貼上完整題幹與子題；若為掃描 PDF 或照片，系統會先做文字辨識。</p>
+              <textarea name="question_text" aria-label="題目文字" placeholder="在此貼上申論題題目……"></textarea>
+              <div class="file-box"><input name="question_file" type="file" aria-label="上傳題目檔案" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"></div>
+            </section>
+            <section class="source-card priority-card basis-card">
+              <span class="source-priority">只接受可核對來源</span>
+              <h3>考選部官方評分要點</h3>
+              <p>請附官方原文、網址或檔案。</p>
+              <label>考選部來源網址（與官方檔案擇一）
+                <input name="official_rubric_url" type="url" placeholder="https://wwwc.moex.gov.tw/…">
+              </label>
+              <textarea name="official_rubric_text" aria-label="考選部官方評分要點文字" placeholder="在此貼上官方爭點與評分說明；請勿自行補配分……"></textarea>
+              <div class="file-box"><input name="official_rubric_file" type="file" aria-label="上傳考選部官方評分要點" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"></div>
+            </section>
+            <section class="source-card reference-card">
+              <h3>補充參考擬答（選填）</h3>
+              <p>可用來補充答題架構與爭點說明。</p>
+              <label>資料性質
+                <select name="reference_source">
+                  <option>未提供</option>
+                  <option>補習班參考擬答</option>
+                  <option>教師或讀書會擬答</option>
+                  <option>自行整理</option>
+                </select>
+              </label>
+              <label>擬答來源網址
+                <input name="reference_url" type="url" placeholder="https://…（補習班、教師或學校公開頁面）">
+              </label>
+              <textarea name="reference_text" aria-label="補充參考擬答文字" placeholder="在此貼上參考擬答……"></textarea>
+              <div class="file-box"><input name="reference_file" type="file" aria-label="上傳補充參考擬答檔案" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"></div>
+            </section>
+          </div>
+        </details>
+
+        <div class="form-foot">
+          <div class="submit-copy">
+            <p>批改通常需要 2–8 分鐘，請保持頁面開啟。</p>
+          </div>
+        </div>
+        <div class="notice">進步紀錄：同一練習者、同一題保留最近 10 次，超過後刪除最舊紀錄。</div>
+      </form>
+    </section>
+
+    <dialog id="answer-preview-dialog" class="exam-dialog">
+      <div class="exam-dialog-head"><h3>作答預覽</h3><button class="secondary" type="button" data-dialog-close="answer-preview-dialog">關閉</button></div>
+      <div class="exam-dialog-body"><pre id="answer-preview-content" class="exam-dialog-preview"></pre></div>
+      <div class="exam-dialog-foot"><span id="answer-preview-meta"></span><button type="button" data-dialog-close="answer-preview-dialog">繼續作答</button></div>
+    </dialog>
+
+    <dialog id="answer-submit-dialog" class="exam-dialog">
+      <div class="exam-dialog-head"><h3 id="answer-submit-dialog-title">第 1 次確認：確定完成作答？</h3></div>
+      <div class="exam-dialog-body"><p id="answer-submit-dialog-message">送出後會開始批改。請先確認題號、頁數與作答內容。</p></div>
+      <div class="exam-dialog-foot">
+        <button id="answer-submit-cancel" class="secondary" type="button">返回檢查</button>
+        <button id="answer-submit-confirm" type="button">確認完成作答</button>
+      </div>
+    </dialog>
+
+    <div id="status" class="status mode-panel" data-mode-panel="essay" role="status" aria-live="polite" hidden></div>
+
+    <section id="results" class="results mode-panel" data-mode-panel="essay" aria-live="polite" hidden>
+      <div class="score-grid">
+        <div class="metric score-main">
+          <span>本次練習結果</span><b id="score-mid">—</b>
+          <div class="score-track"><div id="score-fill" class="score-fill"></div></div>
+        </div>
+        <div class="metric"><span>分數區間</span><b id="score-range">—</b></div>
+        <div class="metric"><span>評分信心</span><b id="score-confidence">—</b></div>
+        <div class="metric"><span>批改模型</span><b id="review-model">—</b></div>
+      </div>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>老師總評</h2></div>
+        <div class="section-body"><p id="review-summary" class="lead"></p></div>
+      </section>
+
+      <section id="part-score-panel" class="panel result-panel" hidden>
+        <div class="section-head"><h2>各小題得分與主要失分</h2></div>
+        <div id="part-score-list" class="section-body diagnostic-list"></div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>逐項批改依據對照</h2></div>
+        <div class="section-body">
+          <div id="official-rubric-summary" class="progress-callout"></div>
+          <div id="official-alignment-list" class="diagnostic-list" style="margin-top:12px"></div>
+        </div>
+      </section>
+
+      <section id="progress-panel" class="panel result-panel">
+        <div class="section-head"><h2>本題進步紀錄</h2></div>
+        <div class="section-body">
+          <div class="progress-summary">
+            <div class="progress-chip"><span>累計作答</span><b id="progress-total">—</b></div>
+            <div class="progress-chip"><span>比前次</span><b id="progress-previous">—</b></div>
+            <div class="progress-chip"><span>比第一次</span><b id="progress-first">—</b></div>
+            <div class="progress-chip"><span>歷來最佳</span><b id="progress-best">—</b></div>
+          </div>
+          <div id="history-list" class="history-list"></div>
+          <div id="progress-callout" class="progress-callout"></div>
+        </div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>逐爭點對照</h2></div>
+        <div id="issue-list" class="section-body issue-list"></div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>架構與涵攝診斷</h2></div>
+        <div class="section-body two-col">
+          <div class="subpanel"><h3>架構錯誤</h3><div id="structure-list" class="diagnostic-list"></div></div>
+          <div class="subpanel"><h3>涵攝缺漏</h3><div id="application-list" class="diagnostic-list"></div></div>
+        </div>
+        <details>
+          <summary>法條、見解與查核警示</summary>
+          <div id="authority-list" class="details-body diagnostic-list"></div>
+        </details>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>建議答題架構</h2></div>
+        <div id="framework-list" class="section-body framework-list"></div>
+        <details>
+          <summary>查看 MAGI 建立的完整閱卷基準</summary>
+          <div id="benchmark-body" class="details-body"></div>
+        </details>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="section-head"><h2>具體改寫與下一步</h2></div>
+        <div class="section-body two-col">
+          <div class="subpanel"><h3>原句改寫</h3><div id="rewrite-list" class="rewrite-list"></div></div>
+          <div class="subpanel"><h3>優先練習</h3><div id="drill-list" class="drill-list"></div></div>
+        </div>
+        <details>
+          <summary>本次做得好的地方</summary>
+          <div id="strength-list" class="details-body"></div>
+        </details>
+      </section>
+
+      <section class="panel footer-note">
+        <div id="score-basis"></div>
+        <div id="source-cautions"></div>
+        <div id="disclaimer"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const modeButtons = Array.from(document.querySelectorAll('.mode-button'));
+    const modePanels = Array.from(document.querySelectorAll('[data-mode-panel]'));
+
+    function setPracticeMode(mode, updateHash = true) {
+      const selected = ['choice', 'essay', 'trends'].includes(mode) ? mode : 'choice';
+      modeButtons.forEach((item) => item.classList.toggle('active', item.dataset.mode === selected));
+      modePanels.forEach((item) => { item.hidden = item.dataset.modePanel !== selected; });
+      if (updateHash && window.location.hash !== `#${selected}`) history.replaceState(null, '', `#${selected}`);
+    }
+
+    modeButtons.forEach((item) => item.addEventListener('click', () => setPracticeMode(item.dataset.mode)));
+
+    const choiceState = {
+      bank: null,
+      pool: [],
+      index: 0,
+      correct: 0,
+      answered: 0,
+      selected: new Set(),
+      locked: false,
+    };
+    const choiceAlias = document.getElementById('choice-alias');
+    const choiceSubject = document.getElementById('choice-subject');
+    const choiceYear = document.getElementById('choice-year');
+    const choiceStatus = document.getElementById('choice-status');
+    const choiceWorkspace = document.getElementById('choice-workspace');
+    const choiceOptions = document.getElementById('choice-options');
+    const choiceSubmit = document.getElementById('choice-submit');
+    const choiceNext = document.getElementById('choice-next');
+    const choiceFeedback = document.getElementById('choice-answer-feedback');
+
+    function showChoiceStatus(message, isError = false) {
+      choiceStatus.hidden = false;
+      choiceStatus.className = `choice-status${isError ? ' error' : ''}`;
+      choiceStatus.textContent = message;
+    }
+
+    function shuffle(items) {
+      const output = items.slice();
+      for (let index = output.length - 1; index > 0; index -= 1) {
+        const target = Math.floor(Math.random() * (index + 1));
+        [output[index], output[target]] = [output[target], output[index]];
+      }
+      return output;
+    }
+
+    function renderChoiceMetrics(bank) {
+      document.getElementById('choice-bank-count').textContent = `${bank.question_count || 0} 題`;
+      const years = bank.years || [];
+      document.getElementById('choice-bank-years').textContent = years.length ? `${Math.min(...years)}–${Math.max(...years)} 年` : '—';
+      document.getElementById('choice-bank-latest').textContent = bank.source && bank.source.updated_through_year ? `${bank.source.updated_through_year} 年` : '—';
+      const overall = bank.overall_progress || {};
+      document.getElementById('choice-wrong-count').textContent = choiceAlias.value.trim() ? `${overall.needs_review || 0} 題` : '填代號後顯示';
+      document.getElementById('choice-overall').textContent = overall.total_attempts
+        ? `累計 ${overall.total_attempts} 次作答，答對率 ${overall.accuracy}%；目前 ${overall.needs_review || 0} 題待複習。`
+        : '作答後會把進度與錯題保存在這台電腦。';
+      const autoSync = (bank.source || {}).auto_sync || {};
+      const syncBox = document.getElementById('choice-auto-sync-status');
+      if (syncBox) {
+        const checked = autoSync.checked_at
+          ? `・最近檢查 ${new Date(autoSync.checked_at).toLocaleString('zh-TW', {timeZone: 'Asia/Taipei'})}`
+          : '';
+        syncBox.textContent = `${autoSync.message || '已設定定期向考選部檢查新年度題答。'}${checked}`;
+        syncBox.className = `choice-status${autoSync.state === 'failed' ? ' error' : ''}`;
+      }
+    }
+
+    function rebuildChoiceFilters(bank) {
+      const previousSubject = choiceSubject.value;
+      clear(choiceSubject);
+      choiceSubject.appendChild(new Option('全部科目', ''));
+      (bank.subjects || []).forEach((item) => {
+        choiceSubject.appendChild(new Option(`${item.label}（${item.question_count} 題）`, item.key));
+      });
+      if (Array.from(choiceSubject.options).some((item) => item.value === previousSubject)) choiceSubject.value = previousSubject;
+      rebuildChoiceYears();
+    }
+
+    function rebuildChoiceYears() {
+      if (!choiceState.bank) return;
+      const selectedSubject = choiceSubject.value;
+      const previous = choiceYear.value;
+      const years = [...new Set((choiceState.bank.questions || [])
+        .filter((item) => !selectedSubject || item.subject_key === selectedSubject)
+        .map((item) => Number(item.year)))].sort((a, b) => b - a);
+      clear(choiceYear);
+      choiceYear.appendChild(new Option('全部年度', ''));
+      years.forEach((year) => choiceYear.appendChild(new Option(`民國 ${year} 年`, String(year))));
+      if (years.includes(Number(previous))) choiceYear.value = previous;
+    }
+
+    function sourcePdfUrl(filename) {
+      return `/static/exam_tutor/source-pdfs/${encodeURIComponent(filename)}`;
+    }
+
+    function renderChoiceDocuments(documents) {
+      const target = document.getElementById('choice-documents');
+      clear(target);
+      const sorted = (documents || []).slice().sort((a, b) => Number(b.year) - Number(a.year));
+      sorted.forEach((item) => {
+        const row = el('div', 'document-row');
+        row.appendChild(el('b', '', `${item.year_label || `${item.year}年`}｜${item.subject || '未命名科目'}`));
+        const links = el('div', 'document-links');
+        [
+          ['試題', item.question_file_url || (item.question_file ? sourcePdfUrl(item.question_file) : '')],
+          ['答案', item.answer_file_url || (item.answer_file ? sourcePdfUrl(item.answer_file) : '')],
+          ['更正', item.modification_file_url || (item.modification_file ? sourcePdfUrl(item.modification_file) : '')]
+        ].forEach(([label, href]) => {
+          if (!href) return;
+          const link = el('a', '', label);
+          link.href = href;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          links.appendChild(link);
+        });
+        row.appendChild(links);
+        target.appendChild(row);
+      });
+      if (!target.childNodes.length) showEmpty(target, '目前沒有原始 PDF 索引。');
+    }
+
+    async function loadChoiceBank(alias = '') {
+      const query = alias ? `?student_alias=${encodeURIComponent(alias)}` : '';
+      const response = await fetch(`/api/exam-tutor/choice-bank${query}`);
+      let body = {};
+      try { body = await response.json(); } catch (_error) { body = {}; }
+      if (!response.ok || !body.ok) throw new Error(body.message || '題庫載入失敗');
+      choiceState.bank = body;
+      renderChoiceMetrics(body);
+      rebuildChoiceFilters(body);
+      renderChoiceDocuments(body.documents);
+      return body;
+    }
+
+    function finishChoiceSession() {
+      choiceState.locked = true;
+      document.getElementById('choice-progress-label').textContent = '本次完成';
+      document.getElementById('choice-progress-meta').textContent = `共 ${choiceState.answered} 題，答對 ${choiceState.correct} 題`;
+      document.getElementById('choice-progress-fill').style.width = '100%';
+      document.getElementById('choice-question-meta').textContent = '練習結果';
+      document.getElementById('choice-question-text').textContent = choiceState.answered
+        ? `答對率 ${Math.round(choiceState.correct / choiceState.answered * 100)}%。錯題已自動加入「只練錯題」。`
+        : '本次沒有可作答題目。';
+      clear(choiceOptions);
+      choiceFeedback.hidden = true;
+      choiceSubmit.hidden = true;
+      choiceNext.hidden = true;
+    }
+
+    function renderChoiceQuestion() {
+      if (choiceState.index >= choiceState.pool.length) return finishChoiceSession();
+      const question = choiceState.pool[choiceState.index];
+      choiceState.selected = new Set();
+      choiceState.locked = false;
+      choiceFeedback.hidden = true;
+      choiceFeedback.className = 'choice-answer-feedback';
+      choiceSubmit.hidden = false;
+      choiceSubmit.disabled = true;
+      choiceNext.hidden = true;
+      document.getElementById('choice-progress-label').textContent = `第 ${choiceState.index + 1} / ${choiceState.pool.length} 題`;
+      document.getElementById('choice-progress-meta').textContent = question.multiple ? '複選題：可選多個選項，再按送出' : '單選題：選定後按送出';
+      document.getElementById('choice-progress-fill').style.width = `${choiceState.index / choiceState.pool.length * 100}%`;
+      document.getElementById('choice-session-score').textContent = `${choiceState.correct} / ${choiceState.answered}`;
+      document.getElementById('choice-question-meta').textContent = `民國 ${question.year} 年｜${question.exam_label || '司法官／律師第一試'}｜${question.subject_label}｜第 ${question.number} 題`;
+      document.getElementById('choice-question-text').textContent = question.question;
+      clear(choiceOptions);
+      Object.entries(question.options || {}).forEach(([label, optionText]) => {
+        const option = el('button', 'choice-option');
+        option.type = 'button';
+        option.dataset.label = label;
+        option.appendChild(el('span', 'choice-letter', label));
+        option.appendChild(el('span', '', optionText));
+        option.addEventListener('click', () => {
+          if (choiceState.locked) return;
+          if (question.multiple) {
+            if (choiceState.selected.has(label)) choiceState.selected.delete(label); else choiceState.selected.add(label);
+          } else {
+            choiceState.selected.clear();
+            choiceState.selected.add(label);
+          }
+          Array.from(choiceOptions.children).forEach((node) => node.classList.toggle('selected', choiceState.selected.has(node.dataset.label)));
+          choiceSubmit.disabled = choiceState.selected.size === 0;
+        });
+        choiceOptions.appendChild(option);
+      });
+    }
+
+    document.getElementById('choice-start').addEventListener('click', async () => {
+      const alias = choiceAlias.value.trim();
+      if (!alias) return showChoiceStatus('請先填寫練習者代號，才能保存錯題與進度。', true);
+      const startButton = document.getElementById('choice-start');
+      startButton.disabled = true;
+      showChoiceStatus('正在整理題庫與個人錯題紀錄……');
+      try {
+        const bank = await loadChoiceBank(alias);
+        const subject = choiceSubject.value;
+        const year = choiceYear.value;
+        const practiceMode = document.getElementById('choice-practice-mode').value;
+        const stats = bank.question_stats || {};
+        let candidates = (bank.questions || []).filter((item) => (!subject || item.subject_key === subject) && (!year || String(item.year) === year));
+        if (practiceMode === 'wrong') candidates = candidates.filter((item) => stats[item.uid] && stats[item.uid].needs_review);
+        if (!candidates.length) throw new Error(practiceMode === 'wrong' ? '這個篩選範圍目前沒有待複習錯題。' : '這個篩選範圍沒有可練習題目。');
+        const limit = Number(document.getElementById('choice-limit').value || 0);
+        choiceState.pool = shuffle(candidates).slice(0, limit > 0 ? limit : candidates.length);
+        choiceState.index = 0;
+        choiceState.correct = 0;
+        choiceState.answered = 0;
+        choiceWorkspace.hidden = false;
+        renderChoiceQuestion();
+        showChoiceStatus(`已準備 ${choiceState.pool.length} 題；每題送出後立即顯示考選部標準答案。`);
+        choiceWorkspace.scrollIntoView({behavior: 'smooth', block: 'start'});
+      } catch (error) {
+        showChoiceStatus(error.message || String(error), true);
+      } finally {
+        startButton.disabled = false;
+      }
+    });
+
+    choiceSubject.addEventListener('change', rebuildChoiceYears);
+
+    choiceSubmit.addEventListener('click', async () => {
+      if (choiceState.locked || !choiceState.selected.size) return;
+      const question = choiceState.pool[choiceState.index];
+      choiceSubmit.disabled = true;
+      try {
+        const response = await fetch('/api/exam-tutor/choice-attempt', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken()},
+          body: JSON.stringify({
+            student_alias: choiceAlias.value.trim(),
+            question_uid: question.uid,
+            selected_answers: Array.from(choiceState.selected),
+          }),
+        });
+        let body = {};
+        try { body = await response.json(); } catch (_error) { body = {}; }
+        if (!response.ok || !body.ok) throw new Error(body.message || '作答保存失敗');
+        choiceState.locked = true;
+        choiceState.answered += 1;
+        if (body.correct) choiceState.correct += 1;
+        Array.from(choiceOptions.children).forEach((node) => {
+          const label = node.dataset.label;
+          node.disabled = true;
+          node.classList.remove('selected');
+          if (String(body.correct_answer).includes(label)) node.classList.add('correct');
+          else if (choiceState.selected.has(label)) node.classList.add('wrong');
+        });
+        choiceFeedback.hidden = false;
+        choiceFeedback.className = `choice-answer-feedback${body.correct ? '' : ' wrong'}`;
+        choiceFeedback.textContent = body.correct
+          ? `答對。考選部標準答案：${body.correct_answer}。${body.answer_note || ''}`
+          : `本題答錯；你的答案 ${body.selected_answer}，考選部標準答案 ${body.correct_answer}。${body.answer_note || ''}`;
+        document.getElementById('choice-session-score').textContent = `${choiceState.correct} / ${choiceState.answered}`;
+        choiceNext.hidden = false;
+        choiceNext.textContent = choiceState.index + 1 >= choiceState.pool.length ? '查看本次結果' : '下一題';
+        const overall = body.overall_progress || {};
+        document.getElementById('choice-wrong-count').textContent = `${overall.needs_review || 0} 題`;
+        document.getElementById('choice-overall').textContent = `累計 ${overall.total_attempts || 0} 次作答，答對率 ${overall.accuracy ?? 0}%；目前 ${overall.needs_review || 0} 題待複習。`;
+      } catch (error) {
+        choiceSubmit.disabled = false;
+        showChoiceStatus(error.message || String(error), true);
+      }
+    });
+
+    choiceNext.addEventListener('click', () => {
+      choiceState.index += 1;
+      renderChoiceQuestion();
+    });
+
+    document.getElementById('choice-import-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const importButton = document.getElementById('choice-import-button');
+      const importStatus = document.getElementById('choice-import-status');
+      importButton.disabled = true;
+      importStatus.textContent = '正在擷取試題、辨識單複選並配對答案……';
+      try {
+        const response = await fetch('/api/exam-tutor/choice-import', {
+          method: 'POST',
+          headers: {'X-CSRF-Token': csrfToken()},
+          body: new FormData(event.currentTarget),
+        });
+        let body = {};
+        try { body = await response.json(); } catch (_error) { body = {}; }
+        if (!response.ok || !body.ok) throw new Error(body.message || '年度題庫更新失敗');
+        importStatus.textContent = `${body.message} 已辨識 ${body.questions_detected} 題、${body.answers_detected} 個答案。`;
+        await loadChoiceBank(choiceAlias.value.trim());
+      } catch (error) {
+        importStatus.textContent = error.message || String(error);
+      } finally {
+        importButton.disabled = false;
+      }
+    });
+
+    const form = document.getElementById('review-form');
+    const button = document.getElementById('review-button');
+    const statusBox = document.getElementById('status');
+    const results = document.getElementById('results');
+    let progressTimer = null;
+    let fallbackTimer = null;
+
+    function csrfToken() {
+      const part = document.cookie.split('; ').find((row) => row.startsWith('X-CSRF-Token='));
+      return part ? decodeURIComponent(part.split('=').slice(1).join('=')) : '';
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined && text !== null) node.textContent = String(text);
+      return node;
+    }
+
+    function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+    function showEmpty(target, text) {
+      clear(target);
+      target.appendChild(el('p', 'empty', text || '本次沒有需要特別指出的項目。'));
+    }
+
+    const essayState = {bank: null, selected: null, queue: [], page: 0};
+    const essayPageSize = 6;
+    let sourceCatalogSummary = {};
+    let activeEssayFamily = 'judicial_bar';
+    const trendState = {loaded: false, loading: false};
+    const trendSubject = document.getElementById('trend-subject');
+    const trendFilterStatus = document.getElementById('trend-filter-status');
+    const trendQuery = document.getElementById('trend-query');
+    const trendList = document.getElementById('trend-list');
+    const trendStatus = document.getElementById('trend-status');
+    const answerField = document.getElementById('student-answer');
+    const answerPolicy = document.getElementById('computer-exam-policy');
+    const answerLimitPanel = document.getElementById('answer-limit-panel');
+    const answerCharacterCount = document.getElementById('answer-character-count');
+    const answerPageCount = document.getElementById('answer-page-count');
+    const answerSaveStatus = document.getElementById('answer-save-status');
+    const answerLimitWarning = document.getElementById('answer-limit-warning');
+    const answerPages = document.getElementById('answer-pages');
+    const answerPreviewDialog = document.getElementById('answer-preview-dialog');
+    const answerSubmitDialog = document.getElementById('answer-submit-dialog');
+    const officialAnswerMaxChars = 5200;
+    const officialAnswerPageCount = 8;
+    const officialAnswerLinesPerPage = 26;
+    const officialAnswerCharsPerLine = 25;
+    let submitConfirmationStep = 0;
+    let submitConfirmed = false;
+
+    function appendTrendList(target, values, ordered = false) {
+      const list = document.createElement(ordered ? 'ol' : 'ul');
+      list.className = ordered ? '' : 'trend-points';
+      (values || []).forEach((value) => list.appendChild(el('li', '', value)));
+      target.appendChild(list);
+      return list;
+    }
+
+    function appendClaimSources(target, sources) {
+      const rows = (sources || []).filter((source) => source && source.url);
+      if (!rows.length) return;
+      const links = el('div', 'trend-source-links');
+      rows.forEach((source) => {
+        const link = el('a', '', `來源：${source.name}`);
+        link.href = source.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        links.appendChild(link);
+      });
+      target.appendChild(links);
+    }
+
+    function appendTrendAmendments(target, item) {
+      const details = item.amendment_details || [];
+      if (!details.length) return;
+      const section = el('section', 'trend-amendments');
+      section.appendChild(el('h3', '', '修了什麼'));
+      details.forEach((detail) => {
+        const card = el('article', 'trend-change-card');
+        card.appendChild(el('h4', '', detail.provision || '修正條文'));
+        const grid = el('div', 'trend-change-grid');
+        [['修正前', detail.previous_rule || '新制定條文，無舊規定'], ['修正後', detail.new_rule], ['實際影響', detail.practical_effect]].forEach(([label, value]) => {
+          const part = el('div', 'trend-change-part');
+          part.appendChild(el('b', '', label));
+          part.appendChild(el('span', '', value || '來源未明列'));
+          grid.appendChild(part);
+        });
+        card.appendChild(grid);
+        if (detail.official_current_text) {
+          const current = el('details', 'trend-current-law');
+          current.appendChild(el('summary', '', '展開現行條文'));
+          current.appendChild(el('p', '', detail.official_current_text));
+          card.appendChild(current);
+        }
+        appendClaimSources(card, detail.sources);
+        section.appendChild(card);
+      });
+      target.appendChild(section);
+    }
+
+    function appendTrendDebateMap(target, item) {
+      const section = el('section', 'trend-debate-map');
+      section.appendChild(el('h3', '', '爭議與相關見解'));
+      const controversies = item.controversies || [];
+      if (controversies.length) {
+        controversies.forEach((controversy) => {
+          const card = el('article', 'trend-controversy');
+          card.appendChild(el('h4', '', controversy.question));
+          const positions = el('div', 'trend-positions');
+          (controversy.positions || []).forEach((position) => {
+            const row = el('div', 'trend-position');
+            row.appendChild(el('b', '', position.label || '見解'));
+            row.appendChild(el('p', '', position.statement));
+            row.appendChild(el('div', 'trend-attribution', position.attribution || '來源所載見解'));
+            appendClaimSources(row, position.sources);
+            positions.appendChild(row);
+          });
+          card.appendChild(positions);
+          if (controversy.exam_tip) card.appendChild(el('p', 'trend-exam-tip', `作答提醒：${controversy.exam_tip}`));
+          section.appendChild(card);
+        });
+      } else {
+        section.appendChild(el('p', 'trend-missing', '尚無足夠資料整理正反見解。'));
+      }
+
+      const viewpoints = item.viewpoints || [];
+      const lanes = [
+        ['實務／官方見解', viewpoints.filter((view) => view.kind !== 'academic')],
+        ['學者見解', viewpoints.filter((view) => view.kind === 'academic')],
+      ];
+      const grid = el('div', 'trend-view-grid');
+      lanes.forEach(([label, rows]) => {
+        const lane = el('section', 'trend-view-lane');
+        lane.appendChild(el('h4', '', label));
+        const list = el('div', 'trend-view-list');
+        if (!rows.length) {
+          list.appendChild(el('p', 'trend-missing', `尚未收錄${label}。`));
+        } else {
+          rows.forEach((view) => {
+            const row = el('div', 'trend-view');
+            row.appendChild(el('b', '', view.attribution));
+            row.appendChild(el('p', '', view.statement));
+            appendClaimSources(row, view.sources);
+            list.appendChild(row);
+          });
+        }
+        lane.appendChild(list);
+        grid.appendChild(lane);
+      });
+      section.appendChild(grid);
+      target.appendChild(section);
+    }
+
+    function openRelatedEssay(question) {
+      const entry = ((essayState.bank || {}).entries || []).find((item) => item.uid === question.uid);
+      if (!entry) {
+        trendStatus.textContent = '這份歷屆題目前只完成來源索引，尚未轉成可直接作答的逐題資料。';
+        return;
+      }
+      selectEssayFamily('judicial_bar', {load: false});
+      selectEssayEntry(entry);
+      setPracticeMode('essay');
+    }
+
+    function renderTrendItem(item) {
+      const card = el('article', 'trend-card');
+      const head = el('div', 'trend-card-head');
+      const heading = el('div');
+      heading.appendChild(el('div', 'small-meta', `${item.subject}${item.event_date ? `・${item.event_date}` : ''}`));
+      heading.appendChild(el('h2', '', item.title));
+      head.appendChild(heading);
+      const badges = el('div', 'trend-badges');
+      badges.appendChild(el('span', `trend-badge ${item.status}`, item.status === 'verified' ? '官方已確認' : '待確認'));
+      const attentionLabels = {high: '高度注意', medium: '持續注意', low: '一般追蹤'};
+      badges.appendChild(el('span', 'trend-badge attention', attentionLabels[item.attention_level] || '持續注意'));
+      head.appendChild(badges);
+      card.appendChild(head);
+
+      const body = el('div', 'trend-card-body');
+      const main = el('div');
+      main.appendChild(el('h3', '', '事件與法律問題'));
+      main.appendChild(el('p', '', item.fact_summary));
+      appendTrendAmendments(main, item);
+      main.appendChild(el('h3', '', '應注意的爭點'));
+      appendTrendList(main, item.issue_points || []);
+      main.appendChild(el('h3', '', '為什麼值得練習'));
+      main.appendChild(el('p', '', item.why_exam_relevant));
+      const outline = el('section', 'trend-outline');
+      outline.appendChild(el('h3', '', '建議答題架構'));
+      appendTrendList(outline, item.answer_outline || [], true);
+      main.appendChild(outline);
+      appendTrendDebateMap(main, item);
+      body.appendChild(main);
+
+      const aside = el('aside');
+      aside.appendChild(el('h3', '', '查核來源'));
+      const sources = el('div', 'trend-sources');
+      (item.sources || []).forEach((source) => {
+        const sourceBox = el('div', 'trend-source');
+        sourceBox.appendChild(el('b', '', `${source.tier === 1 ? '官方' : '雷達'}・${source.name}`));
+        const link = el('a', '', '開啟原始來源');
+        link.href = source.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        sourceBox.appendChild(link);
+        sources.appendChild(sourceBox);
+      });
+      if (item.source_url && !(item.sources || []).some((source) => source.url === item.source_url)) {
+        const detail = el('div', 'trend-source');
+        detail.appendChild(el('b', '', '本項詳細官方資料'));
+        const link = el('a', '', '開啟詳細頁');
+        link.href = item.source_url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        detail.appendChild(link);
+        sources.appendChild(detail);
+      }
+      aside.appendChild(sources);
+      if ((item.related_questions || []).length) {
+        aside.appendChild(el('h3', '', '相關歷屆申論題'));
+        const related = el('div', 'trend-related');
+        item.related_questions.forEach((question) => {
+          const button = el('button', '', `${question.year} 年・${question.subject}・第 ${question.question_number} 題`);
+          button.type = 'button';
+          button.addEventListener('click', () => openRelatedEssay(question));
+          related.appendChild(button);
+        });
+        aside.appendChild(related);
+      }
+      if (item.risk_note) aside.appendChild(el('div', 'trend-risk', item.risk_note));
+      body.appendChild(aside);
+      card.appendChild(body);
+      return card;
+    }
+
+    function rebuildTrendSubjects(subjects) {
+      const previous = trendSubject.value;
+      clear(trendSubject);
+      trendSubject.appendChild(new Option('全部科目', ''));
+      (subjects || []).forEach((subject) => trendSubject.appendChild(new Option(subject, subject)));
+      if (Array.from(trendSubject.options).some((option) => option.value === previous)) trendSubject.value = previous;
+    }
+
+    async function loadTrends() {
+      if (trendState.loading) return;
+      trendState.loading = true;
+      const searchButton = document.getElementById('trend-search');
+      searchButton.disabled = true;
+      trendStatus.textContent = '正在讀取已保存的分析資料……';
+      const params = new URLSearchParams();
+      if (trendSubject.value) params.set('subject', trendSubject.value);
+      if (trendFilterStatus.value) params.set('status', trendFilterStatus.value);
+      if (trendQuery.value.trim()) params.set('q', trendQuery.value.trim());
+      try {
+        const response = await fetch(`/api/exam-tutor/trends${params.size ? `?${params.toString()}` : ''}`);
+        let body = {};
+        try { body = await response.json(); } catch (_error) { body = {}; }
+        if (!response.ok || !body.ok) throw new Error(body.message || '趨勢分析載入失敗');
+        rebuildTrendSubjects(body.subjects || []);
+        const summary = body.summary || {};
+        document.getElementById('trend-total').textContent = `${summary.total || 0} 項`;
+        document.getElementById('trend-verified').textContent = `${summary.verified || 0} 項`;
+        document.getElementById('trend-radar').textContent = `${summary.radar || 0} 項`;
+        clear(trendList);
+        (body.items || []).forEach((item) => trendList.appendChild(renderTrendItem(item)));
+        if (!(body.items || []).length) trendList.appendChild(el('div', 'panel footer-note', '目前篩選條件沒有資料，請清除科目或關鍵字後再試。'));
+        const generated = body.generated_at ? new Date(body.generated_at).toLocaleString('zh-TW', {timeZone: 'Asia/Taipei'}) : '尚無時間';
+        trendStatus.textContent = `顯示 ${summary.total || 0} 項・更新 ${generated}`;
+        trendState.loaded = true;
+      } catch (error) {
+        clear(trendList);
+        trendList.appendChild(el('div', 'panel footer-note', error.message || String(error)));
+        trendStatus.textContent = '趨勢資料沒有完成載入，既有選擇題與申論題功能不受影響。';
+      } finally {
+        trendState.loading = false;
+        searchButton.disabled = false;
+      }
+    }
+
+    document.getElementById('trend-search').addEventListener('click', loadTrends);
+    trendFilterStatus.addEventListener('change', loadTrends);
+    trendSubject.addEventListener('change', loadTrends);
+    trendQuery.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        loadTrends();
+      }
+    });
+
+    for (let page = 1; page <= officialAnswerPageCount; page += 1) {
+      const marker = el('span', 'answer-page');
+      marker.dataset.page = String(page);
+      answerPages.appendChild(marker);
+    }
+
+    function computerExamRulesApply() {
+      const examName = String((essayState.selected || {}).exam_name || form.elements.exam_name.value || '');
+      return activeEssayFamily === 'judicial_bar' && /(?:司法官|律師)/.test(examName) && /第二試/.test(examName);
+    }
+
+    function answerLayoutMetrics(value) {
+      const text = String(value || '');
+      const characters = Array.from(text).length;
+      const visualLines = text.split('\n').reduce((total, line) =>
+        total + Math.max(1, Math.ceil(Array.from(line).length / officialAnswerCharsPerLine)), 0);
+      return {
+        characters,
+        visualLines,
+        page: Math.max(1, Math.ceil(visualLines / officialAnswerLinesPerPage)),
+      };
+    }
+
+    function answerLimitInvalid() {
+      if (!computerExamRulesApply()) return false;
+      const metrics = answerLayoutMetrics(answerField.value);
+      return metrics.characters > officialAnswerMaxChars
+        || metrics.visualLines > officialAnswerPageCount * officialAnswerLinesPerPage;
+    }
+
+    function updateAnswerLimit({trim = true} = {}) {
+      const limited = computerExamRulesApply();
+      if (limited && trim && Array.from(answerField.value).length > officialAnswerMaxChars) {
+        answerField.value = Array.from(answerField.value).slice(0, officialAnswerMaxChars).join('');
+      }
+      const metrics = answerLayoutMetrics(answerField.value);
+      const displayPage = Math.min(metrics.page, officialAnswerPageCount + 1);
+      answerCharacterCount.textContent = limited
+        ? `${metrics.characters.toLocaleString('zh-TW')} / 5,200 字`
+        : `${metrics.characters.toLocaleString('zh-TW')} 字`;
+      answerPageCount.textContent = limited ? `第 ${displayPage} / 8 頁` : '一般申論練習';
+      Array.from(answerPages.children).forEach((item, index) => {
+        item.classList.toggle('active', index < Math.min(metrics.page, officialAnswerPageCount));
+      });
+      answerLimitWarning.className = 'answer-limit-warning';
+      if (!limited) {
+        answerLimitWarning.textContent = '本題不是司法官／律師第二試，不套用 5,200 字與 8 頁限制。';
+      } else if (metrics.visualLines > officialAnswerPageCount * officialAnswerLinesPerPage) {
+        answerLimitWarning.classList.add('error');
+        answerLimitWarning.textContent = '內容超過 8 頁，請調整內容後再送出。';
+      } else if (metrics.page >= officialAnswerPageCount) {
+        answerLimitWarning.classList.add('warning');
+        answerLimitWarning.textContent = `已達最末頁，請注意作答範圍；尚有 ${(officialAnswerMaxChars - metrics.characters).toLocaleString('zh-TW')} 字可用。`;
+      } else {
+        answerLimitWarning.textContent = `尚有 ${(officialAnswerMaxChars - metrics.characters).toLocaleString('zh-TW')} 字可用。`;
+      }
+      if (!button.dataset.reviewing) button.disabled = answerLimitInvalid();
+      return metrics;
+    }
+
+    function updateComputerExamMode() {
+      const limited = computerExamRulesApply();
+      answerPolicy.hidden = !limited;
+      answerLimitPanel.hidden = !limited;
+      if (limited) answerField.setAttribute('maxlength', String(officialAnswerMaxChars));
+      else answerField.removeAttribute('maxlength');
+      updateAnswerLimit();
+    }
+
+    function answerDraftKey() {
+      const identity = String(form.elements.essay_bank_uid.value || 'custom-essay');
+      return `magi:exam-tutor:answer-draft:${identity}`;
+    }
+
+    function saveAnswerDraft({silent = false} = {}) {
+      try {
+        window.localStorage.setItem(answerDraftKey(), JSON.stringify({
+          answer: answerField.value,
+          saved_at: new Date().toISOString(),
+        }));
+        if (!silent || answerField.value.trim()) {
+          answerSaveStatus.textContent = `已儲存 ${new Date().toLocaleTimeString('zh-TW', {hour: '2-digit', minute: '2-digit', second: '2-digit'})}`;
+        }
+      } catch (_error) {
+        answerSaveStatus.textContent = '此瀏覽器無法保存草稿';
+      }
+    }
+
+    function restoreAnswerDraft() {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(answerDraftKey()) || 'null');
+        answerField.value = saved && typeof saved.answer === 'string' ? saved.answer : '';
+        answerSaveStatus.textContent = saved && saved.saved_at ? '已載入本題草稿' : '尚未儲存';
+      } catch (_error) {
+        answerField.value = '';
+        answerSaveStatus.textContent = '尚未儲存';
+      }
+      updateAnswerLimit();
+    }
+
+    function insertAnswerPrefix(prefix) {
+      answerField.focus();
+      const start = answerField.selectionStart;
+      const end = answerField.selectionEnd;
+      answerField.setRangeText(prefix, start, end, 'end');
+      answerField.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+
+    answerField.addEventListener('input', () => {
+      answerSaveStatus.textContent = '尚未儲存變更';
+      updateAnswerLimit();
+    });
+    document.querySelectorAll('[data-answer-command]').forEach((control) => {
+      control.addEventListener('click', () => {
+        answerField.focus();
+        document.execCommand(control.dataset.answerCommand);
+        answerField.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+    });
+    document.querySelectorAll('[data-answer-prefix]').forEach((control) => {
+      control.addEventListener('click', () => insertAnswerPrefix(control.dataset.answerPrefix));
+    });
+    document.getElementById('answer-save').addEventListener('click', () => saveAnswerDraft());
+    document.getElementById('answer-preview').addEventListener('click', () => {
+      const metrics = updateAnswerLimit({trim: false});
+      document.getElementById('answer-preview-content').textContent = answerField.value || '（尚未作答）';
+      document.getElementById('answer-preview-meta').textContent = computerExamRulesApply()
+        ? `${metrics.characters.toLocaleString('zh-TW')} 字・估算第 ${Math.min(metrics.page, officialAnswerPageCount + 1)} / 8 頁`
+        : `${metrics.characters.toLocaleString('zh-TW')} 字`;
+      answerPreviewDialog.showModal();
+    });
+    document.querySelectorAll('[data-dialog-close]').forEach((control) => {
+      control.addEventListener('click', () => document.getElementById(control.dataset.dialogClose).close());
+    });
+    document.getElementById('answer-submit-cancel').addEventListener('click', () => {
+      submitConfirmationStep = 0;
+      answerSubmitDialog.close();
+      answerField.focus();
+    });
+    document.getElementById('answer-submit-confirm').addEventListener('click', () => {
+      if (submitConfirmationStep === 1) {
+        submitConfirmationStep = 2;
+        document.getElementById('answer-submit-dialog-title').textContent = '第 2 次確認：確定送出批改？';
+        document.getElementById('answer-submit-dialog-message').textContent = '這是最後確認。送出後即依目前內容開始批改。';
+        document.getElementById('answer-submit-confirm').textContent = '確定送出批改';
+        return;
+      }
+      submitConfirmed = true;
+      submitConfirmationStep = 0;
+      answerSubmitDialog.close();
+      form.requestSubmit();
+    });
+    form.elements.exam_name.addEventListener('change', updateComputerExamMode);
+    window.setInterval(() => saveAnswerDraft({silent: true}), 10000);
+    window.addEventListener('beforeunload', () => saveAnswerDraft({silent: true}));
+    const essayYear = document.getElementById('essay-bank-year');
+    const essaySubject = document.getElementById('essay-bank-subject');
+    const essayList = document.getElementById('essay-bank-list');
+
+    function addEssayLink(target, label, href) {
+      if (!href) return;
+      const link = el('a', '', label);
+      link.href = href;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      target.appendChild(link);
+    }
+
+    function renderEssayBank() {
+      clear(essayList);
+      if (!essayState.bank) return showEmpty(essayList, '申論題庫載入中……');
+      const year = essayYear.value;
+      const subject = essaySubject.value;
+      const entries = (essayState.bank.entries || []).filter((item) =>
+        (!year || String(item.year) === year) && (!subject || item.subject_key === subject)
+      ).sort((left, right) =>
+        Number(right.year) - Number(left.year)
+        || String(left.subject || '').localeCompare(String(right.subject || ''), 'zh-Hant')
+        || Number(left.question_number || 0) - Number(right.question_number || 0)
+      );
+      const pageCount = entries.length ? Math.ceil(entries.length / essayPageSize) : 0;
+      essayState.page = Math.max(0, Math.min(essayState.page, Math.max(0, pageCount - 1)));
+      const start = essayState.page * essayPageSize;
+      const visibleEntries = entries.slice(start, start + essayPageSize);
+      const shown = visibleEntries.length ? `${start + 1}–${start + visibleEntries.length}` : '0';
+      document.getElementById('essay-bank-count').textContent = `找到 ${entries.length} 題・目前顯示 ${shown}`;
+      document.getElementById('essay-page-status').textContent = pageCount ? `第 ${essayState.page + 1} / ${pageCount} 頁` : '沒有結果';
+      document.getElementById('essay-page-previous').disabled = essayState.page <= 0;
+      document.getElementById('essay-page-next').disabled = !pageCount || essayState.page >= pageCount - 1;
+      visibleEntries.forEach((item) => {
+        const card = el('article', 'essay-card');
+        const scoreLabel = item.max_score === null || item.max_score === undefined ? '依官方題卷' : `${item.max_score} 分`;
+        card.appendChild(el('div', 'essay-card-meta', `民國 ${item.year} 年｜${item.subject}｜第 ${item.question_number || '整卷'} 題｜${scoreLabel}`));
+        card.appendChild(el('h3', '', item.title));
+        const policy = !item.grading_ready
+          ? '可先練習・評分尺整理中'
+          : item.rubric_basis === 'reference_derived'
+          ? `參考擬答評分尺（非官方）・${item.rubric_item_count || 0} 項`
+          : item.official_numeric_scoring
+            ? '考選部已明列逐爭點數字配分'
+            : item.practice_scoring_available
+              ? `官方評分要點＋練習配分・${item.rubric_item_count || 0} 項`
+            : `官方評分要點・${item.rubric_item_count || 0} 項`;
+        card.appendChild(el('div', 'essay-card-policy', policy));
+        card.appendChild(el('div', 'essay-card-preview', String(item.question_text || '').replace(/\s+/g, ' ').trim()));
+        const links = el('div', 'essay-card-links');
+        addEssayLink(links, item.question_file_url ? '本機試題 PDF' : '官方試題 PDF', item.question_file_url || item.question_url);
+        addEssayLink(links, '官方來源', item.question_url);
+        addEssayLink(links, '考選部評分要點', item.official_rubric_file_url || item.official_news_url || item.official_rubric_url);
+        addEssayLink(links, item.reference_answer_file_url ? '本機參考擬答' : '參考擬答來源', item.reference_answer_file_url || item.reference_answer_url);
+        card.appendChild(links);
+        const selectButton = el('button', '', item.grading_ready ? '選這題練習' : '開啟題目先練習');
+        selectButton.type = 'button';
+        selectButton.addEventListener('click', () => selectEssayEntry(item));
+        card.appendChild(selectButton);
+        essayList.appendChild(card);
+      });
+      if (!entries.length) showEmpty(essayList, '這個年度與科目組合目前沒有題目。');
+    }
+
+    function changeEssayPage(delta) {
+      essayState.page = Math.max(0, essayState.page + delta);
+      renderEssayBank();
+      document.querySelector('.essay-bank-panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+
+    function currentEssayCandidates() {
+      if (!essayState.bank) return [];
+      const year = essayYear.value;
+      const subject = essaySubject.value;
+      return (essayState.bank.entries || []).filter((item) =>
+        (!year || String(item.year) === year) && (!subject || item.subject_key === subject)
+      );
+    }
+
+    function renderEssayQueue() {
+      const target = document.getElementById('essay-random-queue');
+      clear(target);
+      target.hidden = !essayState.queue.length;
+      essayState.queue.forEach((item, index) => {
+        const row = el('div', 'random-row');
+        const info = el('div');
+        info.appendChild(el('b', '', `${index + 1}. 民國 ${item.year} 年｜${item.subject}｜${item.max_score ?? '依題卷'} 分`));
+        info.appendChild(el('p', '', item.title));
+        row.appendChild(info);
+        const start = el('button', '', '開始作答');
+        start.type = 'button';
+        start.addEventListener('click', () => selectEssayEntry(item));
+        row.appendChild(start);
+        target.appendChild(row);
+      });
+    }
+
+    function randomizeEssayQueue() {
+      const candidates = currentEssayCandidates();
+      if (!candidates.length) {
+        const target = document.getElementById('essay-random-queue');
+        target.hidden = false;
+        return showEmpty(target, '目前篩選沒有可抽取題目。');
+      }
+      const limit = Number(document.getElementById('essay-random-limit').value || 1);
+      essayState.queue = shuffle(candidates).slice(0, Math.min(limit, candidates.length));
+      renderEssayQueue();
+      document.getElementById('essay-random-queue').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+
+    function lockEssayOfficialFields(locked) {
+      form.elements.exam_name.disabled = locked;
+      form.elements.year.readOnly = locked;
+      form.elements.subject.readOnly = locked;
+      form.elements.max_score.readOnly = locked;
+      form.elements.question_text.readOnly = locked;
+      form.elements.question_file.disabled = locked;
+      form.elements.official_rubric_url.readOnly = locked;
+      form.elements.official_rubric_text.readOnly = locked;
+      form.elements.official_rubric_file.disabled = locked;
+      form.elements.rubric_basis.disabled = locked;
+      [form.elements.year, form.elements.subject, form.elements.max_score,
+       form.elements.question_text, form.elements.official_rubric_url,
+       form.elements.official_rubric_text].forEach((field) => field.classList.toggle('server-locked', locked));
+    }
+
+    function selectEssayEntry(item) {
+      saveAnswerDraft({silent: true});
+      essayState.selected = item;
+      form.elements.essay_bank_uid.value = item.uid;
+      form.elements.exam_name.value = item.exam_name || '司法官／律師第二試';
+      form.elements.year.value = item.year;
+      form.elements.subject.value = item.subject;
+      form.elements.max_score.value = item.max_score;
+      form.elements.rubric_basis.value = item.rubric_basis === 'official' ? 'official' : 'reference_derived';
+      form.elements.question_text.value = item.question_text || '';
+      form.elements.official_rubric_url.value = item.official_rubric_url || item.official_news_url || '';
+      form.elements.official_rubric_text.value = '';
+      form.elements.official_rubric_text.placeholder = '本題已載入考選部評分要點。';
+      form.elements.reference_url.value = item.reference_answer_url || '';
+      updateRubricBasisHelp();
+      lockEssayOfficialFields(true);
+      document.getElementById('essay-selected-title').textContent = `已選：${item.title}`;
+      document.getElementById('essay-selected-note').textContent = !item.grading_ready
+        ? '可先作答；評分尺完成後才能送出批改。'
+        : `本題 ${item.max_score ?? '依題卷'} 分・${item.rubric_item_count || 0} 個評分項目`;
+      document.getElementById('essay-selected-question').textContent = item.question_text || '';
+      const links = document.getElementById('essay-selected-links');
+      clear(links);
+      addEssayLink(links, item.question_file_url ? '開啟本機試題' : '開啟官方試題', item.question_file_url || item.question_url);
+      addEssayLink(links, '開啟考選部評分要點', item.official_rubric_file_url || item.official_news_url || item.official_rubric_url);
+      addEssayLink(links, item.reference_answer_file_url ? '開啟本機參考擬答' : '開啟參考擬答來源', item.reference_answer_file_url || item.reference_answer_url);
+      document.getElementById('essay-selected').hidden = false;
+      document.getElementById('custom-question-details').open = false;
+      updateComputerExamMode();
+      restoreAnswerDraft();
+      document.getElementById('essay-review-panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+
+    function returnToEssayBank() {
+      document.querySelector('.essay-bank-panel').scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+
+    function clearEssaySelection() {
+      saveAnswerDraft({silent: true});
+      essayState.selected = null;
+      form.elements.essay_bank_uid.value = '';
+      lockEssayOfficialFields(false);
+      form.elements.question_text.value = '';
+      form.elements.max_score.value = '';
+      form.elements.official_rubric_url.value = '';
+      form.elements.official_rubric_text.value = '';
+      form.elements.official_rubric_text.placeholder = '在此貼上官方爭點與評分說明；請勿自行補配分……';
+      form.elements.rubric_basis.value = 'official';
+      form.elements.reference_url.value = '';
+      updateRubricBasisHelp();
+      document.getElementById('essay-selected').hidden = true;
+      document.getElementById('essay-selected-question').textContent = '';
+      document.getElementById('custom-question-details').open = true;
+      updateComputerExamMode();
+      restoreAnswerDraft();
+      document.getElementById('custom-question-details').scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+
+    const lawCoverageLabels = {
+      direct_papers: '官方卷已可隨機練習',
+      official_archive_pending_index: '官方題庫已確認，逐卷索引中',
+      official_papers_pending_index: '官方試卷已確認，逐卷索引中',
+      official_admissions_page_only: '僅確認官方招生頁，未找到公開題庫',
+      undergraduate_only: '教育部清冊僅列大學部',
+      no_public_archive_verified: '尚未查得可公開驗證的官方題庫'
+    };
+
+    function renderLawSchoolCoverage(summary) {
+      const target = document.getElementById('law-school-grid');
+      const institutions = summary.institution_registry || [];
+      clear(target);
+      institutions.forEach((item) => {
+        const status = String(item.coverage_status || 'no_public_archive_verified');
+        const tone = status === 'direct_papers' ? 'coverage-direct'
+          : (status.includes('pending') ? 'coverage-pending' : 'coverage-none');
+        const card = el('article', `law-school-card ${tone}`);
+        card.appendChild(el('b', '', item.name || '未命名學校'));
+        const detail = item.paper_count
+          ? `${lawCoverageLabels[status] || status}・${item.paper_count} 份・${(item.years || []).slice(-1)[0] || ''}–${(item.years || [])[0] || ''} 年`
+          : (lawCoverageLabels[status] || status);
+        card.appendChild(el('span', '', detail.replace('・– 年', '')));
+        if (item.official_archive_url) addEssayLink(card, '官方來源', item.official_archive_url);
+        if (item.reference_answer_catalog_url) addEssayLink(card, '擬答來源目錄', item.reference_answer_catalog_url);
+        target.appendChild(card);
+      });
+      if (!institutions.length) showEmpty(target, '法律學門校系清冊尚未載入。');
+    }
+
+    function refreshSourceSubjects() {
+      const target = document.getElementById('source-subject');
+      const family = document.getElementById('source-family').value;
+      const institution = document.getElementById('source-institution').value;
+      const previous = target.value;
+      const byInstitution = sourceCatalogSummary.institution_subjects || {};
+      const byFamily = sourceCatalogSummary.family_subjects || {};
+      const subjects = family === 'law_graduate_school' && institution
+        ? (byInstitution[institution] || [])
+        : (byFamily[family] || []);
+      clear(target);
+      target.appendChild(new Option('全部科目', ''));
+      subjects.forEach((subject) => target.appendChild(new Option(subject, subject)));
+      if (subjects.includes(previous)) target.value = previous;
+    }
+
+    function configureSourceFamily(family) {
+      const sourceFamily = document.getElementById('source-family');
+      const levelSelect = document.getElementById('source-level');
+      const institutionSelect = document.getElementById('source-institution');
+      const isGraduate = family === 'law_graduate_school';
+      sourceFamily.value = family;
+      clear(levelSelect);
+      if (isGraduate) {
+        levelSelect.appendChild(new Option('碩士班', '碩士班'));
+        institutionSelect.disabled = false;
+      } else {
+        levelSelect.appendChild(new Option('三、四等', ''));
+        levelSelect.appendChild(new Option('三等', '三'));
+        levelSelect.appendChild(new Option('四等', '四'));
+        institutionSelect.value = '';
+        institutionSelect.disabled = true;
+      }
+      document.getElementById('source-institution-label').hidden = !isGraduate;
+      document.getElementById('source-level-label').hidden = isGraduate;
+      document.querySelector('.law-school-coverage').hidden = !isGraduate;
+      document.getElementById('source-view-title').textContent = isGraduate
+        ? '法律研究所官方試卷'
+        : '司法三、四等官方試卷';
+      document.getElementById('source-view-note').textContent = isGraduate
+        ? '先選學校，再以科目與年度篩選；試卷已保存在本機的會直接顯示。'
+        : '依三等或四等、科目與年度篩選；不需要再去其他頁面找題庫。';
+      refreshSourceSubjects();
+    }
+
+    function selectEssayFamily(family, {load = true} = {}) {
+      if (!['judicial_bar', 'judicial_personnel', 'law_graduate_school'].includes(family)) return;
+      activeEssayFamily = family;
+      document.querySelectorAll('[data-essay-family]').forEach((button) => {
+        button.setAttribute('aria-selected', button.dataset.essayFamily === family ? 'true' : 'false');
+      });
+      const isJudicialBar = family === 'judicial_bar';
+      document.getElementById('essay-curated-view').hidden = !isJudicialBar;
+      document.getElementById('essay-source-view').hidden = isJudicialBar;
+      updateComputerExamMode();
+      if (isJudicialBar) {
+        renderEssayBank();
+        return;
+      }
+      configureSourceFamily(family);
+      if (load && Object.keys(sourceCatalogSummary).length) {
+        loadSourcePapers({randomMode: false, offset: 0});
+      }
+    }
+
+    function showEssayLoadError(error) {
+      document.getElementById('essay-bank-count').textContent = error.message || String(error);
+      clear(essayList);
+      const box = el('div', 'empty');
+      box.appendChild(el('p', '', '題庫剛才沒有完成載入，可以直接重試，不需要重新開啟頁面。'));
+      const retry = el('button', '', '重新載入題庫');
+      retry.type = 'button';
+      retry.addEventListener('click', () => {
+        retry.disabled = true;
+        document.getElementById('essay-bank-count').textContent = '題庫重新載入中……';
+        loadEssayBank().catch(showEssayLoadError);
+      });
+      box.appendChild(retry);
+      essayList.appendChild(box);
+    }
+
+    async function loadEssayBank() {
+      const response = await fetch('/api/exam-tutor/essay-bank');
+      let body = {};
+      try { body = await response.json(); } catch (_error) { body = {}; }
+      if (!response.ok || !body.ok) throw new Error(body.message || '申論題庫載入失敗');
+      essayState.bank = body;
+      clear(essayYear);
+      essayYear.appendChild(new Option('全部年度', ''));
+      (body.years || []).forEach((year) => essayYear.appendChild(new Option(`民國 ${year} 年`, String(year))));
+      clear(essaySubject);
+      essaySubject.appendChild(new Option('全部科目', ''));
+      (body.subjects || []).forEach((item) => essaySubject.appendChild(new Option(item.label, item.key)));
+      renderEssayBank();
+      const summary = body.source_catalog_summary || {};
+      sourceCatalogSummary = summary;
+      const families = summary.family_counts || {};
+      const coverage = summary.coverage_summary || {};
+      const archive = summary.archive_summary || {};
+      document.getElementById('judicial-bar-count').textContent = `${families.judicial_bar || body.entry_count || 0} 題・可直接選題批改`;
+      document.getElementById('judicial-personnel-count').textContent = `${families.judicial_personnel || 0} 份官方試卷・三等與四等`;
+      document.getElementById('law-graduate-count').textContent = `${families.law_graduate_school || 0} 份官方試卷・${coverage.direct_paper_institutions || 0} 校已索引`;
+      document.getElementById('source-catalog-status').textContent = summary.paper_count
+        ? `本機已索引 ${summary.paper_count} 份司法三四等與研究所官方試卷，保存 ${archive.saved || 0} 份檔案，尚待下載 ${archive.pending || 0} 份。`
+        : '延伸官方試卷庫尚未載入。';
+      document.getElementById('law-school-coverage-summary').textContent = `法律學門 ${coverage.registry_total || summary.institution_count || 0} 校覆蓋狀態・${coverage.direct_paper_institutions || 0} 校已有逐卷題目`;
+      renderLawSchoolCoverage(summary);
+      const sourceInstitution = document.getElementById('source-institution');
+      clear(sourceInstitution);
+      sourceInstitution.appendChild(new Option('全部法律學門校系', ''));
+      (summary.institution_registry || []).forEach((item) => {
+        const suffix = item.paper_count ? `（${item.paper_count} 份）` : '（尚無可隨機題卷）';
+        sourceInstitution.appendChild(new Option(`${item.name}${suffix}`, item.name));
+      });
+      refreshSourceSubjects();
+      const sourceYear = document.getElementById('source-year');
+      clear(sourceYear);
+      sourceYear.appendChild(new Option('跨年度', ''));
+      (summary.years || []).forEach((year) => sourceYear.appendChild(new Option(`民國 ${year} 年`, String(year))));
+      selectEssayFamily(activeEssayFamily, {load: true});
+      return body;
+    }
+
+    essayYear.addEventListener('change', () => { essayState.page = 0; renderEssayBank(); });
+    essaySubject.addEventListener('change', () => { essayState.page = 0; renderEssayBank(); });
+    document.getElementById('essay-page-previous').addEventListener('click', () => changeEssayPage(-1));
+    document.getElementById('essay-page-next').addEventListener('click', () => changeEssayPage(1));
+    document.getElementById('essay-random').addEventListener('click', randomizeEssayQueue);
+    document.getElementById('essay-back-to-bank').addEventListener('click', returnToEssayBank);
+    document.getElementById('essay-selected-clear').addEventListener('click', clearEssaySelection);
+
+    let sourceOffset = 0;
+    let sourceLastCount = 0;
+
+    async function loadSourcePapers({randomMode = false, offset = 0} = {}) {
+      const target = document.getElementById('source-paper-list');
+      clear(target);
+      target.appendChild(el('p', 'empty', randomMode ? '正在抽取官方試卷……' : '正在載入全部題卷……'));
+      const family = document.getElementById('source-family').value;
+      const params = new URLSearchParams({include_source_catalog: '1', exam_family: family});
+      if (randomMode) params.set('random', '1');
+      const level = document.getElementById('source-level').value;
+      const institution = document.getElementById('source-institution').value;
+      const subject = document.getElementById('source-subject').value;
+      const year = document.getElementById('source-year').value;
+      if (level) params.set('level', level);
+      if (institution && family === 'law_graduate_school') params.set('institution', institution);
+      if (subject) params.set('subject', subject);
+      if (year) params.set('year', year);
+      params.set('limit', document.getElementById('source-limit').value || '5');
+      if (!randomMode) params.set('offset', String(Math.max(0, offset)));
+      try {
+        const response = await fetch(`/api/exam-tutor/essay-bank?${params.toString()}`);
+        const body = await response.json();
+        if (!response.ok || !body.ok) throw new Error(body.message || '官方試卷抽取失敗');
+        const catalog = body.source_catalog || {};
+        clear(target);
+        (catalog.papers || []).forEach((paper) => {
+          const card = el('article', 'source-paper');
+          const heading = paper.exam_family === 'law_graduate_school'
+            ? `民國 ${paper.year} 年｜${paper.institution}｜${paper.track}`
+            : `民國 ${paper.year} 年｜司法${paper.level}等｜${paper.track}`;
+          card.appendChild(el('b', '', heading));
+          const paperTypeLabel = paper.paper_type === 'essay' ? '申論卷'
+            : (paper.paper_type === 'essay_or_mixed' ? '申論或混合卷' : '測驗或混合卷');
+          card.appendChild(el('div', 'small-meta', `${paper.subject}｜${paperTypeLabel}`));
+          const links = el('div', 'source-paper-links');
+          addEssayLink(links, paper.question_file_url ? '本機試題 PDF' : '官方試題 PDF', paper.question_file_url || paper.question_url);
+          addEssayLink(links, paper.official_answer_file_url ? '本機標準答案' : '官方標準答案', paper.official_answer_file_url || paper.official_answer_url);
+          addEssayLink(links, paper.official_correction_file_url ? '本機更正答案' : '官方更正答案', paper.official_correction_file_url || paper.official_correction_url);
+          addEssayLink(links, '官方題庫頁', paper.official_page_url);
+          addEssayLink(links, paper.reference_answer_file_url ? '本機逐題擬答' : '逐題擬答', paper.reference_answer_file_url || paper.reference_answer_url);
+          addEssayLink(links, '擬答來源目錄', paper.reference_answer_catalog_url);
+          card.appendChild(links);
+          card.appendChild(el('div', 'source-paper-note', paper.offline_ready
+            ? '已保存，可在內網開啟。'
+            : '尚待下載。'));
+          if (paper.reference_answer_status === 'catalog_only_not_grading_ready') {
+            card.appendChild(el('div', 'source-paper-note', '已有擬答目錄，完整擬答尚待收錄。'));
+          } else if (!paper.reference_answer_url && !paper.official_rubric_url) {
+            card.appendChild(el('div', 'source-paper-note', '尚無評分資料，目前只能自行練習。'));
+          }
+          target.appendChild(card);
+        });
+        if (!(catalog.papers || []).length) showEmpty(target, '這個條件目前沒有官方試卷。');
+        sourceOffset = randomMode ? 0 : Number(catalog.offset || 0);
+        sourceLastCount = (catalog.papers || []).length;
+        const start = catalog.filtered_count && sourceLastCount ? sourceOffset + 1 : 0;
+        const end = sourceOffset + sourceLastCount;
+        const archive = catalog.archive_summary || {};
+        document.getElementById('source-page-status').textContent = randomMode
+          ? `隨機顯示 ${sourceLastCount}／${catalog.filtered_count || 0} 份・本機已保存 ${archive.saved || 0} 份檔案`
+          : `顯示第 ${start}–${end} 份，共 ${catalog.filtered_count || 0} 份・本機已保存 ${archive.saved || 0} 份檔案`;
+        document.getElementById('source-previous').disabled = randomMode || !catalog.has_previous;
+        document.getElementById('source-next').disabled = randomMode || !catalog.has_next;
+      } catch (error) {
+        showEmpty(target, error.message || String(error));
+      }
+    }
+    document.getElementById('source-browse').addEventListener('click', () => loadSourcePapers({randomMode: false, offset: 0}));
+    document.getElementById('source-random').addEventListener('click', () => loadSourcePapers({randomMode: true}));
+    document.getElementById('source-previous').addEventListener('click', () => {
+      const limit = Number(document.getElementById('source-limit').value || 5);
+      loadSourcePapers({randomMode: false, offset: Math.max(0, sourceOffset - limit)});
+    });
+    document.getElementById('source-next').addEventListener('click', () => {
+      loadSourcePapers({randomMode: false, offset: sourceOffset + sourceLastCount});
+    });
+    document.querySelectorAll('[data-essay-family]').forEach((button) => {
+      button.addEventListener('click', () => selectEssayFamily(button.dataset.essayFamily));
+    });
+    document.getElementById('source-institution').addEventListener('change', () => {
+      refreshSourceSubjects();
+      loadSourcePapers({randomMode: false, offset: 0});
+    });
+    ['source-level', 'source-subject', 'source-year', 'source-limit'].forEach((id) => {
+      document.getElementById(id).addEventListener('change', () => loadSourcePapers({randomMode: false, offset: 0}));
+    });
+
+    function addKeyValue(target, label, value) {
+      if (value === undefined || value === null || String(value).trim() === '') return;
+      const row = el('div', 'kv');
+      row.appendChild(el('b', '', label));
+      row.appendChild(el('span', '', value));
+      target.appendChild(row);
+    }
+
+    const statusLabel = {
+      covered: '已掌握', partial: '部分掌握', missing: '漏寫', incorrect: '錯誤'
+    };
+    const importanceLabel = {
+      major: '主要爭點', medium: '中等權重', minor: '次要爭點', structure: '結構標題'
+    };
+
+    function renderIssues(items) {
+      const target = document.getElementById('issue-list');
+      clear(target);
+      if (!items || !items.length) return showEmpty(target, '模型未回傳逐爭點資料，建議重新送出。');
+      items.forEach((item, index) => {
+        const card = el('article', 'issue');
+        const top = el('div', 'issue-top');
+        top.appendChild(el('h3', '', `${index + 1}. ${item.issue || item.issue_id || '未命名爭點'}`));
+        const state = statusLabel[item.status] ? item.status : 'partial';
+        const badges = el('div', 'issue-badges');
+        const isReference = item.rubric_source === 'reference_derived';
+        const isPractice = item.points_source === 'curated_practice_weight_from_official_part_totals';
+        const rubricPoints = item.rubric_points ?? item.official_points;
+        const points = rubricPoints === undefined || rubricPoints === null ? '・不拆爭點分數' : ` ${rubricPoints} 分`;
+        const pointLabel = isReference ? '擬答衍生評分尺・非官方'
+          : isPractice ? '官方爭點・固定練習配分'
+          : '考選部官方';
+        badges.appendChild(el('span', `badge ${isReference || isPractice ? 'supplementary' : 'official'}`, `${pointLabel}${points}`));
+        if (isPractice) badges.appendChild(el('span', 'badge', importanceLabel[item.practice_importance] || '固定權重'));
+        badges.appendChild(el('span', `badge ${state}`, statusLabel[state]));
+        top.appendChild(badges);
+        card.appendChild(top);
+        if (item.student_excerpt) card.appendChild(el('div', 'excerpt', `作答原文：「${item.student_excerpt}」`));
+        addKeyValue(card, '診斷', item.diagnosis);
+        addKeyValue(card, '如何修正', item.correction);
+        addKeyValue(card, '建議順序', item.suggested_order);
+        if (isPractice && item.practice_rationale) addKeyValue(card, '權重理由', item.practice_rationale);
+        addKeyValue(card, isPractice ? '本項取得' : '估計得分', item.estimated_points === undefined || item.estimated_points === null ? '不估分' : `${item.estimated_points} 分`);
+        target.appendChild(card);
+      });
+    }
+
+    function renderPartScores(items) {
+      const panel = document.getElementById('part-score-panel');
+      const target = document.getElementById('part-score-list');
+      clear(target);
+      panel.hidden = !items || !items.length;
+      if (!items || !items.length) return;
+      items.forEach((item) => {
+        const card = el('article', 'diagnostic');
+        card.appendChild(el('h3', '', item.label || item.id || '本題'));
+        addKeyValue(card, '得分', `${item.score} / ${item.max} 分（${item.percentage}%）`);
+        const gaps = item.major_gaps || [];
+        if (!gaps.length) {
+          addKeyValue(card, '主要失分', '沒有固定權重項目失分。');
+        } else {
+          const list = el('ol', 'simple-list');
+          gaps.forEach((gap) => list.appendChild(el('li', '',
+            `${importanceLabel[gap.importance] || '爭點'}・${gap.issue}：${statusLabel[gap.status] || gap.status}，失 ${gap.lost_points} / ${gap.points} 分`
+          )));
+          card.appendChild(el('b', '', '主要失分'));
+          card.appendChild(list);
+        }
+        target.appendChild(card);
+      });
+    }
+
+    function renderDiagnostic(targetId, items, fields) {
+      const target = document.getElementById(targetId);
+      clear(target);
+      if (!items || !items.length) return showEmpty(target);
+      items.forEach((item) => {
+        const card = el('article', 'diagnostic');
+        fields.forEach(([label, key]) => addKeyValue(card, label, item[key]));
+        target.appendChild(card);
+      });
+    }
+
+    function renderFramework(items) {
+      const target = document.getElementById('framework-list');
+      clear(target);
+      if (!items || !items.length) return showEmpty(target, '沒有取得建議架構。');
+      items.forEach((item, index) => {
+        const card = el('article', 'framework-item');
+        card.appendChild(el('h3', '', `${index + 1}. ${item.heading || '未命名段落'}`));
+        if (item.issue_ids && item.issue_ids.length) addKeyValue(card, '對應爭點', item.issue_ids.join('、'));
+        const steps = el('ol');
+        (item.steps || []).forEach((step) => steps.appendChild(el('li', '', step)));
+        if (steps.childNodes.length) card.appendChild(steps);
+        target.appendChild(card);
+      });
+    }
+
+    function renderBenchmark(benchmark) {
+      const target = document.getElementById('benchmark-body');
+      clear(target);
+      if (!benchmark) return showEmpty(target, '沒有閱卷基準。');
+      const official = benchmark.official_rubric || {};
+      const isReference = official.basis === 'reference_derived';
+      const isPractice = Boolean(official.practice_scoring_available);
+      const officialBox = el('div', 'progress-callout');
+      officialBox.textContent = isReference
+        ? `參考擬答評分尺（非官方）${official.numeric_scoring_available ? `・配分合計 ${official.total_points_found} 分` : '・本次不估分'}`
+        : isPractice
+          ? '考選部官方評分要點・練習配分'
+        : official.numeric_scoring_available
+          ? `考選部官方評分要點・配分合計 ${official.total_points_found} 分`
+          : '考選部官方評分要點・未明列逐爭點配分';
+      target.appendChild(officialBox);
+      if (benchmark.problem_overview) target.appendChild(el('p', 'lead', benchmark.problem_overview));
+      const issueTitle = el('h3', '', isReference ? '擬答推導的練習爭點' : '官方標準爭點');
+      target.appendChild(issueTitle);
+      const list = el('ol', 'simple-list');
+      (benchmark.issues || []).forEach((item) => {
+        const points = isPractice ? item.practice_points : item.official_points;
+        const weight = points === undefined || points === null ? '（不拆爭點分數）' : `（${points} 分）`;
+        const sourceLabel = isReference ? '擬答衍生・非官方' : isPractice ? '考選部官方爭點・固定練習配分' : '考選部官方';
+        list.appendChild(el('li', '', `［${sourceLabel}］${item.issue || item.id || '爭點'}${weight}：${item.rule || ''}`));
+      });
+      target.appendChild(list);
+      if (benchmark.cautions && benchmark.cautions.length) {
+        target.appendChild(el('h3', '', '基準限制'));
+        const cautionList = el('ul', 'simple-list');
+        benchmark.cautions.forEach((item) => cautionList.appendChild(el('li', '', item)));
+        target.appendChild(cautionList);
+      }
+    }
+
+    function renderOfficialAlignment(report) {
+      const benchmark = report.benchmark || {};
+      const official = benchmark.official_rubric || {};
+      const isReference = official.basis === 'reference_derived';
+      const isPractice = Boolean(official.practice_scoring_available);
+      const summary = document.getElementById('official-rubric-summary');
+      summary.textContent = isReference
+        ? `參考擬答評分尺（非官方）${official.numeric_scoring_available ? '' : '・質性批改'}`
+        : isPractice
+          ? '考選部官方評分要點・練習配分'
+        : official.numeric_scoring_available
+          ? '考選部官方評分要點與配分'
+          : '考選部官方評分要點・質性批改';
+      const target = document.getElementById('official-alignment-list');
+      clear(target);
+      const items = report.official_alignment || [];
+      if (!items.length) return showEmpty(target, '模型未回傳逐項批改依據對照，請重新送出。');
+      items.forEach((item) => {
+        const card = el('article', 'diagnostic');
+        addKeyValue(card, isReference ? '擬答爭點' : '官方爭點', item.issue || item.issue_id);
+        const pointValue = item.rubric_points ?? item.official_points;
+        addKeyValue(card, isReference ? '擬答衍生配分（非官方）' : isPractice ? '固定練習配分（非官方逐點配分）' : '官方爭點配分', pointValue === undefined || pointValue === null ? '不拆爭點分數' : `${pointValue} 分`);
+        if (isPractice) addKeyValue(card, '重要性', importanceLabel[item.practice_importance] || '固定權重');
+        addKeyValue(card, '作答狀態', statusLabel[item.status] || item.status);
+        addKeyValue(card, '估計取得', item.estimated_points === undefined || item.estimated_points === null ? '不估分' : `${item.estimated_points} 分`);
+        addKeyValue(card, '說明', item.note);
+        target.appendChild(card);
+      });
+    }
+
+    function renderRewrites(items) {
+      const target = document.getElementById('rewrite-list');
+      clear(target);
+      if (!items || !items.length) return showEmpty(target, '本次沒有取得逐句改寫。');
+      items.forEach((item, index) => {
+        const card = el('article', 'rewrite');
+        card.appendChild(el('h3', '', `改寫 ${index + 1}`));
+        addKeyValue(card, '原句', item.original);
+        addKeyValue(card, '改寫', item.improved);
+        addKeyValue(card, '理由', item.why);
+        target.appendChild(card);
+      });
+    }
+
+    function renderDrills(items) {
+      const target = document.getElementById('drill-list');
+      clear(target);
+      if (!items || !items.length) return showEmpty(target, '本次沒有取得練習任務。');
+      items.forEach((item, index) => {
+        const card = el('article', 'drill');
+        card.appendChild(el('h3', '', `優先 ${item.priority || index + 1}`));
+        addKeyValue(card, '任務', item.task);
+        addKeyValue(card, '完成標準', item.success_check);
+        target.appendChild(card);
+      });
+    }
+
+    function renderTextList(targetId, items, emptyText) {
+      const target = document.getElementById(targetId);
+      clear(target);
+      if (!items || !items.length) return showEmpty(target, emptyText);
+      const list = el('ul', 'simple-list');
+      items.forEach((item) => list.appendChild(el('li', '', item)));
+      target.appendChild(list);
+    }
+
+    function signedScore(value) {
+      if (value === null || value === undefined) return '首次作答';
+      const number = Number(value);
+      return `${number > 0 ? '+' : ''}${number} 分`;
+    }
+
+    function renderProgress(report) {
+      const progress = report.progress;
+      const persistence = report.persistence || {};
+      const callout = document.getElementById('progress-callout');
+      const history = document.getElementById('history-list');
+      clear(history);
+      if (!progress) {
+        document.getElementById('progress-total').textContent = '未保存';
+        document.getElementById('progress-previous').textContent = '—';
+        document.getElementById('progress-first').textContent = '—';
+        document.getElementById('progress-best').textContent = '—';
+        callout.textContent = persistence.message || '本次批改沒有建立進步紀錄。';
+        return;
+      }
+      document.getElementById('progress-total').textContent = `${progress.total_attempts} 次`;
+      if (progress.score_available) {
+        document.getElementById('progress-previous').textContent = signedScore(progress.delta_from_previous);
+        document.getElementById('progress-first').textContent = signedScore(progress.delta_from_first);
+        document.getElementById('progress-best').textContent = `${progress.best_score_mid} 分`;
+      } else {
+        const counts = progress.current_issue_counts || {};
+        document.getElementById('progress-previous').textContent = progress.improved_issues && progress.improved_issues.length ? `改善 ${progress.improved_issues.length} 項` : '質性比較';
+        document.getElementById('progress-first').textContent = `掌握 ${counts.covered || 0} 項`;
+        document.getElementById('progress-best').textContent = '官方未配分';
+      }
+      (progress.attempts || []).forEach((attempt, index) => {
+        const row = el('div', 'history-row');
+        row.appendChild(el('b', '', `第 ${Math.max(1, progress.total_attempts - progress.attempts.length + index + 1)} 次`));
+        const date = el('time', '', new Date(attempt.created_at).toLocaleString('zh-TW', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}));
+        row.appendChild(date);
+        const track = el('div', 'history-bar');
+        const fill = el('span');
+        const counts = attempt.issue_counts || {};
+        const issueTotal = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+        const ratio = attempt.score_available
+          ? (Number(attempt.max_score) > 0 ? Math.max(0, Math.min(100, Number(attempt.score_mid) / Number(attempt.max_score) * 100)) : 0)
+          : (issueTotal ? Math.max(0, Math.min(100, Number(counts.covered || 0) / issueTotal * 100)) : 0);
+        fill.style.width = `${ratio}%`;
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el('strong', '', attempt.score_available ? `${attempt.score_mid} / ${attempt.max_score}` : `掌握 ${counts.covered || 0}/${issueTotal}`));
+        history.appendChild(row);
+      });
+      const notes = [];
+      if (progress.improved_issues && progress.improved_issues.length) notes.push(`改善的爭點：${progress.improved_issues.join('、')}`);
+      if (progress.regressed_issues && progress.regressed_issues.length) notes.push(`本次退步的爭點：${progress.regressed_issues.join('、')}`);
+      notes.push(`同一練習者、同一題保留最近 ${progress.retention_limit} 次；目前保留 ${progress.retained_attempts} 次。`);
+      callout.textContent = notes.join(' ');
+    }
+
+    function renderReport(report) {
+      const score = report.score || {};
+      document.getElementById('score-mid').textContent = score.available === false ? '不產生數字分數' : `${score.mid ?? '—'} / ${score.max ?? '—'}`;
+      document.getElementById('score-range').textContent = score.available === false ? '官方未公布' : `${score.low ?? '—'}–${score.high ?? '—'}`;
+      document.getElementById('score-confidence').textContent = score.confidence || '—';
+      const runs = report.model_runs || [];
+      const gradingRuns = runs.filter(run => run && run.route !== 'server_locked_file');
+      const nvidiaRuns = gradingRuns.filter(run => run.route === 'nvidia_nim');
+      const localRuns = gradingRuns.filter(run => run.route !== 'nvidia_nim');
+      const lastRun = gradingRuns.length ? gradingRuns[gradingRuns.length - 1] : {};
+      const modelNode = document.getElementById('review-model');
+      const localModelLabel = run => {
+        const model = String((run && run.model) || 'MAGI 本機模型');
+        if (model.includes('26b')) return '本機 Gemma 26B';
+        if (model.includes('e4b')) return '本機 Gemma 4B';
+        return model;
+      };
+      if (nvidiaRuns.length && localRuns.length) {
+        modelNode.textContent = `NVIDIA Ultra 550B → ${localModelLabel(localRuns[localRuns.length - 1])}（日夜機制）`;
+      } else if (nvidiaRuns.length) {
+        modelNode.textContent = 'NVIDIA Ultra 550B';
+      } else {
+        modelNode.textContent = localModelLabel(lastRun);
+      }
+      modelNode.title = gradingRuns.map(run => `${run.stage || '批改'}：${run.model || run.route || 'MAGI'}`).join('\n');
+      const ratio = score.available === false ? 0 : (Number(score.max) > 0 ? Math.max(0, Math.min(100, Number(score.mid) / Number(score.max) * 100)) : 0);
+      document.getElementById('score-fill').style.width = `${ratio}%`;
+      document.getElementById('review-summary').textContent = report.summary || '';
+      document.getElementById('score-basis').textContent = `批改依據：${score.basis || '—'}`;
+      document.getElementById('disclaimer').textContent = report.disclaimer || '';
+      document.getElementById('source-cautions').textContent = (report.source_cautions || []).length ? `查核提醒：${report.source_cautions.join('；')}` : '';
+      renderIssues(report.issue_map);
+      renderPartScores(report.part_scores);
+      renderOfficialAlignment(report);
+      renderProgress(report);
+      renderDiagnostic('structure-list', report.structure_review, [['問題', 'problem'], ['位置', 'location'], ['影響', 'impact'], ['修正', 'fix']]);
+      renderDiagnostic('application-list', report.application_review, [['問題', 'issue'], ['漏接事實', 'missing_fact_link'], ['修正句型', 'fix']]);
+      renderDiagnostic('authority-list', report.authority_review, [['主張', 'claim'], ['狀態', 'status'], ['說明', 'note']]);
+      renderFramework(report.answer_framework);
+      renderBenchmark(report.benchmark);
+      renderRewrites(report.rewrite_examples);
+      renderDrills(report.priority_drills);
+      renderTextList('strength-list', report.strengths, '這份答案目前沒有可明確保留的作法；先依優先練習修正。');
+    }
+
+    function hasSource(textName, fileName) {
+      const text = form.elements[textName].value.trim();
+      const files = form.elements[fileName].files;
+      return Boolean(text || (files && files.length));
+    }
+
+    function updateRubricBasisHelp() {
+      const referenceMode = form.elements.rubric_basis.value === 'reference_derived';
+      const explanation = document.getElementById('basis-explanation');
+      const title = document.getElementById('auto-rubric-title');
+      const selected = essayState.selected;
+      title.textContent = referenceMode
+        ? '評分標準：參考擬答整理評分尺（非官方）'
+        : selected && selected.practice_scoring_available
+          ? '評分標準：官方評分要點＋練習配分'
+          : selected && selected.official_numeric_scoring
+            ? '評分標準：考選部官方評分要點與配分'
+            : '評分標準：考選部官方評分要點';
+      explanation.textContent = '已自動載入，直接作答即可。';
+      document.querySelector('.reference-card h3').textContent = referenceMode ? '已封存參考擬答' : '補充參考擬答（選填）';
+    }
+    form.elements.rubric_basis.addEventListener('change', updateRubricBasisHelp);
+    updateRubricBasisHelp();
+    updateComputerExamMode();
+    restoreAnswerDraft();
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const bankSelected = Boolean(form.elements.essay_bank_uid.value);
+      const referenceMode = form.elements.rubric_basis.value === 'reference_derived';
+      if (bankSelected && essayState.selected && !essayState.selected.grading_ready) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block';
+        statusBox.textContent = '這題的評分尺尚在整理，目前可先自行練習。'; return;
+      }
+      if (!bankSelected && !hasSource('question_text', 'question_file')) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '請先貼上或上傳題目。'; return;
+      }
+      if (!hasSource('answer_text', 'answer_file')) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '請先貼上或上傳你的作答。'; return;
+      }
+      if (!bankSelected && !referenceMode && !hasSource('official_rubric_text', 'official_rubric_file')) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '請先貼上或上傳考選部官方評分標準。'; return;
+      }
+      if (!bankSelected && !referenceMode && !form.elements.official_rubric_url.value.trim() && !form.elements.official_rubric_file.files.length) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '請提供考選部來源網址，或直接上傳考選部官方評分標準檔案。'; return;
+      }
+      if (!bankSelected && referenceMode && !hasSource('reference_text', 'reference_file')) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '官方未公布評分標準時，請貼上或上傳具來源參考擬答。'; return;
+      }
+      if (!bankSelected && referenceMode && !form.elements.reference_url.value.trim() && !form.elements.reference_file.files.length) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block'; statusBox.textContent = '請提供參考擬答的公開來源網址，或直接上傳擬答檔案。'; return;
+      }
+      updateAnswerLimit({trim: false});
+      if (answerLimitInvalid()) {
+        statusBox.className = 'status error'; statusBox.style.display = 'block';
+        statusBox.textContent = '司法官／律師第二試每題限 5,200 字、8 頁；請刪減內容後再送出。';
+        answerField.focus(); return;
+      }
+      if (computerExamRulesApply() && !submitConfirmed) {
+        submitConfirmationStep = 1;
+        document.getElementById('answer-submit-dialog-title').textContent = '第 1 次確認：確定完成作答？';
+        document.getElementById('answer-submit-dialog-message').textContent = '送出後會開始批改。請先確認題號、頁數與作答內容。';
+        document.getElementById('answer-submit-confirm').textContent = '確認完成作答';
+        answerSubmitDialog.showModal();
+        return;
+      }
+      submitConfirmed = false;
+
+      button.disabled = true;
+      button.dataset.reviewing = 'true';
+      results.style.display = 'none';
+      statusBox.className = 'status';
+      statusBox.style.display = 'block';
+      statusBox.textContent = bankSelected
+        ? '正在逐一檢查爭點、架構與涵攝……'
+        : '正在核對評分要點並批改……';
+      progressTimer = window.setTimeout(() => {
+        statusBox.textContent = '正在整理逐爭點回饋與答題建議……';
+      }, 28000);
+      fallbackTimer = window.setTimeout(() => {
+        statusBox.textContent = '本題爭點較多，仍在批改中，請保持頁面開啟。';
+      }, 305000);
+
+      try {
+        const response = await fetch('/api/exam-tutor/review', {
+          method: 'POST',
+          body: new FormData(form),
+          headers: { 'X-CSRF-Token': csrfToken() },
+        });
+        let body = {};
+        try { body = await response.json(); } catch (_error) { body = {}; }
+        if (!response.ok || !body.ok || !body.report) throw new Error(body.message || `批改失敗（HTTP ${response.status}）`);
+        renderReport(body.report);
+        results.style.display = 'block';
+        statusBox.textContent = '批改完成。請先看逐爭點對照，再依建議架構重寫一次。';
+        results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (error) {
+        statusBox.className = 'status error';
+        statusBox.textContent = error.message || String(error);
+      } finally {
+        if (progressTimer) window.clearTimeout(progressTimer);
+        progressTimer = null;
+        if (fallbackTimer) window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+        delete button.dataset.reviewing;
+        button.disabled = answerLimitInvalid();
+      }
+    });
+
+    const initialHashMode = window.location.hash.replace(/^#/, '');
+    setPracticeMode(['essay', 'trends'].includes(initialHashMode) ? initialHashMode : 'choice', false);
+    loadChoiceBank().catch((error) => showChoiceStatus(error.message || String(error), true));
+    loadEssayBank().catch(showEssayLoadError);
+    loadTrends();
+  </script>
+</body>
+</html>

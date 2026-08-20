@@ -9,22 +9,32 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
 
 from api.blueprints.web_runtime import _collect_process_monitor
+from api.pending_config import write_pending_env_updates
+from api.runtime_paths import (
+    dotenv_override_allowed,
+    get_agent_dir,
+    get_env_file,
+    get_exports_dir,
+    get_mutable_static_dir,
+)
 
 
 golem_console_bp = Blueprint("golem_console", __name__)
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
-_STATIC_DIR = _MAGI_ROOT / "static"
-_EXPORTS_DIR = _STATIC_DIR / "exports"
-_AGENT_DIR = _MAGI_ROOT / ".agent"
+_STATIC_DIR = get_mutable_static_dir()
+_EXPORTS_DIR = get_exports_dir()
+_AGENT_DIR = get_agent_dir()
 _SKILLS_DEFINITIONS = _MAGI_ROOT / "skills" / "definitions.json"
 _GUARDIAN_STATE = _STATIC_DIR / "process_guardian_state.json"
-_ENV_PATH = _MAGI_ROOT / ".env"
+_ENV_PATH = get_env_file()
+_MARKET_LOG_PATH = _STATIC_DIR / "market_briefing_notify.log"
 _MANAGED_API_KEYS = {
     "nvidia_nim": {
         "label": "NVIDIA NIM",
@@ -52,6 +62,13 @@ def _is_admin_user() -> bool:
         return str(getattr(current_user, "role", "") or "").lower() == "admin"
     except Exception:
         return False
+
+
+def _admin_forbidden_response():
+    """Keep operational telemetry out of ordinary user sessions."""
+    if _is_admin_user():
+        return None
+    return jsonify({"ok": False, "error": "admin_required"}), 403
 
 
 def _mask_secret(value: str) -> str:
@@ -119,6 +136,15 @@ def _write_env_values(path: Path, updates: dict[str, str]) -> Path:
     return backup
 
 
+def _write_pending_env_values(updates: dict[str, str]) -> Path:
+    """Stage a V3 secret update without mutating the active hash-bound env."""
+    return write_pending_env_updates(
+        updates,
+        active_env_path=_ENV_PATH,
+        requested_by="golem_console",
+    )
+
+
 def _api_key_status() -> dict[str, Any]:
     env_values = _parse_env_file(_ENV_PATH)
     items = []
@@ -171,7 +197,7 @@ def _recent_files(directory: Path, *, limit: int = 8, prefix: str = "") -> list[
                 "name": item.name,
                 "size": stat.st_size,
                 "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-                "url": f"/static/exports/{item.name}",
+                "url": f"/exports/{quote(item.name, safe='')}",
             }
         )
     return sorted(rows, key=lambda row: row["mtime"], reverse=True)[:limit]
@@ -227,6 +253,9 @@ def _memory_summary() -> dict[str, Any]:
 @golem_console_bp.route("/api/golem/status", methods=["GET"])
 @login_required
 def golem_status_api():
+    forbidden = _admin_forbidden_response()
+    if forbidden:
+        return forbidden
     process_data = _collect_process_monitor(
         process_monitor_state_path=_GUARDIAN_STATE,
         magi_root=_MAGI_ROOT,
@@ -251,10 +280,11 @@ def golem_status_api():
 @golem_console_bp.route("/api/golem/api-keys", methods=["GET", "POST"])
 @login_required
 def golem_api_keys_api():
+    forbidden = _admin_forbidden_response()
+    if forbidden:
+        return forbidden
     if request.method == "GET":
         return jsonify(_api_key_status())
-    if not _is_admin_user():
-        return jsonify({"ok": False, "error": "admin_required"}), 403
 
     data = request.get_json(silent=True) or {}
     key_id = str(data.get("id") or "nvidia_nim").strip()
@@ -273,6 +303,21 @@ def golem_api_keys_api():
     updates = {meta["env_key"]: value}
     if meta.get("enable_key"):
         updates[str(meta["enable_key"])] = "1" if enable else "0"
+    if not dotenv_override_allowed():
+        pending_path = _write_pending_env_values(updates)
+        return jsonify(
+            {
+                "ok": True,
+                "saved": False,
+                "pending": True,
+                "status": "pending_controlled_rebind",
+                "pending_artifact": str(pending_path),
+                "active_env_file_unchanged": str(_ENV_PATH),
+                "requires_controlled_redeploy_or_rebind": True,
+                "restart_hint": "V3 的 active env 已雜湊綁定；請由受控部署流程核准 pending artifact 後重新綁定。",
+            }
+        ), 202
+
     backup = _write_env_values(_ENV_PATH, updates)
     for key, val in updates.items():
         os.environ[key] = val
@@ -299,12 +344,15 @@ def golem_skills_api():
 @golem_console_bp.route("/api/golem/logs", methods=["GET"])
 @login_required
 def golem_logs_api():
+    forbidden = _admin_forbidden_response()
+    if forbidden:
+        return forbidden
     return jsonify(
         {
             "ok": True,
             "server": _tail(_AGENT_DIR / "server.log", 80),
             "daemon": _tail(_AGENT_DIR / "daemon.log", 60),
-            "market": _tail(_MAGI_ROOT / "skills" / "market-briefing" / "market_briefing_notify.log", 40),
+            "market": _tail(_MARKET_LOG_PATH, 40),
         }
     )
 
@@ -312,6 +360,9 @@ def golem_logs_api():
 @golem_console_bp.route("/api/golem/command", methods=["POST"])
 @login_required
 def golem_command_api():
+    forbidden = _admin_forbidden_response()
+    if forbidden:
+        return forbidden
     data = request.get_json(silent=True) or {}
     command = str(data.get("command") or "").strip().lower()
     if not command:

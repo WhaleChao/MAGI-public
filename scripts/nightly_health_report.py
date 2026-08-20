@@ -15,13 +15,19 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _MAGI_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 sys.path.insert(0, _MAGI_ROOT)
 
-AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
+AGENT_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_AGENT_DIR", "").strip())
+    or os.path.join(_MAGI_ROOT, ".agent")
+)
 DELIVERY_LOG = os.path.join(AGENT_DIR, "red_phone_delivery.jsonl")
 AUTOPILOT_RUNS_DIR = os.environ.get(
     "MAGI_AUTOPILOT_RUNS_DIR",
     os.path.join(_MAGI_ROOT, "_autopilot_runs"),
 )
-RUNTIME_DIR = os.environ.get("MAGI_RUNTIME_DIR", os.path.join(_MAGI_ROOT, ".runtime"))
+RUNTIME_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_RUNTIME_DIR", "").strip())
+    or os.path.join(_MAGI_ROOT, ".runtime")
+)
 RESOURCE_GUARD_LOG = os.environ.get(
     "MAGI_RESOURCE_GUARD_LOG",
     os.path.join(RUNTIME_DIR, "resource_guarded_run.jsonl"),

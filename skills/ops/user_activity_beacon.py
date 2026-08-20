@@ -14,7 +14,8 @@ import logging
 logger = logging.getLogger("UserActivityBeacon")
 
 _MAGI_ROOT = os.environ.get("MAGI_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_BEACON_PATH = os.path.join(_MAGI_ROOT, ".agent", "user_activity_beacon.json")
+_AGENT_DIR = os.environ.get("MAGI_AGENT_DIR", "").strip() or os.path.join(_MAGI_ROOT, ".agent")
+_BEACON_PATH = os.path.join(_AGENT_DIR, "user_activity_beacon.json")
 # 預設：最近 5 分鐘內有使用者活動，就視為「活躍」
 _DEFAULT_ACTIVE_THRESHOLD_SEC = int(os.environ.get("MAGI_USER_ACTIVE_THRESHOLD_SEC", "300"))
 

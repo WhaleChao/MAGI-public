@@ -74,6 +74,59 @@ h1 {
     justify-content: flex-end;
 }
 
+.skip-link {
+    position: fixed;
+    left: 14px;
+    top: 8px;
+    z-index: 1000;
+    transform: translateY(-150%);
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    border: 2px solid var(--green);
+    font-weight: 800;
+}
+
+.skip-link:focus { transform: translateY(0); }
+
+.topnav a[aria-current="page"] {
+    border-color: rgba(15, 118, 110, .58);
+    background: rgba(15, 118, 110, .1);
+    color: var(--green);
+}
+
+.nav-more { position: relative; }
+.nav-more summary {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+    font: 700 .82rem/1 var(--font);
+    list-style: none;
+}
+.nav-more summary::-webkit-details-marker { display: none; }
+.nav-more summary::after { content: "⌄"; margin-left: 7px; color: var(--green); }
+.nav-more > div {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 7px);
+    z-index: 30;
+    width: 180px;
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+}
+
 .top-clock {
     min-height: 36px;
     display: inline-flex;
@@ -164,6 +217,16 @@ h1 {
     font-size: 0.86rem;
     overflow-wrap: anywhere;
 }
+
+.primary-link {
+    display: grid !important;
+    align-content: center;
+    justify-items: start !important;
+    gap: 5px;
+    min-height: 70px !important;
+}
+.primary-link strong { font-size: .9rem; }
+.primary-link span { font-size: .72rem; font-weight: 600; opacity: .85; }
 
 .system-pill {
     display: inline-flex;
@@ -1181,8 +1244,17 @@ body.theme-dark .research-card {
     }
 
     .topnav {
+        width: 100%;
+        flex-wrap: nowrap;
         justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: none;
     }
+
+    .topnav::-webkit-scrollbar { display: none; }
+    .topnav > a, .topnav > button, .topnav > details, .top-clock { flex: 0 0 auto; }
+    .nav-more > div { position: fixed; right: 12px; top: 114px; }
 
     .log-band {
         grid-template-columns: 1fr;

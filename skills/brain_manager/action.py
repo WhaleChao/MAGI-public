@@ -9,6 +9,7 @@ import argparse
 import json
 import logging
 import os
+from pathlib import Path
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import socket
 import subprocess
@@ -36,7 +37,7 @@ logger = logging.getLogger("BrainManager")
 # ---------------------------------------------------------------------------
 LLAMA_SERVER_PATH = os.environ.get(
     "LLAMA_SERVER_PATH",
-    "/Users/ai/.docker/bin/inference/llama-server",
+    str(Path.home() / ".docker" / "bin" / "inference" / "llama-server"),
 )
 RPC_START_SCRIPT = os.environ.get(
     "RPC_START_SCRIPT",
@@ -60,8 +61,15 @@ try:
 except Exception:
     LOCAL_API_ENDPOINT = "http://localhost:8080/v1"
 
-STATE_FILE = os.environ.get("MAGI_BRAIN_STATE_FILE", f"{_MAGI_ROOT}/.brain_state.json")
-NGL_HINT_FILE = os.environ.get("MAGI_BRAIN_NGL_HINT_FILE", f"{_MAGI_ROOT}/.brain_ngl_hint.json")
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+STATE_FILE = os.environ.get(
+    "MAGI_BRAIN_STATE_FILE",
+    os.path.join(_AGENT_DIR, "brain_state.json") if _AGENT_DIR else f"{_MAGI_ROOT}/.brain_state.json",
+)
+NGL_HINT_FILE = os.environ.get(
+    "MAGI_BRAIN_NGL_HINT_FILE",
+    os.path.join(_AGENT_DIR, "brain_ngl_hint.json") if _AGENT_DIR else f"{_MAGI_ROOT}/.brain_ngl_hint.json",
+)
 BRAIN_SWITCH_LOCK = threading.RLock()
 BRAIN_AUTO_FALLBACK_LOCAL = os.environ.get("BRAIN_AUTO_FALLBACK_LOCAL", "1") != "0"
 
@@ -939,7 +947,10 @@ def restart_inference_engine(mode: str, force: bool = False):
 
         # target == local
         _stop_rpc_server()
-        set_melchior_mode("engineer")
+        if _distributed_enabled():
+            set_melchior_mode("engineer")
+        else:
+            logger.info("Distributed mode disabled; no remote Melchior mode switch is required")
 
         if not _start_local_server_if_needed():
             note = "Failed to start local llama-server"
@@ -1042,7 +1053,7 @@ def get_brain_status():
             gpu_hint = f"\n- **Melchior GPU:** {used_gb:.2f} / {total_gb:.2f} GB"
         return (
             "🧠 **Current Brain:** Distributed (Big Brain)\n"
-            "- **Model:** GLM/Qwen remote stack via Melchior\n"
+            "- **Model:** approved non-China remote stack via Melchior\n"
             f"- **Status:** {api_status}\n"
             f"{model_hint}{gpu_hint}\n"
             "- **Role:** Commander"

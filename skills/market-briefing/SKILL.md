@@ -92,10 +92,10 @@ description: 每日 08:30 台股/美股追蹤預測技能，含同業比較、�
 - 其他 / 預設 → deep
 
 ## 狀態檔
-- `/Users/ai/Desktop/MAGI_v2/.agent/market_watchlist.json`
-- `/Users/ai/Desktop/MAGI_v2/.agent/market_data_cache.json`
-- `/Users/ai/Desktop/MAGI_v2/.agent/market_news_cache.json`
-- `/Users/ai/Desktop/MAGI_v2/.agent/market_perf_history.json`
+- `${MAGI_AGENT_DIR}/market_watchlist.json`
+- `${MAGI_AGENT_DIR}/market_data_cache.json`
+- `${MAGI_AGENT_DIR}/market_news_cache.json`
+- `${MAGI_AGENT_DIR}/market_perf_history.json`
 
 ## 呼叫格式
 觸發詞：股票、股市、晨報、追蹤

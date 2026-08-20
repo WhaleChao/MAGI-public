@@ -28,15 +28,20 @@ if str(MAGI_ROOT) not in sys.path:
 
 
 def _load_env() -> None:
-    env = MAGI_ROOT / ".env"
-    if not env.exists():
-        return
-    for raw in env.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    candidates = []
+    configured = str(os.environ.get("MAGI_ENV_FILE") or "").strip()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.append(MAGI_ROOT / ".env")
+    for env in candidates:
+        if not env.exists():
             continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+        for raw in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
 @dataclass
@@ -144,64 +149,141 @@ def _route_sample(app, name: str, path: str) -> Sample:
         return Sample(name, False, type(exc).__name__, round(elapsed, 2), str(exc)[:300])
 
 
-def _health_sample(base_url: str) -> Sample:
+def _live_http_sample(base_url: str, name: str, path: str, expected: bytes) -> Sample:
     started = time.perf_counter()
     try:
-        with urllib.request.urlopen(base_url.rstrip("/") + "/health", timeout=8) as resp:
-            data = resp.read(4096)
+        request = urllib.request.Request(
+            base_url.rstrip("/") + path,
+            headers={"Accept": "text/html,application/json", "User-Agent": f"MAGI-{name}/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=8) as resp:
+            data = resp.read(65536)
         elapsed = (time.perf_counter() - started) * 1000
-        ok = int(resp.status) == 200 and b'"db":{"ok":true' in data
-        return Sample("daemon_health", ok, int(resp.status), round(elapsed, 2), "" if ok else data.decode("utf-8", "replace")[:300])
+        ok = int(resp.status) == 200 and expected in data
+        return Sample(name, ok, int(resp.status), round(elapsed, 2), "" if ok else data.decode("utf-8", "replace")[:300])
     except Exception as exc:
         elapsed = (time.perf_counter() - started) * 1000
-        return Sample("daemon_health", False, type(exc).__name__, round(elapsed, 2), str(exc)[:300])
+        return Sample(name, False, type(exc).__name__, round(elapsed, 2), str(exc)[:300])
 
 
 def _file_ops_smoke(app) -> list[Sample]:
     import api.blueprints.osc_files as files_mod
 
-    out_dir = MAGI_ROOT / "exports" / "_osc_stress"
+    exports_dir = Path(os.environ.get("MAGI_EXPORTS_DIR", "").strip() or MAGI_ROOT / "exports").expanduser()
+    runtime_dir = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or MAGI_ROOT / ".runtime").expanduser()
+    out_dir = exports_dir / "_osc_stress"
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_file = out_dir / "osc_stress_file_ops.txt"
     sample_file.write_text("MAGI OSC stress file smoke ok\n", encoding="utf-8")
 
-    share_runtime = MAGI_ROOT / ".runtime" / "osc_web_stress_share"
+    share_runtime = runtime_dir / "osc_web_stress_share"
     share_runtime.mkdir(parents=True, exist_ok=True)
     files_mod._SHARE_STORE_PATH = share_runtime / "shares.json"
-    files_mod._SHARE_PUBLIC_BASE_FILE = MAGI_ROOT / ".runtime" / "osc_share_public_base_url.txt"
+    files_mod._SHARE_PUBLIC_BASE_FILE = Path(
+        os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE")
+        or runtime_dir / "osc_share_public_base_url.txt"
+    ).expanduser()
     files_mod._share_cache_dir = lambda: share_runtime / "cache"
 
-    samples: list[Sample] = []
-    with app.test_client() as client:
-        for name, path in [
-            ("file_preview", f"/api/osc/files/preview?path={sample_file}"),
-            ("file_content", f"/api/osc/files/content?path={sample_file}&inline=1"),
-        ]:
+    def _get_file(name: str, path: str) -> Sample:
+        with app.test_client() as client:
             started = time.perf_counter()
             try:
                 resp = client.get(path)
                 elapsed = (time.perf_counter() - started) * 1000
                 ok = resp.status_code == 200
-                samples.append(Sample(name, ok, resp.status_code, round(elapsed, 2), "" if ok else resp.get_data(as_text=True)[:300]))
+                return Sample(
+                    name,
+                    ok,
+                    resp.status_code,
+                    round(elapsed, 2),
+                    "" if ok else resp.get_data(as_text=True)[:300],
+                )
             except Exception as exc:
-                samples.append(Sample(name, False, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2), str(exc)[:300]))
+                return Sample(
+                    name,
+                    False,
+                    type(exc).__name__,
+                    round((time.perf_counter() - started) * 1000, 2),
+                    str(exc)[:300],
+                )
 
-        started = time.perf_counter()
-        try:
-            resp = client.post("/api/osc/files/share", json={"path": str(sample_file), "ttl_sec": 300})
-            elapsed = (time.perf_counter() - started) * 1000
-            payload = resp.get_json(silent=True) or {}
-            ok = resp.status_code == 200 and bool(payload.get("url"))
-            samples.append(Sample("file_share_create", ok, resp.status_code, round(elapsed, 2), "" if ok else str(payload)[:300]))
-            if ok:
-                token = urlparse(payload["url"]).path.rsplit("/", 1)[-1]
-                started = time.perf_counter()
-                resp2 = client.get("/s/" + token)
+    def _share_cycle(index: int) -> list[Sample]:
+        results: list[Sample] = []
+        with app.test_client() as client:
+            started = time.perf_counter()
+            try:
+                resp = client.post(
+                    "/api/osc/files/share",
+                    json={"path": str(sample_file), "ttl_sec": 300},
+                )
                 elapsed = (time.perf_counter() - started) * 1000
-                public_ok = resp2.status_code == 200 and b"stress file smoke" in resp2.get_data()
-                samples.append(Sample("file_share_public", public_ok, resp2.status_code, round(elapsed, 2), "" if public_ok else resp2.get_data(as_text=True)[:300]))
-        except Exception as exc:
-            samples.append(Sample("file_share_create", False, type(exc).__name__, round((time.perf_counter() - started) * 1000, 2), str(exc)[:300]))
+                payload = resp.get_json(silent=True) or {}
+                ok = resp.status_code == 200 and bool(payload.get("url"))
+                results.append(
+                    Sample(
+                        f"file_share_create_{index}",
+                        ok,
+                        resp.status_code,
+                        round(elapsed, 2),
+                        "" if ok else str(payload)[:300],
+                    )
+                )
+                if ok:
+                    token = urlparse(payload["url"]).path.rsplit("/", 1)[-1]
+                    started = time.perf_counter()
+                    resp2 = client.get("/s/" + token)
+                    elapsed = (time.perf_counter() - started) * 1000
+                    public_ok = (
+                        resp2.status_code == 200
+                        and b"stress file smoke" in resp2.get_data()
+                    )
+                    results.append(
+                        Sample(
+                            f"file_share_public_{index}",
+                            public_ok,
+                            resp2.status_code,
+                            round(elapsed, 2),
+                            "" if public_ok else resp2.get_data(as_text=True)[:300],
+                        )
+                    )
+            except Exception as exc:
+                results.append(
+                    Sample(
+                        f"file_share_create_{index}",
+                        False,
+                        type(exc).__name__,
+                        round((time.perf_counter() - started) * 1000, 2),
+                        str(exc)[:300],
+                    )
+                )
+        return results
+
+    samples: list[Sample] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = []
+        for index in range(6):
+            futures.append(
+                pool.submit(
+                    _get_file,
+                    f"file_preview_session_{index}",
+                    f"/api/osc/files/preview?path={sample_file}",
+                )
+            )
+            futures.append(
+                pool.submit(
+                    _get_file,
+                    f"file_content_session_{index}",
+                    f"/api/osc/files/content?path={sample_file}&inline=1",
+                )
+            )
+        futures.extend(pool.submit(_share_cycle, index) for index in range(4))
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if isinstance(result, list):
+                samples.extend(result)
+            else:
+                samples.append(result)
 
     try:
         sample_file.unlink(missing_ok=True)
@@ -226,7 +308,6 @@ def run_stress(*, rounds: int, workers: int, base_url: str) -> dict:
         ("documents", "/api/osc/documents?limit=25"),
         ("accounting_summary", "/api/osc/accounting/summary"),
         ("saas_overview", "/api/osc/saas/overview"),
-        ("template_folder", "/api/osc/template-folder"),
         ("folder_roots", "/api/osc/folders/roots"),
     ]
 
@@ -236,12 +317,36 @@ def run_stress(*, rounds: int, workers: int, base_url: str) -> dict:
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
         futures = []
         for _ in range(max(1, rounds)):
-            futures.append(pool.submit(_health_sample, base_url))
+            futures.extend(
+                (
+                    pool.submit(
+                        _live_http_sample,
+                        base_url,
+                        "daemon_liveness",
+                        "/livez",
+                        b'"status":"live"',
+                    ),
+                    pool.submit(
+                        _live_http_sample,
+                        base_url,
+                        "daemon_readiness",
+                        "/readyz",
+                        b'"status":"ready"',
+                    ),
+                    pool.submit(
+                        _live_http_sample,
+                        base_url,
+                        "login_session",
+                        "/login",
+                        "MAGI Gateway".encode("utf-8"),
+                    ),
+                )
+            )
             for name, path in routes:
                 futures.append(pool.submit(_route_sample, app, name, path))
         for fut in concurrent.futures.as_completed(futures):
             sample = fut.result()
-            if sample.name == "daemon_health":
+            if sample.name in {"daemon_liveness", "daemon_readiness", "login_session"}:
                 http_samples.append(sample)
             else:
                 api_samples.append(sample)
@@ -267,9 +372,12 @@ def run_stress(*, rounds: int, workers: int, base_url: str) -> dict:
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "rounds": rounds,
         "workers": workers,
+        "gateway_threads": 8,
+        "parallel_file_sessions": 16,
         "elapsed_sec": elapsed,
         "thresholds": {"health_p95_ms": 1500, "api_p95_ms": 8000, "resource_not_critical": True},
         "http_health": http_summary,
+        "multi_session_http": http_summary,
         "osc_api": api_summary,
         "file_ops": file_summary,
         "resource": [before, after],

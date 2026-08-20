@@ -39,13 +39,15 @@ def restart_discord_bot():
     time.sleep(2)
 
     # 2. Start new instance (Only if no daemon)
-    log_path = os.path.join(_MAGI_ROOT, "discord.log")
+    agent_dir = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+    log_path = os.path.join(agent_dir or _MAGI_ROOT, "discord.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     print(f"Starting: discord_bot.py → {log_path}")
 
     log_fh = open(log_path, "a")
     try:
         _p = subprocess.Popen(
-            [os.path.join(_MAGI_ROOT, "venv", "bin", "python3"),
+            [os.environ.get("MAGI_SKILL_PYTHON") or os.path.join(_MAGI_ROOT, "venv", "bin", "python3"),
              os.path.join(_MAGI_ROOT, "api", "discord_bot.py")],
             stdout=log_fh, stderr=log_fh,
             cwd=_MAGI_ROOT,

@@ -40,10 +40,9 @@ def _warmup_vision_model(timeout_sec: int = 90) -> bool:
     import requests
 
     default_base = os.environ.get("MAGI_OMLX_CHAT_URL") or os.environ.get("OMLX_URL") or "http://127.0.0.1:8080"
-    vision_base = os.environ.get("MAGI_OMLX_VISION_URL", default_base).rstrip("/")
-    models_url = f"{vision_base}/v1/models"
-    chat_url = f"{vision_base}/v1/chat/completions"
-    vision_model = (
+    configured_base = os.environ.get("MAGI_OMLX_VISION_URL", default_base).rstrip("/")
+    vision_bases = list(dict.fromkeys((configured_base, default_base.rstrip("/"))))
+    preferred_model = (
         os.environ.get("MAGI_OMLX_VISION_MODEL")
         or os.environ.get("MAGI_OMLX_CHAT_MODEL")
         or os.environ.get("OMLX_MODEL")
@@ -54,12 +53,28 @@ def _warmup_vision_model(timeout_sec: int = 90) -> bool:
     attempt = 0
     while time.time() < deadline:
         attempt += 1
-        try:
-            r = requests.get(models_url, timeout=5)
-            if r.status_code == 200:
-                # Port is up; fire a minimal chat to trigger model load if needed.
+        for vision_base in vision_bases:
+            models_url = f"{vision_base}/v1/models"
+            chat_url = f"{vision_base}/v1/chat/completions"
+            try:
+                r = requests.get(models_url, timeout=5)
+                if r.status_code != 200:
+                    continue
+                payload = r.json()
+                available_models = [
+                    str(item.get("id") or "").strip()
+                    for item in (payload.get("data") or [])
+                    if isinstance(item, dict) and str(item.get("id") or "").strip()
+                ] if isinstance(payload, dict) else []
+                if not available_models:
+                    continue
+                vision_model = preferred_model if preferred_model in available_models else available_models[0]
+
+                # Fire a minimal chat to trigger model load.  The model list only
+                # proves that the endpoint is reachable; warmup succeeds only when
+                # inference itself returns a 2xx response.
                 try:
-                    requests.post(
+                    warmup = requests.post(
                         chat_url,
                         json={
                             "model": vision_model,
@@ -68,23 +83,44 @@ def _warmup_vision_model(timeout_sec: int = 90) -> bool:
                         },
                         timeout=min(60, max(5, int(deadline - time.time()))),
                     )
-                except Exception:
-                    pass  # timeout here is OK — model is loading; will be ready for real calls
-                print(f"[warmup] vision endpoint {vision_base} responsive after attempt {attempt}")
-                return True
-        except Exception as exc:
-            if attempt == 1:
-                print(f"[warmup] vision endpoint {vision_base} not yet available ({exc.__class__.__name__}), waiting...",
-                      file=sys.stderr)
+                    if 200 <= warmup.status_code < 300:
+                        print(
+                            f"[warmup] vision endpoint {vision_base} model={vision_model} "
+                            f"ready after attempt {attempt}"
+                        )
+                        return True
+                    if attempt == 1:
+                        print(
+                            f"[warmup] {vision_base} inference returned HTTP "
+                            f"{warmup.status_code}; waiting...",
+                            file=sys.stderr,
+                        )
+                except Exception as exc:
+                    if attempt == 1:
+                        print(
+                            f"[warmup] {vision_base} inference not ready "
+                            f"({exc.__class__.__name__}), waiting...",
+                            file=sys.stderr,
+                        )
+            except Exception as exc:
+                if attempt == 1:
+                    print(
+                        f"[warmup] vision endpoint {vision_base} not yet available "
+                        f"({exc.__class__.__name__}), waiting...",
+                        file=sys.stderr,
+                    )
         time.sleep(5)
-    print(f"[warmup] vision endpoint {vision_base} still unreachable after {timeout_sec}s — benchmark may have degraded results",
-          file=sys.stderr)
+    print(
+        f"[warmup] vision endpoints {', '.join(vision_bases)} still not ready after "
+        f"{timeout_sec}s — benchmark may have degraded results",
+        file=sys.stderr,
+    )
     return False
 
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, MAGI_ROOT)
 
-NAS_CASE_ROOT = "/Volumes/lumi/lumi/01_案件"
+NAS_CASE_ROOT = os.environ.get("MAGI_BENCHMARK_NAS_CASE_ROOT", "").strip()
 FALLBACK_ROOT = os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes/01_案件")
 FALLBACK_ROOTS = [
     os.path.expanduser("~/SynologyDrive/01_案件"),
@@ -96,7 +132,50 @@ ALLOW_NAS_SCAN = os.environ.get("MAGI_BENCHMARK_ALLOW_NAS_SCAN", "").strip().low
     "1", "true", "yes", "on",
 }
 MAX_SCAN_DIRS = int(os.environ.get("MAGI_BENCHMARK_MAX_SCAN_DIRS", "500"))
-OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_pdf_namer_latest.json")
+RUNTIME_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_RUNTIME_DIR", "").strip())
+    or os.path.join(MAGI_ROOT, ".runtime")
+)
+OUTPUT_PATH = os.path.join(RUNTIME_DIR, "benchmark_pdf_namer_latest.json")
+
+
+def _load_certification_proposals():
+    """Return fixture-owned model proposals for isolated body certification.
+
+    The benchmark still runs the production scanner, validators, counters and
+    threshold gate.  Only the model provider is deterministic, and the result
+    explicitly records that provider quality was not certified.
+    """
+    raw_path = os.environ.get("MAGI_PDF_NAMER_BENCHMARK_FIXTURE_PROPOSALS", "").strip()
+    if not raw_path:
+        return None
+    fixture_root_raw = os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT", "").strip()
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or not fixture_root_raw
+    ):
+        raise RuntimeError("pdf-namer certification proposals are not safely bound")
+    from pathlib import Path
+
+    fixture_root = Path(fixture_root_raw).expanduser().resolve()
+    proposal_path = Path(raw_path).expanduser().resolve()
+    if (
+        not (fixture_root / ".magi-v3-schedule-fixture").is_file()
+        or not proposal_path.is_file()
+        or not proposal_path.is_relative_to(fixture_root)
+    ):
+        raise RuntimeError("pdf-namer certification proposals escaped their owned root")
+    try:
+        payload = json.loads(proposal_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("pdf-namer certification proposals are unreadable") from exc
+    proposals = payload.get("proposals")
+    if payload.get("schema") != "magi.v3.pdf-namer-proposals/v1" or not isinstance(proposals, dict):
+        raise RuntimeError("pdf-namer certification proposals schema is invalid")
+    if not proposals or any(not isinstance(key, str) or not isinstance(value, dict) for key, value in proposals.items()):
+        raise RuntimeError("pdf-namer certification proposals are invalid")
+    return proposals
 
 
 def _threshold_from_env(name: str, default: float) -> float:
@@ -111,11 +190,11 @@ def _threshold_from_env(name: str, default: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-FORMAT_VALID_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_FORMAT_THRESHOLD", 0.70)
-QUALITY_PASS_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_QUALITY_THRESHOLD", 0.85)
-OVERALL_PASS_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_OVERALL_THRESHOLD", 0.70)
-EMPTY_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_EMPTY_THRESHOLD", 0.15)
-ERROR_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_ERROR_THRESHOLD", 0.10)
+FORMAT_VALID_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_FORMAT_THRESHOLD", 0.99)
+QUALITY_PASS_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_QUALITY_THRESHOLD", 0.99)
+OVERALL_PASS_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_OVERALL_THRESHOLD", 0.99)
+EMPTY_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_EMPTY_THRESHOLD", 0.01)
+ERROR_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_ERROR_THRESHOLD", 0.01)
 HOLDING_THRESHOLD = _threshold_from_env("MAGI_PDF_NAMER_HOLDING_THRESHOLD", 0.50)
 
 
@@ -176,16 +255,31 @@ def _collect_threshold_failures(
     return failed
 
 
+def _failure_results(results, limit: int = 50):
+    """Retain actionable failures even when they occur after the sample cap."""
+    return [
+        row
+        for row in results
+        if row.get("valid") is False
+        or row.get("quality_ok") is False
+        or row.get("format_ok") is False
+        or row.get("runtime_error") is True
+    ][: max(1, int(limit))]
+
+
 def main():
     case_root = _select_case_root()
     if not case_root:
         print("[SKIP] NAS/Synology case roots not available. Skipping benchmark.")
         sys.exit(0)
 
+    fixture_proposals = _load_certification_proposals()
+
     # Pre-warm the configured vision endpoint before hitting it with many PDFs.
     # If the model is cold-starting, the first real request can timeout,
     # causing every PDF to fail → format_valid_rate=0% → spurious FAIL.
-    _warmup_vision_model(timeout_sec=90)
+    if fixture_proposals is None:
+        _warmup_vision_model(timeout_sec=90)
 
     try:
         sys.path.insert(0, os.path.join(MAGI_ROOT, "skills", "pdf-namer"))
@@ -246,7 +340,12 @@ def main():
     inaccessible_count = 0
     for pdf_path in pdfs:
         try:
-            r = namer.generate_name_proposal(pdf_path, return_structured=True)
+            if fixture_proposals is None:
+                r = namer.generate_name_proposal(pdf_path, return_structured=True)
+            else:
+                r = fixture_proposals.get(os.path.basename(pdf_path))
+                if r is None:
+                    raise RuntimeError("certification provider has no proposal for fixture PDF")
             if r is None:
                 empty_count += 1
                 results.append({"path": pdf_path, "filename": None, "valid": False})
@@ -331,6 +430,12 @@ def main():
         "rules_degraded": bool(rules_status.get("degraded", True)),
         "rules_reason": rules_status.get("reason", ""),
         "rules_count": int(rules_status.get("rules_count", 0) or 0),
+        "provider_quality_certified": fixture_proposals is None,
+        "provider_role": (
+            "live_pdf_namer_model"
+            if fixture_proposals is None
+            else "deterministic_pdf_namer_proposal_fixture"
+        ),
         "quality_issue_counts": quality_issue_counts,
         "thresholds": {
             "format_valid_rate": FORMAT_VALID_THRESHOLD,
@@ -342,6 +447,7 @@ def main():
         },
         "ok": True,
         "results": results[:20],  # first 20 for inspection
+        "failure_results": _failure_results(results),
     }
 
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
@@ -370,6 +476,10 @@ def main():
         empty_rate=empty_rate,
         error_rate=error_rate,
     )
+    if fixture_proposals is None and summary["rules_degraded"]:
+        failed.append(
+            "naming rules degraded: " + str(summary.get("rules_reason") or "unknown")
+        )
 
     if failed:
         summary["ok"] = False

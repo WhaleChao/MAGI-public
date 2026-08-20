@@ -53,6 +53,7 @@ def main() -> int:
             "PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin",
             "MAGI_ROOT_DIR": str(project_root),
             "MAGI_RUNTIME_DIR": str(runtime_root),
+            "MAGI_TRAINING_LOCK_PATH": str(runtime_root / "training.lock"),
             "MAGI_OMLX_WATCHDOG_STATE_PATH": str(state_dir / "omlx_watchdog_state.json"),
             "MAGI_OMLX_WATCHDOG_MODEL": os.environ.get("MAGI_OMLX_WATCHDOG_MODEL", os.environ.get("MAGI_TEXT_PRIMARY_MODEL", "")),
         },

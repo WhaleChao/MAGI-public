@@ -7,6 +7,7 @@ PDF 自動命名技能 (PyMuPDF + RapidOCR)
 
 import argparse
 import fitz  # PyMuPDF
+import hashlib
 import math
 import os
 import re
@@ -28,8 +29,19 @@ from datetime import datetime, timedelta
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
+_SKILL_CODE_DIR = Path(__file__).resolve().parent
+if str(_SKILL_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_CODE_DIR))
+
+from state_paths import configured_read_path, prepare_write, state_path
 
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import (
+    JUDGMENT_FOLDER_LABEL,
+    PDF_ARCHIVED_NAME_FOLDER_LABELS,
+    is_judgment_folder_segment,
+    path_has_judgment_folder,
+)
 from skills.bridge.shared_utils.case_number_utils import extract_case_number as _extract_case_number, RE_CASE_NUMBER
 from skills.bridge.shared_utils.court_utils import extract_court_name as _extract_court_name, RE_COURT_NAME
 
@@ -70,7 +82,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pdf-namer")
 
-JOB_DIR = Path(__file__).resolve().parent / "_bg_jobs"
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+
+
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
+
+JOB_DIR = state_path("_bg_jobs")
 try:
     _VISION_CONCURRENCY = int(os.environ.get("MAGI_PDF_NAMER_VISION_MAX_WORKERS", "1") or "1")
 except Exception:
@@ -83,8 +114,40 @@ def _with_vision_slot(fn, *args, **kwargs):
     with _VISION_SEMAPHORE:
         return fn(*args, **kwargs)
 
-# Initialize OCR engine globally if available
-ocr_engine = RapidOCR() if HAS_OCR else None
+# RapidOCR's constructor loads its ONNX models immediately. Importing this
+# module happens in API/worker processes that may never need OCR, so constructing
+# it here used several GB of RSS for an otherwise read-only import. Keep the
+# legacy ``ocr_engine`` injection point, but initialise it only on first use.
+ocr_engine = None
+_OCR_ENGINE_LOCK = threading.Lock()
+
+
+def _get_ocr_engine():
+    """Return the process-local RapidOCR singleton, constructing it lazily."""
+    global ocr_engine
+    if ocr_engine is not None:
+        return ocr_engine
+    if not HAS_OCR:
+        return None
+    with _OCR_ENGINE_LOCK:
+        if ocr_engine is None:
+            # Do not cache construction failures. A later request may retry
+            # after a transient runtime/model-file problem has been corrected.
+            ocr_engine = RapidOCR()
+        return ocr_engine
+
+
+def release_ocr_engine() -> None:
+    """Release the lazy RapidOCR singleton for long-lived worker processes."""
+    global ocr_engine
+    with _OCR_ENGINE_LOCK:
+        engine = ocr_engine
+        ocr_engine = None
+    if engine is None:
+        return
+    close = getattr(engine, "close", None)
+    if callable(close):
+        close()
 
 # --- Configuration ---
 
@@ -222,14 +285,27 @@ def _resolve_pdf_with_synology_fallback(pdf_path: str) -> str:
 
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
-LEARNED_RULES_PATH = os.path.join(SKILL_DIR, "_learned_filename_rules.json")
-CORRECTIONS_PATH = os.path.join(SKILL_DIR, "_corrections.json")
+LEARNED_RULES_PATH = str(state_path("_learned_filename_rules.json"))
+CORRECTIONS_PATH = str(state_path("_corrections.json"))
 
 _LEARNED_RULES_CACHE: Optional[dict] = None
-_BATCH_ANALYSIS_CACHE = {}  # type: dict[str, dict] — Pre-computed by batch_analyze_texts
+_BATCH_ANALYSIS_CACHE = {}  # Pure-data entries only; never retain fitz Page/Document.
+_BATCH_ANALYSIS_CACHE_MAX = max(1, int(os.environ.get("MAGI_PDF_BATCH_CACHE_MAX", "256") or "256"))
+
+
+def clear_batch_analysis_cache() -> None:
+    _BATCH_ANALYSIS_CACHE.clear()
 
 _DOC_TYPE_HINTS = [
     ("預付酬金領款單掛號郵件收件回執", "收據"),
+    ("扶助律師接案通知書", "扶助律師接案通知書"),
+    ("法律扶助申請書", "法律扶助申請書"),
+    ("准予扶助證明書", "准予扶助證明書"),
+    ("案件概述單", "案件概述單"),
+    ("資力詢問表", "資力詢問表"),
+    ("審查表", "審查表"),
+    ("委任狀", "委任狀"),
+    ("委任书", "委任狀"),
     ("預付酬金領款單", "收據"),
     ("領款單回執", "收據"),
     ("掛號郵件收件回執", "收據"),
@@ -389,7 +465,7 @@ def _category_from_subfolder(subfolder: str, filename: str = "") -> str:
         return "法扶表單"
     if "回執" in clean:
         return "收據"
-    if "判決書" in clean:
+    if is_judgment_folder_segment(clean):
         return "判決"
     if "證據資料" in clean:
         return "證據"
@@ -415,7 +491,10 @@ def build_filename_learning_rules(
     sample_count = 0
 
     if os.path.isdir(case_root):
-        for root, _, files in os.walk(case_root):
+        for root, dirs, files in os.walk(case_root):
+            dirs[:] = [d for d in dirs if not _is_synthetic_case_path(os.path.join(root, d))]
+            if _is_synthetic_case_path(root):
+                continue
             if sample_count >= max_samples:
                 break
             subfolder = os.path.basename(root)
@@ -437,9 +516,10 @@ def build_filename_learning_rules(
                     token_counts[tok][label] += 1
 
     # Boost with recent manual corrections (higher supervision weight).
-    if os.path.exists(CORRECTIONS_PATH):
+    corrections_path = configured_read_path("_corrections.json", CORRECTIONS_PATH)
+    if corrections_path.exists():
         try:
-            corrections = json.loads(Path(CORRECTIONS_PATH).read_text(encoding="utf-8") or "[]")
+            corrections = json.loads(corrections_path.read_text(encoding="utf-8") or "[]")
             for item in corrections[-500:]:
                 fn = os.path.basename(str(item.get("filename") or ""))
                 sf = str(item.get("subfolder") or "")
@@ -515,7 +595,9 @@ def build_filename_learning_rules(
         "page_selection_profiles": page_selection_profiles,
     }
     try:
-        Path(LEARNED_RULES_PATH).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prepare_write(LEARNED_RULES_PATH).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     except Exception as e:
         logger.warning(f"寫入學習規則失敗: {e}")
     return payload
@@ -525,9 +607,10 @@ def _load_filename_learning_rules() -> dict:
     global _LEARNED_RULES_CACHE
     if _LEARNED_RULES_CACHE is not None:
         return _LEARNED_RULES_CACHE
-    if os.path.exists(LEARNED_RULES_PATH):
+    learned_rules_path = configured_read_path("_learned_filename_rules.json", LEARNED_RULES_PATH)
+    if learned_rules_path.exists():
         try:
-            _LEARNED_RULES_CACHE = json.loads(Path(LEARNED_RULES_PATH).read_text(encoding="utf-8") or "{}")
+            _LEARNED_RULES_CACHE = json.loads(learned_rules_path.read_text(encoding="utf-8") or "{}")
             return _LEARNED_RULES_CACHE or {}
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 418, exc_info=True)
@@ -563,59 +646,102 @@ def _infer_doc_type_from_learning(filename: str) -> Optional[str]:
     return best_label
 
 
+_DATE_POSITIVE_CONTEXT_RE = re.compile(
+    r"收文(?:日期)?|收狀(?:日期)?|收件(?:日期)?|發文日期|裁判日期|"
+    r"宣判日期|作成日期|中華民國"
+)
+_DATE_NEGATIVE_CONTEXT_RE = re.compile(
+    r"訂於|定於|開庭|到庭|言詞辯論|準備程序|調解|審理程序|"
+    r"自民國|日起|出生|期限|截止|展延"
+)
+_ROC_DATE_SCAN_RE = re.compile(
+    r"(?<!\d)(\d{2,3})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?"
+)
+_AD_DATE_SCAN_RE = re.compile(
+    r"(?<!\d)(20\d{2})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?"
+)
+
+
+def _valid_ymd(year: int, month: int, day: int) -> Optional[str]:
+    try:
+        return datetime(year, month, day).strftime("%Y%m%d")
+    except (TypeError, ValueError):
+        return None
+
+
+def _date_context_score(text: str, start: int, end: int) -> int:
+    before = re.sub(r"\s+", "", text[max(0, start - 45):start])
+    around = re.sub(r"\s+", "", text[max(0, start - 60):min(len(text), end + 60)])
+    score = 20
+    if _DATE_POSITIVE_CONTEXT_RE.search(before[-24:] + around[:24]):
+        score += 140
+    if _DATE_NEGATIVE_CONTEXT_RE.search(around):
+        score -= 170
+    if start < 500:
+        score += 25
+    if start < 120:
+        score += 20
+    return score
+
+
+def _ranked_date_candidates(text: str, *, include_ad: bool, include_roc: bool) -> list[tuple[int, int, str]]:
+    original = str(text or "").strip()
+    raw = _normalize_date_text(original)
+    candidates: list[tuple[int, int, str]] = []
+
+    # An existing filename prefix is explicit user filing metadata and must not
+    # be displaced by a hearing/deadline date later in the filename.
+    prefix = re.match(r"^(20\d{6})(?=\s|$)", original)
+    if prefix:
+        try:
+            parsed = datetime.strptime(prefix.group(1), "%Y%m%d")
+        except ValueError:
+            pass
+        else:
+            candidates.append((1000, 0, parsed.strftime("%Y%m%d")))
+
+    if include_ad:
+        for match in _AD_DATE_SCAN_RE.finditer(raw):
+            value = _valid_ymd(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            if value:
+                candidates.append((_date_context_score(raw, match.start(), match.end()), match.start(), value))
+    if include_roc:
+        for match in _ROC_DATE_SCAN_RE.finditer(raw):
+            roc_year = int(match.group(1))
+            if not 80 <= roc_year <= 130:
+                continue
+            value = _valid_ymd(roc_year + 1911, int(match.group(2)), int(match.group(3)))
+            if value:
+                candidates.append((_date_context_score(raw, match.start(), match.end()), match.start(), value))
+    return candidates
+
+
+def _best_ranked_date(text: str, *, include_ad: bool, include_roc: bool) -> Optional[str]:
+    candidates = _ranked_date_candidates(text, include_ad=include_ad, include_roc=include_roc)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    # A lone hearing/deadline date is worse than the file receipt timestamp.
+    return candidates[0][2] if candidates[0][0] >= 0 else None
+
+
 def _extract_roc_date(text: str):
-    """Extract ROC date and return formatted string YYYYMMDD"""
-    # Normalize OCR spacing artifacts (e.g. "115. 3. 2 0" → "115.3.20")
-    text = _normalize_date_text(text)
-    m = RE_DATE.search(text)
-    if m:
-        # Groups: 1=Year, 2=Sep, 3=Month, 4=Sep, 5=Day, 6=Suffix
-        y_roc = int(m.group(1).strip())
-        y_ad = y_roc + 1911
-        mo = int(m.group(3).strip())
-        d = int(m.group(5).strip())
-        return f"{y_ad}{mo:02d}{d:02d}"
-    return None
+    """Extract the most likely ROC document date as YYYYMMDD.
+
+    Receipt/issue/court dates outrank event dates.  This prevents a hearing
+    notice dated 2025-11-14 from being renamed with its 2025-11-28 hearing date.
+    """
+    return _best_ranked_date(text, include_ad=False, include_roc=True)
+
 
 def _extract_ad_date(text: str) -> Optional[str]:
-    """Extract AD date and return formatted string YYYYMMDD"""
-    s = _normalize_date_text(text or "")
-    m = RE_AD_DATE.search(s)
-    if not m:
-        return None
-    try:
-        y = int(m.group(1).strip())
-        mo = int(m.group(3).strip())
-        d = int(m.group(5).strip())
-        if mo < 1 or mo > 12 or d < 1 or d > 31:
-            return None
-        return f"{y}{mo:02d}{d:02d}"
-    except Exception:
-        return None
+    """Extract the most likely AD document date as YYYYMMDD."""
+    return _best_ranked_date(text, include_ad=True, include_roc=False)
+
 
 def _extract_any_date(text: str) -> Optional[str]:
-    """
-    Best-effort: AD date first, then ROC date.
-    """
-    s = _normalize_date_text(text or "")
-    d = _extract_ad_date(s)
-    if d:
-        return d
-    # ROC date
-    m = RE_ANY_ROC_DATE.search(s)
-    if not m:
-        return None
-    try:
-        y_roc = int(m.group(1).strip())
-        # Heuristic: 2-3 digits looks like ROC year.
-        y_ad = y_roc + 1911 if y_roc < 1911 else y_roc
-        mo = int(m.group(3).strip())
-        d2 = int(m.group(5).strip())
-        if mo < 1 or mo > 12 or d2 < 1 or d2 > 31:
-            return None
-        return f"{y_ad}{mo:02d}{d2:02d}"
-    except Exception:
-        return None
+    """Extract the best document date across AD/ROC formats."""
+    return _best_ranked_date(text, include_ad=True, include_roc=True)
 
 def _extract_doc_type(text: str):
     """Identify document type keyword from text"""
@@ -668,29 +794,45 @@ def _extract_name(text: str, default_name: str = "Unknown"):
     # Skip pure envelope pages
     if _is_envelope_page(text):
         return default_name
+    # Already-filed names are high-value structured evidence.  Read the first
+    # parenthetical segment before applying OCR role patterns.
+    from_filename = _extract_name_from_filename(text)
+    if from_filename:
+        return from_filename
     # Use finditer to skip template/instruction matches (e.g. "原告或被告聲請人或相對人")
     _bad_fragments = {"或被告", "或相對人", "聲請人或", "證人", "定人用", "或定人",
                        "經本院", "本院於", "謄本", "乙份", "正本", "影本",
-                       "附件", "清單", "資料", "保險", "全戶"}
+                       "附件", "清單", "資料", "保險", "全戶", "地址",
+                       "開始", "所提", "應於", "自民國", "到院", "撤回",
+                       "更生", "清算", "認可", "申請", "編號", "案號",
+                       "案件", "姓名", "欄位"}
     for m in RE_DEFENDANT.finditer(text[:1500]):
         name = m.group(1).strip()
         name = re.sub(r"[，,。;；].*", "", name)
+        name = re.split(
+            r"(?:自民國|開始|應於|所提|提出|到院|撤回|認可|更生|清算|地址)",
+            name,
+            maxsplit=1,
+        )[0].strip()
         if any(k in name for k in _bad_fragments):
             continue
         # Skip single-char or obviously wrong names
-        if len(name) < 2:
+        if len(name) < 2 or len(name) > 24:
+            continue
+        if re.search(r"\d{3,}|[:：/\\]", name):
             continue
         return name
     return default_name
 
 def _ocr_page_rapid(page):
     """Use RapidOCR to extract text from page image"""
-    if not ocr_engine:
-        return ""
     try:
+        engine = _get_ocr_engine()
+        if engine is None:
+            return ""
         pix = page.get_pixmap(dpi=200)
         img_bytes = pix.tobytes("png")
-        result, _ = ocr_engine(img_bytes)
+        result, _ = engine(img_bytes)
         if not result:
             return ""
         texts = [line[1] for line in result]
@@ -700,10 +842,13 @@ def _ocr_page_rapid(page):
         return ""
 
 def _ocr_image_bytes(img_bytes: bytes) -> str:
-    if not ocr_engine or not img_bytes:
+    if not img_bytes:
         return ""
     try:
-        result, _ = ocr_engine(img_bytes)
+        engine = _get_ocr_engine()
+        if engine is None:
+            return ""
+        result, _ = engine(img_bytes)
         if not result:
             return ""
         texts = [line[1] for line in result if isinstance(line, (list, tuple)) and len(line) >= 2]
@@ -1521,12 +1666,7 @@ def _apply_naming_guards(result: dict, source_hint: str = "") -> dict:
     return result
 
 
-_ARCHIVED_NAME_FOLDERS = (
-    "法院通知或程序裁定",
-    "判決書",
-    "對方歷次書狀",
-    "對造歷次書狀",
-)
+_ARCHIVED_NAME_FOLDERS = PDF_ARCHIVED_NAME_FOLDER_LABELS
 
 _ENVELOPE_PRONE_FOLDERS = _ARCHIVED_NAME_FOLDERS
 _ENVELOPE_PRONE_LABELS = {"法院通知", "裁定", "判決", "書狀_對造"}
@@ -1590,7 +1730,7 @@ def _learned_page_profile_for_path(pdf_path: str) -> dict:
 
 def _is_envelope_prone_path(pdf_path: str) -> bool:
     path_text = str(pdf_path or "")
-    if any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
+    if path_has_judgment_folder(path_text) or any(folder in path_text for folder in _ENVELOPE_PRONE_FOLDERS):
         return True
     profile = _learned_page_profile_for_path(pdf_path)
     if profile:
@@ -1657,28 +1797,100 @@ def _maybe_preserve_archived_filename(pdf_path: str) -> Optional[dict]:
     if stem in generic_names or not (has_date or has_case_no):
         return None
     try:
-        from naming_validator import validate_filename as _validate_filename
+        from naming_validator import (
+            validate_filename as _validate_filename,
+            validate_filename_quality as _validate_filename_quality,
+        )
     except Exception:
         _validate_filename = None
+        _validate_filename_quality = None
     format_ok = True
+    quality_ok = True
     warnings = []
+    quality_issues = []
+    quality_details = {}
     if _validate_filename is not None:
         format_ok, warnings = _validate_filename(basename)
+    if _validate_filename_quality is not None:
+        quality_ok, quality_issues, quality_details = _validate_filename_quality(
+            basename,
+            source_hint=path_text,
+        )
+    # Preservation is allowed only for names that satisfy today's usability
+    # contract.  Poor historical names remain untouched on disk, but are
+    # re-analysed instead of being certified as a good proposal.
+    if not (format_ok and quality_ok):
+        return None
+    prefix = re.match(r"^(20\d{6})(?=\s|$)", stem)
     result = {
         "filename": basename,
-        "date": _extract_any_date(stem) or _extract_roc_date(stem),
+        "date": prefix.group(1) if prefix else (_extract_any_date(stem) or _extract_roc_date(stem)),
         "date_method": "archived_filename",
         "court": _extract_court_name(stem),
         "case_number": _extract_case_number(stem),
         "doc_type": _extract_doc_type(stem) or "",
-        "party": _extract_name(stem, default_name="") or "",
+        "party": _extract_name_from_filename(stem) or "",
         "format_ok": bool(format_ok),
-        "quality_ok": True,
+        "quality_ok": bool(quality_ok),
         "preserved_archived_name": True,
     }
     if warnings:
         result["warnings"] = warnings
+    if quality_issues:
+        result["quality_issues"] = quality_issues
+    if quality_details:
+        result["quality_issue_details"] = quality_details
     return result
+
+
+def _maybe_path_hint_name_result(
+    pdf_path: str,
+    *,
+    case_name: str | None = None,
+    reason: str = "",
+) -> Optional[dict]:
+    """Last-resort naming from path/file metadata when OCR/vision returns empty."""
+    basename = os.path.basename(pdf_path or "")
+    if not basename.lower().endswith(".pdf"):
+        return None
+    stem = os.path.splitext(basename)[0]
+    found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
+    if not found_date:
+        return None
+    found_party = (
+        case_name
+        or _infer_party_from_case_folder_path(pdf_path)
+        or _extract_name_from_filename(basename)
+        or ""
+    )
+    found_type = _infer_doc_type_from_hints(basename) or _infer_doc_type_from_learning(stem) or ""
+    folder_category = _path_subfolder_category(pdf_path)
+    if not found_type and folder_category not in {"", "法扶表單", "證據", "閱卷"}:
+        found_type = folder_category
+    if not found_type:
+        found_type = "文件"
+    result = _build_name_result(
+        found_date=found_date,
+        found_type=found_type,
+        found_party=found_party,
+        date_method=f"{date_method}:path_hint" if date_method else "path_hint",
+        doc_subtype=found_type,
+    )
+    if reason:
+        result["fallback_reason"] = reason
+    result = _apply_naming_guards(
+        result,
+        source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[basename]),
+    )
+    if result.get("filename"):
+        logger.info(
+            "pdf-namer path-hint fallback used for %s (%s): %s",
+            pdf_path,
+            reason,
+            result["filename"],
+        )
+        return result
+    return None
 
 
 def generate_name_proposal(pdf_path: str, case_name: str = None, return_structured: bool = False):
@@ -1696,6 +1908,12 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
     pdf_path = _resolve_pdf_with_synology_fallback(pdf_path)
     empty_result = {"filename": None, "date": None, "court": "", "case_number": "",
                     "doc_type": "", "party": "", "date_method": ""}
+
+    def _fallback_or_empty(reason: str):
+        fallback = _maybe_path_hint_name_result(pdf_path, case_name=case_name, reason=reason)
+        if fallback:
+            return fallback if return_structured else fallback["filename"]
+        return empty_result if return_structured else None
 
     source_hint_parts = [case_name or ""]
     # ── Check batch cache (pre-computed by batch_ocr_pages + batch_analyze_texts) ──
@@ -1776,6 +1994,11 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
         if case_name:
             found_party = case_name
+        found_party = _normalize_party_candidate(found_party)
+        if not found_party:
+            found_party = _normalize_party_candidate(
+                _infer_party_from_case_folder_path(pdf_path)
+            )
 
         # Extract summary from all pages' native text as fallback
         if not found_summary and found_type:
@@ -1787,15 +2010,19 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
         if not found_date:
             found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-            logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+            logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
         if not found_date:
-            return empty_result if return_structured else None
+            return _fallback_or_empty("cached_missing_date")
 
         # Refine with learned rules
         if not found_type or found_type in ("其他", "文件"):
             lt = _infer_doc_type_from_learning(found_doc_subtype or found_type or "")
             if lt:
                 found_type = lt
+        if not found_type or found_type in ("其他", "文件"):
+            path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+            if path_type:
+                found_type = path_type
 
         result = _build_name_result(
             found_date=found_date, found_court=found_court,
@@ -1808,6 +2035,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             result,
             source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=source_hint_parts),
         )
+        if not result.get("filename"):
+            return _fallback_or_empty("cached_empty_filename")
         if return_structured:
             return result
         return result["filename"]
@@ -1938,7 +2167,7 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
         content_text_native = ""
 
     if content_page is None:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_content_page")
 
     # ── Step 1b: Fast text path (only for clean text) ──
     fast_text = "\n".join(part for part in [content_text_native, content_text] if part)
@@ -1952,6 +2181,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
                 fast_result,
                 source_hint=_build_source_hint(pdf_path, case_name=case_name or "", snippets=[fast_text]),
             )
+            if not fast_result.get("filename"):
+                return _fallback_or_empty("fast_text_empty_filename")
             return fast_result if return_structured else fast_result["filename"]
 
     # ── Step 2: Dual-page Vision OCR ──
@@ -2258,8 +2489,15 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     if case_name:
         found_party = case_name
-    elif not found_party:
-        found_party = _infer_party_from_case_folder_path(pdf_path) or ""
+    found_party = _normalize_party_candidate(found_party)
+    if not found_party:
+        found_party = _normalize_party_candidate(
+            _infer_party_from_case_folder_path(pdf_path)
+        )
+    if not found_type or found_type in ("其他", "文件"):
+        path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+        if path_type:
+            found_type = path_type
 
     if _path_subfolder_category(pdf_path) == "書狀_對造" or "檢察官" in (found_type or found_doc_subtype or ""):
         basename_for_fields = os.path.basename(pdf_path or "")
@@ -2317,9 +2555,9 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
 
     if not found_date:
         found_date, date_method = _fallback_date_from_filename_or_mtime(pdf_path)
-        logger.warning("Could not extract date from %s; fallback=%s", pdf_path, found_date)
+        logger.info("Could not extract date from %s; fallback=%s", pdf_path, found_date)
     if not found_date:
-        return empty_result if return_structured else None
+        return _fallback_or_empty("missing_date")
 
     # ── Step 5: Refine with learned rules + DB templates ──
     # The nightly training system has 2,075 samples and 226 rules — use them!
@@ -2412,6 +2650,8 @@ def generate_name_proposal(pdf_path: str, case_name: str = None, return_structur
             snippets=[content_text_native, content_text, vision_info.get("summary", "")],
         ),
     )
+    if not result.get("filename"):
+        return _fallback_or_empty("empty_filename")
 
     if return_structured:
         return result
@@ -2559,8 +2799,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
         # Opus D-3: 真實函文常用「陳報」而非「陳述意見」（如「文到10日內陳報如說明」）
         (r"(?:應於|限於|於)?\s*文到\s*(\d+)\s*日內\s*(陳報)", "陳報"),
         (r"應於\s*(\d+)\s*日內\s*(陳報)", "陳報"),
-        (r"應於文到\s*(\d+)\s*日內繳納.+(規費|裁判費)", "繳費"),
-        (r"限\s*(\d+)\s*日內.+?繳納.+?(裁判費|規費)", "繳費"),
+        (r"應於\s*文到\s*(\d+)\s*日內\s*繳納.*?(規費|裁判費)", "繳費"),
+        (r"限\s*(\d+)\s*日內.+?繳納.*?(裁判費|規費)", "繳費"),
         (r"應於\s*(\d+)\s*日內.+(閱卷)", "閱卷期限"),
         (r"閱卷期限.+?(\d+)\s*日", None),
     ]
@@ -2591,6 +2831,8 @@ def _extract_legal_fields_from_ocr(ocr_text: str, doc_type: str = "") -> dict:
                     fields["deadline_type"] = "補正"
                 elif "陳述意見" in act:
                     fields["deadline_type"] = "陳述意見"
+                elif "繳納" in act or "繳費" in act or "裁判費" in act or "規費" in act:
+                    fields["deadline_type"] = "繳費"
                 else:
                     fields["deadline_type"] = act[:4]
 
@@ -2774,12 +3016,13 @@ def _preprocess_receipt_image(img_bytes: bytes, scale: int = 4) -> bytes:
 
 def _ocr_page_rapid_dpi(page, dpi: int = 300) -> str:
     """RapidOCR at configurable DPI (Phase 2B: use 300 DPI for better accuracy)."""
-    if not ocr_engine:
-        return ""
     try:
+        engine = _get_ocr_engine()
+        if engine is None:
+            return ""
         pix = page.get_pixmap(dpi=dpi)
         img_bytes = pix.tobytes("png")
-        result, _ = ocr_engine(img_bytes)
+        result, _ = engine(img_bytes)
         if not result:
             return ""
         return "\n".join(line[1] for line in result if isinstance(line, (list, tuple)) and len(line) >= 2)
@@ -2841,7 +3084,7 @@ def _ocr_consensus(page, pdf_path: str = "", page_idx: int = 0) -> str:
         return ""
 
     def _run_rapid():
-        if ocr_engine and page is not None:
+        if (HAS_OCR or ocr_engine is not None) and page is not None:
             return _ocr_page_rapid_dpi(page, dpi=300)
         return ""
 
@@ -3295,8 +3538,59 @@ def _parse_naming_response(text: str) -> dict:
 
     return result
 
+def _filename_may_have_osc_todo(name: str, result: dict | None = None) -> bool:
+    """Return True when a renamed court PDF may create an OSC todo.
+
+    Original OSC rules are filename-first.  The quick trigger therefore must
+    include hearing/procedure terms, not only "N日內" deadline wording.
+    """
+    text = str(name or "")
+    result = result or {}
+    if any(str(result.get(key) or "").strip() for key in ("deadline", "deadline_type", "hearing_date", "hearing_time")):
+        return True
+    deadline_actions = (
+        "補正",
+        "補提",
+        "補陳",
+        "陳報",
+        "陳述意見",
+        "表示意見",
+        "提出資料",
+        "具狀",
+        "上訴",
+        "抗告",
+        "繳納",
+        "繳費",
+        "裁判費",
+        "規費",
+        "閱卷",
+        "末日",
+    )
+    if re.search(r"(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)\s*(?:內|内)?", text) and any(term in text for term in deadline_actions):
+        return True
+    if re.search(r"(?:文到|送達|收受).{0,12}(?:\d+|[一二三四五六七八九十百]+)\s*(?:日|天)", text) and any(term in text for term in deadline_actions):
+        return True
+    hearing_terms = (
+        "開庭",
+        "庭期",
+        "期日",
+        "調解",
+        "調查",
+        "審理",
+        "準備程序",
+        "言詞辯論",
+        "辯論",
+        "訊問",
+        "協商",
+        "宣判",
+    )
+    if any(term in text for term in hearing_terms) and re.search(r"(?:\d{6,8}|[一二三四五六七八九十百]+年|\d{2,3}年|\d{1,2}月\d{1,2}日)", text):
+        return True
+    return False
+
+
 def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
-    """快速 regex 預檢檔名 bracket 是否含期限，命中才呼 OSC sync。
+    """快速 regex 預檢檔名是否可能有 OSC 待辦，命中才呼 OSC sync。
 
     避免每次 rename 都 spawn subprocess（45s timeout × 兩次）。
     """
@@ -3304,7 +3598,7 @@ def _trigger_osc_sync_if_applicable(new_path: str, result: dict) -> None:
         return
 
     name = os.path.basename(new_path)
-    if not re.search(r"\d+日內(補正|上訴|陳述意見|繳納|繳費|閱卷)", name):
+    if not _filename_may_have_osc_todo(name, result):
         return
 
     try:
@@ -3511,6 +3805,7 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
 
     results = {}
     for pdf_path in pdf_paths:
+        doc = None
         try:
             doc = fitz.open(pdf_path)
             if doc.needs_pass:
@@ -3562,15 +3857,28 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
                                 os.path.basename(pdf_path), len(p0_ocr))
                     envelope_ocr = p0_ocr
 
+            page_refs = pages
+            page_info = {
+                "envelope": int(page_refs.get("envelope_idx", -1)) >= 0,
+                "content": int(page_refs.get("content_idx", -1)) >= 0,
+                "envelope_idx": int(page_refs.get("envelope_idx", -1)),
+                "content_idx": int(page_refs.get("content_idx", -1)),
+            }
             results[pdf_path] = {
                 "envelope_ocr": envelope_ocr,
                 "content_ocr": content_ocr,
-                "pages": pages,
-                "doc": doc,
+                "pages": page_info,
+                "page_count": int(doc.page_count),
             }
         except Exception as e:
             logger.error("[batch-ocr] %s failed: %s", os.path.basename(pdf_path), e)
-            results[pdf_path] = {"envelope_ocr": "", "content_ocr": "", "pages": {}, "doc": None}
+            results[pdf_path] = {"envelope_ocr": "", "content_ocr": "", "pages": {}, "page_count": 0}
+        finally:
+            if doc is not None:
+                try:
+                    doc.close()
+                except Exception:
+                    logger.debug("[batch-ocr] document close failed", exc_info=True)
 
     # Retry pass: re-OCR pages that returned empty (model swap may have caused timeout)
     retry_needed = [(p, r) for p, r in results.items()
@@ -3581,15 +3889,23 @@ def batch_ocr_pages(pdf_paths: list) -> dict:
         time.sleep(5)  # Allow model to stabilize
         for pdf_path, r in retry_needed:
             pages = r["pages"]
-            if pages.get("content"):
-                content_ocr = _glm_ocr_page(pages["content"], dpi=200)
-                if content_ocr:
-                    r["content_ocr"] = content_ocr
-                    logger.info("[batch-ocr-retry] %s content: %d chars", os.path.basename(pdf_path), len(content_ocr))
-            if pages.get("envelope"):
-                envelope_ocr = _glm_ocr_page(pages["envelope"], dpi=200)
-                if envelope_ocr:
-                    r["envelope_ocr"] = envelope_ocr
+            retry_doc = None
+            try:
+                retry_doc = fitz.open(pdf_path)
+                content_idx = int(pages.get("content_idx", -1))
+                envelope_idx = int(pages.get("envelope_idx", -1))
+                if 0 <= content_idx < retry_doc.page_count:
+                    content_ocr = _glm_ocr_page(retry_doc[content_idx], dpi=200)
+                    if content_ocr:
+                        r["content_ocr"] = content_ocr
+                        logger.info("[batch-ocr-retry] %s content: %d chars", os.path.basename(pdf_path), len(content_ocr))
+                if 0 <= envelope_idx < retry_doc.page_count:
+                    envelope_ocr = _glm_ocr_page(retry_doc[envelope_idx], dpi=200)
+                    if envelope_ocr:
+                        r["envelope_ocr"] = envelope_ocr
+            finally:
+                if retry_doc is not None:
+                    retry_doc.close()
 
     logger.info("[batch-ocr] Phase 1 complete: %d PDFs OCR'd", len(results))
     return results
@@ -3614,6 +3930,7 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
         logger.info("[batch-analyze] Gemma 4 pre-warmed")
     except Exception as e:
         logger.debug("[batch-analyze] Pre-warm note: %s", e)
+    clear_batch_analysis_cache()
     results = {}
     for pdf_path, ocr in ocr_results.items():
         envelope_info = {}
@@ -3665,6 +3982,8 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
         info["content_ocr"] = ocr_data.get("content_ocr", "")
         info["pages"] = ocr_data.get("pages", {})
         _BATCH_ANALYSIS_CACHE[pdf_path] = info
+        while len(_BATCH_ANALYSIS_CACHE) > _BATCH_ANALYSIS_CACHE_MAX:
+            _BATCH_ANALYSIS_CACHE.pop(next(iter(_BATCH_ANALYSIS_CACHE)))
 
     # ── Phase 2b: Infer receipt context from batch neighbors ──
     # Postal receipts (掛號回執) often can't be OCR'd. Infer their content from
@@ -3677,8 +3996,7 @@ def batch_analyze_texts(ocr_results: dict) -> dict:
         total_ocr = len(info.get("envelope_ocr", "")) + len(info.get("content_ocr", ""))
         if total_ocr < 50 and not merged.get("doc_type"):
             # Check page count — receipts are usually 2 pages (front + back)
-            doc = ocr_results.get(pdf_path, {}).get("doc")
-            page_count = doc.page_count if doc else 0
+            page_count = int(ocr_results.get(pdf_path, {}).get("page_count") or 0)
             if page_count <= 2:
                 # This is likely a postal receipt. Find the nearest document
                 # with content to infer what was mailed.
@@ -3716,6 +4034,10 @@ def task_analyze(pdf_path: str) -> str:
         if not os.path.exists(pdf_path):
             return json.dumps({"error": "File not found"})
 
+        fixture_result = _schedule_analysis_fixture(pdf_path)
+        if fixture_result is not None:
+            return json.dumps(fixture_result, ensure_ascii=False)
+
         bn = os.path.basename(pdf_path or "")
         fast_receipt_mode = _is_fast_downgrade_receipt(bn, pdf_path)
 
@@ -3736,21 +4058,102 @@ def task_analyze(pdf_path: str) -> str:
             }, ensure_ascii=False)
 
         stamp_verified = str(info.get("date_method", "")).startswith("stamp")
+        format_ok = bool(info.get("format_ok", False))
+        quality_ok = bool(info.get("quality_ok", False))
         res = {
             "suggested_filename": info["filename"],
             "doc_type": info.get("doc_type", ""),
             "parties": [info["party"]] if info.get("party") else [],
             "date": info.get("date"),
             "date_method": info.get("date_method", ""),
-            "confidence": 0.85 if stamp_verified else 0.8,
+            "confidence": (0.85 if stamp_verified else 0.8) if (format_ok and quality_ok) else 0.0,
             "stamp_verified": stamp_verified,
             "requires_stamp_verification": False,
+            "format_ok": format_ok,
+            "quality_ok": quality_ok,
+            "requires_quality_review": not (format_ok and quality_ok),
+            "format_warnings": info.get("warnings") or [],
+            "quality_issues": info.get("quality_issues") or [],
+            "quality_issue_details": info.get("quality_issue_details") or {},
             "fast_downgrade_receipt": False,
             "db_template_used": False,
         }
         return json.dumps(res, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+def _schedule_analysis_fixture(pdf_path: str) -> dict | None:
+    """Run bounded PDF parsing with a deterministic naming provider.
+
+    This path exists only for release certification.  It parses the real PDF
+    with PyMuPDF, binds the provider and PDF to the owned fixture root, and
+    returns the same terminal analysis payload consumed by nightly_train.
+    """
+    provider_raw = str(os.environ.get("MAGI_PDF_NAMER_ANALYSIS_FIXTURE_PATH") or "").strip()
+    if not provider_raw:
+        return None
+    fixture_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or not fixture_raw
+    ):
+        raise RuntimeError("pdf-namer analysis fixture is not safely bound")
+    fixture = Path(fixture_raw).expanduser().resolve()
+    provider_path = Path(provider_raw).expanduser().resolve()
+    target = Path(pdf_path).expanduser().resolve()
+    if (
+        not (fixture / ".magi-v3-schedule-fixture").is_file()
+        or not provider_path.is_file()
+        or not provider_path.is_relative_to(fixture)
+        or not target.is_file()
+        or target.is_symlink()
+        or not target.is_relative_to(fixture)
+    ):
+        raise RuntimeError("pdf-namer analysis fixture escaped its owned root")
+    try:
+        provider = json.loads(provider_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("pdf-namer analysis provider is unreadable") from exc
+    proposals = provider.get("proposals")
+    proposal = proposals.get(target.name) if isinstance(proposals, dict) else None
+    if provider.get("schema") != "magi.v3.pdf-namer-analysis-fixture/v1" or not isinstance(proposal, dict):
+        raise RuntimeError("pdf-namer analysis provider lacks a bound proposal")
+    document = fitz.open(str(target))
+    try:
+        page_count = int(document.page_count)
+        extracted = "\n".join(document.load_page(index).get_text("text") for index in range(page_count)).strip()
+    finally:
+        document.close()
+    if page_count < 1 or not extracted:
+        raise RuntimeError("pdf-namer fixture PDF did not produce parseable text")
+    expected_text = str(proposal.get("expected_text") or "").strip()
+    if expected_text and expected_text not in extracted:
+        raise RuntimeError("pdf-namer fixture proposal is not supported by parsed PDF text")
+    suggested = str(proposal.get("suggested_filename") or "").strip()
+    party = str(proposal.get("party") or "").strip()
+    date = str(proposal.get("date") or "").strip()
+    doc_type = str(proposal.get("doc_type") or "").strip()
+    if not suggested or not party or not date or not doc_type:
+        raise RuntimeError("pdf-namer fixture proposal is incomplete")
+    return {
+        "suggested_filename": suggested,
+        "doc_type": doc_type,
+        "parties": [party],
+        "date": date,
+        "date_method": "fixture_parsed_pdf_provider",
+        "confidence": float(proposal.get("confidence") or 0.9),
+        "stamp_verified": False,
+        "requires_stamp_verification": False,
+        "fast_downgrade_receipt": False,
+        "db_template_used": False,
+        "parsed_page_count": page_count,
+        "parsed_text_sha256": hashlib.sha256(extracted.encode("utf-8")).hexdigest(),
+        "pdf_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        "provider_quality_certified": False,
+        "provider_role": "deterministic_pdf_naming_proposal_fixture",
+    }
 
 
 def _task_analyze_fast_receipt(pdf_path: str, bn: str) -> str:
@@ -3798,6 +4201,19 @@ def _fallback_date_from_filename_or_mtime(pdf_path: str) -> Tuple[Optional[str],
     m = re.match(r"^(20\d{6})", bn)
     if m:
         return m.group(1), "filename_prefix_fallback"
+    compact_roc_dates: list[str] = []
+    for m_roc in re.finditer(r"(?<!\d)(1\d{6})(?!\d)", bn):
+        raw = m_roc.group(1)
+        try:
+            roc_year = int(raw[:3])
+            month = int(raw[3:5])
+            day = int(raw[5:7])
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                compact_roc_dates.append(f"{roc_year + 1911:04d}{month:02d}{day:02d}")
+        except ValueError:
+            continue
+    if compact_roc_dates:
+        return compact_roc_dates[-1], "filename_roc_compact_fallback"
     try:
         return datetime.fromtimestamp(os.path.getmtime(pdf_path)).strftime("%Y%m%d"), "file_mtime_fallback"
     except Exception:
@@ -3857,6 +4273,57 @@ _OSC_KEYWORDS = {
 _DEADLINE_INJECT_CATEGORIES = {"判決", "裁定", "庭通知書", "函文", "法院通知"}
 
 
+def _normalize_party_candidate(value: Optional[str]) -> str:
+    party = re.sub(r"\s+", "", str(value or "")).strip("，,。；;：:（）()")
+    party = re.sub(
+        r"^(?:被告|原告|聲請人|相對人|上訴人|抗告人|債務人|債權人|當事人)",
+        "",
+        party,
+    )
+    party = re.split(
+        r"(?:自民國|開始|應於|所提|提出|到院|撤回|認可|更生|清算|地址|主文|主旨|"
+        r"申請|編號|案號|案件|姓名|欄位)",
+        party,
+        maxsplit=1,
+    )[0].strip()
+    if not party or len(party) > 24:
+        return ""
+    # Document-field labels and model fallback tokens are not parties.  Short
+    # placeholders such as "案由" otherwise look like valid Chinese names.
+    if party in {
+        "案由", "統一", "當事人", "申請人", "聲請人", "相對人",
+        "原告", "被告", "上訴人", "抗告人", "債務人", "債權人",
+        "通知", "其他", "文件", "姓名", "未知", "不詳", "無",
+    }:
+        return ""
+    if re.search(r"\d{3,}|[:：/\\]", party):
+        return ""
+    person = re.fullmatch(r"[\u4e00-\u9fff·]{2,6}(?:等[一二三四五六七八九十\d]+人)?", party)
+    organization = (
+        re.fullmatch(r"[\u4e00-\u9fffA-Za-z·、與及等一二三四五六七八九十\d]{2,24}", party)
+        and any(
+            marker in party
+            for marker in (
+                "公司", "銀行", "委員會", "基金會", "協會", "中心",
+                "政府", "機關", "事務所", "合作社", "學校", "醫院", "法人",
+            )
+        )
+    )
+    return party if (person or organization) else ""
+
+
+def _compact_filename_summary(value: Optional[str], *, limit: int = 48) -> str:
+    summary = re.sub(r"\s+", "", str(value or ""))
+    summary = summary.replace("~", "；").replace("�", "")
+    summary = re.sub(r"^(?:主文|主旨)\s*[：:]\s*", "", summary)
+    clauses = [part.strip("；;，,。") for part in re.split(r"[；;。]", summary)]
+    clauses = [part for part in clauses if part]
+    summary = "；".join(clauses[:2]) if clauses else ""
+    if len(summary) > limit:
+        summary = summary[: limit - 1].rstrip("；，、：") + "…"
+    return summary
+
+
 def _build_name_result(
     *,
     found_date: Optional[str],
@@ -3887,7 +4354,7 @@ def _build_name_result(
         try:
             year = int(found_date[:4])
             if year < 2000 or year > 2030:
-                logger.warning("Rejecting implausible date %s (year %d)", found_date, year)
+                logger.info("Rejecting implausible date %s (year %d)", found_date, year)
                 found_date = None
         except ValueError:
             found_date = None
@@ -3906,7 +4373,7 @@ def _build_name_result(
 
     court = _shorten_court(found_court)
     case_no = found_case_no or ""
-    party = found_party or ""
+    party = _normalize_party_candidate(found_party)
     dt = found_type or ""
     # For pure 回執 (postal receipt), subtype from delivery record page often
     # contains form text ("口附上原掛號收據") rather than the receipt label —
@@ -3931,7 +4398,7 @@ def _build_name_result(
     # Opponent docs:   {date} {court}{case_no}{case_type}{doc_type}繕本（{party}；{summary}）
 
     # Clean up summary — remove "被告XXX" prefix, convert 大寫數字 to 阿拉伯數字
-    smry = (summary or "").strip()
+    smry = _compact_filename_summary(summary)
     if smry and party:
         # Remove "被告XXX" / "聲請人XXX" prefix from summary
         smry = re.sub(r"^(?:被告|原告|聲請人|上訴人|抗告人)\s*" + re.escape(party) + r"\s*", "", smry)
@@ -3941,8 +4408,7 @@ def _build_name_result(
                 "佰": "百", "仟": "千"}
     for k, v in _NUM_MAP.items():
         smry = smry.replace(k, v)
-    # Truncate to 80 chars
-    smry = smry[:80].rstrip("。，、；")
+    smry = _compact_filename_summary(smry)
 
     case_type = (case_type_hint or "").strip()  # 刑事/民事/行政 prefix
     if not case_type and sub:
@@ -4133,8 +4599,28 @@ def _maybe_fast_text_name_result(
     found_case_no = _extract_case_number(text)
     found_type = _extract_doc_type(text)
     found_party = case_name or _extract_name(text, default_name=None)
+    found_party = _normalize_party_candidate(found_party)
     if not found_party and pdf_path:
-        found_party = _infer_party_from_case_folder_path(pdf_path)
+        found_party = _normalize_party_candidate(
+            _infer_party_from_case_folder_path(pdf_path)
+        )
+    path_type = _infer_doc_type_from_hints(os.path.basename(pdf_path or ""))
+    if path_type and (
+        not found_type
+        or any(
+            marker in os.path.basename(pdf_path or "")
+            for marker in (
+                "案件概述單",
+                "准予扶助證明書",
+                "法律扶助申請書",
+                "資力詢問表",
+                "審查表",
+                "委任狀",
+                "預付酬金領款單",
+            )
+        )
+    ):
+        found_type = path_type
 
     if found_party:
         try:
@@ -4153,7 +4639,7 @@ def _maybe_fast_text_name_result(
     _fast_deadline = _legal.get("deadline")
     _fast_deadline_type = _legal.get("deadline_type", "")
 
-    return _build_name_result(
+    result = _build_name_result(
         found_date=found_date,
         found_court=found_court,
         found_case_no=found_case_no,
@@ -4163,6 +4649,11 @@ def _maybe_fast_text_name_result(
         deadline=_fast_deadline,
         deadline_type=_fast_deadline_type,
     )
+    if _fast_deadline is not None:
+        result["deadline"] = _fast_deadline
+    if _fast_deadline_type:
+        result["deadline_type"] = _fast_deadline_type
+    return result
 
 
 def task_self_train(case_root: str = CASE_ROOT) -> str:
@@ -4404,7 +4895,7 @@ def main():
     parser.add_argument(
         "--task",
         required=True,
-        choices=["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test", "help"],
+        choices=["analyze", "rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test", "help"],
     )
     parser.add_argument("--path", help="PDF file path")
     parser.add_argument("--case_name", help="Client Name (e.g. 游秀鈴)")
@@ -4414,7 +4905,14 @@ def main():
     args = parser.parse_args()
 
     if args.task == "help":
-        print(json.dumps({"skill": "pdf-namer", "tasks": ["rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test"], "description": "PDF 智慧命名與歸檔"}, ensure_ascii=False, indent=2))
+        print(json.dumps({"skill": "pdf-namer", "tasks": ["analyze", "rename_file", "review_name", "file", "file_sync", "file_worker", "file_status", "self_train", "self_test"], "description": "PDF 智慧命名與歸檔"}, ensure_ascii=False, indent=2))
+        return
+
+    if args.task == "analyze":
+        if not args.path:
+            print(json.dumps({"error": "path_required"}, ensure_ascii=False))
+            return
+        print(task_analyze(args.path))
         return
 
     if args.task == "self_test":

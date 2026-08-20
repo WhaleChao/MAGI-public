@@ -20,6 +20,7 @@ skills/engine/realtime_data_gateway.py
 - weather  → 中央氣象署（CWA）OpenData API 或網頁抓取
 - stock    → 台灣證交所 TWSE 公開 API（不需 key）
 - fx_rate  → 僅提示查詢網址（暫未接 API）
+- current_time → 系統時鐘（Asia/Taipei）
 
 環境變數
 --------
@@ -37,6 +38,7 @@ import json
 import logging
 import time
 from typing import Optional, Dict, Any
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,26 @@ _COUNTY_MAP: Dict[str, str] = {
     "金門": "09020",
     "連江": "09007",
 }
+_CWA_LOCATION_NAMES: Dict[str, str] = {
+    "臺北": "臺北市", "台北": "臺北市", "新北": "新北市", "板橋": "新北市",
+    "基隆": "基隆市", "桃園": "桃園市", "新竹市": "新竹市", "新竹縣": "新竹縣",
+    "新竹": "新竹縣", "苗栗": "苗栗縣", "臺中": "臺中市", "台中": "臺中市",
+    "彰化": "彰化縣", "南投": "南投縣", "雲林": "雲林縣", "嘉義市": "嘉義市",
+    "嘉義縣": "嘉義縣", "嘉義": "嘉義縣", "臺南": "臺南市", "台南": "臺南市",
+    "高雄": "高雄市", "屏東": "屏東縣", "臺東": "臺東縣", "台東": "臺東縣",
+    "花蓮": "花蓮縣", "宜蘭": "宜蘭縣", "澎湖": "澎湖縣", "金門": "金門縣",
+    "連江": "連江縣",
+}
+_OPEN_METEO_LOCATION_NAMES: Dict[str, str] = {
+    "臺北": "Taipei", "台北": "Taipei", "新北": "New Taipei", "板橋": "New Taipei",
+    "基隆": "Keelung", "桃園": "Taoyuan", "新竹市": "Hsinchu City", "新竹縣": "Hsinchu County",
+    "新竹": "Hsinchu", "苗栗": "Miaoli", "臺中": "Taichung", "台中": "Taichung",
+    "彰化": "Changhua", "南投": "Nantou", "雲林": "Yunlin", "嘉義市": "Chiayi City",
+    "嘉義縣": "Chiayi County", "嘉義": "Chiayi", "臺南": "Tainan", "台南": "Tainan",
+    "高雄": "Kaohsiung", "屏東": "Pingtung", "臺東": "Taitung", "台東": "Taitung",
+    "花蓮": "Hualien", "宜蘭": "Yilan", "澎湖": "Penghu", "金門": "Kinmen",
+    "連江": "Lienchiang",
+}
 
 # CWA OpenData 36小時天氣預報 API
 _CWA_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
@@ -75,6 +97,8 @@ _CWA_COUNTY_PAGE = "https://www.cwa.gov.tw/V8/C/W/County/County.html"
 
 # TWSE 即時報價
 _TWSE_API = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+_OPEN_METEO_GEOCODING_API = "https://geocoding-api.open-meteo.com/v1/search"
+_OPEN_METEO_FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
 
 # ---------------------------------------------------------------------------
@@ -84,18 +108,19 @@ _TWSE_API = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 _WEATHER_KEYWORDS = [
     "天氣", "氣溫", "溫度", "下雨", "下雪", "颱風", "降雨", "天晴",
     "陰天", "晴天", "氣象", "預報", "降雪", "豪雨", "颳風", "大風",
-    "濕度", "weather", "forecast", "會下", "會不會下", "明天",
+    "濕度", "weather", "forecast", "會下", "會不會下",
     "幾度", "多熱", "多冷", "熱不熱", "冷不冷", "悶不悶", "體感",
 ]
-_STOCK_KEYWORDS = ["股價", "股票", "台積電", "鴻海", "大盤", "加權", "漲", "跌", "點數",
-                   "上市", "上櫃", "TWSE", "TSE", "股", "元/股"]
-_FX_KEYWORDS = ["匯率", "美金", "日圓", "歐元", "人民幣", "港幣", "換算", "外幣",
+_STOCK_KEYWORDS = ["股價", "股票", "台積電", "鴻海", "大盤", "加權指數", "台股", "個股",
+                   "TWSE", "TSE", "元/股"]
+_FX_KEYWORDS = ["匯率", "美金", "美元", "日圓", "日幣", "歐元", "人民幣", "港幣", "外幣",
                 "exchange rate", "forex"]
 
 # 提醒/行程/會議類查詢的負面條件：命中這些關鍵字時不走 weather，
 # 即使 message 含「明天」等時間詞也不應誤判為天氣查詢。
 _WEATHER_NEGATIVE = re.compile(
-    r"提醒|記事|行程|開會|會議|事項|備忘|memo|remind|schedule",
+    r"提醒|記事|行程|日曆|開會|會議|開庭|庭期|法庭|排庭|期限|待辦|事項|備忘|"
+    r"改到|改成|延後|提前|取消|memo|remind|schedule|calendar",
     re.IGNORECASE,
 )
 _STOCK_MANAGEMENT_NEGATIVE = re.compile(
@@ -107,31 +132,153 @@ _REALTIME_CAPABILITY_QUESTION = re.compile(
     r"(?:天氣|氣象|股票|股價|追蹤股票|匯率)",
     re.IGNORECASE,
 )
+_REALTIME_ACTION_VERB = re.compile(
+    r"(?:查一下|查詢|幫我查|幫忙查|幫.{0,6}查|看一下|看看|告訴我|請.{0,6}查|麻煩.{0,6}查|"
+    r"lookup|search|get)",
+    re.IGNORECASE,
+)
+_REALTIME_TIME_CUES = (
+    "現在", "目前", "今天", "明天", "後天", "今晚", "早上", "上午", "中午", "下午", "晚上",
+    "today", "tomorrow", "now",
+)
+_CURRENT_TIME_QUERY = re.compile(
+    r"(?:現在|目前|此刻).{0,10}(?:幾點|日期|時間|幾月幾日|上午還下午)|"
+    r"(?:幾點|日期|時間|幾月幾日|上午還下午).{0,10}(?:現在|目前|此刻)",
+    re.IGNORECASE,
+)
+_REALTIME_NEGATION = re.compile(
+    r"(?:不要|不用|不必|毋須|無須|沒有|沒在|不是).{0,12}"
+    r"(?:查|問|告訴|提供|顯示|使用工具)?.{0,12}"
+    r"(?:天氣|氣象|氣溫|溫度|下雨|下雪|颱風|股價|股票|匯率|外幣|幾點|現在時間)|"
+    r"(?:天氣|氣象|股價|股票|匯率).{0,12}(?:不用查|不必查|不要查|不用查了|取消)",
+    re.IGNORECASE,
+)
+_REALTIME_TRANSFORM_OR_META = re.compile(
+    r"(?:翻譯|翻成|譯成|摘要(?:這句|這段|下列|以下)?|改寫|校對|"
+    r"這個詞|這句話|疑問句|是什麼意思|API|模組|報錯|錯誤|故障)|"
+    r"(?:解釋|說明|為什麼|為何).{0,20}(?:形成|原理|機制|制度|差別|定義|概念)|"
+    r"(?:形成|原理|機制|制度|差別|定義|概念).{0,20}(?:解釋|說明|是什麼|為什麼|為何)|"
+    r"(?:目前|現在|此刻)?\s*時間管理",
+    re.IGNORECASE,
+)
+_REALTIME_HYPOTHETICAL = re.compile(r"(?:如果|假設|假如|倘若|設若).{0,40}(?:天氣|下雨|下雪|颱風|股價|股票|匯率|美元|日圓|外幣)", re.IGNORECASE)
+_HISTORICAL_WEATHER = re.compile(
+    r"(?:去年|前年|過去|歷史|紀錄|記錄|20\d{2}\s*年|民國\s*\d{2,3}\s*年).{0,30}"
+    r"(?:天氣|氣溫|溫度|降雨|下雨|下雪|颱風)|"
+    r"(?:天氣|氣溫|溫度|降雨|下雨|下雪|颱風).{0,30}"
+    r"(?:去年|前年|過去|歷史|紀錄|記錄|20\d{2}\s*年|民國\s*\d{2,3}\s*年)",
+    re.IGNORECASE,
+)
+_STOCK_QUOTE_CUES = re.compile(r"(?:目前|現在|今天|即時|多少|多少錢|一股|股價|股票價格|成交價|成交價格|報價|收盤|開盤|指數)", re.IGNORECASE)
+_FX_QUOTE_CUES = re.compile(r"(?:目前|現在|今天|即時|多少|換多少|兌換|買入|賣出|報價|USD/TWD|TWD/USD)", re.IGNORECASE)
+
+
+def _looks_like_realtime_action_request(text: str) -> bool:
+    """區分「你可以查天氣嗎」能力詢問與「你能查一下明天台北天氣嗎」實際查詢。"""
+    raw = str(text or "")
+    lowered = raw.lower()
+    has_realtime_topic = (
+        any(k in lowered for k in _WEATHER_KEYWORDS)
+        or _has_stock_topic(lowered)
+        or _has_fx_topic(lowered)
+    )
+    if not has_realtime_topic:
+        return False
+    if _REALTIME_ACTION_VERB.search(raw):
+        return True
+    if any(cue in lowered for cue in _REALTIME_TIME_CUES):
+        return True
+    return any(loc in raw for loc in _COUNTY_MAP)
+
+
+def _has_stock_topic(lowered: str) -> bool:
+    return bool(
+        any(k.lower() in lowered for k in _STOCK_KEYWORDS)
+        or re.search(r"(?<!\d)\d{4,6}(?!\d).{0,10}(?:漲|跌|成交|股價)|(?:漲|跌|成交|股價).{0,10}(?<!\d)\d{4,6}(?!\d)", lowered)
+    )
+
+
+def _has_fx_topic(lowered: str) -> bool:
+    return any(k.lower() in lowered for k in _FX_KEYWORDS)
+
+
+def _is_non_realtime_lookup_context(text: str) -> bool:
+    """Reject quoted, negated, hypothetical, historical and diagnostic uses.
+
+    Keyword presence alone is not intent.  These contexts describe or transform
+    a real-time question; they do not ask MAGI to perform that question.
+    """
+    raw = str(text or "")
+    return bool(
+        _REALTIME_NEGATION.search(raw)
+        or _REALTIME_TRANSFORM_OR_META.search(raw)
+        or _REALTIME_HYPOTHETICAL.search(raw)
+        or _HISTORICAL_WEATHER.search(raw)
+    )
 
 
 def classify_realtime_query(text: str) -> Optional[str]:
     """
-    回傳即時資料類型 ("weather" / "stock" / "fx_rate") 或 None（非即時查詢）。
+    回傳即時資料類型 ("weather" / "stock" / "fx_rate" / "current_time") 或 None。
 
     注意：若 message 含提醒/行程/會議類詞彙，即使有時間詞（「明天」）
     也不走 weather，避免提醒查詢誤進天氣路徑。
     """
-    lowered = (text or "").lower()
-    if _REALTIME_CAPABILITY_QUESTION.search(text or ""):
+    raw = str(text or "")
+    lowered = raw.lower()
+    if _is_non_realtime_lookup_context(raw):
+        return None
+    if _CURRENT_TIME_QUERY.search(raw):
+        return "current_time"
+    if _REALTIME_CAPABILITY_QUESTION.search(raw) and not _looks_like_realtime_action_request(raw):
         return None
     if any(k in lowered for k in _WEATHER_KEYWORDS):
         # 負面條件：提醒/行程類 → 不走 weather
-        if _WEATHER_NEGATIVE.search(text):
+        if _WEATHER_NEGATIVE.search(raw):
             pass  # fall through to other checks or return None
-        else:
+        elif _looks_like_realtime_action_request(raw):
             return "weather"
-    if any(k in lowered for k in _STOCK_KEYWORDS):
-        if _STOCK_MANAGEMENT_NEGATIVE.search(text or ""):
+    if _has_stock_topic(lowered):
+        if _STOCK_MANAGEMENT_NEGATIVE.search(raw):
             return None
-        return "stock"
-    if any(k in lowered for k in _FX_KEYWORDS):
+        if _looks_like_realtime_action_request(raw) or _STOCK_QUOTE_CUES.search(raw):
+            return "stock"
+    if _has_fx_topic(lowered) and (
+        _looks_like_realtime_action_request(raw) or _FX_QUOTE_CUES.search(raw)
+    ):
         return "fx_rate"
     return None
+
+
+def detect_realtime_topics(text: str) -> set[str]:
+    """Detect real-time topics without deciding whether to intercept the whole request.
+
+    ``classify_realtime_query`` deliberately leaves compound office requests to
+    the agent.  The agent still needs to prove that it used the right source,
+    so this topic-only detector does not apply the calendar/business negative
+    filters.  A time word such as ``明天`` is never a weather topic by itself.
+    """
+    raw = str(text or "")
+    lowered = raw.lower()
+    topics: set[str] = set()
+    if _is_non_realtime_lookup_context(raw):
+        return topics
+    if (
+        any(k in lowered for k in _WEATHER_KEYWORDS)
+        and _looks_like_realtime_action_request(raw)
+    ):
+        topics.add("weather")
+    if _has_stock_topic(lowered) and (
+        _looks_like_realtime_action_request(raw) or _STOCK_QUOTE_CUES.search(raw)
+    ):
+        topics.add("stock")
+    if _has_fx_topic(lowered) and (
+        _looks_like_realtime_action_request(raw) or _FX_QUOTE_CUES.search(raw)
+    ):
+        topics.add("fx_rate")
+    if _CURRENT_TIME_QUERY.search(raw):
+        topics.add("current_time")
+    return topics
 
 
 def _extract_location(text: str) -> Optional[str]:
@@ -140,6 +287,118 @@ def _extract_location(text: str) -> Optional[str]:
         if loc in text:
             return loc
     return None
+
+
+def _extract_global_location(text: str) -> Optional[str]:
+    """Extract an explicit non-Taiwan place without guessing from context."""
+    raw = str(text or "").strip()
+    patterns = (
+        r"(?:請|麻煩|幫我|可以|能不能|能否)?(?:查一下|查詢|查|看看|看一下|告訴我)?\s*"
+        r"(?P<place>[A-Za-z\u3400-\u9fff·.\-\s]{2,40}?)"
+        r"(?:今天|明天|後天|今晚|現在|目前)?(?:的)?(?:天氣|氣溫|溫度|幾度|會不會下雨|會下雨)",
+        r"(?:weather|forecast)\s+(?:in|for)\s+(?P<place>[A-Za-z\u3400-\u9fff·.\-\s]{2,40})",
+        r"(?P<place>[A-Za-z\u3400-\u9fff·.\-\s]{2,40})\s+(?:weather|forecast)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, re.IGNORECASE)
+        if not match:
+            continue
+        place = re.sub(
+            r"^(?:今天|明天|後天|今晚|現在|目前|想知道|請問|我想知道)+|"
+            r"(?:如何|怎樣|怎麼樣|好嗎|嗎|呢|？|\?)+$",
+            "",
+            match.group("place").strip(),
+        ).strip(" ，,。")
+        if 2 <= len(place) <= 40:
+            return place
+    return None
+
+
+_WMO_WEATHER = {
+    0: "晴朗", 1: "大致晴朗", 2: "局部多雲", 3: "陰天",
+    45: "霧", 48: "霧淞", 51: "小毛毛雨", 53: "毛毛雨", 55: "較強毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨", 71: "小雪", 73: "中雪", 75: "大雪",
+    80: "短暫小雨", 81: "短暫中雨", 82: "強陣雨", 85: "短暫小雪", 86: "強陣雪",
+    95: "雷雨", 96: "雷雨伴小冰雹", 99: "雷雨伴大冰雹",
+}
+
+
+def _query_open_meteo(location_name: str, query_text: str) -> Dict[str, Any]:
+    """Query global weather through Open-Meteo's geocoder and forecast APIs."""
+    try:
+        import urllib.request
+
+        geo_url = _OPEN_METEO_GEOCODING_API + "?" + urlencode(
+            {"name": location_name, "count": 3, "language": "zh", "format": "json"}
+        )
+        with urllib.request.urlopen(urllib.request.Request(geo_url, headers={"Accept": "application/json"}), timeout=8) as response:
+            geocoded = json.loads(response.read().decode("utf-8"))
+        candidates = list(geocoded.get("results") or [])
+        if not candidates:
+            return {"success": False, "error": "location_not_found"}
+
+        chosen = candidates[0]
+        latitude = chosen.get("latitude")
+        longitude = chosen.get("longitude")
+        if latitude is None or longitude is None:
+            return {"success": False, "error": "coordinates_missing"}
+        forecast_url = _OPEN_METEO_FORECAST_API + "?" + urlencode(
+            {
+                "latitude": latitude,
+                "longitude": longitude,
+                "current": "temperature_2m,apparent_temperature,precipitation,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "auto",
+                "forecast_days": 3,
+            }
+        )
+        with urllib.request.urlopen(urllib.request.Request(forecast_url, headers={"Accept": "application/json"}), timeout=8) as response:
+            forecast = json.loads(response.read().decode("utf-8"))
+
+        daily = forecast.get("daily") or {}
+        index = 2 if "後天" in query_text else 1 if "明天" in query_text or "tomorrow" in query_text.lower() else 0
+        dates = list(daily.get("time") or [])
+        if index >= len(dates):
+            return {"success": False, "error": "forecast_period_missing"}
+        code = int((daily.get("weather_code") or [0])[index])
+        high = (daily.get("temperature_2m_max") or [None])[index]
+        low = (daily.get("temperature_2m_min") or [None])[index]
+        rain = (daily.get("precipitation_probability_max") or [None])[index]
+        place_parts: list[str] = []
+        # Geocoder administrative names may be returned in a non-Taiwan
+        # Chinese variant even with language=zh.  City + country is enough to
+        # identify the source location and avoids leaking inconsistent wording.
+        for item in (chosen.get("name"), chosen.get("country")):
+            value = str(item or "").strip()
+            for source, target in (
+                ("台湾", "臺灣"), ("台北", "臺北"), ("台中", "臺中"),
+                ("台南", "臺南"), ("台东", "臺東"),
+            ):
+                value = value.replace(source, target)
+            if value and value not in place_parts:
+                place_parts.append(value)
+        place = "、".join(place_parts)
+        period = "後天" if index == 2 else "明天" if index == 1 else "今天"
+        summary = f"{period}（{dates[index]}）：{_WMO_WEATHER.get(code, f'天氣代碼 {code}')}，{low}～{high}°C"
+        if rain is not None:
+            summary += f"，最高降雨機率 {rain}%"
+        current = forecast.get("current") or {}
+        current_line = ""
+        if index == 0 and current.get("temperature_2m") is not None:
+            current_line = (
+                f"\n目前 {current.get('temperature_2m')}°C（體感 {current.get('apparent_temperature')}°C），"
+                f"降水 {current.get('precipitation')} mm。"
+            )
+        return {
+            "success": True,
+            "location": place,
+            "source": "Open-Meteo Weather Forecast API",
+            "source_url": forecast_url,
+            "reply": f"以下是 {place} 的權威即時預報資料：\n{summary}{current_line}\n資料來源：Open-Meteo（{forecast_url}）",
+        }
+    except Exception as exc:
+        logger.warning("[RDG] Open-Meteo error: %s", exc)
+        return {"success": False, "error": type(exc).__name__}
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +413,14 @@ def _query_cwa_api(location_name: str) -> Dict[str, Any]:
 
     try:
         import urllib.request
-        params = f"?Authorization={api_key}&locationName={location_name}&elementName=Wx,PoP,MinT,MaxT"
-        url = _CWA_API_URL + params
+        official_name = _CWA_LOCATION_NAMES.get(location_name, location_name)
+        url = _CWA_API_URL + "?" + urlencode(
+            {
+                "Authorization": api_key,
+                "locationName": official_name,
+                "elementName": "Wx,PoP,MinT,MaxT",
+            }
+        )
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -288,13 +553,20 @@ def query_weather(query_text: str) -> Dict[str, Any]:
     """
     location = _extract_location(query_text)
     if not location:
-        # 無法辨識地點，還是拒絕猜測
+        global_location = _extract_global_location(query_text)
+        if global_location:
+            global_result = _query_open_meteo(global_location, query_text)
+            if global_result.get("success"):
+                return global_result
+            return {
+                "success": False,
+                "location": global_location,
+                "refusal": f"我目前無法從權威天氣來源核對 {global_location} 的預報，因此不會猜測。請稍後再試。",
+            }
         return {
             "success": False,
             "refusal": (
-                "我無法辨識您要查詢的地點。"
-                "請直接查閱中央氣象署網站：https://www.cwa.gov.tw/ "
-                "或告訴我具體的縣市名稱（例如「臺東」、「台北」）。"
+                "你想查哪個地點的天氣？請告訴我城市或縣市，例如「臺東」或「東京」。"
             ),
         }
 
@@ -306,6 +578,14 @@ def query_weather(query_text: str) -> Dict[str, Any]:
             f"{location} 天氣預報：\n{api_result['forecast']}"
         )
         return {**api_result, "reply": reply}
+
+    # The no-key CWA JS endpoint only covers the current/next 12 hours.  It
+    # must not be relabelled as tomorrow or the day after tomorrow; use the
+    # global forecast API for those explicit forecast periods instead.
+    if any(cue in query_text.lower() for cue in ("明天", "後天", "tomorrow")):
+        period_result = _query_open_meteo(_OPEN_METEO_LOCATION_NAMES.get(location, location), query_text)
+        if period_result.get("success"):
+            return period_result
 
     # 2. Scrape fallback（已升級為解析公開 JS 端點，會回真實溫度）
     scrape_result = _query_cwa_scrape(location)
@@ -408,6 +688,18 @@ def handle_realtime_query(query_text: str) -> Optional[Dict[str, Any]]:
                 "請查閱台灣銀行牌告匯率：https://rate.bot.com.tw/xrt "
                 "或中央銀行：https://www.cbc.gov.tw/"
             ),
+        }
+    elif qtype == "current_time":
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+        return {
+            "success": True,
+            "qtype": "current_time",
+            "source": "MAGI 主機系統時鐘（Asia/Taipei）",
+            "reply": f"現在是臺灣時間 {now:%Y-%m-%d} 星期{weekdays[now.weekday()]} {now:%H:%M:%S}。",
         }
 
     return None

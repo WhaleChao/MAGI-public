@@ -16,8 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from api.runtime_paths import get_runtime_dir
+
 ROOT = Path(__file__).resolve().parents[2]
-EVENTS_PATH = ROOT / ".runtime" / "osc_draft_learning_events.jsonl"
+EVENTS_PATH = get_runtime_dir() / "osc_draft_learning_events.jsonl"
 MAX_TEXT_CHARS = 60000
 MAX_NOTE_CHARS = 3000
 

@@ -1,0 +1,4698 @@
+{
+  "counts": {
+    "active_skill_entrypoints": 52,
+    "checked_in_launchagents": 3,
+    "cron_jobs": 105,
+    "daemon_child_declarations": 6,
+    "enabled_cron_jobs": 95,
+    "http_routes": 353,
+    "installed_launchagents": 0,
+    "skill_entrypoints": 52,
+    "test_modules": 125,
+    "versioned_skill_artifacts": 0
+  },
+  "cron_jobs": [
+    {
+      "command": "@MAGI 系統狀態",
+      "cron": "0 9 * * *",
+      "enabled": true,
+      "id": "job_1770699415",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 JUDGMENT_DAILY_TIME_BUDGET_SEC=1200 JUDGMENT_DAILY_COLLECT_TIMEOUT_SEC=180 JUDGMENT_DAILY_MAX_REASONS=5 JUDGMENT_SUMMARY_RETRY_ENABLE=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py' --task daily_crawl",
+      "cron": "0 4,10,16,22 * * *",
+      "enabled": true,
+      "id": "job_1770705679",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/memory/cortex_sync.py'",
+      "cron": "30 4 * * *",
+      "enabled": true,
+      "id": "job_1770948489644_0726cf",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_1770948489644_c5a469 --block-at throttle --timeout-sec 900 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/magi-autopilot/action.py' --task tick",
+      "cron": "0 */2 * * *",
+      "enabled": true,
+      "id": "job_1770948489644_c5a469",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_auto_skill_import.py'",
+      "cron": "15 1 * * *",
+      "enabled": true,
+      "id": "job_1770949442096_9e8adf",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/transcript-indexer/action.py --task index",
+      "cron": "0 2 * * *",
+      "enabled": false,
+      "id": "job_1772867062892_6cef0b",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "cd ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current && ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 skills/pdf-annotator/action.py --task annotate",
+      "cron": "10 2 * * *",
+      "enabled": false,
+      "id": "job_1772867062892_e33b6a",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/wiki_synthesizer.py --quiet",
+      "cron": "30 3 * * *",
+      "enabled": false,
+      "id": "job_1776221713533_0a5366",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_accounting_sheets -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/accounting_monthly_bonus.py' --commit --refresh-import --catch-up --export-xlsx",
+      "cron": "0 12 * * *",
+      "enabled": true,
+      "id": "job_accounting_monthly_bonus",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 300
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_accounting_sheets -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/import_accounting_sheet.py' --commit --include-previous",
+      "cron": "20 9 * * 1,5",
+      "enabled": true,
+      "id": "job_accounting_sheet_import",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 300
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/token_health_check.py' --refresh --threshold-days 7 --notify --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/token_health/token_health_latest.json'",
+      "cron": "10 */6 * * *",
+      "enabled": true,
+      "id": "job_api_token_health_check",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 180
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/backup_market_watchlist.py",
+      "cron": "25 3 * * *",
+      "enabled": true,
+      "id": "job_backup_market_watchlist",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/benchmark_osc_todos.py",
+      "cron": "50 3 * * *",
+      "enabled": true,
+      "id": "job_benchmark_osc_todos",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_benchmark_pdf_bookmarker --block-at core_only -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/benchmark_pdf_bookmarker.py'",
+      "cron": "40 14 * * *",
+      "enabled": true,
+      "id": "job_benchmark_pdf_bookmarker",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 900
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_benchmark_pdf_namer --block-at core_only -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/benchmark_pdf_namer.py",
+      "cron": "30 14 * * *",
+      "enabled": true,
+      "id": "job_benchmark_pdf_namer",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_BUSINESS_LIVE_CHECK_NOTIFY=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/business_module_live_check.py' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/business_module_live_check_latest.json'",
+      "cron": "7 0,6,12,18 * * *",
+      "enabled": true,
+      "id": "job_business_module_live_check",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 960
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/business_readiness_snapshot.py' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/static/business_readiness_latest.json'",
+      "cron": "4,14,24,34,44,54 * * * *",
+      "enabled": true,
+      "id": "job_business_readiness_snapshot",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 120
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task sync_case_notes",
+      "cron": "0 0 * * *",
+      "enabled": true,
+      "id": "job_case_index_sync",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/debug_cleanup.py",
+      "cron": "0 5 * * *",
+      "enabled": true,
+      "id": "job_debug_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DISK_CLEANUP_DRY_RUN=0 MAGI_DISK_NAS_RECYCLE_ENABLE=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/disk_cleanup_healthcheck.py' --apply",
+      "cron": "55 3 * * *",
+      "enabled": true,
+      "id": "job_disk_cleanup_healthcheck",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/disk_low_water_alarm.py'",
+      "cron": "5 * * * *",
+      "enabled": true,
+      "id": "job_disk_low_water_alarm",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/nightly_distill_gemma.py'",
+      "cron": "0 11 * * 0",
+      "enabled": true,
+      "id": "job_distill_train_gemma",
+      "long_job": true,
+      "resource_guarded": false,
+      "timeout_sec": 5400
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_drive_case_sync_all_files --block-at core_only --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 6000 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_drive_sync_readonly --require google_drive_sync_write -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=300 MAGI_DRIVE_SYNC_LOCAL_HASH_TIMEOUT_SEC=900 MAGI_DRIVE_SYNC_HTTP_TIMEOUT=90 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=90 MAGI_DRIVE_SYNC_API_RETRIES=3 MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=1500000000 MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=1500000000 MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=1500000000 MAGI_DRIVE_SYNC_RESUMABLE_UPLOAD_MIN_BYTES=8388608 MAGI_DRIVE_SYNC_UPLOAD_CHUNK_BYTES=8388608 MAGI_DRIVE_SYNC_DEFERRED_DOWNLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_DEFERRED_UPLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_UNVERIFIED_EXISTING_ARE_OK=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/drive_case_sync_worker.py' --direct-all-cases --direct-all-case-limit 1 --all-case-chunk-size 1 --execute-downloads --execute-uploads --no-create-drive-folders --download-limit 24 --upload-limit 24 --max-download-bytes 1500000000 --max-upload-bytes 1500000000 --max-case-depth 24 --max-case-items 20000 --create-drive-folder-limit 24 --create-drive-folder-max-age-hours 168 --priority-upcoming-days 0 --inventory-timeout-sec 5400 --terminal-headroom-sec 300",
+      "cron": "12,32,52 * * * *",
+      "enabled": true,
+      "id": "job_drive_case_sync_all_files",
+      "long_job": true,
+      "resource_guarded": true,
+      "timeout_sec": 6300
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_drive_case_sync_bidirectional --block-at core_only --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 900 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_drive_sync_readonly -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DRIVE_SYNC_HTTP_TIMEOUT=60 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=60 MAGI_DRIVE_SYNC_API_RETRIES=2 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/drive_case_sync_worker.py' --matched-case-limit 8 --download-limit 24 --upload-limit 24 --max-download-bytes 1500000000 --max-upload-bytes 1500000000 --max-case-depth 20 --max-case-items 1000 --create-drive-folder-limit 10 --create-drive-folder-max-age-hours 168 --priority-upcoming-days 21 --priority-case-limit 24 --no-downloads --no-uploads --no-create-drive-folders --inventory-timeout-sec 1200",
+      "cron": "1 */6 * * *",
+      "enabled": true,
+      "id": "job_drive_case_sync_bidirectional",
+      "long_job": true,
+      "resource_guarded": true,
+      "timeout_sec": 1200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_drive_case_sync_nightly --block-at core_only -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/drive_case_sync_inventory.py --file-diff --execute-downloads --max-case-depth 8 --max-case-items 500 --download-limit 300 --max-download-bytes 2000000000",
+      "cron": "20 3 * * *",
+      "enabled": false,
+      "id": "job_drive_case_sync_nightly",
+      "long_job": true,
+      "resource_guarded": true,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/cleanup_synology_empty_case_shells.py' --apply --limit 0 --max-seconds 240 --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/empty_case_shell_cleanup_latest.json'",
+      "cron": "8,23,38,53 * * * *",
+      "enabled": true,
+      "id": "job_empty_case_shell_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 300
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_exam_tutor_yearly_sync --block-at throttle --timeout-sec 3300 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/sync_exam_tutor_yearly.py'",
+      "cron": "40 4 * * 0",
+      "enabled": true,
+      "id": "job_exam_tutor_yearly_sync",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/file-review-orchestrator/action.py' --task scheduled_check",
+      "cron": "0 6-20 * * 1-5",
+      "enabled": true,
+      "id": "job_file_review_check",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_FILE_REVIEW_PROBE_WITH_GMAIL=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/file-review-orchestrator/action.py' --task 'downloadable_probe {\"days\":30,\"notify\":false}'",
+      "cron": "20,40 8-20 * * 1-5",
+      "enabled": true,
+      "id": "job_file_review_downloadable_probe_dense",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 420
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/file-review-orchestrator/action.py' --task 'cleanup_downloads {\"max_days\":7,\"pending_max_days\":14,\"quarantine_max_days\":14}'",
+      "cron": "47 3 * * *",
+      "enabled": true,
+      "id": "job_file_review_staging_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/function_health_index.py' --compact --fail-on-health --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/function_health_index_latest.json'",
+      "cron": "2,12,22,32,42,52 * * * *",
+      "enabled": true,
+      "id": "job_function_health_index",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 180
+    },
+    {
+      "command": "@MAGI 日曆同步",
+      "cron": "0 8 * * *",
+      "enabled": false,
+      "id": "job_gcal_sync",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/nightly_health_report.py",
+      "cron": "37 6 * * *",
+      "enabled": true,
+      "id": "job_health_report",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_heavy_translation_quality_live --block-at core_only --timeout-sec 420 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/heavy_translation_quality_live.py' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/heavy_translation_quality_latest.json'",
+      "cron": "25 4 * * *",
+      "enabled": true,
+      "id": "job_heavy_translation_quality_live",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 480
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/sync_insights_to_vectors.py --quiet",
+      "cron": "10 */2 * * *",
+      "enabled": true,
+      "id": "job_insight_sync",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py' --task 'retry_summary_queue_auto {\"notify\":false}'",
+      "cron": "30 22 * * *",
+      "enabled": true,
+      "id": "job_judgment_retry_evening",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_afternoon --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_DAY_RUNS_PER_DAY=5 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_day_process {\\\"max_docs\\\":240,\\\"summarize_max\\\":48,\\\"summary_mode\\\":\\\"extractive\\\",\\\"skip_assets\\\":true,\\\"vector_ingest\\\":false,\\\"force\\\":false,\\\"notify\\\":false}\"",
+      "cron": "30 15 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_afternoon",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_backlog_clear --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_DAY_RUNS_PER_DAY=5 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_day_process {\\\"max_docs\\\":240,\\\"summarize_max\\\":48,\\\"summary_mode\\\":\\\"extractive\\\",\\\"skip_assets\\\":true,\\\"vector_ingest\\\":false,\\\"force\\\":false,\\\"notify\\\":true}\"",
+      "cron": "30 21 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_backlog_clear",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_evening --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_DAY_RUNS_PER_DAY=5 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_day_process {\\\"max_docs\\\":240,\\\"summarize_max\\\":48,\\\"summary_mode\\\":\\\"extractive\\\",\\\"skip_assets\\\":true,\\\"vector_ingest\\\":false,\\\"force\\\":false,\\\"notify\\\":false}\"",
+      "cron": "30 19 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_evening",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_morning --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_DAY_RUNS_PER_DAY=5 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_day_process {\\\"max_docs\\\":240,\\\"summarize_max\\\":48,\\\"summary_mode\\\":\\\"extractive\\\",\\\"skip_assets\\\":true,\\\"vector_ingest\\\":false,\\\"force\\\":false,\\\"notify\\\":true}\"",
+      "cron": "40 6 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_morning",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_night_pull --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_WINDOW_START_HOUR=0 JUDICIAL_API_WINDOW_END_HOUR=6 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_night_pull {\\\"max_jdocs\\\":600,\\\"max_days\\\":3,\\\"force\\\":false,\\\"notify\\\":true}\"",
+      "cron": "5 0 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_night_pull",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_judicial_api_noon --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_JUDICIAL_API_LOAD_MODE=tlr_smart MAGI_PREFER_LOCAL_DB=1 MAGI_NO_DELETE=1 JUDGMENT_CACHE_ROOT_NAS_FALLBACK=${HOME}/.magi_mounts/lumi/MAGI_archives/magi_user_cache_offload/judgment_collector JUDICIAL_API_DAY_RUNS_PER_DAY=5 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py --task \"official_api_day_process {\\\"max_docs\\\":240,\\\"summarize_max\\\":48,\\\"summary_mode\\\":\\\"extractive\\\",\\\"skip_assets\\\":true,\\\"vector_ingest\\\":false,\\\"force\\\":false,\\\"notify\\\":false}\"",
+      "cron": "30 11 * * *",
+      "enabled": true,
+      "id": "job_judicial_api_noon",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2400
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/knowledge_lint.py' --quick --write-to-vault --quiet",
+      "cron": "47 5 * * *",
+      "enabled": true,
+      "id": "job_knowledge_lint",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py' --mode condition-mark-by-mediation",
+      "cron": "35 8 * * *",
+      "enabled": true,
+      "id": "job_laf_condition_dedup_scan",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py' --mode condition-draft --max-cases 3",
+      "cron": "40 8 * * *",
+      "enabled": true,
+      "id": "job_laf_condition_draft",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/laf_gmail_dispatch_scan.py' --max-results 80 --apply --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/static/laf_gmail_monitor_state.json'",
+      "cron": "2,17,32,47 * * * *",
+      "enabled": true,
+      "id": "job_laf_gmail_dispatch_scan",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 420
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/laf_nightly_audit.py'",
+      "cron": "55 2 * * *",
+      "enabled": true,
+      "id": "job_laf_nightly_audit",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/osc-orchestrator/action.py' --task laf_pending_scan",
+      "cron": "30 8 * * *",
+      "enabled": true,
+      "id": "job_laf_pending_scan",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 300
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/laf_portal_new_files_scan.py' --apply --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/static/laf_portal_new_files_latest.json'",
+      "cron": "15 */6 * * *",
+      "enabled": true,
+      "id": "job_laf_portal_new_files_scan",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 3900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py' --mode portal-retry-once --max-items 2 --timeout-sec 600",
+      "cron": "25 * * * *",
+      "enabled": true,
+      "id": "job_laf_portal_retry_once",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 750
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_legacy_judgment_resummary_quality --block-at throttle --timeout-sec 900 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/judgment_summary_staged_backfill.py' --scan-limit 480 --nvidia-limit 32 --nvidia-timeout 180 --local-min-score 80 --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/legacy_judgment_resummary_latest.json'",
+      "cron": "*/15 * * * *",
+      "enabled": true,
+      "id": "job_legacy_judgment_resummary_quality",
+      "long_job": true,
+      "resource_guarded": true,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_local_deep_queue_worker --block-at throttle --timeout-sec 1500 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/local_deep_queue_worker.py'",
+      "cron": "*/5 * * * *",
+      "enabled": true,
+      "id": "job_local_deep_queue_worker",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/magi_self_repair_guardian.py' --mode repair-safe --fail-on-issues --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/magi_self_repair_guardian_latest.json'",
+      "cron": "15 6 * * *",
+      "enabled": true,
+      "id": "job_magi_self_repair_guardian",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 300
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_MARKET_PUSH=1 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/market-briefing/action.py --task briefing --notify 1 --mode deep",
+      "cron": "45 8 * * 1-5",
+      "enabled": true,
+      "id": "job_market_briefing_script",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/model_live_gate.py' --expect auto --json --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/model_live_gate_latest.json'",
+      "cron": "10 * * * *",
+      "enabled": true,
+      "id": "job_model_live_gate",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 120
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_nas_pdf_ocr_worker_offpeak --block-at throttle --require-disk-free-gb 30 --require-free-inactive-gb 3 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/documents/nas_pdf_ocr_worker.py' work --batch 2",
+      "cron": "45 0-6,22-23 * * *",
+      "enabled": true,
+      "id": "job_nas_pdf_ocr_worker_offpeak",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DISK_CLEANUP_DRY_RUN=0 MAGI_DISK_NAS_RECYCLE_ENABLE=1 MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE=1 MAGI_DISK_NAS_RECYCLE_MAX_DELETE_ITEMS=20 MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_RUNTIME_SEC=900 MAGI_DISK_NAS_RECYCLE_HEAVY_MAX_FILES=5000 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/disk_cleanup_healthcheck.py' --apply",
+      "cron": "20 4 * * *",
+      "enabled": true,
+      "id": "job_nas_recycle_heavy_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_nightly_autopilot --block-at core_only -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/magi-autopilot/action.py --task nightly",
+      "cron": "0 22 * * *",
+      "enabled": true,
+      "id": "job_nightly_autopilot",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 28800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_nightly_bookmark_regex --block-at throttle -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/weekend_bookmark_batch.py' --stage regex --max-minutes 30 --single-doc-fastpath --skip-large-non-ocr --defer-large-ocr-pages 350 --file-timeout-sec 45 --write-followup-plan --enqueue-ocr-followups",
+      "cron": "15 2 * * *",
+      "enabled": true,
+      "id": "job_nightly_bookmark_regex",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2100
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/nightly_regression.py --json-out ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/static/nightly_regression_latest.json",
+      "cron": "30 2 * * *",
+      "enabled": true,
+      "id": "job_nightly_regression",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/obsidian_acceptance_gate.py' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/obsidian_acceptance_latest.json'",
+      "cron": "0 6 * * *",
+      "enabled": true,
+      "id": "job_obsidian_acceptance_gate",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task cleanup_duplicate_notes",
+      "cron": "10 4 * * *",
+      "enabled": true,
+      "id": "job_obsidian_duplicate_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' MAGI_USE_MARKITDOWN=0 MAGI_OBSIDIAN_OCR_MAX_PAGES=8 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task ingest_source --source '案件' --include-folders high-value --limit 4",
+      "cron": "35 2 * * *",
+      "enabled": true,
+      "id": "job_obsidian_ingest",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 2700
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_obsidian_repair_notes --block-at throttle --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 2400 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' MAGI_USE_MARKITDOWN=0 MAGI_OBSIDIAN_PDF_EXTRACTOR_TIMEOUT_SEC=45 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task repair_notes --limit 20 --reextract",
+      "cron": "27 3 * * *",
+      "enabled": true,
+      "id": "job_obsidian_repair_notes",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 2700
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_obsidian_vector_reindex_notes --block-at throttle --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 1800 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' MAGI_OBSIDIAN_INGEST_ZERO_CHUNKS_FIRST=1 MAGI_OBSIDIAN_INGEST_NOTE_LIMIT=120 MAGI_OBSIDIAN_CHECKPOINT_EVERY=5 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task ingest --folder 20_Notes",
+      "cron": "50 4 * * *",
+      "enabled": true,
+      "id": "job_obsidian_vector_reindex_notes",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_obsidian_vector_reindex_wiki --block-at throttle --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 1800 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' MAGI_OBSIDIAN_INGEST_ZERO_CHUNKS_FIRST=1 MAGI_OBSIDIAN_INGEST_NOTE_LIMIT=120 MAGI_OBSIDIAN_CHECKPOINT_EVERY=5 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/obsidian/action.py' --task ingest --folder 30_Wiki",
+      "cron": "20 5 * * *",
+      "enabled": true,
+      "id": "job_obsidian_vector_reindex_wiki",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' -- /bin/bash '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/config/bin/omlx_switch_model.sh' auto",
+      "cron": "3,18,33,48 * * * *",
+      "enabled": true,
+      "id": "job_omlx_profile_guard",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py -- /bin/bash ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/config/bin/omlx_switch_model.sh day",
+      "cron": "35,55 6 * * *",
+      "enabled": true,
+      "id": "job_omlx_switch_day",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py -- /bin/bash ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/config/bin/omlx_switch_model.sh night",
+      "cron": "50 21 * * *",
+      "enabled": true,
+      "id": "job_omlx_switch_night",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/audit_operational_hardening.py --cleanup-stale-locks --json-out ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/operational_hardening_audit_latest.json --fail-on-red",
+      "cron": "50 8 * * *",
+      "enabled": true,
+      "id": "job_operational_hardening_audit",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/system_diagnostic_report.py' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/system_diagnostic_report_latest.json'",
+      "cron": "0 16 * * *",
+      "enabled": true,
+      "id": "job_optimize_report",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 60
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/osc_auto_backup.py",
+      "cron": "0 3 * * *",
+      "enabled": true,
+      "id": "job_osc_auto_backup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_calendar -- MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_EVENTS_REFRESH_CALENDAR_LIMIT=500 OSC_EVENTS_REFRESH_GCAL_PUSH_LIMIT=200 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=50000 OSC_PDF_CALENDAR_FINAL_DOC_PRIORITY_CASE_LIMIT=2000 OSC_PDF_CALENDAR_TARGET_TIMEOUT_SEC=180 OSC_PDF_CALENDAR_BULK_TEXT_ENABLE=1 OSC_PDF_CALENDAR_FULL_TEXT_SCAN=1 OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES=1 OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT=10000 OSC_EVENTS_REFRESH_PDF_LIMIT=10000 OSC_EVENTS_REFRESH_PDF_CASE_BATCH=500 OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=3600 OSC_EVENTS_REFRESH_TRANSCRIPT_LIMIT=120 TRANSCRIPT_TODO_PDF_TIMEOUT_SEC=60 OSC_TRANSCRIPT_TODO_TIMEOUT_SEC=600 OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_REMEDIATE_ENABLE=1 '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/osc_events_refresh.py' --skip-drive-sync --skip-share-repair",
+      "cron": "35 */2 * * *",
+      "enabled": true,
+      "id": "job_osc_events_refresh",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/osc_gcal_sync.py",
+      "cron": "*/30 * * * *",
+      "enabled": false,
+      "id": "job_osc_gcal_sync",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/osc-orchestrator/action.py' --task 'index_cases {\"max_cases\":220,\"max_files_per_case\":120}'",
+      "cron": "7,22,37,52 * * * *",
+      "enabled": true,
+      "id": "job_osc_index_cases",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/reconcile_overdue_todos.py' --apply --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/overdue_todo_reconcile_latest.json'",
+      "cron": "15 4 * * *",
+      "enabled": true,
+      "id": "job_osc_overdue_todo_reconcile",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "@MAGI 掃描案件待辦 {\"max_cases\":220,\"max_files_per_case\":120,\"time_budget_sec\":1200,\"force_rebuild\":true}",
+      "cron": "30 7 * * *",
+      "enabled": false,
+      "id": "job_osc_scan_cases",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": null
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_calendar -- MAGI_GCAL_DEDUP_ENABLED=1 MAGI_GCAL_DEDUP_DRY_RUN=0 MAGI_GCAL_INCREMENTAL_IMPORT=1 MAGI_GCAL_REPAIR_EXISTING=1 OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP=1 OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT=50000 OSC_PDF_CALENDAR_FINAL_DOC_PRIORITY_CASE_LIMIT=2000 OSC_PDF_CALENDAR_FULL_TEXT_SCAN=1 OSC_PDF_CALENDAR_FULL_TEXT_ALL_CASES=1 OSC_PDF_CALENDAR_FULL_TEXT_SCAN_LIMIT=10000 OSC_PDF_CALENDAR_BUDGET_SEC=7200 OSC_PDF_CALENDAR_TARGET_TIMEOUT_SEC=180 OSC_PDF_CALENDAR_FILE_TIMEOUT_SEC=8 OSC_EVENTS_REFRESH_PDF_LIMIT=10000 OSC_EVENTS_REFRESH_PDF_CASE_BATCH=500 OSC_EVENTS_REFRESH_SCAN_BUDGET_SEC=7200 OSC_EVENTS_REFRESH_SOURCE_AUDIT_DRIVE_REMEDIATE_ENABLE=1 '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/osc_events_refresh.py' --force-rebuild",
+      "cron": "35 3 * * *",
+      "enabled": true,
+      "id": "job_osc_todo_governance",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 10800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_pdf_bookmark_label_repair --block-at throttle -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/repair_pdf_bookmark_labels.py' --apply --limit 12 --max-files 120 --max-dirs 2500 --max-seconds 1800 --per-file-timeout 90 --max-file-mb 80 --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/pdf_bookmark_label_repair_latest.json'",
+      "cron": "35 4 * * *",
+      "enabled": true,
+      "id": "job_pdf_bookmark_label_repair",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 2100
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_pdf_bookmark_large_volume_repair --block-at core_only -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/repair_pdf_bookmark_labels.py' --apply --limit 1 --max-files 40 --max-dirs 2500 --max-seconds 3600 --per-file-timeout 900 --min-file-mb 80 --max-file-mb 1600 --target-hint '閱卷資料' --target-hint '判決書' --target-hint '法院通知' --target-hint '程序裁定' --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/pdf_bookmark_large_volume_repair_latest.json'",
+      "cron": "55 4 * * *",
+      "enabled": true,
+      "id": "job_pdf_bookmark_large_volume_repair",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 3900
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/pdf-bookmarker/action.py --task self_test",
+      "cron": "20 3 * * *",
+      "enabled": true,
+      "id": "job_pdf_bookmarker_self_test",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_pdf_namer_nightly --block-at throttle --require-free-inactive-gb 6 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/pdf-namer/nightly_train.py --max-files 50",
+      "cron": "0 1 * * *",
+      "enabled": true,
+      "id": "job_pdf_namer_nightly",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/pdf-namer/action.py --task self_test",
+      "cron": "15 3 * * *",
+      "enabled": true,
+      "id": "job_pdf_namer_self_test",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/purge_persona_memories.py",
+      "cron": "45 3 * * *",
+      "enabled": true,
+      "id": "job_purge_persona",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_ALLOW_SCHEDULED_REBOOT=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/scheduled_reboot_guard.py' --mode day --apply --json",
+      "cron": "35 6 * * *",
+      "enabled": false,
+      "id": "job_reboot_before_day_model_switch",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 60
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_ALLOW_SCHEDULED_REBOOT=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/scheduled_reboot_guard.py' --mode night --apply --json",
+      "cron": "35 21 * * *",
+      "enabled": false,
+      "id": "job_reboot_before_night_model_switch",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 60
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/reprocess_insights.py --only-degraded --limit 30 --max-seconds 3300 --json-out ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/reprocess_insights_latest.json",
+      "cron": "30 0 * * *",
+      "enabled": true,
+      "id": "job_reprocess_insights",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 3900
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py --job-id job_research_brief_daily --block-at throttle -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_NO_DELETE=1 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/research-brief/action.py --task digest_all",
+      "cron": "35 7 * * *",
+      "enabled": true,
+      "id": "job_research_brief_daily",
+      "long_job": true,
+      "resource_guarded": true,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_governor.py' --json status",
+      "cron": "20 * * * *",
+      "enabled": true,
+      "id": "job_resource_governor",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 120
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/ops/self_repair_reporter.py' --force",
+      "cron": "20 6 * * *",
+      "enabled": true,
+      "id": "job_self_repair_reporter",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 120
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_SLOW_ARCHIVE_BWLIMIT_MBPS=80 MAGI_SLOW_ARCHIVE_MAX_RUNTIME_SEC=7200 MAGI_SLOW_ARCHIVE_RSYNC_TIMEOUT_SEC=600 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/start_slow_archive_closed_cases.py' --apply --limit 3 --min-size-mb 0 --bwlimit-mbps 80 --max-runtime-sec 7200 --rsync-timeout-sec 600 --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/slow_archive_closed_cases_latest.json'",
+      "cron": "40 5 * * *",
+      "enabled": true,
+      "id": "job_slow_archive_closed_cases",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7500
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/smoke_external_chat.py",
+      "cron": "45 6 * * *",
+      "enabled": true,
+      "id": "job_smoke_external_chat",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "/usr/bin/open ${MAGI_EXTERNAL_VOLUME_PATH}",
+      "cron": "2 0 * * *",
+      "enabled": false,
+      "id": "job_supreme_court_interpreter_backfill",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/tailscale_funnel_healthcheck.py' --apply --json-out '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.runtime/tailscale_funnel_health_latest.json'",
+      "cron": "*/10 * * * *",
+      "enabled": true,
+      "id": "job_tailscale_funnel_healthcheck",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 90
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/transcript-indexer/action.py' --task index",
+      "cron": "30 6,21 * * *",
+      "enabled": true,
+      "id": "job_transcript_indexer",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/transcript-downloader/action.py' --task self_test",
+      "cron": "5 3 * * *",
+      "enabled": true,
+      "id": "job_transcript_self_test",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/transcript-downloader/action.py' --task sync",
+      "cron": "8 */2 * * *",
+      "enabled": true,
+      "id": "job_transcript_sync",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py MAGI_TRANSLATOR_APE=1 -- ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/benchmark_translator_ape.py",
+      "cron": "15 13 * * *",
+      "enabled": true,
+      "id": "job_translator_ape_regression",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_weekend_bookmark --block-at throttle --require-free-inactive-gb 6 --timeout-sec 19800 --termination-grace-sec 60 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/weekend_bookmark_batch.py' --stage all --max-minutes 330 --max-runtime-minutes 300 --vision-max-pages 350 --single-doc-fastpath --skip-large-non-ocr --defer-large-ocr-pages 350 --file-timeout-sec 45 --write-followup-plan --enqueue-ocr-followups",
+      "cron": "15 3 * * 6,0",
+      "enabled": true,
+      "id": "job_weekend_bookmark",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 21600
+    },
+    {
+      "command": "${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3 ${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/weekend_resummary.py",
+      "cron": "30 6 * * *",
+      "enabled": true,
+      "id": "job_weekend_resummary",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/weekly_cache_cleanup.py'",
+      "cron": "10 4 * * 0",
+      "enabled": true,
+      "id": "job_weekly_cache_cleanup",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 1800
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py' --task daily_crawl",
+      "cron": "0 3 * * 0",
+      "enabled": true,
+      "id": "job_weekly_legal_crawl",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 7200
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' 'MAGI_OBSIDIAN_AGENT_DIR=${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/.agent' MAGI_WIKI_FALLBACK_RETRY_HOURS=72 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/wiki_synthesizer.py' --quiet --limit 12",
+      "cron": "40 4 * * *",
+      "enabled": true,
+      "id": "job_wiki_synthesizer",
+      "long_job": false,
+      "resource_guarded": false,
+      "timeout_sec": 3600
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_worldmonitor_intel --block-at core_only -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/worldmonitor-intel/action.py' --task collect --no-reasoning --plain-output",
+      "cron": "0 8 * * *",
+      "enabled": true,
+      "id": "job_worldmonitor_intel",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 900
+    },
+    {
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_PDF_NAMER_DOCLING_ENABLED=1 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/pdf-namer/nightly_layout.py'",
+      "cron": "40 2 * * *",
+      "enabled": true,
+      "id": "pdfnamer_docling_layout",
+      "long_job": false,
+      "resource_guarded": true,
+      "timeout_sec": 1800
+    }
+  ],
+  "daemon_children": [
+    {
+      "declaration": "[_PYTHON, \"api/discord_bot.py\"]",
+      "line": 2023,
+      "name": "Discord",
+      "source": "daemon.py"
+    },
+    {
+      "declaration": "[_PYTHON, \"skills/ops/file_review_auto_worker.py\"]",
+      "line": 2088,
+      "name": "FileReviewAuto",
+      "source": "daemon.py"
+    },
+    {
+      "declaration": "[_PYTHON, \"skills/ops/heartbeat.py\"]",
+      "line": 2094,
+      "name": "Heartbeat",
+      "source": "daemon.py"
+    },
+    {
+      "declaration": "[_PYTHON, \"api/server.py\"]",
+      "line": 2019,
+      "name": "Server",
+      "source": "daemon.py"
+    },
+    {
+      "declaration": "[_PYTHON, \"api/tools_api.py\"]",
+      "line": 2030,
+      "name": "ToolsAPI",
+      "source": "daemon.py"
+    },
+    {
+      "declaration": "[_PYTHON, _website_admin, \"--port\", str(_wa_port)]",
+      "line": 2114,
+      "name": "WebsiteAdmin",
+      "source": "daemon.py"
+    }
+  ],
+  "http_routes": [
+    {
+      "handler": "nerv_api_health",
+      "line": 1764,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/nerv/api/health",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "nerv_api_health",
+      "line": 1764,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/status/api/health",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_remote_access",
+      "line": 1804,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/nerv/remote-access",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_admin_observability_support_bundle",
+      "line": 1815,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/admin/observability/support-bundle",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_remote_access_action",
+      "line": 1874,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/nerv/remote-access/action",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_system_test",
+      "line": 1911,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/system-test",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_self_repair",
+      "line": 1927,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/self-repair",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_skill_interview_status",
+      "line": 1961,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/nerv/skill-interview",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_skill_interview_start",
+      "line": 1979,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/nerv/skill-interview/start",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_skill_interview_reply",
+      "line": 2002,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/nerv/skill-interview/reply",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_skill_interview_history",
+      "line": 2037,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/skills/interview-history",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_skill_versions",
+      "line": 2052,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/skills/<skill_name>/versions",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_skill_rollback",
+      "line": 2072,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/skills/<skill_name>/rollback",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_skills",
+      "line": 2114,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/nerv/skills",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_product_runtime",
+      "line": 2125,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/nerv/product-runtime",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_heavy_runtime",
+      "line": 2165,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/nerv/heavy-runtime",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_nerv_skill_detail",
+      "line": 2215,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/nerv/skills/<skill_name>",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_codex_distributed_status",
+      "line": 2308,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/codex-distributed/status",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_codex_distributed_toggle",
+      "line": 2321,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/codex-distributed/toggle",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_status",
+      "line": 2999,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/api/status",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_live_log",
+      "line": 3010,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/api/live-log",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_live_validation",
+      "line": 3026,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/live-validation",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_drive_case_exclusions_list",
+      "line": 3074,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/drive-case-exclusions",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_drive_case_exclusions_add",
+      "line": 3085,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/drive-case-exclusions",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "api_drive_case_exclusions_remove",
+      "line": 3108,
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/drive-case-exclusions",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "livez",
+      "line": 3128,
+      "methods": [
+        "GET"
+      ],
+      "path": "/livez",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "readyz",
+      "line": 3139,
+      "methods": [
+        "GET"
+      ],
+      "path": "/readyz",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "saas_readyz",
+      "line": 3282,
+      "methods": [
+        "GET"
+      ],
+      "path": "/saas-readyz",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "health",
+      "line": 3287,
+      "methods": [
+        "GET"
+      ],
+      "path": "/health",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "transcribe_audio",
+      "line": 3717,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/transcribe",
+      "source": "api/blueprints/admin_runtime.py"
+    },
+    {
+      "handler": "cookie_cutter_page",
+      "line": 77,
+      "methods": [
+        "GET"
+      ],
+      "path": "/cookie-cutter",
+      "source": "api/blueprints/cookie_cutter.py"
+    },
+    {
+      "handler": "cookie_cutter_prepare_api",
+      "line": 84,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cookie-cutter/prepare",
+      "source": "api/blueprints/cookie_cutter.py"
+    },
+    {
+      "handler": "cookie_cutter_generate_api",
+      "line": 125,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/cookie-cutter/generate",
+      "source": "api/blueprints/cookie_cutter.py"
+    },
+    {
+      "handler": "worldmonitor_reports_redirect",
+      "line": 513,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/static/worldmonitor_reports",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "worldmonitor_reports_redirect",
+      "line": 513,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/static/worldmonitor_reports/",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "worldmonitor_entry",
+      "line": 519,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/worldmonitor",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "worldmonitor_entry",
+      "line": 519,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/worldmonitor/",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "intel_panel",
+      "line": 525,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/intel",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "intel_refresh",
+      "line": 543,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/intel/refresh",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "api_skills_run_compat",
+      "line": 550,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/skills/run",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "research_panel",
+      "line": 1067,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/magi-research",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "research_panel",
+      "line": 1067,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/research",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "research_judgment_classifier",
+      "line": 1073,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/research/judgment-classifier",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "research_rss_preview",
+      "line": 1079,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/research/rss-preview",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "dashboard",
+      "line": 1113,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "dashboard_legacy",
+      "line": 1119,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/legacy",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "dashboard_beginner",
+      "line": 1126,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/beginner",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "dashboard_beginner",
+      "line": 1126,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/start",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "status_center",
+      "line": 1133,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/status",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "status_center",
+      "line": 1133,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/status",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "magi_adjust",
+      "line": 1142,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/nerv",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "magi_adjust",
+      "line": 1142,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/magi-adjust",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "magi_adjust",
+      "line": 1142,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/magi-settings",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "magi_adjust",
+      "line": 1142,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/nerv",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "golem_console",
+      "line": 1149,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/golem",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "golem_console",
+      "line": 1149,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/golem",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_home",
+      "line": 1156,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/app",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_home",
+      "line": 1156,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_admin",
+      "line": 1166,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/app-admin",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_admin",
+      "line": 1166,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile-admin",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_config_json",
+      "line": 1175,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile/config.json",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_service_worker",
+      "line": 1180,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile/sw.js",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "mobile_manifest",
+      "line": 1194,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile/manifest.webmanifest",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "dashboard_website",
+      "line": 1226,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/dashboard/website",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "exam_tutor_page",
+      "line": 3854,
+      "methods": [
+        "GET"
+      ],
+      "path": "/exam-tutor",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_archive_file",
+      "line": 3859,
+      "methods": [
+        "GET"
+      ],
+      "path": "/exam-tutor/archive/<path:relative_path>",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_choice_bank_api",
+      "line": 3872,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/exam-tutor/choice-bank",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_essay_bank_api",
+      "line": 3882,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/exam-tutor/essay-bank",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_trends_api",
+      "line": 3895,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/exam-tutor/trends",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_choice_attempt_api",
+      "line": 3908,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/exam-tutor/choice-attempt",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_choice_import_api",
+      "line": 3920,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/exam-tutor/choice-import",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "exam_tutor_review_api",
+      "line": 3931,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/exam-tutor/review",
+      "source": "api/blueprints/exam_tutor.py"
+    },
+    {
+      "handler": "golem_status_api",
+      "line": 255,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/golem/status",
+      "source": "api/blueprints/golem_console.py"
+    },
+    {
+      "handler": "golem_api_keys_api",
+      "line": 282,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/golem/api-keys",
+      "source": "api/blueprints/golem_console.py"
+    },
+    {
+      "handler": "golem_skills_api",
+      "line": 337,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/golem/skills",
+      "source": "api/blueprints/golem_console.py"
+    },
+    {
+      "handler": "golem_logs_api",
+      "line": 346,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/golem/logs",
+      "source": "api/blueprints/golem_console.py"
+    },
+    {
+      "handler": "golem_command_api",
+      "line": 362,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/golem/command",
+      "source": "api/blueprints/golem_console.py"
+    },
+    {
+      "handler": "lottery_page",
+      "line": 206,
+      "methods": [
+        "GET"
+      ],
+      "path": "/lottery",
+      "source": "api/blueprints/lottery.py"
+    },
+    {
+      "handler": "lottery_draw_api",
+      "line": 211,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/lottery/draw",
+      "source": "api/blueprints/lottery.py"
+    },
+    {
+      "handler": "osc_accounting_transactions_api",
+      "line": 93,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/accounting/transactions",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_transactions_xlsx_api",
+      "line": 136,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/accounting/transactions/xlsx",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_transaction_detail_api",
+      "line": 240,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/accounting/transactions/<int:row_id>",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_summary_api",
+      "line": 286,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/accounting/summary",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_google_sheet_import_api",
+      "line": 302,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/accounting/import/google-sheet",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_monthly_bonus_api",
+      "line": 338,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/accounting/monthly-bonus",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_monthly_bonus_xlsx_api",
+      "line": 375,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/accounting/monthly-bonus/xlsx",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_defaults_api",
+      "line": 401,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/accounting/defaults",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_default_detail_api",
+      "line": 438,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/accounting/defaults/<int:row_id>",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_recurring_api",
+      "line": 476,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/accounting/recurring",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_recurring_detail_api",
+      "line": 535,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/accounting/recurring/<int:row_id>",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_accounting_recurring_sync_generated_api",
+      "line": 574,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/accounting/recurring/<int:row_id>/sync-generated",
+      "source": "api/blueprints/osc_accounting.py"
+    },
+    {
+      "handler": "osc_meta_api",
+      "line": 1275,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/meta",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_cases_api",
+      "line": 1559,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/cases",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_detail_api",
+      "line": 1861,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/cases/<row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_close_api",
+      "line": 1974,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/close",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_archive_job_status_api",
+      "line": 3460,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/archive-jobs/<job_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_open_folder_api",
+      "line": 3488,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/open-folder",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_folder_path_api",
+      "line": 3555,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/folder-path",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_create_folder_api",
+      "line": 3610,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/create-folder",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_rename_folder_api",
+      "line": 3703,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/rename-folder",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_folder_browser_api",
+      "line": 3782,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/folder-browser",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_file_search_api",
+      "line": 3847,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/file-search",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_quick_action_api",
+      "line": 3958,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/quick-action",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_client_workbench_api",
+      "line": 4054,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/clients/<row_id>/workbench",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_workbench_api",
+      "line": 4183,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/workbench",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_intelligence_api",
+      "line": 4364,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/case-intelligence",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_intelligence_for_case_api",
+      "line": 4380,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/intelligence-snapshot",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_dashboard_api",
+      "line": 4400,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/dashboard",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_overview_api",
+      "line": 4547,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/overview",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_conflict_check_api",
+      "line": 4554,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/saas/conflict-check",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_intake_api",
+      "line": 4561,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/saas/intake",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_quality_check_api",
+      "line": 4582,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/saas/quality-check",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_client_packet_api",
+      "line": 4589,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/saas/client-packet",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_timeline_api",
+      "line": 4596,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/timeline",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_task_boards_api",
+      "line": 4603,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/task-boards",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_onboarding_api",
+      "line": 4610,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/saas/onboarding",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_notification_prefs_api",
+      "line": 4625,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/saas/notification-prefs",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_workflow_templates_api",
+      "line": 4639,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/workflow-templates",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_ai_governance_api",
+      "line": 4645,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/ai-governance",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_operations_report_api",
+      "line": 4651,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/operations-report",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_saas_diagnostic_pack_api",
+      "line": 4657,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/saas/diagnostic-pack",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_reason_templates_api",
+      "line": 4675,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/case-reason-templates",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_reason_template_detail_api",
+      "line": 4726,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/case-reason-templates/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_activity_logs_api",
+      "line": 4761,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/activity-logs",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_activity_log_detail_api",
+      "line": 4803,
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "path": "/api/osc/activity-logs/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_user_settings_api",
+      "line": 4820,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/user-settings",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_user_setting_detail_api",
+      "line": 4858,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/user-settings/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_memory_keywords_api",
+      "line": 4890,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/memory-keywords",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_memory_keyword_detail_api",
+      "line": 4928,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/memory-keywords/<path:case_number>/<path:hotkey>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_opponents_api",
+      "line": 4968,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/opponents",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_opponent_detail_api",
+      "line": 5008,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/opponents/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_pdf_generation_log_api",
+      "line": 5043,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/pdf-generation-log",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_pdf_generation_log_detail_api",
+      "line": 5068,
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "path": "/api/osc/pdf-generation-log/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_meta_api",
+      "line": 5086,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/drafts/meta",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_generate_api",
+      "line": 5124,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/drafts/generate",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_feedback_recent_api",
+      "line": 5310,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/drafts/feedback",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_feedback_post_api",
+      "line": 5317,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/drafts/feedback",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_export_api",
+      "line": 5343,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/drafts/export",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_drafts_reuse_document_api",
+      "line": 5584,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/drafts/reuse-document",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_documents_api",
+      "line": 5715,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/documents",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_template_folder_api",
+      "line": 5881,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/template-folder",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_documents_open_api",
+      "line": 5940,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/documents/open",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_file_content_api",
+      "line": 6453,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/files/content",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_file_text_api",
+      "line": 6593,
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/files/text",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_file_upload_api",
+      "line": 6648,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/files/upload",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_templates_api",
+      "line": 6739,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/document-templates",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_template_detail_api",
+      "line": 6793,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/document-templates/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_keywords_api",
+      "line": 6828,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/document-keywords",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_keyword_detail_api",
+      "line": 6889,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/document-keywords/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_replacements_api",
+      "line": 6927,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/document-replacements",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_document_replacement_detail_api",
+      "line": 6970,
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "path": "/api/osc/document-replacements/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_api",
+      "line": 6987,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/laf",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_cases_api",
+      "line": 7053,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/laf/cases",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_batch_status_api",
+      "line": 7122,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/laf/batch-status",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_case_status_api",
+      "line": 7153,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/laf-status",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_quotations_api",
+      "line": 7253,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/quotations",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_quotation_detail_api",
+      "line": 7353,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/quotations/<row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_quotation_templates_api",
+      "line": 7396,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/quotation-templates",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_quotation_template_detail_api",
+      "line": 7431,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/quotation-templates/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_hearing_conflicts_api",
+      "line": 7529,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/hearing-conflicts",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_hearing_conflicts_check_api",
+      "line": 7582,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/hearing-conflicts/check",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_hearing_conflicts_generate_api",
+      "line": 7613,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/hearing-conflicts/generate",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_hearing_conflicts_download_api",
+      "line": 7706,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/hearing-conflicts/download",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_calendar_events_api",
+      "line": 7730,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/calendar/events",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_calendar_event_detail_api",
+      "line": 7855,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/calendar/events/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_clients_api",
+      "line": 7916,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/clients",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_client_detail_api",
+      "line": 7973,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/clients/<row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_meetings_api",
+      "line": 8006,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/meetings",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_meeting_detail_api",
+      "line": 8077,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/meetings/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_todos_api",
+      "line": 8111,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/todos",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_todos_bulk_complete_before_api",
+      "line": 8239,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/todos/bulk-complete-before",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_todo_detail_api",
+      "line": 8274,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/todos/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_insights_api",
+      "line": 8348,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/insights",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_insight_detail_api",
+      "line": 8421,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/insights/<insight_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_insights_fetch_full_api",
+      "line": 8453,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/insights/fetch-full",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_judgments_compat_api",
+      "line": 8541,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/judgments",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_forms_preview_api",
+      "line": 8559,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/forms/preview",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_forms_export_api",
+      "line": 8625,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/forms/export",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_documents_stamp_preview_api",
+      "line": 8841,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/documents/stamp-preview",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_documents_stamp_api",
+      "line": 8896,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/documents/stamp",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_documents_finalize_api",
+      "line": 9126,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/documents/finalize",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_cases_import_csv_api",
+      "line": 9374,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/import-csv",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_cases_export_csv_api",
+      "line": 9473,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/export-csv",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_cases_export_xlsx_api",
+      "line": 9494,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/export-xlsx",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_clients_import_csv_api",
+      "line": 9539,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/clients/import-csv",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_clients_export_csv_api",
+      "line": 9626,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/clients/export-csv",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_wizard_run_api",
+      "line": 9667,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/laf-wizard/run",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_backfill_api",
+      "line": 9724,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/laf-backfill",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_archive_wizard_preview_api",
+      "line": 9742,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/archive-wizard/preview",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_archive_wizard_execute_api",
+      "line": 9753,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/archive-wizard/execute",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_labor_law_calc",
+      "line": 9872,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/labor-law/calc",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_labor_law_parse_files",
+      "line": 9967,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/labor-law/parse-files",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_debt_required_get",
+      "line": 10207,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/checklists/debt-required",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_debt_required_save",
+      "line": 10229,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/checklists/debt-required/save",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_laf_number_sync",
+      "line": 10278,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/cases/<row_id>/laf-number/sync",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_checklist_get",
+      "line": 10305,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/checklists/legal-aid",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_checklist_post",
+      "line": 10332,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/checklists/legal-aid",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_checklist_put",
+      "line": 10359,
+      "methods": [
+        "PUT"
+      ],
+      "path": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_checklist_delete",
+      "line": 10379,
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_laf_checklist_seed",
+      "line": 10386,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/checklists/legal-aid/seed",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_checklist_get",
+      "line": 10415,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/checklists/case",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_checklist_post",
+      "line": 10439,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/checklists/case",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_checklist_put",
+      "line": 10463,
+      "methods": [
+        "PUT"
+      ],
+      "path": "/api/osc/checklists/case/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_checklist_delete",
+      "line": 10482,
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/osc/checklists/case/<int:row_id>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_backup_list",
+      "line": 10655,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/backups",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_backup_create",
+      "line": 10665,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/backups",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_backup_restore",
+      "line": 10679,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/backups/<filename>/restore",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_backup_delete",
+      "line": 10783,
+      "methods": [
+        "DELETE"
+      ],
+      "path": "/api/osc/backups/<filename>",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_quotation_export_pdf",
+      "line": 11134,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/quotations/<row_id>/export-pdf",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "osc_case_address_label",
+      "line": 11248,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/cases/<row_id>/address-label",
+      "source": "api/blueprints/osc_cases.py"
+    },
+    {
+      "handler": "debt_forms_list",
+      "line": 443,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/forms",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_form_schema",
+      "line": 449,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/schema/<form_type>",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_courts_list",
+      "line": 458,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/courts",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_expense_reference",
+      "line": 464,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/expense-reference",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_source_status",
+      "line": 477,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/source-status",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_import_candidates",
+      "line": 486,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/import-candidates",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_scan_evidence",
+      "line": 497,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/scan-evidence/<case_id>",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_cases_list",
+      "line": 571,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/debt/cases",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_address_data",
+      "line": 602,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/debt/address-data",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_generate_document",
+      "line": 633,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/generate",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_supplement_checklist",
+      "line": 703,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/supplement-checklist",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_batch_generate",
+      "line": 724,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/batch-generate",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_auto_import",
+      "line": 797,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/auto-import",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_validate",
+      "line": 892,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/validate",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "debt_merge_pdf",
+      "line": 936,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/debt/merge-pdf",
+      "source": "api/blueprints/osc_debt.py"
+    },
+    {
+      "handler": "osc_folder_roots_api",
+      "line": 1251,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/folders/roots",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_upload_multi_api",
+      "line": 1398,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/files/upload-multi",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_upload_chunked_api",
+      "line": 1515,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/files/upload-chunked",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_folders_mkdir_api",
+      "line": 1682,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/folders/mkdir",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_folders_rename_api",
+      "line": 1720,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/folders/rename",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_folders_move_api",
+      "line": 1761,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/folders/move",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_folders_tree_api",
+      "line": 1839,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/folders/tree",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_preview_api",
+      "line": 1928,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/files/preview",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_info_api",
+      "line": 2027,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/files/info",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_share_create_api",
+      "line": 2059,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/files/share",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_files_public_share_api",
+      "line": 2132,
+      "methods": [
+        "GET"
+      ],
+      "path": "/s/<token>",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "osc_folders_browse_api",
+      "line": 2181,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/folders/browse",
+      "source": "api/blueprints/osc_files.py"
+    },
+    {
+      "handler": "gcal_status",
+      "line": 174,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/gcal/status",
+      "source": "api/blueprints/osc_gcal.py"
+    },
+    {
+      "handler": "gcal_auth_start",
+      "line": 213,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/gcal/auth/start",
+      "source": "api/blueprints/osc_gcal.py"
+    },
+    {
+      "handler": "gcal_auth_callback",
+      "line": 253,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/gcal/auth/callback",
+      "source": "api/blueprints/osc_gcal.py"
+    },
+    {
+      "handler": "gcal_disconnect",
+      "line": 318,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/gcal/disconnect",
+      "source": "api/blueprints/osc_gcal.py"
+    },
+    {
+      "handler": "gcal_sync",
+      "line": 335,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/gcal/sync",
+      "source": "api/blueprints/osc_gcal.py"
+    },
+    {
+      "handler": "osc_pdf_info_api",
+      "line": 2328,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/pdf/info",
+      "source": "api/blueprints/osc_pdf.py"
+    },
+    {
+      "handler": "osc_pdf_upload_api",
+      "line": 2338,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/pdf/upload",
+      "source": "api/blueprints/osc_pdf.py"
+    },
+    {
+      "handler": "osc_pdf_action_api",
+      "line": 2357,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/pdf/action",
+      "source": "api/blueprints/osc_pdf.py"
+    },
+    {
+      "handler": "osc_pdf_calendar_scan_api",
+      "line": 2502,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/pdf/calendar-scan",
+      "source": "api/blueprints/osc_pdf.py"
+    },
+    {
+      "handler": "osc_settings_api",
+      "line": 28,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/settings",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_setting_detail_api",
+      "line": 62,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/settings/<path:setting_key>",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_courts_api",
+      "line": 92,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/courts",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_court_detail_api",
+      "line": 131,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/courts/<int:row_id>",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_legal_aid_branches_api",
+      "line": 161,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/osc/legal-aid-branches",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_legal_aid_branch_detail_api",
+      "line": 196,
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "path": "/api/osc/legal-aid-branches/<int:row_id>",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "osc_discord_test_api",
+      "line": 228,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/discord/test",
+      "source": "api/blueprints/osc_settings.py"
+    },
+    {
+      "handler": "raziel_status_api",
+      "line": 641,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/raziel/status",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "raziel_run_api",
+      "line": 675,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/raziel/run",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "raziel_tlr_preview_api",
+      "line": 689,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/raziel/tlr-preview",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "raziel_delivery_api",
+      "line": 702,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/raziel/delivery",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "raziel_delivery_file_api",
+      "line": 712,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/raziel/delivery/<path:name>",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "raziel_file_api",
+      "line": 724,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/raziel/file/<kind>",
+      "source": "api/blueprints/raziel.py"
+    },
+    {
+      "handler": "page",
+      "line": 23,
+      "methods": [
+        "GET"
+      ],
+      "path": "/sentencing-trends",
+      "source": "api/blueprints/sentencing_trends.py"
+    },
+    {
+      "handler": "search_api",
+      "line": 29,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/sentencing-trends/search",
+      "source": "api/blueprints/sentencing_trends.py"
+    },
+    {
+      "handler": "process_monitor_page",
+      "line": 953,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/ops/process-monitor",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "api_memory_stats",
+      "line": 958,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/memory/stats",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "api_memory_recall",
+      "line": 1037,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/memory/recall",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "api_memory_remember",
+      "line": 1058,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/memory/remember",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "api_memory_obsidian_sync",
+      "line": 1077,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/memory/obsidian-sync",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "process_monitor_api",
+      "line": 1092,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ops/process-monitor",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "process_guardian_toggle_api",
+      "line": 1108,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/ops/process-guardian/toggle",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_chat_api",
+      "line": 1121,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/chat",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_magi_modules_run_api",
+      "line": 1150,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/magi-modules/run",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_chat_upload_api",
+      "line": 1220,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/osc/chat/upload",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_poll_api",
+      "line": 1393,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/poll",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_judgments_api",
+      "line": 1411,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/osc/judgments_legacy",
+      "source": "api/blueprints/web_runtime.py"
+    },
+    {
+      "handler": "osc_interface",
+      "line": 615,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/osc",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "osc_debt_interface",
+      "line": 621,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/osc/debt",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "serve_exports",
+      "line": 627,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/exports/<path:filename>",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "toolsapi_compat_proxy",
+      "line": 642,
+      "methods": [
+        "DELETE",
+        "GET",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT"
+      ],
+      "path": "/toolsapi/<path:subpath>",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "index",
+      "line": 821,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "favicon",
+      "line": 830,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/favicon.ico",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "login",
+      "line": 835,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/login",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "mobile_app_entry",
+      "line": 870,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/mobile-app",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "register",
+      "line": 875,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/register",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "logout",
+      "line": 907,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/logout",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "callback",
+      "line": 919,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/callback",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "callback",
+      "line": 919,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/line/webhook",
+      "source": "api/server.py"
+    },
+    {
+      "handler": "static_exports",
+      "line": 403,
+      "methods": [
+        "GET"
+      ],
+      "path": "/static/exports/<path:filename>",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "livez",
+      "line": 1266,
+      "methods": [
+        "GET"
+      ],
+      "path": "/livez",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "health",
+      "line": 1276,
+      "methods": [
+        "GET"
+      ],
+      "path": "/health",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "external_osc_health",
+      "line": 1284,
+      "methods": [
+        "GET"
+      ],
+      "path": "/osc/external/health",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "external_osc_chat",
+      "line": 1302,
+      "methods": [
+        "POST"
+      ],
+      "path": "/osc/external/chat",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "external_osc_ui",
+      "line": 1574,
+      "methods": [
+        "GET"
+      ],
+      "path": "/osc/external/ui",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "external_osc_case_status",
+      "line": 1631,
+      "methods": [
+        "POST"
+      ],
+      "path": "/osc/external/case_status",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "connections_status",
+      "line": 1688,
+      "methods": [
+        "GET"
+      ],
+      "path": "/connections",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "sages_status",
+      "line": 1769,
+      "methods": [
+        "GET"
+      ],
+      "path": "/sages",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_search",
+      "line": 1819,
+      "methods": [
+        "POST"
+      ],
+      "path": "/search",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_research",
+      "line": 1851,
+      "methods": [
+        "POST"
+      ],
+      "path": "/research",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_fetch",
+      "line": 1892,
+      "methods": [
+        "POST"
+      ],
+      "path": "/fetch",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_vision",
+      "line": 1927,
+      "methods": [
+        "POST"
+      ],
+      "path": "/vision",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_melchior_health",
+      "line": 2083,
+      "methods": [
+        "GET"
+      ],
+      "path": "/melchior/health",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_melchior_sync_skills",
+      "line": 2090,
+      "methods": [
+        "POST"
+      ],
+      "path": "/melchior/skills/sync",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_summarize",
+      "line": 2103,
+      "methods": [
+        "POST"
+      ],
+      "path": "/summarize",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_summarize_health",
+      "line": 2439,
+      "methods": [
+        "GET"
+      ],
+      "path": "/summarize/health",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_shortcut_ocr",
+      "line": 2507,
+      "methods": [
+        "POST"
+      ],
+      "path": "/shortcut/ocr",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_shortcut_pdf_text",
+      "line": 2597,
+      "methods": [
+        "POST"
+      ],
+      "path": "/shortcut/pdf_text",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_shortcut_summarize",
+      "line": 2626,
+      "methods": [
+        "POST"
+      ],
+      "path": "/shortcut/summarize",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_shortcut_transcribe",
+      "line": 2664,
+      "methods": [
+        "POST"
+      ],
+      "path": "/shortcut/transcribe",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_list_skills",
+      "line": 2703,
+      "methods": [
+        "GET"
+      ],
+      "path": "/skills",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_create_skill",
+      "line": 2709,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_discover_skills",
+      "line": 2724,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/discover",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_install_skill",
+      "line": 2736,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/install",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_acquire_skill",
+      "line": 2748,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/acquire",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_run_skill",
+      "line": 2809,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/run",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_get_job",
+      "line": 2957,
+      "methods": [
+        "GET"
+      ],
+      "path": "/jobs/<job_id>",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_versions",
+      "line": 3007,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/versions",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_rollback",
+      "line": 3020,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/rollback",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_release_state",
+      "line": 3034,
+      "methods": [
+        "GET"
+      ],
+      "path": "/skills/release",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_set_stable",
+      "line": 3046,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/stable",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_canary_start",
+      "line": 3061,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/canary/start",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_canary_stop",
+      "line": 3094,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/canary/stop",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_ci",
+      "line": 3108,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/ci",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_events",
+      "line": 3123,
+      "methods": [
+        "GET"
+      ],
+      "path": "/skills/events",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_teach",
+      "line": 3133,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/teach",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_teach_file",
+      "line": 3153,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/teach/file",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_internalize",
+      "line": 3170,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/internalize",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_internalize_codebase",
+      "line": 3192,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/internalize/codebase",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_import_toolsai_auto_skill",
+      "line": 3220,
+      "methods": [
+        "POST"
+      ],
+      "path": "/skills/import/toolsai-auto-skill",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_iron_dome_patterns_list",
+      "line": 3239,
+      "methods": [
+        "GET"
+      ],
+      "path": "/iron-dome/patterns",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_iron_dome_patterns_add",
+      "line": 3255,
+      "methods": [
+        "POST"
+      ],
+      "path": "/iron-dome/patterns",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_iron_dome_auto_harden",
+      "line": 3271,
+      "methods": [
+        "POST"
+      ],
+      "path": "/iron-dome/auto-harden",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_skill_knowledge_stats",
+      "line": 3286,
+      "methods": [
+        "GET"
+      ],
+      "path": "/skills/knowledge/stats",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_code_autofix",
+      "line": 3295,
+      "methods": [
+        "POST"
+      ],
+      "path": "/code/autofix",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_code_skill_cycle",
+      "line": 3322,
+      "methods": [
+        "POST"
+      ],
+      "path": "/code/skill-cycle",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_collab_translate",
+      "line": 3332,
+      "methods": [
+        "POST"
+      ],
+      "path": "/collab/translate",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_collab_music",
+      "line": 3351,
+      "methods": [
+        "POST"
+      ],
+      "path": "/collab/music",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_collab_chat",
+      "line": 3366,
+      "methods": [
+        "POST"
+      ],
+      "path": "/collab/chat",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_collab_transcribe",
+      "line": 3457,
+      "methods": [
+        "POST"
+      ],
+      "path": "/collab/transcribe",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_council_core_pending",
+      "line": 3493,
+      "methods": [
+        "GET"
+      ],
+      "path": "/council/core/pending",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_council_core_approve",
+      "line": 3504,
+      "methods": [
+        "POST"
+      ],
+      "path": "/council/core/approve",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_council_core_reject",
+      "line": 3520,
+      "methods": [
+        "POST"
+      ],
+      "path": "/council/core/reject",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_remember",
+      "line": 3537,
+      "methods": [
+        "POST"
+      ],
+      "path": "/remember",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_recall",
+      "line": 3555,
+      "methods": [
+        "POST"
+      ],
+      "path": "/recall",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_query_clients",
+      "line": 3574,
+      "methods": [
+        "GET"
+      ],
+      "path": "/clients",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_add_client",
+      "line": 3584,
+      "methods": [
+        "POST"
+      ],
+      "path": "/clients",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_list_meetings",
+      "line": 3599,
+      "methods": [
+        "GET"
+      ],
+      "path": "/meetings",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_book_meeting",
+      "line": 3607,
+      "methods": [
+        "POST"
+      ],
+      "path": "/meetings",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_legal_skill",
+      "line": 3623,
+      "methods": [
+        "POST"
+      ],
+      "path": "/legal/<skill_name>",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_legal_skills_list",
+      "line": 3647,
+      "methods": [
+        "GET"
+      ],
+      "path": "/legal",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_alert",
+      "line": 3655,
+      "methods": [
+        "POST"
+      ],
+      "path": "/alert",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_definitions",
+      "line": 3670,
+      "methods": [
+        "GET"
+      ],
+      "path": "/definitions",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_laf_smoke_login",
+      "line": 3683,
+      "methods": [
+        "POST"
+      ],
+      "path": "/laf/smoke_login",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_list_audit_log",
+      "line": 3744,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/audit_log",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "api_restore_from_audit",
+      "line": 3798,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/audit_log/restore/<int:log_id>",
+      "source": "api/tools_api.py"
+    },
+    {
+      "handler": "telegram_webhook",
+      "line": 982,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/telegram/webhook",
+      "source": "api/webhooks/telegram.py"
+    }
+  ],
+  "launchagents": {
+    "checked_in": [
+      {
+        "keep_alive": true,
+        "label": "com.magi.memory-watchdog",
+        "program_arguments": [
+          "/bin/bash",
+          "-c",
+          "test -n \"${MAGI_ROOT:-}\" || exit 78; exec \"${MAGI_PYTHON_EXECUTABLE:-$MAGI_ROOT/bin/magi-v3-python}\" \"$MAGI_ROOT/scripts/ops/memory_watchdog.py\""
+        ],
+        "run_at_load": true,
+        "source": "config/launchagents/com.magi.memory-watchdog.plist",
+        "start_calendar_interval": null,
+        "start_interval": null
+      },
+      {
+        "keep_alive": true,
+        "label": "com.magi.mlx-mtp",
+        "program_arguments": [
+          "/bin/bash",
+          "-c",
+          "test -n \"${MAGI_ROOT:-}\" || exit 78; export MAGI_MLX_MTP_MODEL=\"${MAGI_MLX_MTP_MODEL:-$HOME/.omlx/models/gemma-4-e4b-it-4bit}\"; export MAGI_MLX_MTP_DRAFT_MODEL=\"${MAGI_MLX_MTP_DRAFT_MODEL:-$HOME/.omlx/models/gemma-4-E4B-it-assistant-bf16}\"; exec \"${MAGI_PYTHON_EXECUTABLE:-$MAGI_ROOT/bin/magi-v3-python}\" \"$MAGI_ROOT/scripts/serve_mlx_mtp.py\" --host 127.0.0.1 --port 8090"
+        ],
+        "run_at_load": true,
+        "source": "config/launchagents/com.magi.mlx-mtp.plist",
+        "start_calendar_interval": null,
+        "start_interval": null
+      },
+      {
+        "keep_alive": false,
+        "label": "com.magi.omlx-restore",
+        "program_arguments": [
+          "/bin/bash",
+          "-c",
+          "sleep 90 && /bin/bash \"$HOME/Library/Application Support/MAGI/bin/omlx_switch_model.sh\" auto"
+        ],
+        "run_at_load": true,
+        "source": "config/launchagents/com.magi.omlx-restore.plist",
+        "start_calendar_interval": null,
+        "start_interval": null
+      }
+    ],
+    "installed": []
+  },
+  "root_name": "rc606-canonical-cron-rootfix",
+  "schema_version": 1,
+  "skill_entrypoints": [
+    {
+      "entrypoint": "skills/auto-magi-skill/action.py",
+      "id": "auto-magi-skill",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/autoresearch/action.py",
+      "id": "autoresearch",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/brain_manager/action.py",
+      "id": "brain_manager",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/brief-gen/action.py",
+      "id": "brief-gen",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/casper-autofix-knowledge/action.py",
+      "id": "casper-autofix-knowledge",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/contract-review/action.py",
+      "id": "contract-review",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/court-hearing-reminder/action.py",
+      "id": "court-hearing-reminder",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/crawler-targets/action.py",
+      "id": "crawler-targets",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/db-dual-sync/action.py",
+      "id": "db-dual-sync",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/doc-producer/action.py",
+      "id": "doc-producer",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/docx-editor/action.py",
+      "id": "docx-editor",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/evidence-admissibility/action.py",
+      "id": "evidence-admissibility",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/file-review-orchestrator/action.py",
+      "id": "file-review-orchestrator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/forensic-transcript-verifier/action.py",
+      "id": "forensic-transcript-verifier",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/gmail-drafts/action.py",
+      "id": "gmail-drafts",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/insight-refine/action.py",
+      "id": "insight-refine",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/interpreter-empirical-classifier/action.py",
+      "id": "interpreter-empirical-classifier",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/iron-dome/action.py",
+      "id": "iron-dome",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/iron_dome/action.py",
+      "id": "iron_dome",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/judgment-collector/action.py",
+      "id": "judgment-collector",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/judicial-flow-search-archive/action.py",
+      "id": "judicial-flow-search-archive",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/judicial-tools/action.py",
+      "id": "judicial-tools",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/judicial-web-search/action.py",
+      "id": "judicial-web-search",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/labor-law-calculator/action.py",
+      "id": "labor-law-calculator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/laf-orchestrator/action.py",
+      "id": "laf-orchestrator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/laf-portal-automation/action.py",
+      "id": "laf-portal-automation",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/laf-refine-case/action.py",
+      "id": "laf-refine-case",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/laf-withdrawal-report/action.py",
+      "id": "laf-withdrawal-report",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/legal_attest/action.py",
+      "id": "legal_attest",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/magi-autopilot/action.py",
+      "id": "magi-autopilot",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/magi-doctor/action.py",
+      "id": "magi-doctor",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/magi-self-repair/action.py",
+      "id": "magi-self-repair",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/market-briefing/action.py",
+      "id": "market-briefing",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/mock-test/action.py",
+      "id": "mock-test",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/obsidian/action.py",
+      "id": "obsidian",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/osc-orchestrator/action.py",
+      "id": "osc-orchestrator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/osc-scan-folder/action.py",
+      "id": "osc-scan-folder",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/osc_orchestrator/action.py",
+      "id": "osc_orchestrator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/pdf/action.py",
+      "id": "pdf",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/pdf-annotator/action.py",
+      "id": "pdf-annotator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/pdf-bookmarker/action.py",
+      "id": "pdf-bookmarker",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/pdf-namer/action.py",
+      "id": "pdf-namer",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/process-hygiene/action.py",
+      "id": "process-hygiene",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/research-brief/action.py",
+      "id": "research-brief",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/screenshot-sorter-tw/action.py",
+      "id": "screenshot-sorter-tw",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/statutes-vdb/action.py",
+      "id": "statutes-vdb",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/transcript-downloader/action.py",
+      "id": "transcript-downloader",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/transcript-indexer/action.py",
+      "id": "transcript-indexer",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/transcript-todo-extractor/action.py",
+      "id": "transcript-todo-extractor",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/translator/action.py",
+      "id": "translator",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/trial-prep/action.py",
+      "id": "trial-prep",
+      "lifecycle": "active"
+    },
+    {
+      "entrypoint": "skills/worldmonitor-intel/action.py",
+      "id": "worldmonitor-intel",
+      "lifecycle": "active"
+    }
+  ],
+  "source": "derived_from_executable_source_not_readme",
+  "test_modules": [
+    "tests/test_admin_runtime_blueprint.py",
+    "tests/test_agent_readiness_gate.py",
+    "tests/test_agentic_bridges.py",
+    "tests/test_agentic_contracts.py",
+    "tests/test_agentic_planner.py",
+    "tests/test_ai_draft_dispatch_quality.py",
+    "tests/test_answer_verifier.py",
+    "tests/test_archive_wizard_execute.py",
+    "tests/test_autopilot_child_binding.py",
+    "tests/test_balthasar_local_empty.py",
+    "tests/test_business_module_live_check.py",
+    "tests/test_case_display_authoritative_name.py",
+    "tests/test_case_number_auto_reconcile.py",
+    "tests/test_case_statistics_tool.py",
+    "tests/test_clarification_gate.py",
+    "tests/test_content_quality_hardening_rc390.py",
+    "tests/test_context_labels.py",
+    "tests/test_controlled_autonomy_policy.py",
+    "tests/test_controlled_autonomy_runtime.py",
+    "tests/test_cookie_cutter_blueprint.py",
+    "tests/test_cookie_stl.py",
+    "tests/test_cron_schedule_stagger_rc230.py",
+    "tests/test_daily_self_evolution.py",
+    "tests/test_dashboard_pages_blueprint.py",
+    "tests/test_deadline_reminder_insight_gate.py",
+    "tests/test_debt_lawyer_contact.py",
+    "tests/test_debt_robot_source_modules.py",
+    "tests/test_deep_task_control_rc568.py",
+    "tests/test_document_reader.py",
+    "tests/test_drive_case_sync_hash_timeout.py",
+    "tests/test_drive_sync_identical_aliases_rc245.py",
+    "tests/test_durable_deep_delivery_rc568.py",
+    "tests/test_export_docx_security.py",
+    "tests/test_export_public_urls.py",
+    "tests/test_file_review_notifications.py",
+    "tests/test_forensic_transcript_live_command.py",
+    "tests/test_forensic_transcript_verifier.py",
+    "tests/test_generation_quality_failclosed_rc568.py",
+    "tests/test_generative_quality_live.py",
+    "tests/test_golem_console.py",
+    "tests/test_grounded_ai_heavy_fail_closed.py",
+    "tests/test_heavy_translation_quality_live.py",
+    "tests/test_input_method_watchdog.py",
+    "tests/test_install_omlx_text.py",
+    "tests/test_intent_tool_adversarial_rc556.py",
+    "tests/test_intent_tool_grounding_rc555.py",
+    "tests/test_judgment_nvidia_source_bound_rc194.py",
+    "tests/test_judgment_staged_backfill_rc223.py",
+    "tests/test_judgment_summary_quality_rc170.py",
+    "tests/test_judicial_summary_quality.py",
+    "tests/test_laf_gmail_dispatch_scan.py",
+    "tests/test_laf_gmail_spam_restore.py",
+    "tests/test_laf_portal_new_files_scan.py",
+    "tests/test_laf_portal_retry_decoupling.py",
+    "tests/test_laf_portal_retry_heartbeat.py",
+    "tests/test_laf_portal_retry_reconciliation.py",
+    "tests/test_legaltech_taiwan_law_mcp_rc512.py",
+    "tests/test_live_gate_deployment_paths.py",
+    "tests/test_local_deep_queue_worker_rc568.py",
+    "tests/test_local_model_champion_eval_rc568.py",
+    "tests/test_lottery_blueprint.py",
+    "tests/test_magi_self_repair_guardian_cron_desc.py",
+    "tests/test_market_briefing_quality_gate.py",
+    "tests/test_memory_grounding.py",
+    "tests/test_memory_policy.py",
+    "tests/test_menubar_cron_semantics.py",
+    "tests/test_message_intent_boundaries.py",
+    "tests/test_mobile_auth_routes.py",
+    "tests/test_model_live_gate_degraded_profiles.py",
+    "tests/test_model_router_deep_queue_rc568.py",
+    "tests/test_nas_pdf_ocr_worker_lock.py",
+    "tests/test_natural_language_agent_quality_rc549.py",
+    "tests/test_nightly_regression_production_suites.py",
+    "tests/test_obsidian_ingest_checkpoint.py",
+    "tests/test_omlx_watchdog_switch_lock.py",
+    "tests/test_optional_line_health.py",
+    "tests/test_osc_address_label.py",
+    "tests/test_osc_backup_endpoints.py",
+    "tests/test_osc_checklists_endpoints.py",
+    "tests/test_osc_closed_case_archive.py",
+    "tests/test_osc_csv_import_export.py",
+    "tests/test_osc_document_reuse_api.py",
+    "tests/test_osc_documents_stamp_endpoint.py",
+    "tests/test_osc_events_refresh_outcome_semantics.py",
+    "tests/test_osc_file_frontend_runtime.py",
+    "tests/test_osc_files_move.py",
+    "tests/test_osc_folder_rename.py",
+    "tests/test_osc_laf_debt_required_checklist.py",
+    "tests/test_osc_offline_root_isolation_rc587.py",
+    "tests/test_osc_p2_discord_and_theme.py",
+    "tests/test_osc_pdf_blueprint.py",
+    "tests/test_osc_saas_workbench.py",
+    "tests/test_osc_todos_bulk_complete.py",
+    "tests/test_osc_web_smoke.py",
+    "tests/test_overdue_confirmation_calendar_policy.py",
+    "tests/test_pdf_cross_case_identity_confirmation.py",
+    "tests/test_pdf_namer_nightly_process_isolation.py",
+    "tests/test_pdf_namer_state_isolation.py",
+    "tests/test_rc241_runtime_and_batch_regressions.py",
+    "tests/test_rc600_runtime_bootstrap_and_reporting.py",
+    "tests/test_reconcile_overdue_todos.py",
+    "tests/test_saas_commercial_foundations.py",
+    "tests/test_saas_readiness_migration.py",
+    "tests/test_safe_process.py",
+    "tests/test_selfhost_portability.py",
+    "tests/test_selfhost_release_smoke.py",
+    "tests/test_sentencing_trend_chat.py",
+    "tests/test_sentencing_trends.py",
+    "tests/test_startup_resource_policy.py",
+    "tests/test_tailscale_funnel_healthcheck.py",
+    "tests/test_telegram_history.py",
+    "tests/test_tool_registry_contracts.py",
+    "tests/test_tools_api_async_jobs.py",
+    "tests/test_tools_api_runtime.py",
+    "tests/test_tools_api_shortcut_endpoints.py",
+    "tests/test_transcribe_runtime.py",
+    "tests/test_transcript_filename_repair.py",
+    "tests/test_transcript_partial_retry_rc239.py",
+    "tests/test_transcript_portal_empty_failclosed_rc223.py",
+    "tests/test_translation_strict_nim_provenance.py",
+    "tests/test_tw_output_guard_fidelity.py",
+    "tests/test_v3_laf_dedup_compat.py",
+    "tests/test_web_information_architecture.py",
+    "tests/test_web_runtime_blueprint.py",
+    "tests/test_weekend_resummary_budget_semantics.py"
+  ]
+}

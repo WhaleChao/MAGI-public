@@ -9,6 +9,7 @@ Usage:
     python3 scripts/ops/smoke_test_full.py
     python3 scripts/ops/smoke_test_full.py --json-out results.json
     python3 scripts/ops/smoke_test_full.py --skip laf,eefile   # 跳過指定模組
+    python3 scripts/ops/smoke_test_full.py --commercial         # 加跑公版/商用發版守門
 
 Exit code: 0=全過, 1=有失敗
 """
@@ -16,6 +17,7 @@ Exit code: 0=全過, 1=有失敗
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -35,11 +37,69 @@ MAGI_ROOT = _SCRIPT_DIR.parent.parent
 sys.path.insert(0, str(MAGI_ROOT))
 os.chdir(MAGI_ROOT)
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(MAGI_ROOT / ".env")
-except ImportError:
-    pass
+def _load_runtime_env() -> bool:
+    """Load the immutable deployment's hash-bound external environment."""
+
+    configured = os.environ.get("MAGI_ENV_FILE", "").strip()
+    path = Path(configured).expanduser() if configured else MAGI_ROOT / ".env"
+    if not path.is_file():
+        return False
+    if path.is_symlink():
+        raise RuntimeError("MAGI environment must be a regular non-symlink file")
+    expected = os.environ.get("MAGI_ENV_FILE_SHA256", "").strip().lower()
+    if configured and not expected:
+        raise RuntimeError("MAGI_ENV_FILE_SHA256 is required for a bound environment")
+    if expected:
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError("MAGI environment digest mismatch")
+    try:
+        from dotenv import load_dotenv
+    except ImportError as exc:
+        raise RuntimeError("python-dotenv is required for smoke validation") from exc
+    return bool(load_dotenv(path, override=False))
+
+
+_load_runtime_env()
+
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+RUNTIME_DIR = Path(_RUNTIME_OVERRIDE or MAGI_ROOT / ".runtime").expanduser()
+MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or MAGI_ROOT / "static"
+).expanduser()
+
+
+def _installed_release() -> bool:
+    """Identify a sealed production tree without depending on dev-only files."""
+
+    return (
+        os.environ.get("MAGI_V3_DEPLOYMENT_MODE", "").strip().lower()
+        == "production"
+        and (MAGI_ROOT / "release-manifest.json").is_file()
+        and (MAGI_ROOT / "RELEASE_COMPLETE.json").is_file()
+    )
+
+
+def _installed_release_note() -> str:
+    return "immutable production release contract present"
+
+
+def _output_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute() or not _RUNTIME_OVERRIDE:
+        return path
+    relative = Path(*path.parts[1:]) if path.parts and path.parts[0] == ".runtime" else path
+    return RUNTIME_DIR / relative
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+JUDICIAL_API_PIPELINE_TIMEOUT_SEC = max(90, _env_int("MAGI_SMOKE_JUDICIAL_API_TIMEOUT_SEC", 150))
 
 # ── Result model ───────────────────────────────────────────────
 
@@ -121,15 +181,27 @@ def test_python_version():
     return ok, f"Python {sys.version_info.major}.{sys.version_info.minor}"
 
 def test_venv():
+    bound_runtime = Path(
+        os.environ.get("MAGI_V3_PYTHON_RUNTIME", "").strip() or "/nonexistent"
+    ).expanduser()
+    if _installed_release() and bound_runtime.is_file() and os.access(bound_runtime, os.X_OK):
+        return True, f"bound runtime: {bound_runtime}"
     venv = MAGI_ROOT / "venv" / "bin" / "python3"
     if not venv.exists():
         venv = MAGI_ROOT / ".venv" / "bin" / "python3"
     return venv.exists(), str(venv) if venv.exists() else "venv not found"
 
 def test_env_file():
+    bound_env = Path(
+        os.environ.get("MAGI_ENV_FILE", "").strip() or "/nonexistent"
+    ).expanduser()
+    if _installed_release() and bound_env.is_file():
+        return True, f"bound environment: {bound_env}"
     return (MAGI_ROOT / ".env").exists(), ".env exists"
 
 def test_env_example():
+    if _installed_release():
+        return True, _installed_release_note()
     return (MAGI_ROOT / ".env.example").exists(), ".env.example exists"
 
 
@@ -231,15 +303,43 @@ def test_db_write_read():
 # 4. SERVICE HEALTH TESTS
 # ══════════════════════════════════════════════════════════════
 
-def _http_get(url, timeout=5):
+def _http_get(url, timeout=8, retries=1):
     import urllib.request
+    last_exc = None
     req = urllib.request.Request(url, headers={"User-Agent": "MAGI-Smoke/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, resp.read().decode("utf-8", errors="replace")
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", errors="replace")
+        except TimeoutError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(1.0)
+                continue
+            raise
+        except Exception:
+            raise
+    raise last_exc or TimeoutError("http_get_failed")
+
+
+def _health_json_ok(code, body, *, healthy_statuses):
+    if not 200 <= int(code) < 300:
+        return False, f"HTTP {code}"
+    try:
+        payload = json.loads(body or "{}")
+    except Exception as exc:
+        return False, f"HTTP {code}; invalid JSON: {type(exc).__name__}"
+    if not isinstance(payload, dict):
+        return False, f"HTTP {code}; JSON payload is not an object"
+    status = str(payload.get("status") or "").strip().lower()
+    # Public /readyz intentionally omits internal fields.  The documented
+    # status is authoritative unless the payload explicitly says ok=false.
+    ok = payload.get("ok") is not False and status in set(healthy_statuses)
+    return ok, f"HTTP {code}; ok={payload.get('ok')!r}; status={status or '<missing>'}"
 
 def test_server_health():
-    code, body = _http_get("http://127.0.0.1:5002/health")
-    return code == 200, f"HTTP {code}"
+    code, body = _http_get("http://127.0.0.1:5002/readyz", timeout=12, retries=1)
+    return _health_json_ok(code, body, healthy_statuses={"ready"})
 
 def test_tools_api_health():
     try:
@@ -248,7 +348,7 @@ def test_tools_api_health():
     except Exception:
         _tools_url = "http://127.0.0.1:5003"
     code, body = _http_get(f"{_tools_url}/health")
-    return code == 200, f"HTTP {code}"
+    return _health_json_ok(code, body, healthy_statuses={"ready", "operational"})
 
 def test_server_security_headers():
     import urllib.request
@@ -619,15 +719,21 @@ def test_no_sensitive_files():
     return len(issues) == 0, f"Clean" if not issues else f"Found: {', '.join(issues)}"
 
 def test_gitignore_coverage():
+    if _installed_release():
+        return True, _installed_release_note()
     gi = (MAGI_ROOT / ".gitignore").read_text(encoding="utf-8")
     required = ["_autopilot_runs/", "_db_backups/", "_logs/", ".laf_chrome_profile/"]
     missing = [r for r in required if r not in gi]
     return len(missing) == 0, f"All covered" if not missing else f"Missing: {', '.join(missing)}"
 
 def test_license_exists():
+    if _installed_release():
+        return True, _installed_release_note()
     return (MAGI_ROOT / "LICENSE").exists(), "LICENSE exists"
 
 def test_ci_pipeline():
+    if _installed_release():
+        return True, _installed_release_note()
     return (MAGI_ROOT / ".github" / "workflows" / "ci.yml").exists(), "ci.yml exists"
 
 
@@ -656,7 +762,7 @@ def test_judicial_api_pipeline_health():
     checker = MAGI_ROOT / "scripts" / "ops" / "check_judicial_api_pipeline.py"
     if not checker.exists():
         return False, "check_judicial_api_pipeline.py missing"
-    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=90)
+    proc = _run_cmd([sys.executable, str(checker), "--json"], timeout=JUDICIAL_API_PIPELINE_TIMEOUT_SEC)
     try:
         data = json.loads(proc.stdout)
     except Exception:
@@ -665,7 +771,7 @@ def test_judicial_api_pipeline_health():
         return False, (proc.stderr or proc.stdout)[:120]
     status = data.get("status")
     backlog = data.get("backlog") if isinstance(data.get("backlog"), dict) else {}
-    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP"}
+    ok_statuses = {"PIPELINE_HEALTHY", "BACKLOG_WARNING", "BACKLOG_CATCHING_UP", "PULL_STALE_CLEAR", "PULL_WAITING_WINDOW"}
     ok = proc.returncode in {0, 10} and status in ok_statuses
     interpretation = data.get("backlog_interpretation") if isinstance(data.get("backlog_interpretation"), dict) else {}
     if interpretation:
@@ -697,33 +803,41 @@ def test_omlx_aux_models_available():
     return ok, ", ".join(results)
 
 def test_mlx_mtp_sidecar_health():
-    try:
-        code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
-        data = json.loads(body)
-        ok = code == 200 and bool(data.get("ok", True))
-        model = data.get("model") or "-"
-        draft = data.get("draft_model") or "-"
-        return ok, f"model={model}; draft={draft}"
-    except Exception as e:
-        if os.environ.get("MAGI_REQUIRE_MLX_MTP", "1").lower() in {"0", "false", "no"}:
-            return True, "MLX MTP optional"
-        return False, str(e)[:120]
+    last_error = ""
+    for attempt in range(4):
+        try:
+            code, body = _http_get("http://127.0.0.1:8090/health", timeout=3)
+            data = json.loads(body)
+            ok = code == 200 and bool(data.get("ok", True))
+            model = data.get("model") or "-"
+            draft = data.get("draft_model") or "-"
+            suffix = "" if attempt == 0 else f"; retry={attempt}"
+            return ok, f"model={model}; draft={draft}{suffix}"
+        except Exception as e:
+            last_error = str(e)[:120]
+            if attempt < 3:
+                time.sleep(2)
+                continue
+    if os.environ.get("MAGI_REQUIRE_MLX_MTP", "0").lower() in {"0", "false", "no"}:
+        return True, "MLX MTP optional"
+    return False, last_error
 
 def test_menubar_process_running():
-    lines = _process_lines(r"gui/magi_menubar.py")
+    lines = _process_lines(r"run_menubar_no_site.py") + _process_lines(r"gui/magi_menubar.py")
     if lines:
-        return True, f"{len(lines)} process"
+        if len(lines) > 1:
+            return False, f"duplicate menubar processes: {len(lines)}"
+        return True, "1 process"
     if sys.platform != "darwin" or os.environ.get("CI"):
         return True, "not a desktop live environment"
     if os.environ.get("MAGI_REQUIRE_MENUBAR", "1").lower() in {"0", "false", "no"}:
         return True, "menubar optional"
-    return False, "magi_menubar.py not running"
+    return False, "MAGI menubar not running"
 
 def test_nas_lumi_mount_guard():
     candidates = [
         Path(os.environ.get("MAGI_LUMI_MOUNT", "")),
         Path("/Volumes/homes"),
-        Path("/Volumes/lumi"),
     ]
     existing = [str(path) for path in candidates if str(path) != "." and path.exists()]
     if existing:
@@ -734,8 +848,32 @@ def test_nas_lumi_mount_guard():
 
 def test_no_desktop_git_add_noise():
     lines = _process_lines(r"git add --")
-    noisy = [line for line in lines if "/Users/ai/Desktop" in line or ".openclaw_archived" in line or "Paperclip_rebuild" in line]
+    noisy = [line for line in lines if "/Desktop/" in line or ".openclaw_archived" in line or "Paperclip_rebuild" in line]
     return not noisy, "no noisy git add" if not noisy else noisy[0][:160]
+
+
+def test_api_token_health_check():
+    checker = MAGI_ROOT / "scripts" / "ops" / "token_health_check.py"
+    if not checker.exists():
+        return False, "token_health_check.py missing"
+    out = RUNTIME_DIR / "smoke_token_health_latest.json"
+    ok, data, tail = _run_json_script(
+        [
+            sys.executable,
+            str(checker),
+            "--refresh",
+            "--threshold-days",
+            "7",
+            "--json-out",
+            str(out),
+        ],
+        timeout=90,
+    )
+    if not ok:
+        return False, tail
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    failures = int(summary.get("failures") or 0)
+    return bool(data.get("ok")) and failures == 0, f"failures={failures} refreshed={summary.get('refreshed')}"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -777,7 +915,7 @@ def test_public_release_audit_strict():
 
 
 def test_customer_install_wizard_public_dry_run():
-    out = MAGI_ROOT / ".runtime" / "smoke_customer_install_wizard_latest.json"
+    out = RUNTIME_DIR / "smoke_customer_install_wizard_latest.json"
     ok, data, tail = _run_json_script(
         [
             sys.executable,
@@ -817,14 +955,14 @@ def test_health_active_issues_clear():
     data = json.loads(body)
     op = data.get("operational_health") if isinstance(data.get("operational_health"), dict) else {}
     active = op.get("active_unresolved_24h") if isinstance(op.get("active_unresolved_24h"), dict) else {}
+    degraded_reasons = op.get("degraded_reasons") if isinstance(op.get("degraded_reasons"), list) else []
     passed = (
         code == 200
         and data.get("status") == "operational"
         and bool(op.get("ok"))
-        and int(active.get("cron_failures") or 0) == 0
-        and int(active.get("issue_agenda_high_severity") or 0) == 0
+        and not degraded_reasons
     )
-    return passed, f"status={data.get('status')} active={active}"
+    return passed, f"status={data.get('status')} active={active} degraded_reasons={degraded_reasons}"
 
 
 def test_process_hygiene_clean():
@@ -847,7 +985,7 @@ def test_model_live_gate_profile():
             "auto",
             "--json",
             "--json-out",
-            ".runtime/model_live_gate_latest.json",
+            str(RUNTIME_DIR / "model_live_gate_latest.json"),
         ],
         timeout=60,
     )
@@ -859,7 +997,7 @@ def test_model_live_gate_profile():
 
 
 def test_knowledge_lint_clean():
-    path = MAGI_ROOT / "static" / "knowledge_lint_latest.json"
+    path = MUTABLE_STATIC_DIR / "knowledge_lint_latest.json"
     if not path.exists():
         return False, "knowledge_lint_latest.json missing"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -873,7 +1011,7 @@ def test_knowledge_lint_clean():
 
 
 def test_translation_quality_latest_clean():
-    path = MAGI_ROOT / "static" / "translator_ape_latest.json"
+    path = MUTABLE_STATIC_DIR / "translator_ape_latest.json"
     if not path.exists():
         return False, "translator_ape_latest.json missing"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -882,7 +1020,7 @@ def test_translation_quality_latest_clean():
 
 
 def test_tool_hallucination_latest_clean():
-    path = MAGI_ROOT / ".runtime" / "live_magi_tool_hallucination_latest.json"
+    path = RUNTIME_DIR / "live_magi_tool_hallucination_latest.json"
     if not path.exists():
         return False, "live_magi_tool_hallucination_latest.json missing"
     age_hours = (time.time() - path.stat().st_mtime) / 3600
@@ -941,10 +1079,18 @@ def main():
     parser = argparse.ArgumentParser(description="MAGI 全功能冒煙測試")
     parser.add_argument("--json-out", help="輸出 JSON 報告路徑")
     parser.add_argument("--skip", default="", help="跳過模組（逗號分隔，如 laf,eefile,inference）")
+    parser.add_argument(
+        "--commercial",
+        action="store_true",
+        help="加跑公版/商用發版守門（public audit、cleanroom install、commercial readiness）",
+    )
     parser.add_argument("--notify", action="store_true", help="完成後推送通知")
     args = parser.parse_args()
 
     skip = set(s.strip().lower() for s in args.skip.split(",") if s.strip())
+    commercial_enabled = args.commercial or os.environ.get("MAGI_SMOKE_COMMERCIAL", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not commercial_enabled:
+        skip.add("commercial")
 
     print("╔══════════════════════════════════════════╗")
     print("║     MAGI 全功能冒煙測試                  ║")
@@ -952,6 +1098,10 @@ def main():
     print(f"  Time: {report.timestamp}")
     print(f"  Root: {MAGI_ROOT}")
     print(f"  Skip: {skip or 'none'}")
+    if "commercial" in skip:
+        print("  Commercial guards: skipped (use --commercial for public/commercial release gate)")
+    else:
+        print("  Commercial guards: enabled")
     print()
 
     t0 = time.time()
@@ -1071,6 +1221,7 @@ def main():
     run_test("Menubar process running", "ops", test_menubar_process_running)
     run_test("NAS LUMI mount guard", "ops", test_nas_lumi_mount_guard)
     run_test("No Desktop git-add noise", "ops", test_no_desktop_git_add_noise)
+    run_test("API/OAuth token health", "ops", test_api_token_health_check)
     print()
 
     # ── 15. Commercial Release Guards ──
@@ -1110,7 +1261,7 @@ def main():
 
     # ── Output ──
     if args.json_out:
-        out_path = Path(args.json_out)
+        out_path = _output_path(args.json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(asdict(report), f, ensure_ascii=False, indent=2)

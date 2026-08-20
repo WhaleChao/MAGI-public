@@ -24,7 +24,7 @@ description: 透過 Gmail API 建立「草稿」（drafts.create），用於 CAS
 ## OAuth 檔案
 
 預設會找：
-- `credentials.json`: `/Users/ai/Desktop/code/json/credentials.json`
-- `token.json`: `/Users/ai/Desktop/code/json/gmail_compose_token.json`
+- `credentials.json`: `${MAGI_CONFIG_DIR}/google/credentials.json`
+- `token.json`: `${MAGI_CONFIG_DIR}/google/gmail_compose_token.json`
 
 若 token 不存在或失效，會回傳 `need_interactive_oauth=true`（由你在白天完成一次授權即可）。

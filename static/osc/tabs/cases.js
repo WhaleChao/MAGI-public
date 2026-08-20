@@ -1,4 +1,7 @@
 /* tabs/cases.js – Case management + workbench */
+const WB_FOLDER_DRAG_TYPE = "application/x-paperclip-workbench-file-rel";
+let wbFolderDragPayload = null;
+
 async function loadCaseCourtOptions(force = false) {
     if (!force && state.caseCourtOptionsLoaded) return;
     try {
@@ -9,6 +12,33 @@ async function loadCaseCourtOptions(force = false) {
     } catch (e) {
         console.warn("loadCaseCourtOptions failed:", e);
     }
+}
+
+async function loadCaseLawyerOptions(force = false) {
+    if (!force && state.caseLawyerOptionsLoaded) return;
+    const keys = ["default_lawyer", "lawyer_name", "default_specialist"];
+    try {
+        const rows = await Promise.all(keys.map(async key => {
+            try {
+                const data = await api(`/api/osc/settings/${encodeURIComponent(key)}`);
+                return data.item?.value || "";
+            } catch (_e) {
+                return "";
+            }
+        }));
+        const demoNames = new Set(["範例律師", "示範律師", "測試律師", "Sample Lawyer", "Demo Lawyer"]);
+        state.caseLawyerOptions = [...new Set(rows.map(v => String(v || "").trim()).filter(v => v && !demoNames.has(v)))];
+        state.caseLawyerOptionsLoaded = true;
+        renderCaseLawyerOptions();
+    } catch (e) {
+        console.warn("loadCaseLawyerOptions failed:", e);
+    }
+}
+
+function renderCaseLawyerOptions() {
+    const list = document.getElementById("caseLawyerOptions");
+    if (!list) return;
+    list.innerHTML = (state.caseLawyerOptions || []).map(name => `<option value="${esc(name)}"></option>`).join("");
 }
 
 function renderCaseCourtOptions() {
@@ -24,6 +54,7 @@ function renderCaseCourtOptions() {
 async function loadCases() {
     try {
         loadCaseCourtOptions().catch(() => {});
+        loadCaseLawyerOptions().catch(() => {});
         const q = encodeURIComponent((document.getElementById("casesQ").value || "").trim());
         const caseType = encodeURIComponent(state.caseType || "全部");
         const caseKind = encodeURIComponent(state.caseKind || "全部");
@@ -35,16 +66,28 @@ async function loadCases() {
 }
 
 function isLegalAidCaseRow(row = {}) {
-    const text = `${row.case_category || ""} ${row.case_reason || ""}`;
-    return text.includes("法律扶助案件") || text.includes("法律扶助") || text.includes("法扶");
+    const text = `${row.case_category || ""} ${row.case_reason || ""} ${row.case_type || ""} ${row.laf_case_no || ""} ${row.legal_aid_status || ""}`;
+    return text.includes("法律扶助案件")
+        || text.includes("法律扶助")
+        || text.includes("法扶")
+        || /\d{6,8}-[A-Z]-\d{3}/.test(text);
+}
+
+function isLegalConsultantCaseRow(row = {}) {
+    const text = `${row.case_type || ""} ${row.case_reason || ""} ${row.case_stage || ""} ${row.notes || ""} ${row.folder_path || ""}`;
+    return text.includes("法律顧問") || text.includes("顧問");
 }
 
 function caseDisplayStatus(row = {}) {
+    const lafStatus = String(row.legal_aid_status || "").trim();
+    if (lafStatus.includes("待送出") || lafStatus.includes("暫存")) return "待送出";
+    if (lafStatus.includes("待報結")) return "待報結";
     const values = [row.status_display, row.effective_status, row.status, row.legal_aid_status];
     for (const value of values) {
         const text = String(value || "").trim();
         if (!text) continue;
         if (text === "未結案" || text === "未結案/進行中") return "進行中";
+        if (text === "結案中") return "待結案處理";
         return text;
     }
     return "進行中";
@@ -98,7 +141,10 @@ function caseCloseButton(row = {}, extraClass = "") {
 }
 
 function caseDisplayType(row = {}) {
-    return row.case_type_display || row.case_type || "";
+    const display = row.case_type_display || row.case_type || "";
+    if (display === "民事" && isLegalConsultantCaseRow(row)) return "民事｜法律顧問";
+    if (!display && isLegalConsultantCaseRow(row)) return "法律顧問";
+    return display;
 }
 
 function caseDisplayReason(row = {}) {
@@ -120,9 +166,10 @@ function caseStatusScopeLabel(scope) {
 
 function lafBadgeText(row = {}) {
     const lafStatus = String(row.legal_aid_status || "").trim();
-    const displayStatus = caseDisplayStatus(row);
-    const visible = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中" ? lafStatus : displayStatus;
-    return `法扶 / ${visible || "進行中"}`;
+    const display = lafStatus && lafStatus !== "未結案" && lafStatus !== "未結案/進行中"
+        ? lafStatus
+        : (caseDisplayStatus(row) || "未開辦");
+    return `法扶｜${display}`;
 }
 
 function caseNotesText(row = {}) {
@@ -165,12 +212,13 @@ function renderCases() {
         if (cardGrid) cardGrid.innerHTML = `<div class="muted" style="padding:20px;">${hint}</div>`;
         return;
     }
-    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], state.sort.col, state.sort.dir, state.sort.type));
+    const caseSort = state.caseSort || { col: "case_number", dir: -1, type: "string" };
+    const sorted = pushFinalClosedCasesLast(applySort([...state.cases], caseSort.col, caseSort.dir, caseSort.type));
 
     // Card view
     if (cardGrid) {
         const order = JSON.parse(localStorage.getItem('caseCardOrder') || '[]');
-        const useManualOrder = !state.sort?.col && order.length;
+        const useManualOrder = !caseSort?.col && order.length;
         const orderedCases = pushFinalClosedCasesLast(useManualOrder ? [...sorted].sort((a, b) => {
             const ia = order.indexOf(String(a.id));
             const ib = order.indexOf(String(b.id));
@@ -180,39 +228,7 @@ function renderCases() {
             return ia - ib;
         }) : sorted);
 
-        cardGrid.innerHTML = orderedCases.map(r => {
-            const displayStatus = caseDisplayStatus(r);
-            const isLaf = isLegalAidCaseRow(r);
-            const badgeClass = isClosingOrClosedCase(r) ? 'closed' : isLaf ? 'laf' : 'active';
-            const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
-            return `
-            <div class="case-card" draggable="true" data-case-id="${esc(r.id)}">
-                <div class="card-header">
-                    <div class="card-title">${esc(r.client_name || '未命名')}</div>
-                    <span class="card-badge ${badgeClass}">${esc(badgeText)}</span>
-                </div>
-                <div class="card-meta">
-                    <div><span class="label">案號</span> <span class="value">${esc(r.case_number || '-')}</span></div>
-                    <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || '-')}</span></div>
-                    <div><span class="label">法院</span> <span class="value">${esc(r.court_name || '-')}</span></div>
-                    <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || '-')}</span></div>
-                    <div><span class="label">股別</span> <span class="value">${esc(r.court_division || '-')}</span></div>
-                    <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || '-')}</span></div>
-                    <div><span class="label">種類</span> <span class="value">${esc(r.case_category || '-')}</span></div>
-                    ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ''}
-                </div>
-                ${caseNotesBlock(r)}
-                <div class="card-actions">
-                    <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
-                    ${caseCloseButton(r)}
-                    <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
-                    <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
-                    <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
-                    <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
-                    <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
-                </div>
-            </div>`;
-        }).join("");
+        cardGrid.innerHTML = orderedCases.map(r => renderCaseCard(r)).join("");
         initCardDrag(cardGrid);
         bindCaseCardOpen(cardGrid);
     }
@@ -245,7 +261,8 @@ function renderCases() {
 
     const ts = document.querySelectorAll("#cases th[data-sort]");
     ts.forEach(th => {
-        th.innerHTML = th.innerHTML.replace(/ [▲▼]/g, "") + renderSortArrow(th.dataset.sort);
+        const arrow = caseSort.col === th.dataset.sort ? (caseSort.dir === 1 ? " ▲" : " ▼") : "";
+        th.innerHTML = th.innerHTML.replace(/ [▲▼]/g, "") + arrow;
     });
 }
 
@@ -258,6 +275,101 @@ function updateCaseSummary() {
     };
     set("caseVisibleCount", cases.length);
     set("caseClosingVisibleCount", closing);
+}
+
+function renderCaseCard(r = {}, opts = {}) {
+    const displayStatus = caseDisplayStatus(r);
+    const isLaf = isLegalAidCaseRow(r);
+    const badgeClass = isClosingOrClosedCase(r) ? "closed" : isLaf ? "laf" : "active";
+    const badgeText = isLaf ? lafBadgeText(r) : displayStatus;
+    const cardClass = `case-card${opts.modal ? " case-card-expanded" : ""}`;
+    const draggable = opts.modal ? "" : ` draggable="true"`;
+    const closeButton = opts.modal
+        ? `<button class="case-card-modal-close" type="button" aria-label="關閉案件卡片" data-act="case-card-modal-close">×</button>`
+        : "";
+    return `
+        <div class="${cardClass}"${draggable} data-case-id="${esc(r.id || "")}">
+            ${closeButton}
+            <div class="card-header">
+                <div>
+                    <div class="card-title">${esc(r.client_name || "未命名")}</div>
+                    ${opts.modal ? `<div class="card-subtitle">${esc(r.case_number || "-")}</div>` : ""}
+                </div>
+                <span class="card-badge ${badgeClass}">${esc(badgeText)}</span>
+            </div>
+            <div class="card-meta">
+                <div><span class="label">案號</span> <span class="value">${esc(r.case_number || "-")}</span></div>
+                <div><span class="label">案由</span> <span class="value">${esc(caseDisplayReason(r) || "-")}</span></div>
+                <div><span class="label">法院</span> <span class="value">${esc(r.court_name || "-")}</span></div>
+                <div><span class="label">法院案號</span> <span class="value">${esc(r.court_case_no || "-")}</span></div>
+                <div><span class="label">股別</span> <span class="value">${esc(r.court_division || "-")}</span></div>
+                <div><span class="label">承辦</span> <span class="value">${esc(r.lawyer || "-")}</span></div>
+                <div><span class="label">分類</span> <span class="value">${esc(caseDisplayType(r) || "-")}</span></div>
+                <div><span class="label">種類</span> <span class="value">${esc(r.case_category || "-")}</span></div>
+                ${r.laf_case_no ? `<div><span class="label">法扶</span> <span class="value">${esc(r.laf_case_no)}</span></div>` : ""}
+            </div>
+            ${caseNotesBlock(r)}
+            <div class="card-actions">
+                <button class="btn primary" data-act="case-open" data-id="${esc(r.id)}">資料夾</button>
+                ${caseCloseButton(r)}
+                <button class="btn" data-act="case-workbench" data-id="${esc(r.id)}">案件處理</button>
+                <button class="btn" data-act="case-doc-finalize" data-id="${esc(r.id)}">書狀定稿</button>
+                <button class="btn" data-act="case-edit" data-id="${esc(r.id)}">編輯</button>
+                <button class="btn" data-act="case-address-label" data-id="${esc(r.id)}">地址標籤</button>
+                <button class="btn danger" data-act="case-del" data-id="${esc(r.id)}">刪除</button>
+            </div>
+        </div>`;
+}
+
+function closeCaseCardModal() {
+    const modal = document.getElementById("caseCardModal");
+    if (modal) modal.remove();
+    document.body.classList.remove("case-card-modal-open");
+    document.removeEventListener("keydown", handleCaseCardModalKeydown);
+}
+
+function handleCaseCardModalKeydown(e) {
+    if (e.key === "Escape") closeCaseCardModal();
+}
+
+function openCaseCardModal(caseId) {
+    const row = (state.cases || []).find(item => String(item.id) === String(caseId));
+    if (!row) return;
+    closeCaseCardModal();
+    const modal = document.createElement("div");
+    modal.id = "caseCardModal";
+    modal.className = "case-card-modal";
+    modal.innerHTML = `
+        <div class="case-card-modal-backdrop" data-act="case-card-modal-close"></div>
+        <div class="case-card-modal-dialog" role="dialog" aria-modal="true" aria-label="案件資料">
+            ${renderCaseCard(row, { modal: true })}
+        </div>`;
+    document.body.appendChild(modal);
+    document.body.classList.add("case-card-modal-open");
+    bindCaseOpenButtons(modal);
+    modal.querySelectorAll('.card-actions [data-act]:not([data-act="case-open"])').forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const act = btn.dataset.act || "";
+            closeCaseCardModal();
+            if (typeof dispatchDelegatedAction === "function" && act) {
+                try {
+                    await dispatchDelegatedAction(act, btn);
+                } catch (err) {
+                    showToast(`${btn.textContent || "操作"}失敗：${err.message || err}`, "warn", 2800);
+                }
+            }
+        });
+    });
+    modal.querySelectorAll('[data-act="case-card-modal-close"]').forEach(el => {
+        el.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeCaseCardModal();
+        });
+    });
+    document.addEventListener("keydown", handleCaseCardModalKeydown);
 }
 
 const CASE_MAGI_MODULES = {
@@ -336,7 +448,7 @@ function buildCaseMagiContext() {
         `狀態=${caseDisplayStatus(r) || "-"}`,
     ].join("｜"));
     return [
-        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.sort?.col || "預設"}`,
+        `目前案件篩選：分類=${state.caseType || "全部"}；種類=${state.caseKind || "全部"}；狀態=${caseStatusScopeLabel(state.caseStatusScope)}；排序=${state.caseSort?.col || "case_number"}`,
         `目前顯示 ${state.cases?.length || 0} 筆案件。以下最多列 40 筆：`,
         rows.join("\n") || "目前沒有案件列。",
     ].join("\n");
@@ -400,7 +512,8 @@ async function editCase(id) {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     await loadCaseCourtOptions();
-    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
+    await loadCaseLawyerOptions();
+    writeFields("case_", x, ["id", "case_number", "client_name", "client_phone", "client_email", "client_id_number", "lawyer", "laf_case_no", "application_no", "court_name", "court_case_no", "court_division", "status", "folder_path", "notes"]);
     document.getElementById("case_category").value = x.case_category || "";
     document.getElementById("case_type").value = x.case_type || "";
     document.getElementById("case_stage").value = x.case_stage || "";
@@ -413,13 +526,14 @@ function prepareNewCase() {
     const panel = document.getElementById("caseEditorPanel");
     if (panel) panel.open = true;
     loadCaseCourtOptions().catch(() => {});
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    loadCaseLawyerOptions().catch(() => {});
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const name = document.getElementById("case_client_name");
     if (name) name.focus();
 }
 
 async function delCase(id) {
-    if (!confirm(`確定刪除案件 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除案件 ${id}？`)) return;
     await api(`/api/osc/cases/${encodeURIComponent(id)}`, "DELETE");
     await loadCases();
     await loadMeta();
@@ -427,10 +541,15 @@ async function delCase(id) {
 
 async function closeCase(id) {
     if (!id) return;
-    if (!confirm("確定將此案件標記為已結案並搬移到結案資料夾？\\n\\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。")) return;
-    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", {});
-    showArchiveResult(resp?.archive);
-    showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    if (!await showConfirm("MAGI說", "確定將此案件標記為已結案並搬移到結案資料夾？\n\nMAGI 會把這次人工判斷鎖定，後續掃描不得自動改回進行中。搬移會排入背景任務，避免網頁卡住。")) return;
+    const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}/close`, "POST", { background: true });
+    if (resp?.archive_job?.id) {
+        showToast(`案件已標記為已結案，搬移已排入背景：${resp.archive_job.case_number || id}`, "ok", 5000);
+        pollArchiveJob(resp.archive_job.id, id);
+    } else {
+        showArchiveResult(resp?.archive);
+        showToast("案件已標記為已結案，人工狀態已鎖定。", "ok", 4000);
+    }
     await loadCases();
     await loadMeta();
     if (state.wb?.id === id && state.wb.mode === "case") {
@@ -439,15 +558,17 @@ async function closeCase(id) {
 }
 
 async function saveCase() {
-    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    const p = readFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     const lafNumber = (p.case_laf_case_no || p.case_application_no || "").trim();
     const body = {
         id: p.case_id, case_number: p.case_id ? p.case_case_number : "", client_name: p.case_client_name,
         client_phone: p.case_client_phone, client_email: p.case_client_email, client_id_number: p.case_client_id_number,
+        lawyer: p.case_lawyer,
         case_category: p.case_category, case_type: p.case_type, case_stage: p.case_stage,
         case_reason: p.case_reason, laf_case_no: lafNumber, application_no: lafNumber,
         court_name: p.case_court_name, court_case_no: p.case_court_case_no, court_division: p.case_court_division,
-        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes
+        status: p.case_status, folder_path: p.case_folder_path, notes: p.case_notes,
+        background: true,
     };
     const isNew = !(body.id || "").trim();
     const autoFolder = isNew && document.getElementById("case_auto_create_folder")?.checked;
@@ -462,15 +583,23 @@ async function saveCase() {
     } else if (isNew && resp?.case_number) {
         showToast(`案件已建立：${resp.case_number}`, "ok", 3000);
     }
-    showArchiveResult(resp?.archive);
-    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
+    if (resp?.archive_job?.id) {
+        showToast(`結案搬移已排入背景：${resp.archive_job.case_number || body.case_number || body.id}`, "ok", 5000);
+        pollArchiveJob(resp.archive_job.id, body.id);
+    } else {
+        showArchiveResult(resp?.archive);
+    }
+    clearFields(["case_id", "case_case_number", "case_client_name", "case_client_phone", "case_client_email", "case_client_id_number", "case_lawyer", "case_category", "case_type", "case_stage", "case_reason", "case_laf_case_no", "case_application_no", "case_court_name", "case_court_case_no", "case_court_division", "case_status", "case_folder_path", "case_notes"]);
     await loadCases();
     await loadMeta();
 }
 
 function archiveReasonText(reason) {
     return {
+        queued: "已排入背景搬移",
+        running: "背景搬移中",
         moved: "已移到結案資料夾",
+        merged_existing_target: "已合併到既有結案資料夾",
         already_archived: "已在結案資料夾",
         already_in_archive_base: "已在結案資料夾",
         source_missing: "找不到原案件資料夾，請確認同步或路徑",
@@ -481,9 +610,45 @@ function archiveReasonText(reason) {
     }[reason] || reason || "未搬移";
 }
 
+async function pollArchiveJob(jobId, caseId = "", attempt = 0) {
+    if (!jobId) return;
+    try {
+        const data = await api(`/api/osc/archive-jobs/${encodeURIComponent(jobId)}`);
+        const job = data.job || {};
+        if (job.status === "done") {
+            showArchiveResult(job.result || { ok: true, reason: "moved" });
+            await loadCases();
+            await loadMeta();
+            if (caseId && state.wb?.id === caseId && state.wb.mode === "case") {
+                await openCaseWorkbench(caseId, "結案搬移已完成，案件處理頁已重新整理。");
+            }
+            return;
+        }
+        if (job.status === "failed") {
+            showToast(`結案搬移失敗：${archiveReasonText(job.result?.reason || job.error)}`, "warn", 8000);
+            return;
+        }
+        if (attempt < 120) {
+            setTimeout(() => pollArchiveJob(jobId, caseId, attempt + 1), 2500);
+        } else {
+            showToast("結案搬移仍在背景執行，稍後重新整理可查看結果。", "warn", 6000);
+        }
+    } catch (err) {
+        if (attempt < 8) {
+            setTimeout(() => pollArchiveJob(jobId, caseId, attempt + 1), 3000);
+        } else {
+            showToast(`無法讀取結案搬移狀態：${err.message || err}`, "warn", 6000);
+        }
+    }
+}
+
 function showArchiveResult(archive) {
     if (!archive) return;
     const reason = archiveReasonText(archive.reason);
+    if (["queued", "running"].includes(String(archive.reason || archive.status || "").toLowerCase())) {
+        showToast(`結案搬移：${reason}`, "warn", 5000);
+        return;
+    }
     if (archive.ok && !archive.skipped) {
         showToast(`結案搬移：${reason}${archive.to ? " → " + archive.to : ""}`, "ok", 6000);
         return;
@@ -574,9 +739,12 @@ async function openCaseFolderHost(id, quiet = false) {
 // 不依賴本機檔案管理 / smb 協定。把 NAS 案件路徑塞進 #fileManager tab。
 async function openCaseInFileManager(id) {
     try {
-        // 先呼 /open-folder：後端已含 DB → _osc_guess_case_folder（含 NAS 掃描）
-        // 三層 fallback，能找到就找到。前端不再自己判 folder 為空。
-        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/open-folder`, "POST", {});
+        // 網頁檔案管理只需要案件根路徑，不需要先觸發本機 Finder/Explorer 開啟流程。
+        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/folder-path`);
+        if (data && data.ok === false) {
+            handleOpenFolderError(data);
+            return;
+        }
         let folder = (data && data.folder_path || "").trim();
         if (!folder) {
             // 後端三層都找不到 → 顯示 friendly 警告，提供「建立資料夾」按鈕
@@ -592,7 +760,11 @@ async function openCaseInFileManager(id) {
         // 1. 先切到 fileManager view。若側欄為精簡版沒有獨立按鈕，直接啟用 view。
         const fmTabBtn = document.querySelector('.tab-btn[data-tab="fileManager"]');
         if (fmTabBtn) {
-            fmTabBtn.click();
+            if (typeof jumpToPaperclipTab === "function") {
+                jumpToPaperclipTab("fileManager");
+            } else {
+                fmTabBtn.click();
+            }
         } else {
             document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
             document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
@@ -602,10 +774,15 @@ async function openCaseInFileManager(id) {
             const titleEl = document.getElementById("pageTitle");
             if (titleEl) titleEl.textContent = "檔案管理";
         }
+        const caseMeta = data.case || {};
+        const currentCaseLabel = document.getElementById("fmCurrentCaseLabel");
+        if (currentCaseLabel) {
+            currentCaseLabel.textContent = [caseMeta.case_number, caseMeta.client_name].filter(Boolean).join(" ");
+            currentCaseLabel.title = folder;
+        }
         // 2. setRoot 到該案件資料夾（FileManager init 完成後）
         const tryOpen = () => {
             if (window.FileManager && typeof window.FileManager.openWithBasePath === "function") {
-                const caseMeta = data.case || {};
                 const opened = window.FileManager.openWithBasePath(folder, {
                     caseNumber: caseMeta.case_number,
                     clientName: caseMeta.client_name,
@@ -623,7 +800,10 @@ async function openCaseInFileManager(id) {
         };
         tryOpen();
     } catch (e) {
-        showAlert("❌ 系統錯誤", `無法開啟檔案管理：${e.message || e}`);
+        const message = (e && e.message && !/failed\s+to\s+fetch/i.test(e.message))
+            ? e.message
+            : "網路連線暫時中斷，MAGI 已自動重試；請確認連線後再試一次。";
+        showAlert("❌ 系統錯誤", `無法開啟檔案管理：${message}`);
     }
 }
 
@@ -700,7 +880,7 @@ function showFolderPathDialog(folderPath, candidates) {
 }
 
 async function createCaseFolder(id) {
-    if (!id) { showToast("缺少案件 ID", "warn"); return; }
+    if (!id) { showToast("缺少系統案件編號", "warn"); return; }
     try {
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}/create-folder`, "POST", {});
         if (data.ok) {
@@ -718,12 +898,14 @@ function renderWorkbenchCaseEditor(c) {
     const editorCaseType = caseDisplayType(c);
     const editorCaseReason = caseDisplayReason(c);
     const editorStatus = caseDisplayStatus(c);
+    loadCaseLawyerOptions().catch(() => {});
     return `
 	    <div class="card">
 	        <h3>案件主資料快速編輯</h3>
 	        <div class="field-grid cols-4">
 	            <div class="field"><label>案件編號</label><input id="wb_case_case_number" value="${esc(c.case_number || "")}" readonly></div>
 	            <div class="field"><label>當事人</label><input id="wb_case_client_name" value="${esc(c.client_name || "")}"></div>
+	            <div class="field"><label>承辦律師</label><input id="wb_case_lawyer" list="caseLawyerOptions" value="${esc(c.lawyer || "")}" placeholder="留空則依案件分類使用系統預設"></div>
 	            <div class="field"><label>案件種類</label><input id="wb_case_case_category" value="${esc(c.case_category || "")}"></div>
 	            <div class="field"><label>案件分類</label><input id="wb_case_case_type" value="${esc(editorCaseType || "")}"></div>
 	            <div class="field"><label>審級 / 階段</label><input id="wb_case_case_stage" value="${esc(c.case_stage || "")}"></div>
@@ -734,12 +916,13 @@ function renderWorkbenchCaseEditor(c) {
 	            <div class="field"><label>法院案號</label><input id="wb_case_court_case_no" value="${esc(c.court_case_no || "")}"></div>
 	            <div class="field"><label>股別</label><input id="wb_case_court_division" value="${esc(c.court_division || "")}" placeholder="例：義股、簡股"></div>
 	            <div class="field"><label>狀態</label><input id="wb_case_status" value="${esc(editorStatus || "")}"></div>
-            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Y:\\lumi\\01_案件\\..."></div>
+            <div class="field" style="grid-column: span 2;"><label>案件資料夾</label><input id="wb_case_folder_path" value="${esc(c.folder_path || "")}" placeholder="Z:\\active-share\\01_案件\\..."></div>
             <div class="field" style="grid-column: span 2;"><label>備註</label><input id="wb_case_notes" value="${esc(c.notes || "")}"></div>
         </div>
         <div class="toolbar" style="margin-top:10px; margin-bottom:0;">
             <button class="btn primary" data-act="wb-case-save" data-id="${esc(c.id || "")}">儲存案件資料</button>
             <button class="btn" data-act="wb-case-create-folder" data-id="${esc(c.id || "")}"${c.folder_path ? ' title="已有資料夾路徑，點此可重新建立子資料夾結構"' : ""}>建立資料夾</button>
+            <button class="btn" data-act="wb-case-rename-folder" data-id="${esc(c.id || "")}"${c.folder_path ? "" : " disabled"}>資料夾改名</button>
             ${caseCloseButton(c)}
         </div>
     </div>
@@ -754,24 +937,32 @@ function renderCaseFolderBrowser(data) {
     const rel = data.current_relative_path || "";
     const folderPath = data.folder_path || "";
     const folderExists = !!data.folder_exists;
+    const folderListOk = data.folder_list_ok !== false;
+    const folderListError = String(data.message || data.error || "").trim();
     const normalizedFolderPath = folderPath.replace(/\\/g, "/").replace(/\/$/, "");
     const parentButton = rel
-        ? `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(data.parent_relative_path || "")}">↩ 上一層</button>`
+        ? `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(data.parent_relative_path || "")}" data-wb-drop-target="folder">↩ 上一層</button>`
         : "";
     const treeNodes = [
-        `<button class="case-drive-node ${rel ? "" : "active"}" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="">📁 ${esc(c.case_number || "案件根目錄")}</button>`,
+        `<button class="case-drive-node ${rel ? "" : "active"}" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="" data-wb-drop-target="folder">📁 ${esc(c.case_number || "案件根目錄")}</button>`,
         parentButton,
-        ...dirs.map(item => `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}">📁 ${esc(item.name || "")}</button>`),
+        ...dirs.map(item => `<button class="case-drive-node" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-wb-drop-target="folder">📁 ${esc(item.name || "")}</button>`),
     ].filter(Boolean).join("");
-    const rows = entries.length ? entries.map(item => {
+    const rows = !folderListOk
+        ? `<tr><td colspan="5" class="muted">資料夾暫時無法列出內容：${esc(folderListError || "NAS 或同步資料夾目前回應逾時")}</td></tr>`
+        : entries.length ? entries.map(item => {
         const isDir = item.type === "dir";
         const targetPath = item.relative_path ? `${normalizedFolderPath}/${item.relative_path}` : folderPath;
         const openBtn = isDir
             ? `<button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}">進入</button>`
-            : `<a class="btn slim" href="${fileContentUrl(targetPath, true)}" target="_blank" rel="noopener noreferrer">預覽</a>`;
+            : `<button class="btn slim" type="button" data-act="osc-file-preview" data-path="${esc(targetPath)}" data-name="${esc(item.name || "")}">預覽</button>`;
+        const renameBtn = isDir
+            ? `<button class="btn slim" data-act="wb-folder-rename" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-current-path="${esc(rel)}" data-folder-path="${esc(folderPath)}" data-name="${esc(item.name || "")}">改名</button>`
+            : "";
+        const deleteBtn = `<button class="btn slim danger" data-act="wb-folder-trash" data-id="${esc(c.id || "")}" data-path="${esc(item.relative_path || "")}" data-current-path="${esc(rel)}" data-folder-path="${esc(folderPath)}" data-name="${esc(item.name || "")}" data-kind="${esc(item.type || "")}">刪除</button>`;
         const downloadBtn = isDir
             ? ""
-            : `<a class="btn slim" href="${fileContentUrl(targetPath)}" target="_blank" rel="noopener noreferrer">下載</a>`;
+            : `<button class="btn slim" type="button" data-act="osc-file-download" data-path="${esc(targetPath)}" data-name="${esc(item.name || "")}">下載</button>`;
         const shareBtn = isDir
             ? ""
             : `<button class="btn slim" data-act="wb-file-share" data-id="${esc(c.id || "")}" data-path="${esc(targetPath)}" data-name="${esc(item.name || "")}">分享連結</button>`;
@@ -779,12 +970,12 @@ function renderCaseFolderBrowser(data) {
             ? `<button class="btn slim" data-act="wb-file-edit" data-id="${esc(c.id || "")}" data-path="${esc(targetPath)}" data-return-path="${esc(rel)}">編輯</button>`
             : "";
         return `
-        <tr>
+        <tr class="wb-folder-row ${isDir ? "dir" : "file"}" draggable="true" data-wb-rel="${esc(item.relative_path || "")}" data-wb-type="${esc(item.type || "")}" data-wb-name="${esc(item.name || "")}">
             <td>${isDir ? "資料夾" : "檔案"}</td>
             <td>${esc(item.name || "")}</td>
             <td>${esc(item.modified_at || "")}</td>
             <td>${esc(item.size_label || formatBytes(item.size) || "")}</td>
-            <td><div class="wb-folder-actions">${openBtn}${editBtn}${shareBtn}${downloadBtn}</div></td>
+            <td><div class="wb-folder-actions">${openBtn}${renameBtn}${editBtn}${shareBtn}${downloadBtn}${deleteBtn}</div></td>
         </tr>
         `;
     }).join("") : `<tr><td colspan="5" class="muted">目前資料夾沒有可列出的內容</td></tr>`;
@@ -797,17 +988,31 @@ function renderCaseFolderBrowser(data) {
             </div>
             <div class="toolbar case-drive-actions">
                 <button class="btn slim" data-act="wb-folder-open" data-id="${esc(c.id || "")}" data-path="${esc(rel)}">重新整理</button>
+                <button class="btn slim" data-act="wb-folder-mkdir" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">新增資料夾</button>
                 <button class="btn slim" data-act="wb-folder-upload" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳檔案</button>
+                <button class="btn slim" data-act="wb-folder-upload-dir" data-id="${esc(c.id || "")}" data-path="${esc(rel)}" data-folder-path="${esc(folderPath)}">上傳資料夾</button>
                 <button class="btn slim" data-act="wb-folder-copy-path" data-path="${esc(folderPath)}">複製案件路徑</button>
                 <button class="btn slim" data-act="wb-case-open-host" data-id="${esc(c.id || "")}">在本機開啟</button>
             </div>
         </div>
         <div class="wb-folder-meta">
             <div class="wb-folder-kv"><div class="k">案件</div><div class="v">${esc(c.case_number || "")}｜${esc(c.client_name || "")}</div></div>
-            <div class="wb-folder-kv"><div class="k">同步狀態</div><div class="v">${folderExists ? "已同步，可直接瀏覽" : "尚未同步到伺服器本機"}</div></div>
+            <div class="wb-folder-kv"><div class="k">同步狀態</div><div class="v">${
+                folderExists
+                    ? (folderListOk ? "已同步，可直接瀏覽" : "資料夾存在，可在本機開啟")
+                    : "尚未同步到伺服器本機"
+            }</div></div>
         </div>
         <div class="wb-breadcrumb">${esc(rel ? `${folderPath} / ${rel}` : folderPath)}</div>
+        ${folderExists && !folderListOk ? `
+        <div class="status-banner warn" style="margin-top:10px;">
+            ${esc(folderListError || "資料夾已定位，但 NAS 或同步資料夾目前無法由背景服務穩定列出內容。你可以先複製路徑、在本機開啟，或稍後重新整理。")}
+        </div>` : ""}
         ${folderExists ? `
+        <div class="wb-drop-zone" aria-label="拖拉檔案上傳或移動" data-wb-drop-target="folder" data-path="${esc(rel || "")}">
+            <strong>可將多個檔案拖拉到這裡上傳，也可拖拉既有檔案移到目前位置</strong>
+            <span>目前位置：${esc(rel || "案件根目錄")}。同名上傳會先詢問是否覆蓋；既有檔案移動遇同名項目會保留原檔並提示。</span>
+        </div>
         <div class="case-drive-shell">
             <aside class="case-drive-tree" aria-label="案件資料夾結構">
                 ${treeNodes || `<div class="muted">沒有子資料夾</div>`}
@@ -830,12 +1035,114 @@ async function openCaseFolder(id, relativePath = "") {
     const c = data.case || {};
     state.wb = { mode: "case-folder", id, data };
     wbShow(`案件資料夾｜${c.case_number || id}`, renderCaseFolderBrowser(data));
+    bindWorkbenchFolderDropZone();
+    bindWorkbenchFolderMoveDrag();
     wbSetStatus(
         data.folder_exists
-            ? `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`
+            ? (data.folder_list_ok === false
+                ? `資料夾已定位：${data.message || data.error || "請使用本機 Finder 開啟。"}`
+                : `已載入案件資料夾，路徑 ${data.current_relative_path || "/" }。`)
             : "案件資料夾尚未同步到伺服器本機，已提供 NAS 路徑與本機開啟選項。",
-        data.folder_exists ? "ok" : "warn"
+        data.folder_exists && data.folder_list_ok !== false ? "ok" : "warn"
     );
+}
+
+async function createWorkbenchFolder(caseId, folderPath, relativePath = "") {
+    const basePath = String(folderPath || "").trim();
+    if (!caseId || !basePath) {
+        wbSetStatus("目前沒有案件資料夾路徑，無法新增資料夾。", "warn");
+        return;
+    }
+    const name = await showPrompt("MAGI說", "請輸入新資料夾名稱，例如：書狀、證據資料、與當事人往來", "");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    try {
+        const data = await api("/api/osc/folders/mkdir", "POST", {
+            base_path: basePath,
+            relative_path: String(relativePath || ""),
+            name: trimmed,
+        });
+        if (!data.ok) throw new Error(data.error || "新增資料夾失敗");
+        showToast(`已新增資料夾：${trimmed}`, "ok", 3000);
+        wbSetStatus(`已新增資料夾：${trimmed}`, "ok");
+        await openCaseFolder(caseId, relativePath || "");
+    } catch (e) {
+        const msg = String(e.message || e);
+        const friendly = msg.includes("already_exists")
+            ? "同名資料夾已存在。"
+            : msg.includes("name_has_invalid_chars")
+                ? "資料夾名稱不能包含 \\ / : * ? \" < > | 等字元。"
+                : msg.includes("parent_not_found")
+                    ? "目前資料夾尚未同步或不存在，無法在此新增資料夾。"
+                    : msg;
+        wbSetStatus(`新增資料夾失敗：${friendly}`, "warn");
+        showToast(`新增資料夾失敗：${friendly}`, "warn", 3500);
+    }
+}
+
+async function renameWorkbenchCaseFolder(caseId) {
+    if (!caseId) {
+        wbSetStatus("缺少系統案件編號，無法改名。", "warn");
+        return;
+    }
+    const data = state.wb?.data || {};
+    const currentPath = data.folder_path || document.getElementById("wb_case_folder_path")?.value || "";
+    const currentName = String(currentPath || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+    const name = await showPrompt("MAGI說", "請輸入新的案件資料夾名稱。會同步更新 MAGI 內的路徑。", currentName);
+    const trimmed = String(name || "").trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+        const result = await api(`/api/osc/cases/${encodeURIComponent(caseId)}/rename-folder`, "POST", {
+            new_name: trimmed,
+        });
+        const newPath = result.folder_path || "";
+        showToast(`案件資料夾已改名：${trimmed}`, "ok", 3500);
+        wbSetStatus(`案件資料夾已改名，MAGI 路徑已更新。`, "ok");
+        const folderInput = document.getElementById("wb_case_folder_path");
+        if (folderInput && newPath) folderInput.value = newPath;
+        await openCaseWorkbench(caseId);
+    } catch (e) {
+        const msg = friendlyFolderRenameError(e.message || e);
+        wbSetStatus(`案件資料夾改名失敗：${msg}`, "warn");
+        showToast(`案件資料夾改名失敗：${msg}`, "warn", 4000);
+    }
+}
+
+async function renameWorkbenchFolder(caseId, folderPath, relativePath = "", currentPath = "", currentName = "") {
+    const basePath = String(folderPath || "").trim();
+    const srcRel = String(relativePath || "").trim();
+    if (!caseId || !basePath || !srcRel) {
+        wbSetStatus("缺少資料夾路徑，無法改名。", "warn");
+        return;
+    }
+    const name = await showPrompt("MAGI說", "請輸入新的資料夾名稱。會同步更新 MAGI 內的檔案路徑。", currentName || srcRel.split("/").pop() || "");
+    const trimmed = String(name || "").trim();
+    if (!trimmed || trimmed === currentName) return;
+    try {
+        const data = await api("/api/osc/folders/rename", "POST", {
+            base_path: basePath,
+            relative_path: srcRel,
+            new_name: trimmed,
+        });
+        if (!data.ok) throw new Error(data.error || "rename_failed");
+        showToast(`資料夾已改名：${trimmed}`, "ok", 3000);
+        wbSetStatus(`資料夾已改名：${trimmed}`, "ok");
+        await openCaseFolder(caseId, currentPath || "");
+    } catch (e) {
+        const msg = friendlyFolderRenameError(e.message || e);
+        wbSetStatus(`資料夾改名失敗：${msg}`, "warn");
+        showToast(`資料夾改名失敗：${msg}`, "warn", 3500);
+    }
+}
+
+function friendlyFolderRenameError(raw) {
+    const msg = String(raw || "");
+    if (msg.includes("target_exists") || msg.includes("already_exists")) return "同名資料夾已存在。";
+    if (msg.includes("name_has_invalid_chars")) return "資料夾名稱不能包含 \\ / : * ? \" < > | 等字元。";
+    if (msg.includes("name_empty")) return "資料夾名稱不能空白。";
+    if (msg.includes("source_not_found") || msg.includes("folder_not_synced")) return "原資料夾目前找不到或尚未同步到這台電腦。";
+    if (msg.includes("folder_not_allowed")) return "這個路徑不在 MAGI 允許管理的資料夾內。";
+    return msg || "未知錯誤";
 }
 
 function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {
@@ -846,7 +1153,7 @@ function renderTextFileEditor(caseId, rawPath, content, returnPath = "") {
         <div class="wb-breadcrumb">${esc(rawPath)}</div>
         <div class="toolbar" style="margin-top:10px;">
             <button class="btn slim" data-act="wb-file-editor-back" data-id="${esc(caseId)}" data-path="${esc(returnPath)}">回到資料夾</button>
-            <a class="btn slim" href="${fileContentUrl(rawPath)}" target="_blank" rel="noopener noreferrer">下載原檔</a>
+            <button class="btn slim" type="button" data-act="osc-file-download" data-path="${esc(rawPath)}" data-name="${esc(fileRouteName(rawPath))}">下載原檔</button>
             <button class="btn primary" data-act="wb-file-save" data-id="${esc(caseId)}" data-path="${esc(rawPath)}" data-return-path="${esc(returnPath)}">儲存回本機</button>
         </div>
         <div class="muted" style="margin-bottom:10px;">目前直接支援文字檔編輯；Office / PDF 等檔案請下載後修改，再回到資料夾用上傳覆蓋。</div>
@@ -881,33 +1188,392 @@ function promptFolderUpload(caseId, folderPath, relativePath = "") {
     input.click();
 }
 
+function promptDirectoryUpload(caseId, folderPath, relativePath = "") {
+    state.folderUpload = { caseId, folderPath, relativePath, mode: "directory" };
+    const input = document.getElementById("wbDirectoryUploadInput");
+    if (!input) return showAlert("MAGI說", "目前瀏覽器不支援資料夾上傳，請改用拖拉或分批上傳檔案。");
+    input.value = "";
+    input.click();
+}
+
 async function handleFolderUpload(file, opts = {}) {
+    return handleFolderUploadFiles(file ? [file] : [], opts);
+}
+
+function normalizeBrowserUploadPath(file) {
+    const raw = String((file && (file.webkitRelativePath || file.relativePath)) || (file && file.name) || "").replace(/\\/g, "/");
+    const parts = raw.split("/").map(x => x.trim()).filter(Boolean);
+    return parts.length ? parts.join("/") : (file && file.name) || "";
+}
+
+function relativeDirOf(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+}
+
+function existingWorkbenchDirNames() {
+    const entries = state.wb?.data?.entries || [];
+    return new Set(entries.filter(item => item.type === "dir").map(item => String(item.name || "")));
+}
+
+async function buildWorkbenchUploadPlans(files) {
+    const existingDirs = existingWorkbenchDirNames();
+    const conflictRoots = new Set();
+    const plans = files.map(file => {
+        const relativePath = normalizeBrowserUploadPath(file);
+        const parts = relativePath.split("/").filter(Boolean);
+        if (parts.length > 1 && existingDirs.has(parts[0])) conflictRoots.add(parts[0]);
+        return { file, relativePath, overwrite: false };
+    });
+    if (!conflictRoots.size) return { plans, overwrite: false };
+
+    const names = Array.from(conflictRoots).sort((a, b) => a.localeCompare(b, "zh-Hant"));
+    const overwrite = await showConfirm(
+        "MAGI說",
+        `你上傳的資料夾已存在：${names.join("、")}\n\n是否覆蓋同一路徑下的同名檔案？\nMAGI 不會刪掉既有資料夾內其他檔案。`
+    );
+    if (!overwrite) {
+        return {
+            plans: plans.filter(plan => !conflictRoots.has(plan.relativePath.split("/").filter(Boolean)[0] || "")),
+            overwrite: false,
+        };
+    }
+    return {
+        plans: plans.map(plan => {
+            const root = plan.relativePath.split("/").filter(Boolean)[0] || "";
+            return conflictRoots.has(root) ? { ...plan, overwrite: true } : plan;
+        }),
+        overwrite: true,
+    };
+}
+
+async function trashWorkbenchEntry(caseId, folderPath, relativePath = "", currentPath = "", name = "", kind = "") {
+    const basePath = String(folderPath || "").trim();
+    const srcRel = String(relativePath || "").trim();
+    if (!caseId || !basePath || !srcRel) {
+        wbSetStatus("缺少檔案或資料夾路徑，無法刪除。", "warn");
+        return;
+    }
+    const label = kind === "dir" ? "資料夾" : "檔案";
+    const ok = await showConfirm(
+        "MAGI說",
+        `確定將${label}「${name || srcRel}」移到回收區嗎？\n\n這不會永久刪除；MAGI 會移到案件根目錄的 .trash，NAS 同步後原位置會消失。`
+    );
+    if (!ok) return;
+    try {
+        const data = await api("/api/osc/folders/move", "POST", {
+            base_path: basePath,
+            source_relative_path: srcRel,
+            to_trash: true,
+        });
+        if (!data.ok) throw new Error(data.error || "trash_failed");
+        showToast(`已移到回收區：${name || srcRel}`, "ok", 3000);
+        wbSetStatus(`已移到回收區，原位置已移除：${name || srcRel}`, "ok");
+        await openCaseFolder(caseId, currentPath || "");
+    } catch (e) {
+        wbSetStatus(`刪除失敗：${friendlyFolderRenameError(e.message || e)}`, "warn");
+        showToast(`刪除失敗：${e.message || e}`, "warn", 3500);
+    }
+}
+
+function wbSelectedFolderRows() {
+    return Array.from(document.querySelectorAll(".wb-folder-row.selected")).map(row => ({
+        basePath: state.wb?.data?.folder_path || "",
+        rel: row.dataset.wbRel || "",
+        type: row.dataset.wbType || "file",
+        name: row.dataset.wbName || "",
+    })).filter(item => item.rel);
+}
+
+function wbApplyFolderSelection(rows) {
+    const rels = new Set((rows || []).map(row => row.rel || row.dataset?.wbRel || "").filter(Boolean));
+    document.querySelectorAll(".wb-folder-row").forEach(row => {
+        row.classList.toggle("selected", rels.has(row.dataset.wbRel || ""));
+    });
+}
+
+function wbFolderRowPayload(row) {
+    if (!row) return null;
+    const rel = row.dataset.wbRel || "";
+    if (!rel) return null;
+    return {
+        basePath: state.wb?.data?.folder_path || "",
+        rel,
+        type: row.dataset.wbType || "file",
+        name: row.dataset.wbName || rel.split("/").pop() || rel,
+    };
+}
+
+function wbFolderParentRel(rel) {
+    const parts = String(rel || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+}
+
+function wbFolderTargetRel(target) {
+    const node = target && target.closest ? target.closest("[data-wb-drop-target='folder'], .wb-folder-row") : null;
+    if (!node) return state.wb?.data?.current_relative_path || "";
+    if (node.dataset.wbDropTarget === "folder") return node.dataset.path || "";
+    if (node.dataset.wbType === "dir") return node.dataset.wbRel || "";
+    return state.wb?.data?.current_relative_path || "";
+}
+
+function wbFolderMoveErrorText(error) {
+    const msg = String(error || "");
+    if (msg.includes("target_exists")) return "目標資料夾已有同名項目，請先改名或刪除原項目。";
+    if (msg.includes("nested_target")) return "不能把資料夾移到自己或自己的子資料夾底下。";
+    if (msg.includes("target_dir_not_found")) return "目標資料夾目前不存在或尚未同步。";
+    if (msg.includes("source_not_found")) return "來源檔案已不存在或尚未同步。";
+    return msg || "未知錯誤";
+}
+
+function wbValidateMovePayload(payload, targetRel) {
+    const entries = (payload?.entries || [payload]).filter(item => item && item.rel);
+    if (!entries.length) return "missing_source";
+    const basePath = state.wb?.data?.folder_path || "";
+    if (!basePath || entries.some(item => item.basePath !== basePath)) return "different_base";
+    const target = targetRel || "";
+    if (entries.every(item => wbFolderParentRel(item.rel) === target)) return "same_parent";
+    if (entries.some(item => item.type === "dir" && (target === item.rel || target.startsWith(item.rel + "/")))) return "nested_target";
+    return "";
+}
+
+function wbInternalFolderDrag(e) {
+    if (e?.dataTransfer && Array.from(e.dataTransfer.types || []).includes(WB_FOLDER_DRAG_TYPE)) return true;
+    return !!wbFolderDragPayload;
+}
+
+function wbReadFolderDrag(e) {
+    const raw = e?.dataTransfer?.getData(WB_FOLDER_DRAG_TYPE);
+    if (raw) {
+        try { return JSON.parse(raw); } catch (_) {}
+    }
+    return wbFolderDragPayload;
+}
+
+async function moveWorkbenchEntries(payload, targetRel) {
+    const entries = (payload?.entries || [payload]).filter(item => item && item.rel);
+    const basePath = state.wb?.data?.folder_path || "";
+    const caseId = state.wb?.data?.case?.id || state.wb?.id || "";
+    const currentPath = state.wb?.data?.current_relative_path || "";
+    const label = entries.length > 1 ? `${entries.length} 個項目` : (entries[0]?.name || entries[0]?.rel || "項目");
+    wbSetStatus(`移動中：${label}。`, "info");
+    const errors = [];
+    let moved = 0;
+    for (const item of entries) {
+        try {
+            const data = await api("/api/osc/folders/move", "POST", {
+                base_path: basePath,
+                source_relative_path: item.rel,
+                target_relative_path: targetRel || "",
+            });
+            if (data.ok) moved += 1;
+            else errors.push(`${item.name || item.rel}：${wbFolderMoveErrorText(data.error)}`);
+        } catch (e) {
+            errors.push(`${item.name || item.rel}：${wbFolderMoveErrorText(e.message || e)}`);
+        }
+    }
+    if (errors.length) {
+        wbSetStatus(`移動完成 ${moved} 個，失敗 ${errors.length} 個：${errors.slice(0, 2).join("；")}`, "warn");
+    } else {
+        wbSetStatus(`已移動：${label}。`, "ok");
+        showToast(`已移動：${label}`, "ok", 2500);
+    }
+    await openCaseFolder(caseId, currentPath || "");
+}
+
+async function handleFolderUploadFiles(fileList, opts = {}) {
     const ctx = state.folderUpload || {};
     const folderPath = String(ctx.folderPath || "").trim();
-    if (!file || !folderPath) return;
+    const files = Array.from(fileList || []).filter(file => file && file.name);
+    if ((!files.length && !(opts.plans && opts.plans.length)) || !folderPath) return;
+    const planState = opts.plans
+        ? { plans: opts.plans, overwrite: !!opts.overwrite }
+        : await buildWorkbenchUploadPlans(files);
+    const plans = planState.plans || [];
+    if (!plans.length) {
+        wbSetStatus("沒有檔案需要上傳。", "warn");
+        return;
+    }
     const form = new FormData();
-    form.append("folder_path", folderPath);
+    form.append("base_path", folderPath);
     form.append("relative_path", String(ctx.relativePath || ""));
-    if (opts.overwrite) form.append("overwrite", "1");
-    form.append("file", file, file.name);
+    if (opts.overwrite || planState.overwrite || plans.some(plan => plan.overwrite)) form.append("overwrite", "1");
+    plans.forEach(plan => {
+        const uploadName = String(plan.relativePath || plan.file.name || "").split("/").filter(Boolean).pop() || plan.file.name;
+        form.append("files", plan.file, uploadName);
+        form.append("relative_paths", plan.relativePath || uploadName);
+    });
     try {
-        const data = await apiForm("/api/osc/files/upload", form);
-        const saved = (data.saved || [])[0] || {};
-        showToast(`已上傳 ${saved.file_name || file.name}。`, "ok");
-        await openCaseFolder(ctx.caseId, ctx.relativePath || "");
-        wbSetStatus(`檔案 ${saved.file_name || file.name} 已上傳到本機同步資料夾。`, "ok");
-    } catch (e) {
-        if (e.status === 409 && e.payload && e.payload.error === "file_exists") {
-            const confirmOverwrite = confirm(`檔案「${e.payload.file_name || file.name}」已存在，是否覆蓋？`);
-            if (confirmOverwrite) {
-                return await handleFolderUpload(file, { overwrite: true });
+        const data = await apiForm("/api/osc/files/upload-multi", form);
+        const results = data.results || [];
+        const okItems = results.filter(item => item.ok);
+        const conflictItems = results.filter(item => item.error === "file_exists");
+        const errorItems = results.filter(item => !item.ok && item.error !== "file_exists");
+
+        if (conflictItems.length && !opts.overwrite) {
+            const overwrite = await showConfirm("MAGI說", `有 ${conflictItems.length} 個同名檔案已存在，是否覆蓋這些檔案？`);
+            if (overwrite) {
+                const keys = new Set(conflictItems.map(item => String(item.relative_path || item.name || "")));
+                const conflictPlans = plans.filter(plan => {
+                    const suffix = String(plan.relativePath || plan.file.name || "");
+                    return keys.has(suffix) || Array.from(keys).some(key => key.endsWith("/" + suffix));
+                });
+                if (conflictPlans.length) {
+                    return await handleFolderUploadFiles([], { plans: conflictPlans, overwrite: true });
+                }
             }
-            wbSetStatus("已取消覆蓋既有檔案。", "warn");
+        }
+
+        if (okItems.length) {
+            showToast(`已上傳 ${okItems.length} 個檔案。`, "ok");
+            await openCaseFolder(ctx.caseId, ctx.relativePath || "");
+        }
+        const parts = [];
+        if (okItems.length) parts.push(`完成 ${okItems.length} 個`);
+        if (conflictItems.length && !opts.overwrite) parts.push(`同名未覆蓋 ${conflictItems.length} 個`);
+        if (errorItems.length) parts.push(`失敗 ${errorItems.length} 個：${errorItems.slice(0, 3).map(item => `${item.name || "檔案"} ${item.error || ""}`).join("、")}`);
+        wbSetStatus(parts.length ? `批次上傳結果：${parts.join("，")}。` : "沒有檔案完成上傳。", errorItems.length ? "warn" : "ok");
+    } catch (e) {
+        wbSetStatus(`上傳失敗：${e.message}`, "warn");
+        showAlert("MAGI說", `上傳失敗：${e.message}`);
+    }
+}
+
+function bindWorkbenchFolderDropZone() {
+    const card = document.querySelector(".case-drive-card");
+    if (!card || card._wbDropBound) return;
+    card._wbDropBound = true;
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+    const enter = (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        card.classList.add("drag-over");
+    };
+    const leave = (e) => {
+        if (card.contains(e.relatedTarget)) return;
+        card.classList.remove("drag-over");
+    };
+    card.addEventListener("dragenter", enter);
+    card.addEventListener("dragover", enter);
+    card.addEventListener("dragleave", leave);
+    card.addEventListener("drop", async (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        card.classList.remove("drag-over");
+        const files = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
+        if (!files.length) {
+            wbSetStatus("目前只支援拖拉檔案；資料夾請先進入目標資料夾後分批上傳。", "warn");
             return;
         }
-        wbSetStatus(`上傳失敗：${e.message}`, "warn");
-        alert(`上傳失敗：${e.message}`);
-    }
+        const data = state.wb?.data || {};
+        state.folderUpload = {
+            caseId: data.case?.id || state.wb?.id || "",
+            folderPath: data.folder_path || "",
+            relativePath: data.current_relative_path || "",
+        };
+        await handleFolderUploadFiles(files);
+    });
+}
+
+function bindWorkbenchFolderMoveDrag() {
+    const card = document.querySelector(".case-drive-card");
+    if (!card || card._wbMoveDragBound) return;
+    card._wbMoveDragBound = true;
+
+    card.addEventListener("click", (e) => {
+        const row = e.target.closest(".wb-folder-row");
+        if (!row || e.target.closest("button,a,input,select,textarea,[data-act]")) return;
+        const rows = Array.from(card.querySelectorAll(".wb-folder-row"));
+        const payload = wbFolderRowPayload(row);
+        if (!payload) return;
+        if (e.shiftKey && state.wbFolderLastRel) {
+            const start = rows.findIndex(x => (x.dataset.wbRel || "") === state.wbFolderLastRel);
+            const end = rows.findIndex(x => (x.dataset.wbRel || "") === payload.rel);
+            if (start >= 0 && end >= 0) {
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                wbApplyFolderSelection(rows.slice(lo, hi + 1).map(wbFolderRowPayload));
+                return;
+            }
+        }
+        if (e.ctrlKey || e.metaKey) {
+            row.classList.toggle("selected");
+            state.wbFolderLastRel = payload.rel;
+            return;
+        }
+        state.wbFolderLastRel = payload.rel;
+        wbApplyFolderSelection([payload]);
+    });
+
+    card.addEventListener("dragstart", (e) => {
+        const row = e.target.closest(".wb-folder-row");
+        if (!row || e.target.closest("button,a,input,select,textarea,[data-act]")) return;
+        const payload = wbFolderRowPayload(row);
+        if (!payload) return;
+        if (!row.classList.contains("selected")) {
+            wbApplyFolderSelection([payload]);
+            state.wbFolderLastRel = payload.rel;
+        }
+        const selected = wbSelectedFolderRows();
+        wbFolderDragPayload = selected.length > 1
+            ? { basePath: payload.basePath, rel: payload.rel, type: payload.type, name: `${selected.length} 個項目`, entries: selected }
+            : payload;
+        try {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData(WB_FOLDER_DRAG_TYPE, JSON.stringify(wbFolderDragPayload));
+            e.dataTransfer.setData("text/plain", wbFolderDragPayload.name || payload.name);
+        } catch (_) {}
+        row.classList.add("dragging");
+    });
+
+    card.addEventListener("dragend", () => {
+        wbFolderDragPayload = null;
+        card.querySelectorAll(".dragging,.wb-drop-target").forEach(el => el.classList.remove("dragging", "wb-drop-target"));
+    });
+
+    const mark = (e, active) => {
+        const target = e.target.closest("[data-wb-drop-target='folder'], .wb-folder-row");
+        if (!target) return;
+        if (active) target.classList.add("wb-drop-target");
+        else target.classList.remove("wb-drop-target");
+    };
+
+    card.addEventListener("dragover", (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        const target = e.target.closest("[data-wb-drop-target='folder'], .wb-folder-row");
+        if (!target) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        mark(e, true);
+    });
+    card.addEventListener("dragleave", (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        mark(e, false);
+    });
+    card.addEventListener("drop", async (e) => {
+        if (!wbInternalFolderDrag(e)) return;
+        e.preventDefault();
+        card.querySelectorAll(".wb-drop-target").forEach(el => el.classList.remove("wb-drop-target"));
+        const payload = wbReadFolderDrag(e);
+        const targetRel = wbFolderTargetRel(e.target);
+        const reason = wbValidateMovePayload(payload, targetRel);
+        if (reason === "same_parent") {
+            wbSetStatus("選取項目已經在目標資料夾。", "warn");
+            return;
+        }
+        if (reason === "nested_target") {
+            wbSetStatus("不能把資料夾移到自己或自己的子資料夾底下。", "warn");
+            return;
+        }
+        if (reason) {
+            wbSetStatus("只能在同一個案件根目錄內移動檔案或資料夾。", "warn");
+            return;
+        }
+        await moveWorkbenchEntries(payload, targetRel);
+        wbFolderDragPayload = null;
+    });
 }
 
 function setCaseType(type) {
@@ -915,7 +1581,7 @@ function setCaseType(type) {
     document.querySelectorAll("#caseTypeTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.type === state.caseType);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function setCaseKind(kind) {
@@ -924,7 +1590,7 @@ function setCaseKind(kind) {
     document.querySelectorAll("#caseKindTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.kind === state.caseKind);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function setCaseCategory(cat) {
@@ -936,7 +1602,7 @@ function setCaseStatusScope(scope) {
     document.querySelectorAll("#caseStatusTabs .chip").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.scope === state.caseStatusScope);
     });
-    loadCases().catch((e) => alert(`載入案件失敗：${e.message}`));
+    loadCases().catch((e) => showAlert("MAGI說", `載入案件失敗：${e.message}`));
 }
 
 function wbRenderTodoForm(defaultCaseNumber = "", defaultClientName = "") {
@@ -1005,6 +1671,7 @@ async function saveWorkbenchCase() {
     const body = {
         case_number: (document.getElementById("wb_case_case_number")?.value || "").trim(),
         client_name: (document.getElementById("wb_case_client_name")?.value || "").trim(),
+        lawyer: (document.getElementById("wb_case_lawyer")?.value || "").trim(),
         case_category: (document.getElementById("wb_case_case_category")?.value || "").trim(),
         case_type: (document.getElementById("wb_case_case_type")?.value || "").trim(),
         case_stage: (document.getElementById("wb_case_case_stage")?.value || "").trim(),
@@ -1017,6 +1684,7 @@ async function saveWorkbenchCase() {
         status: (document.getElementById("wb_case_status")?.value || "").trim(),
         folder_path: (document.getElementById("wb_case_folder_path")?.value || "").trim(),
         notes: (document.getElementById("wb_case_notes")?.value || "").trim(),
+        background: true,
     };
     if (!body.client_name) {
         wbSetStatus("當事人欄位不能空白。", "warn");
@@ -1024,8 +1692,12 @@ async function saveWorkbenchCase() {
     }
     const resp = await api(`/api/osc/cases/${encodeURIComponent(id)}`, "PUT", body);
     const archive = resp?.archive;
+    const archiveJob = resp?.archive_job;
     if (archive && archive.ok && !archive.skipped) {
         wbSetStatus(`案件資料已儲存，結案搬移：${archiveReasonText(archive.reason)}。`, "ok");
+    } else if (archiveJob?.id) {
+        wbSetStatus("案件資料已儲存，結案搬移已排入背景。", "ok");
+        pollArchiveJob(archiveJob.id, id);
     } else if (archive && !archive.ok) {
         wbSetStatus(`案件資料已儲存，但結案搬移未完成：${archiveReasonText(archive.reason)}。`, "warn");
     } else {
@@ -1090,9 +1762,9 @@ function renderDocsByKeyword(docs, keywords) {
                 <td>${esc(x.file_name || "")}</td>
                 <td>${esc(x.subfolder_name || "")}</td>
                 <td class="actions">
-                    <a class="btn slim" href="${fileContentUrl(x.file_path || "", true)}" target="_blank" rel="noopener noreferrer">預覽</a>
+                    <button class="btn slim" type="button" data-act="osc-file-preview" data-path="${esc(x.file_path || "")}" data-name="${esc(x.file_name || "")}">預覽</button>
                     <button class="btn slim" type="button" data-act="wb-file-share" data-path="${esc(x.file_path || "")}" data-name="${esc(x.file_name || "")}">分享連結</button>
-                    <a class="btn slim" href="${fileContentUrl(x.file_path || "")}" target="_blank" rel="noopener noreferrer">下載</a>
+                    <button class="btn slim" type="button" data-act="osc-file-download" data-path="${esc(x.file_path || "")}" data-name="${esc(x.file_name || "")}">下載</button>
                     <button class="btn slim" type="button" data-act="wb-folder-copy-path" data-path="${esc(x.file_path || "")}">複製路徑</button>
                 </td>
             </tr>`).join("")}
@@ -1115,13 +1787,13 @@ function renderCaseStampableDocuments(c = {}, docs = [], options = {}) {
         <div class="toolbar" style="margin:8px 0;">
             <input id="caseDocFinalizeQ" value="${esc(options.q || "")}" placeholder="在本案書狀內搜尋檔名 / 類型" style="max-width:360px;">
             <button class="btn primary" data-act="case-doc-finalize-search" data-id="${esc(caseId)}">搜尋</button>
-            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開全域書狀索引</button>
+            <button class="btn" data-act="case-doc-index" data-case="${esc(caseNumber)}">開文件總索引</button>
         </div>
     ` : "";
     if (!rows.length) {
         return `
             ${searchBox}
-            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描書狀索引。</div>
+            <div class="muted">本案目前沒有可蓋章的 PDF / DOCX / DOC。可先按「資料夾」確認檔案是否已放入案件資料夾，或重新掃描文件總索引。</div>
         `;
     }
     return `
@@ -1176,7 +1848,7 @@ async function openCaseDocumentFinalizer(id, q = "") {
             <div class="muted" style="margin-top:8px;">載入中...</div>
         </div>
     `);
-    wbSetStatus("正在讀取本案書狀索引。", "info");
+    wbSetStatus("正在讀取本案文件總索引。", "info");
     const data = await api(`/api/osc/documents?limit=300&case_number=${encodeURIComponent(caseNumber)}&q=${encodeURIComponent(q || "")}`);
     const docs = data.items || [];
     state.wb.data = { case: c, documents: docs, q };
@@ -1376,14 +2048,33 @@ function initCardDrag(container) {
             if (e.clientY < mid) container.insertBefore(dragEl, card);
             else container.insertBefore(dragEl, card.nextSibling);
         });
-        card.addEventListener('dblclick', () => {
-            const id = card.dataset.caseId;
-            if (id) openCaseFolder(id);
-        });
     });
 }
 
-function bindCaseCardOpen(container) {
+async function openCaseFolderWithFeedback(caseId, trigger) {
+    if (!caseId) return;
+    const button = trigger && trigger.closest ? trigger.closest('button') : null;
+    const oldText = button ? button.textContent : "";
+    if (button) {
+        button.disabled = true;
+        button.textContent = "開啟中...";
+    }
+    try {
+        await openCaseInFileManager(caseId);
+        if (trigger && trigger.closest && trigger.closest("#caseCardModal")) {
+            closeCaseCardModal();
+        }
+    } catch (err) {
+        showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = oldText || "資料夾";
+        }
+    }
+}
+
+function bindCaseOpenButtons(container) {
     container.querySelectorAll('[data-act="case-open"]').forEach(btn => {
         if (btn._caseOpenDirectBound) return;
         btn._caseOpenDirectBound = true;
@@ -1391,26 +2082,21 @@ function bindCaseCardOpen(container) {
             e.preventDefault();
             e.stopPropagation();
             const caseId = btn.dataset.id;
-            if (!caseId) return;
-            try {
-                await openCaseFolder(caseId);
-            } catch (err) {
-                showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
-            }
+            await openCaseFolderWithFeedback(caseId, btn);
         });
     });
+}
+
+function bindCaseCardOpen(container) {
+    bindCaseOpenButtons(container);
     container.querySelectorAll('.case-card').forEach(card => {
         if (card._caseOpenBound) return;
         card._caseOpenBound = true;
-        card.addEventListener('click', async (e) => {
+        card.addEventListener('click', (e) => {
+            if (card.classList.contains("case-card-expanded")) return;
             if (e.target.closest('button,a,input,select,textarea,[data-act]')) return;
             const caseId = card.dataset.caseId;
-            if (!caseId) return;
-            try {
-                await openCaseFolder(caseId);
-            } catch (err) {
-                showToast(`開啟案件資料夾失敗：${err.message}`, "warn", 2800);
-            }
+            openCaseCardModal(caseId);
         });
     });
 }
@@ -1485,7 +2171,7 @@ async function editClient(id) {
 }
 
 async function delClient(id) {
-    if (!confirm(`確定刪除當事人 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除當事人 ${id}？`)) return;
     await api(`/api/osc/clients/${encodeURIComponent(id)}`, "DELETE");
     await loadClients();
     await loadMeta();
@@ -1545,7 +2231,7 @@ async function editMeeting(id) {
 }
 
 async function delMeeting(id) {
-    if (!confirm(`確定刪除會議 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除會議 ${id}？`)) return;
     await api(`/api/osc/meetings/${id}`, "DELETE");
     await loadMeetings();
     await loadMeta();
@@ -1564,7 +2250,7 @@ async function handleCasesCsvUpload(file) {
     fd.append("file", file);
     showToast("匯入中...", "info", 2000);
     try {
-        const res = await fetch("/api/osc/cases/import-csv", { method: "POST", body: fd });
+        const res = await fetch("/api/osc/cases/import-csv", { method: "POST", credentials: "same-origin", headers: csrfHeaders(), body: fd });
         const data = await res.json();
         if (data.ok) {
             const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
@@ -1578,8 +2264,12 @@ async function handleCasesCsvUpload(file) {
     }
 }
 
+function exportCasesXlsx() {
+    window.location.href = "/api/osc/cases/export-xlsx";
+}
+
 function exportCasesCsv() {
-    window.location.href = "/api/osc/cases/export-csv";
+    exportCasesXlsx();
 }
 
 /* ── Clients CSV Import / Export ── */
@@ -1595,7 +2285,7 @@ async function handleClientsCsvUpload(file) {
     fd.append("file", file);
     showToast("匯入中...", "info", 2000);
     try {
-        const res = await fetch("/api/osc/clients/import-csv", { method: "POST", body: fd });
+        const res = await fetch("/api/osc/clients/import-csv", { method: "POST", credentials: "same-origin", headers: csrfHeaders(), body: fd });
         const data = await res.json();
         if (data.ok) {
             const errMsg = (data.errors || []).slice(0, 3).map(e => `第 ${e.row} 行: ${e.reason}`).join("\n");
@@ -1662,7 +2352,7 @@ function addressLabelDialog(caseId) {
         document.getElementById("al-download-btn").style.display = "none";
         try {
             const url = `/api/osc/cases/${encodeURIComponent(caseId)}/address-label?mode=preview&recipient=${recipient}`;
-            const resp = await fetch(url, { credentials: "same-origin" });
+            const resp = await fetch(url, { credentials: "same-origin", headers: csrfHeaders() });
             if (!resp.ok) {
                 const json = await resp.json().catch(() => ({}));
                 previewDiv.innerHTML = `<span style="color:red">錯誤：${json.error || resp.statusText}</span>`;

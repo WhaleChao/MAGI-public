@@ -2,31 +2,129 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from html import escape
+from urllib.parse import quote
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, abort, jsonify, redirect, request, send_file
 from flask_login import LoginManager
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from api.blueprints.dashboard_pages import dashboard_pages_bp
+from api.blueprints.exam_tutor import exam_tutor_bp
 from api.blueprints.golem_console import golem_console_bp
+from api.blueprints.lottery import lottery_bp
+from api.blueprints.cookie_cutter import cookie_cutter_bp
 from api.blueprints.osc_accounting import osc_accounting_bp
 from api.blueprints.osc_debt import osc_debt_bp
 from api.blueprints.osc_pdf import osc_pdf_bp
+from api.blueprints.raziel import raziel_bp
 from api.blueprints.osc_settings import osc_settings_bp
+from api.runtime_paths import get_mutable_static_dir
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configured_https_public_url() -> bool:
+    for name in ("MAGI_PUBLIC_BASE_URL", "MAGI_BASE_URL", "MAGI_EXTERNAL_BASE_URL"):
+        value = (os.environ.get(name) or "").strip().lower()
+        if value.startswith("https://"):
+            return True
+    return False
+
+
+def _formal_deployment_mode() -> bool:
+    mode = (os.environ.get("MAGI_DEPLOYMENT_MODE") or "").strip().lower()
+    return mode in {"production", "prod", "saas", "formal_saas", "managed_saas", "multi_tenant_saas"}
+
+
+def _https_enforced() -> bool:
+    if _env_truthy("MAGI_FORCE_HTTPS"):
+        return True
+    if _env_truthy("MAGI_SECURE_COOKIES") and _configured_https_public_url():
+        return True
+    return _formal_deployment_mode() and _configured_https_public_url()
+
+
+_SENSITIVE_STATIC_PREFIXES = (
+    "/static/exports/",
+    "/static/runtime/",
+    "/static/reports/",
+    "/static/test_reports/",
+)
+_SENSITIVE_STATIC_NAMES = (
+    "file_review_auto_state.json",
+    "guardian_control.json",
+    "magi_status.json",
+    "laf_gmail_monitor_state.json",
+    "process_guardian_state.json",
+    "external_chat_metrics.jsonl",
+)
+_SENSITIVE_STATIC_SUFFIXES = (
+    "_latest.json",
+    "_state.json",
+    ".jsonl",
+    ".sqlite",
+    ".db",
+)
+_PUBLIC_STATIC_JSON_NAMES = frozenset({"agent_status_public_latest.json"})
+_LEGACY_MARKET_EXPORT_RE = re.compile(
+    r"^/static/exports/"
+    r"(market_briefing_\d{8}_\d{6}_[0-9a-fA-F]{10}\.txt)$"
+)
+
+
+def _is_sensitive_static_request(path: str) -> bool:
+    normalized = (path or "").strip().lower()
+    if not normalized.startswith("/static/"):
+        return False
+    tail = normalized.rsplit("/", 1)[-1]
+    if tail in _PUBLIC_STATIC_JSON_NAMES and normalized == f"/static/{tail}":
+        return False
+    if any(normalized == prefix.rstrip("/") or normalized.startswith(prefix) for prefix in _SENSITIVE_STATIC_PREFIXES):
+        return True
+    return tail in _SENSITIVE_STATIC_NAMES or tail.endswith(_SENSITIVE_STATIC_SUFFIXES)
 
 
 def create_base_app() -> Flask:
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
+    if _env_truthy("MAGI_TRUST_PROXY_HEADERS"):
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    if os.environ.get("MAGI_FORCE_HTTPS", "").strip().lower() in {"1", "true", "yes"}:
+    if _https_enforced():
         app.config["SESSION_COOKIE_SECURE"] = True
 
     try:
         app.secret_key = os.environ["FLASK_SECRET_KEY"]
     except KeyError as exc:
         raise RuntimeError("Missing required env var: FLASK_SECRET_KEY. Set it in .env") from exc
+
+    @app.before_request
+    def _block_sensitive_static_files():
+        # Market notifications published before the authenticated /exports
+        # route was introduced contain an immutable /static/exports URL.  Keep
+        # those narrowly-scoped legacy links usable without weakening the
+        # API-key protection on other static exports.
+        legacy_market_export = _LEGACY_MARKET_EXPORT_RE.fullmatch(request.path)
+        if legacy_market_export:
+            filename = quote(legacy_market_export.group(1), safe="")
+            return redirect(f"/exports/{filename}", code=302)
+        if request.path == "/static/agent_status_public_latest.json":
+            public_status = get_mutable_static_dir() / "agent_status_public_latest.json"
+            if public_status.is_file() and not public_status.is_symlink():
+                return send_file(
+                    public_status,
+                    mimetype="application/json",
+                    conditional=True,
+                    max_age=0,
+                )
+        if _is_sensitive_static_request(request.path):
+            abort(404)
+
     return app
 
 
@@ -78,9 +176,16 @@ def install_security_headers(app: Flask) -> Flask:
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "frame-src 'self' blob:; "
+            "object-src 'self' blob:;",
         )
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        if _https_enforced() or _env_truthy("MAGI_ENABLE_HSTS"):
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         if not request.path.startswith("/static/"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
@@ -96,8 +201,11 @@ def install_csrf(app: Flask, logger: logging.Optional[Logger] = None) -> Flask:
         if logger:
             logger.info("CSRF protection enabled")
     except Exception as exc:
+        fail_open = os.environ.get("MAGI_CSRF_FAIL_OPEN", "").strip().lower() in {"1", "true", "yes", "on"}
         if logger:
             logger.warning("CSRF protection not loaded: %s", exc)
+        if not fail_open:
+            raise RuntimeError("CSRF protection failed to initialize") from exc
     return app
 
 
@@ -113,6 +221,10 @@ def register_core_blueprints(app: Flask) -> Flask:
     app.register_blueprint(osc_accounting_bp)
     app.register_blueprint(osc_debt_bp)
     app.register_blueprint(osc_pdf_bp)
+    app.register_blueprint(raziel_bp)
     app.register_blueprint(golem_console_bp)
+    app.register_blueprint(lottery_bp)
+    app.register_blueprint(cookie_cutter_bp)
+    app.register_blueprint(exam_tutor_bp)
     app.register_blueprint(dashboard_pages_bp)
     return app

@@ -16,8 +16,16 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Optional
 
-import defusedxml.minidom
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+try:
+    import defusedxml.minidom as safe_minidom
+except ModuleNotFoundError:
+    import safe_minidom
 
 from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
 
@@ -108,7 +116,7 @@ def _run_validation(
 def _condense_xml(xml_file: Path) -> None:
     try:
         with open(xml_file, encoding="utf-8") as f:
-            dom = defusedxml.minidom.parse(f)
+            dom = safe_minidom.parse(f)
 
         for element in dom.getElementsByTagName("*"):
             if element.tagName.endswith(":t"):

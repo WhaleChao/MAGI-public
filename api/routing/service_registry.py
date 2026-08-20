@@ -56,8 +56,12 @@ _loaded = False
 def _load_registry() -> dict[str, ServiceEndpoint]:
     path = get_json_dir() / "services.json"
     if not path.exists():
-        _log.warning("services.json not found at %s – using empty registry", path)
-        return {}
+        bundled = Path(__file__).resolve().parents[2] / "json" / "services.json"
+        if bundled.is_file():
+            path = bundled
+        else:
+            _log.warning("services.json not found at %s – using empty registry", path)
+            return {}
 
     try:
         raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))

@@ -14,7 +14,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-import defusedxml.minidom
+try:
+    import defusedxml.minidom as safe_minidom
+except ModuleNotFoundError:
+    import safe_minidom
 
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -26,7 +29,7 @@ def simplify_redlines(input_dir: str) -> tuple[int, str]:
         return 0, f"Error: {doc_xml} not found"
 
     try:
-        dom = defusedxml.minidom.parseString(doc_xml.read_text(encoding="utf-8"))
+        dom = safe_minidom.parseString(doc_xml.read_text(encoding="utf-8"))
         root = dom.documentElement
 
         merge_count = 0

@@ -40,7 +40,7 @@ _CANONICAL_ACTIVE_SHARE_PREFIX = (
 ).replace("\\", "/").rstrip("/")
 _CANONICAL_CLOSED_SHARE_PREFIX = (
     os.environ.get("MAGI_CANONICAL_CLOSED_SHARE_PREFIX")
-    or "Y:/lumi"
+    or f"Y:/{_NAS_CLOSED_SHARE_NAME}"
 ).replace("\\", "/").rstrip("/")
 _CANONICAL_ACTIVE_CASE_PREFIX = (
     os.environ.get("MAGI_CANONICAL_ACTIVE_CASE_PREFIX")
@@ -60,15 +60,23 @@ def _is_dir_accessible(path: str) -> bool:
     SMB hang 時 stat 會無限卡住（kernel uninterruptible sleep），
     所以 /Volumes/ 路徑用 thread + timeout 保護。
     """
-    # 本機路徑（/Users/、SynologyDrive）不需 timeout
-    if path.startswith("/Users/") or not path.startswith("/Volumes/"):
+    needs_timeout = (
+        path.startswith("/Volumes/")
+        or "/Library/CloudStorage/SynologyDrive" in path
+        or "/SynologyDrive" in path
+    )
+
+    # 普通本機路徑不需 timeout；Synology Drive / CloudStorage 會出現
+    # Resource deadlock avoided 或 File Provider 卡住，必須跟 SMB 一樣保護。
+    if not needs_timeout:
         try:
             st = os.stat(path)
             return st.st_mode & 0o40000 != 0
         except OSError:
             return False
 
-    # /Volumes/ SMB 路徑：用 thread timeout 保護，防止 NAS hang 卡住整個 process
+    # /Volumes/ SMB 與 Synology Drive/CloudStorage：用 thread timeout 保護，
+    # 防止 NAS 或 File Provider hang 卡住整個 process。
     import threading
     _result = [False]
     def _check():
@@ -86,6 +94,36 @@ def _is_dir_accessible(path: str) -> bool:
     return _result[0]
 
 
+def _is_stale_mount_path(path: str) -> bool:
+    """判斷是否為歷史殘留 mount 名稱（可用於 roots 排序/回退）。"""
+    return ".local-stale-" in str(path).lower()
+
+
+def _is_file_provider_or_user_mount(path: str) -> bool:
+    norm = str(path or "").replace("\\", "/")
+    return (
+        "/Library/CloudStorage/SynologyDrive" in norm
+        or "/SynologyDrive/" in norm
+        or norm.endswith("/SynologyDrive")
+        or "/.magi_mounts/" in norm
+    )
+
+
+def _write_safe_local_candidate(path: str) -> bool:
+    norm = str(path or "").replace("\\", "/")
+    if not norm:
+        return False
+    if _is_file_provider_or_user_mount(norm) or _is_stale_mount_path(norm):
+        return False
+    if norm.startswith("/Volumes/"):
+        return _is_dir_accessible(norm)
+    # Keep tests and explicit local-only tooling usable, but never synthesize a
+    # missing path for writes.
+    if norm.startswith("/"):
+        return _is_dir_accessible(norm)
+    return False
+
+
 def _discover_volume(base: str, subdir: str = "") -> str:
     """動態偵測 SMB 掛載路徑（macOS 可能掛成 -1, -2 等後綴）。
 
@@ -96,9 +134,18 @@ def _discover_volume(base: str, subdir: str = "") -> str:
         實際可存取的完整路徑，或 canonical 路徑供上層判斷
     """
     canonical = f"/Volumes/{base}/{subdir}" if subdir else f"/Volumes/{base}"
+    if str(os.environ.get("MAGI_SKIP_IMPORT_PROBES") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return canonical
     if _is_dir_accessible(canonical):
         return canonical
     for candidate in sorted(_glob.glob(f"/Volumes/{base}-*/{subdir}" if subdir else f"/Volumes/{base}-*")):
+        if _is_stale_mount_path(candidate):
+            continue
         if _is_dir_accessible(candidate):
             _logger.debug("SMB 掛載使用替代路徑: %s（原 %s）", candidate, canonical)
             return candidate
@@ -124,6 +171,13 @@ _ACTIVE_SMB_ROOT_TTL = float(os.environ.get("MAGI_ACTIVE_SMB_ROOT_TTL_SEC", "60"
 
 
 def _mount_output_lines() -> list[str]:
+    if str(os.environ.get("MAGI_SKIP_IMPORT_PROBES") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return []
     try:
         import subprocess
         result = subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=1)
@@ -203,26 +257,28 @@ def _probe_external_closed_roots() -> list[str]:
       2. MAGI_CLOSED_VOLUME env var（只指定 /Volumes/<名稱>）
       3. 本機/NAS 上任一含 <archive-share>/03_工作資料/10_結案 的掛載點（自動掃 /Volumes/）
       4. SynologyDrive 雲同步變體
-      5. NAS archive share 的 canonical/-1/-2 suffix
+      5. 使用者層級 mount（僅在真實 SMB 不可用時回退）
     每個候選都經 _is_dir_accessible 驗證（2 秒 timeout），避免 stale SMB 誤判。
     """
     candidates: list[str] = []
 
-    # 1. 環境變數
+    # 1. 環境變數（過濾 stale 掛載）
     env_root = os.environ.get("MAGI_CLOSED_CASE_ROOT", "").strip()
-    if env_root:
+    if env_root and not _is_stale_mount_path(env_root):
         candidates.append(env_root)
     env_vol = os.environ.get("MAGI_CLOSED_VOLUME", "").strip()
     if env_vol:
-        candidates.append(os.path.join(
+        env_volume_root = os.path.join(
             env_vol if env_vol.startswith("/Volumes/") else f"/Volumes/{env_vol}",
             _NAS_CLOSED_SHARE_NAME,
-        ))
+        )
+        if not _is_stale_mount_path(env_volume_root):
+            candidates.append(env_volume_root)
 
-    # 2. 自動掃 /Volumes/ — 跳過系統 volume 和 homes share（防止誤判）
+    # 2. 自動掃 /Volumes/ — 真實 SMB 必須優先於 ~/.magi_mounts 殘影。
     try:
         for entry in sorted(os.listdir("/Volumes")):
-            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2"):
+            if entry in ("Macintosh HD", "homes", "homes-1", "homes-2") or ".local-stale-" in entry.lower():
                 continue
             for share_name in _closed_share_aliases():
                 root = os.path.join("/Volumes", entry, share_name)
@@ -251,6 +307,14 @@ def _probe_external_closed_roots() -> list[str]:
         if _is_dir_accessible(nas_probe):
             candidates.append(nas_discovered)
 
+    # 5. User-level mount is read-only fallback.  It can remain as a stale,
+    # incomplete directory after SMB reconnect; never let it outrank /Volumes.
+    for share_name in _closed_share_aliases():
+        user_mount = str(_HOME / f".magi_mounts/{share_name}/{share_name}")
+        user_probe = os.path.join(user_mount, "03_工作資料", "10_結案")
+        if _is_dir_accessible(user_probe):
+            candidates.append(user_mount)
+
     # 去重保序（inline 不依賴 _dedupe_keep_order 避免 import 時 forward ref）
     seen: set = set()
     out: list[str] = []
@@ -258,6 +322,10 @@ def _probe_external_closed_roots() -> list[str]:
         if p and p not in seen:
             seen.add(p)
             out.append(p)
+    # 不要優先挑 stale 掛載；把 non-stale 移到前面
+    non_stale = [p for p in out if not _is_stale_mount_path(p)]
+    stale = [p for p in out if _is_stale_mount_path(p)]
+    out = non_stale + stale
     return out
 
 
@@ -290,9 +358,15 @@ def _get_default_closed_share_roots() -> list[str]:
     # 若仍空 → 保底回傳 canonical 路徑
     if not roots:
         roots = [
+            str(_HOME / ".magi_mounts" / _NAS_CLOSED_SHARE_NAME / _NAS_CLOSED_SHARE_NAME),
             str(_HOME / "Library/CloudStorage/SynologyDrive-homes" / _NAS_CLOSED_SHARE_NAME),
-            _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME),
         ]
+        # 使用備援 user mount 時仍以真實可存取路徑為主；NAS fallback 只做最後手段
+        nas_discovered = _discover_volume(_NAS_CLOSED_SHARE_NAME, _NAS_CLOSED_SHARE_NAME)
+        if nas_discovered and not _is_stale_mount_path(nas_discovered):
+            roots.append(nas_discovered)
+        elif nas_discovered and nas_discovered not in roots:
+            roots.append(nas_discovered)
         # 全空 → 5 秒後就可以 re-probe（不等 60s）
         _CLOSED_ROOT_CACHE["retry_after"] = now + 5
     else:
@@ -315,7 +389,6 @@ _DEFAULT_CLOSED_SHARE_ROOTS = [
     str(_HOME / "SynologyDrive/homes" / _NAS_CLOSED_SHARE_NAME),
     str(_HOME / "SynologyDrive" / _NAS_CLOSED_SHARE_NAME),
     f"/Volumes/{_NAS_CLOSED_SHARE_NAME}/{_NAS_CLOSED_SHARE_NAME}",
-    "/Volumes/lumi/lumi",
 ]
 _DEFAULT_ACTIVE_ROOTS = [
     root.rstrip("/") + "/01_案件" for root in _DEFAULT_ACTIVE_SHARE_ROOTS
@@ -330,7 +403,7 @@ _ACTIVE_PREFIXES = [
 ]
 _CLOSED_PREFIXES = [
     _CANONICAL_CLOSED_CASE_PREFIX,
-    "Y:/lumi/03_工作資料/10_結案",
+    f"Y:/{_NAS_CLOSED_SHARE_NAME}/03_工作資料/10_結案",
     "Y:/archive/03_工作資料/10_結案",
 ]
 _ACTIVE_SHARE_PREFIXES = [
@@ -340,7 +413,7 @@ _ACTIVE_SHARE_PREFIXES = [
 ]
 _CLOSED_SHARE_PREFIXES = [
     _CANONICAL_CLOSED_SHARE_PREFIX,
-    "Y:/lumi",
+    f"Y:/{_NAS_CLOSED_SHARE_NAME}",
     "Y:/archive",
 ]
 
@@ -537,16 +610,18 @@ def _expand_from_prefix(path: str, prefixes: list[str], roots: list[str]) -> lis
     return out
 
 
-def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> list[str]:
+def local_synology_path_candidates(path: str, cfg: Optional[dict] = None, *, for_write: bool = False) -> list[str]:
     s = _norm(path)
     if not s:
         return []
 
     cfg = cfg or load_path_config()
     candidates: list[str] = []
+    is_synology_cloudstorage = "/Library/CloudStorage/SynologyDrive-homes/" in s or "/SynologyDrive/homes/" in s
 
     if s.startswith("/Volumes/") or s.startswith("/Users/"):
-        candidates.append(s)
+        if not is_synology_cloudstorage:
+            candidates.append(s)
     if s.lower().startswith("smb://"):
         volume = _derive_volume_prefix_from_smb(s)
         if volume:
@@ -571,6 +646,8 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
 
     candidates.extend(_expand_from_prefix(s, _ACTIVE_SHARE_PREFIXES, active_roots))
     candidates.extend(_expand_from_prefix(s, _CLOSED_SHARE_PREFIXES, closed_roots))
+    if is_synology_cloudstorage:
+        candidates.append(s)
 
     # Office Windows paths may use the mapped drive itself as the share account,
     # e.g. Z:/<account>/01_案件/..., not only the older Z:/home/... alias.
@@ -581,6 +658,17 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
         account_or_alias = (m_active_drive.group(1) or "").strip()
         rel = (m_active_drive.group(2) or "").lstrip("/")
         if account_or_alias and account_or_alias.lower() not in {"archive", _NAS_CLOSED_SHARE_NAME.lower()}:
+            # The account segment is part of the real SMB path.  The previous
+            # implementation discarded it and only joined ``rel`` to roots
+            # discovered from a legacy ``home`` default.  A canonical
+            # Z:/<account>/... path then became /Volumes/homes/home/... and a
+            # valid case folder was reported missing.  Generate the direct,
+            # bounded SMB candidates without probing or enumerating users;
+            # the existing read/write accessibility gate selects only a real
+            # mounted directory.
+            mounted_homes = ["/Volumes/homes", *sorted(_glob.glob("/Volumes/homes-*"))]
+            for mount in mounted_homes:
+                candidates.append(_join_root_rel(f"{mount}/{account_or_alias}", rel))
             for root in active_roots:
                 candidates.append(_join_root_rel(root, rel))
 
@@ -610,24 +698,33 @@ def local_synology_path_candidates(path: str, cfg: Optional[dict] = None) -> lis
             user_candidate = os.path.join(_user_mount_root, *share_parts, rel)
             candidates.append(user_candidate)
 
-    return _dedupe_keep_order(candidates or [s])
+    out = _dedupe_keep_order(candidates or [s])
+    if for_write:
+        return [p for p in out if _write_safe_local_candidate(p)]
+    return out
 
 
-def local_case_path_candidates(path: str, cfg: Optional[dict] = None) -> list[str]:
-    return local_synology_path_candidates(path, cfg=cfg)
+def local_case_path_candidates(path: str, cfg: Optional[dict] = None, *, for_write: bool = False) -> list[str]:
+    return local_synology_path_candidates(path, cfg=cfg, for_write=for_write)
 
 
-def translate_case_path_to_local(path: str, cfg: Optional[dict] = None, *, require_existing: bool = False) -> str:
-    candidates = local_case_path_candidates(path, cfg=cfg)
+def translate_case_path_to_local(
+    path: str,
+    cfg: Optional[dict] = None,
+    *,
+    require_existing: bool = False,
+    for_write: bool = False,
+) -> str:
+    candidates = local_case_path_candidates(path, cfg=cfg, for_write=for_write)
     if not candidates:
-        return _norm(path)
+        return "" if (require_existing or for_write) else _norm(path)
 
     for cand in candidates:
         if cand.startswith("/Users/") or cand.startswith("/Volumes/"):
-            if os.path.exists(cand):
+            if _is_dir_accessible(cand):
                 return cand
 
-    if require_existing:
+    if require_existing or for_write:
         return ""
 
     for cand in candidates:
@@ -636,23 +733,43 @@ def translate_case_path_to_local(path: str, cfg: Optional[dict] = None, *, requi
     return candidates[0]
 
 
-def translate_synology_path_to_local(path: str, cfg: Optional[dict] = None, *, require_existing: bool = False) -> str:
-    candidates = local_synology_path_candidates(path, cfg=cfg)
+def translate_synology_path_to_local(
+    path: str,
+    cfg: Optional[dict] = None,
+    *,
+    require_existing: bool = False,
+    for_write: bool = False,
+) -> str:
+    candidates = local_synology_path_candidates(path, cfg=cfg, for_write=for_write)
     if not candidates:
-        return _norm(path)
+        return "" if (require_existing or for_write) else _norm(path)
 
     for cand in candidates:
         if cand.startswith("/Users/") or cand.startswith("/Volumes/"):
-            if os.path.exists(cand):
+            if _is_dir_accessible(cand):
                 return cand
 
-    if require_existing:
+    if require_existing or for_write:
         return ""
 
     for cand in candidates:
         if cand.startswith("/Users/") or cand.startswith("/Volumes/"):
             return cand
     return candidates[0]
+
+
+def resolve_case_path_for_write(path: str, cfg: Optional[dict] = None) -> dict:
+    local = translate_case_path_to_local(path, cfg=cfg, require_existing=True, for_write=True)
+    if local:
+        return {"ok": True, "local_path": local, "status": "ready"}
+    return {
+        "ok": False,
+        "status": "pending",
+        "reason": "mount_required",
+        "error": "case_path_write_mount_required",
+        "message": "寫入案件資料夾需要已掛載的真實本機/NAS 路徑；不使用不存在、CloudStorage 或 .magi_mounts fallback。",
+        "path": _norm(path),
+    }
 
 
 def translate_local_path_to_canonical(path: str, cfg: Optional[dict] = None) -> str:

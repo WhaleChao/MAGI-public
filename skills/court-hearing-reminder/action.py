@@ -14,6 +14,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,10 @@ from typing import Any, Dict, List, Optional
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
+
+from api.runtime_paths import get_judgments_json_path
+from api.domains.judgment_summary_quality import evaluate_practice_ready_summary
+from api.osc.insight_filters import is_extractive_fast_judgment_digest
 
 logger = logging.getLogger("court-hearing-reminder")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -36,6 +41,32 @@ def _get_conn():
 
 
 _SUPPORTED_TODO_TYPES = ("開庭", "補正", "繳費")
+_COMPLETABLE_TODO_TYPES = (
+    "法扶進度回報確認",
+    "準備程序",
+    "言詞辯論",
+    "審理程序",
+    "審判程序",
+    "陳述意見",
+    "提出資料",
+    "表示意見",
+    "再抗告",
+    "開庭",
+    "補正",
+    "繳費",
+    "調解",
+    "審理",
+    "宣判",
+    "訊問",
+    "調查",
+    "陳報",
+    "確認",
+    "待辦",
+    "上訴",
+    "抗告",
+    "異議",
+    "再議",
+)
 
 
 def _fetch_upcoming_hearings(conn, days_ahead: int = 7, todo_types: Optional[tuple] = None) -> List[Dict[str, Any]]:
@@ -186,7 +217,7 @@ def _send_reminder(message: str, severity: str = "info"):
     """透過 red_phone 發送提醒。"""
     try:
         from skills.ops.red_phone import alert_admin
-        alert_admin(message, severity=severity, source="court_hearing_reminder", topic_key="alert")
+        alert_admin(message, severity=severity, source="court_hearing_reminder", topic_key="case_schedule")
         logger.info("提醒已發送")
     except Exception as e:
         logger.error("發送提醒失敗: %s", e)
@@ -239,7 +270,11 @@ def _generate_prep_summary(hearing: Dict[str, Any]) -> str:
         lines.append(f"📝 備註：{description}")
 
     # 嘗試從判決收集器取得相關見解
-    related_insights = _fetch_related_judgments(case_reason, court_name)
+    related_insights = _fetch_related_judgments(
+        case_reason,
+        court_name,
+        case_type=str(hearing.get("case_type") or ""),
+    )
     if related_insights:
         lines.append("")
         lines.append("📚 相關裁判見解：")
@@ -256,9 +291,19 @@ _DEGRADED_MARKERS = (
 )
 
 
-def _is_safe_summary(summary: str, case_reason: str) -> bool:
+def _is_safe_summary(
+    summary: str,
+    case_reason: str,
+    *,
+    source_text: str = "",
+    court_name: str = "",
+) -> bool:
     """判斷摘要是否可信（非降級、非幻覺）。用於庭前準備，寧缺勿濫。"""
     if not summary or len(summary) < 50:
+        return False
+    # 外部期限通知不是「原文定位」介面。抽取式快篩只能留在內部
+    # 工作流，絕不可被包裝成可引用的實務見解推播給使用者。
+    if is_extractive_fast_judgment_digest(summary):
         return False
     # 降級標記
     if any(m in summary for m in _DEGRADED_MARKERS):
@@ -266,6 +311,17 @@ def _is_safe_summary(summary: str, case_reason: str) -> bool:
     # 必須包含結構化摘要的關鍵區塊
     has_structure = any(k in summary for k in ("裁判要旨", "法院見解", "爭點", "適用法條"))
     if not has_structure:
+        return False
+    # Use the canonical quality gate as the final source of truth.  This also
+    # rejects templates, prompt echoes and issue-mismatched rule fragments.
+    if not source_text:
+        return False
+    if not evaluate_practice_ready_summary(
+        summary,
+        source_text,
+        case_reason,
+        court_name,
+    ).ok:
         return False
     # 幻覺偵測：摘要裡有完全不同的案由
     if case_reason:
@@ -279,11 +335,97 @@ def _is_safe_summary(summary: str, case_reason: str) -> bool:
     return True
 
 
-def _fetch_related_judgments(case_reason: str, court_name: str) -> List[str]:
-    """從 judgments.json 找出與案由相關的可信見解摘要。只取通過品質檢查的 LLM 摘要。"""
+_DOMAIN_TERMS = {
+    "civil": ("民事", "更生", "清算", "消費者債務", "債務清理", "家事", "侵權", "損害賠償", "契約", "執行", "支付命令"),
+    "criminal": ("刑事", "偵查", "偵字", "毒品", "詐欺", "傷害", "竊盜", "洗錢", "臺非", "台非", "臺抗", "台抗", "刑訴"),
+    "administrative": ("行政", "訴願", "稅", "勞保", "健保", "行政訴訟"),
+}
+_DEBT_RELIEF_TERMS = ("更生", "清算", "消費者債務", "債務清理", "司消債")
+_GENERIC_REASON_TERMS = {"案件", "事件", "民事", "刑事", "行政", "程序", "其他"}
+
+
+def _normalized_terms(value: object) -> set[str]:
+    """Extract meaningful case-reason tokens; generic labels never establish relevance."""
+    text = re.sub(r"\s+", "", str(value or "")).lower()
+    if not text:
+        return set()
+    chunks = re.split(r"[、，,/／;；|（）()【】\-—]+", text)
+    terms = {chunk for chunk in chunks if len(chunk) >= 2 and chunk not in _GENERIC_REASON_TERMS}
+    # Keep known substantive terms even when the reason is a compound label.
+    for domain_terms in _DOMAIN_TERMS.values():
+        terms.update(term for term in domain_terms if term in text and term not in _GENERIC_REASON_TERMS)
+    return terms
+
+
+def _case_domain(*values: object) -> str:
+    text = re.sub(r"\s+", "", " ".join(str(v or "") for v in values)).lower()
+    found = {name for name, terms in _DOMAIN_TERMS.items() if any(term in text for term in terms)}
+    # A criminal marker is especially safety-critical: never recommend it for
+    # a civil deadline merely because an upstream row has a bad case_reason.
+    if "criminal" in found:
+        return "criminal"
+    if "administrative" in found:
+        return "administrative"
+    if "civil" in found:
+        return "civil"
+    return ""
+
+
+def _is_related_judgment_for_deadline(
+    judgment: Dict[str, Any],
+    *,
+    case_reason: str,
+    case_type: str = "",
+) -> bool:
+    """Fail closed unless subject, domain and special procedure all agree.
+
+    judgments.json is a mixed historical cache.  Its old rows can have a
+    missing or incorrectly copied `case_reason`; therefore title, court/type
+    metadata and summary are considered together before a deadline notice is
+    allowed to cite the row.
+    """
+    j_reason = str(judgment.get("case_reason") or judgment.get("案由") or "").strip()
+    if not j_reason:
+        return False
+    target_terms = _normalized_terms(case_reason)
+    candidate_terms = _normalized_terms(j_reason)
+    if not target_terms or not candidate_terms or not (target_terms & candidate_terms):
+        return False
+
+    title = str(judgment.get("title") or judgment.get("案號") or "")
+    summary = str(judgment.get("summary") or judgment.get("裁判要旨") or "")
+    candidate_domain = _case_domain(
+        title,
+        judgment.get("court_type"),
+        judgment.get("case_type"),
+        judgment.get("procedure_type"),
+        j_reason,
+        summary,
+    )
+    target_domain = _case_domain(case_type, case_reason)
+    if target_domain and candidate_domain != target_domain:
+        return False
+
+    target_text = f"{case_reason}{case_type}"
+    candidate_text = f"{j_reason}{title}{summary}"
+    # Debt-relief deadlines need debt-relief authority, not a generic civil
+    # result.  Require the procedure marker on both sides.
+    if any(term in target_text for term in _DEBT_RELIEF_TERMS) and not any(
+        term in candidate_text for term in _DEBT_RELIEF_TERMS
+    ):
+        return False
+    return True
+
+
+def _fetch_related_judgments(case_reason: str, court_name: str, *, case_type: str = "") -> List[str]:
+    """Return only high-quality, same-domain holdings for a deadline notice.
+
+    No fallback is intentional: an empty section is safer than an unrelated
+    criminal decision or an extractive fast digest in a legal deadline alert.
+    """
     if not case_reason:
         return []
-    jdg_path = _MAGI_ROOT / "skills" / "judgment-collector" / "judgments.json"
+    jdg_path = get_judgments_json_path()
     if not jdg_path.exists():
         return []
     try:
@@ -293,20 +435,25 @@ def _fetch_related_judgments(case_reason: str, court_name: str) -> List[str]:
             return []
 
         related = []
-        reason_lower = case_reason.lower()
         for j in judgments:
-            # 只取 LLM 摘要，排除 preview 類型
-            if j.get("summary_type") not in (None, "llm"):
+            # Historical rows without an explicit type are untrusted.  A
+            # deadline notification may only quote a verified LLM summary.
+            if str(j.get("summary_type") or "").strip().lower() != "llm":
                 continue
-            j_reason = str(j.get("case_reason") or j.get("案由") or "").lower()
-            if reason_lower in j_reason or j_reason in reason_lower:
-                summary = j.get("summary") or j.get("裁判要旨") or ""
-                if not _is_safe_summary(summary, case_reason):
-                    continue
-                # 取「裁判要旨」區塊（最精煉的一行）
-                short = _extract_key_holding(summary, max_chars=120)
-                title = j.get("title") or j.get("案號") or ""
-                related.append(f"[{title}] {short}" if title else short)
+            if not _is_related_judgment_for_deadline(j, case_reason=case_reason, case_type=case_type):
+                continue
+            summary = str(j.get("summary") or j.get("裁判要旨") or "")
+            if not _is_safe_summary(
+                summary,
+                case_reason,
+                source_text=str(j.get("full_text") or j.get("raw_text") or ""),
+                court_name=str(j.get("court_name") or j.get("court") or ""),
+            ):
+                continue
+            # 取「裁判要旨」區塊（最精煉的一行）
+            short = _extract_key_holding(summary, max_chars=120)
+            title = j.get("title") or j.get("案號") or ""
+            related.append(f"[{title}] {short}" if title else short)
         return related[:5]
     except Exception:
         return []
@@ -541,14 +688,25 @@ def _match_pending_todos(query: str, todo_types: Optional[tuple] = None) -> List
             conn.close()
     except Exception:
         return []
-    q = query.lower()
+    q = query.lower().strip()
+    if not q:
+        return []
     return [
         h for h in hearings
-        if q in str(h.get("case_number", "")).lower()
-        or q in str(h.get("client_name", "")).lower()
-        or q in str(h.get("court_case_number", "")).lower()
-        or q in str(h.get("case_reason", "")).lower()
+        if q in " ".join(
+            str(h.get(k, "") or "").lower()
+            for k in ("case_number", "client_name", "court_case_number", "case_reason", "todo_type", "description")
+        )
     ]
+
+
+def _extract_completion_type_hint(clean: str) -> tuple[str, tuple | None]:
+    text = str(clean or "").strip()
+    for todo_type in sorted(_COMPLETABLE_TODO_TYPES, key=len, reverse=True):
+        if todo_type and todo_type in text:
+            narrowed = text.replace(todo_type, "", 1).strip(" -_，,。；;：:　")
+            return (narrowed or text), (todo_type,)
+    return text, None
 
 
 def task_done(query: str, notify: bool = True) -> str:
@@ -576,11 +734,14 @@ def task_done(query: str, notify: bool = True) -> str:
     if not clean:
         return "❌ 請指定案件名稱或案號，例如：「張國賢繳了」「補字第54號交了」"
 
-    matched = _match_pending_todos(clean, todo_types=("繳費", "補正"))
+    search_query, type_hint = _extract_completion_type_hint(clean)
+    primary_types = type_hint or ("繳費", "補正")
+    matched = _match_pending_todos(search_query, todo_types=primary_types)
 
     if len(matched) == 0:
-        # 如果搜不到，擴大到全部類型（含開庭）
-        matched = _match_pending_todos(clean)
+        # 如果搜不到，擴大到全部 OSC 待辦類型，讓 DC/TG 回覆「陳報已完成」
+        # 「調解已完成」「上訴已完成」都能走同一個 DB 權威路徑。
+        matched = _match_pending_todos(search_query or clean, todo_types=_COMPLETABLE_TODO_TYPES)
         if len(matched) == 0:
             return f"❌ 找不到「{clean}」的待辦排程。目前待辦：\n\n{task_list()}"
 

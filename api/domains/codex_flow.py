@@ -1,7 +1,7 @@
 """
 [2026-04-25 已停用] Codex distributed / sidecar operations.
 
-所有函式已 stub 化 — Codex 全面停用，推理改走 NVIDIA NIM 405B / oMLX。
+所有函式已 stub 化 — Codex 全面停用，推理改走 NVIDIA NIM heavy / oMLX。
 保留 module 與函式簽名避免下游 import 爆炸。
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import logging
 
 logger = logging.getLogger("Orchestrator")
 
-_STUB_STATUS_MSG = "Codex 已停用，目前推理走 NVIDIA NIM 405B / oMLX。"
+_STUB_STATUS_MSG = "Codex 已停用，目前推理走 NVIDIA NIM heavy / oMLX。"
 
 
 def parse_codex_distributed_features(message: str) -> dict:

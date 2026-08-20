@@ -18,9 +18,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "casper_ecosystem" / "law_firm_orchestrators" / "judicial_automation_v2.py"
+_NAS_CASE_SHARE = (os.environ.get("MAGI_NAS_CASE_SHARE") or "lumi").strip().strip("/\\")
 DEFAULT_CASE_ROOTS = [
-    Path("/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"),
-    Path("/Volumes/lumi/lumi/01_案件"),
+    Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+    Path("/Volumes") / _NAS_CASE_SHARE / _NAS_CASE_SHARE / "01_案件",
 ]
 
 

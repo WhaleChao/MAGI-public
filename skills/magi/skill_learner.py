@@ -36,12 +36,19 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("SkillLearner")
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
+_AGENT_OVERRIDE = os.environ.get("MAGI_AGENT_DIR", "").strip()
+_AGENT_DIR = Path(_AGENT_OVERRIDE or _MAGI_ROOT / ".agent").expanduser()
 SKILLS_DIR = Path(os.environ.get(
     "MAGI_SKILLS_DIR",
-    str(_MAGI_ROOT / ".agent" / "skills"),
+    str(_AGENT_DIR / "skills"),
 ))
 SKILLS_INDEX_PATH = SKILLS_DIR / ".skills_index.json"
-SKILL_REVIEW_LOG = _MAGI_ROOT / ".agent" / "skill_review_log.jsonl"
+SKILL_REVIEW_LOG = _AGENT_DIR / "skill_review_log.jsonl"
+COUNCIL_MINUTES_PATH = (
+    _AGENT_DIR / "nightly_council_minutes.md"
+    if _AGENT_OVERRIDE
+    else _MAGI_ROOT / "nightly_council_minutes.md"
+)
 
 # ── 技能分類（法律 AI 專用）──────────────────────────────────────
 
@@ -503,8 +510,6 @@ def review_and_learn(
     Returns:
         {"learned": bool, "skill_name": str, "action": str}
     """
-    import urllib.request
-
     if not task_record or len(task_record) < 50:
         return {"learned": False, "reason": "task_record too short"}
 
@@ -514,20 +519,21 @@ def review_and_learn(
         task_record=task_record[:6000],
     )
 
-    # 呼叫本地 LLM
+    # Use the same model registry/fallback path as the rest of MAGI. A fixed
+    # model id can disappear after the day/night topology changes and used to
+    # turn every nightly review into an HTTP 404.
     try:
-        omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080/v1/chat/completions")
-        payload = json.dumps({
-            "model": os.environ.get("MAGI_OMLX_MODEL", "gemma-4-26b-a4b-it-4bit"),
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1500,
-            "temperature": 0.4,
-        }).encode("utf-8")
-        req = urllib.request.Request(omlx_url, data=payload,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        from skills.bridge.inference_gateway import InferenceGateway
+
+        data = InferenceGateway().dispatch(
+            prompt=prompt,
+            task_type="skill_review",
+            timeout=120,
+            force_quality=False,
+        )
+        if not data.get("success"):
+            raise RuntimeError(str(data.get("error") or "inference_gateway_failed"))
+        response = str(data.get("response") or "").strip()
     except Exception as e:
         logger.warning("Skill review LLM call failed: %s", e)
         return {"learned": False, "reason": f"llm_error: {e}"}
@@ -636,9 +642,8 @@ def night_review_skills(
     """
     if not council_minutes:
         # 嘗試讀取最新議事錄
-        minutes_path = _MAGI_ROOT / "nightly_council_minutes.md"
-        if minutes_path.exists():
-            council_minutes = minutes_path.read_text(encoding="utf-8", errors="ignore")
+        if COUNCIL_MINUTES_PATH.exists():
+            council_minutes = COUNCIL_MINUTES_PATH.read_text(encoding="utf-8", errors="ignore")
 
     if not council_minutes or len(council_minutes) < 100:
         return {"reviewed": False, "reason": "no_minutes"}

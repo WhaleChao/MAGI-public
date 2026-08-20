@@ -36,7 +36,8 @@ except Exception:
 
 from skills.ops import health_probes as _health_probes
 
-REPORT_PATH = os.path.join(MAGI_DIR, "static", "doctor_report.json")
+_MUTABLE_STATIC_DIR = os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip()
+REPORT_PATH = os.path.join(_MUTABLE_STATIC_DIR or os.path.join(MAGI_DIR, "static"), "doctor_report.json")
 SKILLS_DIR = os.path.join(MAGI_DIR, "skills")
 
 
@@ -58,7 +59,8 @@ def check_skill_imports():
             continue
 
         try:
-            py_compile.compile(action_py, doraise=True)
+            source = Path(action_py).read_bytes()
+            compile(source, action_py, "exec")
             results.append({
                 "skill": entry,
                 "file": action_py,
@@ -361,26 +363,20 @@ def check_infrastructure():
     # v2 architecture: cron_jobs.json + Discord bot cron scheduler (no OpenClaw dependency)
     try:
         _magi_root = os.environ.get("MAGI_ROOT_DIR", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        cron_path = os.path.join(_magi_root, "cron_jobs.json")
-        has_jobs = False
-        job_count = 0
-        if os.path.exists(cron_path):
-            data = json.load(open(cron_path, "r", encoding="utf-8"))
-            job_count = sum(1 for j in data if j.get("enabled", True))
-            has_jobs = job_count > 0
-        bot_alive = subprocess.run(
-            ["pgrep", "-f", "discord_bot.py"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        ).returncode == 0
+        from magi_v3.external_inputs import load_bound_cron_jobs
+
+        data = load_bound_cron_jobs(_magi_root).jobs
+        job_count = sum(1 for j in data if j.get("enabled", True))
+        has_jobs = job_count > 0
+        from skills.ops import health_probes as _health_probes
+        bot_alive, pid_text = _health_probes.python_script_process_running("api/discord_bot.py")
         if has_jobs and bot_alive:
             checks.append(
                 {
                     "id": "autopilot_schedule",
                     "label": "夜間排程",
                     "pass": True,
-                    "detail": f"Discord cron scheduler 運行中，{job_count} 個任務啟用",
+                    "detail": f"Discord cron scheduler 運行中，{job_count} 個任務啟用 (pid={pid_text})",
                 }
             )
         elif has_jobs:
@@ -510,13 +506,10 @@ def _repair_iron_dome():
 def _repair_plist():
     """v2: 排程由 Discord bot cron scheduler 管理，不再依賴 legacy plist。"""
     # 檢查 discord_bot.py 是否在跑
-    import subprocess
-    bot_alive = subprocess.run(
-        ["pgrep", "-f", "discord_bot.py"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
-    ).returncode == 0
+    from skills.ops import health_probes as _health_probes
+    bot_alive, pid_text = _health_probes.python_script_process_running("api/discord_bot.py")
     if bot_alive:
-        return {"repaired": True, "action": "排程檢查", "detail": "Discord cron scheduler 正在運行"}
+        return {"repaired": True, "action": "排程檢查", "detail": f"Discord cron scheduler 正在運行 (pid={pid_text})"}
     # 嘗試重啟 daemon（會帶起 discord_bot）
     daemon_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.daemon.plist")
     if os.path.exists(daemon_plist):

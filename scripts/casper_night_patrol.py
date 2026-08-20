@@ -41,9 +41,14 @@ logging.basicConfig(
 logger = logging.getLogger("NightPatrol")
 
 # Paths
-DAEMON_LOG = os.path.join(PROJECT_ROOT, "daemon.log")
-REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
-PROPOSALS_FILE = os.path.join(PROJECT_ROOT, ".agent", "pending_proposals.json")
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+_EXPORTS_DIR = (os.environ.get("MAGI_EXPORTS_DIR") or "").strip()
+DAEMON_LOG = os.path.join(_AGENT_DIR, "daemon.log") if _AGENT_DIR else os.path.join(PROJECT_ROOT, "daemon.log")
+REPORTS_DIR = os.path.join(_EXPORTS_DIR, "night-patrol") if _EXPORTS_DIR else os.path.join(PROJECT_ROOT, "reports")
+PROPOSALS_FILE = os.path.join(
+    _AGENT_DIR or os.path.join(PROJECT_ROOT, ".agent"),
+    "pending_proposals.json",
+)
 try:
     from api.routing.service_registry import get_service_url as _get_svc_url
     _omlx_default = _get_svc_url("omlx_inference")

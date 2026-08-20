@@ -4,7 +4,7 @@
 
 視覺風格仿 05_E.py。
 執行：python3 06_F.py
-依賴：PyQt5、MAGI_v2 src/supplement_core
+依賴：PyQt5、MAGI V3 src/supplement_core
 """
 
 import os
@@ -16,24 +16,28 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_CANDIDATES = [
     os.path.abspath(os.path.join(_HERE, "..", "..")),
     os.path.abspath(os.path.join(_HERE, "..")),
-    "/Users/ai/Desktop/MAGI_v2",
 ]
-_DEFAULT_MAGI_V2 = next(
+_DEFAULT_MAGI_ROOT = next(
     (
         root for root in _ROOT_CANDIDATES
         if os.path.isdir(os.path.join(root, "src", "supplement_core"))
     ),
-    "/Users/ai/Desktop/MAGI_v2",
+    _ROOT_CANDIDATES[0],
 )
-MAGI_V2 = os.environ.get("MAGI_V2_ROOT", _DEFAULT_MAGI_V2)
-sys.path.insert(0, os.path.join(MAGI_V2, "src"))
-sys.path.insert(0, MAGI_V2)
-os.environ.setdefault("MAGI_ROOT", MAGI_V2)
+MAGI_ROOT = os.environ.get("MAGI_ROOT", _DEFAULT_MAGI_ROOT)
+sys.path.insert(0, os.path.join(MAGI_ROOT, "src"))
+sys.path.insert(0, MAGI_ROOT)
+os.environ.setdefault("MAGI_ROOT", MAGI_ROOT)
 
 # ── 📁 案件根目錄 ─────────────────────────────────────────────────────────────
-_DEFAULT_CASE_ROOT = (
-    "/Users/ai/Library/CloudStorage/SynologyDrive-homes"
-    "/01_案件/法扶案件/消費者債務清理"
+_DEFAULT_CASE_ROOT = os.path.join(
+    os.path.expanduser("~"),
+    "Library",
+    "CloudStorage",
+    "SynologyDrive-homes",
+    "01_案件",
+    "法扶案件",
+    "消費者債務清理",
 )
 OSC_CASE_ROOT = os.environ.get("OSC_CASE_ROOT", _DEFAULT_CASE_ROOT)
 
@@ -69,7 +73,7 @@ class ExtractWorker(QObject):
         except ImportError as e:
             self.error.emit(
                 f"❌ 無法 import supplement_core\n{e}\n\n"
-                f"請確認 MAGI_v2 已部署，並設定 env MAGI_V2_ROOT"
+                f"請確認 MAGI V3 已部署，並設定 env MAGI_ROOT"
             )
             return
         try:
@@ -261,7 +265,7 @@ class SupplementGenerator(QMainWindow):
             QMessageBox.critical(
                 self, "Import 失敗",
                 f"無法 import supplement_core\n{e}\n\n"
-                f"請確認 MAGI_v2 已部署，並設定 env MAGI_V2_ROOT"
+                f"請確認 MAGI V3 已部署，並設定 env MAGI_ROOT"
             )
             return
 

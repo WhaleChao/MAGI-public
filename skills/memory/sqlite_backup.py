@@ -9,15 +9,23 @@ import sqlite3
 import os
 import logging
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger("SQLiteBackup")
 
 # SQLite database path
-BACKUP_DB_PATH = os.path.join(os.path.dirname(__file__), "memory_backup.db")
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+BACKUP_DB_PATH = os.environ.get(
+    "MAGI_MEMORY_BACKUP_DB_PATH",
+    str(Path(_AGENT_DIR).expanduser() / "memory" / "memory_backup.db")
+    if _AGENT_DIR
+    else os.path.join(os.path.dirname(__file__), "memory_backup.db"),
+)
 
 
 def _get_connection():
     """Get SQLite connection with auto-create table."""
+    Path(BACKUP_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(BACKUP_DB_PATH)
     conn.row_factory = sqlite3.Row
     

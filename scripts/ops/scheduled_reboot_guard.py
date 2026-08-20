@@ -28,7 +28,7 @@ from api.platforms import runtime_dir  # noqa: E402
 
 
 WINDOWS = {
-    # omlx_switch day runs at 06:55.
+    # Day profile is valid from 06:35; the 06:55 switch job is only a retry.
     "day": (6 * 60 + 30, 6 * 60 + 54),
     # omlx_switch night runs at 21:50.
     "night": (21 * 60 + 25, 21 * 60 + 49),

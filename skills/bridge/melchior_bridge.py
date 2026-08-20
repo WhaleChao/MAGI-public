@@ -226,9 +226,11 @@ def _generate_image_openai(prompt: str, output_path: str = None) -> dict:
         url = item.get("url") or ""
         b64 = item.get("b64_json") or ""
 
-        final_path = output_path or os.path.join(
-            f"{_MAGI_ROOT}/static/images", f"gen_{os.urandom(4).hex()}.png"
+        _images_dir = os.path.join(
+            os.environ.get("MAGI_EXPORTS_DIR", "").strip() or f"{_MAGI_ROOT}/static",
+            "images",
         )
+        final_path = output_path or os.path.join(_images_dir, f"gen_{os.urandom(4).hex()}.png")
         os.makedirs(os.path.dirname(final_path), exist_ok=True)
 
         if b64:
@@ -283,9 +285,11 @@ def generate_image(prompt: str, output_path: str = None) -> dict:
                 if result.get("image_base64"):
                     import base64
                     img_data = base64.b64decode(result["image_base64"])
-                    final_path = output_path or os.path.join(
-                        f"{_MAGI_ROOT}/static/images", f"gen_{os.urandom(4).hex()}.png"
+                    _images_dir = os.path.join(
+                        os.environ.get("MAGI_EXPORTS_DIR", "").strip() or f"{_MAGI_ROOT}/static",
+                        "images",
                     )
+                    final_path = output_path or os.path.join(_images_dir, f"gen_{os.urandom(4).hex()}.png")
                     os.makedirs(os.path.dirname(final_path), exist_ok=True)
                     with open(final_path, "wb") as f:
                         f.write(img_data)
@@ -295,9 +299,11 @@ def generate_image(prompt: str, output_path: str = None) -> dict:
                     image_url = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}{result['url']}"
                     img_resp = _get_session().get(image_url, timeout=30)
                     if img_resp.status_code == 200:
-                        final_path = output_path or os.path.join(
-                            f"{_MAGI_ROOT}/static/images", os.path.basename(result["url"])
+                        _images_dir = os.path.join(
+                            os.environ.get("MAGI_EXPORTS_DIR", "").strip() or f"{_MAGI_ROOT}/static",
+                            "images",
                         )
+                        final_path = output_path or os.path.join(_images_dir, os.path.basename(result["url"]))
                         os.makedirs(os.path.dirname(final_path), exist_ok=True)
                         with open(final_path, "wb") as f:
                             f.write(img_resp.content)

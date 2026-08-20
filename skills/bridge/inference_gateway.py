@@ -36,6 +36,37 @@ from api.model_config import (
     default_local_vision_models,
     resolve_text_model,
 )
+try:
+    from api.model_router import choose_model_for_request, decision_summary
+except Exception:
+    choose_model_for_request = None
+    decision_summary = None
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+    _MAGI_PREFIX_FALLBACK_RE = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+    _HEAVY_WORD_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        magi_match = _MAGI_PREFIX_FALLBACK_RE.match(text)
+        if magi_match:
+            rest = text[magi_match.end():]
+            heavy_after_magi = _HEAVY_WORD_PREFIX_FALLBACK_RE.match(rest)
+            if heavy_after_magi:
+                cleaned = rest[heavy_after_magi.end():].strip()
+                return True, f"@MAGI {cleaned}".strip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 try:
     from providers import build_provider_registry as _build_provider_registry
@@ -90,6 +121,25 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _flask_heavy_opt_in() -> bool:
+    try:
+        from flask import g as _flask_g, has_app_context as _has_app_context
+        if _has_app_context():
+            return bool(getattr(_flask_g, "heavy_opt_in", False))
+    except Exception:
+        logging.getLogger(__name__).debug("flask heavy flag unavailable", exc_info=True)
+    return False
+
+
+def _detect_heavy_opt_in(prompt: str, *, explicit: bool = False) -> bool:
+    if explicit:
+        return True
+    if _flask_heavy_opt_in():
+        return True
+    has_prefix, _cleaned = split_heavy_prefix(prompt)
+    return bool(has_prefix)
+
+
 def _is_night() -> bool:
     h = datetime.datetime.now().hour
     if _NIGHT_START > _NIGHT_END:
@@ -140,14 +190,17 @@ def classify_intent(prompt: str, image_path: str = "", explicit_task_type: str =
     if explicit_task_type and explicit_task_type.strip():
         return explicit_task_type.strip()
 
+    _has_heavy_prefix, prompt_without_heavy = split_heavy_prefix(prompt)
+    prompt_for_intent = prompt_without_heavy if _has_heavy_prefix else str(prompt or "")
+
     # 2) If image provided → vision or captcha
     if image_path and str(image_path).strip():
-        p_lower = (prompt or "").lower()
+        p_lower = (prompt_for_intent or "").lower()
         if any(k in p_lower for k in ("captcha", "驗證碼", "digits", "characters")):
             return "captcha"
         return "vision"
 
-    text = str(prompt or "").strip()
+    text = str(prompt_for_intent or "").strip()
     if not text:
         return "general"
 
@@ -268,6 +321,21 @@ class InferenceGateway:
     def select_model_for_task(self, task_type: str, force_quality: bool = False) -> str:
         return select_model_for_task(task_type=task_type, force_quality=force_quality)
 
+    def smart_model_decision(self, *, task_type: str = "general", prompt: str = "", model: str = "", heavy: bool = False, force_quality: bool = False):
+        if not callable(choose_model_for_request):
+            return None
+        try:
+            return choose_model_for_request(
+                task_type=task_type,
+                prompt=prompt,
+                requested_model=model,
+                heavy_opt_in=heavy,
+                force_quality=force_quality,
+            )
+        except Exception as exc:
+            logger.debug("smart_model_decision failed: %s", exc, exc_info=True)
+            return None
+
     @staticmethod
     def _split_models(raw: Optional[str]) -> List[str]:
         out: List[str] = []
@@ -349,7 +417,10 @@ class InferenceGateway:
             )
             try:
                 import json as _json
-                _log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".agent", "gpt_oss_migration_watchdog.jsonl")
+                _root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                _agent_dir = os.environ.get("MAGI_AGENT_DIR", "").strip() or os.path.join(_root, ".agent")
+                _log_path = os.path.join(_agent_dir, "gpt_oss_migration_watchdog.jsonl")
+                os.makedirs(_agent_dir, exist_ok=True)
                 with open(_log_path, "a", encoding="utf-8") as _f:
                     _f.write(_json.dumps({
                         "ts": datetime.datetime.now().isoformat(),
@@ -449,7 +520,7 @@ class InferenceGateway:
                 return gate.is_reachable("balthasar")
             except Exception as exc:
                 # gate 自己爆 → 降級走 legacy，不讓使用者受影響
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 470, exc_info=True)
         # --- end NEW ---
         # 以下為原有 legacy 程式碼（不動）
 
@@ -539,8 +610,10 @@ class InferenceGateway:
                 os.path.join(home, "SynologyDrive"),
             ),
             (
-                "/Volumes/SynologyDrive/MAGI/balthasar_fallback",
-                "/Volumes/SynologyDrive",
+                os.path.join(
+                    os.sep, "Volumes", "SynologyDrive", "MAGI", "balthasar_fallback"
+                ),
+                os.path.join(os.sep, "Volumes", "SynologyDrive"),
             ),
         ]
         for path, root in candidates:
@@ -1007,11 +1080,14 @@ class InferenceGateway:
 
     def chat(self, prompt: str, task_type: str = "general", timeout: int = 90, model: str = "", **kwargs) -> dict:
         request_id = kwargs.pop("request_id", None) or uuid.uuid4().hex[:12]
+        request_heavy_opt_in = _detect_heavy_opt_in(prompt, explicit=bool(kwargs.get("heavy", False)))
         _t0 = time.monotonic()
         result = self._chat_inner(prompt, task_type=task_type, timeout=timeout, model=model, **kwargs)
         _dur_ms = int((time.monotonic() - _t0) * 1000)
         result["request_id"] = request_id
         result["duration_ms"] = _dur_ms
+        result["task_type"] = str(result.get("task_type") or task_type or "general")
+        result["heavy_opt_in"] = bool(result.get("heavy_opt_in") or request_heavy_opt_in or result.get("heavy_fast_path"))
         try:
             logger.info(
                 "inference_chat %s",
@@ -1048,26 +1124,51 @@ class InferenceGateway:
         # 3) prompt prefix: 終極防線 — 偵測 @heavy / @重型 前綴並自動剝除
         heavy_opt_in = bool(kwargs.get("heavy", False))
         if not heavy_opt_in:
-            try:
-                from flask import g as _flask_g
-                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
-            except Exception:
-                pass
-        # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在上游 sanitize 轉半形
-        _prompt_lower_head = prompt.lstrip().lower() if isinstance(prompt, str) else ""
-        if not heavy_opt_in and (_prompt_lower_head.startswith("@heavy ") or _prompt_lower_head.startswith("@重型 ")):
+            heavy_opt_in = _flask_heavy_opt_in()
+        _prompt_has_heavy_prefix, _prompt_without_heavy_prefix = split_heavy_prefix(prompt)
+        if not heavy_opt_in and _prompt_has_heavy_prefix:
             heavy_opt_in = True
-            # 剝除前綴，不讓 `@heavy` 字面傳給 LLM（保留 prompt 原大小寫的其餘內容）
-            _p = prompt.lstrip()
-            prompt = _p.split(" ", 1)[1] if " " in _p else ""
+            prompt = _prompt_without_heavy_prefix
             logger.info("inference_chat: @heavy prefix detected in prompt (final-line defense)")
+        elif _prompt_has_heavy_prefix:
+            prompt = _prompt_without_heavy_prefix
 
-        # ── @heavy fast path：跳過 oMLX，直接走 NIM 405B（Plan A, 2026-04-19 P1-2 修） ──
+        smart_decision = None
+        if _env_bool("MAGI_SMART_MODEL_ROUTER", True):
+            smart_decision = self.smart_model_decision(
+                task_type=task_type,
+                prompt=prompt,
+                model=model,
+                heavy=heavy_opt_in,
+                force_quality=bool(kwargs.get("force_quality", False)),
+            )
+            if smart_decision is not None:
+                try:
+                    _summary = decision_summary(smart_decision) if callable(decision_summary) else smart_decision.selected_model
+                    logger.info("inference_chat smart_model_router: %s", _summary)
+                except Exception:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1098, exc_info=True)
+
+        # ── @heavy fast path：跳過 oMLX，直接走 NVIDIA NIM heavy（Plan A, 2026-04-19 P1-2 修） ──
         # 使用者明確 @heavy 表示要雲端重型模型；oMLX 常在高負載時吐「忙碌中」假 success，
         # 讓 NIM 永遠接不到手（P1-2 bug）。修法：heavy_opt_in=True 時跳過 oMLX，直接試 NIM。
         #
         # 2026-04-24：新增 strict 模式 (MAGI_HEAVY_STRICT_NIM=1) — 失敗時以指數退避重試 NIM
-        # 而非立刻退回 oMLX。適合使用者明確要求「所有 chunk 統一用 NIM 405B，慢沒關係」的場景。
+        # 而非立刻退回 oMLX。適合使用者明確要求「所有 chunk 統一用 NIM heavy，慢沒關係」的場景。
+        if (
+            heavy_opt_in
+            and not _env_bool("NVIDIA_NIM_ENABLE", False)
+            and task_type not in ("tc_review", "captcha", "date_extract")
+        ):
+            return self._result(
+                success=False,
+                route="nvidia_nim_required",
+                degraded=False,
+                response="",
+                error="explicit_heavy_requires_nvidia_nim",
+                task_type=task_type,
+            )
+
         if (
             heavy_opt_in
             and _env_bool("NVIDIA_NIM_ENABLE", False)
@@ -1085,7 +1186,9 @@ class InferenceGateway:
                 _strict_backoff_max = float(os.environ.get("MAGI_HEAVY_STRICT_NIM_BACKOFF_MAX", "60") or "60")
                 _max_attempts = _strict_retries + 1 if _strict_nim else 1
                 nim_r = {}
+                _attempts_used = 0
                 for _attempt in range(_max_attempts):
+                    _attempts_used = _attempt + 1
                     if _attempt > 0:
                         import time as _t
                         _sleep = min(_strict_backoff_max, _strict_backoff_base * (2 ** (_attempt - 1)))
@@ -1098,16 +1201,26 @@ class InferenceGateway:
                         prompt=prompt,
                         timeout_sec=max(60, int(timeout)),
                         task_type=task_type,
-                        require_pii_scrub=_env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True),
+                        require_pii_scrub=True,
                         system_prompt=_DEFAULT_SYSTEM_PROMPT_ZH,
-                        heavy=True,  # 強制走 405B
+                        heavy=True,  # 強制走重型 NIM
+                        user_heavy_authorized=True,
                     )
                     if nim_r.get("success") and nim_r.get("response"):
                         break
                     # 若是可重試錯誤（timeout / rate_limit / circuit_open），strict 模式繼續；
                     # 若是 hard error（auth / budget exhausted / blocked model），立即放棄。
                     _err = str(nim_r.get("error") or "").lower()
-                    _hard_stop = any(k in _err for k in ("budget_exhausted", "auth_failed", "blocked_model", "pii_scrub_failed"))
+                    _hard_stop = any(
+                        marker in _err
+                        for marker in (
+                            "budget_exhausted",
+                            "budget_exceeded",
+                            "auth_failed",
+                            "blocked_model",
+                            "pii_scrub_failed",
+                        )
+                    )
                     if _hard_stop:
                         logger.warning("inference_chat: @heavy strict hard-stop (%s), aborting retries", _err)
                         break
@@ -1127,36 +1240,53 @@ class InferenceGateway:
                 # NIM 全部嘗試失敗（strict 已重試 N 次，或 hard-stop 中止）
                 errors.append(f"nvidia_nim_heavy_fast:{nim_r.get('error', 'empty')}")
                 nim_already_tried = True
-                if _strict_nim and not _env_bool("MAGI_HEAVY_STRICT_NIM_ALLOW_FALLBACK", False):
-                    # strict 模式預設禁止 fallback；直接回失敗讓呼叫端自己決定是否降級
-                    logger.warning(
-                        "@heavy strict NIM failed after %d attempts (%s); NOT falling back to oMLX",
-                        _max_attempts, nim_r.get("error", "empty"),
-                    )
-                    return self._result(
-                        success=False,
-                        route="nvidia_nim_strict_failed",
-                        degraded=False,
-                        response="",
-                        error=f"nim_strict_exhausted:{nim_r.get('error', 'empty')}",
-                        task_type=task_type,
-                    )
+                # Explicit @heavy is a provider contract: never silently
+                # substitute a local model, even when strict retries are off.
                 logger.warning(
-                    "@heavy fast path NIM failed (%s), falling back to oMLX",
+                    "@heavy NIM failed after %d attempts (%s); local fallback is forbidden",
+                    _attempts_used,
                     nim_r.get("error", "empty"),
                 )
+                return self._result(
+                    success=False,
+                    route=(
+                        "nvidia_nim_strict_failed"
+                        if _strict_nim
+                        else "nvidia_nim_heavy_failed"
+                    ),
+                    degraded=False,
+                    response="",
+                    error=(
+                        f"nim_strict_exhausted:{nim_r.get('error', 'empty')}"
+                        if _strict_nim
+                        else f"nim_heavy_failed:{nim_r.get('error', 'empty')}"
+                    ),
+                    task_type=task_type,
+                )
             except Exception as nim_err:
-                errors.append(f"nvidia_nim_heavy_fast:exception:{nim_err}")
-                nim_already_tried = True
                 logger.warning("@heavy fast path NIM exception: %s", nim_err)
+                return self._result(
+                    success=False,
+                    route="nvidia_nim_heavy_failed",
+                    degraded=False,
+                    response="",
+                    error=f"nim_heavy_exception:{nim_err}",
+                    task_type=task_type,
+                )
 
         # Try oMLX first for tasks that have an oMLX model configured
         # OCR/date extraction stay on OCR model; review/classify still use the configured local text model.
-        omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
+        omlx_model = (
+            getattr(smart_decision, "selected_model", "")
+            if smart_decision is not None and getattr(smart_decision, "provider", "omlx") == "omlx"
+            else ""
+        ) or _MODEL_ROSTER.get(task_type, {}).get("omlx", "")
         if omlx_model and task_type not in ("tc_review", "captcha", "date_extract"):
             r = self._omlx_chat(prompt, timeout=max(10, int(timeout)), model=omlx_model, task_type=task_type)
             if r.get("success"):
                 r["task_type"] = task_type
+                if smart_decision is not None:
+                    r["model_route_decision"] = smart_decision.to_dict()
                 return r
             errors.append(f"omlx:{r.get('error','')}")
 
@@ -1172,6 +1302,8 @@ class InferenceGateway:
             )
             if review.get("success"):
                 review["task_type"] = task_type
+                if smart_decision is not None:
+                    review["model_route_decision"] = smart_decision.to_dict()
                 return review
             errors.append(f"omlx:{review.get('error','')}")
             merged_error = " | ".join([e for e in errors if e])[:1200] or "all_routes_failed"
@@ -1215,7 +1347,7 @@ class InferenceGateway:
                     if codex_r.get("success") and codex_text:
                         return self._result(
                             success=True,
-                            route="openclaw_codex",
+                            route="codex_direct",
                             degraded=True,
                             response=codex_text,
                             model=str(codex_r.get("model") or "codex"),
@@ -1230,15 +1362,8 @@ class InferenceGateway:
         # 預設關閉（NVIDIA_NIM_ENABLE=0），使用者驗收完才開
         nim_enabled = _env_bool("NVIDIA_NIM_ENABLE", False)
         nim_require_optin = _env_bool("NVIDIA_NIM_REQUIRE_OPTIN", True)
-        nim_require_pii = _env_bool("NVIDIA_NIM_REQUIRE_PII_SCRUB", True)
-        heavy_opt_in = bool(kwargs.get("heavy", False))
-        # 也支援從 Flask request context 取 heavy flag（由 tools_api.py 設）
-        if not heavy_opt_in:
-            try:
-                from flask import g as _flask_g
-                heavy_opt_in = bool(getattr(_flask_g, "heavy_opt_in", False))
-            except Exception:
-                pass
+        nim_require_pii = True
+        # heavy_opt_in was resolved once above from kwarg, Flask g, or prompt prefix.
 
         nim_allowed = (
             nim_enabled
@@ -1303,12 +1428,16 @@ class InferenceGateway:
                 errors.append(f"remote_balthasar:skipped:{bal_reason}")
 
         local = self._local_chat(
-            prompt, timeout=max(8, int(timeout)), model_hint=model,
+            prompt,
+            timeout=max(8, int(timeout)),
+            model_hint=(getattr(smart_decision, "selected_model", "") if smart_decision is not None else "") or model,
             num_ctx=int(kwargs.get("num_ctx") or 0),
             num_predict=int(kwargs.get("num_predict") or 0),
         )
         if local.get("success"):
             local["task_type"] = task_type
+            if smart_decision is not None:
+                local["model_route_decision"] = smart_decision.to_dict()
             return local
         errors.append(f"local_ollama:{local.get('error','')}")
 
@@ -1414,7 +1543,7 @@ class InferenceGateway:
                 if codex_res.get("success") and codex_text:
                     return self._result(
                         success=True,
-                        route="openclaw_codex",
+                        route="codex_direct",
                         degraded=False,
                         analysis=codex_text,
                         model=str(codex_res.get("model") or "gpt-5.4"),
@@ -1422,9 +1551,9 @@ class InferenceGateway:
                         task_type=task_type,
                     )
                 if codex_res.get("error"):
-                    errors.append(f"openclaw_codex:{codex_res.get('error')}")
+                    errors.append(f"codex_direct:{codex_res.get('error')}")
         except Exception as codex_err:
-            errors.append(f"openclaw_codex:exception:{codex_err}")
+            errors.append(f"codex_direct:exception:{codex_err}")
 
         # Try oMLX vision (Gemma-3 multimodal) with OCR context
         omlx_model = _MODEL_ROSTER.get(task_type, {}).get("omlx", "")

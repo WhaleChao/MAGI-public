@@ -6,9 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from api.runtime_paths import get_runtime_dir
+
 
 _ALLOWED_PATHS = frozenset({"user_confirmed", "tri_sage_consensus", "file_evidence"})
-_AUDIT_PATH = Path(__file__).resolve().parents[2] / ".runtime" / "verified_fact_audit.jsonl"
+_AUDIT_PATH = get_runtime_dir() / "verified_fact_audit.jsonl"
 _REFLEXIVE_MARKERS = (
     "我上次說",
     "我之前講",

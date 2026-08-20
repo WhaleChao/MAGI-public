@@ -30,7 +30,10 @@ sys.path.insert(0, str(MAGI_ROOT))
 
 HIGH_ALERT_COOLDOWN_SEC = int(os.environ.get("MAGI_DISK_LOW_WATER_HIGH_COOLDOWN_SEC", "21600"))
 CRITICAL_ALERT_COOLDOWN_SEC = int(os.environ.get("MAGI_DISK_LOW_WATER_CRITICAL_COOLDOWN_SEC", "3600"))
-ALERT_STATE_PATH = MAGI_ROOT / ".runtime" / "disk_low_water_alarm_state.json"
+RUNTIME_DIR = Path(
+    os.environ.get("MAGI_RUNTIME_DIR", "").strip() or MAGI_ROOT / ".runtime"
+).expanduser()
+ALERT_STATE_PATH = RUNTIME_DIR / "disk_low_water_alarm_state.json"
 
 
 def get_disk_free_gb(path: str = "/") -> float:
@@ -183,6 +186,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    adapter = os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") or ""
+    if adapter:
+        fixture_root = Path(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "")
+        if not (
+            adapter == "real_entrypoint_dry_run_v1"
+            and os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") == "1"
+            and os.environ.get("MAGI_V3_SCHEDULE_NO_NETWORK") == "1"
+            and os.environ.get("MAGI_V3_SCHEDULE_NO_NOTIFY") == "1"
+            and (fixture_root / ".magi-v3-schedule-fixture").is_file()
+        ):
+            raise SystemExit("invalid schedule realism adapter")
+        args.path = str(fixture_root / "disk-probe")
+        args.threshold_warn = 0.0
+        args.threshold_critical = 0.0
+
     free_gb = get_disk_free_gb(args.path)
     severity = "OK"
     triggered = False
@@ -222,6 +240,10 @@ def main() -> int:
         "alarm_triggered": triggered,
         "alert_emitted": alert_emitted,
         "auto_reclaim": auto_reclaim,
+        "adapter": adapter or None,
+        "dry_run": bool(adapter),
+        "network_attempted": False if adapter else None,
+        "notification_attempted": False if adapter else None,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

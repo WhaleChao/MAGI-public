@@ -10,8 +10,9 @@ from datetime import datetime
 logger = logging.getLogger("DebugCapture")
 
 _MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", Path(__file__).resolve().parent.parent))
-DEBUG_DIR = _MAGI_ROOT / ".runtime" / "debug_screenshots"
-DEBUG_MD = _MAGI_ROOT / ".runtime" / "debug_archive" / "debug_log.md"
+_RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or _MAGI_ROOT / ".runtime").expanduser()
+DEBUG_DIR = _RUNTIME_DIR / "debug_screenshots"
+DEBUG_MD = _RUNTIME_DIR / "debug_archive" / "debug_log.md"
 
 def _ensure_dirs():
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)

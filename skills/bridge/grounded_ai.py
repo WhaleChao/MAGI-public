@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sys
+from difflib import SequenceMatcher
 
 import requests
 
@@ -366,19 +367,117 @@ def _is_incoherent_response(query: str, answer: str, threshold: float = 0.25) ->
     """Layer 2: 語義一致性檢查 — 用 cosine similarity 比對 query↔answer。
     若相似度低於 threshold，判定為不連貫回覆（LLM 跑題）。
     """
-    if not query or not answer or len(answer.strip()) < 20:
+    if not query or not answer:
         return False
     try:
         q_emb = _embedding_cache(query[:200])
         a_emb = _embedding_cache(answer[:500])
+        # mem_bridge intentionally returns an all-zero vector while the embedding
+        # service is unavailable.  Zero is a sentinel, not evidence that two
+        # texts are semantically unrelated; treating it as cosine=0 made every
+        # otherwise valid reply fail this guard.  Keep the guard fail-closed for
+        # unrelated replies, but accept an explicit shared topic while semantic
+        # embeddings cannot be evaluated.
+        if not _embeddings_are_comparable(q_emb, a_emb):
+            if _has_lexical_topic_overlap(query, answer):
+                logger.info("Coherence embedding unavailable; explicit topic overlap found")
+                return False
+            logger.warning("Incoherent response (embedding unavailable; no topic overlap)")
+            return True
         sim = _cosine_similarity(q_emb, a_emb)
         if sim < threshold:
             logger.warning("⚠️ Incoherent response (cosine=%.3f < %.2f)", sim, threshold)
             return True
         return False
     except Exception as e:
-        logger.debug("Coherence check skipped: %s", e)
+        logger.warning("Coherence check failed closed: %s", e)
+        return True
+
+
+_COHERENCE_QUERY_FRAME_RE = re.compile(
+    r"^(?:(?:請|麻煩)(?:你|您)?(?:幫我|替我)?|"
+    r"(?:我|你|您)(?:覺得|認為|想問|想知道))"
+)
+# A closed grammatical class, not a growing topic stoplist.  These verbs state
+# what to do with the subject that follows; they are not themselves the subject.
+_COHERENCE_LEADING_INTENT_RE = re.compile(
+    r"^(?:分析|確認|檢查|查詢|比較|評估|整理|說明|解釋|摘要|檢視|找出)"
+)
+_COHERENCE_OPINION_PREDICATE_RE = re.compile(
+    r"(?:滿|蠻|很|真|還算|不太|不怎麼)?"
+    r"(?:好喝|好吃|不錯|好用|漂亮|有趣|舒服|怎麼樣|如何)"
+)
+_COHERENCE_NON_TOPIC_FOCUS_RE = re.compile(
+    r"^(?:今天|明天|昨天|現在|目前|這個|那個|這份|那份|這些|那些|這裡|那裡)$"
+)
+_COHERENCE_TOPIC_COVERAGE_MIN = 0.5
+
+
+def _embeddings_are_comparable(first, second) -> bool:
+    """Return whether two embeddings contain usable vectors of equal length."""
+    try:
+        if not first or not second or len(first) != len(second):
+            return False
+        first_values = tuple(float(value) for value in first)
+        second_values = tuple(float(value) for value in second)
+        return (
+            all(value == value and abs(value) != float("inf") for value in first_values)
+            and all(value == value and abs(value) != float("inf") for value in second_values)
+            and any(abs(value) > 1e-12 for value in first_values)
+            and any(abs(value) > 1e-12 for value in second_values)
+        )
+    except (TypeError, ValueError, OverflowError):
         return False
+
+
+def _has_lexical_topic_overlap(query: str, answer: str) -> bool:
+    """Fail-closed lexical fallback for an unavailable embedding service.
+
+    The query is reduced to one explicit focus span by removing grammatical
+    request framing and one closed class of leading intent verbs.  Opinion
+    predicates form a natural boundary (for example, ``我覺得綠茶滿好喝`` has
+    the focus ``綠茶``).  A response is accepted only when contiguous shared
+    spans cover at least half of that focus.  This avoids an ever-growing
+    stop-word list and prevents a lone temporal/determiner anchor such as
+    ``明天`` or ``這份`` from certifying an otherwise unrelated answer.
+    """
+
+    def _normalized(text: str) -> str:
+        return "".join(
+            re.findall(r"[a-z0-9]+|[\u3400-\u9fff]", str(text or "").lower())
+        )
+
+    focus = _normalized(str(query)[:200])
+    while focus:
+        frame = _COHERENCE_QUERY_FRAME_RE.match(focus)
+        if frame is None:
+            break
+        focus = focus[frame.end():]
+
+    intent = _COHERENCE_LEADING_INTENT_RE.match(focus)
+    if intent is not None:
+        focus = focus[intent.end():]
+
+    opinion = _COHERENCE_OPINION_PREDICATE_RE.search(focus)
+    if opinion is not None and opinion.start() >= 2:
+        focus = focus[:opinion.start()]
+
+    answer_text = _normalized(str(answer)[:500])
+    if (
+        len(focus) < 2
+        or len(answer_text) < 2
+        or _COHERENCE_NON_TOPIC_FOCUS_RE.fullmatch(focus)
+    ):
+        return False
+
+    shared_blocks = [
+        block.size
+        for block in SequenceMatcher(None, focus, answer_text, autojunk=False).get_matching_blocks()
+        if block.size >= 2
+    ]
+    if not shared_blocks:
+        return False
+    return sum(shared_blocks) / len(focus) >= _COHERENCE_TOPIC_COVERAGE_MIN
 
 
 # ── 實體幻覺偵測（Entity Hallucination Detection）──────────────────
@@ -1047,16 +1146,40 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
     Layer 1: Statute / noise memory filter per tier
     Layer 2: Semantic coherence check on LLM output
 
-    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM 405B，跳過本地 oMLX
+    Layer 0 (P1-2, 2026-04-19): @heavy / @重型 前綴 → 直接走 NVIDIA NIM heavy，跳過本地 oMLX
     """
     logger.info(f"💬 Chatting: {message}")
 
-    # ── Layer 0: @heavy opt-in → 直接走 NIM 405B（P1-2 根修 2026-04-19）──
+    # ── Layer 0: @heavy opt-in → 直接走 NIM heavy（P1-2 根修 2026-04-19）──
     # 此為 chat_casper 主要入口，處理所有 /osc/external/chat → _handle_chat_async 路徑。
     # 必須在這一層接 @heavy，因為 chat_casper 不會走 inference_gateway._chat_inner 的 heavy fast path。
     _msg_stripped = str(message or "").strip()
-    # 2026-04-24：case-insensitive（@HEAVY / @Heavy 都接受）；全形 ＠ 已在 orchestrator sanitize 統一轉半形
-    _msg_lower_head = _msg_stripped.lower()
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+        _MAGI_PREFIX_FALLBACK_RE = re.compile(r"^\s*@\s*magi(?=$|[\s:：,，、。!！?？\-–—])\s*[:：,，、。!！?？\-–—]*\s*", re.IGNORECASE)
+        _HEAVY_WORD_PREFIX_FALLBACK_RE = re.compile(
+            r"^\s*(?:[＠@]\s*)?(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(_message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            _text = str(_message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            _magi_match = _MAGI_PREFIX_FALLBACK_RE.match(_text)
+            if _magi_match:
+                _rest = _text[_magi_match.end():]
+                _heavy_after_magi = _HEAVY_WORD_PREFIX_FALLBACK_RE.match(_rest)
+                if _heavy_after_magi:
+                    _cleaned = _rest[_heavy_after_magi.end():].strip()
+                    return True, f"@MAGI {_cleaned}".strip()
+            _match = _HEAVY_PREFIX_FALLBACK_RE.match(_text)
+            return (True, _text[_match.end():].strip()) if _match else (False, _text)
     # 2026-04-24：三保險偵測（prefix / flask.g / explicit kwarg）
     # - prefix：上游尚未剝除時直接命中
     # - flask.g：同 request thread 設定，但 ThreadPoolExecutor 子 thread 讀不到
@@ -1068,31 +1191,32 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
             _heavy_via_g = bool(getattr(_flask_g_head, "heavy_opt_in", False))
         except Exception:
             _heavy_via_g = False
-    _has_prefix = _msg_lower_head.startswith("@heavy ") or _msg_lower_head.startswith("@重型 ")
+    _has_prefix, _clean_msg = split_heavy_prefix(_msg_stripped)
     if _has_prefix or _heavy_via_g:
         import os as _os
         _nim_enabled = (_os.environ.get("NVIDIA_NIM_ENABLE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        _allow_heavy_fallback = (
+            _os.environ.get("MAGI_HEAVY_STRICT_NIM_ALLOW_FALLBACK", "0") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         if _nim_enabled:
             try:
                 from skills.bridge.nim_heavy import run_nim_chat
                 # 若 prefix 還在就剝除；若上游已剝除則直接用原文
-                if _has_prefix:
-                    _clean_msg = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
-                else:
+                if not _has_prefix:
                     _clean_msg = _msg_stripped
-                logger.info("chat_casper: @heavy opt-in → NIM 405B fast path")
+                logger.info("chat_casper: @heavy opt-in → NIM heavy fast path")
                 _nim_r = run_nim_chat(
                     prompt=_clean_msg,
                     timeout_sec=int(_os.environ.get("NVIDIA_NIM_TIMEOUT_SEC", "120") or "120"),
                     task_type="legal_analysis",
-                    require_pii_scrub=(_os.environ.get("NVIDIA_NIM_REQUIRE_PII_SCRUB", "1") or "").strip() != "0",
+                    require_pii_scrub=True,
                     system_prompt=(
                         "你是 MAGI 系統的 AI 助理，服務對象為台灣的律師事務所。"
                         "請全程使用台灣繁體中文（正體中文）回覆。"
                         "使用台灣慣用的法律術語，例如「被告」而非「被告人」、「起訴書」而非「起诉书」。"
                         "不要使用簡體中文或中國大陸用語。"
                     ),
-                    heavy=True,  # 強制 405B
+                    heavy=True,  # 強制重型 NIM
                 )
                 if _nim_r.get("success") and _nim_r.get("response"):
                     logger.info(
@@ -1100,22 +1224,33 @@ def chat_casper(message, conversation_history="", heavy: bool = False):
                         _nim_r.get("model"), _nim_r.get("duration_ms", 0), _nim_r.get("pii_counts", {}),
                     )
                     return str(_nim_r["response"])
-                logger.warning(
-                    "chat_casper: NIM failed (%s), falling back to oMLX with prefix stripped",
-                    _nim_r.get("error", "empty"),
-                )
-                # NIM 失敗 → 剝除 @heavy 前綴後繼續走 oMLX（降級）
+                logger.warning("chat_casper: NIM heavy failed (%s)", _nim_r.get("error", "empty"))
+                if not _allow_heavy_fallback:
+                    return (
+                        "NVIDIA 重型服務目前無法完成這項工作；本次沒有改用較弱模型，"
+                        "也沒有產生未經重型模型驗證的內容。請稍後再試。"
+                    )
                 message = _clean_msg
             except Exception as _nim_err:
-                logger.warning("chat_casper: NIM exception (%s), falling back to oMLX", _nim_err)
+                logger.warning("chat_casper: NIM heavy exception (%s)", _nim_err)
+                if not _allow_heavy_fallback:
+                    return (
+                        "NVIDIA 重型服務目前無法完成這項工作；本次沒有改用較弱模型，"
+                        "也沒有產生未經重型模型驗證的內容。請稍後再試。"
+                    )
                 if _has_prefix:
-                    message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                    message = _clean_msg
                 else:
                     message = _msg_stripped
         else:
-            # NIM 未啟用，剝除 @heavy 前綴正常走 oMLX（避免前綴混進 prompt）
+            if not _allow_heavy_fallback:
+                return (
+                    "NVIDIA 重型服務目前尚未啟用；本次沒有改用較弱模型，"
+                    "也沒有產生未經重型模型驗證的內容。"
+                )
+            # 明確允許降級時才剝除 @heavy 前綴並走本機模型。
             if _has_prefix:
-                message = _msg_stripped.split(" ", 1)[1] if " " in _msg_stripped else ""
+                message = _clean_msg
             else:
                 message = _msg_stripped
 

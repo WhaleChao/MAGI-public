@@ -265,15 +265,37 @@ except Exception:
         WebhookHandler = _UnavailableWebhookHandler
 
 
-def line_feature_enabled() -> bool:
-    return _env_flag("MAGI_ENABLE_LINE", "1")
+def line_feature_enabled(access_token: str = "", secret: str = "") -> bool:
+    """Return whether LINE is intentionally configured for this process.
+
+    An explicit ``MAGI_ENABLE_LINE`` value always wins.  For older production
+    installations that already carry both LINE credentials but predate that
+    flag, the credential pair itself is the opt-in signal.  Missing credentials
+    still leave web/Discord/Telegram-only installations safely disabled.
+    """
+
+    if "MAGI_ENABLE_LINE" in os.environ:
+        return _env_flag("MAGI_ENABLE_LINE", "0")
+    token = str(
+        access_token
+        or os.environ.get("MAGI_LINE_CHANNEL_ACCESS_TOKEN")
+        or os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+        or ""
+    ).strip()
+    secret_value = str(
+        secret
+        or os.environ.get("MAGI_LINE_CHANNEL_SECRET")
+        or os.environ.get("LINE_CHANNEL_SECRET")
+        or ""
+    ).strip()
+    return bool(token and secret_value)
 
 
 def build_line_clients(access_token: str, secret: str):
     token = str(access_token or "").strip()
     secret_value = str(secret or "").strip()
 
-    if not line_feature_enabled():
+    if not line_feature_enabled(token, secret_value):
         return _UnavailableLineBotApi(), _UnavailableWebhookHandler(), False, "disabled by MAGI_ENABLE_LINE"
     if not LINE_SDK_AVAILABLE:
         return _UnavailableLineBotApi(), _UnavailableWebhookHandler(), False, "line-bot-sdk is not installed"

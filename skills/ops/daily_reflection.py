@@ -12,15 +12,15 @@ chat model to synthesize a reflection summary for self-evolution.
 import os
 import sys
 import json
-import time
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-from api.runtime_paths import ensure_orch_on_sys_path, get_orch_dir
+from api.runtime_paths import ensure_orch_on_sys_path, get_agent_dir, get_orch_dir, get_runtime_dir
 
 MAGI_DIR = str(_MAGI_ROOT)
 CODE_DIR = str(get_orch_dir())
@@ -28,62 +28,47 @@ ensure_orch_on_sys_path()
 
 from skills.bridge.inference_gateway import InferenceGateway
 
-def parse_openclaw_sessions(hours: int = 24) -> str:
-    """Read OpenClaw main agent sessions modified within `hours`."""
-    base_dir = Path("/Users/ai/.openclaw/agents/main/sessions")
-    if not base_dir.exists():
-        return ""
-    
-    cutoff = time.time() - (hours * 3600)
-    dialogues = []
-    
-    # Process jsonl files modified within the timeframe
-    for p in base_dir.glob("*.jsonl"):
-        try:
-            if p.stat().st_mtime >= cutoff:
-                lines = p.read_text(encoding="utf-8").splitlines()
-                session_text = []
-                for ln in lines:
-                    if not ln.strip():
-                        continue
-                    try:
-                        obj = json.loads(ln)
-                        item_type = obj.get("type")
-                        if item_type == "message":
-                            msg_data = obj.get("message", {})
-                            role = str(msg_data.get("role") or "").upper()
-                            
-                            content_blocks = msg_data.get("content", [])
-                            content = ""
-                            if isinstance(content_blocks, list):
-                                for block in content_blocks:
-                                    if block.get("type") == "text":
-                                        content += block.get("text", "") + "\n"
-                            
-                            content = content.strip()
-                            if content:
-                                session_text.append(f"{role}: {content}")
-                        elif item_type == "action":
-                            action_name = str(obj.get("action") or "").strip()
-                            if action_name:
-                                session_text.append(f"ACTION: {action_name}")
-                        elif item_type == "error":
-                            err_msg = str(obj.get("error") or "").strip()
-                            if err_msg:
-                                session_text.append(f"ERROR: {err_msg}")
-                    except Exception:
-                        continue
-                if session_text:
-                    dialogues.append("\n".join(session_text))
-        except Exception:
-            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 77, exc_info=True)
+def parse_v3_conversation_history(hours: int = 24, limit: int = 500) -> str:
+    """Read recent V3 chat history through a strictly read-only SQLite handle."""
 
-    return "\n\n---\n\n".join(dialogues)
+    db_path = get_runtime_dir() / "conversation_history.sqlite3"
+    if not db_path.is_file():
+        return ""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat()
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2)
+        try:
+            rows = conn.execute(
+                "SELECT session_id, role, content FROM conversation_history "
+                "WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+                (cutoff, max(1, min(2000, int(limit)))),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logging.getLogger(__name__).debug("V3 conversation reflection probe failed", exc_info=True)
+        return ""
+
+    dialogues = []
+    for session_id, role, content in reversed(rows):
+        text = str(content or "").strip()
+        if not text:
+            continue
+        dialogues.append(
+            f"SESSION {str(session_id or '')[:16]} {str(role or '').upper()}: {text[:4000]}"
+        )
+    return "\n".join(dialogues)
 
 def run_reflection() -> dict:
-    conversation = parse_openclaw_sessions(hours=96)
+    conversation = parse_v3_conversation_history(hours=96)
     if not conversation.strip():
-        return {"success": False, "error": "No recent conversation logs found."}
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "no_recent_v3_conversation_logs",
+            "response": "",
+        }
 
     # Limit prompt size (Gemma E4B has 8192 context, leaving room for generation)
     char_limit = 20000
@@ -125,7 +110,7 @@ def run_reflection() -> dict:
         summary_md = f"## [{today_str}] Self-Evolution Daily Reflection\n\n{out}\n\n---\n"
         
         # Save to learnings
-        learnings_path = Path("/Users/ai/.openclaw/workspace/.learnings/LEARNINGS.md")
+        learnings_path = get_agent_dir() / "learnings" / "LEARNINGS.md"
         learnings_path.parent.mkdir(parents=True, exist_ok=True)
         
         content = ""
@@ -161,8 +146,11 @@ if __name__ == "__main__":
     print("Running self-evolution reflection...", flush=True)
     res = run_reflection()
     if res.get("success"):
-        print("✅ Daily reflection complete:")
-        print(res.get("response"))
+        if res.get("skipped"):
+            print("⏭️ Daily reflection skipped: no recent V3 conversation logs.")
+        else:
+            print("✅ Daily reflection complete:")
+            print(res.get("response"))
         if res.get("note"):
             print(f"Note: {res.get('note')}")
     else:

@@ -33,7 +33,7 @@ from data.watchlist import WatchItem, _format_watchlist
 
 def _predict_one(
     item: WatchItem,
-    params: Dict[str, float],
+    params: Dict[str, Any],
     mode: str = "quick",
     committee_callback: Optional[Callable[[WatchItem, str, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
@@ -75,7 +75,23 @@ def _predict_one(
         signal = _predict_pct_by_params(trend, mom5, vol, params)
         pred_pct = signal
         pred_price = last * (1 + pred_pct / 100.0)
-        conf = int(_clamp(78 - (abs(vol) * 4.5) - (abs(pred_pct) * 2.5), 35, 86))
+        quality_gates = (
+            params.get("_quality_gates")
+            if isinstance(params.get("_quality_gates"), dict)
+            else {}
+        )
+        quality_gate = (
+            quality_gates.get(item.market)
+            if isinstance(quality_gates.get(item.market), dict)
+            else quality_gates.get("ALL")
+        )
+        if not isinstance(quality_gate, dict):
+            quality_gate = {}
+        verified_edge = bool(quality_gate.get("verified_edge"))
+        empirical_hit = float(quality_gate.get("hit_rate") or 0.0)
+        baseline_hit = float(quality_gate.get("baseline_hit_rate") or 0.0)
+        quality_samples = int(quality_gate.get("sample_count") or 0)
+        conf = int(round(empirical_hit)) if quality_samples else 0
 
         # fundamentals
         fund = ""
@@ -87,12 +103,20 @@ def _predict_one(
         elif item.market == "US":
             fund = _latest_us_filing(item.symbol)
 
-        dir_icon = "↗" if pred_pct >= 0 else "↘"
-        core = (
-            f"{item.label} ({item.symbol}) {dir_icon} 昨收 {last:.2f}，"
-            f"預估次一交易日 {pred_price:.2f} ({pred_pct:+.2f}%)，"
-            f"信心 {conf}%"
-        )
+        if verified_edge:
+            dir_icon = "↗" if pred_pct >= 0 else "↘"
+            core = (
+                f"{item.label} ({item.symbol}) {dir_icon} 昨收 {last:.2f}，"
+                f"模型次一交易日情境 {pred_price:.2f} ({pred_pct:+.2f}%)，"
+                f"歷史方向命中 {conf}%"
+            )
+        else:
+            core = (
+                f"{item.label} ({item.symbol}) ◌ 昨收 {last:.2f}，"
+                f"結論：觀望。模型原始情境 {pred_price:.2f} ({pred_pct:+.2f}%) 僅供回測；"
+                f"近期方向命中 {empirical_hit:.1f}%、簡單基準 {baseline_hit:.1f}%"
+                f"（{quality_samples} 筆），尚未證明具有方向優勢"
+            )
         if fund:
             core += f"｜財報訊號：{fund}"
 
@@ -161,6 +185,9 @@ def _predict_one(
             "vol": vol,
             "signal": signal,
             "confidence": conf,
+            "quality_gate": quality_gate,
+            "verified_edge": verified_edge,
+            "public_action": "MODEL_DIRECTION" if verified_edge else "WATCH",
             "line": core,
             **tech_dict,
             **deep_dict,
@@ -199,6 +226,12 @@ def _predict_one(
                     committee_line = str(committee_result.pop("line", "") or "").strip()
                     out.update(committee_result)
                     if committee_line:
+                        if not verified_edge:
+                            committee_line = (
+                                "研究訊號（未通過方向績效閘門，不作買賣結論）："
+                                + committee_line
+                            )
+                            out["committee_verdict_unverified"] = True
                         out["committee_line"] = committee_line
                         out["line"] = f"{out['line']}\n  {committee_line}"
             except Exception as ce:
@@ -253,10 +286,21 @@ def _render_report(items: List[WatchItem], rows: List[Dict[str, Any]], mode: str
         body.extend(["【其他】", *[f"- {x}" for x in other_lines], ""])
 
     ok_rows = [r for r in rows if r.get("ok")]
-    avg_pred = _safe_mean([float(r.get("pred_pct") or 0.0) for r in ok_rows], default=0.0)
-    risk = "偏高" if abs(avg_pred) > 2.2 else "中性"
+    verified_rows = [r for r in ok_rows if r.get("verified_edge")]
+    if verified_rows:
+        avg_pred = _safe_mean(
+            [float(r.get("pred_pct") or 0.0) for r in verified_rows],
+            default=0.0,
+        )
+        risk = "偏高" if abs(avg_pred) > 2.2 else "中性"
+        conclusion = (
+            f"整體已驗證方向：{('多方' if avg_pred >= 0 else '空方')}"
+            f"（平均模型情境 {avg_pred:+.2f}% / 風險 {risk}）"
+        )
+    else:
+        conclusion = "整體結論：觀望；目前沒有標的通過「優於簡單基準」的方向績效閘門。"
     foot = [
-        f"整體偏向：{('多方' if avg_pred >= 0 else '空方')}（平均預估 {avg_pred:+.2f}% / 風險 {risk}）",
-        "註：此為統計模型推估，非投資建議。",
+        conclusion,
+        "註：原始模型數字供績效追蹤與情境分析，非投資建議。",
     ]
     return "\n".join(head + body + foot).strip()

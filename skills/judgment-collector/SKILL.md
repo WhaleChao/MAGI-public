@@ -4,9 +4,9 @@ description: 司法見解收集器 — 根據案由自動收集判決、生成�
 author: CASPER
 created: 2026-02-16
 metadata:
-  version: "2.0"
+  version: "3.0"
   sage: casper
-  updated: "2026-03-12"
+  updated: "2026-07-31"
 ---
 
 # judgment-collector
@@ -19,6 +19,7 @@ metadata:
 |------|------|
 | `help` | 顯示可用指令清單 |
 | `self_test` | 自我測試 |
+| `extract_practice_summary {payload}` | 從單一裁判全文擷取可入庫實務見解（不寫 DB） |
 | `collect {payload}` | 收集判決 + 生成見解摘要 |
 | `daily_crawl` | 每日自動爬取（掃描進行中案件） |
 | `official_api_night_pull` | 司法院 API 夜間批量拉取裁判書 |
@@ -67,34 +68,51 @@ python action.py --task 'backfill_archive_summaries {"max_items":30,"year_min":1
 python action.py --task 'backfill_archive_summaries {"max_items":200}'
 ```
 
-## 摘要規格
+## 實務見解擷取規格
 
-每筆判決的 LLM 摘要必須包含以下結構：
+每筆裁判先由來源綁定的擷取器判定法律爭點，再產生下列結構：
 
 ```
-## 裁判要旨
-（一句話概括本判決的核心法律見解）
+## 法律爭點
+（從裁判標題與開頭判定；「一般」不是有效爭點）
 
-## 事實摘要
-（案件事實經過，100字以內）
+## 實務見解
+（逐字擷取法律原則，不改寫）
 
-## 爭點
-（本案的法律爭點，條列式）
+## 法院涵攝
+（逐字擷取法院如何把原則適用到本案；有內容才列）
 
-## 法院見解
-（法院對各爭點的論述與結論 — 最重要的部分）
+## 裁判結果
+（只取主文中的結果）
 
 ## 適用法條
-（列出本判決適用的法條）
+（只列擷取段落實際出現的法條）
+
+## 摘要方式
+原文擷取；未以模型改寫（僅正規化空白）
 ```
 
 ### 品質控制
 
-- **僅儲存真正 LLM 摘要**：搜尋預覽片段不存入 judgments.json
+- **NVIDIA 只負責選段**：NVIDIA 120B 只能回傳候選段落編號，不得撰寫、改寫或補充引文；MAGI 依編號回取裁判原文後才組版。
+- **不得退回小模型充數**：NVIDIA、JSON 格式、候選編號或品質驗證失敗時不寫入摘要，也不得改由本機小模型生成看似流暢的替代內容。
+- **來源逐字支援**：每一段實務見解都必須能在裁判全文核對；只支援部分段落亦拒絕。
+- **爭點對齊**：舊資料若只標「一般」，從裁判開頭辨識再審、羈押、定應執行刑、傷害、詐欺等實際爭點。
+- **拒絕純法條抄錄**：只有法條文字、沒有涵攝、法理概念或權威裁判訊號者不入庫。
+- **誠實空結果**：找不到可用實務見解時回傳空結果，不以案件事實、主文或預覽片段充數。
+- **批次共用同一閘門**：即時搜尋、七萬筆回填、實務見解庫與書狀引用均使用相同品質判定。
 - **去重**：以 URL 為 key，同一判決不重複存入
-- **幻覺偵測**：若 LLM 摘要的裁判案由與預期不符，自動標記為降級
+- **幻覺偵測**：案由不符、提示詞殘留、推理軌跡、樣板文字或無來源支持均拒絕
 - **降級重試**：降級摘要自動排入重試佇列，分 fast / standard / deep 三級
 - **自我修復**：每次存入時自動清除殘留的降級/垃圾條目
+
+### 單筆品質驗證
+
+```bash
+python action.py --task 'extract_practice_summary {"text_path":"/path/to/judgment.txt","case_reason":"一般","case_number":"114年度聲再字第21號"}'
+```
+
+只有 `success=true` 且 `quality.ok=true` 的摘要才能寫入實務見解庫。
 
 ### judgments.json 欄位
 
@@ -156,8 +174,9 @@ python action.py --task 'backfill_archive_summaries {"max_items":200}'
 
 ## 依賴
 
-- `skills/bridge/inference_gateway.py`（LLM 推理閘道）
-- `skills/insight-refine/action.py`（摘要精煉）
+- `api/domains/judgment_nvidia_summary.py`（NVIDIA 120B 候選編號選擇與 fail-closed 寫回）
+- `api/domains/judgment_summary_quality.py`（原文候選、來源支持與實務價值閘門）
+- `skills/bridge/nim_heavy.py`（NVIDIA NIM API、PII 清理、額度與斷路器）
 - MariaDB（`law_firm_data` 資料庫）
 
 ## 低價值判決過濾（2026-04-02）

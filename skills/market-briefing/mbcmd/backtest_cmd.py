@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 from data.perf_tracker import (
     _DEFAULT_MODEL_PARAMS,
+    _direction_quality,
     _fit_params_from_samples,
     _load_perf,
     _mae_for_params,
@@ -65,6 +66,7 @@ def _cmd_backtest() -> str:
 
     best_mae = 999.0
     best_name = ""
+    quality_by_name: Dict[str, Dict[str, Any]] = {}
     for name, p in candidates:
         mae = _mae_for_params(test, p)
         hits = 0
@@ -76,7 +78,13 @@ def _cmd_backtest() -> str:
             if _sign(pred) == _sign(float(s.get("actual_ret_pct") or 0)):
                 hits += 1
         hr = hits / len(test) * 100 if test else 0
-        lines.append(f"  {name}: MAE={mae:.3f} 命中率={hr:.1f}%")
+        direction_quality = _direction_quality(test, params=p)
+        quality_by_name[name] = direction_quality
+        lines.append(
+            f"  {name}: MAE={mae:.3f} 命中率={hr:.1f}%"
+            f"｜簡單基準={float(direction_quality.get('baseline_hit_rate') or 0.0):.1f}%"
+            f"｜優勢={float(direction_quality.get('edge_pct_point') or 0.0):+.1f} pct"
+        )
         if mae < best_mae:
             best_mae = mae
             best_name = name
@@ -90,7 +98,13 @@ def _cmd_backtest() -> str:
             best_params = p
             break
     current_mae = _mae_for_params(test, params_current)
-    if best_params and best_name != "目前權重" and (current_mae - best_mae) >= 0.05:
+    best_quality = quality_by_name.get(best_name) or {}
+    if (
+        best_params
+        and best_name != "目前權重"
+        and (current_mae - best_mae) >= 0.05
+        and bool(best_quality.get("verified_edge"))
+    ):
         lr = 0.4
         merged = {
             "w_trend": (1 - lr) * float(params_current.get("w_trend", 0.55)) + lr * float(best_params["w_trend"]),
@@ -114,6 +128,8 @@ def _cmd_backtest() -> str:
         lines.append(f"✅ 已自動套用「{best_name}」權重（MAE {current_mae:.3f} → {best_mae:.3f}，lr=0.4 漸進融合）")
     elif best_name == "目前權重":
         lines.append("✅ 目前權重已是最佳，無需調整。")
+    else:
+        lines.append("⏸ 候選權重未證明優於簡單方向基準，本次不自動套用。")
 
     # 時間序列趨勢（近 30 筆的滾動 MAE）
     if len(samples) >= 30:

@@ -36,7 +36,7 @@ _MAGI_ROOT = Path(__file__).resolve().parents[3]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-from api.runtime_paths import config_candidates, get_magi_root_dir
+from api.runtime_paths import config_candidates, get_database_backup_dir
 
 
 def _remote_db_ip_or(fallback: str) -> str:
@@ -48,7 +48,7 @@ def _remote_db_ip_or(fallback: str) -> str:
 
 CONFIG_CANDIDATES = [str(p) for p in config_candidates("config.json")]
 
-DEFAULT_BACKUP_DIR = str(get_magi_root_dir() / "_db_backups" / "law_firm_data")
+DEFAULT_BACKUP_DIR = str(get_database_backup_dir())
 _DOTENV_LOADED = False
 
 
@@ -195,9 +195,23 @@ def _ping_db(profile: DBProfile) -> bool:
 
 
 def _find_bin(name: str) -> str:
-    b = shutil.which(name)
-    if b:
-        return b
+    explicit = os.environ.get(f"MAGI_{name.upper()}_BIN", "").strip()
+    candidates = [
+        explicit,
+        shutil.which(name) or "",
+        f"/opt/homebrew/bin/{name}",
+        f"/usr/local/bin/{name}",
+        f"/opt/local/bin/{name}",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        try:
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.resolve())
+        except OSError:
+            continue
     raise FileNotFoundError(f"missing binary: {name}")
 
 
@@ -210,6 +224,49 @@ def _sha256(path: Path) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _verify_backup_integrity(file_path: Path) -> Dict[str, Any]:
+    meta_path = Path(str(file_path) + ".meta.json")
+    if not meta_path.exists():
+        return {"ok": False, "error": "backup_metadata_missing", "meta_path": str(meta_path)}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"ok": False, "error": f"backup_metadata_invalid:{type(exc).__name__}"}
+    expected = str((meta or {}).get("sha256") or "").strip().lower()
+    if not expected:
+        return {"ok": False, "error": "backup_checksum_missing"}
+    actual = _sha256(file_path)
+    if actual != expected:
+        return {
+            "ok": False,
+            "error": "backup_checksum_mismatch",
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+        }
+    if file_path.suffix == ".gz":
+        try:
+            with gzip.open(file_path, "rb") as source:
+                while source.read(1024 * 1024):
+                    pass
+        except Exception as exc:
+            return {"ok": False, "error": f"backup_gzip_invalid:{type(exc).__name__}"}
+    return {"ok": True, "sha256": actual, "meta_path": str(meta_path)}
 
 
 def _backup_one(profile: DBProfile, target: str, out_dir: Path) -> Dict[str, Any]:
@@ -287,10 +344,7 @@ def _backup_one(profile: DBProfile, target: str, out_dir: Path) -> Dict[str, Any
         "elapsed_sec": elapsed,
         "created_at": datetime.now().isoformat(),
     }
-    (out_path.with_suffix(out_path.suffix + ".meta.json")).write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _atomic_write_json(out_path.with_suffix(out_path.suffix + ".meta.json"), meta)
     return meta
 
 
@@ -481,6 +535,16 @@ def run_restore(
             "path": str(file_path),
         }
 
+    integrity = _verify_backup_integrity(file_path)
+    if not integrity.get("ok"):
+        return {
+            "ok": False,
+            "task": "restore",
+            "error": "backup_integrity_failed",
+            "integrity": integrity,
+            "path": str(file_path),
+        }
+
     profiles = _load_profiles()
     profile = _choose_remote_profile(profiles) if restore_target == "remote" else _choose_local_profile(profiles)
     if not _ping_db(profile):
@@ -498,6 +562,7 @@ def run_restore(
         "task": "restore",
         "target": restore_target,
         "input": str(file_path),
+        "integrity": integrity,
         "pre_backup": None,
         "restore": None,
         "rotation": None,

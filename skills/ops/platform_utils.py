@@ -51,6 +51,7 @@ if IS_WINDOWS:
         """Acquire a lock on file handle *fh*."""
         mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
         # Lock first byte
+        fh.seek(0)
         msvcrt.locking(fh.fileno(), mode, 1)
 
     def file_unlock(fh) -> None:

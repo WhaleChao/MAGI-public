@@ -20,7 +20,7 @@ import shutil
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, Callable
 from dataclasses import dataclass, field
 import pickle
 import base64
@@ -36,9 +36,23 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_json_dir, get_orch_dir
+from api.runtime_paths import (
+    ensure_path_on_sys_path,
+    get_config_path,
+    get_json_dir,
+    get_laf_orchestrator_state_path,
+    get_orch_dir,
+    get_payment_proof_registry_path,
+    get_payment_registry_path,
+)
 from api.case_path_mapper import preferred_case_roots, translate_case_path_to_local
 from skills.engine.legal_web_adapter import format_legal_web_engine_log, resolve_legal_web_engine
+from skills.bridge.shared_utils.court_utils import (
+    COURT_OPTIONS,
+    SIMPLE_COURT_PARENT,
+    normalize_court_name,
+)
+from magi_v3.file_review_receipts import canonical_portal_download_signature
 
 logger = logging.getLogger("FileReviewAutomation")
 
@@ -255,30 +269,31 @@ class CaptchaSolver:
                 try:
                     import ddddocr
                 except ImportError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 257, exc_info=True)
 
             if ddddocr:
                 try:
-                    self.dddd_ocr = ddddocr.DdddOcr(show_ad=False)
-                    logging.getLogger("file_review").info("ddddocr 初始化成功")
+                    from skills.engine.ocr.shared_runtime import get_shared_ddddocr
+
+                    self.dddd_ocr = get_shared_ddddocr(
+                        ddddocr.DdddOcr,
+                        kwargs={"show_ad": False},
+                    )
+                    if self.dddd_ocr:
+                        logging.getLogger("file_review").info("ddddocr 共用引擎初始化成功")
                 except Exception as e:
                     logging.getLogger("file_review").warning("ddddocr 初始化失敗: %s", e)
 
         # Lazy Load RapidOCR (與 ddddocr 並行，作為雙引擎互補)
         if RAPIDOCR_AVAILABLE:
-            global RapidOCR
-            if RapidOCR is None:
-                try:
-                    from rapidocr_onnxruntime import RapidOCR
-                except ImportError:
-                    pass
+            try:
+                from skills.engine.ocr.shared_runtime import get_shared_rapidocr
 
-            if RapidOCR:
-                try:
-                    self.ocr = RapidOCR()
-                    logging.getLogger("file_review").info("RapidOCR (備用) 初始化成功")
-                except Exception as e:
-                    logging.getLogger("file_review").warning("RapidOCR 初始化失敗: %s", e)
+                self.ocr = get_shared_rapidocr()
+                if self.ocr:
+                    logging.getLogger("file_review").info("RapidOCR 共用備用引擎初始化成功")
+            except Exception as e:
+                logging.getLogger("file_review").warning("RapidOCR 初始化失敗: %s", e)
     
     def solve_from_element(self, driver, img_element) -> str:
         """從 Selenium 元素識別驗證碼"""
@@ -309,7 +324,7 @@ class CaptchaSolver:
         try:
             if not img_data:
                 return ""
-            
+
             candidates = []
 
             # 優先使用 ddddocr
@@ -318,6 +333,9 @@ class CaptchaSolver:
                 digits = re.sub(r'[^0-9]', '', result)
                 if digits:
                     candidates.append(digits)
+                    expected_len = max(4, min(8, int(os.environ.get("MAGI_FILE_REVIEW_CAPTCHA_LENGTH", "6") or "6")))
+                    if len(digits) >= expected_len:
+                        return digits[:expected_len]
             
             # 備用：RapidOCR
             if self.ocr:
@@ -410,12 +428,12 @@ class LawyerPortalSSO:
         try:
             print(full_msg, file=sys.stderr)
         except BrokenPipeError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 412, exc_info=True)
         if self.log_callback:
             try:
                 self.log_callback(full_msg)
             except BrokenPipeError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 417, exc_info=True)
 
     @staticmethod
     def _looks_like_driver_bootstrap_error(exc: Exception) -> bool:
@@ -437,6 +455,73 @@ class LawyerPortalSSO:
     def _clear_login_error(self) -> None:
         self.last_error_code = ""
         self.last_error_detail = ""
+
+    def _login_page_not_ready_error(self) -> tuple[str, str]:
+        """Classify a missing login form without exposing page contents.
+
+        The Playwright compatibility driver deliberately retries a timed-out
+        navigation with ``domcontentloaded``.  If both attempts do not produce
+        the login form, the following Selenium-style wait used to surface only
+        an empty ``TimeoutException``.  That erased the distinction between a
+        portal/network timeout and a real CAPTCHA failure.
+        """
+        try:
+            current_url = str(self.driver.current_url or "").strip()
+        except Exception:
+            current_url = ""
+        try:
+            title = str(self.driver.title or "").strip()
+        except Exception:
+            title = ""
+        try:
+            page_source = str(self.driver.page_source or "")
+        except Exception:
+            page_source = ""
+
+        page_lower = page_source.lower()
+        unavailable_markers = (
+            "err_connection",
+            "err_timed_out",
+            "this site can’t be reached",
+            "this site can't be reached",
+            "無法連上這個網站",
+            "無法連線到此頁面",
+            "系統維護",
+            "服務暫停",
+        )
+        portal_host = "portal.ezlawyer.com.tw"
+        looks_unavailable = (
+            not current_url
+            or current_url in {"about:blank", "data:,"}
+            or len(page_source) < 500
+            or any(marker in page_lower for marker in unavailable_markers)
+        )
+        if looks_unavailable:
+            code = "login_page_timeout"
+        elif portal_host not in current_url.lower():
+            code = "login_redirect_unexpected"
+        else:
+            code = "login_contract_changed"
+
+        safe_title = re.sub(r"[\r\n\t]+", " ", title)[:120]
+        detail = (
+            "login form input.form-control not ready within 15s; "
+            f"url={current_url[:240] or '<empty>'}; "
+            f"title={safe_title or '<empty>'}; body_len={len(page_source)}"
+        )
+        return code, detail
+
+    def _restart_driver_after_login_page_failure(self) -> None:
+        """Discard a half-loaded browser session before the next login try."""
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "failed to close login retry driver", exc_info=True
+            )
+        self.driver = None
+        self._cleanup_isolated_profile_dir()
 
     def _detect_chrome_binary(self) -> Optional[str]:
         if sys.platform == "darwin":
@@ -466,7 +551,11 @@ class LawyerPortalSSO:
     def _ensure_isolated_profile_dir(self) -> str:
         if self._isolated_profile_dir and os.path.isdir(self._isolated_profile_dir):
             return self._isolated_profile_dir
-        base_dir = _MAGI_ROOT / ".runtime" / "browser_profiles" / "file_review"
+        base_dir = (
+            Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip())
+            if os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+            else _MAGI_ROOT / ".runtime"
+        ) / "browser_profiles" / "file_review"
         base_dir.mkdir(parents=True, exist_ok=True)
         self._isolated_profile_dir = tempfile.mkdtemp(prefix="chrome_", dir=str(base_dir))
         return self._isolated_profile_dir
@@ -717,9 +806,22 @@ class LawyerPortalSSO:
                 time.sleep(random.uniform(1.5, 3))
                 
                 # 等待頁面載入
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "input.form-control"))
-                )
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "input.form-control"))
+                    )
+                except TimeoutException:
+                    error_code, error_detail = self._login_page_not_ready_error()
+                    self._set_login_error(error_code, error_detail)
+                    self.log(f"⚠️ 登入頁尚未就緒 ({error_code}): {error_detail}")
+                    # A timed-out/half-loaded context commonly remains poisoned.
+                    # Retry from a fresh browser instead of repeating against the
+                    # same page and reporting the final failure as CAPTCHA-related.
+                    self._restart_driver_after_login_page_failure()
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        continue
+                    return False
                 
                 # 找到所有 form-control 輸入框
                 form_inputs = self.driver.find_elements(By.CSS_SELECTOR, "input.form-control")
@@ -810,14 +912,14 @@ class LawyerPortalSSO:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 812, exc_info=True)
                     login_btn.click()
                 else:
                     self.log("  ⚠️ 找不到登入按鈕，嘗試 Enter 提交")
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 819, exc_info=True)
                     captcha_field.send_keys(Keys.RETURN)
 
                 # 等待登入結果
@@ -996,7 +1098,7 @@ class LawyerPortalSSO:
                         try:
                             os.unlink(tmp_path)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 998, exc_info=True)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 679, exc_info=True)
     
@@ -1183,6 +1285,9 @@ class FileReviewInfo:
     message_id: str = ""
     download_deadline: str = ""  # 下載期限
     files: List[str] = field(default_factory=list)
+    allow_text_without_pdf: bool = False
+    _payment_notice_text_only: bool = False
+    source_message_ids: List[str] = field(default_factory=list)
 
     @property
     def case_number(self) -> str:
@@ -1270,6 +1375,27 @@ class FileReviewManager:
         self.last_login_error_detail = ""
         self.last_navigation_error_code = ""
         self.last_navigation_error_detail = ""
+        self.last_download_error_code = ""
+        self.last_download_error_detail = ""
+        self.last_download_error_events: List[Dict[str, str]] = []
+        self._case_identity_mismatch_events: List[Dict[str, Any]] = []
+        # A bounded portal walk may legitimately finish only part of the
+        # currently visible rows.  Keep that state separate from a portal
+        # error: callers must schedule the remaining rows again instead of
+        # reporting a false "complete" result.
+        self.last_download_deferred = False
+        self.last_download_deferred_reason = ""
+        self.last_download_total_count = 0
+        self.last_download_processed_count = 0
+        self.last_download_processed_signature_hashes: set[str] = set()
+        self.last_download_verified_existing_signature_hashes: set[str] = set()
+        # Rows whose last verified court payload belonged to another case are
+        # still probed on every sweep, but the unchanged outer row is not
+        # clicked again during the bounded cooldown.  Keep their anonymous
+        # row receipts separate from completed/existing artifacts so callers
+        # can report an exact, safe upstream deferral instead of a false
+        # incomplete-download failure.
+        self.last_download_mismatch_deferred_signature_hashes: set[str] = set()
         self._last_upload_screenshot = None  # 最後一次上傳成功的截圖路徑
         self.gmail_service = None
         self._last_gmail_error = ""
@@ -1289,9 +1415,14 @@ class FileReviewManager:
         self.allow_party_archive_map = (
             os.environ.get("MAGI_ALLOW_PARTY_ARCHIVE_MAP", "0").strip().lower() in {"1", "true", "yes", "on"}
         )
-        # 預設開啟下載前去重，避免同案卷檔在既有 registry / 案件資料夾已存在時反覆重抓。
+        # 法院可能分批追加同案閱卷資料。整案跳過仍預設關閉；
+        # 按鈕級去重則預設開啟，但會綁定 portal row signature 並在有限時間後
+        # 自動重探。因此列資料更新可立即下載，未變更列不會每幾分鐘重點。
         self.enable_case_level_download_skip = (
-            os.environ.get("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "1").strip().lower() in {"1", "true", "yes", "on"}
+            os.environ.get("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "0").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        self.enable_button_level_download_skip = (
+            os.environ.get("MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP", "1").strip().lower() in {"1", "true", "yes", "on"}
         )
         self.enable_preclick_smart_skip = (
             os.environ.get("MAGI_ENABLE_PRECLICK_SMART_SKIP", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -1310,6 +1441,7 @@ class FileReviewManager:
         self.dismissed_payments = self._load_dismissed_payments()
 
         self.ready_to_download = []  # 待下載清單
+        self.pending_payment_notices = []  # Gmail 繳費信線索，需進入口下載 PDF
 
         # MD5 記錄
         self.md5_records_file = os.path.join(self.download_folder, "md5_records.json")
@@ -1324,9 +1456,19 @@ class FileReviewManager:
         # 用 rowid 記錄每個按鈕，避免同 button 被重複點擊；新 button 則一定下載
         self.clicked_rowids_file = os.path.join(self.download_folder, "clicked_rowids.json")
         self._clicked_rowids: dict = self._load_clicked_rowids()
+        # A portal row can occasionally return a completed PDF belonging to a
+        # different case.  Keep a short, row-scoped cooldown after that
+        # fail-closed quarantine so the same bad response is not downloaded on
+        # every sweep.  This is deliberately not a permanent dedup: a changed
+        # row signature or expiry is retried, so later legitimate uploads are
+        # never marked complete or silently discarded.
+        self.case_mismatch_suppressions_file = os.path.join(
+            self.download_folder, ".case_mismatch_suppressions.json"
+        )
+        self._case_mismatch_suppressions: dict = self._load_case_mismatch_suppressions()
 
         # 已處理的「待繳費」項目（避免重複點擊/下載同一張繳費單）
-        self.payment_registry_file = os.path.join(self.download_folder, "payment_registry.json")
+        self.payment_registry_file = str(get_payment_registry_path(self.download_folder))
         self.payment_registry = self._load_payment_registry()
 
         # 聲請紀錄（追蹤每案是否已首次聲請 → 決定是否需上傳收文章委任狀）
@@ -1353,16 +1495,20 @@ class FileReviewManager:
             try:
                 sso.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1355, exc_info=True)
             self.sso = None
             self.driver = None
             return
         driver = getattr(self, "driver", None)
         if driver is not None:
+            quit_method = getattr(driver, "quit", None)
+            if not callable(quit_method):
+                self.driver = None
+                return
             try:
-                driver.quit()
+                quit_method()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1364, exc_info=True)
             self.driver = None
 
     def __del__(self):
@@ -1682,6 +1828,31 @@ class FileReviewManager:
     # applies to legacy/non-payment keys.  Payment slips are separately deduped
     # by payment_registry so an old PDF is never re-sent just because TTL passed.
     PAYMENT_NOTIFY_COOLDOWN_HOURS = 720
+    # A party name is not a stable payment identity.  The same person can have
+    # several cases and receive a new payment slip months later.  Historical
+    # party-only dismissals are therefore a short-lived convenience; an
+    # explicit case-number dismissal remains permanent.
+    PAYMENT_PARTY_DISMISS_TTL_HOURS = 72
+
+    def _expand_web_payment_notice_key(self, key: object) -> set:
+        """Expand historical raw-case notification keys to normalized case keys."""
+        raw_key = str(key or "").strip()
+        if not raw_key.startswith("web_payment:"):
+            return set()
+        out = {raw_key}
+        if (
+            raw_key.startswith("web_payment:case:")
+            or raw_key.startswith("web_payment:payid:")
+            or raw_key.startswith("web_payment:rowid:")
+        ):
+            return out
+        raw_case = raw_key[len("web_payment:"):].strip()
+        if not raw_case:
+            return out
+        norm = self._normalize_case_keyword_loose(raw_case)
+        if norm:
+            out.add(f"web_payment:case:{norm}")
+        return out
 
     def _load_notified_cases(self) -> set:
         """載入已通知的案件記錄（含 TTL 清理，超過冷卻時間自動移除以便重新通知）"""
@@ -1691,14 +1862,21 @@ class FileReviewManager:
                     data = json.load(f)
                 # 相容舊格式 (list) — 全數保留但下次存檔會轉為 dict
                 if isinstance(data, list):
-                    return set(data)
+                    expanded = set()
+                    for key in data:
+                        expanded.update(self._expand_web_payment_notice_key(key))
+                    return expanded
                 # 新格式 (dict: {key: ISO_timestamp}) — 清除超過冷卻時間的
                 if isinstance(data, dict):
                     cutoff = (datetime.now() - timedelta(hours=self.PAYMENT_NOTIFY_COOLDOWN_HOURS)).isoformat()
-                    return {
+                    current = {
                         k for k, v in data.items()
                         if str(k).startswith("web_payment:") or str(v) >= cutoff
                     }
+                    expanded = set()
+                    for key in current:
+                        expanded.update(self._expand_web_payment_notice_key(key))
+                    return expanded
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1330, exc_info=True)
         return set()
@@ -1794,8 +1972,10 @@ class FileReviewManager:
 
     def dismiss_payment(self, case_keyword: str, reason: str = "") -> dict:
         """
-        手動標記案件繳費通知為已處理（永久跳過）。
-        case_keyword: 案號關鍵字（模糊比對，例如 '114原金訴4' 或 '張裕和'）
+        手動標記繳費通知為已處理。
+
+        案號級標記永久有效；只提供當事人姓名時，僅作短期安全網，
+        避免同名當事人的新案件在數月後仍被錯誤靜音。
         """
         norm = self._normalize_case_keyword_loose(case_keyword) if hasattr(self, '_normalize_case_keyword_loose') else case_keyword.strip()
         # 找出所有匹配的 notified_cases key
@@ -1845,39 +2025,99 @@ class FileReviewManager:
             for key in removed:
                 remove("payment_dismissed", key)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1847, exc_info=True)
         return {"success": True, "keyword": case_keyword, "removed_keys": removed}
 
     def list_dismissed_payments(self) -> dict:
         """列出所有手動跳過的繳費通知"""
         return {"dismissed": self.dismissed_payments}
 
-    def _is_payment_dismissed(self, notify_key: str, notify_key_case: str = "") -> bool:
-        """檢查該案件是否已被手動標記為已繳費（in-memory + DB fallback）"""
-        for key in (notify_key, notify_key_case):
-            if not key:
-                continue
-            # 精確匹配
-            if key in self.dismissed_payments:
+    @classmethod
+    def _payment_dismissal_case_identity(cls, key: object) -> str:
+        """Extract a normalized court-case identity from a notice key.
+
+        Party-only legacy keys intentionally return an empty identity so they
+        cannot silence a different, later case for the same person.
+        """
+        raw = str(key or "").strip()
+        if raw.startswith("web_payment:case:"):
+            case_part = raw[len("web_payment:case:") :].split(":", 1)[0]
+        elif raw.startswith("web_payment:") and not raw.startswith(
+            (
+                "web_payment:dismissed:",
+                "web_payment:payid:",
+                "web_payment:rowid:",
+                "web_payment:fallback:",
+            )
+        ):
+            case_part = raw[len("web_payment:") :].split(":", 1)[0]
+        else:
+            return ""
+        normalized = cls._normalize_case_keyword_loose(case_part)
+        return normalized if re.search(r"\d", normalized) else ""
+
+    def _party_dismissal_is_current(self, metadata: object, party: str) -> bool:
+        if not party or not isinstance(metadata, dict):
+            return False
+        if str(metadata.get("keyword") or "").strip() != party:
+            return False
+        dismissed_at = str(metadata.get("dismissed_at") or "").strip()
+        if not dismissed_at:
+            return False
+        try:
+            stamp = datetime.fromisoformat(dismissed_at.replace("Z", "+00:00"))
+            now = datetime.now(stamp.tzinfo) if stamp.tzinfo else datetime.now()
+            age_hours = (now - stamp).total_seconds() / 3600
+            return 0 <= age_hours <= float(self.PAYMENT_PARTY_DISMISS_TTL_HOURS)
+        except Exception:
+            return False
+
+    def _is_payment_dismissed(
+        self,
+        notify_key: str,
+        notify_key_case: str = "",
+        *,
+        party: str = "",
+    ) -> bool:
+        """Check case-scoped dismissals without leaking them across cases."""
+        notice_keys = tuple(
+            key
+            for key in (
+                str(notify_key or "").strip(),
+                str(notify_key_case or "").strip(),
+            )
+            if key
+        )
+        notice_case_ids = {
+            identity
+            for identity in (
+                self._payment_dismissal_case_identity(key) for key in notice_keys
+            )
+            if identity
+        }
+        for dismissed_key, metadata in self.dismissed_payments.items():
+            if dismissed_key in notice_keys:
                 return True
-            # 模糊比對：dismissed 的 keyword 是否出現在 notify_key 中
-            for dk, dv in self.dismissed_payments.items():
-                kw = dv.get("keyword", "") if isinstance(dv, dict) else ""
-                if kw and kw in key:
-                    return True
-        # DB fallback: 如果 in-memory 沒命中，再查一次 DB（可能其他進程寫入）
+            dismissed_case_id = self._payment_dismissal_case_identity(dismissed_key)
+            if dismissed_case_id and dismissed_case_id in notice_case_ids:
+                return True
+            if not dismissed_case_id and self._party_dismissal_is_current(metadata, party):
+                return True
+
+        # DB fallback is exact-key only. Fuzzy person matching would recreate
+        # the cross-case suppression bug.
         try:
             from skills.ops.dedup_db import is_done
-            for key in (notify_key, notify_key_case):
+            for key in notice_keys:
                 if key and is_done("payment_dismissed", key):
                     return True
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1874, exc_info=True)
         return False
 
     def _is_proof_uploaded_for_case(self, row_json: dict) -> bool:
         """檢查 payment_proof_registry.json 是否已有該案件的繳費憑證上傳記錄。"""
-        proof_registry_path = os.path.join(self.download_folder, "payment_proof_registry.json")
+        proof_registry_path = str(get_payment_proof_registry_path(self.download_folder))
         if not os.path.exists(proof_registry_path):
             return False
         try:
@@ -1920,6 +2160,7 @@ class FileReviewManager:
         - Chrome 自動加上的 ` (N)` 後綴
         - OLA 在 OCR 後加的 epoch timestamp `_OCR_<10digit_epoch>` → `_OCR`
           （每次點線上下載按鈕，OLA 給的檔名 epoch 都不同，但實際是同一份卷宗 → 必須 normalize）
+        - Chrome/Playwright 對一般卷宗加上的 `_<10-13digit_epoch>`
 
         例:
         - `113_偵_002746_DOC_001_OCR (3).pdf` → `113_偵_002746_DOC_001_OCR.pdf`
@@ -1928,9 +2169,52 @@ class FileReviewManager:
         stem, ext = os.path.splitext(filename)
         # 1. 移除 OLA 加的 epoch timestamp suffix `_<10digit>` after `_OCR`
         stem = re.sub(r'_OCR_\d{10,13}$', '_OCR', stem)
+        stem = re.sub(r'_\d{10,13}$', '', stem)
         # 2. 移除 Chrome 重複後綴 ` (N)`
         cleaned = re.sub(r'\s*\(\d+\)$', '', stem)
         return cleaned + ext
+
+    @classmethod
+    def _review_filename_case_identity(cls, filename: str) -> Tuple[str, str, str]:
+        """Return the court-case identity encoded by an OLA review filename."""
+        base = cls._strip_chrome_suffix(os.path.basename(str(filename or "")))
+        year, case_type, number = cls._parse_court_case_no(base)
+        return cls._norm(year), cls._norm(case_type), cls._norm(number)
+
+    @classmethod
+    def _review_case_meta_identities(cls, case_meta: Optional[Dict[str, Any]]) -> List[Tuple[str, str, str]]:
+        identities: List[Tuple[str, str, str]] = []
+        meta = case_meta if isinstance(case_meta, dict) else {}
+        for value in (meta.get("showyyidno"), meta.get("case_number"), meta.get("yyidno")):
+            year, case_type, number = cls._parse_court_case_no(str(value or ""))
+            identity = (cls._norm(year), cls._norm(case_type), cls._norm(number))
+            if all(identity) and identity not in identities:
+                identities.append(identity)
+        return identities
+
+    @classmethod
+    def _review_artifact_case_binding(
+        cls,
+        path: str,
+        case_meta: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Fail closed when a server filename names a different court case."""
+        filename_identity = cls._review_filename_case_identity(path)
+        expected = cls._review_case_meta_identities(case_meta)
+        if not all(filename_identity):
+            status = "unverifiable_filename"
+        elif not expected:
+            status = "unverifiable_case_meta"
+        elif filename_identity in expected:
+            status = "verified"
+        else:
+            status = "mismatch"
+        return {
+            "status": status,
+            "filename": os.path.basename(str(path or "")),
+            "filename_identity": list(filename_identity),
+            "expected_identities": [list(item) for item in expected],
+        }
 
     def _load_download_registry(self) -> dict:
         """載入已下載檔案 registry"""
@@ -1960,25 +2244,167 @@ class FileReviewManager:
         except Exception as e:
             self.log(f"  ⚠️ 儲存 clicked_rowids 失敗: {e}")
 
-    def _is_rowid_clicked(self, rowid: str) -> bool:
-        """檢查某個 OLA rowid 是否已被點擊過下載按鈕。"""
+    def _load_case_mismatch_suppressions(self) -> dict:
+        try:
+            if os.path.exists(self.case_mismatch_suppressions_file):
+                with open(self.case_mismatch_suppressions_file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                if isinstance(data, dict):
+                    entries = data.get("entries", data)
+                    return entries if isinstance(entries, dict) else {}
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1928, exc_info=True)
+        return {}
+
+    def _save_case_mismatch_suppressions(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.case_mismatch_suppressions_file), exist_ok=True)
+            with open(self.case_mismatch_suppressions_file, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "entries": self._case_mismatch_suppressions}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log(f"  ⚠️ 儲存跨案下載抑制紀錄失敗: {e}")
+
+    @classmethod
+    def _case_mismatch_suppression_key(cls, case_meta: Optional[Dict[str, Any]]) -> str:
+        meta = case_meta if isinstance(case_meta, dict) else {}
+        rowid = str(meta.get("_portal_rowid") or "").strip()
+        if rowid:
+            return f"rowid:{rowid}"
+        identities = cls._review_case_meta_identities(meta)
+        if identities:
+            return "case:" + ":".join(identities[0])
+        return ""
+
+    @staticmethod
+    def _case_mismatch_row_signature(row_json: Optional[Dict[str, Any]]) -> str:
+        row = row_json if isinstance(row_json, dict) else {}
+        # These fields are the portal's stable row/update indicators.  Do not
+        # hash the entire payload: volatile display fields would defeat the
+        # cooldown without proving that a new attachment was published.
+        fields = (
+            "rowid", "no", "yyidno", "showyyidno", "c60yyidno", "isdown",
+            "downdt", "upddt", "updated_at", "updtime", "limitdt", "paylimitdt",
+        )
+        return "|".join(f"{name}={str(row.get(name) or '').strip()}" for name in fields)
+
+    def _is_case_mismatch_suppressed(
+        self,
+        case_meta: Optional[Dict[str, Any]],
+        row_json: Optional[Dict[str, Any]],
+    ) -> bool:
+        key = self._case_mismatch_suppression_key(case_meta)
+        if not key:
+            return False
+        entry = self._case_mismatch_suppressions.get(key)
+        if not isinstance(entry, dict):
+            return False
+        signature = self._case_mismatch_row_signature(row_json)
+        if signature and signature != str(entry.get("row_signature") or ""):
+            self._case_mismatch_suppressions.pop(key, None)
+            self._save_case_mismatch_suppressions()
+            return False
+        try:
+            until = datetime.fromisoformat(str(entry.get("suppress_until") or ""))
+        except Exception:
+            until = None
+        if until is None or until <= datetime.now():
+            self._case_mismatch_suppressions.pop(key, None)
+            self._save_case_mismatch_suppressions()
+            return False
+        return True
+
+    def _remember_case_mismatch_suppression(
+        self,
+        case_meta: Optional[Dict[str, Any]],
+        binding: Optional[Dict[str, Any]],
+    ) -> None:
+        # Without an authoritative rowid we cannot safely suppress a whole
+        # case: another row for that case may carry a genuine new attachment.
+        if not str((case_meta or {}).get("_portal_rowid") or "").strip():
+            return
+        key = self._case_mismatch_suppression_key(case_meta)
+        if not key:
+            return
+        # The outer list is still probed every scheduled run and any stable-row
+        # signature change invalidates this entry immediately.  A full-day
+        # fallback therefore avoids repeatedly downloading a known wrong-case
+        # payload without delaying a genuinely updated court row.
+        minutes = max(1, int(os.environ.get("MAGI_CASE_MISMATCH_RETRY_MINUTES", "1440") or "1440"))
+        meta = case_meta if isinstance(case_meta, dict) else {}
+        self._case_mismatch_suppressions[key] = {
+            "row_signature": self._case_mismatch_row_signature(meta.get("_portal_row_json")),
+            "expected_identities": (binding or {}).get("expected_identities") or [],
+            "filename_identity": (binding or {}).get("filename_identity") or [],
+            "recorded_at": datetime.now().isoformat(),
+            "suppress_until": (datetime.now() + timedelta(minutes=minutes)).isoformat(),
+        }
+        self._save_case_mismatch_suppressions()
+
+    def _clear_case_mismatch_suppression(self, case_meta: Optional[Dict[str, Any]]) -> None:
+        key = self._case_mismatch_suppression_key(case_meta)
+        if key and self._case_mismatch_suppressions.pop(key, None) is not None:
+            self._save_case_mismatch_suppressions()
+
+    def _is_rowid_clicked(
+        self,
+        rowid: str,
+        row_json: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """檢查 OLA rowid 是否仍在有限去重期內。
+
+        不使用永久跳過：portal 列的穩定簽章一有變更就立即失效，
+        即使法院沒有更新簽章，TTL 屆滿也會重探。
+        """
         rid = str(rowid or "").strip()
         if not rid:
             return False
-        return rid in self._clicked_rowids
+        entry = self._clicked_rowids.get(rid)
+        if not isinstance(entry, dict):
+            return False
+
+        current_signature = self._case_mismatch_row_signature(row_json)
+        stored_signature = str(entry.get("row_signature") or "")
+        if current_signature and stored_signature and current_signature != stored_signature:
+            self._clicked_rowids.pop(rid, None)
+            self._save_clicked_rowids()
+            return False
+
+        try:
+            clicked_at = datetime.fromisoformat(
+                str(entry.get("last_clicked") or entry.get("first_clicked") or "")
+            )
+        except Exception:
+            clicked_at = None
+        try:
+            minutes = max(
+                1,
+                int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "1440") or "1440"),
+            )
+        except Exception:
+            minutes = 1440
+        if clicked_at is None or clicked_at + timedelta(minutes=minutes) <= datetime.now():
+            self._clicked_rowids.pop(rid, None)
+            self._save_clicked_rowids()
+            return False
+        return True
 
     def _register_rowid_clicked(self, rowid: str, case_info: dict = None):
         """登錄已點擊下載按鈕的 rowid。"""
         rid = str(rowid or "").strip()
         if not rid:
             return
-        if rid not in self._clicked_rowids:
-            self._clicked_rowids[rid] = {
-                "first_clicked": datetime.now().isoformat(),
-                "yyidno": (case_info or {}).get("case_number") or (case_info or {}).get("yyidno") or "",
-                "party": (case_info or {}).get("party") or (case_info or {}).get("client_name") or "",
-            }
-            self._save_clicked_rowids()
+        now = datetime.now().isoformat()
+        previous = self._clicked_rowids.get(rid)
+        previous = previous if isinstance(previous, dict) else {}
+        meta = case_info if isinstance(case_info, dict) else {}
+        self._clicked_rowids[rid] = {
+            "first_clicked": str(previous.get("first_clicked") or now),
+            "last_clicked": now,
+            "row_signature": self._case_mismatch_row_signature(meta.get("_portal_row_json")),
+            "yyidno": meta.get("case_number") or meta.get("yyidno") or previous.get("yyidno") or "",
+            "party": meta.get("party") or meta.get("client_name") or previous.get("party") or "",
+        }
+        self._save_clicked_rowids()
 
     def _load_manual_archive_map(self) -> dict:
         """載入手動歸檔映射"""
@@ -2072,6 +2498,87 @@ class FileReviewManager:
                 json.dump(self._download_registry, f, ensure_ascii=False, indent=2)
         except Exception as e:
             self.log(f"⚠️ 無法儲存下載 registry: {e}")
+
+    def _download_resume_state_path(self) -> str:
+        """Return the local, privacy-preserving cursor for a bounded portal sweep."""
+        return os.path.join(
+            self.download_folder or ".",
+            ".file_review_download_resume.json",
+        )
+
+    def _load_download_resume_state(self) -> dict:
+        path = self._download_resume_state_path()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                state = json.load(f) or {}
+            if not isinstance(state, dict):
+                raise ValueError("download_resume_state_not_dict")
+        except Exception:
+            state = {}
+        state.setdefault("version", 1)
+        if not isinstance(state.get("cases"), dict):
+            state["cases"] = {}
+        return state
+
+    def _save_download_resume_state(self, state: dict) -> None:
+        """Atomically persist only hashes; never write party/case text to the cursor."""
+        path = self._download_resume_state_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state or {}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            self.log(f"  ⚠️ 無法儲存閱卷續跑進度: {e}")
+
+    @staticmethod
+    def _download_resume_hash(value: str) -> str:
+        return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+    def _download_resume_completed_buttons(self, resume_key: str) -> set:
+        if not str(resume_key or "").strip():
+            return set()
+        state = self._load_download_resume_state()
+        scope = state.get("cases", {}).get(
+            self._download_resume_hash(resume_key), {}
+        )
+        values = scope.get("completed_button_hashes", []) if isinstance(scope, dict) else []
+        return {
+            str(value)
+            for value in values
+            if isinstance(value, str) and len(value) == 64
+        }
+
+    def _mark_download_resume_button_completed(
+        self,
+        resume_key: str,
+        button_hash: str,
+    ) -> None:
+        if not str(resume_key or "").strip() or len(str(button_hash or "")) != 64:
+            return
+        state = self._load_download_resume_state()
+        cases = state.setdefault("cases", {})
+        scope_hash = self._download_resume_hash(resume_key)
+        scope = cases.setdefault(scope_hash, {})
+        completed = {
+            str(value)
+            for value in scope.get("completed_button_hashes", [])
+            if isinstance(value, str) and len(value) == 64
+        }
+        completed.add(str(button_hash))
+        scope["completed_button_hashes"] = sorted(completed)
+        scope["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._save_download_resume_state(state)
+
+    def _clear_download_resume_state(self) -> None:
+        """Clear a completed sweep so the next hourly run can detect additions."""
+        path = self._download_resume_state_path()
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            self.log(f"  ⚠️ 無法清除閱卷續跑進度: {e}")
 
     def _load_apply_registry(self) -> dict:
         """載入聲請紀錄 registry（追蹤每案聲請次數）"""
@@ -2202,17 +2709,26 @@ class FileReviewManager:
             archived = self._find_existing_payment_slip_files(row_json)
             if archived:
                 self._mark_payment_processed(row_json, files=archived)
-                self._seed_payment_notification_dedup(
-                    row_json,
-                    reason="existing_archived_payment_slip",
-                )
                 return True
             return False
+
+        if str(entry.get("status") or "").strip() == "invalid_download_cooldown":
+            try:
+                cooldown_hours = float(os.environ.get("MAGI_EEFILE_PAYMENT_ERROR_COOLDOWN_HOURS", "6") or "6")
+            except Exception:
+                cooldown_hours = 6.0
+            processed_at = str(entry.get("processed_at") or "").strip()
+            try:
+                dt = datetime.fromisoformat(processed_at)
+                if cooldown_hours > 0 and (datetime.now() - dt).total_seconds() < cooldown_hours * 3600:
+                    return True
+            except Exception:
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2222, exc_info=True)
 
         # 僅有 key 不足以判定已處理：必須至少有可用檔案紀錄且檔案仍可定位。
         path_hints = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
         for p in path_hints:
-            if os.path.isfile(p):
+            if os.path.isfile(p) and self._is_valid_payment_download_artifact(p):
                 return True
 
         name_hints = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
@@ -2220,10 +2736,6 @@ class FileReviewManager:
             archived = self._find_existing_payment_slip_files(row_json)
             if archived:
                 self._mark_payment_processed(row_json, files=archived)
-                self._seed_payment_notification_dedup(
-                    row_json,
-                    reason="existing_archived_payment_slip",
-                )
                 return True
             return False
 
@@ -2233,10 +2745,6 @@ class FileReviewManager:
         archived = self._find_existing_payment_slip_files(row_json)
         if archived:
             self._mark_payment_processed(row_json, files=archived)
-            self._seed_payment_notification_dedup(
-                row_json,
-                reason="existing_archived_payment_slip",
-            )
             return True
         return False
 
@@ -2300,9 +2808,106 @@ class FileReviewManager:
                     "party": str((row_json or {}).get("clnm") or (case_info or {}).get("party") or ""),
                 })
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2315, exc_info=True)
         if changed:
             self._save_notified_cases()
+
+    def _payment_notification_already_seen(self, row_json: dict = None, case_info: dict = None) -> bool:
+        """Return True when this payment row already has a sent/seeded notice key."""
+        keys = self._payment_case_notify_keys(row_json, case_info)
+        if not keys:
+            return False
+        if any(key in self.notified_cases for key in keys):
+            return True
+        try:
+            from skills.ops.dedup_db import is_done as _dd_is_done
+            return any(_dd_is_done("filereview_payment", key) for key in keys)
+        except Exception:
+            return False
+
+    def _payment_pdf_delivery_state_path(self) -> str:
+        """Return the shared, content-addressed payment delivery registry."""
+        return os.path.join(self.download_folder or ".", ".payment_pdf_delivery_state.json")
+
+    def _load_payment_pdf_delivery_state(self) -> dict:
+        path = self._payment_pdf_delivery_state_path()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                state = json.load(f) or {}
+            if not isinstance(state, dict):
+                raise ValueError("payment_delivery_state_not_dict")
+        except Exception:
+            state = {}
+        state.setdefault("version", 1)
+        if not isinstance(state.get("sent_files"), dict):
+            state["sent_files"] = {}
+        if not isinstance(state.get("pending_files"), dict):
+            state["pending_files"] = {}
+        return state
+
+    def _save_payment_pdf_delivery_state(self, state: dict) -> None:
+        path = self._payment_pdf_delivery_state_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state or {}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            self.log(f"  ⚠️ 無法儲存繳費單送達狀態: {e}")
+
+    @staticmethod
+    def _payment_pdf_delivery_key(path: str) -> str:
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return "sha256:" + digest.hexdigest()
+        except Exception:
+            try:
+                st = os.stat(path)
+                return f"path:{os.path.realpath(path)}:{int(st.st_size)}:{int(st.st_mtime)}"
+            except Exception:
+                return f"path:{os.path.realpath(path or '')}"
+
+    def _payment_pdf_already_delivered(self, path: str) -> bool:
+        key = self._payment_pdf_delivery_key(path)
+        state = self._load_payment_pdf_delivery_state()
+        return bool(key and key in (state.get("sent_files") or {}))
+
+    def _record_payment_pdf_delivery(self, path: str, *, sent: bool, caption: str = "", error: str = "") -> None:
+        key = self._payment_pdf_delivery_key(path)
+        if not key:
+            return
+        state = self._load_payment_pdf_delivery_state()
+        sent_files = state.setdefault("sent_files", {})
+        pending_files = state.setdefault("pending_files", {})
+        now_iso = datetime.now().isoformat()
+        record = {
+            "path": os.path.realpath(path),
+            "name": os.path.basename(path),
+            "caption": caption,
+            "size": os.path.getsize(path) if os.path.exists(path) else 0,
+        }
+        if sent:
+            record["sent_at"] = now_iso
+            sent_files[key] = record
+            pending_files.pop(key, None)
+        else:
+            previous = pending_files.get(key) if isinstance(pending_files, dict) else {}
+            try:
+                attempts = int((previous or {}).get("attempts") or 0)
+            except Exception:
+                attempts = 0
+            record.update({
+                "last_attempt_at": now_iso,
+                "attempts": attempts + 1,
+                "last_error": str(error or "payment_pdf_delivery_failed")[:240],
+            })
+            pending_files[key] = record
+        state["updated_at"] = now_iso
+        self._save_payment_pdf_delivery_state(state)
 
     def _mark_payment_processed(self, row_json: dict, files: Optional[List[str]] = None, case_info: Optional[dict] = None):
         key = self._payment_registry_key(row_json)
@@ -2350,6 +2955,33 @@ class FileReviewManager:
             "case_number": case_number,
             "files": file_names,
             "file_paths": file_paths,
+        }
+        self._save_payment_registry()
+
+    def _mark_payment_download_error(self, row_json: dict, reason: str, files: Optional[List[str]] = None, case_info: Optional[dict] = None):
+        key = self._payment_registry_key(row_json)
+        if not key:
+            return
+        file_paths = []
+        file_names = []
+        for x in (files or []):
+            xp = str(x or "").strip()
+            if not xp:
+                continue
+            ap = os.path.realpath(xp)
+            file_paths.append(ap)
+            file_names.append(os.path.basename(ap))
+        self.payment_registry[key] = {
+            "processed_at": datetime.now().isoformat(),
+            "status": "invalid_download_cooldown",
+            "reason": reason,
+            "yyidno": str((row_json or {}).get("yyidno") or (row_json or {}).get("showyyidno") or (case_info or {}).get("case_number") or ""),
+            "p_payid": str((row_json or {}).get("p_payid") or ""),
+            "rowid": str((row_json or {}).get("rowid") or ""),
+            "party": str((row_json or {}).get("clnm") or (case_info or {}).get("party") or ""),
+            "case_number": str((row_json or {}).get("yyidno") or (case_info or {}).get("case_number") or ""),
+            "files": list(dict.fromkeys(file_names)),
+            "file_paths": list(dict.fromkeys(file_paths)),
         }
         self._save_payment_registry()
 
@@ -2505,7 +3137,7 @@ class FileReviewManager:
         # 優先使用 file_paths（完整路徑），若檔案仍存在就直接回傳
         direct_paths = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
         if direct_paths:
-            existing = [p for p in direct_paths if os.path.isfile(p)]
+            existing = [p for p in direct_paths if os.path.isfile(p) and self._is_valid_payment_download_artifact(p)]
             if existing:
                 return existing
 
@@ -2587,8 +3219,6 @@ class FileReviewManager:
         檢查該待繳費案件是否已繳費（繳費憑證已上傳或狀態已更新）。
 
         判斷依據（任一命中即視為已繳費）：
-        - paystatus == '1'  → OLA 列表標記已繳
-        - payment == 'Y'    → OLA 繳費旗標已設
         - statusnm / result 文字包含「已繳」「繳費完成」「收據」「繳訖」
         - 不再是 pending_payment（statusnm 無「待繳費」且 paystatus != '2'）
           且 status 已推進到後續階段 (status >= '4')
@@ -2610,10 +3240,11 @@ class FileReviewManager:
         combined_text = f"{statusnm} {result_text}"
 
         paid = False
-        # p_status 已從 paid 條件移除（它代表「繳費單已產生」，不是「已繳費」）
-        if paystatus == "1" or payment == "Y":
-            paid = True
-        elif any(kw in combined_text for kw in ("已繳", "繳費完成", "收據", "繳訖")):
+        # paystatus/payment/p_status describe the portal action lifecycle and
+        # have changed meaning across OLA revisions. They are not evidence of
+        # an uploaded proof. Only explicit terminal text (or a clearly advanced
+        # non-payment state) may suppress a payment notification.
+        if any(kw in combined_text for kw in ("已繳", "繳費完成", "收據", "繳訖")):
             paid = True
         elif (paystatus not in ("", "2") and status_code >= "4"
               and "待繳費" not in combined_text):
@@ -2645,41 +3276,89 @@ class FileReviewManager:
 
         payment_notify_keys = self._payment_case_notify_keys(row_json, case_info)
 
-        # 已處理過且本輪沒有新檔案：只補齊 dedup 記錄，不重送舊 PDF。
-        # 這避免 30 天 TTL 到期後，把 registry 內的舊繳費單又送一次。
+        # 「已下載」不等於「已通知」。舊逻輯在 registry 找到 PDF 就直接
+        # 種入通知 dedup，會讓實際從未送達的繳費單永久靜音。現改由檔案 SHA
+        # 送達回執作為唯一附件去重依據；沒有回執就補送既有 PDF。
         if file_paths is None and self._is_payment_processed(row_json):
-            self._seed_payment_notification_dedup(
-                row_json,
-                case_info,
-                reason="skip_existing_payment_registry",
-            )
-            self.log(f"  ℹ️ 繳費單已在 registry 處理過，跳過舊 PDF 補發: {notify_key_case or notify_key}")
-            return True
-
-        # 手動標記已繳費 → 永久跳過
-        if self._is_payment_dismissed(notify_key, notify_key_case):
-            self.log(f"  ℹ️ 案件已手動標記為已繳費，跳過通知: {notify_key}")
-            return True
-
-        # MAGI 已上傳繳費憑證（payment_proof_registry）→ 跳過
-        if self._is_proof_uploaded_for_case(row_json):
-            self.log(f"  ℹ️ MAGI 已上傳繳費憑證，跳過通知: {notify_key}")
-            return True
-
-        # 同一 session 已通知 → 跳過（兩個 key 任一命中即跳過）
-        if notify_key in self.notified_cases:
-            return True
-        if notify_key_case and notify_key_case in self.notified_cases:
-            return True
-        if any(key in self.notified_cases for key in payment_notify_keys):
-            return True
-        try:
-            from skills.ops.dedup_db import is_done as _dd_is_done
-            if any(_dd_is_done("filereview_payment", key) for key in payment_notify_keys):
-                self._seed_payment_notification_dedup(row_json, case_info, reason="dedup_db_seen")
+            existing = self._resolve_payment_registry_files(row_json)
+            if not existing:
+                existing = self._find_existing_payment_slip_files(row_json)
+            valid_existing = [
+                p for p in (existing or [])
+                if os.path.exists(p) and self._is_valid_payment_download_artifact(p)
+            ]
+            undelivered = [p for p in valid_existing if not self._payment_pdf_already_delivered(p)]
+            if undelivered:
+                file_paths = undelivered
+                self.log(
+                    f"  ℹ️ 繳費單已下載但無送達回執，本輪自動補送 {len(undelivered)} 份: "
+                    f"{notify_key_case or notify_key}"
+                )
+            elif valid_existing:
+                self._seed_payment_notification_dedup(
+                    row_json,
+                    case_info,
+                    reason="verified_pdf_delivery_receipt",
+                )
+                self.log(f"  ℹ️ 繳費單 PDF 已有送達回執，不重複發送: {notify_key_case or notify_key}")
                 return True
-        except Exception:
-            pass
+            else:
+                # invalid_download_cooldown 等非完成狀態不得來源不明地標記通知。
+                self.log(f"  ℹ️ registry 尚無可交付的繳費單 PDF，保留待續跑: {notify_key_case or notify_key}")
+                return False
+
+        explicit_payment_pdf = False
+        if file_paths is not None:
+            valid_file_paths = [
+                p for p in (file_paths or [])
+                if os.path.exists(p) and self._is_valid_payment_download_artifact(p)
+            ]
+            if not valid_file_paths:
+                self.log(
+                    f"  ℹ️ 繳費列尚未取得實際繳費單 PDF，暫不通知/去重: {notify_key_case or notify_key}"
+                )
+                return False
+            file_paths = valid_file_paths
+            explicit_payment_pdf = True
+
+        # 手動標記已繳費時，仍要補送本次剛取得的法院 PDF 附件。
+        if self._is_payment_dismissed(
+            notify_key,
+            notify_key_case,
+            party=party,
+        ):
+            if explicit_payment_pdf:
+                self.log(f"  ℹ️ 案件已標記已繳費，但本輪有新繳費單 PDF，仍補送附件: {notify_key}")
+            else:
+                self.log(f"  ℹ️ 案件已手動標記為已繳費，跳過通知: {notify_key}")
+                return True
+
+        # MAGI 已上傳繳費憑證時，仍要補送本次剛取得的法院 PDF 附件。
+        if self._is_proof_uploaded_for_case(row_json):
+            if explicit_payment_pdf:
+                self.log(f"  ℹ️ MAGI 已有繳費憑證，但本輪有新繳費單 PDF，仍補送附件: {notify_key}")
+            else:
+                self.log(f"  ℹ️ MAGI 已上傳繳費憑證，跳過通知: {notify_key}")
+                return True
+
+        # A historical text notice is not proof that the PDF attachment was
+        # delivered. Keep notification-key dedup only for text-only attempts;
+        # a newly acquired PDF must still be delivered and is deduped by its
+        # file hash in the orchestrator delivery registry.
+        if not explicit_payment_pdf:
+            if notify_key in self.notified_cases:
+                return True
+            if notify_key_case and notify_key_case in self.notified_cases:
+                return True
+            if any(key in self.notified_cases for key in payment_notify_keys):
+                return True
+            try:
+                from skills.ops.dedup_db import is_done as _dd_is_done
+                if any(_dd_is_done("filereview_payment", key) for key in payment_notify_keys):
+                    self._seed_payment_notification_dedup(row_json, case_info, reason="dedup_db_seen")
+                    return True
+            except Exception:
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 2721, exc_info=True)
 
         if file_paths is None:
             file_paths = self._resolve_payment_registry_files(row_json)
@@ -2693,7 +3372,7 @@ class FileReviewManager:
                  f"p_status={row_json.get('p_status')}, payment={row_json.get('payment')}, "
                  f"status={row_json.get('status')}, statusnm={row_json.get('statusnm')}, "
                  f"result={str(row_json.get('result') or '')[:30]}")
-        if self._has_payment_proof_uploaded(row_json):
+        if self._has_payment_proof_uploaded(row_json) and not explicit_payment_pdf:
             self.log(f"  ℹ️ 案件已上傳繳費憑證，跳過通知: {notify_key}")
             return True
 
@@ -2928,6 +3607,16 @@ class FileReviewManager:
         if m:
             year, case_type, number = m.groups()
             return f"{year}年度{case_type}字第{int(number)}號"
+        # Court/Gmail notices also use compact forms such as 115上訴3543.
+        # Keep the accepted case-word vocabulary explicit so dates, amounts
+        # and LAF application numbers cannot be mistaken for court dockets.
+        m = re.search(
+            r'(?<!\d)(\d{2,4})(上訴|上易|上更|上重訴|原金訴|原訴|原易|原簡|金訴|金重訴|偵|訴|易|簡|聲|抗|家護|家調|司促)0*(\d{1,8})(?!\d)',
+            text,
+        )
+        if m:
+            year, case_type, number = m.groups()
+            return f"{year}年度{case_type}字第{int(number)}號"
         return raw.strip()
 
     def _extract_case_identifiers(self, text: str) -> Dict[str, str]:
@@ -2946,6 +3635,7 @@ class FileReviewManager:
             r'案號\s*[：:]\s*((?:\d{2,4}\s*年?度?\s*[^，。,;\s]{1,20}\s*字第?\s*\d+\s*號?)|(?:\d{2,4}\.[^，。,;\s]{1,20}\.\d{1,6}))',
             r'(\d{2,4}\s*年?度?\s*[^，。,;\s]{1,20}\s*字第?\s*\d+\s*號?)',
             r'(\d{2,4}\.[^，。,;\s]{1,20}\.\d{1,6})',
+            r'(?<!\d)(\d{2,4}\s*(?:上訴|上易|上更|上重訴|原金訴|原訴|原易|原簡|金訴|金重訴|偵|訴|易|簡|聲|抗|家護|家調|司促)\s*0*\d{1,8})(?!\d)',
         ]
         for pattern in court_patterns:
             match = re.search(pattern, normalized)
@@ -2996,12 +3686,12 @@ class FileReviewManager:
         try:
             print(full_msg, file=sys.stderr)
         except BrokenPipeError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3038, exc_info=True)
         if self.log_callback:
             try:
                 self.log_callback(full_msg)
             except BrokenPipeError:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3043, exc_info=True)
     
     # ---------- Gmail 監控 ----------
     
@@ -3214,10 +3904,12 @@ class FileReviewManager:
                         self._download_attachments(msg_id, info)
                         
                         # 發送繳費通知（red_phone: TG + DC mirror）
-                        self.notify_payment_needed(info)
-                        
-                        self.processed_emails.add(msg_id)
-                        self._save_processed_emails() # 立即儲存
+                        _notify_result = self.notify_payment_needed(info)
+                        if _notify_result is True:
+                            self.processed_emails.add(msg_id)
+                            self._save_processed_emails() # 立即儲存
+                        elif _notify_result is False:
+                            self.log(f"  ⚠️ 繳費通知未送達或尚未取得 PDF，保留信件供下輪重試: {subject[:80]}")
                 
                 except Exception as e:
                     self.log(f"  ⚠️ 處理信件 {msg_id if 'msg_id' in locals() else 'unknown'} 失敗: {e}")
@@ -3390,8 +4082,8 @@ class FileReviewManager:
             self.log(f"  [DEBUG] 解析郵件本體 (MimeType: {payload.get('mimeType')})...")
             
             def extract_text(part):
-                mimeType = part.get('mimeType')
-                body_data = part.get('body', {}).get('data')
+                mimeType = str(part.get('mimeType') or '')
+                body_data = (part.get('body') or {}).get('data')
                 
                 # 1. 優先回傳 text/plain
                 if mimeType == 'text/plain' and body_data:
@@ -3437,20 +4129,90 @@ class FileReviewManager:
         except Exception as e:
             self.log(f"  ⚠️ [DEBUG] 取得內文發生錯誤: {e}")
             return ""
-            
+
+    @staticmethod
+    def _is_payment_notice_text(text: str) -> bool:
+        normalized = FileReviewManager._normalize_case_text(text)
+        if not normalized:
+            return False
+        compact = re.sub(r"\s+", "", normalized)
+        haystacks = (normalized, compact)
+        if any(k in h for h in haystacks for k in ("繳費完成", "繳費完成通知", "已繳費", "繳訖", "收款完成")):
+            if not any(k in h for h in haystacks for k in ("待繳費", "繳費單", "繳費期限", "規費繳款")):
+                return False
+        return any(
+            k in h
+            for h in haystacks
+            for k in (
+                "繳費單",
+                "待繳費",
+                "繳費期限",
+                "含繳費單",
+                "規費繳款",
+                "規費繳款單",
+                "裁判費",
+                "聲請費",
+                "複製電子卷證費用",
+                "閱卷費用",
+                "處理費",
+                "繳納費用",
+            )
+        )
+
+    @staticmethod
+    def _extract_label_from_payment_text(text: str, label: str) -> str:
+        normalized = FileReviewManager._normalize_case_text(text)
+        if not normalized or not label:
+            return ""
+        labels = (
+            "對象法院",
+            "當事人",
+            "案號",
+            "股別",
+            "案由",
+            "聲請方式",
+            "預約時段",
+            "備註說明",
+            "遞出委任狀日期",
+            "遞出上訴狀日期",
+            "下次開庭日期",
+            "法院回覆結果",
+            "回復狀態",
+            "回覆內容",
+            "繳費狀態",
+            "繳費期限",
+            "應繳金額",
+        )
+        boundary = "|".join(re.escape(item) for item in labels if item != label)
+        pattern = rf"{re.escape(label)}\s*[：:]?\s*(.+?)(?=\s*(?:{boundary})\s*[：:]?|$)"
+        match = re.search(pattern, normalized)
+        if not match:
+            return ""
+        return match.group(1).strip(" ：:;；,，。")
+
+    def _email_attachment_filenames(self, payload: Dict) -> List[str]:
+        names: List[str] = []
+        for item in self._extract_attachments_recursive(payload or {}):
+            filename = str(item.get("filename") or "").strip()
+            if filename:
+                names.append(filename)
+        return list(dict.fromkeys(names))
+
     def _extract_attachments_recursive(self, part: dict) -> List[dict]:
         """遞迴提取所有附件資訊 (支援巢狀 multipart 結構)"""
         attachments = []
         
         # 檢查當前 part 是否為附件
         filename = part.get('filename')
-        attachment_id = part.get('body', {}).get('attachmentId')
+        body = part.get('body') or {}
+        attachment_id = body.get('attachmentId')
         
-        if filename and attachment_id:
+        if filename and (attachment_id or body.get('data')):
             attachments.append({
                 'filename': filename,
                 'attachmentId': attachment_id,
-                'mimeType': part.get('mimeType', '')
+                'mimeType': part.get('mimeType', ''),
+                'body': body,
             })
         
         # 遞迴處理子 parts
@@ -3607,6 +4369,72 @@ class FileReviewManager:
         self.last_login_error_code = str(getattr(self.sso, "last_error_code", "") or "sso_login_failed").strip()
         self.last_login_error_detail = str(getattr(self.sso, "last_error_detail", "") or "").strip()
         return False
+
+    @staticmethod
+    def _looks_like_invalid_csrf_text(text: str) -> bool:
+        lowered = str(text or "").lower()
+        if not lowered:
+            return False
+        compact = re.sub(r"[\s:_-]+", " ", lowered)
+        return (
+            "invalid csrf token" in compact
+            or ("csrf" in compact and "forbidden" in compact)
+            or ("csrf" in compact and "invalid" in compact)
+        )
+
+    def _current_page_has_invalid_csrf(self) -> bool:
+        if not self.driver:
+            return False
+        parts: List[str] = []
+        for getter in (
+            lambda: self.driver.page_source,
+            lambda: self.driver.title,
+            lambda: self.driver.current_url,
+        ):
+            try:
+                parts.append(str(getter() or ""))
+            except Exception:
+                continue
+        return self._looks_like_invalid_csrf_text("\n".join(parts))
+
+    @staticmethod
+    def _looks_like_ola_error_page(
+        page_source: str = "", page_title: str = "", current_url: str = ""
+    ) -> bool:
+        source = str(page_source or "").lower()
+        title = str(page_title or "").lower()
+        url = str(current_url or "").lower()
+        return any(
+            [
+                url.startswith("chrome-error://"),
+                url.startswith("about:neterror"),
+                "404" in title,
+                "not found" in title,
+                "無法連線" in source,
+                "連線失敗" in source,
+                "err_" in source,
+                "this site can't be reached" in source,
+                "this page isn't working" in source,
+                "neterror" in source,
+                "aw, snap!" in source,
+                len(source) < 500 and ("error" in source or "404" in source),
+            ]
+        )
+
+    def _mark_download_error(self, code: str, detail: str = "") -> None:
+        self.last_download_error_code = str(code or "").strip()
+        self.last_download_error_detail = str(detail or "").strip()[:500]
+        if self.last_download_error_code:
+            events = getattr(self, "last_download_error_events", None)
+            if not isinstance(events, list):
+                events = []
+                self.last_download_error_events = events
+            events.append(
+                {
+                    "code": self.last_download_error_code,
+                    "detail": self.last_download_error_detail,
+                }
+            )
     
     def navigate_to_file_review(self) -> bool:
         """
@@ -3752,7 +4580,7 @@ class FileReviewManager:
                                                     self.driver._popup_pages.append(_p)
                                                 break
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3794, exc_info=True)
                                 new_window = _fallback_win
                                 clicked = True
                             else:
@@ -3836,7 +4664,7 @@ class FileReviewManager:
                     try:
                         self.driver.switch_to.window(new_window)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 3878, exc_info=True)
 
             # Playwright 路徑：等待新頁面完全載入（含 JS 重新導向）
             if _use_playwright_popup and hasattr(self.driver, '_page'):
@@ -3861,23 +4689,19 @@ class FileReviewManager:
                 
                 # 檢查是否為 404 或網路錯誤
                 try:
-                    page_source = self.driver.page_source.lower()
+                    raw_page_source = self.driver.page_source or ""
+                    page_source = raw_page_source.lower()
                     page_title = self.driver.title.lower() if self.driver.title else ""
                     current_url = self.driver.current_url.lower() if self.driver.current_url else ""
+
+                    if self._looks_like_invalid_csrf_text("\n".join([raw_page_source, page_title, current_url])):
+                        self.log("  ⚠️ 偵測到法院 CSRF token 失效，需重開 session 後重試")
+                        return _nav_fail("invalid_csrf_token", current_url or raw_page_source[:220])
                     
                     # 常見的錯誤特徵
-                    is_error_page = any([
-                        "404" in page_title,
-                        "not found" in page_title,
-                        "無法連線" in page_source,
-                        "連線失敗" in page_source,
-                        "err_" in page_source,
-                        "this site can't be reached" in page_source,
-                        "this page isn't working" in page_source,
-                        "neterror" in page_source,
-                        "aw, snap!" in page_source,
-                        len(page_source) < 500 and ("error" in page_source or "404" in page_source),
-                    ])
+                    is_error_page = self._looks_like_ola_error_page(
+                        raw_page_source, page_title, current_url
+                    )
                     
                     if is_error_page:
                         if refresh_attempt < max_refresh_retries - 1:
@@ -4047,7 +4871,7 @@ class FileReviewManager:
                             except Exception:
                                 continue
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4089, exc_info=True)
 
             if not found_menu:
                 self.log("  ⚠️ 所有方法均無法找到「線上閱卷作業」選單")
@@ -4109,7 +4933,7 @@ class FileReviewManager:
                             except Exception:
                                 continue
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4151, exc_info=True)
 
             if not submenu_found:
                 self.log("  ⚠️ 子選單展開失敗，無法進入列表頁")
@@ -4202,7 +5026,7 @@ class FileReviewManager:
                 try:
                     self.driver._active_frame = hit["frame"]
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4244, exc_info=True)
                 return True
         try:
             self.driver.switch_to.default_content()
@@ -4305,14 +5129,19 @@ class FileReviewManager:
             || body.indexOf('驗證碼') >= 0 || body.indexOf('自然人憑證登入') >= 0
             || body.indexOf('會員登入') >= 0 || body.indexOf('使用者代號') >= 0
             || body.indexOf('密碼') >= 0 || body.indexOf('無權限') >= 0;
+          const lowerBody = body.toLowerCase();
+          const hasInvalidCsrf = lowerBody.indexOf('invalid csrf token') >= 0
+            || (lowerBody.indexOf('csrf') >= 0 && lowerBody.indexOf('forbidden') >= 0)
+            || (lowerBody.indexOf('csrf') >= 0 && lowerBody.indexOf('invalid') >= 0);
           const trCount = strictRows.length || (hasMarkers ? genericRows.length : 0);
           const hasTable = hasSpecificTable || (hasMarkers && !!document.querySelector('table, [role="table"], .el-table, .v-data-table'));
-          const isValidList = !hasAuthMarkers && (hasMarkers || hasEmptyState || hasTable || trCount > 0);
+          const isValidList = !hasAuthMarkers && !hasInvalidCsrf && (hasMarkers || hasEmptyState || hasTable || trCount > 0);
           return {
             has_list_markers: hasMarkers,
             has_table: hasTable,
             has_empty_state: hasEmptyState,
             has_auth_markers: hasAuthMarkers,
+            invalid_csrf_token: hasInvalidCsrf,
             is_valid_list: isValidList,
             tr_count: trCount,
             strict_tr_count: strictRows.length,
@@ -4410,7 +5239,7 @@ class FileReviewManager:
             try:
                 frames = list(pw_page.frames)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4452, exc_info=True)
 
         last_diagnostics: List[Dict[str, Any]] = []
         deadline = time.time() + 6.0
@@ -4437,7 +5266,7 @@ class FileReviewManager:
                     for k in (
                         "frame_name", "frame_url", "has_list_markers", "has_table",
                         "has_empty_state", "has_auth_markers", "is_valid_list",
-                        "tr_count", "strict_tr_count", "body_len", "body_preview",
+                        "invalid_csrf_token", "tr_count", "strict_tr_count", "body_len", "body_preview",
                     )
                 })
                 score = (
@@ -4448,6 +5277,7 @@ class FileReviewManager:
                     + min(int(check.get("tr_count") or 0), 20)
                     + min(int(check.get("body_len") or 0), 200) / 1000.0
                     - int(bool(check.get("has_auth_markers"))) * 20
+                    - int(bool(check.get("invalid_csrf_token"))) * 30
                 )
                 if score > best_score:
                     best_score = score
@@ -4459,7 +5289,7 @@ class FileReviewManager:
                 try:
                     self.driver._active_frame = best.get("frame")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4501, exc_info=True)
                 return best
             if time.time() >= deadline:
                 return {"diagnostics": last_diagnostics, "check": check}
@@ -4467,7 +5297,7 @@ class FileReviewManager:
             try:
                 frames = list(pw_page.frames)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 4509, exc_info=True)
 
     def _open_review_list_v1(self) -> bool:
         """
@@ -4581,6 +5411,10 @@ class FileReviewManager:
                                       || body.indexOf('驗證碼') >= 0 || body.indexOf('自然人憑證登入') >= 0
                                       || body.indexOf('會員登入') >= 0 || body.indexOf('使用者代號') >= 0
                                       || body.indexOf('密碼') >= 0 || body.indexOf('無權限') >= 0;
+                    var lowerBody = body.toLowerCase();
+                    var hasInvalidCsrf = lowerBody.indexOf('invalid csrf token') >= 0
+                                      || (lowerBody.indexOf('csrf') >= 0 && lowerBody.indexOf('forbidden') >= 0)
+                                      || (lowerBody.indexOf('csrf') >= 0 && lowerBody.indexOf('invalid') >= 0);
                     var strictTrCount = document.querySelectorAll('tr#trdata, table#tablecontext tbody tr').length;
                     var genericTrCount = document.querySelectorAll('table tbody tr, [role="row"], .el-table__row, .v-data-table__tr').length;
                     var trCount = strictTrCount || (hasList ? genericTrCount : 0);
@@ -4590,13 +5424,23 @@ class FileReviewManager:
                         has_table: hasTable,
                         has_empty_state: hasEmptyState,
                         has_auth_markers: hasAuthMarkers,
-                        is_valid_list: !hasAuthMarkers && (hasList || hasEmptyState || hasTable || trCount > 0),
+                        invalid_csrf_token: hasInvalidCsrf,
+                        is_valid_list: !hasAuthMarkers && !hasInvalidCsrf && (hasList || hasEmptyState || hasTable || trCount > 0),
                         tr_count: trCount,
                         strict_tr_count: strictTrCount,
                         body_len: body.trim().length,
                         body_preview: body.replace(/\\s+/g, ' ').trim().slice(0, 220)
                     };
                 """) or {}
+            if _page_check.get("invalid_csrf_token"):
+                self.log("  ⚠️ 列表頁回傳 invalid CSRF token，需重開 session 後重試")
+                out["error"] = "invalid_csrf_token"
+                out["error_code"] = "invalid_csrf_token"
+                out["error_detail"] = {
+                    "page_check": _page_check,
+                    "frame_diagnostics": (_pw_hit or {}).get("diagnostics", [])[:8] if isinstance(_pw_hit, dict) else [],
+                }
+                return out
             if _page_check.get("has_auth_markers"):
                 self.log("  ⚠️ 列表頁驗證失敗：法院入口要求重新登入或權限確認")
                 out["error"] = "list_page_auth_required"
@@ -4662,19 +5506,18 @@ class FileReviewManager:
                     if norm_target and norm_target not in self._normalize_case_keyword(probe_text):
                         continue
 
-                    court_pickup = self._is_court_pickup_row(row_json, row_text=row_text)
-                    pending_payment = self._is_pending_payment_row(row_json, row_text=row_text)
                     has_download = bool(row_data.get("has_online_download"))
 
-                    status = "other"
-                    if has_download:
-                        status = "downloadable"
+                    status = self._classify_portal_row_status(
+                        row_json,
+                        row_text=row_text,
+                        has_download=has_download,
+                    )
+                    if status == "downloadable":
                         downloadable_count += 1
-                    elif court_pickup:
-                        status = "court_pickup"
+                    elif status == "court_pickup":
                         court_pickup_count += 1
-                    elif pending_payment:
-                        status = "pending_payment"
+                    elif status == "pending_payment":
                         pending_payment_count += 1
 
                     paystatus = str(row_json.get("paystatus") or "").strip()
@@ -4707,6 +5550,18 @@ class FileReviewManager:
                         "payment_flag": payment_flag,
                         "payid": payid,
                         "rowid": rowid,
+                        # Keep the receipt/dedup revision aliases on the
+                        # in-memory probe item.  The canonical signature uses
+                        # these fields when present; omitting them here made a
+                        # probe signature differ from the downloader's raw-row
+                        # signature.  They are not copied into the PII-free
+                        # receipt (which stores hashes only).
+                        "no": str(row_json.get("no") or "").strip(),
+                        "c60yyidno": str(row_json.get("c60yyidno") or "").strip(),
+                        "upddt": str(row_json.get("upddt") or "").strip(),
+                        "updated_at": str(row_json.get("updated_at") or "").strip(),
+                        "updtime": str(row_json.get("updtime") or "").strip(),
+                        "limitdt": str(row_json.get("limitdt") or "").strip(),
                         "applydt": applydt,
                         "isdown": isdown,
                         "downdt": downdt,
@@ -4856,6 +5711,20 @@ class FileReviewManager:
         return True
 
     @staticmethod
+    def _is_download_deadline_expired_text(text: str) -> bool:
+        """Return True only for the portal's explicit download-expired labels."""
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        return any(
+            marker in normalized
+            for marker in (
+                "超過下載期限",
+                "已逾下載期限",
+                "下載期限已過",
+                "下載期限逾期",
+            )
+        )
+
+    @staticmethod
     def _is_court_pickup_row(row_json: dict, row_text: str = "") -> bool:
         """判斷是否為可到院/紙本閱卷列。"""
         if not isinstance(row_json, dict):
@@ -4880,18 +5749,71 @@ class FileReviewManager:
         if FileReviewManager._is_court_pickup_row(row_json, row_text=row_text):
             return False
         paystatus = str(row_json.get("paystatus") or "").strip()
+        p_status = str(row_json.get("p_status") or "").strip().upper()
         payment = str(row_json.get("payment") or "").strip().upper()
         status = str(row_json.get("status") or "").strip()
         statusnm = str(row_json.get("statusnm") or "").strip()
-        result_text = f"{row_json.get('result') or ''}\n{row_text or ''}"
+        result_text = str(row_json.get("result") or "")
+        current_text = re.sub(r"\s+", "", str(row_text or ""))
+        result_norm = re.sub(r"\s+", "", result_text)
 
-        if "待繳費" in result_text:
+        # OLA keeps the original "待繳費" instruction in ``result`` even
+        # after payment.  The visible row tail is the current state and must win.
+        terminal_markers = (
+            "已繳費", "繳費完成", "繳訖", "無須繳納費用", "無需繳費",
+            "不需繳費", "免繳費", "超過下載期限", "已逾下載期限",
+        )
+        explicit_pending = "待繳費" in current_text and not any(
+            marker in current_text for marker in terminal_markers
+        )
+        if explicit_pending:
             return True
-        if paystatus == "2":
+        if any(marker in current_text for marker in terminal_markers):
+            return False
+        # A generated payment slip is actionable, not proof of payment.  OLA
+        # has reused paystatus values between versions, so do not suppress a
+        # row merely because a code looks terminal without explicit evidence.
+        if p_status == "Y":
             return True
-        if payment == "N" and status in {"3", "6"} and ("同意" in statusnm or "繳費" in result_text):
+        # Current OLA semantics observed in production: paystatus=1 and
+        # payment=Y mean that a payment action is present, not "already paid".
+        if paystatus == "1":
+            return True
+        if payment == "Y" and status in {"3", "6"} and (
+            "同意" in statusnm or "繳費" in result_norm
+        ):
+            return True
+        # Legacy rows may not expose paystatus/payment; retain the visible
+        # instruction fallback only when no terminal code is present.
+        if not current_text and "待繳費" in result_norm:
             return True
         return False
+
+    @staticmethod
+    def _allow_payment_slip_print_during_general_download() -> bool:
+        raw = os.environ.get("MAGI_FILE_REVIEW_GENERAL_DOWNLOAD_PRINT_PAYMENT_SLIPS", "")
+        return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _classify_portal_row_status(row_json: dict, row_text: str = "", has_download: bool = False) -> str:
+        """Classify OLA portal rows with payment/court-pickup semantics first."""
+        if not isinstance(row_json, dict):
+            row_json = {}
+        if FileReviewManager._is_court_pickup_row(row_json, row_text=row_text):
+            return "court_pickup"
+        if FileReviewManager._is_pending_payment_row(row_json, row_text=row_text):
+            return "pending_payment"
+        # OLA can leave the green download control on a row whose download
+        # deadline has already expired.  The downloader rejects these rows
+        # before clicking, so the read-only probe must use the same exclusion
+        # or its expected count can never reconcile with handled signatures.
+        if FileReviewManager._is_download_deadline_expired_text(row_text):
+            return "expired"
+        # OLA sometimes shows a download marker inside payment instructions before
+        # the clerk uploads the file; only treat it as downloadable after exclusions.
+        if has_download:
+            return "downloadable"
+        return "other"
 
     @staticmethod
     def _is_payment_overdue(row_json: dict, max_days: int = 14) -> bool:
@@ -4949,7 +5871,372 @@ class FileReviewManager:
         except Exception:
             return str(value or "")
 
-    def _collect_new_files_from_folder(self, folder: str, existing_file_mtimes: dict, timeout_sec: int = 10) -> List[str]:
+    def _download_payload_looks_like_json_error(self, path: str) -> bool:
+        try:
+            with open(path, "rb") as fh:
+                chunk = fh.read(2048)
+            text = chunk.decode("utf-8", errors="ignore").lstrip()
+        except Exception:
+            return False
+        if not text.startswith(("{", "[")):
+            return False
+        lowered = text.lower()
+        return (
+            "messagetext" in lowered
+            or "\"status\"" in lowered
+            or "\"controller\"" in lowered
+            or "銷帳編號取號失敗" in text
+        )
+
+    def _is_valid_download_pdf(self, path: str) -> bool:
+        """Only completed PDF artifacts may enter archive/dedupe registries."""
+        lowered_path = str(path or "").lower()
+        filename = os.path.basename(str(path or ""))
+        if "_ignored_downloads" in lowered_path or "_duplicate_downloads" in lowered_path or ".invalid_artifact" in filename.lower():
+            return False
+        if not filename.lower().endswith(".pdf"):
+            return False
+        try:
+            if os.path.getsize(path) <= 0:
+                return False
+            with open(path, "rb") as fh:
+                chunk = fh.read(4096)
+        except Exception:
+            return False
+        if not chunk.lstrip().startswith(b"%PDF"):
+            return False
+        if self._download_payload_looks_like_json_error(path):
+            return False
+        lowered = chunk.decode("utf-8", errors="ignore").lower()
+        if any(marker in lowered for marker in ("<html", "<!doctype html", "messagetext", "\"status\"", "\"controller\"")):
+            return False
+        return True
+
+    def _is_valid_payment_download_artifact(self, path: str) -> bool:
+        return self._is_valid_download_pdf(path)
+
+    def _is_valid_review_download_artifact(self, path: str) -> bool:
+        if self._is_payment_slip_filename(path):
+            return False
+        if not self._is_valid_download_pdf(path):
+            return False
+        # Real OLA review records are large PDFs.  Seeing only a `%PDF` header
+        # is not completion evidence: a cancelled Chromium download can leave a
+        # multi-megabyte prefix that previously entered registries and archive
+        # folders.  Keep tiny synthetic fixtures compatible with unit tests,
+        # while requiring the PDF trailer for production-sized artifacts.
+        try:
+            size = os.path.getsize(path)
+            if size <= 64 * 1024:
+                return True
+            with open(path, "rb") as fh:
+                fh.seek(max(0, size - 16384))
+                return b"%%EOF" in fh.read()
+        except Exception:
+            return False
+
+    def _quarantine_case_mismatch(
+        self,
+        path: str,
+        *,
+        case_meta: Optional[Dict[str, Any]],
+        binding: Optional[Dict[str, Any]] = None,
+        reason: str = "court_case_identity_mismatch",
+    ) -> str:
+        """Move a cross-case artifact into an auditable, non-archive area."""
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            abs_path = os.path.abspath(path)
+            abs_root = os.path.abspath(self.download_folder)
+            if os.path.commonpath([abs_path, abs_root]) != abs_root:
+                self.log(f"  🔒 跨案檔案不在 MAGI 下載區，保留不移動: {os.path.basename(path)}")
+                return ""
+            qroot = os.path.join(self.download_folder, "_case_mismatch_downloads")
+            qdir = os.path.join(qroot, datetime.now().strftime("%Y%m%d"))
+            os.makedirs(qdir, exist_ok=True)
+            base = os.path.basename(abs_path)
+            stem, ext = os.path.splitext(base)
+            safe_reason = re.sub(r"[^0-9A-Za-z_-]+", "_", reason).strip("_") or "case_mismatch"
+            dst = os.path.join(qdir, f"{stem}.{safe_reason}{ext or '.bin'}")
+            if os.path.exists(dst):
+                dst = os.path.join(
+                    qdir,
+                    f"{stem}.{safe_reason}.{datetime.now().strftime('%H%M%S')}{ext or '.bin'}",
+                )
+            shutil.move(abs_path, dst)
+            public_meta = case_meta if isinstance(case_meta, dict) else {}
+            receipt = {
+                "ts": datetime.now().isoformat(),
+                "source": abs_path,
+                "quarantine_path": dst,
+                "reason": safe_reason,
+                "binding": binding or self._review_artifact_case_binding(base, public_meta),
+                "case_meta": {
+                    "court": public_meta.get("court") or "",
+                    "case_number": public_meta.get("case_number") or public_meta.get("yyidno") or "",
+                    "showyyidno": public_meta.get("showyyidno") or "",
+                    "party": public_meta.get("party") or "",
+                },
+            }
+            with open(os.path.join(qroot, "manifest.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+            error_detail = (
+                f"download filename identity {receipt['binding'].get('filename_identity')} "
+                f"does not match portal row {receipt['binding'].get('expected_identities')}"
+            )
+            mismatch_events = getattr(self, "_case_identity_mismatch_events", None)
+            if not isinstance(mismatch_events, list):
+                mismatch_events = []
+                self._case_identity_mismatch_events = mismatch_events
+            mismatch_events.append(
+                {
+                    "filename_identity": list(
+                        receipt["binding"].get("filename_identity") or []
+                    ),
+                    "expected_identities": list(
+                        receipt["binding"].get("expected_identities") or []
+                    ),
+                    "quarantine_path": dst,
+                    "error_detail": error_detail,
+                }
+            )
+            self._mark_download_error(
+                "case_identity_mismatch",
+                error_detail,
+            )
+            # Persist a bounded, row-scoped cooldown only after the artifact
+            # was safely quarantined.  It prevents repeated portal clicks for
+            # the exact same bad row while expiry/row changes keep real later
+            # uploads eligible for a fresh verification attempt.
+            self._remember_case_mismatch_suppression(public_meta, receipt["binding"])
+            self.log(
+                f"  ⛔ 案號不一致，已阻止跨案歸檔: {base} → "
+                f"{os.path.relpath(dst, self.download_folder)}"
+            )
+            return dst
+        except Exception as exc:
+            self.log(f"  ⚠️ 跨案檔案隔離失敗: {os.path.basename(str(path))}: {exc}")
+            return ""
+
+    def _reconcile_resolved_case_identity_mismatches(self) -> int:
+        """Clear only mismatch alerts superseded by a verified archive result.
+
+        A large OLA PDF can finish after the outer-row loop has advanced.  The
+        cross-case gate must still quarantine that late artifact, but the
+        protection event is no longer a batch failure when the same court-case
+        identity is subsequently downloaded under its authoritative row and
+        archived successfully in this exact run.
+        """
+        mismatch_events = getattr(self, "_case_identity_mismatch_events", None)
+        if not isinstance(mismatch_events, list) or not mismatch_events:
+            return 0
+        report = getattr(self, "_last_archive_report", None)
+        items = report.get("items") if isinstance(report, dict) else None
+        if not isinstance(items, list) or not items:
+            return 0
+
+        successful_actions = {
+            "copied",
+            "moved",
+            "exists_skip",
+            "target_exists_isolate_src",
+            "target_exists_keep_src",
+        }
+        archived_identities = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("action") or "") not in successful_actions:
+                continue
+            identity = self._review_filename_case_identity(str(item.get("file") or ""))
+            if all(identity):
+                archived_identities.add(identity)
+
+        resolved_details = set()
+        unresolved = []
+        for event in mismatch_events:
+            if not isinstance(event, dict):
+                unresolved.append(event)
+                continue
+            identity = tuple(str(part or "") for part in event.get("filename_identity") or [])
+            if len(identity) == 3 and all(identity) and identity in archived_identities:
+                resolved_details.add(str(event.get("error_detail") or ""))
+            else:
+                unresolved.append(event)
+        if not resolved_details:
+            return 0
+
+        error_events = getattr(self, "last_download_error_events", None)
+        if isinstance(error_events, list):
+            self.last_download_error_events = [
+                event
+                for event in error_events
+                if not (
+                    isinstance(event, dict)
+                    and str(event.get("code") or "") == "case_identity_mismatch"
+                    and str(event.get("detail") or "") in resolved_details
+                )
+            ]
+        self._case_identity_mismatch_events = unresolved
+        remaining = getattr(self, "last_download_error_events", None)
+        if isinstance(remaining, list) and remaining:
+            latest = remaining[-1] if isinstance(remaining[-1], dict) else {}
+            self.last_download_error_code = str(latest.get("code") or "")
+            self.last_download_error_detail = str(latest.get("detail") or "")
+        else:
+            self.last_download_error_code = ""
+            self.last_download_error_detail = ""
+        self.log(
+            "  ✅ 已核銷同輪後續正確歸檔的跨列保護事件: "
+            f"{len(resolved_details)} 筆"
+        )
+        return len(resolved_details)
+
+    def _quarantine_invalid_download(self, path: str, reason: str = "invalid_artifact") -> str:
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            base = os.path.basename(path)
+            qdir = os.path.join(self.download_folder, "_ignored_downloads", datetime.now().strftime("%Y%m%d"))
+            os.makedirs(qdir, exist_ok=True)
+            stem, ext = os.path.splitext(base)
+            if not ext:
+                ext = ".bin"
+            safe_reason = re.sub(r"[^0-9A-Za-z_-]+", "_", reason or "invalid_artifact").strip("_")
+            dst = os.path.join(qdir, f"{stem}.{safe_reason}{ext}")
+            if os.path.exists(dst):
+                stamp = datetime.now().strftime("%H%M%S")
+                dst = os.path.join(qdir, f"{stem}.{safe_reason}.{stamp}{ext}")
+            shutil.move(path, dst)
+            try:
+                if hasattr(self, "_last_invalid_download_artifacts"):
+                    self._last_invalid_download_artifacts.append(dst)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3636, exc_info=True)
+            self.log(f"  ⏭️ 已隔離非 PDF/錯誤下載檔: {base} → {os.path.relpath(dst, self.download_folder)}")
+            return dst
+        except Exception as e:
+            self.log(f"  ⚠️ 隔離非 PDF/錯誤下載檔失敗: {os.path.basename(str(path))}: {e}")
+            return ""
+
+    def _isolate_duplicate_download(
+        self,
+        path: str,
+        reason: str = "duplicate",
+        *,
+        existing_path: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Move duplicate MAGI staging files into a disposable audit area."""
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            abs_path = os.path.abspath(path)
+            abs_root = os.path.abspath(self.download_folder)
+            try:
+                if os.path.commonpath([abs_path, abs_root]) != abs_root:
+                    self.log(f"  🔒 重複檔不在 MAGI 下載區，保留不移動: {os.path.basename(path)}")
+                    return ""
+            except Exception:
+                return ""
+
+            base = os.path.basename(abs_path)
+            qroot = os.path.join(self.download_folder, "_duplicate_downloads")
+            qdir = os.path.join(qroot, datetime.now().strftime("%Y%m%d"))
+            os.makedirs(qdir, exist_ok=True)
+            stem, ext = os.path.splitext(base)
+            safe_reason = re.sub(r"[^0-9A-Za-z_-]+", "_", reason or "duplicate").strip("_") or "duplicate"
+            dst = os.path.join(qdir, f"{stem}.{safe_reason}{ext}")
+            if os.path.exists(dst):
+                stamp = datetime.now().strftime("%H%M%S")
+                dst = os.path.join(qdir, f"{stem}.{safe_reason}.{stamp}{ext}")
+            shutil.move(abs_path, dst)
+
+            try:
+                with open(os.path.join(qroot, "manifest.jsonl"), "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "ts": datetime.now().isoformat(),
+                        "source": abs_path,
+                        "duplicate_path": dst,
+                        "reason": safe_reason,
+                        "existing_path": existing_path or "",
+                        "metadata": metadata or {},
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5288, exc_info=True)
+            self.log(f"  📦 重複下載已移至 MAGI 暫存: {base} → {os.path.relpath(dst, self.download_folder)}")
+            return dst
+        except Exception as e:
+            self.log(f"  ⚠️ 重複下載隔離失敗: {e}")
+            return ""
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _find_duplicate_review_content(self, review_folder: str, file_path: str) -> str:
+        """Find an identical file already archived under the review folder."""
+        try:
+            if not review_folder or not file_path or not os.path.isdir(review_folder) or not os.path.isfile(file_path):
+                return ""
+            src_abs = os.path.abspath(file_path)
+            src_size = os.path.getsize(file_path)
+            if src_size <= 0:
+                return ""
+            src_hash = ""
+            stack = [(review_folder, 0)]
+            visited = 0
+            checked = 0
+            ignored_ext = {".crdownload", ".download", ".part", ".tmp"}
+            while stack:
+                cur, depth = stack.pop()
+                visited += 1
+                if visited > 1200 or checked > 500:
+                    break
+                try:
+                    with os.scandir(cur) as entries:
+                        for entry in entries:
+                            if entry.is_file(follow_symlinks=False):
+                                if os.path.abspath(entry.path) == src_abs:
+                                    continue
+                                if os.path.splitext(entry.name)[1].lower() in ignored_ext:
+                                    continue
+                                try:
+                                    if entry.stat(follow_symlinks=False).st_size != src_size:
+                                        continue
+                                except OSError:
+                                    continue
+                                if not src_hash:
+                                    src_hash = self._sha256_file(file_path)
+                                checked += 1
+                                try:
+                                    if self._sha256_file(entry.path) == src_hash:
+                                        return entry.path
+                                except Exception:
+                                    continue
+                            elif entry.is_dir(follow_symlinks=False) and depth < 4:
+                                stack.append((entry.path, depth + 1))
+                except Exception:
+                    continue
+            return ""
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5351, exc_info=True)
+            return ""
+
+    def _collect_new_files_from_folder(
+        self,
+        folder: str,
+        existing_file_mtimes: dict,
+        timeout_sec: int = 10,
+        accept: Optional[Callable[[str], bool]] = None,
+    ) -> List[str]:
         """等待並收集新下載檔名（僅檔名，不含路徑）。"""
         found = []
         if not os.path.exists(folder):
@@ -4966,6 +6253,10 @@ class FileReviewManager:
                     current_mtime = os.path.getmtime(fpath)
                     old_mtime = existing_file_mtimes.get(filename, 0)
                     if filename not in existing_file_mtimes or current_mtime > old_mtime:
+                        if accept is not None and not accept(fpath):
+                            self._quarantine_invalid_download(fpath)
+                            existing_file_mtimes[filename] = current_mtime
+                            continue
                         found.append(filename)
                         existing_file_mtimes[filename] = current_mtime
             except Exception:
@@ -4981,6 +6272,71 @@ class FileReviewManager:
             out.append(x)
         return out
 
+    def _snapshot_download_file_mtimes(self, folders: List[str]) -> Dict[str, float]:
+        """Capture download file mtimes keyed by absolute path for later change detection."""
+        snapshot: Dict[str, float] = {}
+        for folder in folders or []:
+            if not folder or not os.path.isdir(folder):
+                continue
+            try:
+                for filename in os.listdir(folder):
+                    if filename.endswith((".json", ".tmp")):
+                        continue
+                    path = os.path.join(folder, filename)
+                    if not os.path.isfile(path):
+                        continue
+                    snapshot[path] = os.path.getmtime(path)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5269, exc_info=True)
+        return snapshot
+
+    def _download_file_changed_since_snapshot(self, path: str, snapshot: Dict[str, float]) -> bool:
+        if not path:
+            return False
+        try:
+            filename = os.path.basename(path)
+            if filename.endswith((".json", ".tmp")) or not os.path.isfile(path):
+                return False
+            current_mtime = os.path.getmtime(path)
+            return path not in snapshot or current_mtime > snapshot.get(path, 0)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5286, exc_info=True)
+            return False
+
+    @staticmethod
+    def _reconcile_popup_attempt_counts(
+        pending_modes: List[str],
+        *,
+        verified_path_count: int,
+        verified_button_count: int,
+    ) -> Tuple[int, List[str]]:
+        """Match final-snapshot artifacts without hiding another failed button."""
+        pending = list(pending_modes or [])
+        late_verified_count = min(
+            len(pending),
+            max(0, int(verified_path_count or 0) - int(verified_button_count or 0)),
+        )
+        return late_verified_count, pending[late_verified_count:]
+
+    @staticmethod
+    def _popup_source_has_download_controls(source: str) -> bool:
+        """Recognize a rendered OLA file row even when WebDriver misreports visibility.
+
+        The Judiciary's jQuery grid can paint usable buttons while Selenium's
+        ``is_displayed`` remains false for elements inside the nested dialog
+        iframe.  Requiring both an actual data row and a single-file download
+        control avoids accepting the two batch-download header buttons.
+        """
+        text = str(source or "")
+        if not re.search(r"<tr\b[^>]*\bid=[\"']trdata[\"']", text, re.IGNORECASE):
+            return False
+        return bool(
+            re.search(
+                r"<(?:button|input|a)\b[^>]*\btitle=[\"']下載[\"']",
+                text,
+                re.IGNORECASE,
+            )
+        )
     def _select_best_pending_row_for_case(self, base_row_elem, base_row_json: dict):
         """
         在同案號多列中，挑出最適合下載繳費單的列。
@@ -5015,7 +6371,7 @@ class FileReviewManager:
                     if (_date.today() - _dl).days > 14:
                         s -= 4  # 逾期超過 14 天：大幅降分，讓較新未逾期申請優先
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 5131, exc_info=True)
             applydt = re.sub(r"\D", "", str((row_json_inner or {}).get("applydt") or ""))
             rowid = re.sub(r"\D", "", str((row_json_inner or {}).get("rowid") or ""))
             return (s, applydt, rowid)
@@ -5362,7 +6718,19 @@ class FileReviewManager:
 
         self._switch_to_review_list_v1()
         self.log("  [待繳費] 已回到列表 frame，開始掃描新下載檔案")
-        new_files = self._collect_new_files_from_folder(today_folder, existing_file_mtimes, timeout_sec=15)
+        self._last_invalid_download_artifacts = []
+        new_files = self._collect_new_files_from_folder(
+            today_folder,
+            existing_file_mtimes,
+            timeout_sec=15,
+            accept=self._is_valid_payment_download_artifact,
+        )
+        if not new_files and getattr(self, "_last_invalid_download_artifacts", None):
+            self._mark_payment_download_error(
+                row_json or {},
+                reason="payment_download_returned_non_pdf",
+                files=getattr(self, "_last_invalid_download_artifacts", []),
+            )
         self.log(f"  [待繳費] 本輪偵測到新檔案: {len(new_files)}")
         return new_files
 
@@ -5471,11 +6839,23 @@ class FileReviewManager:
 
         # 4. 收集新檔案
         self._switch_to_review_list_v1()
-        new_files = self._collect_new_files_from_folder(today_folder, existing_file_mtimes, timeout_sec=15)
+        self._last_invalid_download_artifacts = []
+        new_files = self._collect_new_files_from_folder(
+            today_folder,
+            existing_file_mtimes,
+            timeout_sec=15,
+            accept=self._is_valid_payment_download_artifact,
+        )
+        if not new_files and getattr(self, "_last_invalid_download_artifacts", None):
+            self._mark_payment_download_error(
+                row_json or {},
+                reason="payment_download_returned_non_pdf",
+                files=getattr(self, "_last_invalid_download_artifacts", []),
+            )
         self.log(f"  [繳費單] 偵測到新檔案: {len(new_files)}")
         return new_files
 
-    def download_all_payment_slips(self, max_days: int = 14) -> List[Dict[str, Any]]:
+    def download_all_payment_slips(self, max_days: int = 14, target_case_number: str = None) -> List[Dict[str, Any]]:
         """
         專門下載所有待繳費案件的繳費單 PDF。
 
@@ -5487,6 +6867,21 @@ class FileReviewManager:
         """
         self.log("🔍 開始批次下載繳費單 PDF...")
         results: List[Dict[str, Any]] = []
+        started_at = time.time()
+        try:
+            max_runtime_sec = int(os.environ.get("MAGI_PAYMENT_SLIP_DOWNLOAD_MAX_RUNTIME_SEC", "180") or "180")
+        except Exception:
+            max_runtime_sec = 180
+        max_runtime_sec = max(30, min(max_runtime_sec, 900))
+
+        def _time_exceeded() -> bool:
+            return (time.time() - started_at) > max_runtime_sec
+
+        try:
+            if self.driver and hasattr(self.driver, "implicitly_wait"):
+                self.driver.implicitly_wait(5)
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5788, exc_info=True)
 
         today_folder = os.path.join(
             self.download_folder, time.strftime("%Y%m%d")
@@ -5505,44 +6900,17 @@ class FileReviewManager:
 
         # ========= 步驟 1: 切到列表頁 (下載列表 FHD2C) =========
         try:
-            self.driver.switch_to.default_content()
-            # 點擊側邊欄的列表式查看（會載入 FHD2B 或 FHD2C）
-            # 我們需要的是有 data-json 的列表（FHD2C），所以用 check_and_download_available 的方式
-            list_view_btn = None
-            for selector in [
-                "//a[contains(normalize-space(.), '列表式查看')]",
-                "//a[contains(., '列表式查看')]",
-            ]:
-                try:
-                    el = self.driver.find_element(By.XPATH, selector)
-                    if el and el.is_displayed():
-                        list_view_btn = el
-                        break
-                except Exception:
-                    continue
+            if _time_exceeded():
+                self.log(f"  ⏳ 繳費單下載達時間上限 {max_runtime_sec}s，結束本輪")
+                return results
+            if not self._open_review_list_v1():
+                self.log("  ❌ 導航到列表頁失敗: 無法定位列表 frame")
+                return results
 
-            if list_view_btn:
-                try:
-                    ActionChains(self.driver).move_to_element(list_view_btn).click().perform()
-                except Exception:
-                    self.driver.execute_script("arguments[0].click();", list_view_btn)
-                self.log("  ✓ 點擊「列表式查看」")
-                time.sleep(1.5)
-
-            self.driver.switch_to.default_content()
-            main_iframe = self.driver.find_element(
-                By.XPATH, "//iframe[@name='main-content'] | //iframe[@id='main-content']"
-            )
-            self.driver.switch_to.frame(main_iframe)
-            time.sleep(1)
-            try:
-                v1_iframe = self.driver.find_element(
-                    By.XPATH, "//iframe[@name='v1'] | //iframe[@id='v1']"
-                )
-                self.driver.switch_to.frame(v1_iframe)
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4140, exc_info=True)
-            time.sleep(2)
+            if _time_exceeded():
+                self.log(f"  ⏳ 繳費單下載達時間上限 {max_runtime_sec}s，結束本輪")
+                return results
+            time.sleep(0.5)
 
             # 滾動以確保所有內容載入
             try:
@@ -5577,12 +6945,26 @@ class FileReviewManager:
         pending_rows = []
         today_str = time.strftime("%Y-%m-%d")
         for rd in rows_data:
+            if _time_exceeded():
+                self.log(f"  ⏳ 繳費單下載達時間上限 {max_runtime_sec}s，停止收集待繳費列")
+                break
             rj = rd.get("row_json") if isinstance(rd.get("row_json"), dict) else {}
             rt = str(rd.get("row_text") or "")
             if self._is_pending_payment_row(rj, row_text=rt):
+                if target_case_number and not self._matches_target_case_number(
+                    target_case_number,
+                    rj.get("yyidno"),
+                    rj.get("showyyidno"),
+                    rj.get("c60yyidno"),
+                    rt,
+                ):
+                    continue
+
                 # 檢查是否在期限內
                 pay_deadline = str(rj.get("paylimitdt") or rj.get("limitdt") or "").strip()
-                if pay_deadline and len(pay_deadline) == 7:
+                # Gmail 已寄出繳費信時，代表這張繳費單需要處理；
+                # 指定案號下載不受例行掃描的 max_days 窗口限制。
+                if not target_case_number and pay_deadline and len(pay_deadline) == 7:
                     try:
                         y = int(pay_deadline[:3]) + 1911
                         m = int(pay_deadline[3:5])
@@ -5616,23 +6998,35 @@ class FileReviewManager:
                 if existing:
                     _existing_paths = existing.get("file_paths") or []
                     _label = rj.get('showyyidno') or rj.get('yyidno') or '-'
-                    if _existing_paths and all(os.path.exists(fp) for fp in _existing_paths):
+                    _valid_existing_paths = [
+                        fp for fp in _existing_paths
+                        if os.path.exists(fp) and self._is_valid_payment_download_artifact(fp)
+                    ]
+                    if _valid_existing_paths:
                         self.log(f"  ⏭️ 已有繳費單: {_label}")
                         results.append({
                             "case_number": rj.get("showyyidno") or rj.get("yyidno") or "",
                             "party": rj.get("clnm") or "",
                             "court": rj.get("crtid") or "",
-                            "pdf_path": _existing_paths[0],
+                            "rowid": rj.get("rowid") or "",
+                            "payid": rj.get("p_payid") or rj.get("payid") or "",
+                            "pdf_path": _valid_existing_paths[0],
+                            "all_paths": _valid_existing_paths,
                             "already_existed": True,
                         })
+                        continue
+                    if _existing_paths:
+                        self.log(f"  ♻️ registry 只有無效/錯誤繳費單，重新下載: {_label}")
                     else:
-                        self.log(f"  ⏭️ 已處理過（registry 有記錄）: {_label}")
-                    continue
+                        self.log(f"  ♻️ registry 沒有可核對的繳費單 PDF，重新下載: {_label}")
                 # fallback：相容查詢（舊 registry 格式用未正規化的 key）
                 if self._is_payment_processed(rj):
                     _label = rj.get('showyyidno') or rj.get('yyidno') or '-'
                     self.log(f"  ⏭️ 已處理過（相容比對）: {_label}")
                     continue
+                if self._payment_notification_already_seen(rj):
+                    _label = rj.get('showyyidno') or rj.get('yyidno') or '-'
+                    self.log(f"  ♻️ 只有舊通知記錄、沒有可核對 PDF，繼續下載: {_label}")
 
                 pending_rows.append(rd)
 
@@ -5645,6 +7039,9 @@ class FileReviewManager:
 
         # ========= 步驟 3: 依序下載每筆繳費單 =========
         for i, rd in enumerate(pending_rows):
+            if _time_exceeded():
+                self.log(f"  ⏳ 繳費單下載達時間上限 {max_runtime_sec}s，停止後續繳費單下載")
+                break
             rj = rd.get("row_json", {})
             row_idx = rd.get("idx", 0)
             case_id = rj.get("showyyidno") or rj.get("yyidno") or f"row_{row_idx}"
@@ -5730,14 +7127,17 @@ class FileReviewManager:
                     "case_number": case_id,
                     "party": party,
                     "court": rj.get("crtid") or "",
+                    "rowid": rj.get("rowid") or "",
+                    "payid": rj.get("p_payid") or rj.get("payid") or "",
                     "pdf_path": pdf_paths[0] if pdf_paths else all_paths[0],
                     "all_paths": all_paths,
                     "already_existed": False,
                 })
                 self.log(f"    ✅ 繳費單已下載: {new_files}")
             else:
-                # 即使沒抓到檔案也記錄（避免重複嘗試）
-                self._mark_payment_processed(rj, files=[], case_info={
+                # 沒有拿到 PDF 不能標成已處理；只記錄短暫錯誤冷卻，
+                # 讓下一輪仍可重試，避免「沒有繳費單卻永久略過」。
+                self._mark_payment_download_error(rj, reason="payment_slip_download_no_pdf", files=[], case_info={
                     "case_number": case_id, "party": party,
                 })
                 self.log(f"    ⚠️ 未偵測到繳費單檔案")
@@ -5790,6 +7190,16 @@ class FileReviewManager:
             self.log("  未下載任何檔案 (可能已過期或無需下載)")
             return True # 沒檔案也算執行成功，避免報錯
 
+    def _record_verified_existing_portal_signature(self, signature: str) -> None:
+        """Keep every existing-file smart skip tied to its portal row receipt."""
+        if signature:
+            self.last_download_verified_existing_signature_hashes.add(signature)
+
+    def _record_mismatch_deferred_portal_signature(self, signature: str) -> None:
+        """Bind an active cross-case cooldown to the current anonymous row."""
+        if signature:
+            self.last_download_mismatch_deferred_signature_hashes.add(signature)
+
     def check_and_download_available(self, target_case_number: str = None) -> List[str]:
         """
         檢查並下載可下載的閱卷資料
@@ -5807,10 +7217,23 @@ class FileReviewManager:
         # 每輪重置，避免跨 run 汙染
         self._last_download_meta_by_file = {}
         self._last_smart_skipped_files = []
+        self.last_download_error_code = ""
+        self.last_download_error_detail = ""
+        self.last_download_error_events = []
+        self._case_identity_mismatch_events = []
+        self.last_download_deferred = False
+        self.last_download_deferred_reason = ""
+        self.last_download_total_count = 0
+        self.last_download_processed_count = 0
+        self.last_download_processed_signature_hashes = set()
+        self.last_download_verified_existing_signature_hashes = set()
+        self.last_download_mismatch_deferred_signature_hashes = set()
         # new_file_path -> case meta (party/showyyidno/yyidno/court). Used for human-readable reporting.
         download_meta_by_file = {}
+        allow_payment_slip_print = self._allow_payment_slip_print_during_general_download()
         start_ts = time.time()
         max_runtime_sec = int(os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_MAX_RUNTIME_SEC", "900") or "900")
+        download_deadline_ts = start_ts + max_runtime_sec
 
         def _time_exceeded() -> bool:
             """
@@ -5819,16 +7242,32 @@ class FileReviewManager:
             這裡用「整個 download 檢查」的總時間上限，確保不會卡死 nightly。
             """
             return (time.time() - start_ts) > max_runtime_sec
+
+        def _mark_time_budget_deferred(*, processed: int, total: int) -> None:
+            self.last_download_deferred = True
+            self.last_download_deferred_reason = "download_time_budget_exhausted"
+            self.last_download_processed_count = max(0, int(processed))
+            self.last_download_total_count = max(
+                self.last_download_processed_count,
+                int(total),
+            )
     
         try:
             self.log(f"檢查可下載的閱卷資料 (目標: {target_case_number or '全部'})...")
+            if allow_payment_slip_print:
+                self.log("  ⚠️ 一般閱卷下載已允許自動列印繳費單（MAGI_FILE_REVIEW_GENERAL_DOWNLOAD_PRINT_PAYMENT_SLIPS=1）")
             if _time_exceeded():
                 self.log(f"  ⏳ 已達時間上限 {max_runtime_sec}s，結束本輪檢查（避免 nightly 卡死）")
+                _mark_time_budget_deferred(processed=0, total=0)
                 return downloaded_files
             
             # 重要: 先回到主文件，因為 navigate_to_file_review 可能在巢狀 frame 內
             # 側邊選單 (列表式查看) 在根層級，不在 frame 內
             self.driver.switch_to.default_content()
+            if self._current_page_has_invalid_csrf():
+                self.log("  ⚠️ 下載前偵測到 invalid CSRF token，需重開 session 後重試")
+                self._mark_download_error("invalid_csrf_token", "current page contains invalid CSRF token")
+                return downloaded_files
             
             # 點選「列表式查看」(使用 contains(., text) 匹配 <a><i>icon</i> 文字</a> 結構)
             list_view_btn = None
@@ -5858,6 +7297,7 @@ class FileReviewManager:
 
             if _time_exceeded():
                 self.log(f"  ⏳ 已達時間上限 {max_runtime_sec}s，結束本輪檢查（避免 nightly 卡死）")
+                _mark_time_budget_deferred(processed=0, total=0)
                 return downloaded_files
             
             # 重要: 切換到 main-content iframe (選單項目的 target="main-content")
@@ -5975,12 +7415,16 @@ class FileReviewManager:
                                 _row = _btn.find_element(By.XPATH, "./ancestor::tr")
                                 self.log(f"    [debug] row[{_i}] text={repr(_row.text[:120])}")
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6115, exc_info=True)
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6117, exc_info=True)
                     return downloaded_files
 
             if not download_btns:
+                if self._current_page_has_invalid_csrf():
+                    self.log("  ⚠️ 下載列表回傳 invalid CSRF token，需重開 session 後重試")
+                    self._mark_download_error("invalid_csrf_token", "download list contains invalid CSRF token")
+                    return downloaded_files
                 self.log(f"  找到 {len(download_btns)} 個可下載項目 (沒有資料)")
                 self.log("  ℹ️ 目前無可下載資料")
                 # Debug: 截圖和 HTML 以便分析
@@ -6062,6 +7506,10 @@ class FileReviewManager:
                                 self._notify_payment_if_needed(row_json, case_info=case_info, file_paths=None)
                                 continue
 
+                            if not allow_payment_slip_print:
+                                self.log(f"  ⏭️ 一般閱卷下載不自動列印繳費單，避免觸發法院舊案通知: {case_info.get('party') or '(未知)'}｜{case_info.get('case_number') or case_info.get('showyyidno') or '-'}")
+                                continue
+
                             payment_new_files = self._download_payment_slip_from_row(
                                 row,
                                 row_json=row_json,
@@ -6137,6 +7585,8 @@ class FileReviewManager:
                 "//table[@id='tablecontext']//tbody//tr//button[@title='下載']",
                 # 備用：只有 fa-download 圖示沒有 span 文字的按鈕 (排除批次)
                 "//tbody//tr[@id='trdata']//button[.//i[contains(@class, 'fa-download')]]",
+                # 法院偶爾把 button 改成 input/a，title 契約仍為「下載」
+                "//*[@title='下載' and (self::button or self::input or self::a)]",
             ]
             
             for sel in selectors:
@@ -6199,6 +7649,7 @@ class FileReviewManager:
                          self.log("  ⚠️ 在此選擇器下未找到符合目標案號的按鈕")
             
             self.log(f"  找到 {len(download_btns)} 個可下載項目")
+            self.last_download_total_count = len(download_btns)
             
             # 建立今日日期資料夾
             today_folder = os.path.join(
@@ -6246,6 +7697,10 @@ class FileReviewManager:
             for i, btn in enumerate(download_btns):
                 if _time_exceeded():
                     self.log(f"  ⏳ 已達時間上限 {max_runtime_sec}s，停止後續按鈕處理（已完成 {i}/{len(download_btns)}）")
+                    _mark_time_budget_deferred(
+                        processed=i,
+                        total=len(download_btns),
+                    )
                     break
                 try:
                     # 擷取該下載按鈕所在表格列 (tr) 的案件資訊
@@ -6302,7 +7757,7 @@ class FileReviewManager:
                         row_text = ""
 
                     # 待繳費流程：
-                    # - 未處理：下載繳費單並通知，該列不進入卷宗下載
+                    # - 未處理：一般閱卷下載預設不列印繳費單，避免觸發法院通知信
                     # - 已處理：僅補通知（必要時），並繼續嘗試卷宗下載
                     row_has_online_download = False
                     try:
@@ -6356,77 +7811,92 @@ class FileReviewManager:
                             self._notify_payment_if_needed(payment_row_json, case_info=case_info, file_paths=None)
                             self.log("  ℹ️ 繳費單已處理，繼續嘗試卷宗檔案下載")
                         else:
-                            self.log(f"  💰 偵測待繳費項目，嘗試下載繳費單: {party_payment}｜{yyidno_payment or '-'}")
-                            payment_new_files = []
-                            try:
-                                if payment_row is not None:
-                                    payment_new_files = self._download_payment_slip_from_row(
-                                        payment_row,
-                                        row_json=payment_row_json,
-                                        today_folder=today_folder,
-                                        existing_file_mtimes=existing_file_mtimes,
-                                    ) or []
-                            except Exception as pay_e:
-                                self.log(f"  ⚠️ 待繳費下載流程失敗: {pay_e}")
-
-                            case_meta = {
-                                "court": (case_info.get("court") or payment_row_json.get("crtid") or ""),
-                                "case_number": (case_info.get("case_number") or payment_row_json.get("yyidno") or ""),
-                                "showyyidno": (case_info.get("showyyidno") or payment_row_json.get("showyyidno") or ""),
-                                "party": (case_info.get("party") or payment_row_json.get("clnm") or ""),
-                                "artifact_type": "payment_slip",
-                            }
-
-                            payment_paths = []
-                            if payment_new_files:
-                                self.log(f"  ✅ 待繳費下載完成 {len(payment_new_files)} 份")
-                                yyidno_reg = (case_meta.get("case_number") or case_meta.get("showyyidno") or "").strip()
-                                _pay_party = (case_meta.get("party") or "").strip()
-                                _pay_case = yyidno_reg
-                                for nf in payment_new_files:
-                                    srcp = os.path.join(today_folder, nf)
-                                    # 重新命名繳費單 PDF
-                                    if nf.lower().endswith(".pdf") and _pay_party and _pay_case:
-                                        safe_case = re.sub(r'[\\/:*?"<>|]', '', _pay_case).strip()
-                                        safe_party = re.sub(r'[\\/:*?"<>|]', '', _pay_party).strip()
-                                        new_name = f"繳費單_{safe_party}_{safe_case}.pdf"
-                                        dst = os.path.join(today_folder, new_name)
-                                        if os.path.exists(dst) and dst != srcp:
-                                            base, ext = os.path.splitext(new_name)
-                                            for _ridx in range(1, 100):
-                                                dst = os.path.join(today_folder, f"{base}_{_ridx}{ext}")
-                                                if not os.path.exists(dst):
-                                                    break
-                                        try:
-                                            os.rename(srcp, dst)
-                                            srcp = dst
-                                            self.log(f"    📝 重新命名: {nf} → {os.path.basename(dst)}")
-                                        except Exception:
-                                            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4966, exc_info=True)
-                                    payment_paths.append(srcp)
-                                    download_meta_by_file[srcp] = dict(case_meta)
-                                    self._register_downloaded(os.path.basename(srcp), yyidno=yyidno_reg, case_info=case_meta)
-                                self._mark_payment_processed(payment_row_json, files=payment_paths, case_info=case_meta)
+                            if not allow_payment_slip_print:
+                                self.log(f"  ⏭️ 一般閱卷下載不自動列印繳費單，避免觸發法院舊案通知: {party_payment}｜{yyidno_payment or '-'}")
+                                if row_has_online_download:
+                                    self.log("  ℹ️ 同列可見「線上下載」，不列印繳費單並繼續嘗試卷宗下載。")
+                                else:
+                                    continue
                             else:
-                                self.log("  ⚠️ 未偵測到繳費單檔案（可能尚未觸發下載）")
+                                self.log(f"  💰 偵測待繳費項目，嘗試下載繳費單: {party_payment}｜{yyidno_payment or '-'}")
+                                payment_new_files = []
+                                try:
+                                    if payment_row is not None:
+                                        payment_new_files = self._download_payment_slip_from_row(
+                                            payment_row,
+                                            row_json=payment_row_json,
+                                            today_folder=today_folder,
+                                            existing_file_mtimes=existing_file_mtimes,
+                                        ) or []
+                                except Exception as pay_e:
+                                    self.log(f"  ⚠️ 待繳費下載流程失敗: {pay_e}")
 
-                            try:
-                                self._notify_payment_if_needed(payment_row_json, case_info=case_meta, file_paths=payment_paths)
-                            except Exception as n_e:
-                                self.log(f"  ⚠️ 待繳費通知失敗: {n_e}")
-                            # 這類列在法院端可能同時顯示「待繳費」訊息與「線上下載」按鈕。
-                            # 若直接 continue 會錯過可下載卷宗，因此此情況要續跑下載流程。
-                            if row_has_online_download:
-                                self.log("  ℹ️ 同列可見「線上下載」，繼續嘗試卷宗下載。")
-                            else:
-                                continue
+                                case_meta = {
+                                    "court": (case_info.get("court") or payment_row_json.get("crtid") or ""),
+                                    "case_number": (case_info.get("case_number") or payment_row_json.get("yyidno") or ""),
+                                    "showyyidno": (case_info.get("showyyidno") or payment_row_json.get("showyyidno") or ""),
+                                    "party": (case_info.get("party") or payment_row_json.get("clnm") or ""),
+                                    "artifact_type": "payment_slip",
+                                }
 
-                    # ★★★ Registry 去重：分兩種情境 ★★★
-                    # 1. row 沒有「線上下載」按鈕：用 case-level dedup（看 yyidno 是否完全下載過）跳過
-                    # 2. row 有「線上下載」按鈕：用 button-level dedup（看 rowid 是否點過）跳過
-                    #    — 因為同案可能有多個聲請（多 row），每個 row 是獨立的下載按鈕
-                    #    — 同案資料夾已有舊卷宗也不能跳，法院可能追加上傳新卷宗
-                    #    — 檔案層級的去重（檔名/hash）由 archive 階段處理：已存在則刪、不存在則歸檔
+                                payment_paths = []
+                                if payment_new_files:
+                                    self.log(f"  ✅ 待繳費下載完成 {len(payment_new_files)} 份")
+                                    yyidno_reg = (case_meta.get("case_number") or case_meta.get("showyyidno") or "").strip()
+                                    _pay_party = (case_meta.get("party") or "").strip()
+                                    _pay_case = yyidno_reg
+                                    for nf in payment_new_files:
+                                        srcp = os.path.join(today_folder, nf)
+                                        # 重新命名繳費單 PDF
+                                        if nf.lower().endswith(".pdf") and _pay_party and _pay_case:
+                                            safe_case = re.sub(r'[\\/:*?"<>|]', '', _pay_case).strip()
+                                            safe_party = re.sub(r'[\\/:*?"<>|]', '', _pay_party).strip()
+                                            new_name = f"繳費單_{safe_party}_{safe_case}.pdf"
+                                            dst = os.path.join(today_folder, new_name)
+                                            if os.path.exists(dst) and dst != srcp:
+                                                base, ext = os.path.splitext(new_name)
+                                                for _ridx in range(1, 100):
+                                                    dst = os.path.join(today_folder, f"{base}_{_ridx}{ext}")
+                                                    if not os.path.exists(dst):
+                                                        break
+                                            try:
+                                                os.rename(srcp, dst)
+                                                srcp = dst
+                                                self.log(f"    📝 重新命名: {nf} → {os.path.basename(dst)}")
+                                            except Exception:
+                                                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 4966, exc_info=True)
+                                        payment_paths.append(srcp)
+                                        download_meta_by_file[srcp] = dict(case_meta)
+                                        self._register_downloaded(os.path.basename(srcp), yyidno=yyidno_reg, case_info=case_meta)
+                                    self._mark_payment_processed(payment_row_json, files=payment_paths, case_info=case_meta)
+                                else:
+                                    self.log("  ⚠️ 未偵測到繳費單檔案（可能尚未觸發下載）")
+
+                                try:
+                                    self._notify_payment_if_needed(payment_row_json, case_info=case_meta, file_paths=payment_paths)
+                                except Exception as n_e:
+                                    self.log(f"  ⚠️ 待繳費通知失敗: {n_e}")
+                                # 這類列在法院端可能同時顯示「待繳費」訊息與「線上下載」按鈕。
+                                # 若直接 continue 會錯過可下載卷宗，因此此情況要續跑下載流程。
+                                if row_has_online_download:
+                                    self.log("  ℹ️ 同列可見「線上下載」，繼續嘗試卷宗下載。")
+                                else:
+                                    continue
+
+                    # The portal leaves a green 「線上下載」 control on expired
+                    # rows. Opening every such row only yields an empty popup
+                    # and used to hide real failures among dozens of false
+                    # "missing button" warnings.
+                    if self._is_download_deadline_expired_text(row_text):
+                        self.log(
+                            f"  ⏭️ [下載期限已過] 跳過案號 "
+                            f"{case_info.get('case_number') or case_info.get('showyyidno') or '-'}"
+                        )
+                        continue
+
+                    # ★★★ Registry 去重：只在 opt-in 時做整案/按鈕跳過 ★★★
+                    # OLA 可能對同一案件、同一 rowid 分批追加卷證；排程必須重探。
+                    # 檔案層級的去重（檔名/hash）由 archive 階段處理：已存在則跳、不存在則歸檔。
                     yyidno_for_dedup = (case_info.get("case_number") or case_info.get("showyyidno") or "").strip()
                     party_label = (case_info.get("party") or "").strip() or "(未知)"
                     # row_json 是 scope 內的 local 變數（line ~5660 由 _extract_row_json 提取）
@@ -6436,6 +7906,30 @@ class FileReviewManager:
                             row_id_for_dedup = str(row_json.get("rowid") or row_json.get("no") or "").strip()
                     except Exception:
                         row_id_for_dedup = ""
+                    row_receipt_signature = canonical_portal_download_signature(
+                        {
+                            **(row_json if isinstance(row_json, dict) else {}),
+                            "row_text": str(row_text or "")[:1000],
+                        }
+                    )
+
+                    if isinstance(case_info, dict):
+                        case_info["_portal_rowid"] = row_id_for_dedup
+                        case_info["_portal_row_json"] = row_json if isinstance(row_json, dict) else {}
+
+                    if row_has_online_download and self._is_case_mismatch_suppressed(case_info, row_json):
+                        self._record_mismatch_deferred_portal_signature(
+                            row_receipt_signature
+                        )
+                        self.last_download_deferred = True
+                        self.last_download_deferred_reason = (
+                            "court_payload_identity_mismatch"
+                        )
+                        self.log(
+                            f"  🔒 [跨案回應冷卻] 暫不重點 rowid={row_id_for_dedup or '-'} "
+                            f"({party_label}/{yyidno_for_dedup})；列資料變更或冷卻到期後會再驗證"
+                        )
+                        continue
 
                     if not row_has_online_download:
                         # 情境 1：沒下載按鈕 → 用 case-level dedup
@@ -6447,30 +7941,27 @@ class FileReviewManager:
                             continue
                     else:
                         # 情境 2：有下載按鈕 → 用 button-level (rowid) dedup
-                        if row_id_for_dedup and self._is_rowid_clicked(row_id_for_dedup):
-                            isdown_flag = ""
-                            downdt_flag = ""
-                            try:
-                                if isinstance(row_json, dict):
-                                    isdown_flag = str(row_json.get("isdown") or "").strip().upper()
-                                    downdt_flag = str(row_json.get("downdt") or "").strip()
-                            except Exception:
-                                pass
-                            if not isdown_flag and not downdt_flag:
-                                if (
-                                    yyidno_for_dedup
-                                    and self.enable_case_level_download_skip
-                                    and self._is_yyidno_fully_downloaded(yyidno_for_dedup)
-                                ):
-                                    self.log(f"  ⏭️ [已下載] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——法院端仍顯示未下載，但 registry 已有卷宗")
-                                    continue
-                                if self._case_review_folder_has_files(case_info):
-                                    self.log(f"  ⏭️ [已歸檔] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——法院端仍顯示未下載，但案件資料夾已有卷宗")
-                                    continue
-                                self.log(f"  ℹ️ [registry stale] rowid={row_id_for_dedup} 已記錄，但法院端顯示未下載且本機未找到卷宗，續跑: {party_label}/{yyidno_for_dedup}")
-                            else:
-                                self.log(f"  ⏭️ [按鈕已點過] 跳過 rowid={row_id_for_dedup} ({party_label}/{yyidno_for_dedup})——button registry 已有紀錄")
-                                continue
+                        if (
+                            self.enable_button_level_download_skip
+                            and row_id_for_dedup
+                            and self._is_rowid_clicked(row_id_for_dedup, row_json=row_json)
+                        ):
+                            # Registration only happens after a complete review
+                            # artifact passes the existing validity gate.  The
+                            # portal often leaves isdown/downdt blank even after
+                            # a successful download, especially when the case
+                            # cannot yet be mapped to a local folder.  Requiring
+                            # those display fields here would defeat the bounded
+                            # registry and repeatedly download the same payload.
+                            self.log(
+                                f"  ⏭️ [近期已驗證下載] 跳過 rowid={row_id_for_dedup} "
+                                f"({party_label}/{yyidno_for_dedup})——列簽章未變；更新或冷卻屆滿將自動重驗"
+                            )
+                            if row_receipt_signature:
+                                self._record_verified_existing_portal_signature(
+                                    row_receipt_signature
+                                )
+                            continue
                         if self._case_review_folder_has_files(case_info):
                             self.log(f"  ℹ️ [追加上傳偵測] 資料夾已有舊閱卷資料，但 portal 仍顯示「線上下載」且此 rowid 未點過，續跑（檔名/hash dedup 會擋重複）: {yyidno_for_dedup} ({party_label})")
                     
@@ -6562,7 +8053,12 @@ class FileReviewManager:
                             self.log("    jQuery 無效，嘗試直接呼叫 doViewFile()...")
                             try:
                                 row_json = self.driver.execute_script("return $(arguments[0]).closest('tr').data('json');", btn)
-                                self.log(f"    取得 Row JSON: {row_json}")
+                                # Portal rows contain names, ID numbers, phones and e-mail.
+                                # Never serialize the full object into durable worker logs.
+                                self.log(
+                                    "    已取得案件列資料 "
+                                    f"(fields={len(row_json) if isinstance(row_json, dict) else 0})"
+                                )
                                 
                                 if row_json:
                                     # ★ (補)更新案件資料: 確保 showyyidno 被擷取
@@ -6571,7 +8067,7 @@ class FileReviewManager:
                                         case_info["case_number"] = row_json.get("yyidno", "") or case_info.get("case_number", "")
                                         case_info["showyyidno"] = row_json.get("showyyidno", "")
                                         case_info["party"] = row_json.get("clnm", "")
-                                        self.log(f"    (補)更新案件資料: {case_info.get('showyyidno')}")
+                                        self.log("    (補)案件識別資料已更新")
                                     except Exception:
                                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5097, exc_info=True)
 
@@ -6682,7 +8178,24 @@ class FileReviewManager:
                         temp_info = TempInfo(case_info.get('case_number'), case_info.get('party'))
                         target_case_folder = self._resolve_case_folder(temp_info)
                     
-                    self._handle_download_popup(target_case_folder=target_case_folder)
+                    smart_skip_count_before = len(self._last_smart_skipped_files)
+                    popup_owned_files = self._handle_download_popup(
+                        target_case_folder=target_case_folder,
+                        resume_key=(
+                            row_id_for_dedup
+                            or yyidno_for_dedup
+                            or case_info.get("showyyidno")
+                            or case_info.get("case_number")
+                        ),
+                        deadline_ts=download_deadline_ts,
+                    ) or []
+                    if (
+                        row_receipt_signature
+                        and len(self._last_smart_skipped_files) > smart_skip_count_before
+                    ):
+                        self._record_verified_existing_portal_signature(
+                            row_receipt_signature
+                        )
                     
                     # 等待下載
                     self.log("  等待檔案下載完成...")
@@ -6695,6 +8208,8 @@ class FileReviewManager:
                             "case_number": (case_info.get("case_number") or "") if isinstance(case_info, dict) else "",
                             "showyyidno": (case_info.get("showyyidno") or "") if isinstance(case_info, dict) else "",
                             "party": (case_info.get("party") or "") if isinstance(case_info, dict) else "",
+                            "_portal_rowid": (case_info.get("_portal_rowid") or "") if isinstance(case_info, dict) else "",
+                            "_portal_row_json": (case_info.get("_portal_row_json") or {}) if isinstance(case_info, dict) else {},
                         }
                     except Exception:
                         case_meta = {}
@@ -6705,6 +8220,32 @@ class FileReviewManager:
                         _scan_dirs = [d for d in set([today_folder, self.download_folder]) if os.path.exists(d)]
                         if not _scan_dirs:
                             return found
+                        # Preferred contract: the popup that was opened for this
+                        # exact outer row reports the files it observed. This
+                        # prevents a previous row's late download from being
+                        # claimed by whichever row happens to be processed next.
+                        if popup_owned_files:
+                            for _owned_path in popup_owned_files:
+                                candidate_path = os.path.abspath(str(_owned_path or ""))
+                                if not os.path.isfile(candidate_path):
+                                    continue
+                                if not self._is_valid_review_download_artifact(candidate_path):
+                                    continue
+                                binding = self._review_artifact_case_binding(candidate_path, case_meta)
+                                if binding.get("status") == "mismatch":
+                                    self._quarantine_case_mismatch(
+                                        candidate_path,
+                                        case_meta=case_meta,
+                                        binding=binding,
+                                    )
+                                    self._record_mismatch_deferred_portal_signature(
+                                        row_receipt_signature
+                                    )
+                                    continue
+                                existing_file_mtimes[candidate_path] = os.path.getmtime(candidate_path)
+                                found.append(candidate_path)
+                            if found:
+                                return list(dict.fromkeys(found))
                         start = time.time()
                         while time.time() - start < timeout_sec:
                             try:
@@ -6718,7 +8259,7 @@ class FileReviewManager:
                                         current_mtime = os.path.getmtime(fpath)
                                         old_mtime = existing_file_mtimes.get(fpath, 0)
                                         if fpath not in existing_file_mtimes or current_mtime > old_mtime:
-                                            found.append(fpath)
+                                            candidate_path = fpath
                                             # update baseline so subsequent cases won't "claim" the same file
                                             existing_file_mtimes[fpath] = current_mtime
                                             # 若在 root，搬到 today_folder
@@ -6729,10 +8270,37 @@ class FileReviewManager:
                                                         import shutil as _shutil
                                                         _shutil.move(fpath, dst)
                                                         self.log(f"    ✓ 檔案從 root 移到日期資料夾: {filename}")
-                                                        found[-1] = dst
+                                                        candidate_path = dst
                                                         existing_file_mtimes[dst] = current_mtime
                                                 except Exception as _mv_e:
                                                     self.log(f"    ⚠️ 移檔失敗: {_mv_e}")
+                                            if not self._is_valid_review_download_artifact(candidate_path):
+                                                # A large OLA file can expose its final name
+                                                # before Chromium has written the trailer. Do
+                                                # not move that live file out from under the
+                                                # downloader; keep polling until it becomes a
+                                                # complete PDF. Non-PDF payloads remain safe to
+                                                # quarantine immediately.
+                                                try:
+                                                    with open(candidate_path, "rb") as _pdf_probe:
+                                                        _looks_like_pdf = _pdf_probe.read(8).lstrip().startswith(b"%PDF")
+                                                except Exception:
+                                                    _looks_like_pdf = False
+                                                if not _looks_like_pdf:
+                                                    self._quarantine_invalid_download(candidate_path)
+                                                continue
+                                            binding = self._review_artifact_case_binding(candidate_path, case_meta)
+                                            if binding.get("status") == "mismatch":
+                                                self._quarantine_case_mismatch(
+                                                    candidate_path,
+                                                    case_meta=case_meta,
+                                                    binding=binding,
+                                                )
+                                                self._record_mismatch_deferred_portal_signature(
+                                                    row_receipt_signature
+                                                )
+                                                continue
+                                            found.append(candidate_path)
                             except Exception:
                                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5243, exc_info=True)
                             time.sleep(0.8)
@@ -6758,10 +8326,10 @@ class FileReviewManager:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5264, exc_info=True)
                         yyidno_reg = (case_meta.get("case_number") or case_meta.get("showyyidno") or "").strip()
                         for nf in new_for_case:
-                            srcp = os.path.join(today_folder, nf)
+                            srcp = nf if os.path.isabs(str(nf)) else os.path.join(today_folder, str(nf))
                             download_meta_by_file[srcp] = dict(case_meta)
                             # ★ 將檔案登錄到 registry
-                            self._register_downloaded(nf, yyidno=yyidno_reg, case_info=case_meta)
+                            self._register_downloaded(os.path.basename(srcp), yyidno=yyidno_reg, case_info=case_meta)
 
                         # Button-level dedup must mean "this review-download button produced
                         # a review artifact", not merely "a popup opened".  OLA can show the
@@ -6770,15 +8338,21 @@ class FileReviewManager:
                         # by payment_registry and must not consume the review rowid either.
                         review_files = [
                             p for p in new_for_case
-                            if "繳費單" not in os.path.basename(str(p))
+                            if self._is_valid_review_download_artifact(str(p))
                         ]
+                        if review_files and row_receipt_signature:
+                            self.last_download_processed_signature_hashes.add(
+                                row_receipt_signature
+                            )
                         if review_files and row_id_for_dedup:
                             try:
                                 _info_for_reg = {
                                     "case_number": (case_info.get("case_number") if isinstance(case_info, dict) else "") or yyidno_for_dedup,
                                     "party": (case_info.get("party") if isinstance(case_info, dict) else "") or party_label,
+                                    "_portal_row_json": row_json if isinstance(row_json, dict) else {},
                                 }
                                 self._register_rowid_clicked(row_id_for_dedup, _info_for_reg)
+                                self._clear_case_mismatch_suppression(case_meta)
                                 self.log(f"  ✓ 已登錄 rowid: {row_id_for_dedup}")
                             except Exception as _rrc_e:
                                 self.log(f"  ⚠️ 登錄 rowid 失敗: {_rrc_e}")
@@ -6806,9 +8380,25 @@ class FileReviewManager:
                             
                     except Exception as e:
                         self.log(f"  ⚠️ 恢復 frame context 失敗: {e}")
+
+                    if self.last_download_deferred:
+                        _mark_time_budget_deferred(
+                            processed=i,
+                            total=len(download_btns),
+                        )
+                        break
                     
                 except Exception as e:
                     self.log(f"  ⚠️ 下載第 {i+1} 個項目失敗: {e}")
+                    if self.last_download_deferred:
+                        _mark_time_budget_deferred(
+                            processed=i,
+                            total=len(download_btns),
+                        )
+                        break
+
+            if not self.last_download_deferred:
+                self.last_download_processed_count = len(download_btns)
             
             # 檢查新下載的檔案
             self.log("  檢查新檔案並歸檔...")
@@ -6826,6 +8416,12 @@ class FileReviewManager:
                         fp = os.path.join(_late_dir, fn)
                         if not os.path.isfile(fp):
                             continue
+                        # Record newness before moving.  Court downloads may
+                        # preserve the document's old server mtime, so wall-clock
+                        # comparison alone can discard a file that arrived now.
+                        _late_was_new = self._download_file_changed_since_snapshot(
+                            fp, existing_file_mtimes
+                        )
                         # 若在 root，移到 today_folder
                         if _late_dir == self.download_folder and _late_dir != today_folder:
                             dst = os.path.join(today_folder, fn)
@@ -6836,16 +8432,52 @@ class FileReviewManager:
                                     fp = dst
                                     self.log(f"  ✓ 後補移檔: {fn} → today_folder")
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 6980, exc_info=True)
                         if fp in download_meta_by_file:
                             continue
                         try:
-                            if os.path.getmtime(fp) >= (download_start_time - 1):
+                            if (
+                                _late_was_new
+                                or self._download_file_changed_since_snapshot(fp, existing_file_mtimes)
+                                or os.path.getmtime(fp) >= (download_start_time - 1)
+                            ) and self._is_valid_review_download_artifact(fp):
                                 download_meta_by_file[fp] = {}
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5316, exc_info=True)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5318, exc_info=True)
+
+            # Remove abandoned final-name prefixes left by a cancelled browser
+            # session. Active downloads are normally `.crdownload`; the age
+            # guard prevents moving a final-name file that is still settling.
+            try:
+                for _partial_dir in set([today_folder, self.download_folder]):
+                    if not os.path.isdir(_partial_dir):
+                        continue
+                    for _partial_name in os.listdir(_partial_dir):
+                        _partial_path = os.path.join(_partial_dir, _partial_name)
+                        if not os.path.isfile(_partial_path) or not _partial_name.lower().endswith(".pdf"):
+                            continue
+                        if self._is_payment_slip_filename(_partial_path):
+                            continue
+                        if self._is_valid_review_download_artifact(_partial_path):
+                            continue
+                        try:
+                            with open(_partial_path, "rb") as _partial_probe:
+                                _partial_is_pdf = _partial_probe.read(8).lstrip().startswith(b"%PDF")
+                            _partial_age = time.time() - os.path.getmtime(_partial_path)
+                        except Exception:
+                            continue
+                        if _partial_is_pdf and _partial_age >= 5:
+                            self._quarantine_invalid_download(
+                                _partial_path,
+                                reason="incomplete_pdf_download",
+                            )
+                            download_meta_by_file.pop(_partial_path, None)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "silent-catch at %s:%s", __name__, 5319, exc_info=True
+                )
 
             candidates = []
             try:
@@ -6891,24 +8523,20 @@ class FileReviewManager:
                     md5 = self._calculate_md5(src)
                         
                     # 檢查是否已存在 (根據 MD5)
-                    is_duplicate = False
+                    duplicate_record = None
                     for record in self.md5_records.values():
                         if record.get('md5') == md5:
-                            is_duplicate = True
+                            duplicate_record = record
                             break
                         
-                    if is_duplicate:
+                    if duplicate_record:
                         self.log(f"  ⏭️ 發現重複檔案 (MD5相同)，跳過: {filename}")
-                        if self.no_delete:
-                            self.log(f"  🔒 MAGI_NO_DELETE=1，保留來源檔案: {filename}")
-                        else:
-                            try:
-                                if safe_remove:
-                                    safe_remove(src, reason="download_dup_md5", allow_delete=True, log=self.log)
-                                else:
-                                    pass  # safe policy: never delete if safe_remove unavailable
-                            except Exception:
-                                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5381, exc_info=True)
+                        self._isolate_duplicate_download(
+                            src,
+                            reason="download_md5_duplicate",
+                            existing_path=str(duplicate_record.get("path") or ""),
+                            metadata={"filename": filename, "md5": md5},
+                        )
                         continue
                             
                     # ★ 檔案已經在 today_folder，不需要移動，直接記錄
@@ -6939,15 +8567,74 @@ class FileReviewManager:
             # ★★★ 歸檔到案件資料夾 ★★★
             if downloaded_files and case_info_list:
                 self._archive_to_case_folders(downloaded_files, case_info_list)
+                self._reconcile_resolved_case_identity_mismatches()
+
+            # A completed full sweep intentionally clears its cursor so the
+            # next hourly run re-probes every portal row for newly added files.
+            # A deferred or failed sweep preserves hashes of individually
+            # verified buttons and resumes without repeating them.
+            if not self.last_download_deferred and not self.last_download_error_code:
+                self._clear_download_resume_state()
             
         except Exception as e:
             self.log(f"⚠️ 檢查下載失敗: {e}")
+            detail = str(e)[:500]
+            try:
+                if self._looks_like_invalid_csrf_text(detail) or self._current_page_has_invalid_csrf():
+                    self._mark_download_error("invalid_csrf_token", detail or "current page contains invalid CSRF token")
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7332, exc_info=True)
         
         return downloaded_files
     
  
     
-    def _handle_download_popup(self, original_handles=None, target_case_folder=None):
+    def _visible_review_dialog_iframe(self):
+        """Return the iframe owned by the newest visible OLA review dialog.
+
+        jQuery UI leaves detached/hidden dialog nodes behind on some portal
+        transitions.  A page-wide ``.ui-dialog-content iframe`` lookup can
+        therefore bind the next case row to the previous row's iframe.  Only
+        an iframe below a currently displayed dialog is eligible, and the
+        newest visible dialog wins.
+        """
+        dialogs = self.driver.find_elements(
+            By.CSS_SELECTOR, ".ui-dialog[role='dialog']"
+        )
+        visible_dialogs = []
+        for dialog in dialogs:
+            try:
+                size = dialog.size or {}
+                if (
+                    dialog.is_displayed()
+                    and float(size.get("width", 0) or 0) > 100
+                    and float(size.get("height", 0) or 0) > 50
+                ):
+                    visible_dialogs.append(dialog)
+            except Exception:
+                continue
+        for dialog in reversed(visible_dialogs):
+            try:
+                frames = dialog.find_elements(
+                    By.CSS_SELECTOR, ".ui-dialog-content iframe, iframe"
+                )
+                for frame in reversed(frames):
+                    try:
+                        if frame.is_displayed():
+                            return frame
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return None
+
+    def _handle_download_popup(
+        self,
+        original_handles=None,
+        target_case_folder=None,
+        resume_key: str = "",
+        deadline_ts: float = None,
+    ):
         """
         處理「線上閱覽」彈窗並下載檔案
         
@@ -6961,6 +8648,58 @@ class FileReviewManager:
           </div>
         </div>
         """
+        popup_owned_files: List[str] = []
+        attempted_download_count = 0
+        verified_button_count = 0
+        pending_download_modes: List[str] = []
+        completed_button_hashes = self._download_resume_completed_buttons(
+            resume_key
+        )
+
+        def _deadline_reached(reserve_sec: int = 45) -> bool:
+            if deadline_ts is None:
+                return False
+            if time.time() + max(0, int(reserve_sec)) < float(deadline_ts):
+                return False
+            self.last_download_deferred = True
+            self.last_download_deferred_reason = "download_time_budget_exhausted"
+            return True
+
+        def _button_resume_hash(button, index: int) -> str:
+            """Hash stable DOM evidence without persisting case/document text."""
+            parts = []
+            try:
+                row = button.find_element(By.XPATH, "./ancestor::tr")
+                parts.extend(
+                    [
+                        str(row.get_attribute("data-json") or ""),
+                        str(row.get_attribute("id") or ""),
+                        str(row.text or ""),
+                    ]
+                )
+            except Exception as exc:
+                self.log(
+                    "  閱覽按鈕所在列無法讀取，改用按鈕屬性建立續傳識別："
+                    f"{type(exc).__name__}"
+                )
+            try:
+                parts.extend(
+                    [
+                        str(button.get_attribute("title") or ""),
+                        str(button.get_attribute("onclick") or ""),
+                        str(button.get_attribute("value") or ""),
+                    ]
+                )
+            except Exception as exc:
+                self.log(
+                    "  閱覽按鈕屬性無法讀取，改用安全索引建立續傳識別："
+                    f"{type(exc).__name__}"
+                )
+            material = "\n".join(part for part in parts if part.strip())
+            if not material:
+                material = f"popup-button-index:{int(index)}"
+            return self._download_resume_hash(material)
+
         try:
             self.log("  === 處理線上閱覽彈窗 ===")
             
@@ -6973,7 +8712,19 @@ class FileReviewManager:
                 # 使用 presence_of_element_located 因為 visibility 檢查有時會失敗
                 # (即使 Dialog 可見，overlay 樣式可能導致 visibility check 失敗)
                 dialog = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".ui-dialog[role='dialog']"))
+                    lambda _driver: next(
+                        (
+                            candidate
+                            for candidate in reversed(
+                                _driver.find_elements(
+                                    By.CSS_SELECTOR, ".ui-dialog[role='dialog']"
+                                )
+                            )
+                            if candidate.is_displayed()
+                            and float((candidate.size or {}).get("width", 0) or 0) > 100
+                        ),
+                        False,
+                    )
                 )
                 # 額外等待確保 Dialog 完全載入
                 time.sleep(0.5)
@@ -6994,17 +8745,14 @@ class FileReviewManager:
                         self.log(f"    [{i}] displayed={d.is_displayed()}, class={d.get_attribute('class')[:50]}")
                 except Exception as e:
                     self.log(f"  Debug 資訊取得失敗: {e}")
-                return
+                return popup_owned_files
             
             # Step 2: 切換到 Dialog 內的 iframe (IDX_0)
             try:
                 self.log("  尋找 Dialog 內的 iframe (10秒)...")
                 # iframe 的 name 是動態的 (IDX_0, IDX_1, etc.)
                 dialog_iframe = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 
-                        ".ui-dialog-content iframe, "
-                        ".ui-dialog iframe, "
-                        "div[role='dialog'] iframe"))
+                    lambda _driver: self._visible_review_dialog_iframe()
                 )
                 self.driver.switch_to.frame(dialog_iframe)
                 self.log("  ✓ 已切換到 Dialog iframe (IDX_0)")
@@ -7013,56 +8761,111 @@ class FileReviewManager:
             
             # Step 2.5: 切換到嵌套的 v1 iframe (關鍵！下載按鈕在這裡面)
             # 結構: Dialog → iframe IDX_0 → iframe v1 → 下載按鈕
+            nested_frame_ready = False
             try:
-                self.log("  尋找嵌套的 v1 iframe (10秒)...")
-                time.sleep(1)  # 等待內部 iframe 載入
-                
-                # 先嘗試用 name 找
-                v1_iframe = None
-                try:
-                    v1_iframe = self.driver.find_element(By.NAME, "v1")
-                except Exception:
-                    # 也試試看 id
-                    try:
-                        v1_iframe = self.driver.find_element(By.ID, "v1")
-                    except Exception:
-                        # 找所有 iframe
-                        iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-                        if iframes:
-                            self.log(f"  發現 {len(iframes)} 個 iframe，切換到第一個")
-                            v1_iframe = iframes[0]
-                
-                if v1_iframe:
-                    self.driver.switch_to.frame(v1_iframe)
-                    self.log("  ✓ 已切換到嵌套的 v1 iframe")
-                    time.sleep(2)  # 等待內容載入
-                else:
-                    self.log("  ⚠️ 未找到嵌套的 v1 iframe，嘗試在當前層級操作")
-            except Exception as nested_e:
-                self.log(f"  ⚠️ 切換嵌套 iframe 時錯誤: {nested_e}")
-            
-            # Step 3: 等待檔案表格載入 (網路不穩定，增加等待時間)
-            self.log("  等待檔案列表載入 (30秒)...")
-            time.sleep(1)  # 給 AJAX 載入時間
-            
-            try:
-                WebDriverWait(self.driver, 30).until(
-                    EC.presence_of_element_located((By.XPATH, 
-                        "//i[contains(@class, 'fa-download')] | "
-                        "//button[.//i[contains(@class, 'fa-download')]] | "
-                        "//table[@id='content']//tr[@class] | "
-                        "//table//tbody//tr"))
+                nested_timeout = max(
+                    10,
+                    int(os.environ.get("MAGI_FILE_REVIEW_POPUP_FRAME_TIMEOUT_SEC", "30") or "30"),
                 )
-                self.log("  ✓ 檔案列表已載入")
-            except TimeoutException:
-                self.log("  ⚠️ 檔案列表載入逾時")
-                
-                # 檢查是否無資料
-                page_source = self.driver.page_source
-                if "無資料" in page_source or "查無資料" in page_source:
-                    self.log("  (確認無檔案可下載)")
-                    self._close_dialog()
-                    return
+                self.log(f"  尋找嵌套的 v1 iframe ({nested_timeout}秒)...")
+                v1_iframe = WebDriverWait(self.driver, nested_timeout).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "iframe[name='v1'], iframe#v1")
+                    )
+                )
+                self.driver.switch_to.frame(v1_iframe)
+                nested_frame_ready = True
+                self.log("  ✓ 已切換到嵌套的 v1 iframe")
+            except Exception as nested_e:
+                detail = f"nested v1 frame unavailable: {nested_e}"
+                self.log(f"  ❌ 切換嵌套 iframe 失敗: {nested_e}")
+                self._mark_download_error("popup_nested_frame_timeout", detail)
+
+            # Step 3: Wait for the nested page to finish its server-side
+            # preparation. The old predicate accepted any table row, including
+            # the loading mask's layout table, and therefore declared success
+            # before v1 had even loaded.
+            popup_ready = False
+            explicit_empty = False
+            if nested_frame_ready:
+                popup_timeout = max(
+                    30,
+                    int(os.environ.get("MAGI_FILE_REVIEW_POPUP_READY_TIMEOUT_SEC", "180") or "180"),
+                )
+                popup_grace_timeout = max(
+                    3,
+                    int(os.environ.get("MAGI_FILE_REVIEW_POPUP_GRACE_TIMEOUT_SEC", "15") or "15"),
+                )
+                self.log(f"  等待檔案列表完成處理 ({popup_timeout}秒)...")
+
+                empty_markers = ("無資料", "查無資料", "無檔案可下載", "無可下載資料")
+
+                def _popup_content_ready(driver):
+                    try:
+                        source = str(driver.page_source or "")
+                        if any(marker in source for marker in empty_markers):
+                            return True
+                        if self._popup_source_has_download_controls(source):
+                            return True
+                        controls = driver.find_elements(
+                            By.XPATH,
+                            "//*[@title='下載'] | "
+                            "//button[.//i[contains(@class, 'fa-download')]] | "
+                            "//a[contains(@onclick, 'download') or contains(@onclick, 'Download')] | "
+                            "//input[contains(@onclick, 'download') or contains(@onclick, 'Download')]",
+                        )
+                        if any(control.is_displayed() for control in controls):
+                            return True
+                        processing = driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "#___HELP_PROCESSBAR___, #___HELP_WINDOWMASK___",
+                        )
+                        return bool(processing) and not any(
+                            element.is_displayed() for element in processing
+                        )
+                    except Exception:
+                        return False
+
+                try:
+                    WebDriverWait(self.driver, popup_timeout).until(_popup_content_ready)
+                    popup_ready = True
+                    page_source = str(self.driver.page_source or "")
+                    explicit_empty = any(marker in page_source for marker in empty_markers)
+                    self.log("  ✓ 檔案列表已完成處理")
+                except TimeoutException:
+                    # The Judiciary portal can publish the file rows at the exact
+                    # WebDriverWait boundary.  A diagnostic screenshot taken
+                    # immediately after the timeout then shows valid download
+                    # controls even though the wait has already failed.  Give
+                    # that boundary transition one short, bounded final check.
+                    self.log(
+                        f"  ⚠️ 主等待已達 {popup_timeout} 秒，"
+                        f"進行 {popup_grace_timeout} 秒最終 DOM 複核..."
+                    )
+                    try:
+                        WebDriverWait(
+                            self.driver, popup_grace_timeout
+                        ).until(_popup_content_ready)
+                        popup_ready = True
+                        page_source = str(self.driver.page_source or "")
+                        explicit_empty = any(
+                            marker in page_source for marker in empty_markers
+                        )
+                        self.log("  ✓ 寬限複核已確認檔案列表完成")
+                    except TimeoutException:
+                        detail = (
+                            "popup content still processing after "
+                            f"{popup_timeout + popup_grace_timeout}s"
+                        )
+                        self.log(
+                            "  ❌ 檔案列表處理逾時 "
+                            f"({popup_timeout + popup_grace_timeout}秒)"
+                        )
+                        self._mark_download_error(
+                            "popup_processing_timeout", detail
+                        )
+            else:
+                self.log("  ❌ 無法進入檔案列表，略過下載按鈕搜尋")
             
             # Step 4: 尋找下載按鈕 (只找單檔下載按鈕，排除批次下載)
             download_btns = []
@@ -7076,18 +8879,36 @@ class FileReviewManager:
                 "//table[@id='tablecontext']//tbody//tr//button[@title='下載']",
                 # 備用：只有 fa-download 圖示沒有 span 文字的按鈕 (排除批次)
                 "//tbody//tr[@id='trdata']//button[.//i[contains(@class, 'fa-download')]]",
+                # 法院偶爾把 button 改成 input/a，title 契約仍為「下載」
+                "//*[@title='下載' and (self::button or self::input or self::a)]",
             ]
             
-            for sel in selectors:
-                btns = self.driver.find_elements(By.XPATH, sel)
-                visible_btns = [b for b in btns if b.is_displayed()]
-                if visible_btns:
-                    download_btns = visible_btns
-                    self.log(f"  ✓ 找到 {len(download_btns)} 個單檔下載按鈕 (selector: {sel[:40]}...)")
-                    break
+            if popup_ready and not explicit_empty:
+                for sel in selectors:
+                    btns = self.driver.find_elements(By.XPATH, sel)
+                    visible_btns = [b for b in btns if b.is_displayed()]
+                    if visible_btns:
+                        download_btns = visible_btns
+                        self.log(f"  ✓ 找到 {len(download_btns)} 個單檔下載按鈕 (selector: {sel[:40]}...)")
+                        break
+                    # In OLA's nested jQuery iframe, Selenium occasionally
+                    # reports false visibility although the rendered data-row
+                    # control is present and JavaScript-clickable.  Restrict
+                    # this fallback to the exact data-row selectors.
+                    if btns and ("tr[@id='trdata']" in sel or "table[@id='tablecontext']" in sel):
+                        download_btns = btns
+                        self.log(
+                            f"  ✓ 找到 {len(download_btns)} 個單檔下載按鈕 "
+                            "(內嵌視窗 DOM 備援判定)"
+                        )
+                        break
             
             # Step 5: 點擊下載按鈕並處理「第二個彈窗」
             if download_btns:
+                popup_today_folder = os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d"))
+                download_scan_dirs = list(dict.fromkeys([popup_today_folder, self.download_folder]))
+                existing_file_mtimes = self._snapshot_download_file_mtimes(download_scan_dirs)
+
                 # (SmartDL) 預先掃描目標資料夾
                 review_root_folder = None
                 review_file_index = {}
@@ -7106,8 +8927,9 @@ class FileReviewManager:
                 
                 # 恢復到 Dialog -> v1 iframe
                 try:
-                    dialog_iframe_elem = self.driver.find_element(By.CSS_SELECTOR, 
-                        ".ui-dialog-content iframe, .ui-dialog iframe, div[role='dialog'] iframe")
+                    dialog_iframe_elem = self._visible_review_dialog_iframe()
+                    if dialog_iframe_elem is None:
+                        raise NoSuchElementException("visible review dialog iframe missing")
                     self.driver.switch_to.frame(dialog_iframe_elem)
                     try:
                         self.driver.switch_to.frame("v1")
@@ -7122,6 +8944,17 @@ class FileReviewManager:
                 current_windows = set(self.driver.window_handles)
                 
                 for idx, btn in enumerate(download_btns):
+                    button_resume_hash = _button_resume_hash(btn, idx)
+                    if button_resume_hash in completed_button_hashes:
+                        self.log(
+                            f"  ⏭️ [續跑] 第 {idx+1}/{len(download_btns)} 份已於本掃描週期完成"
+                        )
+                        continue
+                    if _deadline_reached():
+                        self.log(
+                            "  ⏳ 本輪閱卷時間已到，已保留彈窗內進度，下輪續跑"
+                        )
+                        break
                     try:
                         # (SmartDL) 檢查檔案是否已存在
                         if review_root_folder and self.enable_preclick_smart_skip:
@@ -7144,9 +8977,28 @@ class FileReviewManager:
                                         })
                                     except Exception:
                                         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5640, exc_info=True)
+                                    self._record_verified_existing_portal_signature(
+                                        row_receipt_signature
+                                    )
+                                    self._mark_download_resume_button_completed(
+                                        resume_key,
+                                        button_resume_hash,
+                                    )
+                                    completed_button_hashes.add(
+                                        button_resume_hash
+                                    )
                                     continue
                             except Exception as smart_e:
                                 self.log(f"  ⚠️ 智慧檢查失敗 (不影響下載): {smart_e}")
+
+                        attempted_download_count += 1
+                        button_verified = False
+
+                        # Per-button ownership snapshot: a late file from an
+                        # earlier row/button is not evidence for this click.
+                        button_file_mtimes = self._snapshot_download_file_mtimes(
+                            download_scan_dirs
+                        )
 
                         self.log(f"  點擊下載按鈕 {idx+1}/{len(download_btns)}...")
                         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
@@ -7193,10 +9045,8 @@ class FileReviewManager:
                                         break
                                     # 偵測到 crdownload / 完整 PDF 檔案（只算檔案，排除目錄）
                                     try:
-                                        _dl_folder = os.path.join(self.download_folder, datetime.now().strftime("%Y%m%d"))
-                                        _dl_root = self.download_folder
                                         _found_dl = False
-                                        for _chk in [_dl_folder, _dl_root]:
+                                        for _chk in download_scan_dirs:
                                             if os.path.isdir(_chk):
                                                 for _fn in os.listdir(_chk):
                                                     _fp = os.path.join(_chk, _fn)
@@ -7204,14 +9054,17 @@ class FileReviewManager:
                                                         continue  # skip directories like _待歸檔
                                                     if _fn.endswith(('.json', '.tmp')):
                                                         continue
-                                                    if _fn not in existing_file_mtimes or os.path.getmtime(_fp) > existing_file_mtimes.get(_fp, 0):
+                                                    if self._download_file_changed_since_snapshot(_fp, button_file_mtimes):
                                                         self.log(f"  ✅ 偵測到新下載: {_fn}")
+                                                        if self._is_valid_review_download_artifact(_fp):
+                                                            popup_owned_files.append(os.path.abspath(_fp))
+                                                            button_verified = True
                                                         _found_dl = True
                                                         break
                                             if _found_dl:
                                                 break
                                     except Exception:
-                                        pass
+                                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7355, exc_info=True)
                                     time.sleep(1)
                                 # 手動關閉新視窗（若仍開著）
                                 try:
@@ -7219,7 +9072,7 @@ class FileReviewManager:
                                         self.driver.close()
                                         self.log("  ✓ 下載視窗已關閉")
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 7363, exc_info=True)
                             except Exception as sw_e:
                                 self.log(f"  ⚠️ 切換下載視窗失敗: {sw_e}")
 
@@ -7242,8 +9095,11 @@ class FileReviewManager:
                             try:
                                 self.driver.switch_to.default_content()
                                 
-                                dialog_iframe_elem = self.driver.find_element(By.CSS_SELECTOR, 
-                                    ".ui-dialog-content iframe, .ui-dialog iframe, div[role='dialog'] iframe")
+                                dialog_iframe_elem = self._visible_review_dialog_iframe()
+                                if dialog_iframe_elem is None:
+                                    raise NoSuchElementException(
+                                        "visible review dialog iframe missing"
+                                    )
                                 self.driver.switch_to.frame(dialog_iframe_elem)
                                 
                                 try:
@@ -7260,7 +9116,63 @@ class FileReviewManager:
                                 break
                                     
                         else:
-                            time.sleep(1.5)  # 沒有新視窗，等待下載觸發
+                            # Some OLA responses download in-place instead of
+                            # opening a second window.  The previous 1.5 second
+                            # sleep returned before large PDFs had a trailer,
+                            # allowing the next case row to claim the late file.
+                            direct_timeout = max(
+                                5,
+                                int(
+                                    os.environ.get(
+                                        "MAGI_FILE_REVIEW_DIRECT_DOWNLOAD_TIMEOUT_SEC",
+                                        "30",
+                                    )
+                                    or "30"
+                                ),
+                            )
+                            direct_deadline = time.time() + direct_timeout
+                            direct_complete = False
+                            while time.time() < direct_deadline and not direct_complete:
+                                for _direct_dir in download_scan_dirs:
+                                    if not os.path.isdir(_direct_dir):
+                                        continue
+                                    for _direct_name in os.listdir(_direct_dir):
+                                        if _direct_name.endswith((".json", ".tmp", ".crdownload")):
+                                            continue
+                                        _direct_path = os.path.join(
+                                            _direct_dir, _direct_name
+                                        )
+                                        if not os.path.isfile(_direct_path):
+                                            continue
+                                        if not self._download_file_changed_since_snapshot(
+                                            _direct_path, button_file_mtimes
+                                        ):
+                                            continue
+                                        if self._is_valid_review_download_artifact(
+                                            _direct_path
+                                        ):
+                                            popup_owned_files.append(
+                                                os.path.abspath(_direct_path)
+                                            )
+                                            direct_complete = True
+                                            button_verified = True
+                                            break
+                                    if direct_complete:
+                                        break
+                                if not direct_complete:
+                                    time.sleep(0.5)
+                            if not direct_complete:
+                                pending_download_modes.append("direct")
+
+                        if button_verified:
+                            verified_button_count += 1
+                            self._mark_download_resume_button_completed(
+                                resume_key,
+                                button_resume_hash,
+                            )
+                            completed_button_hashes.add(button_resume_hash)
+                        elif new_windows:
+                            pending_download_modes.append("window")
                         
                     except Exception as e:
                         self.log(f"  點擊失敗: {e}")
@@ -7271,16 +9183,106 @@ class FileReviewManager:
                         except Exception:
                             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5746, exc_info=True)
             else:
-                self.log("  ⚠️ 未找到下載按鈕")
+                if explicit_empty:
+                    self.log("  ℹ️ 法院明確回覆無檔案可下載")
+                elif popup_ready:
+                    self.log("  ❌ 檔案列表就緒但未找到下載按鈕")
+                    self._mark_download_error(
+                        "popup_download_button_missing",
+                        "outer row advertised online download but ready popup exposed no download control",
+                    )
+                else:
+                    self.log("  ❌ 彈窗未就緒，未嘗試下載")
+                # Preserve the popup DOM whenever the portal fails closed.
+                try:
+                    from api.debug_capture import save_debug_html, save_debug_screenshot
+                    save_debug_screenshot(
+                        self.driver,
+                        "debug_popup_no_download_button",
+                        context="線上閱覽彈窗未找到下載按鈕",
+                    )
+                    save_debug_html(
+                        self.driver,
+                        "debug_popup_no_download_button",
+                        context="線上閱覽彈窗未找到下載按鈕",
+                    )
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "could not preserve popup failure evidence",
+                        exc_info=True,
+                    )
             
+            # Final ownership snapshot for this exact popup. A file may obtain
+            # its final PDF name only after the download window auto-closes.
+            if download_btns:
+                try:
+                    for _owned_dir in download_scan_dirs:
+                        if not os.path.isdir(_owned_dir):
+                            continue
+                        for _owned_name in os.listdir(_owned_dir):
+                            _owned_path = os.path.join(_owned_dir, _owned_name)
+                            if (
+                                os.path.isfile(_owned_path)
+                                and self._download_file_changed_since_snapshot(
+                                    _owned_path, existing_file_mtimes
+                                )
+                                and self._is_valid_review_download_artifact(_owned_path)
+                            ):
+                                popup_owned_files.append(os.path.abspath(_owned_path))
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "could not finalize popup-owned download list", exc_info=True
+                    )
+
+                # Reconcile button-level evidence only after the final popup
+                # snapshot.  Large OLA PDFs can obtain their final name before
+                # Chromium writes the trailer, so an in-place wait may time out
+                # even though the same popup produces a complete PDF moments
+                # later.  Conversely, one successful button must never hide a
+                # different button that produced no verifiable artifact.
+                verified_paths = list(
+                    dict.fromkeys(
+                        os.path.abspath(path)
+                        for path in popup_owned_files
+                        if self._is_valid_review_download_artifact(path)
+                    )
+                )
+                late_verified_count, unresolved_modes = (
+                    self._reconcile_popup_attempt_counts(
+                        pending_download_modes,
+                        verified_path_count=len(verified_paths),
+                        verified_button_count=verified_button_count,
+                    )
+                )
+                if late_verified_count:
+                    self.log(
+                        "  ✅ 延後完成驗證："
+                        f"{late_verified_count} 個下載按鈕已取得完整 PDF"
+                    )
+                if unresolved_modes:
+                    direct_only = all(mode == "direct" for mode in unresolved_modes)
+                    code = (
+                        "direct_download_incomplete"
+                        if direct_only
+                        else "popup_download_incomplete"
+                    )
+                    self._mark_download_error(
+                        code,
+                        f"{len(unresolved_modes)}/{attempted_download_count} "
+                        "download control(s) produced no verifiable complete PDF "
+                        "after final popup reconciliation",
+                    )
+
             # Step 6: 關閉彈窗
             time.sleep(2)
             self._close_dialog()
+            return list(dict.fromkeys(popup_owned_files))
             
         except Exception as e:
             self.log(f"  ❌ 處理彈窗錯誤: {e}")
             import traceback
             traceback.print_exc()
+            return list(dict.fromkeys(popup_owned_files))
 
     def _close_dialog(self):
         """關閉 jQuery UI Dialog 並等待確認關閉"""
@@ -7370,6 +9372,61 @@ class FileReviewManager:
 
         if not downloaded_files:
             self.log("  ℹ️ 無下載檔案，略過歸檔")
+            return
+
+        filtered_downloaded_files = []
+        for fp in downloaded_files:
+            fn = os.path.basename(str(fp or ""))
+            meta = meta_by_file.get(fp) or meta_by_file.get(fn) or {}
+            artifact_type = (meta.get("artifact_type") if isinstance(meta, dict) else "") or ""
+            valid = (
+                self._is_valid_payment_download_artifact(str(fp))
+                if str(artifact_type).strip().lower() == "payment_slip"
+                else self._is_valid_review_download_artifact(str(fp))
+            )
+            if valid:
+                if str(artifact_type).strip().lower() != "payment_slip":
+                    binding = self._review_artifact_case_binding(str(fp), meta)
+                    if binding.get("status") == "mismatch":
+                        qdst = self._quarantine_case_mismatch(
+                            str(fp),
+                            case_meta=meta,
+                            binding=binding,
+                            reason="archive_court_case_identity_mismatch",
+                        )
+                        try:
+                            self._last_archive_report["items"].append(
+                                {
+                                    "party": (meta.get("party") or "") if isinstance(meta, dict) else "",
+                                    "court_case_no": (
+                                        meta.get("showyyidno")
+                                        or meta.get("case_number")
+                                        or ""
+                                    ) if isinstance(meta, dict) else "",
+                                    "folder": "",
+                                    "file": fn,
+                                    "dst": qdst,
+                                    "action": "blocked_case_identity_mismatch",
+                                    "binding": binding,
+                                }
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).debug(
+                                "silent-catch at %s:%s", __name__, 5904, exc_info=True
+                            )
+                        continue
+                filtered_downloaded_files.append(fp)
+                continue
+            qdst = self._quarantine_invalid_download(str(fp), reason="archive_reject")
+            try:
+                self._last_archive_report["items"].append(
+                    {"party": "", "court_case_no": "", "folder": "", "file": fn, "dst": qdst, "action": "ignored_invalid_artifact"}
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5904, exc_info=True)
+        downloaded_files = filtered_downloaded_files
+        if not downloaded_files:
+            self.log("  ℹ️ 下載檔案均非有效 PDF，已隔離並略過歸檔")
             return
 
         if not case_info_list:
@@ -7540,16 +9597,36 @@ class FileReviewManager:
                             self.log(f"  ⏭️ 已存在（規範化後同名），跳過: {filename} (existing: {existing_fn})")
                             existing = os.path.join(root, existing_fn)
                             _remember_payment_destination(existing)
-                            # 來源檔處理：no_delete 模式保留；否則 isolate
-                            if not self.no_delete:
-                                try:
-                                    if safe_remove:
-                                        safe_remove(file_path, reason="archive_dup_normalized", allow_delete=True, log=self.log)
-                                except Exception:
-                                    pass
-                            return {"ok": True, "dst": existing, "action": "exists_skip"}
+                            qdst = self._isolate_duplicate_download(
+                                file_path,
+                                reason="review_filename_duplicate",
+                                existing_path=existing,
+                                metadata={"filename": filename, "matched_by": "normalized_filename"},
+                            )
+                            return {"ok": True, "dst": existing, "action": "exists_skip", "duplicate_quarantine": qdst}
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 5989, exc_info=True)
+
+            try:
+                existing_by_content = self._find_duplicate_review_content(review_folder, file_path)
+                if existing_by_content:
+                    self.log(f"  ⏭️ 已存在（內容 hash 相同），跳過: {filename} (existing: {os.path.basename(existing_by_content)})")
+                    _remember_payment_destination(existing_by_content)
+                    qdst = self._isolate_duplicate_download(
+                        file_path,
+                        reason="review_content_duplicate",
+                        existing_path=existing_by_content,
+                        metadata={"filename": filename, "matched_by": "sha256_content"},
+                    )
+                    return {
+                        "ok": True,
+                        "dst": existing_by_content,
+                        "action": "exists_skip",
+                        "reason": "content_duplicate",
+                        "duplicate_quarantine": qdst,
+                    }
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6004, exc_info=True)
 
             today_str = datetime.now().strftime("%Y%m%d")
             date_folder = os.path.join(review_folder, today_str)
@@ -7558,18 +9635,19 @@ class FileReviewManager:
 
             try:
                 if os.path.exists(dst_path):
-                    if self.no_delete:
-                        self.log(f"  ⏭️ 目標已存在，保留原檔案: {filename}")
+                    qdst = self._isolate_duplicate_download(
+                        file_path,
+                        reason="review_target_exists",
+                        existing_path=dst_path,
+                        metadata={"filename": filename, "matched_by": "target_path"},
+                    )
+                    if qdst:
+                        self.log(f"  ⏭️ 目標已存在，重複來源已移至 MAGI 暫存: {filename}")
                         _remember_payment_destination(dst_path)
-                        return {"ok": True, "dst": dst_path, "action": "target_exists_keep_src"}
+                        return {"ok": True, "dst": dst_path, "action": "target_exists_isolate_src", "duplicate_quarantine": qdst}
                     try:
-                        if safe_remove:
-                            safe_remove(file_path, reason="archive_target_exists", allow_delete=True, log=self.log)
-                            self.log(f"  ⏭️ 目標已存在，已隔離原檔案: {filename}")
-                        else:
-                            # Safe policy: never delete if safe_remove unavailable.
-                            self.log(f"  🔒 目標已存在，但 safe_remove 不可用，保留原檔案: {filename}")
-                        return {"ok": True, "dst": dst_path, "action": "target_exists_isolate_src"}
+                        self.log(f"  🔒 目標已存在，但重複來源隔離失敗，保留原檔案: {filename}")
+                        return {"ok": True, "dst": dst_path, "action": "target_exists_keep_src"}
                     except Exception as del_e:
                         self.log(f"  ⚠️ 隔離原檔案失敗: {del_e}")
                         return {"ok": False, "dst": dst_path, "action": "target_exists_isolate_failed"}
@@ -7881,6 +9959,8 @@ class FileReviewManager:
                     )
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 6318, exc_info=True)
+                    continue
+                if res.get("ok"):
                     continue
 
             # stage
@@ -9294,11 +11374,121 @@ class FileReviewManager:
                     keys.append(key)
         return keys
 
+    @staticmethod
+    def _loose_review_file_date_folder(path: str) -> str:
+        """Return the YYYYMMDD folder for a manually imported review artifact."""
+        name = os.path.basename(path or "")
+        match = re.match(r"^(20\d{6})(?:\D|$)", name)
+        if match:
+            return match.group(1)
+        try:
+            return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y%m%d")
+        except Exception:
+            return datetime.now().strftime("%Y%m%d")
+
+    @staticmethod
+    def _unique_sibling_path(path: str) -> str:
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        for idx in range(2, 1000):
+            candidate = f"{stem}_{idx}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+        stamp = datetime.now().strftime("%H%M%S")
+        return f"{stem}_{stamp}{ext}"
+
+    def _stage_loose_review_duplicate(self, path: str, *, existing_path: str = "") -> str:
+        """Move a duplicate manual root import into MAGI's disposable duplicate area."""
+        try:
+            if not path or not os.path.isfile(path):
+                return ""
+            qroot = os.path.join(self.download_folder, "_duplicate_downloads")
+            qdir = os.path.join(qroot, datetime.now().strftime("%Y%m%d"))
+            os.makedirs(qdir, exist_ok=True)
+            base = os.path.basename(path)
+            stem, ext = os.path.splitext(base)
+            dst = self._unique_sibling_path(os.path.join(qdir, f"{stem}.loose_root_duplicate{ext}"))
+            shutil.move(path, dst)
+            try:
+                with open(os.path.join(qroot, "manifest.jsonl"), "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "ts": datetime.now().isoformat(),
+                        "source": os.path.abspath(path),
+                        "duplicate_path": dst,
+                        "reason": "loose_root_duplicate",
+                        "existing_path": existing_path or "",
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9887, exc_info=True)
+            self.log(f"  📦 根目錄重複閱卷檔已移至 MAGI 暫存: {base} → {os.path.relpath(dst, self.download_folder)}")
+            return dst
+        except Exception as e:
+            self.log(f"  ⚠️ 根目錄重複閱卷檔隔離失敗: {os.path.basename(str(path))}: {e}")
+            return ""
+
+    def _normalize_loose_review_root_files(self, root_folder: str) -> List[Dict[str, str]]:
+        """Move loose review artifacts from the review root into dated subfolders."""
+        enabled = os.environ.get("MAGI_FILE_REVIEW_NORMALIZE_LOOSE_IMPORTS", "1").strip().lower()
+        if enabled in {"0", "false", "no", "off"}:
+            return []
+        if not root_folder or not os.path.isdir(root_folder):
+            return []
+        root_base = os.path.basename(os.path.normpath(root_folder))
+        if "閱卷" not in root_base:
+            return []
+
+        ignored_ext = {".crdownload", ".download", ".part", ".tmp"}
+        movable_ext = {".pdf", ".zip", ".rar", ".7z", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+        actions: List[Dict[str, str]] = []
+        try:
+            with os.scandir(root_folder) as entries:
+                root_entries = list(entries)
+        except Exception:
+            return actions
+
+        for entry in root_entries:
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if entry.name.startswith(".") or entry.name == "Thumbs.db":
+                    continue
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext in ignored_ext or ext not in movable_ext:
+                    continue
+
+                date_folder = self._loose_review_file_date_folder(entry.path)
+                dst_dir = os.path.join(root_folder, date_folder)
+                os.makedirs(dst_dir, exist_ok=True)
+                dst = os.path.join(dst_dir, entry.name)
+                if os.path.abspath(entry.path) == os.path.abspath(dst):
+                    continue
+
+                if os.path.exists(dst):
+                    try:
+                        same_size = os.path.getsize(entry.path) == os.path.getsize(dst)
+                        if same_size and self._sha256_file(entry.path) == self._sha256_file(dst):
+                            staged = self._stage_loose_review_duplicate(entry.path, existing_path=dst)
+                            actions.append({"action": "duplicate_staged", "src": entry.path, "dst": staged, "existing": dst})
+                            continue
+                    except Exception:
+                        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9947, exc_info=True)
+                    dst = self._unique_sibling_path(dst)
+
+                shutil.move(entry.path, dst)
+                actions.append({"action": "moved", "src": entry.path, "dst": dst})
+                self.log(f"  📁 根目錄閱卷檔已收入日期資料夾: {entry.name} → {date_folder}/")
+            except Exception as e:
+                self.log(f"  ⚠️ 根目錄閱卷檔整理失敗: {getattr(entry, 'name', '')}: {e}")
+                continue
+        return actions
+
     def _build_existing_review_file_index(self, root_folder: str) -> Dict[str, str]:
         """Index existing files under the review folder using exact and normalized keys."""
         index: Dict[str, str] = {}
         if not root_folder or not os.path.exists(root_folder):
             return index
+        self._normalize_loose_review_root_files(root_folder)
         _max_depth = 4
         _visited = 0
         _stack = [(root_folder, 0)]
@@ -9360,7 +11550,7 @@ class FileReviewManager:
                 try:
                     _add(el.text)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 9529, exc_info=True)
 
         if row is not None:
             try:
@@ -9372,7 +11562,7 @@ class FileReviewManager:
                 try:
                     _add(cell.text)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 9541, exc_info=True)
                 _attrs(cell)
 
         combined = "\n".join(candidates)
@@ -9539,6 +11729,7 @@ class FileReviewManager:
             var targetNum = arguments[2];
             var targetName = arguments[3];
             var isPaymentProofUpload = arguments[4] || false;
+            var targetEvent = String(arguments[5] || '').trim();
 
             // Build multiple matching patterns
             var numPadded = ('000000' + targetNum).slice(-6);
@@ -9582,6 +11773,27 @@ class FileReviewManager:
                 }
 
                 if (!matchCase) continue;
+
+                // A payment proof OCR may identify a precise portal occurrence
+                // (pay_id/payid/p_payid/rowid). When present, data-json is
+                // authoritative: never fall back to the first same-case row.
+                if (targetEvent) {
+                    var exactEvent = false;
+                    var exactJson = row.getAttribute('data-json');
+                    if (exactJson) {
+                        try {
+                            var exactRow = JSON.parse(exactJson);
+                            var eventFields = ['rowid', 'p_payid', 'payid', 'pay_id'];
+                            for (var ef = 0; ef < eventFields.length; ef++) {
+                                if (String(exactRow[eventFields[ef]] || '').trim() === targetEvent) {
+                                    exactEvent = true;
+                                    break;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    if (!exactEvent) continue;
+                }
                 if (rowText.indexOf('聲請者取消') >= 0) continue;
 
                 // 判定該列繳費狀態
@@ -9621,7 +11833,8 @@ class FileReviewManager:
             }
             // 非繳費憑證：維持原行為（首個 match）
             return candidates[0].idx;
-            """, year, case_type, case_number, client_name, _is_payment_proof_upload)
+            """, year, case_type, case_number, client_name, _is_payment_proof_upload,
+            str(case_info.get("payment_event_id") or case_info.get("pay_id") or ""))
 
             if _is_payment_proof_upload and (target_row_idx is None or target_row_idx < 0):
                 self.log("  ⚠️ 繳費憑證上傳：找不到「待繳費」row（可能所有 row 都已繳費），拒絕上傳到已繳列以避免錯亂")
@@ -9864,6 +12077,17 @@ class FileReviewManager:
     # ------------------------------------------------------------------
     # 繳費憑證上傳
     # ------------------------------------------------------------------
+    @staticmethod
+    def _payment_proof_event_matches_row(row_json: dict, event_id: str = "") -> bool:
+        """Match OCR occurrence identity to authoritative portal data-json."""
+        event_id = str(event_id or "").strip()
+        if not event_id or not isinstance(row_json, dict):
+            return not event_id
+        return any(
+            str(row_json.get(field) or "").strip() == event_id
+            for field in ("rowid", "p_payid", "payid", "pay_id")
+        )
+
     def upload_payment_proof(
         self,
         case_info: Dict[str, str],
@@ -9880,38 +12104,152 @@ class FileReviewManager:
             case_info, file_path, file_remark="繳費憑證"
         )
 
-    # 法院全名 → court_code 對照表
-    _FULL_COURT_MAP = {
-        "臺灣臺北地方法院": "TPD", "臺灣新北地方法院": "PCD",
-        "臺灣士林地方法院": "SLD", "臺灣桃園地方法院": "TYD",
-        "臺灣新竹地方法院": "SCD", "臺灣苗栗地方法院": "MLD",
-        "臺灣臺中地方法院": "TCD", "臺灣彰化地方法院": "CHD",
-        "臺灣南投地方法院": "NTD", "臺灣雲林地方法院": "ULD",
-        "臺灣嘉義地方法院": "CYD", "臺灣臺南地方法院": "TND",
-        "臺灣高雄地方法院": "KSD", "臺灣屏東地方法院": "PTD",
-        "臺灣花蓮地方法院": "HLD", "臺灣臺東地方法院": "TTD",
-        "臺灣宜蘭地方法院": "ILD", "臺灣基隆地方法院": "KLD",
-        "臺灣澎湖地方法院": "PHD", "福建金門地方法院": "KMD",
-        "福建連江地方法院": "LCD",
-        "臺灣高等法院": "TPH",
-        "臺灣高等法院臺中分院": "TCH",
-        "臺灣高等法院臺南分院": "TNH",
-        "臺灣高等法院高雄分院": "KSH",
-        "臺灣高等法院花蓮分院": "HLH",
-    }
+    # 共用法院目錄是唯一來源；避免閱卷 OCR 與其他技能各自維護不完整清單。
+    _FULL_COURT_MAP = dict(COURT_OPTIONS)
+    _COURT_ALIAS_MAP = dict(SIMPLE_COURT_PARENT)
+
+    @classmethod
+    def _canonical_court_name(cls, court_name: str) -> str:
+        """法院 OCR 文字 → 官方法院全名，容忍常見台/臺與 OCR 近形錯字。"""
+        if not court_name:
+            return ""
+        name = str(court_name or "").strip()
+        name = (
+            name.replace("台灣", "臺灣")
+            .replace("台北", "臺北")
+            .replace("台中", "臺中")
+            .replace("台南", "臺南")
+            .replace("台東", "臺東")
+            .replace("臺束", "臺東")
+            .replace("臺柬", "臺東")
+            .replace("臺束", "臺東")
+        )
+        compact = re.sub(r"\s+", "", name)
+        shared = normalize_court_name(compact)
+        if shared in cls._FULL_COURT_MAP:
+            return shared
+        if name in cls._FULL_COURT_MAP:
+            return name
+        for full_name in cls._FULL_COURT_MAP:
+            if full_name in name or name in full_name:
+                return full_name
+        try:
+            from difflib import SequenceMatcher
+
+            best_name = ""
+            best_score = 0.0
+            for full_name in cls._FULL_COURT_MAP:
+                score = SequenceMatcher(None, name, full_name).ratio()
+                if score > best_score:
+                    best_name = full_name
+                    best_score = score
+            if best_score >= 0.78:
+                return best_name
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch canonical court fuzzy", exc_info=True)
+        return name
 
     @classmethod
     def _court_name_to_code(cls, court_name: str) -> str:
-        """法院全名 → court_code，支援模糊比對。"""
-        if not court_name:
-            return ""
-        code = cls._FULL_COURT_MAP.get(court_name, "")
-        if not code:
-            for full_name, c in cls._FULL_COURT_MAP.items():
-                if full_name in court_name or court_name in full_name:
-                    code = c
-                    break
-        return code
+        """法院全名 → court_code，支援 OCR 錯字與模糊比對。"""
+        canonical = cls._canonical_court_name(court_name)
+        return cls._FULL_COURT_MAP.get(canonical, "")
+
+    @staticmethod
+    def _payment_candidate_score(candidate: Dict[str, str]) -> int:
+        """Score OCR completeness without using field values as confidence."""
+        weights = {
+            "raw_case_id": 120,
+            "court_code": 100,
+            "pay_id": 30,
+            "amount": 30,
+            "payment_deadline": 25,
+            "payer": 15,
+            "payment_date": 10,
+            "payment_status": 10,
+        }
+        return sum(weight for field, weight in weights.items() if candidate.get(field))
+
+    @staticmethod
+    def _payment_candidate_priority(candidate: Dict[str, str]) -> int:
+        """Wide-table PSM 4 outranks other layouts regardless of extra fields."""
+        return {"4": 3, "6": 2, "11": 1}.get(
+            str(candidate.get("_ocr_psm") or ""), 0
+        )
+
+    @staticmethod
+    def _payment_candidate_is_complete(candidate: Dict[str, str]) -> bool:
+        """True when wide-table PSM 4 already has every upload-relevant field."""
+        required = (
+            "raw_case_id",
+            "court_code",
+            "pay_id",
+            "amount",
+            "payment_deadline",
+            "payment_date",
+            "payment_status",
+        )
+        return all(candidate.get(field) for field in required)
+
+    @staticmethod
+    def _normalized_payment_field(field: str, value: object) -> str:
+        text = str(value or "").strip()
+        if field in {"pay_id", "amount", "payment_deadline", "payment_date"}:
+            return re.sub(r"\D+", "", text)
+        if field == "court_code":
+            return text.upper()
+        return re.sub(r"\s+", "", text)
+
+    @classmethod
+    def _merge_payment_ocr_candidates(
+        cls,
+        candidates: List[Dict[str, str]],
+    ) -> Tuple[Dict[str, str], str]:
+        """Merge only complete, same-case OCR candidates.
+
+        A candidate without both case id and court code cannot prove identity and
+        therefore cannot contribute supplemental fields. Identity conflicts
+        fail closed. Optional OCR metadata comes from the highest-quality
+        candidate and lower-quality candidates may only fill empty fields.
+        """
+        identity_complete = [
+            dict(item)
+            for item in candidates
+            if item.get("raw_case_id") and item.get("court_code")
+        ]
+        if not identity_complete:
+            return {}, "no_complete_identity"
+
+        identities = {
+            (
+                cls._normalized_payment_field("raw_case_id", item.get("raw_case_id")),
+                cls._normalized_payment_field("court_code", item.get("court_code")),
+            )
+            for item in identity_complete
+        }
+        if len(identities) != 1:
+            return {}, "identity_conflict"
+
+        ordered = sorted(
+            identity_complete,
+            key=lambda item: (
+                cls._payment_candidate_priority(item),
+                cls._payment_candidate_score(item),
+            ),
+            reverse=True,
+        )
+        merge_fields = (
+            "raw_case_id", "court_code", "court_name", "year", "case_type",
+            "case_number", "pay_id", "payer", "amount", "payment_deadline",
+            "payment_date", "payment_status",
+        )
+        merged = dict(ordered[0])
+        for item in ordered[1:]:
+            for field in merge_fields:
+                if not merged.get(field) and item.get(field):
+                    merged[field] = item[field]
+        merged.pop("_ocr_psm", None)
+        return merged, ""
 
     @staticmethod
     def parse_payment_screenshot(image_path: str) -> Dict[str, str]:
@@ -9935,25 +12273,62 @@ class FileReviewManager:
         if not os.path.exists(image_path):
             return {}
 
-        ocr_text = ""
-
-        # ── 方法 1: tesseract OCR（最可靠） ──
+        # ── 方法 1: 多版面 tesseract OCR ──
+        # PSM 4 適合寬表格；PSM 6 適合單一文字區塊；PSM 11 補稀疏欄位。
+        # 只允許具備完整案件身分的候選參與評分/合併。
+        ocr_candidates: List[Dict[str, str]] = []
         if _shutil.which("tesseract"):
-            try:
-                r = _sp.run(
-                    ["tesseract", image_path, "-", "-l", "chi_tra+eng", "--psm", "6"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if r.returncode == 0:
-                    ocr_text = r.stdout
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 7830, exc_info=True)
+            for psm in (4, 6, 11):
+                try:
+                    r = _sp.run(
+                        [
+                            "tesseract", image_path, "-", "-l", "chi_tra+eng",
+                            "--psm", str(psm),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if r.returncode != 0 or not r.stdout:
+                        continue
+                    parsed_candidate = FileReviewManager._parse_payment_text(r.stdout)
+                    if parsed_candidate:
+                        parsed_candidate["_ocr_psm"] = str(psm)
+                        ocr_candidates.append(parsed_candidate)
+                        logging.getLogger(__name__).info(
+                            "payment OCR psm=%s parsed identity_complete=%s score=%s",
+                            psm,
+                            bool(
+                                parsed_candidate.get("raw_case_id")
+                                and parsed_candidate.get("court_code")
+                            ),
+                            FileReviewManager._payment_candidate_score(parsed_candidate),
+                        )
+                        if (
+                            psm == 4
+                            and FileReviewManager._payment_candidate_is_complete(
+                                parsed_candidate
+                            )
+                        ):
+                            parsed_candidate.pop("_ocr_psm", None)
+                            return parsed_candidate
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "payment OCR psm=%s failed", psm, exc_info=True
+                    )
 
-        # ── 從 OCR 文字用 regex 抽取 ──
-        if ocr_text:
-            result = FileReviewManager._parse_payment_text(ocr_text)
-            if result:
-                return result
+        if ocr_candidates:
+            merged_ocr, merge_error = FileReviewManager._merge_payment_ocr_candidates(
+                ocr_candidates
+            )
+            if merged_ocr:
+                return merged_ocr
+            if "conflict" in merge_error:
+                logging.getLogger(__name__).warning(
+                    "payment OCR candidates conflict; refusing vision fallback (%s)",
+                    merge_error,
+                )
+                return {}
 
         # ── 方法 2: vision API fallback（Ollama / OpenAI） ──
         import base64 as _b64
@@ -9965,9 +12340,10 @@ class FileReviewManager:
             ext.lstrip("."), "image/png"
         )
         prompt = (
-            "這是一張台灣司法院閱卷繳費狀況查詢截圖。"
-            "請從截圖中提取以下資訊並以 JSON 格式回覆：\n"
-            '1. raw_case_id: 案號（如 "114.原金訴.000166"）\n'
+            "這是一張與台灣法院案件有關的繳費證明，可能是司法院繳費清單、"
+            "法院收據，或網銀／ATM／行動支付的交易明細。"
+            "請從圖片中提取以下資訊並以 JSON 格式回覆；看不到的欄位留空，禁止猜測：\n"
+            '1. raw_case_id: 案號，可為 "114.原金訴.000166" 或 "115年度訴字第123號"\n'
             '2. court_name: 法院名稱（如 "臺灣花蓮地方法院"）\n'
             '3. amount: 繳費金額（數字）\n'
             '4. payer: 繳款人姓名\n'
@@ -10050,26 +12426,25 @@ class FileReviewManager:
             parsed = _json.loads(m.group())
         except Exception:
             return {}
-        raw_id = str(parsed.get("raw_case_id", "")).strip()
+        raw_id = str(parsed.get("raw_case_id") or parsed.get("case_no") or "").strip()
         if not raw_id:
             return {}
-        parts = raw_id.split(".")
-        if len(parts) != 3:
-            return {}
         court_name = str(parsed.get("court_name", "")).strip()
-        return {
-            "year": parts[0].strip(),
-            "case_type": parts[1].strip(),
-            "case_number": str(int(parts[2].strip())),
-            "court_name": court_name,
-            "court_code": FileReviewManager._court_name_to_code(court_name),
-            "raw_case_id": raw_id,
-            "amount": str(parsed.get("amount", "")),
-            "payer": str(parsed.get("payer", "")),
-        }
+        result = FileReviewManager._parse_payment_text(
+            f"繳費憑證 {raw_id} {court_name}",
+            require_payment_context=False,
+        )
+        if not result:
+            return {}
+        result["amount"] = str(parsed.get("amount", "")) or result.get("amount", "")
+        result["payer"] = str(parsed.get("payer", "")) or result.get("payer", "")
+        return result
 
     @staticmethod
-    def _parse_payment_text(text: str) -> Dict[str, str]:
+    def _parse_payment_text(
+        text: str,
+        require_payment_context: bool = True,
+    ) -> Dict[str, str]:
         """
         從 OCR 文字（tesseract 輸出）中用 regex 解析繳費截圖資訊。
 
@@ -10078,40 +12453,146 @@ class FileReviewManager:
         """
         import re as _re
 
-        # 先確認是繳費相關截圖（含繳費/繳款/入帳/繳費狀況等關鍵字）
-        _PAYMENT_KEYWORDS = ("繳費", "繳款", "入帳", "銷帳", "請款", "繳費狀況")
-        if not any(kw in text for kw in _PAYMENT_KEYWORDS):
+        raw_text = str(text or "")
+        # 法院清單、法院收據與金融機構交易明細用詞不同，不可只接受「繳費狀況」。
+        _PAYMENT_KEYWORDS = (
+            "繳費", "繳款", "入帳", "銷帳", "請款", "繳費狀況",
+            "付款", "付款成功", "交易成功", "轉帳成功", "扣款成功",
+            "交易明細", "轉帳明細", "收據", "繳訖", "應繳金額",
+        )
+        if require_payment_context and not any(kw in raw_text for kw in _PAYMENT_KEYWORDS):
             return {}  # 非繳費截圖（可能是照片或其他文件）
 
-        # 案號: 數字.中文字.數字（如 114.原金訴.000166）
-        case_match = _re.search(r'(\d{2,3})\.([\u4e00-\u9fff]+)\.(\d{3,6})', text)
+        normalized_text = (
+            raw_text.replace("．", ".").replace("。", ".").replace("·", ".")
+        )
+
+        # 同時接受閱卷系統點號案號與法院收據常見的「年度…字第…號」。
+        dotted_match = _re.search(
+            r'(\d{2,3})\s*\.\s*([\u4e00-\u9fff]{1,16})\s*\.\s*(\d{1,6})',
+            normalized_text,
+        )
+        formal_match = _re.search(
+            r'(\d{2,3})\s*(?:年度|年)?\s*([\u4e00-\u9fff]{1,16}?)\s*字\s*第?\s*0*(\d{1,6})\s*號?',
+            normalized_text,
+        )
+        case_match = dotted_match or formal_match
         if not case_match:
             return {}
 
         year = case_match.group(1)
         case_type = case_match.group(2)
-        case_number_raw = case_match.group(3)
+        case_number_source = case_match.group(3)
+        case_number_raw = (
+            case_number_source
+            if dotted_match is not None
+            else str(int(case_number_source)).zfill(6)
+        )
         case_number = str(int(case_number_raw))
         raw_case_id = f"{year}.{case_type}.{case_number_raw}"
 
-        # 法院名稱: 臺灣...法院 或 福建...法院（含分院）
-        court_match = _re.search(r'[臺台福][灣]?[^\s]*法院(?:[^\s]*分院)?', text)
-        court_name = court_match.group(0).rstrip() if court_match else ""
-        # 正規化: 台→臺
-        court_name = court_name.replace("台灣", "臺灣").replace("台中", "臺中").replace("台南", "臺南").replace("台東", "臺東").replace("台北", "臺北")
+        # 法院名稱: 臺灣...法院、福建...法院、花蓮簡易庭等表格簡稱。
+        court_pattern = r'(?:[臺台福][灣]?)?[^\s]{1,12}(?:地方法院|高等法院[^\s]*分院|法院|簡易庭|地院)'
+        court_match = None
+        court_name = ""
+        compact_text = _re.sub(r"\s+", "", normalized_text)
+        # 先用白名單子字串。OCR 常把欄位標籤與法院名稱黏在一起，regex 可能會一併吞入。
+        for candidate in sorted(
+            set(FileReviewManager._FULL_COURT_MAP) | set(FileReviewManager._COURT_ALIAS_MAP),
+            key=len,
+            reverse=True,
+        ):
+            if candidate in compact_text:
+                court_name = candidate
+                break
+        if not court_name:
+            court_match = _re.search(court_pattern, normalized_text)
+            court_name = court_match.group(0).rstrip() if court_match else ""
+        court_name = FileReviewManager._canonical_court_name(court_name)
 
         court_code = FileReviewManager._court_name_to_code(court_name)
 
-        # 金額: 在 court_name 後面找純數字（排除銷帳編號等長數字和日期）
-        amount = ""
-        # 找所有 1-4 位數字（繳費金額通常 50-9999）
-        nums = _re.findall(r'(?<!\d)(\d{2,4})(?!\d)', text)
-        # 過濾掉年份(114,115)、日期(1150311 的片段)等
-        for n in nums:
-            val = int(n)
-            if 50 <= val <= 9999 and n != year:
-                amount = n
+        # 寬表格截圖通常同列含：案號 銷帳編號 繳款人 法院 期限 金額 //繳費日 狀態。
+        line = ""
+        for raw_line in normalized_text.splitlines():
+            if raw_case_id in raw_line or case_match.group(0) in raw_line:
+                line = raw_line
                 break
+        line = line or normalized_text
+        case_token = raw_case_id if raw_case_id in line else case_match.group(0)
+        tail = line[line.find(case_token) + len(case_token):] if case_token in line else line
+
+        pay_id = ""
+        pay_id_match = _re.search(r'(?<!\d)(\d{10,20})(?!\d)', tail)
+        if pay_id_match:
+            pay_id = pay_id_match.group(1)
+
+        payer = ""
+        line_court_match = _re.search(court_pattern, line)
+        if line_court_match:
+            line_court_name = FileReviewManager._canonical_court_name(line_court_match.group(0).rstrip())
+            line_court_code = FileReviewManager._court_name_to_code(line_court_name)
+            if line_court_code or not court_code:
+                court_name = line_court_name
+                court_code = line_court_code
+        if pay_id and line_court_match:
+            between = line[line.find(pay_id) + len(pay_id):line_court_match.start()]
+            payer = _re.sub(r"\s+", "", between).strip()
+
+        payment_deadline = ""
+        payment_date = ""
+        payment_status = ""
+
+        compact_line = _re.sub(r"\s+", "", line)
+        status_match = _re.search(r'(繳費(?:完成|成功|失敗|未完成|逾期)?(?:[（(][^）)]*[）)])?)', compact_line)
+        if status_match:
+            payment_status = status_match.group(1).replace("(", "（").replace(")", "）")
+
+        court_raw = (line_court_match or court_match).group(0) if (line_court_match or court_match) else ""
+        court_pos = compact_line.find(_re.sub(r"\s+", "", court_raw)) if court_raw else -1
+        after_court = compact_line[court_pos + len(_re.sub(r"\s+", "", court_raw)):] if court_pos >= 0 else compact_line
+
+        # 金額: 表格欄位優先；找不到才退回全 OCR 文字，避免把案號 502 誤當金額。
+        amount = ""
+        table_amount_match = _re.search(r'(?P<deadline>1\d{6})(?P<amount>\d{1,5})(?://?(?P<paydate>1\d{6}))?', after_court)
+        if table_amount_match:
+            payment_deadline = table_amount_match.group("deadline") or ""
+            amount = table_amount_match.group("amount") or ""
+            payment_date = table_amount_match.group("paydate") or ""
+        if not amount:
+            # 一般法院收據／網銀交易明細多把金額放在獨立一行，而非案號同列。
+            labelled_amount = _re.search(
+                r'(?:交易金額|繳費金額|應繳金額|付款金額|金額)\s*[:：]?\s*'
+                r'(?:NT\s*\$|TWD|新臺幣|新台幣|\$)?\s*([\d,]{1,12})',
+                normalized_text,
+                flags=_re.IGNORECASE,
+            )
+            if labelled_amount:
+                amount = labelled_amount.group(1).replace(",", "")
+        if not payment_deadline or not payment_date:
+            dates = _re.findall(r'(?<!\d)(1\d{6})(?!\d)', line)
+            if dates and not payment_deadline:
+                payment_deadline = dates[0]
+            if len(dates) >= 2 and not payment_date:
+                payment_date = dates[-1]
+
+        nums = _re.findall(r'(?<!\d)(\d{2,5})(?!\d)', after_court if after_court else text)
+        # 過濾掉年份(114,115)、日期(1150311 的片段)等
+        if not amount:
+            for n in nums:
+                val = int(n)
+                if (
+                    50 <= val <= 99999
+                    and n != year
+                    and n not in {
+                        case_number_raw,
+                        case_number,
+                        payment_deadline,
+                        payment_date,
+                    }
+                ):
+                    amount = n
+                    break
 
         return {
             "year": year,
@@ -10121,7 +12602,11 @@ class FileReviewManager:
             "court_code": court_code,
             "raw_case_id": raw_case_id,
             "amount": amount,
-            "payer": "",  # tesseract 中文人名容易亂碼，不強求
+            "payer": payer,
+            "pay_id": pay_id,
+            "payment_deadline": payment_deadline,
+            "payment_date": payment_date,
+            "payment_status": payment_status,
         }
 
     def _try_upload_in_current_context(self, file_path: str, file_remark: str = "") -> bool:
@@ -10873,7 +13358,7 @@ class FileReviewManager:
                                 el2.send_keys(str(field_value))
                                 self.log(f"      ↺ {field_label}: JS注入後重填 (was: {actual!r})")
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11042, exc_info=True)
                         filled_count += 1
                         self.log(f"      ✓ {field_label}: {field_value}")
                     except Exception as e:
@@ -10910,7 +13395,7 @@ class FileReviewManager:
                     try:
                         self.driver._last_dialog = None
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11079, exc_info=True)
                     self.driver.execute_script("arguments[0].click();", btn)
                     return True
                 except Exception:
@@ -11367,9 +13852,9 @@ class FileReviewManager:
                             try:
                                 self.driver.switch_to.frame("v1")
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11536, exc_info=True)
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11538, exc_info=True)
 
                         _selected_count = 0
                         for _slot in _slots:
@@ -11586,7 +14071,7 @@ class FileReviewManager:
                             try:
                                 self.driver._last_dialog = None
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11755, exc_info=True)
                             if click_mode == "native":
                                 btn.click()
                             else:
@@ -11651,7 +14136,7 @@ class FileReviewManager:
                         try:
                             self.driver._last_dialog = None
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11820, exc_info=True)
                         direct_ok = self.driver.execute_script(
                             """
                             return (function() {
@@ -11680,7 +14165,7 @@ class FileReviewManager:
                                     submit_rejected = True
                                     break
                             except Exception:
-                                pass
+                                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 11849, exc_info=True)
                             if _file_review_submit_success_from_text(_visible_page_text(), case_info):
                                 self.log("  ✅ doSubmitCheck 後偵測到法院端受理訊息")
                                 break
@@ -11933,7 +14418,7 @@ class FileReviewManager:
                 try:
                     evidence_json = "|" + json.dumps(ready_evidence, ensure_ascii=False)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12102, exc_info=True)
                 return "Ready" + evidence_json
             
         except Exception as e:
@@ -12079,7 +14564,20 @@ class FileReviewManager:
         """傳送繳費單通知。走 red_phone（TG + DC mirror），附件走 LAFNotifier。"""
         try:
             files = info.files or []
-            existing_files = [fp for fp in files if os.path.exists(fp)]
+            existing_files = [
+                fp for fp in files
+                if os.path.exists(fp) and self._is_valid_payment_download_artifact(fp)
+            ]
+            if existing_files:
+                undelivered_files = [
+                    fp for fp in existing_files
+                    if not self._payment_pdf_already_delivered(fp)
+                ]
+                if not undelivered_files:
+                    self.log("  ℹ️ 繳費單 PDF 皆已有送達回執，不重複發送")
+                    return None
+                existing_files = undelivered_files
+            allow_text_without_pdf = bool(getattr(info, "allow_text_without_pdf", False))
             court_case_no = self._notification_case_no(info)
 
             # ── 多路徑 dedup：dismissed / proof / DB，任一命中就跳過 ──
@@ -12087,11 +14585,20 @@ class FileReviewManager:
             _party = info.client_name or ""
             _notify_key = f"web_payment:case:{_ck}:{_party}" if _ck else ""
             _notify_key_no_party = f"web_payment:{_ck}" if _ck else ""
+            delivery_note = ""
 
-            # 1. dismissed 比對（人名 key + 案號 key）
-            if self._is_payment_dismissed(_notify_key, _notify_key_no_party):
-                self.log(f"  ℹ️ 已標記為已繳費，跳過通知: {_ck} {_party}")
-                return None  # intentional skip — caller must NOT count as "notified"
+            # 1. dismissed 比對（人名 key + 案號 key）。這只能壓掉「純文字催繳」；
+            # 本輪若實際取得新 PDF，仍要把法院文件交付給使用者。
+            dismissed = self._is_payment_dismissed(
+                _notify_key,
+                _notify_key_no_party,
+                party=_party,
+            )
+            if dismissed:
+                if not existing_files:
+                    self.log(f"  ℹ️ 已標記為已繳費，跳過純文字催繳: {_ck} {_party}")
+                    return None  # intentional skip — caller must NOT count as "notified"
+                delivery_note = "案件已標記處理；仍交付本輪新取得的法院 PDF"
 
             # 2. payment_proof dedup DB 比對（案號格式：115.原侵重訴.000001）
             _ck_norm = re.sub(r"[年度字第號\s]+", "", _ck) if _ck else ""
@@ -12102,29 +14609,25 @@ class FileReviewManager:
                     try:
                         from skills.ops.dedup_db import is_done as _is_done
                         if _is_done("payment_proof", _proof_key):
-                            self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過通知: {_proof_key}")
-                            return None  # intentional skip
+                            if not existing_files:
+                                self.log(f"  ℹ️ 繳費憑證已上傳（dedup DB），跳過純文字催繳: {_proof_key}")
+                                return None  # intentional skip
+                            delivery_note = "繳費憑證已有紀錄；仍交付本輪新取得的法院 PDF"
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12274, exc_info=True)
                     # 也查 proof registry JSON
                     try:
-                        _proof_path = os.path.join(self.download_folder, "payment_proof_registry.json")
+                        _proof_path = str(get_payment_proof_registry_path(self.download_folder))
                         if os.path.isfile(_proof_path):
                             with open(_proof_path, "r", encoding="utf-8") as _pf:
                                 _proof_reg = json.load(_pf)
                             if _proof_key in _proof_reg:
-                                self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過通知: {_proof_key}")
-                                return None  # intentional skip
+                                if not existing_files:
+                                    self.log(f"  ℹ️ 繳費憑證已上傳（JSON），跳過純文字催繳: {_proof_key}")
+                                    return None  # intentional skip
+                                delivery_note = "繳費憑證已有紀錄；仍交付本輪新取得的法院 PDF"
                     except Exception:
-                        pass
-
-            # 3. dismissed 模糊比對：人名出現在 dismissed keyword 中（不管 notify_key 格式）
-            if _party:
-                for _dk, _dv in self.dismissed_payments.items():
-                    _dkw = _dv.get("keyword", "") if isinstance(_dv, dict) else ""
-                    if _dkw and _dkw == _party:
-                        self.log(f"  ℹ️ 當事人已標記已繳費，跳過通知: {_party}")
-                        return None  # intentional skip
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12285, exc_info=True)
 
             # ── 從 DB 補齊法院名稱和當事人（email 路徑常缺這些）──
             if (not info.court or info.court == "-") and _ck and self.db:
@@ -12144,7 +14647,7 @@ class FileReviewManager:
                             _party = str(_db_row.get("client_name") or "").strip()
                             info.client_name = _party
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 12313, exc_info=True)
 
             # ── Auto-writeback: 用案號精確比對 DB，補齊空的法院/股別/案號 ──
             # 安全規則：
@@ -12242,67 +14745,116 @@ class FileReviewManager:
 
             self.log(f"  [DEBUG] notify_payment_needed: existing_files={existing_files}")
 
-            msg = f"💰 繳費單通知\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
+            if not existing_files and not allow_text_without_pdf:
+                self.log(
+                    f"  ⚠️ 繳費單通知延後：尚未取得 PDF 繳費單，"
+                    f"不發送空通知、不標記已通知: {court_case_no}"
+                )
+                return False
+
+            text_only_notice = bool(not existing_files and allow_text_without_pdf)
+            try:
+                setattr(info, "_payment_notice_text_only", text_only_notice)
+            except Exception:
+                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 12640, exc_info=True)
+
+            if text_only_notice:
+                title = "繳費通知（尚未取得PDF）"
+            else:
+                title = "繳費單 PDF 補送" if delivery_note else "繳費單通知"
+            msg = f"💰 {title}\n{_party or info.client_name} - {court_case_no}\n法院: {info.court or '-'}\n繳費期限: {info.payment_deadline or '-'}"
+            if delivery_note:
+                msg += f"\n狀態: {delivery_note}"
+            if text_only_notice:
+                msg += "\n狀態: Gmail 來信已確認需繳費，但信件未提供可交付的 PDF；請至閱卷系統待繳費/附件下載繳費單。"
             if info.laf_case_no:
                 msg += f"\n法扶案號: {info.laf_case_no}"
             if info.application_no and info.application_no != info.laf_case_no:
                 msg += f"\n申請編號: {info.application_no}"
 
+            if (os.environ.get("MAGI_FILE_REVIEW_SUPPRESS_NOTIFY", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                self.log(f"  ℹ️ MAGI_FILE_REVIEW_SUPPRESS_NOTIFY=1，略過繳費通知送出: {court_case_no}")
+                return False
+
             any_ok = False
+            file_delivery_complete = not existing_files
+            delivered_originals: set[str] = set()
+            delivery_files = (
+                self._prepare_payment_notice_delivery_files(existing_files, info)
+                if existing_files else []
+            )
+            if existing_files and not delivery_files:
+                delivery_files = existing_files
 
-            # ── red_phone: TG 推送 + DC mirror ──────────────────
-            try:
-                from skills.ops.red_phone import send_telegram_push_with_status
-                st = send_telegram_push_with_status(
-                    msg,
-                    severity="info",
-                    source="file_review_orchestrator",
-                    topic_key="filereview_payment",
-                    queue_on_fail=True,
-                ) or {}
-                if bool(st.get("telegram")) or bool(st.get("queued")):
-                    any_ok = True
-                    self.log(f"  ✅ red_phone 繳費通知已送達: {court_case_no}")
-                else:
-                    self.log(f"  ⚠️ red_phone 送達失敗: {st.get('error', '')[:80]}")
-            except Exception as rp_e:
-                self.log(f"  ⚠️ red_phone import/send 失敗: {rp_e}")
-
-            # ── 附件：TG 走 LAFNotifier，DC 走 red_phone ─────────
+            # ── 附件優先：有 PDF 時，附件 caption 就是主通知，避免純文字與 PDF 通知各送一次。 ──
             if existing_files:
-                file_caption = f"📎 繳費單 PDF — {info.client_name} {court_case_no}"
-                # TG 附件
+                file_caption = msg
+                file_delivery_ok = False
                 try:
                     ensure_path_on_sys_path(get_orch_dir())
                     from line_notifier import LAFNotifier
                     notifier = LAFNotifier()
                     tg_file_ok = notifier.notify_admin_with_files(
-                        file_caption, existing_files,
+                        file_caption, delivery_files,
                         topic_key="filereview_payment",
                         source="file_review_orchestrator",
                     )
                     if tg_file_ok:
+                        file_delivery_ok = True
                         any_ok = True
-                        self.log(f"  ✅ TG PDF 附件已送出 ({len(existing_files)} 份)")
+                        file_delivery_complete = True
+                        delivered_originals.update(existing_files)
+                        self.log(f"  ✅ PDF 附件已送出 ({len(delivery_files)} 份)")
                     else:
-                        self.log(f"  ⚠️ TG PDF 附件送出失敗")
+                        self.log(f"  ⚠️ PDF 附件送出失敗")
                 except Exception as file_e:
                     self.log(f"  ⚠️ LAFNotifier 附件發送失敗: {file_e}")
-                # DC 附件
+                if not file_delivery_ok:
+                    try:
+                        from skills.ops.red_phone import send_discord_bot_file
+                        for original_fp, fp in zip(existing_files, delivery_files):
+                            dc_file_ok = send_discord_bot_file(
+                                fp, caption=file_caption,
+                                topic_key="filereview_payment",
+                                source="file_review_orchestrator",
+                            )
+                            if dc_file_ok:
+                                any_ok = True
+                                delivered_originals.add(original_fp)
+                                self.log(f"  ✅ DC PDF fallback 已上傳: {os.path.basename(fp)}")
+                            else:
+                                self.log(f"  ⚠️ DC PDF fallback 上傳失敗: {os.path.basename(fp)}")
+                    except Exception as dc_e:
+                        self.log(f"  ⚠️ DC 檔案 fallback 上傳失敗: {dc_e}")
+                file_delivery_complete = len(delivered_originals) == len(existing_files)
+                for fp in existing_files:
+                    self._record_payment_pdf_delivery(
+                        fp,
+                        sent=fp in delivered_originals,
+                        caption=file_caption,
+                        error="payment_pdf_delivery_failed" if fp not in delivered_originals else "",
+                    )
+
+            # ── 無 PDF 或附件失敗時，才送純文字 red_phone。 ─────────────────────
+            if not any_ok:
                 try:
-                    from skills.ops.red_phone import send_discord_bot_file
-                    for fp in existing_files:
-                        dc_file_ok = send_discord_bot_file(
-                            fp, caption=file_caption,
-                            topic_key="filereview_payment",
-                            source="file_review_orchestrator",
-                        )
-                        if dc_file_ok:
-                            self.log(f"  ✅ DC PDF 已上傳: {os.path.basename(fp)}")
-                        else:
-                            self.log(f"  ⚠️ DC PDF 上傳失敗: {os.path.basename(fp)}")
-                except Exception as dc_e:
-                    self.log(f"  ⚠️ DC 檔案上傳失敗: {dc_e}")
+                    from skills.ops.red_phone import send_telegram_push_with_status
+                    st = send_telegram_push_with_status(
+                        msg,
+                        severity="info",
+                        source="file_review_orchestrator",
+                        topic_key="filereview_payment",
+                        queue_on_fail=True,
+                    ) or {}
+                    if bool(st.get("telegram")) or bool(st.get("delivered")):
+                        any_ok = True
+                        self.log(f"  ✅ red_phone 繳費通知已送達: {court_case_no}")
+                    elif bool(st.get("queued")):
+                        self.log(f"  ⚠️ red_phone 繳費通知僅排入補送佇列，暫不標記已通知: {court_case_no}")
+                    else:
+                        self.log(f"  ⚠️ red_phone 送達失敗: {st.get('error', '')[:80]}")
+                except Exception as rp_e:
+                    self.log(f"  ⚠️ red_phone import/send 失敗: {rp_e}")
 
             # ── Fallback: red_phone 不可用時嘗試直接 TG ──────────
             if not any_ok:
@@ -12321,18 +14873,88 @@ class FileReviewManager:
                 except Exception as fb_e:
                     self.log(f"  ⚠️ LAFNotifier fallback 也失敗: {fb_e}")
 
-            if any_ok:
+            result_ok = file_delivery_complete if existing_files else any_ok
+            if result_ok:
                 self.log(f"✅ 繳費通知已送達: {court_case_no}")
+            elif existing_files and any_ok:
+                self.log(f"⚠️ 繳費提醒文字已送出，但 PDF 附件未完整送達，保留待續跑: {court_case_no}")
             else:
                 self.log(f"❌ 繳費通知全部管道失敗: {court_case_no}")
 
-            return any_ok
+            return result_ok
 
         except Exception as e:
             self.log(f"❌ 發送繳費通知失敗: {e}")
             import traceback
             traceback.print_exc()
             return False
+
+    @staticmethod
+    def _payment_delivery_filename_component(value: str, default: str = "") -> str:
+        text = FileReviewManager._normalize_case_text(value or "")
+        text = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", text)
+        text = re.sub(r"\s+", "", text).strip("._- ")
+        return (text or default or "").strip()[:90]
+
+    @staticmethod
+    def _same_file_payload(path_a: str, path_b: str) -> bool:
+        try:
+            if not (os.path.isfile(path_a) and os.path.isfile(path_b)):
+                return False
+            h_a = hashlib.sha256()
+            h_b = hashlib.sha256()
+            with open(path_a, "rb") as fa:
+                for chunk in iter(lambda: fa.read(1024 * 1024), b""):
+                    h_a.update(chunk)
+            with open(path_b, "rb") as fb:
+                for chunk in iter(lambda: fb.read(1024 * 1024), b""):
+                    h_b.update(chunk)
+            return h_a.hexdigest() == h_b.hexdigest()
+        except Exception:
+            return False
+
+    def _prepare_payment_notice_delivery_files(self, file_paths: List[str], info: FileReviewInfo) -> List[str]:
+        """Create descriptive PDF copies for notification delivery."""
+        if not file_paths:
+            return []
+        party = self._payment_delivery_filename_component(
+            getattr(info, "client_name", "") or getattr(info, "party", ""),
+            default="未辨識當事人",
+        )
+        case_no = self._payment_delivery_filename_component(
+            getattr(info, "court_case_no", "") or getattr(info, "case_number", ""),
+            default="未辨識案號",
+        )
+        base_stem = "_".join(part for part in ("繳費單", party, case_no) if part)
+        if not base_stem:
+            base_stem = "繳費單_未辨識案件"
+
+        delivery_dir = os.path.join(self.download_folder or ".", ".payment_delivery_files")
+        try:
+            os.makedirs(delivery_dir, exist_ok=True)
+        except Exception:
+            return list(file_paths)
+
+        out: List[str] = []
+        total = len(file_paths)
+        for idx, src in enumerate(file_paths, 1):
+            if not src or not os.path.isfile(src):
+                continue
+            ext = os.path.splitext(src)[1].lower() or ".pdf"
+            suffix = f"_{idx}" if total > 1 else ""
+            dst = os.path.join(delivery_dir, f"{base_stem}{suffix}{ext}")
+            try:
+                if os.path.exists(dst) and not self._same_file_payload(src, dst):
+                    short_hash = hashlib.sha256(Path(src).read_bytes()).hexdigest()[:8]
+                    dst = os.path.join(delivery_dir, f"{base_stem}{suffix}_{short_hash}{ext}")
+                if os.path.realpath(src) != os.path.realpath(dst):
+                    if not (os.path.exists(dst) and self._same_file_payload(src, dst)):
+                        shutil.copy2(src, dst)
+                out.append(dst)
+            except Exception as e:
+                self.log(f"  ⚠️ 繳費單改名副本建立失敗，改送原檔: {os.path.basename(src)} ({e})")
+                out.append(src)
+        return out
 
     def _download_email_attachments(self, msg_id: str, message: Dict = None) -> List[str]:
         """
@@ -12346,6 +14968,7 @@ class FileReviewManager:
             已下載的檔案路徑列表
         """
         downloaded_files = []
+        downloaded_seen = set()
         
         if not self.gmail_service:
             return downloaded_files
@@ -12362,8 +14985,8 @@ class FileReviewManager:
             # Use recursive extraction to handle nested multipart structures
             _recursive_parts = self._extract_attachments_recursive(payload) if hasattr(self, '_extract_attachments_recursive') else []
             if _recursive_parts:
-                # Re-wrap into format expected by downstream code (body.attachmentId)
-                _all_parts = [{"filename": p.get("filename", ""), "mimeType": p.get("mimeType", ""), "body": {"attachmentId": p.get("attachmentId", "")}} for p in _recursive_parts]
+                # Re-wrap into format expected by downstream code.
+                _all_parts = [{"filename": p.get("filename", ""), "mimeType": p.get("mimeType", ""), "body": p.get("body") or {"attachmentId": p.get("attachmentId", "")}} for p in _recursive_parts]
             else:
                 # Fallback: flat single-level extraction
                 parts = payload.get('parts', [])
@@ -12403,12 +15026,51 @@ class FileReviewManager:
                     self.log(f"  ⚠️ 無法取得附件資料: {filename}")
                     continue
                 
-                # 儲存到下載資料夾
+                # 儲存到下載資料夾；同一封信被多個 Gmail query 命中時，
+                # 以內容 hash 重用既有附件，避免同一份繳費單被加時間戳下載多次。
                 file_path = os.path.join(self.download_folder, filename)
+                file_hash = hashlib.sha256(file_data).hexdigest()
+
+                def _same_payload(path: str) -> bool:
+                    try:
+                        if not os.path.isfile(path):
+                            return False
+                        h = hashlib.sha256()
+                        with open(path, "rb") as existing_f:
+                            for chunk in iter(lambda: existing_f.read(1024 * 1024), b""):
+                                h.update(chunk)
+                        return h.hexdigest() == file_hash
+                    except Exception:
+                        return False
+
+                if _same_payload(file_path):
+                    if file_path not in downloaded_seen:
+                        downloaded_files.append(file_path)
+                        downloaded_seen.add(file_path)
+                    self.log(f"  ⏭️ 附件已存在且內容相同，重用: {os.path.basename(file_path)}")
+                    continue
+
+                base, ext = os.path.splitext(filename)
+                try:
+                    for existing_name in os.listdir(self.download_folder):
+                        if not existing_name.startswith(base) or not existing_name.lower().endswith(ext.lower()):
+                            continue
+                        existing_path = os.path.join(self.download_folder, existing_name)
+                        if _same_payload(existing_path):
+                            if existing_path not in downloaded_seen:
+                                downloaded_files.append(existing_path)
+                                downloaded_seen.add(existing_path)
+                            self.log(f"  ⏭️ 附件已有同內容副本，重用: {existing_name}")
+                            break
+                    else:
+                        existing_path = ""
+                except Exception:
+                    existing_path = ""
+                if existing_path:
+                    continue
                 
                 # 如果檔案已存在，加上時間戳
                 if os.path.exists(file_path):
-                    base, ext = os.path.splitext(filename)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = f"{base}_{timestamp}{ext}"
                     file_path = os.path.join(self.download_folder, filename)
@@ -12416,7 +15078,9 @@ class FileReviewManager:
                 with open(file_path, 'wb') as f:
                     f.write(file_data)
                 
-                downloaded_files.append(file_path)
+                if file_path not in downloaded_seen:
+                    downloaded_files.append(file_path)
+                    downloaded_seen.add(file_path)
                 self.log(f"  ✅ 已下載附件: {filename}")
                 
         except Exception as e:
@@ -12442,7 +15106,7 @@ class FileReviewManager:
         check_date = (datetime.now() - timedelta(days=max(1, int(days or 7)))).strftime('%Y/%m/%d')
 
         queries = [
-            ("payment", f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限) after:{check_date}"),
+            ("payment", f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限 OR 規費繳款 OR 裁判費 OR 聲請費) after:{check_date}"),
             ("download", f"(法院 完成 線上 交付 核閱 通知 OR 線上下載 OR 交付核閱 OR 核閱通知) after:{check_date}"),
             # 備援：法院主旨格式常變動（含全形空白/不同片語），先撈回來再由內容分類。
             ("auto", f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統) after:{check_date}"),
@@ -12492,7 +15156,7 @@ class FileReviewManager:
                         t = self._normalize_case_text(f"{subject} {snippet}")
                         if self._is_court_pickup_notice_text(t):
                             msg_type = "court_pickup"
-                        elif any(k in t for k in ["繳費單", "待繳費", "繳費期限", "含繳費單"]):
+                        elif self._is_payment_notice_text(t):
                             msg_type = "payment"
                         elif any(k in t for k in ["線上下載", "交付核閱", "核閱通知", "下載期限"]):
                             msg_type = "download"
@@ -12515,6 +15179,142 @@ class FileReviewManager:
 
         return out[: max_results * 2]
 
+    def _queue_pending_payment_notice(self, info: FileReviewInfo) -> bool:
+        """Queue a Gmail payment notice for portal PDF download."""
+        case_no = (info.case_number or "").strip()
+        if not case_no:
+            return False
+        key = self._normalize_case_keyword_loose(case_no) or case_no
+        if not info.source_message_ids and info.message_id:
+            info.source_message_ids = [info.message_id]
+        queue = getattr(self, "pending_payment_notices", None)
+        if queue is None:
+            self.pending_payment_notices = []
+            queue = self.pending_payment_notices
+        for existing in queue:
+            existing_key = self._normalize_case_keyword_loose(existing.case_number or "") or existing.case_number
+            if existing_key != key:
+                continue
+            if not existing.court and info.court:
+                existing.court = info.court
+            if not existing.client_name and info.client_name:
+                existing.client_name = info.client_name
+            if not getattr(existing, "case_reason", "") and getattr(info, "case_reason", ""):
+                existing.case_reason = getattr(info, "case_reason", "")
+            if not existing.payment_deadline and info.payment_deadline:
+                existing.payment_deadline = info.payment_deadline
+            for msg_id in info.source_message_ids or ([info.message_id] if info.message_id else []):
+                if msg_id and msg_id not in existing.source_message_ids:
+                    existing.source_message_ids.append(msg_id)
+            return True
+        queue.append(info)
+        return True
+
+    def _download_queued_payment_notices_from_portal(self) -> dict:
+        """Download payment-slip PDFs for Gmail payment notices from the OLA portal."""
+        notices = list(getattr(self, "pending_payment_notices", []) or [])
+        stats = {"attempted": 0, "downloaded": 0, "notified": 0, "processed_messages": 0, "errors": []}
+        if not notices:
+            return stats
+
+        if not (self.username and self.password):
+            stats["errors"].append("payment_portal_download_missing_credentials")
+            self.log("  ⚠️ Gmail 繳費信需進入口下載 PDF，但缺少閱卷帳密")
+            return stats
+
+        try:
+            if not getattr(self, "logged_in", False):
+                self.log("  🔐 Gmail 繳費信觸發入口下載：登入閱卷系統...")
+                if not self.login():
+                    stats["errors"].append("payment_portal_login_failed")
+                    return stats
+            if not self.navigate_to_file_review():
+                stats["errors"].append("payment_portal_navigation_failed")
+                return stats
+        except Exception as e:
+            stats["errors"].append(f"payment_portal_start_failed:{str(e)[:120]}")
+            return stats
+
+        try:
+            max_days = int(os.environ.get("MAGI_FILE_REVIEW_PAYMENT_SLIP_MAX_DAYS", "14") or "14")
+        except Exception:
+            max_days = 14
+        max_days = max(1, min(max_days, 60))
+
+        for notice in notices:
+            case_no = (notice.case_number or "").strip()
+            if not case_no:
+                stats["errors"].append(f"payment_notice_missing_case:{notice.message_id or '-'}")
+                continue
+            stats["attempted"] += 1
+            try:
+                self.log(f"  🧾 依 Gmail 繳費信進入口抓繳費單: {notice.client_name or '-'}｜{case_no}")
+                results = self.download_all_payment_slips(
+                    max_days=max_days,
+                    target_case_number=case_no,
+                ) or []
+            except Exception as e:
+                stats["errors"].append(f"payment_portal_download_failed:{case_no}:{str(e)[:120]}")
+                continue
+
+            valid_paths: List[str] = []
+            result_meta: dict = {}
+            for result in results:
+                paths = result.get("all_paths") or ([result.get("pdf_path")] if result.get("pdf_path") else [])
+                for path in paths:
+                    if path and os.path.exists(path) and self._is_valid_payment_download_artifact(path):
+                        valid_paths.append(path)
+                        if not result_meta:
+                            result_meta = dict(result)
+            valid_paths = list(dict.fromkeys(valid_paths))
+            if not valid_paths:
+                self.log(f"  ⚠️ 入口未取得繳費單 PDF，保留 Gmail 信件待下輪重試: {case_no}")
+                stats["errors"].append(f"payment_portal_no_pdf:{case_no}")
+                continue
+
+            delivery_info = FileReviewInfo(
+                court=notice.court or str(result_meta.get("court") or ""),
+                court_case_no=case_no,
+                client_name=notice.client_name or str(result_meta.get("party") or ""),
+                payment_deadline=notice.payment_deadline,
+                status="待繳費",
+                files=valid_paths,
+            )
+            delivery_info.source_message_ids = list(notice.source_message_ids or ([notice.message_id] if notice.message_id else []))
+            delivered = self.notify_payment_needed(delivery_info)
+            if delivered is True:
+                stats["downloaded"] += len(valid_paths)
+                stats["notified"] += 1
+                row_json = {
+                    "yyidno": case_no,
+                    "showyyidno": case_no,
+                    "clnm": delivery_info.client_name,
+                    "rowid": str(result_meta.get("rowid") or ""),
+                    "p_payid": str(result_meta.get("payid") or result_meta.get("p_payid") or ""),
+                }
+                case_info = {
+                    "case_number": case_no,
+                    "showyyidno": case_no,
+                    "party": delivery_info.client_name,
+                    "court": delivery_info.court,
+                }
+                self._seed_payment_notification_dedup(
+                    row_json,
+                    case_info,
+                    reason="gmail_notice_portal_pdf_delivered",
+                )
+                for msg_id in delivery_info.source_message_ids:
+                    if msg_id:
+                        self.processed_emails.add(msg_id)
+                        stats["processed_messages"] += 1
+                self._save_processed_emails()
+            elif delivered is False:
+                stats["errors"].append(f"payment_pdf_delivery_failed:{case_no}")
+            else:
+                self.log(f"  ℹ️ 入口已取得 PDF 但通知被既有狀態略過: {case_no}")
+
+        return stats
+
     def process_emails(self) -> dict:
         """處理所有相關郵件 (繳費單 + 下載通知)，回傳統計摘要。"""
         summary = {
@@ -12523,6 +15323,9 @@ class FileReviewManager:
             "download_hits": 0,
             "pickup_hits": 0,
             "ready_to_download_count": 0,
+            "payment_portal_attempts": 0,
+            "payment_portal_downloaded": 0,
+            "payment_portal_notified": 0,
             "errors": [],
         }
         if not self.gmail_service:
@@ -12534,6 +15337,7 @@ class FileReviewManager:
             self.log("正在檢查繳費單與下載通知信件...")
             # 重置待下載清單
             self.ready_to_download = []
+            self.pending_payment_notices = []
 
             from datetime import timedelta
             check_date = (datetime.now() - timedelta(days=7)).strftime('%Y/%m/%d')
@@ -12544,8 +15348,10 @@ class FileReviewManager:
             _excl_completion = " -subject:繳費完成"
 
             # A. 繳費單通知
-            query_payment = f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限) after:{check_date}{_excl_laf}{_excl_completion}"
-            r_pay = self._scan_and_process_emails(query_payment, "payment")
+            query_payment = f"(法院 回覆 閱卷 結果 通知 OR 含繳費單 OR 待繳費 OR 繳費期限 OR 規費繳款 OR 裁判費 OR 聲請費) after:{check_date}{_excl_laf}{_excl_completion}"
+            seen_message_ids: set = set()
+
+            r_pay = self._scan_and_process_emails(query_payment, "payment", seen_message_ids=seen_message_ids)
             summary["payment_hits"] += r_pay.get("hits", 0)
             summary["payment_notified"] += r_pay.get("notified", 0)
             summary["pickup_hits"] += r_pay.get("pickup_hits", 0)
@@ -12553,19 +15359,40 @@ class FileReviewManager:
 
             # B. 下載通知
             query_download = f"(法院 完成 線上 交付 核閱 通知 OR 線上下載 OR 交付核閱 OR 核閱通知) after:{check_date}{_excl_laf}"
-            r_dl = self._scan_and_process_emails(query_download, "download")
+            r_dl = self._scan_and_process_emails(query_download, "download", seen_message_ids=seen_message_ids)
             summary["download_hits"] += r_dl.get("hits", 0)
             summary["pickup_hits"] += r_dl.get("pickup_hits", 0)
             summary["errors"].extend(r_dl.get("errors", []))
 
             # C. 備援掃描（主旨格式改版/插空白時）
-            query_auto = f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統) after:{check_date}{_excl_laf}{_excl_completion}"
-            r_auto = self._scan_and_process_emails(query_auto, "auto")
+            query_auto = f"(閱卷 OR 閱 卷 OR 複製電子卷證 OR 線上聲請閱卷暨聲請複製電子卷證系統 OR 規費 OR 裁判費 OR 聲請費) after:{check_date}{_excl_laf}{_excl_completion}"
+            r_auto = self._scan_and_process_emails(query_auto, "auto", seen_message_ids=seen_message_ids)
             summary["payment_hits"] += r_auto.get("payment_hits", 0)
             summary["payment_notified"] += r_auto.get("payment_notified", 0)
             summary["download_hits"] += r_auto.get("download_hits", 0)
             summary["pickup_hits"] += r_auto.get("pickup_hits", 0)
             summary["errors"].extend(r_auto.get("errors", []))
+
+            # Gmail classification and court-portal downloads have different
+            # ownership/locking rules.  The unattended FileReview cycle runs
+            # the dedicated payment-slip portal step immediately afterwards;
+            # opening Chromium from inside the mail scanner caused duplicate
+            # portal owners and made a healthy email scan look failed when the
+            # portal lock was busy.  Keep the legacy opt-in for direct/manual
+            # callers, but let the formal owner separate these two stages.
+            with_portal_payment = str(
+                os.environ.get("MAGI_FILE_REVIEW_EMAIL_SCAN_WITH_PORTAL_PAYMENT", "1")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if with_portal_payment:
+                portal_payment = self._download_queued_payment_notices_from_portal()
+                summary["payment_portal_attempts"] = portal_payment.get("attempted", 0)
+                summary["payment_portal_downloaded"] = portal_payment.get("downloaded", 0)
+                summary["payment_portal_notified"] = portal_payment.get("notified", 0)
+                summary["payment_notified"] += portal_payment.get("notified", 0)
+                summary["errors"].extend(portal_payment.get("errors", []))
+                summary["payment_portal_deferred_to_owner"] = False
+            else:
+                summary["payment_portal_deferred_to_owner"] = True
 
             summary["ready_to_download_count"] = len(self.ready_to_download)
 
@@ -12575,7 +15402,7 @@ class FileReviewManager:
 
         return summary
 
-    def _scan_and_process_emails(self, query: str, type: str) -> dict:
+    def _scan_and_process_emails(self, query: str, type: str, seen_message_ids: Optional[set] = None) -> dict:
         """掃描並處理特定類型的郵件，回傳統計。"""
         # 統計：hits=命中數, notified=成功通知數
         # auto 模式可能同時產出 payment 和 download，用複合 key 回傳
@@ -12591,6 +15418,11 @@ class FileReviewManager:
                 msg_id = msg['id']
                 if msg_id in self.processed_emails:
                     continue
+                if seen_message_ids is not None:
+                    if msg_id in seen_message_ids:
+                        self.log(f"  ⏭️ 本輪已處理過信件 [{msg_id}]，略過重複 query 命中")
+                        continue
+                    seen_message_ids.add(msg_id)
 
                 # 取得信件詳細內容
                 message = self.gmail_service.users().messages().get(userId='me', id=msg_id).execute()
@@ -12614,31 +15446,13 @@ class FileReviewManager:
 
                 self.log(f"  📨 [DEBUG] 檢查信件 [{msg_id}] 主旨: {subject}")
 
-                # 解析內文
-                body = ""
-                _payload_body = message.get('payload', {}).get('body', {})
-                if 'data' in _payload_body:
-                    import base64
-                    try:
-                        body = base64.urlsafe_b64decode(_payload_body['data']).decode('utf-8')
-                    except Exception as e: logger.debug("Failed to decode email body data: %s", e)
-                elif 'parts' in message.get('payload', {}):
-                    parts = message['payload']['parts']
-                    for part in parts:
-                        if part['mimeType'] == 'text/plain' and 'data' in part['body']:
-                            import base64
-                            try:
-                                body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
-                            except Exception as e: logger.debug("Failed to decode text/plain part data: %s", e)
-                            break
-                        # 如果沒有 text/plain，嘗試找 text/html
-                        elif part['mimeType'] == 'text/html' and 'data' in part['body'] and not body:
-                            import base64
-                            try:
-                                body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
-                            except Exception as e: logger.debug("Failed to decode text/html part data: %s", e)
+                payload = message.get('payload', {}) or {}
+                body = self._get_email_body(payload)
+                snippet = str(message.get("snippet") or "")
+                attachment_names = self._email_attachment_filenames(payload)
+                attachment_text = " ".join(attachment_names)
 
-                text_to_search = self._normalize_case_text(f"{body} {subject}")
+                text_to_search = self._normalize_case_text(f"{body} {subject} {snippet} {attachment_text}")
                 ids = self._extract_case_identifiers(text_to_search)
                 court_case_no = ids["court_case_no"]
                 fallback_case_no = ids["laf_case_no"] or ids["application_no"]
@@ -12649,11 +15463,11 @@ class FileReviewManager:
 
                 # 根據類型處理（auto 模式先由內容自動分類）
                 msg_type = type
-                t = self._normalize_case_text(f"{subject} {body}")
+                t = self._normalize_case_text(f"{subject} {body} {snippet} {attachment_text}")
                 if self._is_court_pickup_notice_text(t):
                     msg_type = "court_pickup"
                 elif type == "auto":
-                    if any(k in t for k in ["繳費單", "待繳費", "繳費期限", "含繳費單"]):
+                    if self._is_payment_notice_text(t):
                         msg_type = "payment"
                     elif any(k in t for k in ["線上下載", "交付核閱", "核閱通知", "下載期限"]):
                         msg_type = "download"
@@ -12664,22 +15478,30 @@ class FileReviewManager:
                     stats["hits"] += 1
                     if type == "auto":
                         stats["payment_hits"] += 1
-                    if "繳費" in body or "附件" in body: # 簡單判斷
+                    if self._is_payment_notice_text(t):
                          # 建立 Info 物件
                          info = FileReviewInfo()
                          info.court_case_no = court_case_no
                          info.laf_case_no = ids["laf_case_no"]
                          info.application_no = ids["application_no"]
                          info.message_id = msg_id
+                         # Gmail notices sometimes do not expose a PDF attachment
+                         # through the API. Send a text alert for that narrow case,
+                         # but keep it separate from web_payment:* PDF delivery dedupe.
+                         info.allow_text_without_pdf = True
 
                          # ── 從 email HTML 表格補齊 client_name / court / payment_deadline ──
                          _html_body = body or ""
                          _m_court = re.search(r'對象法院</td>\s*<td[^>]*>(.*?)</td>', _html_body)
                          if _m_court:
                              info.court = _m_court.group(1).strip()
+                         elif self._extract_label_from_payment_text(_html_body, "對象法院"):
+                             info.court = self._extract_label_from_payment_text(_html_body, "對象法院")
                          _m_party = re.search(r'當事人</td>\s*<td[^>]*>(.*?)</td>', _html_body)
                          if _m_party:
                              info.client_name = _m_party.group(1).strip()
+                         elif self._extract_label_from_payment_text(_html_body, "當事人"):
+                             info.client_name = self._extract_label_from_payment_text(_html_body, "當事人")
                          _m_ck_dot = re.search(r'案號</td>\s*<td[^>]*>(\d{2,3})\.([\w]+)\.(\d+)</td>', _html_body)
                          if _m_ck_dot and not info.court_case_no:
                              _yr = _m_ck_dot.group(1)
@@ -12690,9 +15512,13 @@ class FileReviewManager:
                          _m_division = re.search(r'股別</td>\s*<td[^>]*>(.*?)</td>', _html_body)
                          if _m_division:
                              info.court_division = _m_division.group(1).strip()
+                         elif self._extract_label_from_payment_text(_html_body, "股別"):
+                             info.court_division = self._extract_label_from_payment_text(_html_body, "股別")
                          _m_reason = re.search(r'案由</td>\s*<td[^>]*>(.*?)</td>', _html_body)
                          if _m_reason:
                              info.case_reason = _m_reason.group(1).strip()
+                         elif self._extract_label_from_payment_text(_html_body, "案由"):
+                             info.case_reason = self._extract_label_from_payment_text(_html_body, "案由")
                          _m_deadline = re.search(r'繳費期限[：:]\s*(\d{2,4}[/\-年]\d{1,2}[/\-月]\d{1,2})', _html_body)
                          if _m_deadline:
                              info.payment_deadline = _m_deadline.group(1).strip()
@@ -12703,16 +15529,83 @@ class FileReviewManager:
                          info.files = downloaded_files
                          self.log(f"  📎 共下載 {len(downloaded_files)} 個附件")
 
-                         # 標記已處理 (processed_emails 是 set，只記錄 msg_id)
-                         self.processed_emails.add(msg_id)
-                         self._save_processed_emails()
+                         has_payment_pdf = any(
+                             os.path.exists(p) and self._is_valid_payment_download_artifact(p)
+                             for p in (downloaded_files or [])
+                         )
+                         if not has_payment_pdf:
+                             queued = self._queue_pending_payment_notice(info)
+                             if queued:
+                                 self.log(
+                                     f"  🧾 Gmail 繳費信未含 PDF，已排入入口下載: "
+                                     f"{info.case_number or msg_id}"
+                                 )
+                                 # The email itself is sufficient evidence that
+                                 # payment action is required.  Alert immediately
+                                 # while the PDF is queued; a court-portal lock or
+                                 # slow download must not make the user miss the
+                                 # deadline.  Keep this key separate from the PDF
+                                 # delivery keys so a later attachment is still
+                                 # sent exactly once.
+                             else:
+                                 self.log(
+                                     f"  ⚠️ Gmail 繳費信無法排入入口下載（缺案號）: {msg_id}"
+                                 )
 
-                         # 通知 (含附件) — key 統一加 web_payment: 前綴避免與 web 掃描重複
-                         notify_key = f"web_payment:{info.court_case_no or info.laf_case_no or info.application_no or msg_id}"
+                             # The email itself is authoritative evidence that
+                             # payment action is required.  Failure to parse a
+                             # case number must never suppress the alert: it is
+                             # precisely the situation in which a human needs a
+                             # visible "待辨識" notice.  A queued item remains
+                             # unprocessed until its PDF is retrieved so future
+                             # cycles can retry the portal; an unqueueable item
+                             # is closed only after this fallback alert is
+                             # actually delivered.
+                             notice_case_key = (
+                                 info.court_case_no
+                                 or info.laf_case_no
+                                 or info.application_no
+                                 or msg_id
+                             )
+                             text_notify_key = f"gmail_payment_text:{notice_case_key}"
+                             if not queued and not (
+                                 info.court_case_no
+                                 or info.laf_case_no
+                                 or info.application_no
+                             ):
+                                 info.court_case_no = "案號待辨識（請查看法院繳費通知信）"
+                             if text_notify_key not in self.notified_cases:
+                                 _notify_result = self.notify_payment_needed(info)
+                                 if _notify_result is True:
+                                     self.notified_cases.add(text_notify_key)
+                                     self._save_notified_cases()
+                                     stats["notified"] += 1
+                                     if type == "auto":
+                                         stats["payment_notified"] += 1
+                                     if not queued:
+                                         self.processed_emails.add(msg_id)
+                                         self._save_processed_emails()
+                                 elif _notify_result is False:
+                                     self.log(
+                                         "  ⚠️ Gmail 繳費文字提醒未送達，"
+                                         f"保留信件待下輪重試: {notice_case_key}"
+                                     )
+                             elif not queued:
+                                 # A prior delivered fallback is sufficient for
+                                 # an unqueueable message.  Do not keep showing
+                                 # the same 1-hit/0-notified pseudo-failure.
+                                 self.processed_emails.add(msg_id)
+                                 self._save_processed_emails()
+                             continue
+
+                         notice_case_key = info.court_case_no or info.laf_case_no or info.application_no or msg_id
+                         notify_key = f"web_payment:{notice_case_key}"
                          if notify_key not in self.notified_cases:
                              _notify_result = self.notify_payment_needed(info)
                              sent_ok = _notify_result is True  # True=sent, None=skip, False=failed
                              if sent_ok:
+                                 self.processed_emails.add(msg_id)
+                                 self._save_processed_emails()
                                  self.notified_cases.add(notify_key)
                                  self._save_notified_cases()  # 持久化，避免重複通知
                                  stats["notified"] += 1
@@ -12720,15 +15613,16 @@ class FileReviewManager:
                                      stats["payment_notified"] += 1
                              elif _notify_result is False:
                                  # False = attempted but failed
-                                 self.log(f"  ⚠️ 繳費通知未送達，暫不標記已通知: {notify_key}")
+                                 self.log(f"  ⚠️ 繳費通知未送達或尚未取得 PDF，暫不標記已通知/已處理: {notify_key}")
                              # None = dismissed/dedup — already logged; don't warn
 
                 elif msg_type == "download":
                     stats["hits"] += 1
                     if type == "auto":
                         stats["download_hits"] += 1
-                    # 下載通知
-                    self.log(f"  發現可下載案件: {resolved_case_no}")
+                    # 下載通知只作為下載器線索。法院入口可能已出現「線上下載」
+                    # 但書記官尚未上傳檔案；成功下載並歸檔前，不標記已處理。
+                    self.log(f"  發現可下載線索（待實際下載驗證）: {resolved_case_no}")
 
                     # 加入待下載清單
                     info = FileReviewInfo()
@@ -12737,11 +15631,6 @@ class FileReviewManager:
                     info.application_no = ids["application_no"]
                     info.message_id = msg_id
                     self.ready_to_download.append(info)
-
-                    # 標記已處理 (下載成功後再標記可能更好，但在這裡標記代表「已讀」)
-                    # processed_emails 是 set，只記錄 msg_id
-                    self.processed_emails.add(msg_id)
-                    self._save_processed_emails()
 
                 elif msg_type == "court_pickup":
                     stats["pickup_hits"] += 1
@@ -12779,7 +15668,9 @@ class FileReviewManager:
             if not messages:
                 self.log("  ℹ️ 無需要處理的信件。")
                 return
-            draft_processed_file = os.path.join(str(get_orch_dir()), ".draft_processed_emails.json")
+            draft_processed_file = str(
+                get_laf_orchestrator_state_path(".draft_processed_emails.json")
+            )
             processed = set()
             try:
                 if os.path.exists(draft_processed_file):
@@ -12873,6 +15764,7 @@ class FileReviewManager:
                 processed.add(msg_id)
                 
             try:
+                os.makedirs(os.path.dirname(draft_processed_file), exist_ok=True)
                 with open(draft_processed_file, "w") as f:
                     json.dump(list(processed), f)
             except Exception as e: logger.debug("Failed to save draft processed file: %s", e)
@@ -12924,7 +15816,7 @@ class FileReviewManager:
                 if _runtime_deleted > 0:
                     self.log(f"✅ 已清理 .runtime/debug_screenshots/ 中 {_runtime_deleted} 個舊 debug 檔")
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 13093, exc_info=True)
 
             # Debug 檔案模式（舊路徑相容清理）
             debug_patterns = [

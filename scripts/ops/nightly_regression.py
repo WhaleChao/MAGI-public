@@ -5,16 +5,18 @@ scripts/ops/nightly_regression.py
 ===================================
 MAGI Nightly Regression Runner
 
-Orchestrates four test suites and sends a consolidated report to Telegram:
+Orchestrates the production test suites and sends a consolidated report:
   1. system_test.py       — subsystem health (Ollama, DB, memory, …)
   2. smoke_three_channels.py — TG / Discord / LINE credential + API checks
-  3. mock_skill_test.py   — full skill E2E against eefile_mock + laf_mock
-  4. smoke_core_routes.py — core text-routing capability checks
+  3. smoke_core_routes.py — core text-routing capability checks
+
+The retired V2 mock-skill fixture remains available only when ``mock`` is
+explicitly requested.  It is not part of the production nightly verdict.
 
 Usage:
   python scripts/ops/nightly_regression.py
   python scripts/ops/nightly_regression.py --no-notify
-  python scripts/ops/nightly_regression.py --suites system,channels,mock,coreroutes
+  python scripts/ops/nightly_regression.py --suites system,channels,coreroutes
 
 LaunchAgent / crontab example:
   0 2 * * * <_MAGI_ROOT>/venv/bin/python3 \
@@ -39,6 +41,8 @@ PYTHON   = str(VENV_PY) if VENV_PY.exists() else sys.executable
 if str(MAGI_DIR) not in sys.path:
     sys.path.insert(0, str(MAGI_DIR))
 
+from skills.ops import health_probes as _health_probes
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,6 +62,115 @@ def _run(cmd: list[str], timeout: int = 300) -> tuple[int, str, str]:
         return -1, "", f"timeout ({timeout}s)"
     except Exception as e:
         return -2, "", str(e)
+
+
+def _suite_report_path(filename: str) -> Path:
+    runtime = Path(os.environ.get("MAGI_RUNTIME_DIR") or "/tmp").expanduser()
+    runtime.mkdir(parents=True, exist_ok=True)
+    path = runtime / filename
+    # Never let a failed child process inherit a stale successful report.
+    path.unlink(missing_ok=True)
+    return path
+
+
+def _discord_bot_process() -> tuple[bool, str]:
+    """Return whether the Discord bot process is visible to local health probes."""
+    return _health_probes.python_script_process_running("api/discord_bot.py", timeout_sec=5)
+
+
+def _pid_list(pid_text: str) -> list[str]:
+    return [pid.strip() for pid in str(pid_text or "").split(",") if pid.strip()]
+
+
+def ensure_discord_bot_for_regression(wait_sec: int = 25) -> dict:
+    """
+    Nightly regression is a health check, but the health signal is noisy when
+    daemon is between Discord restarts.  Give the bot a short self-heal window
+    before running the suites that require it.
+    """
+    running, pid_text = _discord_bot_process()
+    if running:
+        pids = _pid_list(pid_text)
+        if len(pids) > 1:
+            return {"ok": False, "action": "duplicate_running", "pid": pid_text, "count": len(pids)}
+        return {"ok": True, "action": "already_running", "pid": pid_text}
+
+    script = MAGI_DIR / "api" / "discord_bot.py"
+    if not script.exists():
+        return {"ok": False, "action": "missing_script", "path": str(script)}
+
+    from magi_v3.external_inputs import bound_shared_directory
+
+    log_path = bound_shared_directory(
+        MAGI_DIR,
+        env_name="MAGI_RUNTIME_DIR",
+        shared_leaf="runtime",
+        source_fallback=".runtime",
+    ) / "nightly_discord_preflight.log"
+    log_fh = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = log_path.open("a", encoding="utf-8")
+        log_fh.write(f"\n[{datetime.now().isoformat()}] starting discord_bot.py for nightly regression preflight\n")
+        log_fh.flush()
+        proc = subprocess.Popen(
+            [PYTHON, str(script)],
+            cwd=str(MAGI_DIR),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as e:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        return {"ok": False, "action": "start_failed", "error": str(e), "log_path": str(log_path)}
+    finally:
+        if log_fh is not None and not log_fh.closed:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+
+    deadline = time.time() + max(1, wait_sec)
+    while time.time() < deadline:
+        running, pid_text = _discord_bot_process()
+        if running:
+            pids = _pid_list(pid_text)
+            if len(pids) > 1:
+                return {
+                    "ok": False,
+                    "action": "duplicate_running",
+                    "pid": pid_text,
+                    "count": len(pids),
+                    "launcher_pid": proc.pid,
+                    "log_path": str(log_path),
+                }
+            return {
+                "ok": True,
+                "action": "started",
+                "pid": pid_text,
+                "launcher_pid": proc.pid,
+                "log_path": str(log_path),
+            }
+        if proc.poll() is not None:
+            return {
+                "ok": False,
+                "action": "exited_early",
+                "returncode": proc.returncode,
+                "launcher_pid": proc.pid,
+                "log_path": str(log_path),
+            }
+        time.sleep(1)
+
+    return {
+        "ok": False,
+        "action": "start_timeout",
+        "launcher_pid": proc.pid,
+        "log_path": str(log_path),
+    }
 
 
 def _notify(msg: str) -> None:
@@ -104,7 +217,7 @@ def run_system_test() -> dict:
 def run_channel_smoke() -> dict:
     print("[Suite 2] Three-channel smoke test …")
     script = MAGI_DIR / "scripts" / "ops" / "smoke_three_channels.py"
-    tmp_json = Path("/tmp/magi_smoke_channels.json")
+    tmp_json = _suite_report_path("magi_smoke_channels.json")
 
     rc, stdout, stderr = _run(
         [PYTHON, str(script), "--json-out", str(tmp_json)],
@@ -153,7 +266,7 @@ def run_channel_smoke() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Suite 3 — Mock skill test (mock_skill_test.py)
+# Optional retired V2 mock-skill compatibility probe
 # ---------------------------------------------------------------------------
 
 def run_mock_skills(skills: str = "all") -> dict:
@@ -165,18 +278,18 @@ def run_mock_skills(skills: str = "all") -> dict:
     script = next((p for p in candidates if p.exists()), None)
 
     if script is None:
-        tried = ", ".join(str(p) for p in candidates)
         return {
             "suite": "mock",
-            "label": "Mock Skills (deprecated)",
+            "label": "Mock Skills（已退役）",
             "ok": True,
             "passed": 0,
             "failed": 0,
             "skipped": 1,
-            "warned": 1,
+            "warned": 0,
             "total": 1,
             "failures": [],
-            "warnings": [f"deprecated_or_missing_fixture: mock skill suite not found (tried: {tried})"],
+            "warnings": [],
+            "status": "retired",
         }
 
     rc, stdout, stderr = _run(
@@ -225,7 +338,7 @@ def run_mock_skills(skills: str = "all") -> dict:
 def run_core_routes() -> dict:
     print("[Suite 4] Core route smoke test …")
     script = MAGI_DIR / "scripts" / "ops" / "smoke_core_routes.py"
-    tmp_json = Path("/tmp/magi_smoke_core_routes.json")
+    tmp_json = _suite_report_path("magi_smoke_core_routes.json")
 
     rc, stdout, stderr = _run(
         [PYTHON, str(script), "--json-out", str(tmp_json)],
@@ -343,6 +456,23 @@ def build_report(suites: list[dict]) -> tuple[str, bool]:
     return "\n".join(lines), overall_ok
 
 
+def build_failure_summary(suites: list[dict]) -> str:
+    """Compact stderr summary so cron issue samples show actionable failures."""
+    parts: list[str] = []
+    for suite in suites:
+        if suite.get("ok"):
+            continue
+        label = str(suite.get("label") or suite.get("suite") or "?")
+        failures = [str(item) for item in suite.get("failures") or [] if str(item).strip()]
+        if suite.get("error"):
+            failures.insert(0, str(suite.get("error")))
+        if failures:
+            parts.append(f"{label}: " + "; ".join(failures[:4]))
+        else:
+            parts.append(f"{label}: failed={suite.get('failed', 0)} rc={suite.get('rc', '')}")
+    return " | ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -357,7 +487,7 @@ SUITE_FUNCS = {
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="MAGI nightly regression runner")
-    ap.add_argument("--suites",    default="system,channels,mock,coreroutes",
+    ap.add_argument("--suites",    default="system,channels,coreroutes",
                     help="Comma-separated suites to run (system,channels,mock,coreroutes)")
     ap.add_argument("--no-notify", action="store_true",
                     help="Skip Telegram notification")
@@ -369,6 +499,30 @@ def main() -> int:
     results: list[dict] = []
 
     start = time.time()
+    preflight = None
+    if any(name in {"system", "channels"} for name in suite_names):
+        preflight = ensure_discord_bot_for_regression()
+        print(
+            "[Preflight] Discord bot: "
+            f"{'ok' if preflight.get('ok') else 'fail'} "
+            f"action={preflight.get('action')} pid={preflight.get('pid', '')}"
+        )
+        if not preflight.get("ok"):
+            results.append(
+                {
+                    "suite": "preflight",
+                    "label": "Discord Bot Preflight",
+                    "ok": False,
+                    "passed": 0,
+                    "failed": 1,
+                    "total": 1,
+                    "failures": [
+                        f"{preflight.get('action') or 'discord_preflight_failed'}"
+                        + (f": {preflight.get('pid')}" if preflight.get("pid") else "")
+                    ],
+                }
+            )
+
     for name in suite_names:
         fn = SUITE_FUNCS.get(name)
         if fn is None:
@@ -396,13 +550,19 @@ def main() -> int:
         out = Path(args.json_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "ok": overall_ok,
+            "success": overall_ok,
             "generated_at": datetime.now().isoformat(),
             "elapsed_sec": elapsed,
             "overall_ok": overall_ok,
+            "preflight": preflight,
             "suites": results,
         }
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"JSON report saved: {out}")
+
+    if not overall_ok:
+        print("nightly_regression_failed: " + build_failure_summary(results), file=sys.stderr)
 
     if not args.no_notify:
         _notify(report_text)

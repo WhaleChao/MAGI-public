@@ -8,8 +8,17 @@ pdf-namer / naming_rules.py
 核心格式:  YYYYMMDD 文件類型(補充資訊).pdf
 """
 
+import os
 import re
+import sys
+from pathlib import Path
 from typing import Dict, Optional, Tuple, List
+
+_SKILL_CODE_DIR = Path(__file__).resolve().parent
+if str(_SKILL_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_CODE_DIR))
+
+from state_paths import read_path
 
 # ─────────────────────────────── 文件類型分類 ──────────────────────────────
 
@@ -325,9 +334,9 @@ def build_few_shot_examples(max_per_category: int = 3) -> str:
 
 def load_training_data() -> List[dict]:
     """Load training data from JSON file."""
-    import os, json
-    path = os.path.join(os.path.dirname(__file__), "training_data.json")
-    if os.path.exists(path):
+    import json
+    path = read_path("training_data.json")
+    if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
@@ -358,7 +367,7 @@ SYSTEM_PROMPT = """你是專業的法律事務所文件管理助手。你的任�
 04_往來信函/        ← 信件
 05_委任相關/        ← 契約、收據、委任證明
 06_法扶相關/        ← 法扶表單、回報單
-07_判決書/          ← 判決
+07_判決書或終局裁定及處分/          ← 判決
 ```
 
 ## 分類範例

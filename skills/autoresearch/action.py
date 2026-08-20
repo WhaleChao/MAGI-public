@@ -30,8 +30,13 @@ from pathlib import Path
 
 _SKILL_DIR = Path(__file__).resolve().parent
 _MAGI_ROOT = _SKILL_DIR.parents[1]
-_RESULTS_DIR = _SKILL_DIR / "runs"
-_RESULTS_DIR.mkdir(exist_ok=True)
+_SHARED_STATE_DIR = (os.environ.get("MAGI_SHARED_STATE_DIR") or "").strip()
+_RESULTS_DIR = Path(
+    os.environ.get("MAGI_AUTORESEARCH_RUNS_DIR")
+    or ((_SHARED_STATE_DIR and str(Path(_SHARED_STATE_DIR).expanduser() / "autoresearch-runs")))
+    or str(_SKILL_DIR / "runs")
+).expanduser()
+_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # SSH helpers

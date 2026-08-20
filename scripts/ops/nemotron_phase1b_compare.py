@@ -5,8 +5,8 @@ nemotron_phase1b_compare.py — 5 份繁中 PDF Nemotron Parse vs macOS Vision �
 只在 oMLX 4 個 server 已 bootout 的狀態下執行（避免記憶體爭用）。
 
 執行：
-    /Users/ai/Desktop/MAGI_v2/venv/bin/python3 \
-        /Users/ai/Desktop/MAGI_v2/scripts/ops/nemotron_phase1b_compare.py
+    "${MAGI_PYTHON_EXECUTABLE}" \
+        "${MAGI_ROOT}/scripts/ops/nemotron_phase1b_compare.py"
 
 輸出：/tmp/nemotron_phase1b/
 """
@@ -21,26 +21,39 @@ import time
 import traceback
 from pathlib import Path
 
+# 測試資料集中在 MAGI 工程資料；允許 CI／其他電腦以環境變數覆寫，
+# 不再依賴桌面頂層的相容捷徑。
+TEST_DATA_ROOT = Path(
+    os.environ.get(
+        "MAGI_TEST_DATA_ROOT",
+        Path.home() / "Desktop" / "MAGI" / "V3_工程資料" / "測試輸入" / "AGENT TEST DATA",
+    )
+)
+DESKTOP_ROOT = Path.home() / "Desktop"
+
 # 5 份樣本（label, pdf path, document_type）
 SAMPLES = [
     ("sample01_judgment",
-     "/Users/ai/Desktop/AGENT TEST DATA/判決/1499.pdf",
+     str(TEST_DATA_ROOT / "判決" / "1499.pdf"),
      "裁判書"),
     ("sample02_court_spec",
-     "/Users/ai/Desktop/AGENT TEST DATA/判決/裁判書開放API規格說明(1140822版).pdf",
+     str(TEST_DATA_ROOT / "判決" / "裁判書開放API規格說明(1140822版).pdf"),
      "司法院規格說明"),
     ("sample03_passbook",
-     "/Users/ai/Desktop/存摺.pdf",
+     str(DESKTOP_ROOT / "存摺.pdf"),
      "低品質掃描"),
     ("sample04_report",
-     "/Users/ai/Desktop/AGENT TEST DATA/判決/平等近用司法專案報告.pdf",
+     str(TEST_DATA_ROOT / "判決" / "平等近用司法專案報告.pdf"),
      "司法報告"),
     ("sample05_form",
-     "/Users/ai/Desktop/0000-0000-範本-消費者債務清理/02_各種書狀/04_債務人清冊.pdf",
+     str(DESKTOP_ROOT / "0000-0000-範本-消費者債務清理" / "02_各種書狀" / "04_債務人清冊.pdf"),
      "表單"),
 ]
 
-MODEL_PATH = "/Users/ai/.omlx/models-vision/nemotron-parse-v1.2-hf"
+MODEL_PATH = os.environ.get(
+    "MAGI_NEMOTRON_PARSE_MODEL_PATH",
+    str(Path.home() / ".omlx" / "models-vision" / "nemotron-parse-v1.2-hf"),
+)
 OUT_DIR = Path("/tmp/nemotron_phase1b")
 PROMPT = "</s><s><predict_bbox><predict_classes><output_markdown><predict_no_text_in_pic>"
 PROMPT_IDS = [2, 0, 50004, 50008, 50001, 50010]
@@ -85,7 +98,7 @@ def main() -> int:
     log(f"model loaded in {load_dur:.1f}s, RSS={rss_mb():.0f} MB")
 
     # Apple Vision
-    sys.path.insert(0, "/Users/ai/Desktop/MAGI_v2")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     log("loading apple_vision_provider ...")
     from skills.engine.ocr import apple_vision_provider
     av_ok, av_reason = apple_vision_provider.check_available()

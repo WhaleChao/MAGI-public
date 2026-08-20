@@ -8,7 +8,10 @@ from typing import Dict, Optional
 from skills.evolution.skill_genesis import acquire_skill, run_skill_action, run_skill_ci
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-PENDING_FILE = f"{_MAGI_ROOT}/.agent/intent_forge_pending.json"
+PENDING_FILE = os.path.join(
+    os.path.expanduser(os.environ.get("MAGI_AGENT_DIR", "").strip() or f"{_MAGI_ROOT}/.agent"),
+    "intent_forge_pending.json",
+)
 
 
 def _ensure_pending_store():
@@ -266,4 +269,3 @@ def forge_continue_with_user_feedback(user_id: str, user_feedback: str) -> Dict:
         clarification=clarification,
         route_tag="intent_forge_continue",
     )
-

@@ -2,10 +2,15 @@
             <div class="card">
                 <div class="toolbar">
                     <div>
-                        <h3>業務概覽</h3>
-                        <div class="muted">案件管理系統的業務概覽。</div>
+                        <h3>今日工作台</h3>
+                        <div class="muted">今日重點、近期案件與同步狀態。</div>
                     </div>
-                    <button class="btn" id="dashboardRefreshBtn">重新整理</button>
+                    <div class="inline-actions">
+                        <button class="btn" data-tab-jump="cases" type="button">案件列表</button>
+                        <button class="btn" data-tab-jump="fileManager" type="button">檔案管理</button>
+                        <a class="btn" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer">Google 日曆</a>
+                        <button class="btn" id="dashboardRefreshBtn">重新整理</button>
+                    </div>
                 </div>
                 <div class="muted" id="dashboardWindow">帳務區間載入中...</div>
                 <div class="stat-grid" style="margin-top:12px;">
@@ -29,7 +34,7 @@
             <div class="grid-2 dashboard-todo-panels">
                 <div class="card">
                     <h3>OSC 建立待辦</h3>
-                    <div class="section-note" id="dashboardOscTodosSummary">來源：OSC 手動或系統建立的案件待辦。</div>
+                    <div class="section-note" id="dashboardOscTodosSummary">來源：OSC 手動或 PDF 建立的案件待辦。</div>
                     <div class="table-wrap">
                         <table>
                             <thead><tr><th>日期</th><th>案號</th><th>類型</th><th>描述</th><th>操作</th></tr></thead>
@@ -38,8 +43,8 @@
                     </div>
                 </div>
                 <div class="card">
-                    <h3>行事曆事件</h3>
-                    <div class="section-note" id="dashboardCalendarTodosSummary">來源：Google 日曆匯入的案件事件。</div>
+                    <h3>案件行程同步紀錄</h3>
+                    <div class="section-note" id="dashboardCalendarTodosSummary">只顯示已配對案件的 MAGI／Google 同步資料，不是完整 Google 日曆。</div>
                     <div class="table-wrap">
                         <table>
                             <thead><tr><th>日期</th><th>案號</th><th>類型</th><th>描述</th><th>操作</th></tr></thead>
@@ -50,7 +55,7 @@
             </div>
             <div class="grid-2">
                 <div class="card">
-                    <h3>近期行事曆</h3>
+                    <h3>近期案件行程（同步稽核）</h3>
                     <div class="table-wrap">
                         <table>
                             <thead><tr><th>開始</th><th>標題</th><th>案號</th><th>地點</th></tr></thead>

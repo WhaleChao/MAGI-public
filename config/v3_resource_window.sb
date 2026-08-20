@@ -1,0 +1,19 @@
+(version 1)
+
+; This profile is expanded only with canonical paths by the sealed collector.
+; It permits local IPC/listeners required by the real V2/V3 compositions but
+; denies every non-loopback connection and every read of the live MAGI/data
+; domains.  The collector runs explicit denial probes before starting an arm.
+(allow default)
+(deny network*)
+(allow network-bind (local ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(deny file-write*)
+(allow file-write* (literal "/dev/null"))
+(allow file-write* (subpath (param "WORKDIR")))
+(deny file-read* (subpath (param "LIVE_MAGI_ROOT")))
+(deny file-read* (subpath (param "CLOUD_STORAGE_ROOT")))
+(deny file-read* (subpath (param "VOLUMES_ROOT")))
+(deny file-read* (subpath (param "KEYCHAINS_ROOT")))
+(deny file-read* (subpath (param "SSH_ROOT")))

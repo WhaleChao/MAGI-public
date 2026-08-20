@@ -46,19 +46,22 @@ TRANSCRIPT_CAPTCHA_QUEUE_PATH = Path(os.environ.get("MAGI_TRANSCRIPT_CAPTCHA_DEF
 TRANSCRIPT_MANUAL_QUEUE_PATH = Path(
     os.environ.get(
         "MAGI_TRANSCRIPT_MANUAL_QUEUE_PATH",
-        str(MAGI_ROOT / "static" / "transcript_manual_queue.jsonl"),
+        str(
+            Path(os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or MAGI_ROOT / "static")
+            / "transcript_manual_queue.jsonl"
+        ),
     )
 )
 RED_PHONE_OUTBOX_PATH = Path(
     os.environ.get(
         "MAGI_RED_PHONE_OUTBOX_FILE",
-        str(MAGI_ROOT / ".agent" / "red_phone_outbox.json"),
+        str(Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent") / "red_phone_outbox.json"),
     )
 )
 RED_PHONE_DELIVERY_LOG_PATH = Path(
     os.environ.get(
         "MAGI_RED_PHONE_DELIVERY_LOG",
-        str(MAGI_ROOT / ".agent" / "red_phone_delivery.jsonl"),
+        str(Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent") / "red_phone_delivery.jsonl"),
     )
 )
 EXPORT_MOD = MAGI_ROOT / "skills" / "ops" / "export_text.py"

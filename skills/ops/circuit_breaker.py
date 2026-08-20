@@ -6,13 +6,20 @@ After 3 consecutive failed consensus attempts, system enters 4-hour cooldown.
 """
 
 import os
+from pathlib import Path
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import json
 import time
 from datetime import datetime, timedelta
 
 # State file location
-STATE_FILE = "/Users/ai/.magi/circuit_breaker_state.json"
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+STATE_FILE = os.environ.get(
+    "MAGI_CIRCUIT_BREAKER_STATE_PATH",
+    os.path.join(_AGENT_DIR, "circuit_breaker_state.json")
+    if _AGENT_DIR
+    else str(Path.home() / ".magi" / "circuit_breaker_state.json"),
+)
 
 # Configuration
 MAX_FAILURES = 3

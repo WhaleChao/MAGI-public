@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import types
 from pathlib import Path
 
 from flask import Flask
@@ -30,6 +33,42 @@ def _make_app(template_dir: Path):
     return app
 
 
+def test_tailscale_serve_uses_launchd_safe_absolute_cli(monkeypatch):
+    from api.blueprints import dashboard_pages as pages
+
+    seen = {}
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "Web": {
+                    "aimac-mini.tailnet.test:443": {
+                        "Handlers": {"/": {"Proxy": "http://127.0.0.1:5002"}}
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr(pages.shutil, "which", lambda _name: None)
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return Result()
+
+    monkeypatch.setattr(pages.subprocess, "run", fake_run)
+
+    assert pages._load_tailscale_serve_url() == "https://aimac-mini.tailnet.test"
+    assert seen["command"] == [
+        "/opt/homebrew/bin/tailscale",
+        "serve",
+        "status",
+        "--json",
+    ]
+    assert seen["kwargs"]["timeout"] == 2
+
+
 def test_redirect_routes_point_to_existing_page_targets(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
@@ -56,6 +95,10 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     template_dir.mkdir()
     (template_dir / "dashboard.html").write_text("dashboard {{ user.id }}", encoding="utf-8")
     (template_dir / "dashboard_nerv.html").write_text("nerv {{ user.id }}", encoding="utf-8")
+    (template_dir / "dashboard_beginner.html").write_text(
+        "beginner {{ user.id }} {{ dashboard.page_label|default('') }}",
+        encoding="utf-8",
+    )
     (template_dir / "golem_console.html").write_text("golem {{ user.id }}", encoding="utf-8")
     (template_dir / "research.html").write_text("research {{ research.namespace_count }}", encoding="utf-8")
     (template_dir / "mobile_home.html").write_text("mobile {{ mobile.base_url }} {{ user.id }}", encoding="utf-8")
@@ -84,6 +127,22 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert b"nerv u1" in response.data
 
+    response = client.get("/dashboard/beginner", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    assert b"beginner u1" in response.data
+
+    response = client.get("/start", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    assert b"beginner u1" in response.data
+
+    response = client.get("/status", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    assert "beginner u1 MAGI 系統檢測" in response.get_data(as_text=True)
+
+    response = client.get("/dashboard/status", headers={"X-User-ID": "u1"})
+    assert response.status_code == 200
+    assert "beginner u1 MAGI 系統檢測" in response.get_data(as_text=True)
+
     response = client.get("/nerv", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert b"nerv u1" in response.data
@@ -103,6 +162,215 @@ def test_dashboard_pages_render_with_login_required(tmp_path, monkeypatch):
     response = client.get("/mobile-admin", headers={"X-User-ID": "u1"})
     assert response.status_code == 200
     assert b"mobile-admin https://magi.tailnet.test" in response.data
+
+
+def test_dashboard_templates_expose_system_detection_entry():
+    root = Path(__file__).resolve().parents[1]
+
+    golem = (root / "templates" / "golem_console.html").read_text(encoding="utf-8")
+    beginner = (root / "templates" / "dashboard_beginner.html").read_text(encoding="utf-8")
+    legacy_dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    status_page = (root / "templates" / "dashboard_beginner.html").read_text(encoding="utf-8")
+    adjust_page = (root / "templates" / "dashboard_nerv.html").read_text(encoding="utf-8")
+
+    assert 'href="/status">系統檢測' in golem
+    assert 'href="/osc?tab=todos"' in golem
+    assert 'href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"' in golem
+    assert 'href="/sentencing-trends">判決趨勢' in golem
+    assert "dashboard.capabilities_action" in beginner
+    assert 'href="/status">系統檢測' in beginner
+    assert "[ 系統檢測 / 狀態中心 ]" in legacy_dashboard
+    assert "dashboard.page_title" in status_page
+    assert "dashboard.quick_links" in status_page
+    assert "MAGI 調整" in adjust_page
+
+
+def test_status_dashboard_health_poll_handles_login_redirect():
+    root = Path(__file__).resolve().parents[1]
+    status_page = (root / "templates" / "dashboard_nerv.html").read_text(encoding="utf-8")
+
+    assert "redirect: 'manual'" in status_page
+    assert "credentials: 'same-origin'" in status_page
+    assert "cache: 'no-store'" in status_page
+    assert "/status/api/health?_=${Date.now()}" in status_page
+    assert "healthPollInFlight" in status_page
+    assert "scheduleHealthPoll" in status_page
+    assert "visibilitychange" in status_page
+    assert "window.addEventListener('focus', refreshHealthNow)" in status_page
+    assert 'id="health-refresh-state"' in status_page
+    assert "資料：尚未同步" in status_page
+    assert "需要重新登入" in status_page
+
+
+def test_status_dashboard_uses_live_health_over_stale_reports(tmp_path, monkeypatch):
+    import api.blueprints.dashboard_pages as pages
+
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "system_test_report.json").write_text(
+        json.dumps(
+            {
+                "total": 12,
+                "passed": 11,
+                "failed": 1,
+                "timestamp": "2026-07-02T02:31:17",
+                "tests": [
+                    {
+                        "id": "autopilot_schedule",
+                        "label": "夜間排程 (AUTOPILOT)",
+                        "pass": False,
+                        "detail": "cron_jobs.json 有 80 個任務，但 discord_bot.py 未運行",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (static_dir / "integration_smoke_latest.json").write_text(
+        json.dumps(
+            {
+                "overall_ok": False,
+                "generated_at": "2000-01-01T00:00:00",
+                "checks": [{"name": "old_failure", "ok": False, "summary": "historical failure"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (static_dir / "magi_status.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(pages, "_MAGI_ROOT", tmp_path)
+    monkeypatch.setattr(
+        pages,
+        "_load_live_health_snapshot",
+        lambda: {"status": "operational", "operational_health": {"ok": True}},
+    )
+
+    dashboard = pages._build_status_dashboard()
+
+    assert dashboard["readiness"]["status"] == "pass"
+    assert "即時 health" in dashboard["readiness"]["detail"]
+    assert dashboard["failed_smoke"] == []
+    schedule = next(item for item in dashboard["capabilities"] if item["name"] == "排程與背景任務")
+    assert schedule["status"] == "pass"
+    assert "已恢復" in schedule["detail"]
+    smoke = next(item for item in dashboard["evidence"] if item["name"] == "整合 smoke")
+    assert smoke["status"] == "warn"
+    assert "歷史報告已過期" in smoke["summary"]
+    system = next(item for item in dashboard["evidence"] if item["name"] == "系統自測")
+    assert system["status"] == "warn"
+    assert "確認恢復" in system["summary"]
+
+
+def test_status_dashboard_accepts_readyz_contract(tmp_path, monkeypatch):
+    import api.blueprints.dashboard_pages as pages
+
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "system_test_report.json").write_text("{}", encoding="utf-8")
+    (static_dir / "integration_smoke_latest.json").write_text("{}", encoding="utf-8")
+    (static_dir / "magi_status.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pages, "_MAGI_ROOT", tmp_path)
+    monkeypatch.setattr(pages, "_load_live_health_snapshot", lambda: {"ok": True, "status": "ready"})
+
+    dashboard = pages._build_status_dashboard()
+
+    assert dashboard["readiness"]["status"] == "pass"
+    live = next(item for item in dashboard["evidence"] if item["name"] == "即時 health")
+    assert live["status"] == "pass"
+    assert live["summary"] == "目前 ready"
+
+
+def test_status_dashboard_uses_current_scheduler_owner_and_count(tmp_path, monkeypatch):
+    import api.blueprints.dashboard_pages as pages
+
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "system_test_report.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "id": "autopilot_schedule",
+                        "pass": True,
+                        "detail": "discord_bot.py 運行中 (pid=71516)",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (static_dir / "integration_smoke_latest.json").write_text("{}", encoding="utf-8")
+    (static_dir / "magi_status.json").write_text("{}", encoding="utf-8")
+    lock_dir = tmp_path / ".runtime" / "locks"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "cron_scheduler_owner.lock.json").write_text(
+        json.dumps({"pid": os.getpid(), "owner": "discord_internal_cron"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps([{"enabled": True}, {"enabled": True}, {"enabled": False}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pages, "_MAGI_ROOT", tmp_path)
+    monkeypatch.setattr(pages, "_load_live_health_snapshot", lambda: {"ok": True, "status": "ready"})
+
+    dashboard = pages._build_status_dashboard()
+
+    schedule = next(item for item in dashboard["capabilities"] if item["name"] == "排程與背景任務")
+    assert schedule["status"] == "pass"
+    assert f"pid={os.getpid()}" in schedule["detail"]
+    assert "2 個任務啟用" in schedule["detail"]
+    assert "71516" not in schedule["detail"]
+
+
+def test_dashboard_and_mobile_pages_require_login_when_unauthenticated(tmp_path, monkeypatch):
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in (
+        "dashboard.html",
+        "dashboard_nerv.html",
+        "dashboard_beginner.html",
+        "golem_console.html",
+        "research.html",
+        "mobile_home.html",
+        "mobile_admin.html",
+    ):
+        (template_dir / name).write_text("protected", encoding="utf-8")
+    monkeypatch.setattr(
+        "api.blueprints.dashboard_pages._build_mobile_app_config",
+        lambda: {"base_url": "https://magi.tailnet.test", "routes": []},
+    )
+
+    app = _make_app(template_dir)
+
+    @app.route("/login")
+    def login():
+        return "login"
+
+    client = app.test_client()
+    protected_paths = [
+        "/dashboard",
+        "/dashboard/beginner",
+        "/start",
+        "/status",
+        "/dashboard/status",
+        "/dashboard/nerv",
+        "/golem",
+        "/research",
+        "/mobile",
+        "/app",
+        "/mobile-admin",
+        "/app-admin",
+        "/dashboard/website",
+        "/wa/",
+    ]
+    for path in protected_paths:
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 302, path
+        assert "/login" in response.location, path
+        assert "next=" in response.location, path
 
 
 def test_mobile_config_and_manifest_routes(tmp_path, monkeypatch):
@@ -138,7 +406,12 @@ def test_mobile_config_and_manifest_routes(tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert data["start_url"] == "/mobile"
+    assert data["scope"] == "/mobile"
     assert {"name": "Paperclip", "url": "/osc"} in data["shortcuts"]
+
+    response = client.get("/mobile/sw.js")
+    assert response.status_code == 200
+    assert response.headers["Service-Worker-Allowed"] == "/mobile"
 
 
 def test_pixel_dashboard_route_is_removed(tmp_path):
@@ -253,24 +526,23 @@ def test_intel_refresh_returns_json_for_ajax(tmp_path, monkeypatch):
     assert response.get_json() == {"ok": True, "message": "updated"}
 
 
-def test_intel_legacy_skills_run_form_routes_to_worldmonitor_refresh(tmp_path, monkeypatch):
-    from api.blueprints import dashboard_pages as mod
-
+def test_legacy_api_skills_run_delegates_to_canonical_helper(tmp_path, monkeypatch):
     template_dir = tmp_path / "templates"
     template_dir.mkdir()
     for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
         (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
 
-    root = tmp_path / "magi"
-    action_path = root / "skills" / "worldmonitor-intel" / "action.py"
-    action_path.parent.mkdir(parents=True)
-    action_path.write_text("print('ok')\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "_MAGI_ROOT", root)
-    monkeypatch.setattr(
-        mod.subprocess,
-        "run",
-        lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "updated", "stderr": ""})(),
-    )
+    calls = []
+    fake_tools_api = types.ModuleType("api.tools_api")
+
+    def _fake_run_skill_from_payload(data, *, user_id="api"):
+        from flask import jsonify
+
+        calls.append({"data": dict(data), "user_id": user_id})
+        return jsonify({"success": True, "skill": data.get("skill"), "task": data.get("task")}), 200
+
+    fake_tools_api._run_skill_from_payload = _fake_run_skill_from_payload
+    monkeypatch.setitem(sys.modules, "api.tools_api", fake_tools_api)
 
     app = _make_app(template_dir)
     client = app.test_client()
@@ -281,8 +553,35 @@ def test_intel_legacy_skills_run_form_routes_to_worldmonitor_refresh(tmp_path, m
         follow_redirects=False,
     )
 
-    assert response.status_code == 302
-    assert response.location.endswith("/intel?refresh=ok")
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert calls == [{"data": {"skill": "worldmonitor-intel", "task": "collect"}, "user_id": "u1"}]
+
+
+def test_legacy_api_skills_run_error_names_canonical_endpoint(tmp_path, monkeypatch):
+    template_dir = tmp_path / "templates"
+    template_dir.mkdir()
+    for name in ("dashboard.html", "dashboard_nerv.html", "intel.html"):
+        (template_dir / name).write_text("{{ user.id }}", encoding="utf-8")
+
+    fake_tools_api = types.ModuleType("api.tools_api")
+
+    def _boom(data, *, user_id="api"):
+        raise RuntimeError("canonical unavailable")
+
+    fake_tools_api._run_skill_from_payload = _boom
+    monkeypatch.setitem(sys.modules, "api.tools_api", fake_tools_api)
+
+    app = _make_app(template_dir)
+    client = app.test_client()
+    response = client.post(
+        "/api/skills/run",
+        json={"skill": "translator", "task": "help"},
+        headers={"X-User-ID": "u1"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["canonical_endpoint"] == "/skills/run"
 
 
 def test_intel_reports_are_sorted_by_filename_time_and_skip_placeholder(tmp_path, monkeypatch):
@@ -490,10 +789,23 @@ def test_research_rss_preview_parses_feed_instead_of_showing_xml(tmp_path, monke
 
 
 def test_worldmonitor_cron_is_daily():
-    cron_path = Path(__file__).resolve().parents[1] / "cron_jobs.json"
-    jobs = json.loads(cron_path.read_text(encoding="utf-8"))
+    import shlex
+
+    from magi_v3.external_inputs import load_bound_cron_jobs
+
+    root = Path(__file__).resolve().parents[1]
+    jobs = list(load_bound_cron_jobs(root, missing_source_default=False).jobs)
     job = next(item for item in jobs if item.get("id") == "job_worldmonitor_intel")
 
     assert job["cron"] == "0 8 * * *"
-    assert "worldmonitor-intel/action.py --task collect --no-reasoning --plain-output" in job["command"]
+    argv = shlex.split(job["command"])
+    action_index = next(
+        idx for idx, item in enumerate(argv) if item.endswith("worldmonitor-intel/action.py")
+    )
+    assert argv[action_index + 1 :] == [
+        "--task",
+        "collect",
+        "--no-reasoning",
+        "--plain-output",
+    ]
     assert "每日" in job["desc"]

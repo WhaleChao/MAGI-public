@@ -13,7 +13,7 @@ description: 管理「使用者指定的每日爬蟲 URL 清單」並將內容�
 
 ## 狀態檔
 
-- 預設：`/Users/ai/Desktop/code/_crawl_targets.json`
+- 預設：`${MAGI_DATA_DIR}/crawler/targets.json`
 - 內容只做增修，不做刪除檔案（remove 只移除清單項目，不會刪任何下載檔）。
 
 ## 指令

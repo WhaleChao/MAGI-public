@@ -17,10 +17,17 @@ from skills.evolution.skill_genesis import (
     run_skill_ci,
     validate_skill_safety,
 )
+from skills.overlay import base_skills_dir, skill_overlay_dir
 
 _MAGI_ROOT = os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2]))
-SKILLS_DIR = os.path.join(_MAGI_ROOT, "skills")
-INTERVIEW_HISTORY_FILE = os.path.join(_MAGI_ROOT, "logs", "skill_interview_history.jsonl")
+SKILLS_DIR = str(skill_overlay_dir())
+BASE_SKILLS_DIR = str(base_skills_dir())
+INTERVIEW_HISTORY_FILE = str(
+    Path(
+        os.environ.get("MAGI_SKILL_INTERVIEW_HISTORY_FILE", "").strip()
+        or skill_overlay_dir() / ".logs" / "skill_interview_history.jsonl"
+    ).expanduser()
+)
 
 _DEFAULT_INPUTS = [
     "使用者的文字需求",
@@ -93,7 +100,7 @@ def _derive_slug(display_name: str, initial_request: str) -> str:
 def _ensure_unique_slug(slug: str) -> str:
     candidate = str(slug or "").strip() or "custom-skill"
     n = 1
-    while os.path.exists(os.path.join(SKILLS_DIR, candidate)):
+    while any(os.path.exists(os.path.join(root, candidate)) for root in (SKILLS_DIR, BASE_SKILLS_DIR)):
         n += 1
         candidate = f"{slug}-{n}"
     return candidate
@@ -395,7 +402,7 @@ def _generate_evals_template(profile: dict) -> str:
 
 
 def _refresh_skill_routers() -> dict:
-    info = {"embedding_router": "skipped", "semantic_router": "skipped"}
+    info = {"embedding_router": "skipped", "semantic_router": "skipped", "skill_registry": "skipped"}
     try:
         from skills.bridge.embedding_router import get_router
 
@@ -413,6 +420,13 @@ def _refresh_skill_routers() -> dict:
         info["semantic_router"] = "cleared"
     except Exception as e:
         info["semantic_router"] = f"error:{e}"
+    try:
+        from skills.plugin import skill_registry
+
+        skill_registry.discover(force=True)
+        info["skill_registry"] = "rebuilt"
+    except Exception as e:
+        info["skill_registry"] = f"error:{e}"
     return info
 
 

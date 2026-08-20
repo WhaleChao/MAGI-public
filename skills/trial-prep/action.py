@@ -38,7 +38,7 @@ def _resolve_case_base() -> str:
             return roots[0]
     except Exception:
         pass
-    return "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"
+    return str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件")
 
 CASE_BASE = Path(_resolve_case_base())
 

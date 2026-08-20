@@ -21,8 +21,10 @@ from urllib import parse, request
 
 _SKILL_DIR = Path(__file__).resolve().parent
 _MAGI_ROOT = _SKILL_DIR.parents[1]
-_AGENT_DIR = _MAGI_ROOT / ".agent"
+_LEGACY_AGENT_DIR = _MAGI_ROOT / ".agent"
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR") or str(_LEGACY_AGENT_DIR)).expanduser()
 _NEWS_CACHE_PATH = _AGENT_DIR / "market_news_cache.json"
+_LEGACY_NEWS_CACHE_PATH = _LEGACY_AGENT_DIR / "market_news_cache.json"
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +45,13 @@ def _strip_html(text: str) -> str:
 
 def _load_cache() -> Dict[str, Any]:
     try:
-        if _NEWS_CACHE_PATH.exists():
-            data = json.loads(_NEWS_CACHE_PATH.read_text(encoding="utf-8"))
+        candidates = [_NEWS_CACHE_PATH]
+        if _NEWS_CACHE_PATH.resolve(strict=False) != _LEGACY_NEWS_CACHE_PATH.resolve(strict=False):
+            candidates.append(_LEGACY_NEWS_CACHE_PATH)
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            data = json.loads(candidate.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
     except Exception:

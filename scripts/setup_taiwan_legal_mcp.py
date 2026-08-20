@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TARGET = ROOT / ".runtime" / "mcp-taiwan-legal-db"
+RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser()
+DEFAULT_TARGET = RUNTIME_DIR / "mcp-taiwan-legal-db"
 REPO = "https://github.com/lawchat-oss/mcp-taiwan-legal-db.git"
 
 
@@ -35,4 +36,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

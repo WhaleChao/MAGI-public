@@ -33,7 +33,7 @@ if str(MAGI_ROOT) not in sys.path:
 from api.runtime_paths import get_metrics_dir
 
 METRICS_DIR = get_metrics_dir()
-DEFAULT_JUDGMENT_DIR = Path("/Users/ai/Desktop/判決")
+DEFAULT_JUDGMENT_DIR = Path.home() / "Desktop" / "判決"
 DEFAULT_OBS_STATUS = METRICS_DIR / "stability_observe_24h_current_status.json"
 DEFAULT_STRESS_JSONL = METRICS_DIR / "stress_longfile_3ch.jsonl"
 DEFAULT_STRESS_SUMMARY = METRICS_DIR / "stress_longfile_3ch_summary.json"

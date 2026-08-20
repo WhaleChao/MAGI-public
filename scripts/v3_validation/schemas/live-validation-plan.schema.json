@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/live-validation-plan.schema.json",
+  "title": "MAGI V3 isolated live validation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plan_id", "created_at", "mode", "environment", "checks"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "mode": {"const": "isolated_live_validation"},
+    "environment": {"$ref": "#/$defs/safe_environment"},
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/check"}
+    }
+  },
+  "$defs": {
+    "safe_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ports",
+        "production_services_started",
+        "external_ingress_enabled",
+        "writers_enabled",
+        "scheduler_enabled",
+        "webhook_consumers_enabled",
+        "model_switch_enabled",
+        "production_db_allowed",
+        "nas_allowed",
+        "channel_delivery_allowed"
+      ],
+      "properties": {
+        "ports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["main", "tools", "admin"],
+          "properties": {
+            "main": {"const": 5102},
+            "tools": {"const": 5103},
+            "admin": {"const": 8188}
+          }
+        },
+        "production_services_started": {"const": false},
+        "external_ingress_enabled": {"const": false},
+        "writers_enabled": {"const": false},
+        "scheduler_enabled": {"const": false},
+        "webhook_consumers_enabled": {"const": false},
+        "model_switch_enabled": {"const": false},
+        "production_db_allowed": {"const": false},
+        "nas_allowed": {"const": false},
+        "channel_delivery_allowed": {"const": false}
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "rule", "method", "endpoint"],
+      "properties": {
+        "service": {"enum": ["5002", "5003"]},
+        "rule": {"type": "string", "pattern": "^/"},
+        "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "endpoint": {"type": "string", "minLength": 1}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "route",
+        "side_effect_class",
+        "execution_mode",
+        "timeout_sec",
+        "assertions"
+      ],
+      "properties": {
+        "check_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+        "route": {"$ref": "#/$defs/route"},
+        "side_effect_class": {
+          "enum": ["none", "read_only", "local_draft", "reversible_write", "external_commit", "destructive"]
+        },
+        "execution_mode": {"enum": ["live_probe", "offline_replay", "schema_only"]},
+        "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 30},
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 500}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"execution_mode": {"const": "live_probe"}}, "required": ["execution_mode"]},
+          "then": {"properties": {"side_effect_class": {"enum": ["none", "read_only"]}}}
+        }
+      ]
+    }
+  }
+}

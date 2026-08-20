@@ -5,7 +5,7 @@ Multi-language → zh-Hant translation bridge for research-brief.
 Priority:
     1. Source already zh-Hant/zh-Hans → pass through (no translation)
     2. Apple Translation sidecar (ja/ko/de/fr/es/en/ru/ar/th/vi/it/pt/nl/pl/tr/...)
-    3. NIM 405B fallback (degraded=true, Plan A)
+    3. NIM heavy fallback (degraded=true, Plan A)
     4. Give up → return original with degraded flag
 
 Contract:
@@ -102,14 +102,22 @@ def translate_to_zh_hant(text: str, source_lang: Optional[str] = None) -> Dict[s
         except Exception as e:
             logger.debug("apple_translation exception src=%s: %s", src, e)
 
-    # 2. NIM 405B fallback
+    # 2. NIM heavy fallback
     try:
         from skills.bridge.nim_heavy import run_nim_chat
         prompt = (f"Translate the following {src} text to Traditional Chinese (繁體中文). "
                   f"Output ONLY the translation, no preamble, no explanation.\n\n{text}")
-        r = run_nim_chat(prompt, heavy=False, max_tokens=1024)
-        if isinstance(r, dict) and r.get("text"):
-            out = str(r["text"]).strip()
+        r = run_nim_chat(
+            prompt=prompt,
+            task_type="translation",
+            heavy=False,
+            require_pii_scrub=True,
+            data_classification="public_source",
+            privacy_profile="public_source",
+            restore_pii=False,
+        )
+        if isinstance(r, dict) and r.get("success") and r.get("response"):
+            out = str(r["response"]).strip()
             # Strip common preamble even though we told it not to
             out = re.sub(r"^(Translation:|繁體中文：|中文：|譯文：)\s*", "", out)
             if out:

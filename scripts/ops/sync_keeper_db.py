@@ -2,6 +2,7 @@ import os
 import subprocess
 import datetime
 import logging
+from pathlib import Path
 
 # --- Load .env for subprocess/cron credential access ---
 try:
@@ -12,11 +13,15 @@ except Exception:
 
 
 # Configure logging
+_MAGI_ROOT = Path(__file__).resolve().parents[2]
+_RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or _MAGI_ROOT / ".runtime").expanduser()
+_LOG_PATH = _RUNTIME_DIR / "logs" / "sync_db.log"
+_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("sync_db.log"),
+        logging.FileHandler(_LOG_PATH),
         logging.StreamHandler()
     ]
 )

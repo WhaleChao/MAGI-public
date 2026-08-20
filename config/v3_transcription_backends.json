@@ -1,0 +1,195 @@
+{
+  "$schema": "../docs/architecture/v3/contracts/transcription-backends.schema.json",
+  "schema_version": 1,
+  "policy": {
+    "primary_backend_id": "mlx_whisper",
+    "secondary_backend_id": "whisper_cli",
+    "allowed_model_license_ids": ["MIT"],
+    "unknown_backend_action": "reject",
+    "selection_fail_closed": true,
+    "model_auto_download_allowed": false,
+    "candidate_execution_scope": "isolated_offline_only",
+    "resource_policy": "config/v3_resource_policy.json",
+    "quality_claims_require_recorded_benchmark_evidence": true
+  },
+  "output_contract": {
+    "contract_id": "magi.transcript.v1",
+    "adapter_required": true,
+    "required_top_level_fields": [
+      "schema_version",
+      "backend_id",
+      "model_id",
+      "source_commit",
+      "language",
+      "duration_seconds",
+      "segments",
+      "forensic_provenance"
+    ],
+    "required_segment_fields": ["text", "start_seconds", "end_seconds", "words"],
+    "validation_rules": [
+      "timestamps_are_finite_non_negative_and_monotonic",
+      "segment_end_is_not_before_start",
+      "segment_end_does_not_exceed_audio_duration",
+      "language_is_normalized",
+      "word_confidence_semantics_are_declared",
+      "speaker_labels_are_normalized_or_null"
+    ]
+  },
+  "backends": [
+    {
+      "id": "mlx_whisper",
+      "role": "primary",
+      "enabled": true,
+      "selectable": true,
+      "fallback_allowed": true,
+      "execution_mode": "managed_local",
+      "implementation": {
+        "kind": "in_tree",
+        "source_path": "skills/hearing/balthasar_local.py",
+        "dependency": "mlx-whisper==0.4.3",
+        "platform": "Darwin arm64",
+        "runtime_contract": {
+          "backend_env": "MAGI_FORENSIC_PRIMARY_ASR_BACKEND",
+          "model_env": "MAGI_FORENSIC_PRIMARY_ASR_MODEL",
+          "backend_binary_env": "MAGI_FORENSIC_PRIMARY_BACKEND_BINARY",
+          "license_env": "MAGI_FORENSIC_PRIMARY_MODEL_LICENSE",
+          "weights_sha256_env": "MAGI_FORENSIC_PRIMARY_MODEL_WEIGHTS_SHA256",
+          "config_sha256_env": "MAGI_FORENSIC_PRIMARY_MODEL_CONFIG_SHA256",
+          "backend_binary_sha256_env": "MAGI_FORENSIC_PRIMARY_BACKEND_BINARY_SHA256",
+          "absolute_paths_required": true,
+          "artifact_content_sha256_required": true,
+          "license_id_required": true
+        }
+      },
+      "isolation": {
+        "required": false,
+        "network_access": false,
+        "production_writes": false,
+        "maximum_concurrent_heavy_workers": 1
+      },
+      "model_acquisition": {
+        "auto_download_allowed": false,
+        "preinstalled_model_required": true,
+        "missing_model_action": "reject"
+      },
+      "promotion_gate": {
+        "required": false,
+        "status": "existing_primary"
+      }
+    },
+    {
+      "id": "whisper_cli",
+      "role": "secondary",
+      "enabled": true,
+      "selectable": true,
+      "fallback_allowed": false,
+      "execution_mode": "isolated_offline_only",
+      "implementation": {
+        "kind": "preinstalled_local_cli",
+        "source_path": "skills/bridge/balthasar_bridge.py",
+        "dependency": "Homebrew openai-whisper",
+        "platform": "Darwin arm64",
+        "runtime_contract": {
+          "backend_env": "MAGI_FORENSIC_SECONDARY_ASR_BACKEND",
+          "model_env": "MAGI_FORENSIC_SECONDARY_ASR_MODEL",
+          "model_dir_env": "MAGI_WHISPER_MODEL_DIR",
+          "backend_binary_env": "MAGI_WHISPER_BIN",
+          "license_env": "MAGI_FORENSIC_SECONDARY_MODEL_LICENSE",
+          "weights_sha256_env": "MAGI_FORENSIC_SECONDARY_MODEL_WEIGHTS_SHA256",
+          "backend_binary_sha256_env": "MAGI_FORENSIC_SECONDARY_BACKEND_BINARY_SHA256",
+          "absolute_paths_required": true,
+          "artifact_content_sha256_required": true,
+          "license_id_required": true,
+          "model_config": "embedded_in_checkpoint"
+        }
+      },
+      "isolation": {
+        "required": true,
+        "network_access": false,
+        "production_writes": false,
+        "maximum_concurrent_heavy_workers": 1
+      },
+      "model_acquisition": {
+        "auto_download_allowed": false,
+        "preinstalled_model_required": true,
+        "missing_model_action": "reject"
+      },
+      "promotion_gate": {
+        "required": true,
+        "status": "not_run",
+        "gate_id": "forensic_dual_asr_offline_runtime",
+        "promotion_requires_status": "passed"
+      }
+    },
+    {
+      "id": "ownscribe",
+      "role": "candidate",
+      "enabled": false,
+      "selectable": false,
+      "fallback_allowed": false,
+      "execution_mode": "isolated_offline_only",
+      "implementation": {
+        "kind": "external_candidate",
+        "source_path": "${MAGI_OWNSCRIBE_EVALUATION_SOURCE}",
+        "source_commit": "d9dcecde896ab0e5b15f475b6940669a611ccea1",
+        "source_tree": "49456f5c7b606c991fc03a7378049b76415c958a",
+        "evaluation": "docs/architecture/v3/OWNSCRIBE_EVALUATION.json"
+      },
+      "isolation": {
+        "required": true,
+        "network_access": false,
+        "production_writes": false,
+        "maximum_concurrent_heavy_workers": 1
+      },
+      "model_acquisition": {
+        "auto_download_allowed": false,
+        "preinstalled_model_required": true,
+        "missing_model_action": "reject"
+      },
+      "current_output_contract": {
+        "compatible": false,
+        "adapter_required": true,
+        "blocking_gaps": [
+          "no_schema_version",
+          "no_backend_or_model_provenance",
+          "backend_dependent_word_timestamp_and_confidence_semantics",
+          "no_timestamp_or_duration_validation"
+        ]
+      },
+      "promotion_gate": {
+        "required": true,
+        "status": "not_run",
+        "gate_id": "legal_zh_tw_audio_benchmark",
+        "corpus": "lawfully_usable_human_gold_zh_tw_legal_audio",
+        "minimum_corpus_items": 10,
+        "minimum_authorized_duration_seconds": 600,
+        "minimum_human_gold_legal_terms": 100,
+        "minimum_multi_speaker_items": 3,
+        "required_scenarios": ["court_hearing", "lawyer_client", "legal_dictation"],
+        "portable_evidence_raw_content_forbidden": true,
+        "external_upload_allowed": false,
+        "corpus_and_result_verifier": "scripts/v3_validation/transcription_quality_benchmark.py",
+        "baseline_backend_id": "mlx_whisper",
+        "required_metrics": [
+          "cer_or_wer",
+          "legal_term_error_rate",
+          "timestamp_drift",
+          "speaker_diarization_error",
+          "realtime_factor",
+          "peak_rss",
+          "peak_metal_or_accelerator_footprint"
+        ],
+        "thresholds_must_be_approved_before_execution": true,
+        "required_evidence": [
+          "corpus_manifest_without_raw_sensitive_audio",
+          "per_item_results",
+          "aggregate_results",
+          "matched_machine_state",
+          "output_contract_validation",
+          "resource_policy_validation"
+        ],
+        "promotion_requires_status": "passed"
+      }
+    }
+  ]
+}

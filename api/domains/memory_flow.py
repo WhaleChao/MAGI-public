@@ -116,6 +116,11 @@ def maybe_capture_user_rules(orch, user_id: str, platform: str, message: str):
         if now - last < float(os.environ.get("MAGI_RULE_MEMORY_MIN_INTERVAL_SEC", "45")):
             return
         orch._rule_last_write[key] = now
+        maxsize = int(getattr(orch, "_rule_last_write_maxsize", 5000) or 5000)
+        if len(orch._rule_last_write) > maxsize:
+            oldest = sorted(orch._rule_last_write, key=orch._rule_last_write.get)
+            for stale_key in oldest[: max(1, len(oldest) - maxsize)]:
+                orch._rule_last_write.pop(stale_key, None)
     try:
         from skills.memory.mem_bridge import remember
         from skills.evolution.skill_genesis import validate_skill_safety

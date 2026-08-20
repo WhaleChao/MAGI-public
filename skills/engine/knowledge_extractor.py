@@ -16,7 +16,8 @@ from typing import Any
 logger = logging.getLogger("KnowledgeExtractor")
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2])))
-EXTRACT_STATS_PATH = MAGI_ROOT / ".agent" / "knowledge_extract_stats.json"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
+EXTRACT_STATS_PATH = AGENT_DIR / "knowledge_extract_stats.json"
 
 # 最小內容長度（太短的對話不值得擷取）
 MIN_CONTENT_LEN = 50

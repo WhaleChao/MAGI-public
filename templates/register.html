@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 
 <head>
     <meta charset="UTF-8">
@@ -7,103 +7,128 @@
     <title>MAGI Registration</title>
     <style>
         body {
-            background-color: #0d0d0d;
-            color: #e0e0e0;
-            font-family: monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
             margin: 0;
+            background: #eef1f3;
+            min-height: 100vh;
+            min-height: 100dvh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             padding: 20px 14px;
-        }
-
-        .container {
-            background: #1e272e;
-            padding: 40px;
-            border-radius: 8px;
-            border: 1px solid #2d3436;
-            width: min(360px, 100%);
-        }
-
-        input {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            background: #000;
-            border: 1px solid #555;
-            color: white;
+            overflow-x: hidden;
             box-sizing: border-box;
+            color: #17202a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
         }
 
-        button {
+        .auth-shell {
+            width: min(420px, calc(100vw - 28px));
+            margin: 0 auto;
+        }
+
+        .auth-card {
+            box-sizing: border-box;
+            background: #ffffff;
+            border: 1px solid rgba(23, 32, 42, 0.12);
+            border-radius: 14px;
+            padding: 30px;
+        }
+
+        .auth-brand {
+            margin: 0;
+            text-align: center;
+            font-size: 1.4rem;
+            letter-spacing: 0;
+            font-weight: 700;
+        }
+
+        .auth-subtitle {
+            margin: 8px 0 16px;
+            color: #637083;
+            text-align: center;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .auth-form {
+            margin-top: 8px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .auth-field {
+            display: grid;
+            gap: 6px;
+        }
+
+        .auth-label {
+            font-size: 0.8rem;
+            color: #637083;
+        }
+
+        .auth-input {
             width: 100%;
-            padding: 10px;
-            background: #00b894;
-            color: white;
-            border: none;
+            min-height: 44px;
+            padding: 10px 12px;
+            border: 1px solid rgba(23, 32, 42, 0.12);
+            border-radius: 10px;
+            background: #f6f8fa;
+            box-sizing: border-box;
+            font-size: 1rem;
+            color: #17202a;
+        }
+
+        .auth-submit {
+            min-height: 44px;
+            width: 100%;
+            border: 0;
+            border-radius: 10px;
+            background: #0f766e;
+            color: #fff;
+            font-weight: 700;
+            font-size: 0.98rem;
             cursor: pointer;
-            margin-top: 10px;
         }
 
-        h2 {
+        .auth-link {
+            color: #2563eb;
             text-align: center;
-            color: #55efc4;
-        }
-
-        .flash {
-            color: #feca57;
-            text-align: center;
-            font-size: 0.9em;
-            margin-bottom: 15px;
-        }
-
-        a {
-            color: #74b9ff;
-            text-decoration: none;
-            font-size: 0.8em;
             display: block;
-            text-align: center;
-            margin-top: 15px;
-        }
-
-        p {
-            font-size: 0.8em;
-            color: #aaa;
-            text-align: center;
-        }
-        @media (max-width: 480px) {
-            body {
-                align-items: flex-start;
-                padding: 14px;
-            }
-            .container {
-                padding: 24px 18px;
-                border-radius: 12px;
-            }
-            h2 {
-                font-size: 1.2rem;
-            }
+            margin-top: 14px;
+            text-decoration: none;
+            font-size: 0.86rem;
         }
     </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-auth-mobile-v3">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
 </head>
 
-<body>
-    <div class="container">
-        <h2>NEW USER</h2>
-        <p>First user becomes ADMIN.<br>Others are RESTRICTED.</p>
-        {% with messages = get_flashed_messages() %}
-        {% if messages %}
-        <div class="flash">{{ messages[0] }}</div>
-        {% endif %}
-        {% endwith %}
-        <form method="post">
-            <input type="text" name="username" placeholder="Choose Username" required>
-            <input type="password" name="password" placeholder="Choose Password" required>
-            <button type="submit">REGISTER</button>
-        </form>
-        <a href="{{ url_for('login') }}">Back to Login</a>
-    </div>
+<body class="site-auth auth-page">
+    <main class="auth-shell">
+        <section class="auth-card" aria-label="註冊">
+            <p class="auth-brand">MAGI Registration</p>
+            <p class="auth-subtitle">第一位使用者將成為管理員，後續帳號為一般使用者。</p>
+            {% with messages = get_flashed_messages() %}
+            {% if messages %}
+            <p class="auth-flash" role="status">{{ messages[0] }}</p>
+            {% endif %}
+            {% endwith %}
+            <form method="post" class="auth-form" novalidate>
+                <label class="auth-field">
+                    <span class="auth-label">使用者名稱</span>
+                    <input class="auth-input" type="text" name="username" autocomplete="username" placeholder="輸入使用者名稱" required>
+                </label>
+                <label class="auth-field">
+                    <span class="auth-label">密碼</span>
+                    <input class="auth-input" type="password" name="password" autocomplete="new-password" placeholder="輸入密碼" required>
+                </label>
+                <input type="hidden" name="next" value="{{ next_target or '' }}">
+                <button class="auth-submit" type="submit">建立帳號</button>
+            </form>
+            <a class="auth-link" href="{{ url_for('login', next=next_target or '') }}">回到登入</a>
+        </section>
+    </main>
 </body>
 
 </html>

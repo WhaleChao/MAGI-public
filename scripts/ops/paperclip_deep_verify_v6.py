@@ -1,6 +1,8 @@
 """Paperclip Deep Verify v6 — UX v3 IA 重組 + cross-platform open folder."""
 import sys, json
-sys.path.insert(0, '/Users/ai/Desktop/MAGI_v2')
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.sync_api import sync_playwright
 
 URL, USER, PASS = "http://127.0.0.1:5002", "teatai", "teatai"

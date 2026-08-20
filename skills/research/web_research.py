@@ -37,7 +37,22 @@ except Exception as e:
 # =============================================================================
 # Configuration
 # =============================================================================
-SEARCH_CACHE_DIR = f"{_MAGI_ROOT}/cache/web_search"
+_RUNTIME_DIR = (os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+_SHARED_STATE_DIR = (
+    os.environ.get("MAGI_SHARED_STATE_DIR")
+    or os.environ.get("MAGI_V3_SHARED_STATE_DIR")
+    or ""
+).strip()
+SEARCH_CACHE_DIR = os.environ.get(
+    "MAGI_WEB_RESEARCH_CACHE_DIR",
+    os.path.join(_RUNTIME_DIR, "cache", "web_search")
+    if _RUNTIME_DIR
+    else (
+        os.path.join(_SHARED_STATE_DIR, "runtime", "cache", "web_search")
+        if _SHARED_STATE_DIR
+        else f"{_MAGI_ROOT}/cache/web_search"
+    ),
+)
 USER_AGENT = "MAGI-CASPER/1.0 (Web Research Module)"
 MAX_CONTENT_LENGTH = 50000  # Characters
 MAX_SECTIONS = 8

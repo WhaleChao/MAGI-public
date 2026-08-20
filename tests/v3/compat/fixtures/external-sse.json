@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "fixture_id": "external-chat-sse",
+  "recorded_at": "2026-07-14T02:02:00Z",
+  "route": {
+    "service": "5003",
+    "rule": "/osc/external/chat",
+    "methods": ["POST"],
+    "endpoint": "external_osc_chat"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/osc/external/chat",
+    "query": {"stream": "true"},
+    "headers": {
+      "X-API-Key": "<redacted:x-api-key:381b564f8541>",
+      "Content-Type": "application/json"
+    },
+    "content_type": "application/json",
+    "body": {"message": "ping"},
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {"Content-Type": "text/event-stream"},
+    "content_type": "text/event-stream",
+    "body": "data: {\"delta\":\"pong\"}\n\ndata: [DONE]\n\n"
+  },
+  "side_effect_class": "external_commit",
+  "expected_legacy_shape": "sse",
+  "redaction": {
+    "version": 1,
+    "safe_for_offline": true,
+    "raw_payload_retained": false,
+    "test_payload_only": false,
+    "applied": ["key:x-api-key"]
+  },
+  "replay": {
+    "mode": "offline",
+    "network_allowed": false,
+    "external_writes_allowed": false
+  }
+}

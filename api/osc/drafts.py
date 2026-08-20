@@ -18,6 +18,13 @@ from pathlib import Path
 from api.model_config import TEXT_PRIMARY_MODEL
 from api.runtime_paths import ensure_path_on_sys_path, get_orch_dir
 from api.case_path_mapper import preferred_case_roots
+from api.legal_research_quality import (
+    citation_lock_for_items,
+    is_draft_eligible,
+    supporting_spans,
+    validate_text_against_citation_lock,
+    verification_state,
+)
 from api.legal_workflow import detect_legal_workflow, workflow_prompt_block
 from api.osc.insight_filters import (
     displayable_insight_item,
@@ -25,6 +32,8 @@ from api.osc.insight_filters import (
     is_non_extractable_legal_insight,
 )
 from api.osc.draft_learning import learning_guidance_for_prompt
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy back-references into server helpers.
@@ -220,6 +229,18 @@ def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
         case_number = str(raw.get("case_number") or base.get("case_number") or "").strip()
         case_reason = str(raw.get("case_reason") or raw.get("reason") or base.get("case_reason") or "").strip()
         court = str(raw.get("court") or base.get("court") or "").strip()
+        state = str(
+            raw.get("verification_state")
+            or base.get("verification_state")
+            or verification_state(base or raw)
+        ).strip()
+        draft_eligible = bool(
+            raw.get("draft_eligible")
+            if "draft_eligible" in raw
+            else base.get("draft_eligible")
+            if "draft_eligible" in base
+            else is_draft_eligible({**base, **raw, "verification_state": state})
+        )
         if not full_text and summary:
             full_text = summary
         if not title:
@@ -240,6 +261,27 @@ def _osc_resolve_draft_insights(payload: dict) -> list[dict]:
                 "case_number": case_number,
                 "case_reason": case_reason,
                 "court": court,
+                "verification_state": state,
+                "draft_eligible": draft_eligible,
+                "citation_id": str(raw.get("citation_id") or base.get("citation_id") or f"J{len(out) + 1}"),
+                "citation_text": str(
+                    raw.get("citation_text")
+                    or base.get("citation_text")
+                    or case_number
+                    or title
+                ).strip(),
+                "support_spans": (
+                    raw.get("support_spans")
+                    or base.get("support_spans")
+                    or supporting_spans(
+                        case_reason or title,
+                        {
+                            "full_text": full_text,
+                            "summary_full": summary,
+                            "title": title,
+                        },
+                    )
+                ),
             }
         )
     return out
@@ -279,6 +321,21 @@ def _osc_collect_draft_reference_style(payload: dict) -> tuple[str, list[dict], 
     return ("\n\n".join(blocks).strip() or "(無參考範本)"), refs, warnings
 
 
+def _osc_research_draft_authorities(doc_type: str, reason: str) -> dict:
+    """Research a generic legal issue without sending case facts or parties."""
+    query = " ".join(part for part in (str(reason or "").strip(), str(doc_type or "").strip(), "實務見解") if part)
+    if len(query) < 4:
+        return {"ok": False, "success": False, "error": "missing_abstract_legal_issue", "items": []}
+    try:
+        # Lazy import avoids the judgment-flow / OSC draft import cycle.
+        from api.domains.judgment_flow import build_legal_research_payload
+
+        return build_legal_research_payload(query, limit=5)
+    except Exception:
+        logger.warning("draft authority research unavailable", exc_info=True)
+        return {"ok": False, "success": False, "error": "legal_research_unavailable", "items": []}
+
+
 def _osc_build_draft_context(payload: dict) -> dict:
     body = payload or {}
     case_row = {}
@@ -316,15 +373,32 @@ def _osc_build_draft_context(payload: dict) -> dict:
     case_facts = str(body.get("case_facts") or body.get("facts") or case_row.get("description") or case_row.get("notes") or "").strip()
 
     selected_insights = _osc_resolve_draft_insights(body)
+    external_research = {}
+    if _osc_truthy(body.get("augment_legal_sources")):
+        external_research = _osc_research_draft_authorities(doc_type, reason)
+        discovered = external_research.get("items") if isinstance(external_research.get("items"), list) else []
+        if discovered:
+            selected_insights = _osc_resolve_draft_insights(
+                {"selected_insights": list(selected_insights) + list(discovered)}
+            )
+    citation_lock = citation_lock_for_items(selected_insights)
+    citeable_insights = [insight for insight in selected_insights if is_draft_eligible(insight)]
     legal_insights = ""
-    for i, insight in enumerate(selected_insights[:5], 1):
+    for i, insight in enumerate(citeable_insights[:5], 1):
         ref = str(insight.get("title") or "實務見解").strip()
         court = str(insight.get("court") or "").strip()
         summary = str(insight.get("summary") or insight.get("insight_text") or insight.get("full_text") or "").strip()[:2000]
         label = f"{ref}"
         if court:
             label = f"{court}｜{label}"
-        legal_insights += f"\n{i}. 【{label}】\n{summary}\n"
+        spans = insight.get("support_spans") or []
+        support = "\n".join(
+            f"   支持原文：{str(span.get('text') or '')[:900]}"
+            for span in spans[:2]
+            if isinstance(span, dict) and str(span.get("text") or "").strip()
+        )
+        citation_id = str(insight.get("citation_id") or f"J{i}")
+        legal_insights += f"\n{i}. [{citation_id}]【{label}】\n{summary}\n{support}\n"
 
     reference_style, references, warnings = _osc_collect_draft_reference_style(body)
     custom_template = _osc_get_setting_value("draft_prompt_template", "").strip()
@@ -339,6 +413,18 @@ def _osc_build_draft_context(payload: dict) -> dict:
     workflow_guidance = workflow_prompt_block(legal_workflow)
     if workflow_guidance and not selected_insights and not references:
         warnings.append("legal_workflow_source_review_required")
+    if _osc_truthy(body.get("augment_legal_sources")):
+        if not external_research.get("success"):
+            warnings.append("legaltech_mcp_research_unavailable")
+        elif not citeable_insights:
+            warnings.append("legaltech_mcp_candidates_require_official_fulltext_verification")
+    rejected_count = len(citation_lock.get("rejected") or [])
+    if rejected_count:
+        warnings.append(f"unverified_insights_excluded:{rejected_count}")
+    citation_lock_text = "\n".join(
+        f"- [{row.get('citation_id')}] {row.get('citation_text')}（僅得依所附支持原文引用）"
+        for row in (citation_lock.get("allowed") or [])
+    ) or "(本次沒有通過核對的可引用裁判；不得自行加入裁判字號)"
     values = {
         "doc_type": doc_type or "(未指定)",
         "case_number": case_number or "(待填)",
@@ -351,8 +437,11 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "legal_insights": legal_insights or "(無)",
         "reference_style": reference_style or "(無參考範本)",
         "learning_guidance": learning_guidance,
+        "citation_lock": citation_lock_text,
     }
     prompt = _osc_render_draft_template(template, values)
+    if "{citation_lock}" not in template:
+        prompt = f"{prompt.rstrip()}\n\n## 可引用裁判白名單\n{citation_lock_text}\n"
     if "{learning_guidance}" not in template and learning_guidance and "尚無人工修正紀錄" not in learning_guidance:
         prompt = f"{prompt.rstrip()}\n\n## 使用者修正學習紀錄\n{learning_guidance}\n"
     if workflow_guidance:
@@ -372,9 +461,19 @@ def _osc_build_draft_context(payload: dict) -> dict:
         "defendant": defendant,
         "case_facts": case_facts,
         "selected_insights": selected_insights,
+        "citeable_insights": citeable_insights,
+        "citation_lock": citation_lock,
         "selected_documents": references,
         "warnings": warnings,
         "legal_workflow": legal_workflow,
+        "legal_research": {
+            "attempted": _osc_truthy(body.get("augment_legal_sources")),
+            "ok": bool(external_research.get("success")),
+            "provider": "legaltech_taiwan_law_mcp",
+            "candidate_count": len(external_research.get("items") or []),
+            "citeable_count": len(citeable_insights),
+            "privacy": external_research.get("privacy") or {},
+        },
         "prompt": prompt,
         "template_source": "custom" if custom_template else "default",
         "suggested_filename": suggested_filename,
@@ -399,6 +498,40 @@ def _osc_generate_draft_with_casper(prompt: str) -> str:
     if not text:
         raise RuntimeError("CASPER 生成失敗: empty response")
     return text
+
+
+def _osc_generate_draft_with_nvidia(prompt: str) -> tuple[str, str]:
+    """Use the approved NVIDIA heavy API with mandatory PII scrubbing.
+
+    Legal drafting is a heavy synthesis task.  Failure is explicit and never
+    silently rerouted to a local model under this provider contract.
+    """
+    try:
+        from skills.bridge.nim_heavy import run_nim_chat
+    except Exception as exc:
+        raise RuntimeError(f"NVIDIA 法律草擬介面載入失敗: {exc}") from exc
+    result = run_nim_chat(
+        prompt=prompt,
+        task_type="legal_drafting",
+        heavy=True,
+        require_pii_scrub=True,
+        timeout_sec=int(os.environ.get("MAGI_DRAFT_NVIDIA_TIMEOUT_SEC", "240") or "240"),
+        system_prompt=(
+            "你是臺灣執業律師的書狀助理。只能使用輸入事實與引用白名單；"
+            "不得杜撰裁判、證據、日期、金額、姓名、地址或電話。"
+            "輸入中所有 [PERSON-000]、[ADDRESS-000]、[COURTCASE-000] 等方括號占位符"
+            "必須原樣保留，不得翻譯、改寫、刪除或猜測原值。"
+            "第一行必須完整照寫輸入指定的文書類型，並保留法院、案號、"
+            "聲請或答辯事項、事實及理由、此致、具狀人與日期等書狀結構。"
+            "資料不足時只能標記（待確認）。輸出仍需律師人工確認。"
+        ),
+    )
+    if not result.get("success"):
+        raise RuntimeError(f"NVIDIA 法律草擬失敗: {result.get('error') or 'unknown'}")
+    text = str(result.get("response") or "").strip()
+    if not text:
+        raise RuntimeError("NVIDIA 法律草擬失敗: empty response")
+    return text, str(result.get("model") or "nvidia_nim")
 
 
 def _osc_generate_draft_with_ollama(prompt: str, model: str, ollama_url: str) -> str:
@@ -454,11 +587,25 @@ def _osc_generate_draft_with_gemini(prompt: str) -> tuple[str, str]:
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
+        from skills.engine.pii_scrubber import build_scrubber_from_magi_db
+
+        scrubber = build_scrubber_from_magi_db()
+        privacy = scrubber.scrub(
+            prompt,
+            profile="office_confidential",
+            require_known_names=True,
+        )
+        if not privacy.safe_to_send:
+            reason = ",".join((*privacy.residual_categories, *privacy.warnings)) or "unknown"
+            raise RuntimeError(f"Gemini 去識別守門已阻擋：{reason}")
+        response = model.generate_content(privacy.scrubbed_text)
         text = str(getattr(response, "text", "") or "").strip()
         if not text:
             raise RuntimeError("Gemini 未回傳內容")
-        return text, model_name
+        response_residuals = scrubber.detect_residuals(text, profile="office_confidential")
+        if response_residuals:
+            raise RuntimeError("Gemini 回覆含未遮罩識別子，已阻擋")
+        return privacy.restore(text), model_name
     except Exception as e:
         raise RuntimeError(f"Gemini API 錯誤: {e}")
 
@@ -478,8 +625,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if row_id:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE id=%s
             LIMIT 1
@@ -490,8 +636,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and case_number:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE case_number=%s
             LIMIT 1
@@ -502,8 +647,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and laf_case_no:
         row, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE laf_case_no=%s
             LIMIT 1
@@ -514,8 +658,7 @@ def _osc_get_case_identity_by_payload(payload: dict) -> dict:
     if (not row) and client_name:
         rows, _ = _osc_exec(
             """
-            SELECT id, case_number, client_name, case_category, case_stage, case_reason, status, folder_path,
-                   laf_case_no, application_no, court_case_no
+            SELECT *
             FROM cases
             WHERE client_name=%s
             ORDER BY updated_at DESC, created_date DESC
@@ -558,19 +701,39 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
     c = case_row or {}
     f = fields or {}
     today = datetime.now().strftime("%Y-%m-%d")
+    client_name = f.get("client_name") or c.get("client_name") or ""
+    case_number = f.get("case_number") or c.get("case_number") or ""
+    court_case_no = (
+        f.get("court_case_no")
+        or c.get("court_case_no")
+        or c.get("court_case_number")
+        or ""
+    )
+    court_name = f.get("court_name") or c.get("court_name") or ""
+    laf_case_no = f.get("laf_case_no") or c.get("laf_case_no") or ""
+    case_reason = f.get("case_reason") or c.get("case_reason") or ""
+    lawyer_name = f.get("lawyer_name") or c.get("lawyer_name") or "＿＿＿＿"
+    address = f.get("address") or c.get("address") or c.get("client_address") or ""
+    phone = f.get("phone") or c.get("phone") or c.get("client_phone") or ""
+    tax_id = f.get("tax_id") or c.get("tax_id") or c.get("client_id_number") or ""
+    email = f.get("email") or c.get("email") or c.get("client_email") or ""
 
     if ftype == "contract":
         title = "契約書草稿"
         doc = (
             f"{title}\n\n"
             f"日期：{f.get('date') or today}\n"
-            f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-            f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-            f"法院案號：{f.get('court_case_no') or c.get('court_case_no') or ''}\n"
-            f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
-            f"受任律師：{f.get('lawyer_name') or '＿＿＿＿'}\n"
+            f"當事人：{client_name}\n"
+            f"案件編號：{case_number}\n"
+            f"法院案號：{court_case_no}\n"
+            f"法扶案號：{laf_case_no}\n"
+            f"案由：{case_reason}\n"
+            f"受任律師：{lawyer_name}\n"
             f"費用項目：{f.get('item') or ''}\n"
             f"金額：{f.get('amount') or ''}\n"
+            f"通訊地址：{address}\n"
+            f"聯絡電話：{phone}\n"
+            f"電子信箱：{email}\n"
             f"備註：{f.get('notes') or ''}\n"
             f"\n\n（以下為契約條文草稿，請自行替換正文）"
         )
@@ -582,12 +745,16 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
         doc = (
             f"{title}\n\n"
             f"日期：{f.get('date') or today}\n"
-            f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-            f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-            f"法院案號：{f.get('court_case_no') or c.get('court_case_no') or ''}\n"
-            f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
-            f"案由：{f.get('case_reason') or c.get('case_reason') or ''}\n"
-            f"受任律師：{f.get('lawyer_name') or '＿＿＿＿'}\n"
+            f"當事人：{client_name}\n"
+            f"案件編號：{case_number}\n"
+            f"法院名稱：{court_name}\n"
+            f"法院案號：{court_case_no}\n"
+            f"法扶案號：{laf_case_no}\n"
+            f"案由：{case_reason}\n"
+            f"受任律師：{lawyer_name}\n"
+            f"通訊地址：{address}\n"
+            f"聯絡電話：{phone}\n"
+            f"身分證字號：{tax_id}\n"
             f"備註：{f.get('notes') or ''}\n"
         )
         filename = f"委任狀草稿_{c.get('case_number') or '未指定位案件'}"
@@ -604,12 +771,13 @@ def _osc_build_form_preview(form_type: str, case_row: dict, fields: dict) -> dic
         f"{title}\n\n"
         f"日期：{f.get('date') or today}\n"
         f"收據編號：{f.get('receipt_no') or ''}\n"
-        f"當事人：{f.get('client_name') or c.get('client_name') or ''}\n"
-        f"案件編號：{f.get('case_number') or c.get('case_number') or ''}\n"
-        f"法扶案號：{f.get('laf_case_no') or c.get('laf_case_no') or ''}\n"
+        f"當事人：{client_name}\n"
+        f"案件編號：{case_number}\n"
+        f"法扶案號：{laf_case_no}\n"
         f"費用項目：{f.get('item') or '法律服務費'}\n"
         f"金額：{amount}\n"
         f"付款方式：{f.get('payment_method') or ''}\n"
+        f"收款律師：{lawyer_name}\n"
         f"備註：{f.get('notes') or ''}\n"
     )
     filename = f"收據草稿_{c.get('case_number') or '未指定位案件'}"
@@ -684,13 +852,6 @@ def _osc_get_closed_archive_base() -> str:
     env_base = (os.environ.get("MAGI_CLOSED_CASE_ARCHIVE_PATH") or "").strip()
     if env_base:
         return env_base
-    for candidate in (
-        "/Volumes/lumi/lumi/03_工作資料/10_結案",
-        "/Volumes/lumi-1/lumi/03_工作資料/10_結案",
-        "/Volumes/lumi-2/lumi/03_工作資料/10_結案",
-    ):
-        if os.path.isdir(candidate):
-            return candidate
     try:
         ensure_path_on_sys_path(get_orch_dir())
         from osc_core.paths import get_closed_case_archive_path  # type: ignore

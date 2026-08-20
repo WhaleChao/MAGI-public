@@ -22,31 +22,44 @@ from datetime import datetime
 from pathlib import Path
 
 MAGI_ROOT = Path(__file__).resolve().parents[1]
+if str(MAGI_ROOT) in sys.path:
+    sys.path.remove(str(MAGI_ROOT))
 sys.path.insert(0, str(MAGI_ROOT))
+for _module_name, _module in list(sys.modules.items()):
+    if _module_name == "api" or _module_name.startswith("api."):
+        _module_file = str(getattr(_module, "__file__", "") or "")
+        if _module_file and not _module_file.startswith(str(MAGI_ROOT)):
+            sys.modules.pop(_module_name, None)
 
-# Load .env
-for line in (MAGI_ROOT / ".env").read_text().splitlines():
-    line = line.strip()
-    if line and not line.startswith("#") and "=" in line:
-        k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+# Load the caller-bound env file when present; V2 keeps the repository .env fallback.
+_ENV_FILE = Path(os.environ.get("MAGI_ENV_FILE", "").strip() or MAGI_ROOT / ".env").expanduser()
+if _ENV_FILE.is_file():
+    for line in _ENV_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip())
+
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
+_AGENT_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(str(MAGI_ROOT / ".agent" / "judicial_jlist_crawl.log"), encoding="utf-8"),
+        logging.FileHandler(str(_AGENT_DIR / "judicial_jlist_crawl.log"), encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("JListCrawl")
 
 # ── 從 judgment-collector 借用 API 工具 ──
 sys.path.insert(0, str(MAGI_ROOT / "skills" / "judgment-collector"))
+from api.domains.judicial_api_cache import ensure_judgment_cache_root  # noqa: E402
 from action import _jdg_post_json, _get_jdg_credentials  # noqa: E402
 
 DEFAULT_BUDGET_SEC = int(os.environ.get("JUDICIAL_JLIST_BUDGET_SEC", "18000"))  # 5 小時
-SAVE_DIR = MAGI_ROOT / ".cache" / "judgment_collector"
+SAVE_DIR = ensure_judgment_cache_root(logger=logger)
 TOKEN_REFRESH_INTERVAL = 80  # 每 80 筆重新認證
 REQUEST_DELAY = 0.3  # 每筆間隔秒數
 

@@ -16,14 +16,15 @@ _MAGI_ROOT = Path(__file__).resolve().parents[2]
 if str(_MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(_MAGI_ROOT))
 
-ARCHIVE_ROOT = os.environ.get("JUDICIAL_ARCHIVE_ROOT", f"{_MAGI_ROOT}/archive/judicial_search").strip()
 DEFAULT_MAX_RESULTS = int(os.environ.get("JUDICIAL_ARCHIVE_MAX_RESULTS", "120"))
 DEFAULT_MAX_CHARS = int(os.environ.get("JUDICIAL_ARCHIVE_MAX_CHARS", "300000"))
 DEFAULT_SEARCH_POOL_CAP = int(os.environ.get("JUDICIAL_ARCHIVE_SEARCH_POOL_CAP", "3000"))
 DEFAULT_RELAXED_POOL_CAP = int(os.environ.get("JUDICIAL_ARCHIVE_RELAXED_POOL_CAP", "6000"))
 DEFAULT_FIRST_PASS_MULT = int(os.environ.get("JUDICIAL_ARCHIVE_FIRST_PASS_MULT", "16"))
 DEFAULT_RELAXED_MULT = int(os.environ.get("JUDICIAL_ARCHIVE_RELAXED_MULT", "40"))
-from api.runtime_paths import get_orch_dir
+from api.runtime_paths import get_judicial_archive_dir, get_orch_dir
+
+ARCHIVE_ROOT = str(get_judicial_archive_dir())
 
 CODE_DIR = os.environ.get("CASPER_CODE_DIR", str(get_orch_dir())).strip()
 
@@ -744,7 +745,14 @@ def _run_skill(skill: str, task: str, timeout_sec: int = 120, route_key: str = "
         "route_key": route_key,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(tools_api + "/skills/run", data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    api_key = (os.environ.get("MAGI_API_KEY") or "").strip()
+    if api_key:
+        headers["X-API-Key"] = api_key
+    tenant_id = (os.environ.get("MAGI_TENANT_ID") or "").strip()
+    if tenant_id:
+        headers["X-Tenant-ID"] = tenant_id
+    req = urllib.request.Request(tools_api + "/skills/run", data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=max(5, int(timeout_sec) + 15)) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
@@ -765,7 +773,43 @@ def _skill_json_task(command: str, payload: dict) -> str:
 
 def _parse_skill_output(run_result: dict) -> dict:
     if not isinstance(run_result, dict) or not run_result.get("success"):
-        return {"success": False, "error": (run_result.get("error") if isinstance(run_result, dict) else "run failed")}
+        primary = (
+            str(run_result.get("error") or "run failed").strip()
+            if isinstance(run_result, dict)
+            else "run failed"
+        )
+        # Skill Genesis intentionally wraps non-zero action exits.  Preserve
+        # the action's final structured error from its trace so an upstream
+        # HTTP block is not flattened into the unactionable string
+        # ``Action execution failed``.
+        details: list[str] = []
+        traces = run_result.get("trace") if isinstance(run_result, dict) else []
+        for trace in reversed(traces if isinstance(traces, list) else []):
+            if not isinstance(trace, dict):
+                continue
+            for key in ("stderr", "stdout"):
+                raw = str(trace.get(key) or "").strip()
+                if not raw:
+                    continue
+                parsed = None
+                for line in reversed(raw.splitlines()):
+                    try:
+                        candidate = json.loads(line.strip())
+                    except Exception:
+                        continue
+                    if isinstance(candidate, dict):
+                        parsed = candidate
+                        break
+                if isinstance(parsed, dict):
+                    for field in ("error", "detail", "reason"):
+                        value = str(parsed.get(field) or "").strip()
+                        if value and value not in details:
+                            details.append(value[:300])
+                elif raw not in details:
+                    details.append(raw[-300:])
+        detail = ": ".join(details[:2])
+        error = primary if not detail or detail.lower() in primary.lower() else f"{primary}: {detail}"
+        return {"success": False, "error": error[:700], "trace": traces or []}
     raw = (run_result.get("output") or "").strip()
     if not raw:
         return {"success": False, "error": "empty skill output"}

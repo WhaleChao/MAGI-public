@@ -23,6 +23,7 @@ from urllib import request as _urlreq
 
 _MAGI_ROOT_DEFAULT = Path(__file__).resolve().parent.parent.parent
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(_MAGI_ROOT_DEFAULT)))
+RUNTIME_ROOT = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or MAGI_ROOT)
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
@@ -93,7 +94,9 @@ def _ensure_tools_api_up() -> Check:
     if ok and obj.get("status") == "ok":
         return Check("tools_api_health", True, f"HTTP {code}", dt)
     # try restart once
-    tools_log = MAGI_ROOT / "logs" / "tools_api_standalone.log"
+    runtime_dir = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or MAGI_ROOT / ".runtime").expanduser()
+    tools_log = runtime_dir / "logs" / "tools_api_standalone.log"
+    tools_log.parent.mkdir(parents=True, exist_ok=True)
     _run_cmd(["/bin/zsh", "-lc", f"pkill -f 'api/tools_api.py' || true; nohup {VENV_PY} {MAGI_ROOT}/api/tools_api.py > {tools_log} 2>&1 & disown; sleep 2"], timeout_sec=30)
     ok2, code2, obj2, body2, dt2 = _http_json("GET", f"{TOOLS_URL}/health", timeout_sec=8)
     if ok2 and obj2.get("status") == "ok":
@@ -136,7 +139,7 @@ def _check_summarize_circuit() -> List[Check]:
 
 
 def _check_transcribe_dual() -> Check:
-    wav = str(MAGI_ROOT / "tmp_qa" / "qa_two_speakers.wav")
+    wav = str(RUNTIME_ROOT / "tmp_qa" / "qa_two_speakers.wav")
     ok, code, obj, body, dt = _http_json("POST", f"{TOOLS_URL}/collab/transcribe", body={"audio_path": wav}, timeout_sec=120)
     if not ok or code != 200:
         return Check("transcribe_dual", False, f"HTTP={code} {body[:200]}", dt)

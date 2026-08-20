@@ -85,7 +85,7 @@ async function searchDraftCases() {
 async function loadDraftSelectedCase() {
     await withBusy("draftCaseLoadBtn", "載入中...", async () => {
         const id = (document.getElementById("draftCaseSelect").value || "").trim();
-        if (!id) return alert("請先選擇案件");
+        if (!id) return showAlert("MAGI說", "請先選擇案件");
         const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
         const x = data.item || {};
         state.draft.selectedCaseId = x.id || id;
@@ -139,6 +139,366 @@ function renderDraftDocuments() {
         `;
     }).join("");
     renderDraftDocSelections();
+}
+
+function documentReuseIsWord(item) {
+    const raw = String(item?.file_path || item?.file_name || "").trim().toLowerCase();
+    return raw.endsWith(".docx") || raw.endsWith(".doc");
+}
+
+function documentReuseFolderPath(path) {
+    const raw = String(path || "").trim();
+    if (!raw) return "";
+    const idx = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
+    return idx > 0 ? raw.slice(0, idx) : raw;
+}
+
+function documentReuseState() {
+    if (!state.documentReuse) {
+        state.documentReuse = { cases: [], selectedCaseId: "", documents: [], selectedDocument: null, lastResult: null };
+    }
+    return state.documentReuse;
+}
+
+function setReuseStatus(text, tone = "info") {
+    const el = document.getElementById("reuseStatus");
+    if (!el) return;
+    el.textContent = text || "";
+    el.className = `status-banner${tone === "warn" || tone === "error" ? " warn" : tone === "ok" || tone === "success" ? " ok" : ""}`;
+}
+
+function documentReuseFieldValue(id) {
+    return (document.getElementById(id)?.value || "").trim();
+}
+
+let documentReuseDocNameSearchTimer = null;
+
+function updateDocumentReuseSuggestedNameFromFields(force = false) {
+    const input = document.getElementById("reuseSuggestedName");
+    if (!input) return;
+    const current = (input.value || "").trim();
+    if (!force && current && input.dataset.autoFromDocName !== "1") return;
+    const docType = documentReuseFieldValue("reuseDocType") || "沿用書狀";
+    const caseNo = documentReuseFieldValue("reuseCaseNumber") || "未命名";
+    input.value = `${docType}_${caseNo}`;
+    input.dataset.autoFromDocName = "1";
+}
+
+function renderDocumentReusePreview() {
+    const box = document.getElementById("reusePreview");
+    if (!box) return;
+    const rows = [
+        ["書狀名稱", documentReuseFieldValue("reuseDocType")],
+        ["案號", documentReuseFieldValue("reuseCaseNumber")],
+        ["股別", documentReuseFieldValue("reuseDivision")],
+        ["法院 / 地檢署", documentReuseFieldValue("reuseCourtName")],
+        ["案由", documentReuseFieldValue("reuseReason")],
+        ["我方", documentReuseFieldValue("reusePlaintiff")],
+        ["對造", documentReuseFieldValue("reuseDefendant")],
+        ["新檔檔名", documentReuseFieldValue("reuseSuggestedName") || "自動產生"],
+    ];
+    const hasAny = rows.some(([, value]) => value && value !== "自動產生");
+    if (!hasAny) {
+        box.innerHTML = `<div class="muted">載入新案件或手動填欄位後，這裡會顯示要寫進新檔的內容。</div>`;
+        return;
+    }
+    box.innerHTML = rows.map(([label, value]) => `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(label)}</div>
+                <div class="muted">${esc(value || "未填")}</div>
+            </div>
+        </div>
+    `).join("");
+}
+
+function showDocumentReuseWarning(message, focusId = "") {
+    setReuseStatus(message, "warn");
+    if (focusId) {
+        const el = document.getElementById(focusId);
+        if (el && typeof el.focus === "function") el.focus();
+    }
+    if (typeof showAlert === "function") showAlert("MAGI說", message);
+}
+
+function syncDocumentReuseDocNameSearch(options = {}) {
+    const immediate = !!options.immediate;
+    const docName = documentReuseFieldValue("reuseDocType");
+    const q = document.getElementById("reuseQ");
+    updateDocumentReuseSuggestedNameFromFields();
+    renderDocumentReusePreview();
+    if (documentReuseDocNameSearchTimer) {
+        clearTimeout(documentReuseDocNameSearchTimer);
+        documentReuseDocNameSearchTimer = null;
+    }
+    if (!q) return;
+    if (!docName) {
+        if (q.dataset.autoFromDocName === "1") q.value = "";
+        return;
+    }
+    q.value = docName;
+    q.dataset.autoFromDocName = "1";
+    const run = () => {
+        if (!document.getElementById("documentReuse")?.classList.contains("active")) return;
+        setReuseStatus(`正在依「${docName}」自動搜尋舊書狀底稿...`);
+        loadDocumentReuseDocuments().catch(reportDocumentReuseError);
+    };
+    if (immediate) {
+        run();
+        return;
+    }
+    documentReuseDocNameSearchTimer = setTimeout(run, 450);
+}
+
+function renderDocumentReuseCases() {
+    const select = document.getElementById("reuseCaseSelect");
+    if (!select) return;
+    const reuse = documentReuseState();
+    const items = reuse.cases || [];
+    if (!items.length) {
+        select.innerHTML = `<option value="">查無案件</option>`;
+        return;
+    }
+    select.innerHTML = [`<option value="">請選擇新案件</option>`, ...items.map(r => {
+        const label = [r.client_name, r.case_number, r.case_reason].filter(Boolean).join("｜");
+        const selected = String(reuse.selectedCaseId || "") === String(r.id) ? " selected" : "";
+        return `<option value="${esc(r.id)}"${selected}>${esc(label)}</option>`;
+    })].join("");
+}
+
+async function searchDocumentReuseCases() {
+    await withBusy("reuseCaseSearchBtn", "搜尋中...", async () => {
+        const q = encodeURIComponent((document.getElementById("reuseCaseSearch")?.value || "").trim());
+        const data = await api(`/api/osc/cases?limit=80&q=${q}`);
+        const reuse = documentReuseState();
+        reuse.cases = data.items || [];
+        renderDocumentReuseCases();
+        setReuseStatus(`已找到 ${reuse.cases.length} 筆新案件候選，請選一筆後按「載入新案件」。`);
+    });
+}
+
+async function loadDocumentReuseSelectedCase() {
+    await withBusy("reuseCaseLoadBtn", "載入中...", async () => {
+        const id = (document.getElementById("reuseCaseSelect")?.value || "").trim();
+        if (!id) return showAlert("MAGI說", "請先選擇新案件");
+        const data = await api(`/api/osc/cases/${encodeURIComponent(id)}`);
+        const x = data.item || {};
+        const reuse = documentReuseState();
+        reuse.selectedCaseId = x.id || id;
+        document.getElementById("reuseCaseNumber").value = x.court_case_number || x.court_case_no || x.case_number || "";
+        document.getElementById("reuseDivision").value = x.court_division || "";
+        document.getElementById("reuseCourtName").value = x.court_name || "";
+        document.getElementById("reuseReason").value = x.case_reason || "";
+        document.getElementById("reusePlaintiff").value = x.client_name || "";
+        document.getElementById("reuseDefendant").value = x.opponent_name || "";
+        if (!(document.getElementById("reuseDocType").value || "").trim()) {
+            document.getElementById("reuseDocType").value = "沿用書狀";
+        }
+        updateDocumentReuseSuggestedNameFromFields();
+        renderDocumentReusePreview();
+        setReuseStatus(`已載入新案件資料：${x.client_name || ""} / ${x.case_number || id}`);
+    });
+}
+
+function renderDocumentReuseSelection() {
+    const reuse = documentReuseState();
+    const selected = reuse.selectedDocument || null;
+    const label = document.getElementById("reuseSelectedLabel");
+    const box = document.getElementById("reuseSelected");
+    if (!label || !box) return;
+    if (!selected) {
+        label.textContent = "尚未選取舊書狀底稿";
+        box.innerHTML = `<div class="muted">在第二步搜尋舊書狀後，按「選為底稿」。</div>`;
+        return;
+    }
+    label.textContent = "已選舊書狀底稿";
+    box.innerHTML = `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(selected.file_name || selected.file_path || "")}</div>
+                <div class="muted">舊案號：${esc(selected.case_number || "-")}｜${esc(selected.kind_label || "書狀")}</div>
+                <div class="muted">${esc(shortText(selected.file_path || "", 160))}</div>
+            </div>
+            <div class="inline-actions">
+                <button class="btn ghost" data-act="document-reuse-clear">移除</button>
+                <button class="btn" data-act="doc-open" data-path="${esc(selected.file_path || "")}">開啟底稿</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderDocumentReuseResult() {
+    const box = document.getElementById("reuseResult");
+    if (!box) return;
+    const reuse = documentReuseState();
+    const result = reuse.lastResult || null;
+    if (!result) {
+        box.innerHTML = `<div class="muted">尚未產生新檔。</div>`;
+        return;
+    }
+    const outputPath = result.output_path || result.path || "";
+    const folderPath = result.output_dir || documentReuseFolderPath(outputPath);
+    const replacementItems = result.replacements || result.replacement_summary || [];
+    const replacementText = Array.isArray(replacementItems)
+        ? replacementItems
+            .filter(x => Number(x.count || 0) > 0)
+            .slice(0, 8)
+            .map(x => `${esc(x.field || x.label || x.key || x.source || "欄位")} ${Number(x.count || 0)} 次`)
+            .join("、")
+        : "";
+    const warnings = result.warnings || [];
+    box.innerHTML = `
+        <div class="selection-item">
+            <div class="meta-text">
+                <div>${esc(result.file_name || (outputPath ? outputPath.split(/[\\/]/).pop() : "沿用書狀"))}</div>
+                <div class="muted">${esc(shortText(outputPath, 180))}</div>
+                ${replacementText ? `<div class="muted">替換：${replacementText}</div>` : ""}
+                ${warnings.length ? `<div class="status-banner warn" style="margin-top:6px;">${esc(warnings.join("；"))}</div>` : ""}
+            </div>
+            <div class="inline-actions">
+                ${outputPath ? `<button class="btn" data-act="doc-open" data-path="${esc(outputPath)}">開啟新檔</button>` : ""}
+                ${folderPath ? `<button class="btn" data-act="doc-open-folder" data-path="${esc(folderPath)}">開資料夾</button>` : ""}
+                ${outputPath ? `<button class="btn ghost" data-act="doc-copy" data-path="${esc(outputPath)}">複製路徑</button>` : ""}
+            </div>
+        </div>
+    `;
+}
+
+function renderDocumentReuseDocuments() {
+    const body = document.getElementById("reuseDocsBody");
+    if (!body) return;
+    const reuse = documentReuseState();
+    const selectedId = String(reuse.selectedDocument?.id || "");
+    const items = reuse.documents || [];
+    if (!items.length) {
+        body.innerHTML = `<tr><td colspan="5" class="muted">尚未搜尋，或沒有符合條件的舊 Word 書狀。</td></tr>`;
+        renderDocumentReuseSelection();
+        renderDocumentReuseResult();
+        renderDocumentReusePreview();
+        return;
+    }
+    body.innerHTML = items.map(r => {
+        const picked = selectedId && selectedId === String(r.id);
+        const isWord = documentReuseIsWord(r);
+        const selectLabel = !isWord ? "僅 Word" : (picked ? "✓ 已選" : "選為底稿");
+        return `
+            <tr>
+                <td><button class="btn ${picked ? "selected-toggle" : ""}" data-act="document-reuse-select" data-id="${esc(r.id)}" ${isWord ? "" : "disabled"}>${selectLabel}</button></td>
+                <td>${esc(r.case_number || "")}</td>
+                <td>${esc(r.kind_label || "")}</td>
+                <td>${esc(r.file_name || "")}</td>
+                <td title="${esc(r.file_path || "")}">${esc(shortText(r.file_path || "", 120))}</td>
+            </tr>
+        `;
+    }).join("");
+    renderDocumentReuseSelection();
+    renderDocumentReuseResult();
+    renderDocumentReusePreview();
+}
+
+async function loadDocumentReuseDocuments() {
+    await withBusy("reuseSearchBtn", "搜尋中...", async () => {
+        const q = encodeURIComponent((document.getElementById("reuseQ")?.value || "").trim());
+        const caseNumber = encodeURIComponent((document.getElementById("reuseCaseFilter")?.value || "").trim());
+        const kind = encodeURIComponent((document.getElementById("reuseKind")?.value || "own_pleading_word").trim());
+        const data = await api(`/api/osc/documents?limit=200&q=${q}&case_number=${caseNumber}&kind=${kind}&reuse_scope=own_pleading_word`);
+        const reuse = documentReuseState();
+        reuse.documents = data.items || [];
+        renderDocumentReuseDocuments();
+        setReuseStatus(`已找到 ${reuse.documents.length} 份舊 Word 書狀，請按「選為底稿」。`);
+    });
+}
+
+function selectDocumentReuseDocument(id) {
+    const reuse = documentReuseState();
+    const sid = String(id || "");
+    const item = (reuse.documents || []).find(x => String(x.id) === sid);
+    if (!item) return;
+    if (!documentReuseIsWord(item)) {
+        showAlert("MAGI說", "沿用舊書狀目前只支援 Word 來源檔。");
+        return;
+    }
+    reuse.selectedDocument = { ...item };
+    renderDocumentReuseDocuments();
+    setReuseStatus(`已選舊書狀底稿：${item.file_name || item.file_path || ""}`);
+}
+
+function clearDocumentReuseSelection() {
+    const reuse = documentReuseState();
+    reuse.selectedDocument = null;
+    renderDocumentReuseDocuments();
+    setReuseStatus("已清除舊書狀底稿。");
+}
+
+function collectDocumentReusePayload() {
+    return {
+        case_id: documentReuseState().selectedCaseId || (document.getElementById("reuseCaseSelect")?.value || "").trim(),
+        case_lookup_number: (document.getElementById("reuseCaseNumber")?.value || "").trim(),
+        doc_type: (document.getElementById("reuseDocType")?.value || "").trim(),
+        case_number: (document.getElementById("reuseCaseNumber")?.value || "").trim(),
+        division: (document.getElementById("reuseDivision")?.value || "").trim(),
+        court_name: (document.getElementById("reuseCourtName")?.value || "").trim(),
+        reason: (document.getElementById("reuseReason")?.value || "").trim(),
+        plaintiff: (document.getElementById("reusePlaintiff")?.value || "").trim(),
+        defendant: (document.getElementById("reuseDefendant")?.value || "").trim(),
+        suggested_filename: (document.getElementById("reuseSuggestedName")?.value || "").trim(),
+        selected_documents: [],
+        selected_insights: [],
+    };
+}
+
+async function reuseDocumentReuseDocument() {
+    await withBusy("reuseRunBtn", "產生中...", async () => {
+        setReuseStatus("正在檢查是否已選新案件資料與舊書狀底稿...");
+        const reuse = documentReuseState();
+        const source = reuse.selectedDocument || null;
+        if (!source) {
+            showDocumentReuseWarning("還沒選舊書狀底稿。請先在第二步搜尋舊書狀，按「選為底稿」。", "reuseQ");
+            return;
+        }
+        if (!documentReuseIsWord(source)) {
+            showDocumentReuseWarning("目前只能用 Word 檔當底稿，請改選 .doc 或 .docx。", "reuseQ");
+            return;
+        }
+        const payload = collectDocumentReusePayload();
+        const hasTargetData = [payload.case_number, payload.court_name, payload.reason, payload.plaintiff, payload.defendant].some(Boolean);
+        if (!hasTargetData) {
+            showDocumentReuseWarning("還沒載入或填寫新案件資料。請先完成第一步的新案件資料。", "reuseCaseSearch");
+            return;
+        }
+        if (!source.file_path) {
+            showDocumentReuseWarning("這份舊書狀沒有可用路徑，請改選另一份底稿。", "reuseQ");
+            return;
+        }
+        payload.source_document = source;
+        payload.source_path = source.file_path || "";
+        payload.source_document_id = source.id || "";
+        payload.source_case_number = source.case_number || "";
+        payload.suggested_filename = (document.getElementById("reuseSuggestedName")?.value || "").trim()
+            || `${(document.getElementById("reuseDocType")?.value || "沿用書狀").trim()}_${(document.getElementById("reuseCaseNumber")?.value || "未命名").trim()}`;
+        renderDocumentReusePreview();
+        setReuseStatus("正在把新案件資料寫入舊書狀底稿，並另存成新檔...");
+        const data = await api("/api/osc/drafts/reuse-document", "POST", payload);
+        reuse.lastResult = data.result || data;
+        renderDocumentReuseResult();
+        setReuseStatus(`新書狀已產生：${reuse.lastResult.file_name || "已產生新檔"}`, "ok");
+    });
+}
+
+async function loadDocumentReuse() {
+    try {
+        const reuse = documentReuseState();
+        if (!(reuse.cases || []).length) {
+            await searchDocumentReuseCases();
+        } else {
+            renderDocumentReuseCases();
+        }
+        renderDocumentReuseDocuments();
+        renderDocumentReusePreview();
+        setReuseStatus("先搜尋並載入新案件，再選舊書狀底稿。");
+    } catch (e) {
+        setReuseStatus(`沿用舊書狀初始化失敗：${e.message}`, "warn");
+    }
 }
 
 function renderDraftInsights() {
@@ -242,6 +602,9 @@ async function previewDraftPrompt() {
         state.draft.result = text;
         state.draft.originalResult = "";
         state.draft.resultMode = "preview";
+        state.draft.citationLock = data.citation_lock || {};
+        state.draft.qualityCheck = null;
+        state.draft.exportAllowed = false;
         updateDraftCharCount();
         setDraftModeIndicator("preview");
         const warningCount = (data.warnings || []).length;
@@ -261,6 +624,9 @@ async function generateDraft() {
         state.draft.resultMode = "generated";
         state.draft.lastProvider = data.provider || "";
         state.draft.lastModel = data.model || "";
+        state.draft.citationLock = data.citation_lock || {};
+        state.draft.qualityCheck = data.quality_check || null;
+        state.draft.exportAllowed = data.export_allowed === true;
         updateDraftFeedbackPanel();
         updateDraftCharCount();
         setDraftModeIndicator("generated");
@@ -268,29 +634,35 @@ async function generateDraft() {
             document.getElementById("draftSuggestedName").value = data.suggested_filename;
         }
         const degraded = text.includes("系統降級回覆") || text.includes("忙碌或逾時");
-        setDraftStatus(`產生完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}`, degraded ? "warn" : "info");
+        const qualityIssues = data?.quality_check?.issues || [];
+        const qualityText = state.draft.exportAllowed
+            ? "品質閘門通過"
+            : `品質閘門未通過（${qualityIssues.length} 項），修正後才能匯出`;
+        setDraftStatus(
+            `產生完成。Provider: ${data.provider || "-"}${data.model ? ` / ${data.model}` : ""}；${qualityText}`,
+            (degraded || !state.draft.exportAllowed) ? "warn" : "info",
+        );
     });
 }
 
 async function copyDraftResult() {
     const text = (document.getElementById("draftResult").value || "").trim();
-    if (!text) return alert("沒有可複製內容");
+    if (!text) return showAlert("MAGI說", "沒有可複製內容");
     try {
         await navigator.clipboard.writeText(text);
         setDraftStatus("已複製產生結果到剪貼簿。");
     } catch {
-        alert("複製失敗，請手動複製");
+        showAlert("MAGI說", "複製失敗，請手動複製");
     }
 }
 
 async function exportDraftResult() {
     await withBusy("draftExportBtn", "匯出中...", async () => {
         const draftText = (document.getElementById("draftResult").value || "").trim();
-        if (!draftText) return alert("沒有內容可以匯出");
+        if (!draftText) return showAlert("MAGI說", "沒有內容可以匯出");
         const body = {
+            ...collectDraftPayload(),
             draft_text: draftText,
-            doc_type: (document.getElementById("draftDocType").value || "").trim(),
-            case_number: (document.getElementById("draftDocsCaseFilter").value || document.getElementById("draftCaseNumber").value || "").trim(),
             suggested_filename: (document.getElementById("draftSuggestedName").value || "").trim(),
             title: (document.getElementById("draftDocType").value || "書狀草稿").trim(),
         };
@@ -372,8 +744,8 @@ function updateDraftFeedbackPanel() {
 async function submitDraftFeedback() {
     await withBusy("draftFeedbackSaveBtn", "記錄中...", async () => {
         const delta = currentDraftCorrectionDelta();
-        if (!delta.original) return alert("請先產生一次 AI 書狀，再修改結果。");
-        if (!delta.changed) return alert("尚未偵測到修正內容。");
+        if (!delta.original) return showAlert("MAGI說", "請先產生一次 AI 書狀，再修改結果。");
+        if (!delta.changed) return showAlert("MAGI說", "尚未偵測到修正內容。");
         const payload = collectDraftPayload();
         payload.original_text = delta.original;
         payload.corrected_text = delta.corrected;
@@ -459,4 +831,9 @@ async function loadDraftComposer() {
 function reportDraftError(e) {
     const msg = e?.message ? String(e.message) : String(e || "unknown_error");
     setDraftStatus(`草擬流程失敗：${msg}`, "warn");
+}
+
+function reportDocumentReuseError(e) {
+    const msg = e?.message ? String(e.message) : String(e || "unknown_error");
+    setReuseStatus(`沿用舊書狀流程失敗：${msg}`, "warn");
 }

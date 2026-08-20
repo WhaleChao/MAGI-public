@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>線稿轉餅乾切模｜MAGI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260818-cookie-cutter-ui">
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+  <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
+  <style>
+    :root { --cc-bg:#eef5f7; --cc-panel:#fff; --cc-panel-soft:#f6fbfc; --cc-ink:#132a32; --cc-muted:#587079; --cc-line:#b8d0d6; --cc-cyan:#0b8f9b; --cc-cyan-deep:#076773; --cc-ok:#087a55; --cc-warn:#9b6100; --cc-danger:#bc3030; }
+    * { box-sizing:border-box; }
+    body.site-cookie-cutter { min-height:100vh; margin:0; background:radial-gradient(circle at 78% -12%,rgba(11,143,155,.14),transparent 34%),var(--cc-bg); color:var(--cc-ink); font-family:var(--magi-font,-apple-system,BlinkMacSystemFont,"Noto Sans TC",sans-serif); }
+    .cc-shell { width:min(1060px,calc(100vw - 32px)); margin:30px auto 64px; }
+    .cc-topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:18px; }
+    .cc-brand { display:flex; align-items:center; gap:11px; color:var(--cc-ink); text-decoration:none; font-weight:900; letter-spacing:.08em; }
+    .cc-brand-mark { display:grid; width:34px; height:34px; place-items:center; border:1px solid var(--cc-cyan); border-radius:10px; background:linear-gradient(145deg,#d5fbff,#e9ffff); color:var(--cc-cyan-deep); box-shadow:0 8px 22px rgba(7,103,115,.13); }
+    .cc-nav { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .cc-nav a,.cc-theme { min-height:38px; display:inline-flex; align-items:center; padding:8px 11px; border:1px solid var(--cc-line); border-radius:9px; background:var(--cc-panel); color:var(--cc-ink); text-decoration:none; font-size:13px; font-weight:800; }
+    .cc-nav a[aria-current="page"] { border-color:var(--cc-cyan); background:#ddf8fa; color:var(--cc-cyan-deep); }
+    .cc-theme { padding:0 10px; cursor:pointer; }
+    .cc-hero { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(250px,.75fr); gap:18px; margin-bottom:18px; }
+    .cc-hero-copy { padding:8px 2px; }
+    .cc-kicker { margin:0 0 8px; color:var(--cc-cyan-deep); font-size:12px; font-weight:900; letter-spacing:.12em; }
+    h1 { margin:0; font-size:clamp(31px,5vw,48px); line-height:1.16; letter-spacing:.01em; }
+    .cc-lead { max-width:680px; margin:13px 0 0; color:var(--cc-muted); font-size:16px; line-height:1.75; }
+    .cc-privacy { display:grid; grid-template-columns:auto 1fr; gap:11px; align-content:center; padding:17px; border:1px solid #8fd7bc; border-radius:12px; background:linear-gradient(135deg,#ecfff6,#f8fffc); color:#195744; font-size:13px; line-height:1.65; }
+    .cc-privacy strong { display:grid; width:34px; height:34px; place-items:center; border-radius:50%; background:var(--cc-ok); color:#fff; }
+    .cc-card { overflow:hidden; border:1px solid var(--cc-line); border-radius:16px; background:var(--cc-panel); box-shadow:0 18px 42px rgba(12,42,50,.10); }
+    .cc-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:20px 23px 15px; border-bottom:1px solid var(--cc-line); background:linear-gradient(130deg,rgba(11,143,155,.12),transparent 48%),var(--cc-panel-soft); }
+    .cc-card-head h2 { margin:0 0 5px; font-size:20px; }
+    .cc-card-head p { margin:0; color:var(--cc-muted); font-size:13px; line-height:1.6; }
+    .cc-step { flex:0 0 auto; padding:5px 9px; border:1px solid #91d6dc; border-radius:999px; color:var(--cc-cyan-deep); background:#e5fbfd; font-size:12px; font-weight:900; }
+    .cc-workspace { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr); }
+    .cc-upload { min-height:344px; padding:24px; border-right:1px solid var(--cc-line); background:var(--cc-panel); }
+    .cc-drop { display:grid; min-height:294px; place-content:center; padding:26px; border:2px dashed #75bac1; border-radius:13px; background:linear-gradient(145deg,#effdfe,#faffff); text-align:center; cursor:pointer; transition:.2s ease; }
+    .cc-drop:hover,.cc-drop:focus-within { border-color:var(--cc-cyan); background:#e7fbfd; box-shadow:inset 0 0 0 3px rgba(11,143,155,.08); }
+    .cc-drop-icon { margin-bottom:10px; color:var(--cc-cyan-deep); font-size:32px; }
+    .cc-drop strong { display:block; margin-bottom:7px; font-size:18px; }
+    .cc-drop small { display:block; color:var(--cc-muted); line-height:1.65; }
+    .cc-drop input { width:min(100%,390px); margin:19px auto 0; color:var(--cc-ink); font:inherit; }
+    .cc-controls { padding:22px; background:var(--cc-panel-soft); }
+    .cc-controls h3 { margin:0 0 4px; font-size:17px; }
+    .cc-controls > p { margin:0 0 15px; color:var(--cc-muted); font-size:12px; line-height:1.55; }
+    .cc-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+    .cc-field { display:grid; gap:6px; color:#28434c; font-size:13px; font-weight:800; }
+    .cc-field input { width:100%; min-height:42px; padding:9px 10px; border:1px solid var(--cc-line); border-radius:8px; background:var(--cc-panel); color:var(--cc-ink); font:inherit; }
+    .cc-field input:focus { outline:3px solid rgba(11,143,155,.17); border-color:var(--cc-cyan); }
+    .cc-submit-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:16px 23px; border-top:1px solid var(--cc-line); background:var(--cc-panel); }
+    .cc-submit-note { color:var(--cc-muted); font-size:12px; line-height:1.55; }
+    #generate { min-height:46px; padding:11px 17px; border:0; border-radius:9px; background:var(--cc-cyan); color:#fff; font:inherit; font-weight:900; cursor:pointer; box-shadow:0 8px 17px rgba(7,103,115,.2); }
+    #generate:hover { background:var(--cc-cyan-deep); } #generate:disabled { opacity:.58; cursor:wait; }
+    .cc-status { display:none; margin:17px 23px 0; padding:12px 14px; border-left:4px solid var(--cc-cyan); border-radius:7px; background:#eefbfd; color:#24545d; font-size:13px; font-weight:800; line-height:1.6; white-space:pre-wrap; }
+    .cc-status.is-visible { display:block; } .cc-status.error { border-color:var(--cc-danger); background:#fff5f4; color:#9f2828; } .cc-status.success { border-color:var(--cc-ok); background:#effcf6; color:#176143; }
+    .cc-guide { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; margin-top:18px; overflow:hidden; border:1px solid var(--cc-line); border-radius:13px; background:var(--cc-line); }
+    .cc-guide div { padding:15px; background:var(--cc-panel); } .cc-guide b { display:block; margin-bottom:4px; color:var(--cc-cyan-deep); font-size:13px; } .cc-guide span { color:var(--cc-muted); font-size:12px; line-height:1.55; }
+    @media (max-width:760px) { .cc-shell{width:min(100vw - 20px,1060px);margin:18px auto 36px}.cc-topbar{align-items:flex-start;flex-direction:column}.cc-nav{justify-content:flex-start}.cc-hero,.cc-workspace{grid-template-columns:1fr}.cc-upload{min-height:auto;border-right:0;border-bottom:1px solid var(--cc-line)}.cc-drop{min-height:236px}.cc-guide{grid-template-columns:1fr}.cc-submit-row{align-items:stretch;flex-direction:column}#generate{width:100%} }
+    @media (max-width:420px) { .cc-nav a{font-size:12px;padding:7px 8px}.cc-grid{grid-template-columns:1fr}.cc-card-head,.cc-upload,.cc-controls,.cc-submit-row{padding-left:16px;padding-right:16px}.cc-status{margin-left:16px;margin-right:16px} }
+    :root[data-magi-theme="cyber"] body.site-cookie-cutter { --cc-bg:#061218; --cc-panel:#0a1b23; --cc-panel-soft:#0d232c; --cc-ink:#d8fbff; --cc-muted:#91b9c0; --cc-line:#285665; --cc-cyan:#33d6df; --cc-cyan-deep:#7af4fa; --cc-ok:#5de3ae; --cc-danger:#ff8989; background:radial-gradient(circle at 78% -12%,rgba(51,214,223,.18),transparent 34%),#061218; }
+    :root[data-magi-theme="cyber"] .cc-brand-mark,:root[data-magi-theme="cyber"] .cc-nav a[aria-current="page"],:root[data-magi-theme="cyber"] .cc-step { background:#102f38; }
+    :root[data-magi-theme="cyber"] .cc-drop { background:linear-gradient(145deg,#0a252e,#0c1d25); }
+    :root[data-magi-theme="cyber"] .cc-drop:hover,:root[data-magi-theme="cyber"] .cc-drop:focus-within { background:#10323a; }
+    :root[data-magi-theme="cyber"] .cc-privacy { border-color:#397a65; background:linear-gradient(135deg,#0d2c25,#0b211d); color:#b6f3d3; }
+    :root[data-magi-theme="cyber"] .cc-status { background:#0b2a32; color:#b9eef2; } :root[data-magi-theme="cyber"] .cc-status.success { background:#0b2d23; color:#b6f3d3; } :root[data-magi-theme="cyber"] .cc-status.error { background:#351d21; color:#ffc4c4; }
+  </style>
+</head>
+<body class="site-lottery site-cookie-cutter">
+  <main class="cc-shell">
+    <header class="cc-topbar">
+      <a class="cc-brand" href="/" aria-label="MAGI 首頁"><span class="cc-brand-mark" aria-hidden="true">✦</span>MAGI TOOLS</a>
+      <nav class="cc-nav" aria-label="公開工具導覽"><a href="/lottery">抽獎工具</a><a href="/exam-tutor">國考練習</a><a href="/cookie-cutter" aria-current="page">餅乾切模</a><button class="cc-theme" type="button" data-magi-theme-toggle aria-label="切換日夜主題"></button></nav>
+    </header>
+    <section class="cc-hero" aria-labelledby="page-title">
+      <div class="cc-hero-copy"><p class="cc-kicker">MAGI MAKER / LOCAL STL</p><h1 id="page-title">線稿轉餅乾切模</h1><p class="cc-lead">把清楚的黑白線稿轉成可列印的切模與鏡像壓模。外框形成含握邊的切模，內部線條會轉成壓模凸紋。</p></div>
+      <aside class="cc-privacy"><strong aria-hidden="true">✓</strong><span><b>資料留在本機處理</b><br>免登入、不呼叫外部 AI、不保存上傳圖片；ZIP 只在本次請求中產生。</span></aside>
+    </section>
+    <section class="cc-card" aria-labelledby="maker-title">
+      <div class="cc-card-head"><div><h2 id="maker-title">建立可列印模型</h2><p>請使用封閉外框的 PNG、JPG、BMP 或 TIF 線稿。</p></div><span class="cc-step">步驟 1／1</span></div>
+      <form id="form"><div class="cc-workspace"><div class="cc-upload"><label class="cc-drop"><span class="cc-drop-icon" aria-hidden="true">⌁</span><strong>選擇或拖入線稿</strong><small>上限 8MB、1600 萬像素<br>最外框需封閉；內部眼睛、文字與花紋會做成壓模。</small><input name="image" type="file" accept="image/png,image/jpeg,image/bmp,image/tiff" required></label></div><div class="cc-controls"><h3>列印尺寸與結構</h3><p>請依麵團厚度與印表機噴嘴調整；產生前會驗證封閉網格。</p><div class="cc-grid"><label class="cc-field">成品寬度 mm<input name="width_mm" type="number" min="20" max="200" value="80" required></label><label class="cc-field">刀高 mm<input name="blade_height_mm" type="number" min="5" max="30" value="15" required></label><label class="cc-field">刀壁 mm<input name="blade_wall_mm" type="number" min=".6" max="3" step=".1" value="1.2" required></label><label class="cc-field">握邊 mm<input name="rim_mm" type="number" min="0" max="15" step=".1" value="3" required></label><label class="cc-field">壓模底板 mm<input name="stamp_base_mm" type="number" min="1" max="10" step=".1" value="3" required></label><label class="cc-field">凸紋 mm<input name="relief_mm" type="number" min=".4" max="12" step=".1" value="2" required></label><label class="cc-field">間隙 mm<input name="clearance_mm" type="number" min="0" max="3" step=".1" value=".3" required></label></div></div></div><output id="result" class="cc-status" aria-live="polite"></output><div class="cc-submit-row"><span class="cc-submit-note">完成後會下載 ZIP：切模 STL、壓模 STL、辨識預覽與參數 JSON。</span><button id="generate" type="submit">產生並下載 STL</button></div></form>
+    </section>
+    <section class="cc-guide" aria-label="使用提醒"><div><b>1．線稿</b><span>使用高對比、外框完整的圖；空白或開放輪廓會安全拒絕。</span></div><div><b>2．生成</b><span>系統只產出封閉網格，不會以空白或破損模型取代結果。</span></div><div><b>3．列印</b><span>請在切片軟體確認尺寸與方向，再進行食品接觸用途的列印。</span></div></section>
+  </main>
+  <script>
+    const form=document.querySelector('#form'), output=document.querySelector('#result'), button=document.querySelector('#generate');
+    const csrfToken=()=>decodeURIComponent((document.cookie.split('; ').find(value=>value.startsWith('X-CSRF-Token='))||'').split('=').slice(1).join('='));
+    const showStatus=(text,kind='')=>{output.textContent=text;output.className=`cc-status is-visible ${kind}`.trim();};
+    form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;showStatus('正在辨識外框、內線並檢查封閉網格…');
+      try{const response=await fetch('/api/cookie-cutter/generate',{method:'POST',body:new FormData(form),headers:{'X-CSRF-Token':csrfToken()},cache:'no-store'});
+        if(!response.ok){let body={};try{body=await response.json();}catch(_){}showStatus(body.message||'暫時無法處理','error');return}
+        const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='MAGI_cookie_cutter_and_stamp.zip';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);showStatus('已完成並下載 ZIP。列印前請先用切片軟體確認尺寸與預覽。','success');
+      }catch(_){showStatus('網路暫時無法連線，請稍後再試。','error')}finally{button.disabled=false}});
+  </script>
+</body>
+</html>

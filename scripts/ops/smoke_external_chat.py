@@ -12,7 +12,13 @@ import os
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    if os.environ.get("MAGI_DISABLE_DOTENV", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        load_dotenv()
 except ImportError:
     pass
 
@@ -51,6 +57,7 @@ def main():
     print(f"[*] Starting Smoke Test for {url}")
     print("--------------------------------------------------")
 
+    checks = []
     for name, payload in [("SIMPLE", simple_payload), ("COMPLEX", complex_payload)]:
         print(f"[*] Testing {name} Tier Route...")
         try:
@@ -62,6 +69,23 @@ def main():
             is_success = data.get("success", False)
             is_degraded = data.get("degraded", False)
             meta = data.get("meta", {})
+            reply = str(data.get("reply") or "")
+            check_ok = bool(
+                200 <= resp.status_code < 300
+                and is_success is True
+                and reply.strip()
+            )
+            checks.append(
+                {
+                    "name": name,
+                    "ok": check_ok,
+                    "http_status": resp.status_code,
+                    "success": is_success is True,
+                    "degraded": is_degraded is True,
+                    "reply_length": len(reply),
+                    "meta": meta if isinstance(meta, dict) else {},
+                }
+            )
             
             print(f"   [HTTP {resp.status_code}] Success: {is_success} | Degraded: {is_degraded}")
             print(f"   Response time: {round(t1 - t0, 3)}s")
@@ -71,13 +95,30 @@ def main():
                 print("   [!] WARNING: Route is degraded (timeout breached or overloaded).")
                 print(f"   reply: {data.get('reply')}")
             else:
-                reply = data.get('reply', '')
                 print(f"   [OK] Reply len={len(reply)} | Preview: {reply[:60].replace(chr(10), ' ')}")
                 
         except Exception as e:
             print(f"   [X] Request failed: {e}")
+            checks.append(
+                {
+                    "name": name,
+                    "ok": False,
+                    "http_status": 0,
+                    "success": False,
+                    "degraded": False,
+                    "reply_length": 0,
+                    "error": f"{type(e).__name__}: {e}"[:240],
+                }
+            )
         
         print("--------------------------------------------------")
+    summary = {
+        "success": len(checks) == 2 and all(row.get("ok") is True for row in checks),
+        "successful_checks": sum(row.get("ok") is True for row in checks),
+        "checks": checks,
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return 0 if summary["success"] else 1
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -62,14 +62,20 @@ PARAMS: {{"expression": "100*3+50"}}
 FINAL: 正當防衛是指對於現在不法之侵害，而出於防衛自己或他人權利之行為，不罰。
 
 規則：
+- 先確認使用者要達成的結果，再選擇最少必要的工具與步驟；不要只因為出現關鍵字就啟動功能
+- 工具結果必須能支撐結論；多個來源互相衝突時，明確說明差異，不得擅自選一個當事實
 - 每次只用一個工具。觀察結果後決定下一步。最多 {max_steps} 步
 - 如果工具沒有回傳可用內容、只回傳工具標記或錯誤訊息，不可自行補答案；必須說明工具未回傳足夠資訊
 - 不可刪除檔案或資料
+- 不可透過 ReAct 寫入記憶、建案、下載歸檔、同步、修改或送出外部系統。需要這些動作時，先完成可驗證的唯讀查核，再清楚列出「待確認動作」，交回 MAGI 專用流程
 - read_file 只能讀本機檔案路徑（如 /Users/...），不能讀 URL
 - 工具選擇必須精準：
   - 問「行程、開庭、會議、排程、今天/明天有沒有事」→ 用 get_schedule，不要用 web_search
-  - 問「天氣、新聞、最新、匯率、股價」→ 用 web_search
+  - 問「天氣、即時匯率、即時股價」→ 用 realtime_lookup；權威來源失敗時追問或說明失敗，禁止猜數字
+  - 問「新聞、時事、網路最新資訊」→ 用 web_search，回答須保留來源
   - 問「事務所案件、案號、當事人案件狀態」→ 用 query_cases
+  - 問「MAGI 系統、服務、紅黃燈、功能健康」→ 用 system_health
+  - 問「法扶、閱卷、筆錄、通知、日曆或 Drive 模組是否正常」→ 用 business_status
   - 問「判決、裁判、實務見解」→ 用 search_judgments
   - 問「通譯判決抓取、通譯判決分類、通譯實證研究、最高法院通譯表格」→ 用 run_skill，skill_name=interpreter-empirical-classifier
   - 問「法條、第幾條、法律條文」→ 用 search_statutes
@@ -103,6 +109,24 @@ _IRON_DOME_TEXT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+# Only these run_skill task variants are permitted inside autonomous ReAct.
+# The /skills/run endpoint remains available to dedicated workflows, but the
+# model-driven loop cannot fetch-and-persist, rewrite PDFs, or collect data.
+_REACT_READ_ONLY_SKILL_TASKS: dict[str, frozenset[str]] = {
+    "judicial-web-search": frozenset({"search"}),
+    "statutes-vdb": frozenset({"search"}),
+    "labor-law-calculator": frozenset({"run"}),
+    "contract-review": frozenset({"review"}),
+    "worldmonitor-intel": frozenset({"run"}),
+    "pdf-namer": frozenset({"propose"}),
+    "translator": frozenset({"translate"}),
+    "market-briefing": frozenset({"list", "brief"}),
+    "trial-prep": frozenset({"prepare"}),
+    "osc-orchestrator": frozenset({"query"}),
+    "interpreter-empirical-classifier": frozenset({"status", "self_test"}),
+}
 
 
 class ReActEngine:
@@ -166,9 +190,9 @@ class ReActEngine:
         return react_part
 
     @classmethod
-    def for_omlx(cls, tools=None, user_query="", max_steps=5, total_timeout=60, soul_text=""):
-        # type: (Optional[dict], str, int, int, str) -> ReActEngine
-        """建立走 oMLX E4B 的 ReAct 引擎。
+    def for_omlx(cls, tools=None, user_query="", max_steps=5, total_timeout=60, soul_text="", heavy=False):
+        # type: (Optional[dict], str, int, int, str, bool) -> ReActEngine
+        """建立 ReAct 引擎。
 
         Args:
             tools: 工具 dict，若為 None 則自動用 get_compact_tools
@@ -176,10 +200,49 @@ class ReActEngine:
             max_steps: 最大步數（E4B 較慢，預設 5）
             total_timeout: 整體超時秒數（預設 60，含 summarize/translate 等較慢工具）
             soul_text: SOUL 身份文字（注入 system prompt 前段）
+            heavy: True 時保留 ReAct 工具 prompt，但以 NVIDIA NIM 產生 ACTION/FINAL
         """
         if tools is None:
             from skills.engine.tool_registry import get_compact_tools
             tools = get_compact_tools(user_query)
+
+        def _split_messages_for_nim(messages):
+            system_parts = []
+            prompt_parts = []
+            for msg in messages or []:
+                role = str((msg or {}).get("role") or "user").strip().lower()
+                content = str((msg or {}).get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "system":
+                    system_parts.append(content)
+                else:
+                    prompt_parts.append("{}:\n{}".format(role.upper(), content))
+            return "\n\n".join(system_parts), "\n\n".join(prompt_parts)
+
+        def _heavy_llm(messages):
+            from skills.bridge.nim_heavy import run_nim_chat
+
+            system_prompt, prompt_body = _split_messages_for_nim(messages)
+            result = run_nim_chat(
+                prompt=prompt_body,
+                timeout_sec=max(60, int(total_timeout or STEP_TIMEOUT)),
+                task_type="agentic",
+                require_pii_scrub=True,
+                system_prompt=system_prompt,
+                heavy=True,
+                # ``heavy=True`` is only selected by the current-message
+                # explicit @heavy route.  Preserve the user's exact payload
+                # (ordinary PII included), while run_nim_chat still blocks
+                # credentials before any network call.
+                user_heavy_authorized=True,
+            )
+            if result.get("success") and result.get("response"):
+                return result["response"]
+            err = str(result.get("error") or "unknown")
+            # Explicit @heavy is a provider contract.  A local fallback would
+            # silently change both model quality and the user's stated route.
+            return "LLM ERROR: nvidia_nim:{}".format(err)
 
         def _omlx_llm(messages):
             from skills.bridge.ensemble_inference import (
@@ -195,11 +258,12 @@ class ReActEngine:
 
         engine = cls(
             tools=tools,
-            llm_fn=_omlx_llm,
+            llm_fn=_heavy_llm if heavy else _omlx_llm,
             max_steps=max_steps,
             total_timeout=total_timeout,
         )
         engine._soul_text = soul_text
+        engine._llm_route = "nvidia_nim" if heavy else "omlx"
         return engine
 
     @staticmethod
@@ -296,6 +360,8 @@ class ReActEngine:
 
     def _iron_dome_check(self, tool_name: str, params: dict) -> Optional[str]:
         """Iron Dome 安全檢查。回傳 None 表示安全，否則回傳攔截原因。"""
+        if not isinstance(params, dict):
+            return "Tool parameters must be a JSON object"
         param_str = json.dumps(params, ensure_ascii=False).lower()
         for blocked in _IRON_DOME_BLOCKED:
             if blocked in param_str:
@@ -305,7 +371,101 @@ class ReActEngine:
         if tool_name not in self.tools:
             return f"Tool '{tool_name}' not found. Available: {list(self.tools.keys())}"
 
+        side_effect = str(self.tools[tool_name].get("side_effect") or "read_only").strip().lower()
+        if side_effect not in {"read_only", "dynamic"}:
+            return (
+                f"Tool '{tool_name}' requires a confirmed MAGI workflow "
+                "and cannot run autonomously"
+            )
+        if side_effect == "dynamic":
+            if tool_name != "run_skill":
+                return f"Tool '{tool_name}' has no autonomous side-effect policy"
+            skill_name = str(params.get("skill_name") or "").strip()
+            task = str(params.get("task") or "").strip()
+            allowed_tasks = _REACT_READ_ONLY_SKILL_TASKS.get(skill_name, frozenset())
+            if task not in allowed_tasks:
+                return (
+                    f"Skill task '{skill_name}:{task}' requires a confirmed MAGI workflow "
+                    "and cannot run autonomously"
+                )
+
+        schema = self.tools[tool_name].get("input_schema")
+        if schema:
+            try:
+                from api.tools.registry import ToolRegistry
+
+                schema_error = ToolRegistry._input_schema_error(schema, params)
+            except Exception:
+                schema_error = "input_schema_validation_unavailable"
+            if schema_error:
+                return schema_error
+
         return None
+
+    @staticmethod
+    def _is_interpreter_empirical_request(text: str) -> bool:
+        body = str(text or "")
+        if "通譯" not in body:
+            return False
+        intent_markers = ("實證", "分類", "分類表", "抓取", "補抓", "上網抓", "表格")
+        source_markers = ("最高法院", "裁判", "判決", "法院")
+        return any(m in body for m in intent_markers) and any(m in body for m in source_markers)
+
+    @staticmethod
+    def _extract_interpreter_keywords(text: str) -> str:
+        body = str(text or "")
+        quoted = re.search(r"[「『\"]([^」』\"]*通譯[^」』\"]*)[」』\"]", body)
+        if quoted:
+            return quoted.group(1).strip()
+        if "最高法院" in body:
+            return "最高法院 通譯"
+        return "通譯"
+
+    def _coerce_action_for_query(self, user_query: str, tool_name: str, params: dict) -> tuple[str, dict, str]:
+        """Correct known high-risk tool confusions before execution.
+
+        The LLM sometimes chooses the generic judgment collector for empirical
+        interpreter research. That is still a tool call, but it is the wrong
+        tool for the user's workflow. Keep this deterministic guard narrow so
+        plain judgment searches remain unaffected.
+        """
+        try:
+            from skills.engine.realtime_data_gateway import detect_realtime_topics
+
+            realtime_topics = detect_realtime_topics(user_query)
+        except Exception:
+            realtime_topics = set()
+        if realtime_topics.intersection({"weather", "stock", "fx_rate"}) and tool_name == "web_search" and "realtime_lookup" in self.tools:
+            return "realtime_lookup", {"query": user_query}, "coerced_authoritative_realtime_source"
+        if "current_time" in realtime_topics and tool_name == "web_search" and "current_time" in self.tools:
+            return "current_time", {}, "coerced_system_clock_source"
+
+        if not self._is_interpreter_empirical_request(user_query):
+            return tool_name, params, ""
+        if "run_skill" not in self.tools:
+            return tool_name, params, ""
+
+        merged = dict(params or {})
+        inner: dict[str, Any] = {}
+        raw_inner = merged.get("params")
+        if isinstance(raw_inner, dict):
+            inner.update(raw_inner)
+        elif isinstance(raw_inner, str) and raw_inner.strip():
+            try:
+                parsed = json.loads(raw_inner)
+                if isinstance(parsed, dict):
+                    inner.update(parsed)
+            except json.JSONDecodeError:
+                logger.debug("Interpreter empirical params JSON ignored: %s", raw_inner[:120])
+
+        inner.setdefault("keywords", self._extract_interpreter_keywords(user_query))
+        merged["skill_name"] = "interpreter-empirical-classifier"
+        current_task = str(merged.get("task") or "").strip()
+        allowed_tasks = {"fetch", "fetch_and_classify", "classify", "status", "self_test"}
+        merged["task"] = current_task if current_task in allowed_tasks else "fetch_and_classify"
+        merged["params"] = json.dumps(inner, ensure_ascii=False)
+        reason = "coerced_interpreter_empirical_classifier"
+        return "run_skill", merged, reason
 
     @staticmethod
     def _iron_dome_text_check(text: str) -> Optional[str]:
@@ -330,7 +490,11 @@ class ReActEngine:
         lowered = text.lower()
         if lowered.startswith("tool_called:"):
             return True
+        if text.startswith("[REALTIME_UNAVAILABLE]"):
+            return True
         if text.startswith("工具執行錯誤"):
+            return True
+        if re.match(r"^(?:錯誤|失敗|技能失敗|技能執行失敗|搜尋 API 回傳|系統健康證據目前不可讀|業務模組 LIVE 證據目前不可讀)", text, re.I):
             return True
         if text.startswith("⛔"):
             return True
@@ -446,11 +610,14 @@ class ReActEngine:
             # 檢查是否有 ACTION
             if "ACTION:" in response:
                 tool_name, params = self._parse_action(response)
+                tool_name, params, coerce_reason = self._coerce_action_for_query(user_query, tool_name, params)
 
                 # 記錄思考過程
                 think_match = re.search(r'<think>(.*?)</think>', response, re.DOTALL)
                 if think_match:
                     trace.append({"step": step, "type": "think", "content": think_match.group(1).strip()[:300]})
+                if coerce_reason:
+                    trace.append({"step": step, "type": "tool_route_guard", "reason": coerce_reason})
 
                 # Iron Dome 安全檢查
                 block_reason = self._iron_dome_check(tool_name, params)
@@ -469,13 +636,16 @@ class ReActEngine:
                     except Exception as exc:
                         observation = f"工具執行錯誤: {type(exc).__name__}: {exc}"
 
-                    trace.append({"step": step, "type": "observation", "content": observation[:300]})
+                    trace.append({"step": step, "type": "observation", "content": observation[:1200]})
 
                     if self._observation_is_unusable(observation):
-                        answer = (
-                            f"已選擇並呼叫 `{tool_name}`，但工具沒有回傳可供作答的內容；"
-                            "我不會憑空補答案。請稍後重試，或先確認該工具/資料來源是否正常。"
-                        )
+                        if observation.startswith("[REALTIME_UNAVAILABLE]"):
+                            answer = observation.removeprefix("[REALTIME_UNAVAILABLE]").strip()
+                        else:
+                            answer = (
+                                f"已選擇並呼叫 `{tool_name}`，但工具沒有回傳可供作答的內容；"
+                                "我不會憑空補答案。請稍後重試，或先確認該工具/資料來源是否正常。"
+                            )
                         trace.append({"step": step, "type": "tool_result_missing", "tool": tool_name, "content": answer})
                         return {
                             "success": True,
@@ -535,11 +705,12 @@ class ReActEngine:
             messages.append({"role": "user", "content": summary_prompt})
             try:
                 final_response = self._llm(messages)
-                if final_response and len(final_response.strip()) > 10:
-                    trace.append({"step": self.max_steps + 1, "type": "forced_summary", "content": final_response.strip()[:500]})
+                clean_final = str(final_response or "").strip()
+                if clean_final and len(clean_final) > 10 and not clean_final.startswith("LLM ERROR"):
+                    trace.append({"step": self.max_steps + 1, "type": "forced_summary", "content": clean_final[:500]})
                     return {
                         "success": True,
-                        "answer": final_response.strip(),
+                        "answer": clean_final,
                         "trace": trace,
                         "steps": self.max_steps + 1,
                         "tools_used": tools_used,

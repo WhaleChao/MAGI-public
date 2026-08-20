@@ -40,6 +40,10 @@ def build_backlog_interpretation(
     archive_upserts: Any = 0,
     vector_ingested: Any = 0,
     summarized: Any = 0,
+    usable_summaries: Any = None,
+    rejected_summaries: Any = None,
+    summary_mode: str = "",
+    vector_enabled: Any = None,
     errors: Any = 0,
     oldest_age_hours: Any = 0.0,
     newest_age_hours: Any = 0.0,
@@ -58,6 +62,8 @@ def build_backlog_interpretation(
     archive = _i(archive_upserts)
     vectors = _i(vector_ingested)
     summaries = _i(summarized)
+    usable = summaries if usable_summaries is None else _i(usable_summaries)
+    rejected = max(0, summaries - usable) if rejected_summaries is None else _i(rejected_summaries)
     err = _i(errors)
     raw = _i(raw_total)
     unreadable = _i(unreadable_count)
@@ -74,52 +80,68 @@ def build_backlog_interpretation(
 
     if err:
         status = "PROCESS_ERROR"
-        headline = "整理有錯誤，需優先看 traceback"
+        headline = "司法院裁判資料整理有錯誤，需優先看錯誤紀錄"
     elif remaining <= 0:
         status = "CLEAR"
-        headline = "已清空，最新裁判可進入見解流程"
+        headline = "司法院裁判資料整理序列已清空"
     elif oldest >= 24 * 7:
         status = "STALE"
-        headline = "嚴重積壓，見解庫的新鮮度已落後"
+        headline = "司法院裁判資料嚴重積壓，見解庫的新鮮度已落後"
     elif oldest >= 24:
         status = "AGING"
-        headline = "有跨日積壓，最新見解可能延遲出現"
+        headline = "司法院裁判資料有跨日積壓，最新見解可能延遲出現"
     else:
         status = "CATCHING_UP"
-        headline = "有待消化 backlog，但仍在正常消化"
+        headline = "司法院裁判資料仍有待整理量，但正在正常處理"
+
+    mode_label = {
+        "extractive": "快速原文擷取",
+        "llm": "模型摘要",
+        "none": "不產生摘要",
+        "auto": "自動選擇",
+    }.get(str(summary_mode or "").strip().lower(), str(summary_mode or "未標示"))
+    if err:
+        round_result = f"本輪發生 {format_count(err)} 個錯誤，未完成項目會保留待重試"
+    elif done:
+        round_result = f"本輪已讀取 {format_count(done)} 件；待整理量 {format_count(before)} → {format_count(remaining)}"
+    else:
+        round_result = f"本輪沒有讀取新資料；目前仍有 {format_count(remaining)} 件待整理"
 
     lines: List[str] = [
-        f"- 狀態：{headline}",
-        f"- 本輪：待處理 {format_count(before)} → {format_count(remaining)}（消化 {format_count(reduced)}，處理 {format_count(done)}）",
-        f"- 入庫：court_judgments {format_count(db)} / archive {format_count(archive)} / 摘要 {format_count(summaries)} / 向量 {format_count(vectors)}",
-        f"- 老化：最老 {format_duration_hours(oldest)}；最新 {format_duration_hours(newest)}",
+        f"- 結果：{round_result}",
+        f"- 目前：{headline}",
+        f"- 可用內容：完整資料入庫 {format_count(min(db, archive))} 件；摘要嘗試 {format_count(summaries)}、通過 {format_count(usable)}、淘汰 {format_count(rejected)}",
+        f"- 檢索：向量新增 {format_count(vectors)} 件（模式：{mode_label}）",
     ]
+    if str(summary_mode or "").strip().lower() == "extractive" and not bool(vector_enabled):
+        lines[-1] = (
+            f"- 檢索：向量新增 {format_count(vectors)} 件；快速原文擷取模式依設定不建立向量，"
+            "不是向量服務故障"
+        )
     if raw:
-        lines.append(f"- Raw：總檔 {format_count(raw)}；不可讀 {format_count(unreadable)}")
+        lines.append(f"- 資料檔：總數 {format_count(raw)}；不可讀 {format_count(unreadable)}")
     if low_value or missing_text:
         lines.append(
-            f"- 品質閘門：低價值程序文書略過 {format_count(low_value)}；無全文略過 {format_count(missing_text)}"
+            f"- 排除：低價值程序文書 {format_count(low_value)} 件；無全文 {format_count(missing_text)} 件"
         )
     if remaining > 0:
         if done > 0:
-            estimate = f"- 預估：照本輪速度約 {format_count(runs_left)} 輪清空；照設定批量約 {format_count(configured_runs_left)} 輪"
+            estimate = f"- 剩餘：依本輪速度約需 {format_count(runs_left)} 輪；依設定批量約需 {format_count(configured_runs_left)} 輪"
             if daily_runs > 0 and configured_runs_left > 0:
                 estimate += f"（每日 {daily_runs} 輪約 {math.ceil(configured_runs_left / daily_runs)} 天）"
             lines.append(estimate)
         else:
-            lines.append("- 預估：本輪未消化成功，無法估算清空時間")
-    if cache_root:
-        lines.append(f"- 快取：{cache_root}")
+            lines.append("- 剩餘：本輪沒有成功消化，暫時無法估算")
 
     suggestions: List[str] = []
     if err:
-        suggestions.append("先查 issue_agenda / stderr，避免錯誤重跑造成同一批卡住。")
+        suggestions.append("先查問題紀錄與錯誤輸出，避免錯誤重跑造成同一批卡住。")
     if remaining > 0 and oldest >= 24 * 7:
-        suggestions.append("啟動或加密度執行 backlog_clear；目前不是缺資料，而是消化速度不足。")
-    elif remaining > 0:
-        suggestions.append("維持 night pull，白天整理可提高批量或增加補跑輪次。")
+        suggestions.append("啟動或加密度執行裁判資料整理補跑任務；目前不是缺資料，而是整理速度不足。")
+    elif remaining > 0 and done <= 0:
+        suggestions.append("檢查本輪未讀取資料的原因；不要把這次結果視為已完成。")
     if unreadable:
-        suggestions.append("抽查不可讀 raw 檔，避免壞檔讓 backlog 永遠不歸零。")
+        suggestions.append("抽查不可讀資料檔，避免壞檔讓待整理量永遠不歸零。")
     if not suggestions:
         suggestions.append("維持目前排程。")
 
@@ -130,6 +152,8 @@ def build_backlog_interpretation(
         "backlog_remaining": remaining,
         "handled": done,
         "reduced": reduced,
+        "usable_summaries": usable,
+        "rejected_summaries": rejected,
         "runs_left_at_current_rate": runs_left,
         "runs_left_at_configured_batch": configured_runs_left,
         "lines": lines,

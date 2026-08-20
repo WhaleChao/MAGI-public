@@ -24,7 +24,9 @@ from api.case_path_mapper import default_case_roots, preferred_case_roots
 
 HOME = Path.home()
 DEFAULT_VAULT = HOME / "Documents" / "MAGI_Obsidian_Vault"
-AGENT_DIR = MAGI_ROOT / ".agent"
+_FANG_SHARE = (os.environ.get("MAGI_OBSIDIAN_FANG_SHARE") or "lumi").strip().strip("/\\")
+_FANG_FOLDER = (os.environ.get("MAGI_OBSIDIAN_FANG_FOLDER") or "fang").strip().strip("/\\")
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
 VAULT_CONFIG_PATH = AGENT_DIR / "obsidian_vault_config.json"
 
 _CASE_ROOTS = preferred_case_roots(include_closed=True)
@@ -59,7 +61,7 @@ SOURCE_SPECS = [
         "name": "fang",
         "description": "fang 資料夾全文獻來源。",
         "candidates": [
-            Path("/Volumes/lumi/fang"),
+            Path("/Volumes") / _FANG_SHARE / _FANG_FOLDER,
         ],
     },
 ]

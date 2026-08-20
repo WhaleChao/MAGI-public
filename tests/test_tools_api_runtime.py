@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +14,8 @@ from api.permissions import (
     PermissionPolicy,
     deny_command,
 )
+
+_AUTH_HEADERS = {"X-API-Key": "test-key"}
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -26,6 +30,11 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 @pytest.fixture
 def tools_api_runtime(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root))
+    monkeypatch.setenv("MAGI_API_KEY", "test-key")
+    sys.modules.pop("api.authz", None)
+    sys.modules.pop("api.tools_api", None)
     import api.tools_api as tools_api
 
     events_path = tmp_path / "tools_runtime_events.jsonl"
@@ -44,7 +53,11 @@ def tools_api_runtime(monkeypatch, tmp_path):
         ),
     )
 
-    return tools_api, tools_api.app.test_client(), events_path
+    try:
+        yield tools_api, tools_api.app.test_client(), events_path
+    finally:
+        tools_api._INFERENCE_EXECUTOR.shutdown(wait=True, cancel_futures=True)
+        sys.modules.pop("api.tools_api", None)
 
 
 def test_search_emits_pre_and_post_events(monkeypatch, tools_api_runtime):
@@ -62,7 +75,7 @@ def test_search_emits_pre_and_post_events(monkeypatch, tools_api_runtime):
     response = client.post(
         "/search",
         json={"query": "MAGI", "num_results": 3},
-        headers={"X-Request-ID": "req-search", "X-User-ID": "u1", "X-Platform": "LINE"},
+        headers={**_AUTH_HEADERS, "X-Request-ID": "req-search", "X-User-ID": "u1", "X-Platform": "LINE"},
     )
 
     assert response.status_code == 200
@@ -73,6 +86,230 @@ def test_search_emits_pre_and_post_events(monkeypatch, tools_api_runtime):
     assert events[1]["tool_name"] == "search"
     assert events[1]["status"] == "handled"
     assert events[1]["ok"] is True
+
+
+def test_skill_runtime_flags_default_to_non_mutating(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.delenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_REPAIR_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({})
+
+    assert flags["auto_repair"] is False
+    assert flags["auto_install_deps"] is False
+    assert flags["rollback_on_fail"] is False
+    assert flags["mutating_runtime_requested"] is False
+    assert flags["dev_env_opt_in"] is False
+
+
+def test_tools_livez_is_process_only(tools_api_runtime):
+    _tools_api, client, _events_path = tools_api_runtime
+
+    response = client.get("/livez")
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "live"
+    assert response.get_json()["probe"] == "liveness"
+
+
+def test_tools_health_requires_reachable_model(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_TOOLS_HEALTH_PROBE_MODEL", "1")
+    tools_api._TOOLS_HEALTH_CACHE.update(ts=0.0, payload=None)
+
+    class _Session:
+        def get(self, *_args, **_kwargs):
+            raise TimeoutError("model unavailable")
+
+    monkeypatch.setattr("skills.bridge.http_pool.get_session", lambda: _Session())
+    response = client.get("/health?fresh=1")
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["status"] == "not_ready"
+    assert payload["checks"]["model"]["ok"] is False
+
+
+def test_tools_health_reports_verified_model_ready(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_TOOLS_HEALTH_PROBE_MODEL", "1")
+    tools_api._TOOLS_HEALTH_CACHE.update(ts=0.0, payload=None)
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": [{"id": "test-model"}]}
+
+    class _Session:
+        def get(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr("skills.bridge.http_pool.get_session", lambda: _Session())
+    response = client.get("/health?fresh=1")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["status"] == "ready"
+    assert payload["checks"]["model"]["model_count"] == 1
+
+
+def test_external_health_does_not_hardcode_orchestrator_ready(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("MAGI_TOOLS_HEALTH_PROBE_MODEL", "1")
+    tools_api._EXTERNAL_KEY_CACHE.update(ts=0.0, value="")
+    tools_api._TOOLS_HEALTH_CACHE.update(ts=0.0, payload=None)
+
+    class _Session:
+        def get(self, *_args, **_kwargs):
+            raise TimeoutError("model unavailable")
+
+    monkeypatch.setattr("skills.bridge.http_pool.get_session", lambda: _Session())
+    response = client.get("/osc/external/health", headers={"X-API-Key": "test-key"})
+
+    assert response.status_code == 503
+    assert response.get_json()["success"] is False
+    assert response.get_json()["orchestrator_ready"] is False
+
+
+def test_skill_runtime_flags_require_explicit_dev_opt_in(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", "1")
+    monkeypatch.delenv("MAGI_SKILL_AUTO_REPAIR_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT", raising=False)
+    monkeypatch.delenv("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({})
+
+    assert flags["auto_repair"] is True
+    assert flags["auto_install_deps"] is True
+    assert flags["rollback_on_fail"] is True
+    assert flags["mutating_runtime_requested"] is True
+    assert flags["dev_env_opt_in"] is True
+
+
+def test_skill_runtime_flags_payload_can_request_single_mutation(monkeypatch, tools_api_runtime):
+    tools_api, _client, _events_path = tools_api_runtime
+    monkeypatch.delenv("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", raising=False)
+
+    flags = tools_api._resolve_skill_runtime_flags({"auto_install_deps": True})
+
+    assert flags["auto_repair"] is False
+    assert flags["auto_install_deps"] is True
+    assert flags["rollback_on_fail"] is False
+    assert flags["mutating_runtime_requested"] is True
+
+
+def test_tools_api_consumes_and_runs_overlay_only_skill_with_path_permission(
+    monkeypatch, tmp_path, tools_api_runtime
+):
+    from skills import overlay
+    from skills.evolution import skill_genesis as genesis
+
+    tools_api, client, _events_path = tools_api_runtime
+    release = tmp_path / "release"
+    (release / "skills").mkdir(parents=True)
+    (release / "skills" / "definitions.json").write_text(
+        json.dumps({"_meta": {"version": "base"}, "tools": []}), encoding="utf-8"
+    )
+    overlay_root = tmp_path / "shared" / "skill-overlays"
+    skill = overlay_root / "overlay-api-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: overlay-api-demo\ndescription: overlay API consumer\n---\n",
+        encoding="utf-8",
+    )
+    action = skill / "action.py"
+    action.write_text(
+        "import json\nprint(json.dumps({'marker': 'overlay-run'}))\n",
+        encoding="utf-8",
+    )
+    (overlay_root / "definitions.json").write_text(
+        json.dumps(
+            {
+                "_meta": {"version": "overlay"},
+                "tools": [
+                    {
+                        "name": "run_overlay_api_demo",
+                        "description": "Run overlay-only demo",
+                        "endpoint": "/skills/run",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "skill": {
+                                    "type": "string",
+                                    "default": "overlay-api-demo",
+                                },
+                                "task": {"type": "string"},
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(overlay, "_ROOT", release)
+    monkeypatch.setenv("MAGI_SKILL_OVERLAY_DIR", str(overlay_root))
+    monkeypatch.setattr(genesis, "BASE_SKILLS_DIR", str(release / "skills"))
+    monkeypatch.setattr(genesis, "SKILLS_DIR", str(overlay_root))
+    monkeypatch.setattr(genesis, "SKILL_VERSIONS_DIR", str(overlay_root / ".versions"))
+    monkeypatch.setattr(genesis, "SKILL_EVENTS_FILE", str(overlay_root / ".logs" / "events.jsonl"))
+    monkeypatch.setattr(
+        genesis,
+        "SKILL_USAGE_TRACKER_FILE",
+        str(overlay_root / ".logs" / "usage.jsonl"),
+    )
+
+    class _CapturingEnforcer:
+        def __init__(self):
+            self.paths = []
+
+        def evaluate_command(self, subject):
+            return SimpleNamespace(allowed=True, subject=subject)
+
+        def evaluate_path(self, subject):
+            self.paths.append(subject)
+            return SimpleNamespace(allowed=True, subject=subject)
+
+    enforcer = _CapturingEnforcer()
+    monkeypatch.setattr(tools_api, "_TOOLS_PERMISSION_ENFORCER", enforcer)
+
+    definitions = client.get("/definitions", headers=_AUTH_HEADERS)
+    assert definitions.status_code == 200
+    assert [tool["name"] for tool in definitions.get_json()["tools"]] == [
+        "run_overlay_api_demo"
+    ]
+    listed = client.get("/skills")
+    assert "overlay-api-demo" in {
+        item["folder"] for item in listed.get_json()["skills"]
+    }
+    assert "overlay-api-demo" in tools_api._discover_runnable_skill_dirs()
+    assert tools_api._resolve_skill_action_path("overlay-api-demo") == str(action)
+
+    response = client.post(
+        "/skills/run",
+        json={"skill": "overlay-api-demo", "task": "self test"},
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    assert "overlay-run" in response.get_json()["output"]
+    assert enforcer.paths == [str(action)]
+
+    allowed, decision = tools_api._check_tool_access(
+        "skill:not-installed",
+        command_subject="skill:not-installed",
+        path_subject="",
+        require_path_subject=True,
+    )
+    assert allowed is False
+    assert decision.reason == "skill_action_path_unresolved"
 
 
 def test_search_denial_emits_denied_post_event(monkeypatch, tools_api_runtime):
@@ -95,7 +332,7 @@ def test_search_denial_emits_denied_post_event(monkeypatch, tools_api_runtime):
         ),
     )
 
-    response = client.post("/search", json={"query": "MAGI"})
+    response = client.post("/search", json={"query": "MAGI"}, headers=_AUTH_HEADERS)
 
     assert response.status_code == 403
     payload = response.get_json()
@@ -116,7 +353,7 @@ def test_search_exception_emits_error_post_event(monkeypatch, tools_api_runtime)
 
     monkeypatch.setattr(tools_api, "search_web", _boom)
 
-    response = client.post("/search", json={"query": "MAGI"})
+    response = client.post("/search", json={"query": "MAGI"}, headers=_AUTH_HEADERS)
 
     assert response.status_code == 500
     payload = response.get_json()
@@ -138,7 +375,7 @@ def test_summarize_circuit_breaker_degraded_path_emits_post_event(monkeypatch, t
         return False, {"success": False, "text": "", "error": "mocked_probe_fail"}
     monkeypatch.setattr(tools_api, "_run_with_timeout", _fail_probe)
 
-    response = client.post("/summarize", json={"text": "這是一段需要摘要的長文字。" * 5})
+    response = client.post("/summarize", json={"text": "這是一段需要摘要的長文字。" * 5}, headers=_AUTH_HEADERS)
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -151,6 +388,31 @@ def test_summarize_circuit_breaker_degraded_path_emits_post_event(monkeypatch, t
     assert events[1]["status"] == "degraded"
     assert events[1]["ok"] is True
     assert events[1]["error"] == "circuit_open"
+
+
+def test_fetch_blocks_private_hosts_by_default(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    called = {"fetch": False}
+    monkeypatch.delenv("MAGI_TOOLS_FETCH_ALLOW_PRIVATE", raising=False)
+    monkeypatch.delenv("MAGI_TOOLS_FETCH_ALLOW_PRIVATE_BY_REQUEST", raising=False)
+    monkeypatch.setattr(tools_api, "fetch_url_content", lambda *_args, **_kwargs: called.__setitem__("fetch", True))
+
+    response = client.post("/fetch", json={"url": "http://127.0.0.1:5002/health"}, headers=_AUTH_HEADERS)
+
+    assert response.status_code == 403
+    assert response.get_json()["error"].startswith("private_fetch_blocked")
+    assert called["fetch"] is False
+
+
+def test_fetch_private_hosts_require_explicit_server_allow(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_TOOLS_FETCH_ALLOW_PRIVATE", "1")
+    monkeypatch.setattr(tools_api, "fetch_url_content", lambda url: {"success": True, "url": url, "content": "ok"})
+
+    response = client.post("/fetch", json={"url": "http://127.0.0.1:5002/health"}, headers=_AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
 
 
 def test_external_chat_applies_min_timeout_floor(monkeypatch, tools_api_runtime):
@@ -270,6 +532,97 @@ def test_external_chat_current_main_model_shortcut(monkeypatch, tools_api_runtim
     assert "gemma-4-e4b-it-4bit" in payload["reply"]
 
 
+def test_collab_chat_semantic_preflight_uses_orchestrator_before_gateway(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def __init__(self):
+            self.calls = []
+
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            self.calls.append((user_id, message, platform, role))
+            return "ORCH_SEMANTIC_REPLY"
+
+    fake_orch = _FakeOrch()
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: fake_orch)
+
+    response = client.post("/collab/chat", json={"prompt": "你可以查天氣嗎？"}, headers=_AUTH_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["response"] == "ORCH_SEMANTIC_REPLY"
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "tool_capability"
+    assert fake_orch.calls == [("collab-chat", "你可以查天氣嗎？", "COLLAB", "user")]
+
+
+def test_collab_chat_agentic_prompt_uses_orchestrator(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def __init__(self):
+            self.calls = []
+
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            self.calls.append((user_id, message, platform, role))
+            return "ORCH_AGENTIC_REPLY"
+
+    fake_orch = _FakeOrch()
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: fake_orch)
+
+    response = client.post("/collab/chat", json={"prompt": "請幫我比較民法184條與相關判決見解"}, headers=_AUTH_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["response"] == "ORCH_AGENTIC_REPLY"
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "agent_task"
+    assert fake_orch.calls == [("collab-chat", "請幫我比較民法184條與相關判決見解", "COLLAB", "user")]
+
+
+def test_collab_chat_explicit_task_uses_orchestrator(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+
+    class _FakeOrch:
+        def process_message(self, user_id, message, platform="COLLAB", role="user"):
+            return f"ORCH_EXPLICIT:{message}"
+
+    monkeypatch.setattr(tools_api, "_get_osc_orchestrator", lambda: _FakeOrch())
+
+    response = client.post("/collab/chat", json={"prompt": "查案件 2025-0134"}, headers=_AUTH_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["route"] == "orchestrator_semantic_preflight"
+    assert payload["intent_kind"] == "explicit_task"
+    assert payload["response"] == "ORCH_EXPLICIT:查案件 2025-0134"
+
+
+def test_external_ui_enforces_api_key(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "secret-key")
+
+    response = client.get("/osc/external/ui")
+    assert response.status_code == 401
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert payload["error"] == "unauthorized: invalid api key"
+
+
+def test_external_ui_loads_with_valid_api_key(monkeypatch, tools_api_runtime):
+    tools_api, client, _events_path = tools_api_runtime
+    monkeypatch.setenv("MAGI_EXTERNAL_API_KEY", "secret-key")
+    tools_api._EXTERNAL_KEY_CACHE["ts"] = 0.0
+    tools_api._EXTERNAL_KEY_CACHE["value"] = ""
+
+    response = client.get("/osc/external/ui", headers={"X-API-Key": "secret-key"})
+    assert response.status_code == 200
+    assert "CASPER OSC 外部對話介面" in response.get_data(as_text=True)
+
+
 def test_summarize_circuit_open_uses_resilient_probe(monkeypatch, tools_api_runtime):
     tools_api, client, _events_path = tools_api_runtime
     monkeypatch.setattr(tools_api, "_summarize_cb_allow_upstream", lambda: False)
@@ -288,6 +641,7 @@ def test_summarize_circuit_open_uses_resilient_probe(monkeypatch, tools_api_runt
     response = client.post(
         "/summarize",
         json={"text": "這是一段需要摘要的長文字。" * 20, "summary_length": "medium", "timeout_sec": 45},
+        headers=_AUTH_HEADERS,
     )
 
     assert response.status_code == 200
@@ -320,6 +674,7 @@ def test_summarize_timeout_uses_extractive_fallback(monkeypatch, tools_api_runti
     response = client.post(
         "/summarize",
         json={"text": "這是一段需要摘要的長文字。" * 20, "summary_length": "medium", "timeout_sec": 45},
+        headers=_AUTH_HEADERS,
     )
 
     assert response.status_code == 200

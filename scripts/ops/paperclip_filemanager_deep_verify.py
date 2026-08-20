@@ -8,22 +8,28 @@ import os
 import re
 import json
 import time
+import atexit
+import shutil
 import subprocess
 from pathlib import Path
 
-sys.path.insert(0, '/Users/ai/Desktop/MAGI_v2')
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
 from playwright.sync_api import sync_playwright
 
 URL = "http://127.0.0.1:5002"
 USER = "teatai"
 PASS = "teatai"
 
-REPO = Path("/Users/ai/Desktop/MAGI_v2")
 FIX = REPO / "tests/fixtures/file_manager_samples"
 
-# A populated NAS folder we know contains files (LAF case dir) used as the
-# browse root in the file manager UI tests.
-TEST_BASE = "/Users/ai/SynologyDrive/homes/01_案件/法扶案件/刑事"
+# File manager UI tests must not create artifacts in real case folders by
+# default. Set PAPERCLIP_FILEMANAGER_TEST_BASE explicitly when a NAS live test
+# is required.
+TEST_BASE = os.environ.get(
+    "PAPERCLIP_FILEMANAGER_TEST_BASE",
+    "/tmp/paperclip_filemanager_test_base",
+)
 
 # Sandbox dir on NAS-side for write/upload tests (created if missing,
 # cleaned at end). Sits under base; .trash auto-created during recycle.
@@ -77,11 +83,21 @@ def main():
     data = urllib.parse.urlencode({"username": USER, "password": PASS}).encode()
     opener.open(f"{URL}/login", data=data, timeout=10)
 
+    os.makedirs(TEST_BASE, exist_ok=True)
     sandbox_full = os.path.join(TEST_BASE, SANDBOX_REL)
+
+    def _cleanup_sandbox() -> None:
+        keep = str(os.environ.get("PAPERCLIP_KEEP_VERIFY_SANDBOX", "")).strip().lower()
+        if keep in {"1", "true", "yes", "on"}:
+            return
+        if os.path.basename(sandbox_full) != SANDBOX_REL:
+            return
+        shutil.rmtree(sandbox_full, ignore_errors=True)
+
+    atexit.register(_cleanup_sandbox)
     # Wipe sandbox at start so each run is clean.
     if os.path.isdir(sandbox_full):
-        import shutil as _sh
-        _sh.rmtree(sandbox_full, ignore_errors=True)
+        shutil.rmtree(sandbox_full, ignore_errors=True)
     body = json.dumps({"base_path": TEST_BASE, "relative_path": "", "name": SANDBOX_REL}).encode()
     req = urllib.request.Request(
         f"{URL}/api/osc/folders/mkdir", data=body,

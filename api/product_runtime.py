@@ -5,13 +5,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from api.runtime_paths import get_config_path, get_magi_root_dir
+from api.runtime_paths import get_agent_dir, get_config_path
 
 
 PRODUCT_RUNTIME_PATH = Path(
     os.environ.get(
         "MAGI_PRODUCT_RUNTIME_PATH",
-        str(get_magi_root_dir() / ".agent" / "product_runtime.json"),
+        str(get_agent_dir() / "product_runtime.json"),
     )
 )
 

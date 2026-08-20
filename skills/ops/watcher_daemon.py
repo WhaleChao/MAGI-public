@@ -38,8 +38,17 @@ def _tools_api_url() -> str:
 
 
 # Configuration
-WATCHER_DB = os.path.expanduser("~/watcher_evidence.db")
-LOG_FILE = os.path.expanduser("~/watcher_daemon.log")
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+_RUNTIME_DIR = (os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+WATCHER_DB = os.path.expanduser(
+    os.environ.get("MAGI_WATCHER_DB_PATH")
+    or (os.path.join(_AGENT_DIR, "watcher_evidence.db") if _AGENT_DIR else "~/watcher_evidence.db")
+)
+LOG_FILE = os.path.expanduser(
+    os.environ.get("MAGI_WATCHER_LOG_PATH")
+    or (os.path.join(_RUNTIME_DIR, "logs", "watcher_daemon.log") if _RUNTIME_DIR else "~/watcher_daemon.log")
+)
+os.makedirs(os.path.dirname(LOG_FILE) or ".", exist_ok=True)
 PULL_INTERVAL = 300  # 5 minutes
 KEEPER_HOST = os.environ.get("KEEPER_HOST", "127.0.0.1")
 

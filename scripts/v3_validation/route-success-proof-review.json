@@ -1,0 +1,1176 @@
+{
+  "schema_version": 1,
+  "inventory_fingerprint": "fb615907acc4aae3e16ed254366362046bbf5747e29d0c27c2d27b5e33afaf27",
+  "review_policy": "exact_success_assertion_observed_on_passing_pytest_nodeid",
+  "test_targets": [
+    "tests/test_admin_runtime_blueprint.py::test_admin_support_bundle_is_admin_only_no_store_and_honest_without_ledger",
+    "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success",
+    "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success",
+    "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers",
+    "tests/v3/test_route_certification_osc_crud_success.py::test_web_module_and_upload_success_use_sandbox_orchestrator",
+    "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal",
+    "tests/test_admin_runtime_blueprint.py::test_nerv_remote_access_status_and_actions",
+    "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls",
+    "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters",
+    "tests/test_archive_wizard_execute.py::test_archive_execute_uses_selected_case_lookup",
+    "tests/test_dashboard_pages_blueprint.py::test_intel_refresh_runs_local_worldmonitor_skill",
+    "tests/test_dashboard_pages_blueprint.py::test_legacy_api_skills_run_delegates_to_canonical_helper",
+    "tests/test_golem_console.py::test_golem_api_key_update_writes_env_and_runtime",
+    "tests/test_golem_console.py::test_golem_command_api_supports_safe_commands",
+    "tests/test_lottery_blueprint.py::test_lottery_xlsx_draw_count_can_be_specified",
+    "tests/test_mobile_auth_routes.py::test_login_next_target_is_sanitized",
+    "tests/test_osc_address_label.py::test_address_label_preview_inline_disposition",
+    "tests/test_osc_backup_endpoints.py::test_backup_create_writes_file",
+    "tests/test_osc_backup_endpoints.py::test_backup_restore_dry_run_no_writes",
+    "tests/test_osc_checklists_endpoints.py::test_case_checklist_delete_is_soft",
+    "tests/test_osc_checklists_endpoints.py::test_laf_checklist_delete_removes_row",
+    "tests/test_osc_checklists_endpoints.py::test_laf_checklist_post_creates_with_auto_key",
+    "tests/test_osc_checklists_endpoints.py::test_laf_checklist_put_updates_status",
+    "tests/test_osc_checklists_endpoints.py::test_laf_checklist_seed_inserts_defaults",
+    "tests/test_osc_csv_import_export.py::test_cases_import_success",
+    "tests/test_osc_documents_stamp_endpoint.py::test_finalize_pdf_generates_copies_labels_and_evidence",
+    "tests/test_osc_documents_stamp_endpoint.py::test_stamp_preview_returns_last_page_image",
+    "tests/test_osc_files_move.py::test_chunked_upload_uses_actor_namespaced_session_dir",
+    "tests/test_osc_files_move.py::test_move_file_between_case_folders",
+    "tests/test_osc_files_move.py::test_share_file_creates_opaque_download_link",
+    "tests/test_osc_files_move.py::test_upload_multi_accepts_batch_files_and_reports_conflicts",
+    "tests/test_osc_folder_rename.py::test_case_root_folder_rename_updates_case_path_and_references",
+    "tests/test_osc_folder_rename.py::test_generic_folder_rename_updates_indexed_paths",
+    "tests/test_osc_laf_debt_required_checklist.py::test_debt_required_get_returns_osc_spec_and_laf_number_candidates",
+    "tests/test_osc_laf_debt_required_checklist.py::test_debt_required_save_upserts_visible_items_and_prunes_inactive_debt_rows",
+    "tests/test_osc_laf_debt_required_checklist.py::test_laf_number_sync_uses_single_candidate_when_manual_number_is_empty",
+    "tests/test_osc_p2_discord_and_theme.py::test_discord_test_success_with_valid_url",
+    "tests/test_osc_pdf_blueprint.py::test_pdf_calendar_scan_preview_detects_hearing",
+    "tests/test_osc_pdf_blueprint.py::test_pdf_extract_text",
+    "tests/test_osc_pdf_blueprint.py::test_pdf_info",
+    "tests/test_osc_pdf_blueprint.py::test_pdf_upload",
+    "tests/test_osc_todos_bulk_complete.py::test_bulk_complete_before_updates_stale_open_todos",
+    "tests/test_osc_web_smoke.py::test_case_create_replaces_demo_lawyer_with_setting_default",
+    "tests/test_osc_web_smoke.py::test_case_put_syncs_legacy_court_case_number_to_canonical",
+    "tests/test_osc_web_smoke.py::test_case_workbench_upload_allows_legal_pdf_over_50mb",
+    "tests/test_osc_web_smoke.py::test_open_folder_route_does_not_auto_create_missing_folder",
+    "tests/test_osc_web_smoke.py::test_quick_action_laf_closing_status_is_native_osc_inventory",
+    "tests/test_tools_api_async_jobs.py::test_poll_queued_job_returns_202",
+    "tests/test_tools_api_async_jobs.py::test_sync_skill_run_succeeds",
+    "tests/test_tools_api_runtime.py::test_collab_chat_semantic_preflight_uses_orchestrator_before_gateway",
+    "tests/test_tools_api_runtime.py::test_fetch_private_hosts_require_explicit_server_allow",
+    "tests/test_tools_api_runtime.py::test_search_emits_pre_and_post_events",
+    "tests/test_tools_api_runtime.py::test_summarize_circuit_breaker_degraded_path_emits_post_event",
+    "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_ocr_returns_plaintext_on_success",
+    "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_summarize_returns_plaintext",
+    "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_transcribe_returns_plaintext",
+    "tests/test_web_runtime_blueprint.py::test_memory_recall_and_remember_routes",
+    "tests/test_web_runtime_blueprint.py::test_obsidian_sync_route_starts_ingest",
+    "tests/test_web_runtime_blueprint.py::test_process_monitor_routes_render_and_toggle",
+    "tests/v3/test_route_certification_tools_success.py",
+    "tests/v3/test_route_certification_gateway_success.py"
+  ],
+  "proofs": [
+    {
+      "service": "5002",
+      "rule": "/api/admin/observability/support-bundle",
+      "method": "GET",
+      "endpoint": "admin_runtime.api_admin_observability_support_bundle",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_admin_support_bundle_is_admin_only_no_store_and_honest_without_ledger"
+    },
+    {
+      "service": "5002",
+      "rule": "/",
+      "method": "POST",
+      "endpoint": "index",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_line_root_and_alias_callbacks_dispatch_to_offline_handler"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/codex-distributed/toggle",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_codex_distributed_toggle",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/drive-case-exclusions",
+      "method": "DELETE",
+      "endpoint": "admin_runtime.api_drive_case_exclusions_remove",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/drive-case-exclusions",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_drive_case_exclusions_add",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/golem/api-keys",
+      "method": "POST",
+      "endpoint": "golem_console.golem_api_keys_api",
+      "test_nodeid": "tests/test_golem_console.py::test_golem_api_key_update_writes_env_and_runtime"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/golem/command",
+      "method": "POST",
+      "endpoint": "golem_console.golem_command_api",
+      "test_nodeid": "tests/test_golem_console.py::test_golem_command_api_supports_safe_commands"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/intel/refresh",
+      "method": "POST",
+      "endpoint": "dashboard_pages.intel_refresh",
+      "test_nodeid": "tests/test_dashboard_pages_blueprint.py::test_intel_refresh_runs_local_worldmonitor_skill"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/iron_dome/broadcast",
+      "method": "POST",
+      "endpoint": "iron_dome_broadcast",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_iron_dome_mutations_dispatch_to_offline_sync_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/iron_dome/notify",
+      "method": "POST",
+      "endpoint": "iron_dome_notify",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_iron_dome_mutations_dispatch_to_offline_sync_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/lottery/draw",
+      "method": "POST",
+      "endpoint": "lottery.lottery_draw_api",
+      "test_nodeid": "tests/test_lottery_blueprint.py::test_lottery_xlsx_draw_count_can_be_specified"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/obsidian-sync",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_obsidian_sync",
+      "test_nodeid": "tests/test_web_runtime_blueprint.py::test_obsidian_sync_route_starts_ingest"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/recall",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_recall",
+      "test_nodeid": "tests/test_web_runtime_blueprint.py::test_memory_recall_and_remember_routes"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/remember",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_remember",
+      "test_nodeid": "tests/test_web_runtime_blueprint.py::test_memory_recall_and_remember_routes"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/heavy-runtime",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_heavy_runtime",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/product-runtime",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_product_runtime",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/remote-access/action",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_remote_access_action",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_remote_access_status_and_actions"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skill-interview/reply",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_interview_reply",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skill-interview/start",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_interview_start",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skills/<skill_name>",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_detail",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/ops/process-guardian/toggle",
+      "method": "POST",
+      "endpoint": "web_runtime.process_guardian_toggle_api",
+      "test_nodeid": "tests/test_web_runtime_blueprint.py::test_process_monitor_routes_render_and_toggle"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/archive-wizard/execute",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_archive_wizard_execute_api",
+      "test_nodeid": "tests/test_archive_wizard_execute.py::test_archive_execute_uses_selected_case_lookup"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/backups",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_backup_create",
+      "test_nodeid": "tests/test_osc_backup_endpoints.py::test_backup_create_writes_file"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/backups/<filename>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_backup_delete",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/backups/<filename>/restore",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_backup_restore",
+      "test_nodeid": "tests/test_osc_backup_endpoints.py::test_backup_restore_dry_run_no_writes"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_cases_api",
+      "test_nodeid": "tests/test_osc_web_smoke.py::test_case_create_replaces_demo_lawyer_with_setting_default"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_case_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_case_detail_api",
+      "test_nodeid": "tests/test_osc_web_smoke.py::test_case_put_syncs_legacy_court_case_number_to_canonical"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/address-label",
+      "method": "GET",
+      "endpoint": "osc_cases.osc_case_address_label",
+      "test_nodeid": "tests/test_osc_address_label.py::test_address_label_preview_inline_disposition"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/close",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_close_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/create-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_create_folder_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/folder-browser",
+      "method": "GET",
+      "endpoint": "osc_cases.osc_case_folder_browser_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/laf-number/sync",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_laf_number_sync",
+      "test_nodeid": "tests/test_osc_laf_debt_required_checklist.py::test_laf_number_sync_uses_single_candidate_when_manual_number_is_empty"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/laf-status",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_case_status_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/open-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_open_folder_api",
+      "test_nodeid": "tests/test_osc_web_smoke.py::test_open_folder_route_does_not_auto_create_missing_folder"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/quick-action",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_quick_action_api",
+      "test_nodeid": "tests/test_osc_web_smoke.py::test_quick_action_laf_closing_status_is_native_osc_inventory"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/rename-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_rename_folder_api",
+      "test_nodeid": "tests/test_osc_folder_rename.py::test_case_root_folder_rename_updates_case_path_and_references"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/import-csv",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_cases_import_csv_api",
+      "test_nodeid": "tests/test_osc_csv_import_export.py::test_cases_import_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/chat/upload",
+      "method": "POST",
+      "endpoint": "web_runtime.osc_chat_upload_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_web_module_and_upload_success_use_sandbox_orchestrator"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/case",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_checklist_post",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/case/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_case_checklist_delete",
+      "test_nodeid": "tests/test_osc_checklists_endpoints.py::test_case_checklist_delete_is_soft"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/case/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_case_checklist_put",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/debt-required",
+      "method": "GET",
+      "endpoint": "osc_cases.osc_laf_debt_required_get",
+      "test_nodeid": "tests/test_osc_laf_debt_required_checklist.py::test_debt_required_get_returns_osc_spec_and_laf_number_candidates"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/debt-required/save",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_debt_required_save",
+      "test_nodeid": "tests/test_osc_laf_debt_required_checklist.py::test_debt_required_save_upserts_visible_items_and_prunes_inactive_debt_rows"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_checklist_post",
+      "test_nodeid": "tests/test_osc_checklists_endpoints.py::test_laf_checklist_post_creates_with_auto_key"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_laf_checklist_delete",
+      "test_nodeid": "tests/test_osc_checklists_endpoints.py::test_laf_checklist_delete_removes_row"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_laf_checklist_put",
+      "test_nodeid": "tests/test_osc_checklists_endpoints.py::test_laf_checklist_put_updates_status"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/seed",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_checklist_seed",
+      "test_nodeid": "tests/test_osc_checklists_endpoints.py::test_laf_checklist_seed_inserts_defaults"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/clients/import-csv",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_clients_import_csv_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/debt/scan-evidence/<case_id>",
+      "method": "GET",
+      "endpoint": "osc_debt.debt_scan_evidence",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/discord/test",
+      "method": "POST",
+      "endpoint": "osc_settings.osc_discord_test_api",
+      "test_nodeid": "tests/test_osc_p2_discord_and_theme.py::test_discord_test_success_with_valid_url"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-replacements",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_document_replacements_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-replacements/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_document_replacement_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_document_templates_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_document_template_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_document_template_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/finalize",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_finalize_api",
+      "test_nodeid": "tests/test_osc_documents_stamp_endpoint.py::test_finalize_pdf_generates_copies_labels_and_evidence"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/open",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_open_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/stamp",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_stamp_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/stamp-preview",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_stamp_preview_api",
+      "test_nodeid": "tests/test_osc_documents_stamp_endpoint.py::test_stamp_preview_returns_last_page_image"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/export",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_export_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/feedback",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_feedback_post_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/generate",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_generate_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/reuse-document",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_reuse_document_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/share",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_share_create_api",
+      "test_nodeid": "tests/test_osc_files_move.py::test_share_file_creates_opaque_download_link"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/text",
+      "method": "GET",
+      "endpoint": "osc_cases.osc_file_text_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/text",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_file_text_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_file_upload_api",
+      "test_nodeid": "tests/test_osc_web_smoke.py::test_case_workbench_upload_allows_legal_pdf_over_50mb"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload-chunked",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_upload_chunked_api",
+      "test_nodeid": "tests/test_osc_files_move.py::test_chunked_upload_uses_actor_namespaced_session_dir"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload-multi",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_upload_multi_api",
+      "test_nodeid": "tests/test_osc_files_move.py::test_upload_multi_accepts_batch_files_and_reports_conflicts"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/mkdir",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_mkdir_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/move",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_move_api",
+      "test_nodeid": "tests/test_osc_files_move.py::test_move_file_between_case_folders"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/rename",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_rename_api",
+      "test_nodeid": "tests/test_osc_folder_rename.py::test_generic_folder_rename_updates_indexed_paths"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/forms/export",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_forms_export_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/forms/preview",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_forms_preview_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/gcal/auth/callback",
+      "method": "GET",
+      "endpoint": "osc_gcal.gcal_auth_callback",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/insights",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_insights_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/insights/fetch-full",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_insights_fetch_full_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/labor-law/calc",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_labor_law_calc",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf-backfill",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_backfill_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf-wizard/run",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_wizard_run_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf/batch-status",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_batch_status_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_files_documents_and_laf_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/magi-modules/run",
+      "method": "POST",
+      "endpoint": "web_runtime.osc_magi_modules_run_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_web_module_and_upload_success_use_sandbox_orchestrator"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf-generation-log/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_pdf_generation_log_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf/action",
+      "method": "POST",
+      "endpoint": "osc_pdf.osc_pdf_action_api",
+      "test_nodeid": "tests/test_osc_pdf_blueprint.py::test_pdf_extract_text"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf/calendar-scan",
+      "method": "POST",
+      "endpoint": "osc_pdf.osc_pdf_calendar_scan_api",
+      "test_nodeid": "tests/test_osc_pdf_blueprint.py::test_pdf_calendar_scan_preview_detects_hearing"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf/info",
+      "method": "GET",
+      "endpoint": "osc_pdf.osc_pdf_info_api",
+      "test_nodeid": "tests/test_osc_pdf_blueprint.py::test_pdf_info"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf/upload",
+      "method": "POST",
+      "endpoint": "osc_pdf.osc_pdf_upload_api",
+      "test_nodeid": "tests/test_osc_pdf_blueprint.py::test_pdf_upload"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/quotations",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_quotations_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/quotations/<row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_quotation_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/quotations/<row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_quotation_detail_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_osc_crud_success_paths_use_transaction_journal"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/delivery",
+      "method": "POST",
+      "endpoint": "raziel.raziel_delivery_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/run",
+      "method": "POST",
+      "endpoint": "raziel.raziel_run_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/tlr-preview",
+      "method": "POST",
+      "endpoint": "raziel.raziel_tlr_preview_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_debt_folder_gcal_and_raziel_success_use_sandbox_providers"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/client-packet",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_client_packet_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/conflict-check",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_conflict_check_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/intake",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_intake_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/notification-prefs",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_notification_prefs_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/onboarding",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_onboarding_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/quality-check",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_quality_check_api",
+      "test_nodeid": "tests/v3/test_route_certification_osc_crud_success.py::test_remaining_osc_projection_and_sandbox_text_success"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/todos/bulk-complete-before",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_todos_bulk_complete_before_api",
+      "test_nodeid": "tests/test_osc_todos_bulk_complete.py::test_bulk_complete_before_updates_stale_open_todos"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/self-repair",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_self_repair",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/skills/<skill_name>/rollback",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_skill_rollback",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_nerv_skill_routes_and_heavy_runtime_controls"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/skills/run",
+      "method": "POST",
+      "endpoint": "dashboard_pages.api_skills_run_compat",
+      "test_nodeid": "tests/test_dashboard_pages_blueprint.py::test_legacy_api_skills_run_delegates_to_canonical_helper"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/system-test",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_system_test",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/api/transcribe",
+      "method": "POST",
+      "endpoint": "admin_runtime.transcribe_audio",
+      "test_nodeid": "tests/test_admin_runtime_blueprint.py::test_remaining_admin_mutations_succeed_with_disposable_adapters"
+    },
+    {
+      "service": "5002",
+      "rule": "/callback",
+      "method": "POST",
+      "endpoint": "callback",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_line_root_and_alias_callbacks_dispatch_to_offline_handler"
+    },
+    {
+      "service": "5002",
+      "rule": "/line/webhook",
+      "method": "POST",
+      "endpoint": "callback",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_line_root_and_alias_callbacks_dispatch_to_offline_handler"
+    },
+    {
+      "service": "5002",
+      "rule": "/login",
+      "method": "POST",
+      "endpoint": "login",
+      "test_nodeid": "tests/test_mobile_auth_routes.py::test_login_next_target_is_sanitized"
+    },
+    {
+      "service": "5002",
+      "rule": "/register",
+      "method": "POST",
+      "endpoint": "register",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_login_and_register_commit_only_to_in_memory_database"
+    },
+    {
+      "service": "5002",
+      "rule": "/telegram/webhook",
+      "method": "POST",
+      "endpoint": "telegram.telegram_webhook",
+      "test_nodeid": "tests/v3/test_route_certification_gateway_success.py::test_telegram_webhook_dispatches_to_offline_update_handler"
+    },
+    {
+      "service": "5003",
+      "rule": "/alert",
+      "method": "POST",
+      "endpoint": "api_alert",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/api/audit_log/restore/<int:log_id>",
+      "method": "POST",
+      "endpoint": "api_restore_from_audit",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_audit_restore_success_is_journaled_in_disposable_transaction"
+    },
+    {
+      "service": "5003",
+      "rule": "/clients",
+      "method": "POST",
+      "endpoint": "api_add_client",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/code/autofix",
+      "method": "POST",
+      "endpoint": "api_code_autofix",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/code/skill-cycle",
+      "method": "POST",
+      "endpoint": "api_code_skill_cycle",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/chat",
+      "method": "POST",
+      "endpoint": "api_collab_chat",
+      "test_nodeid": "tests/test_tools_api_runtime.py::test_collab_chat_semantic_preflight_uses_orchestrator_before_gateway"
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/music",
+      "method": "POST",
+      "endpoint": "api_collab_music",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/transcribe",
+      "method": "POST",
+      "endpoint": "api_collab_transcribe",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/translate",
+      "method": "POST",
+      "endpoint": "api_collab_translate",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/council/core/approve",
+      "method": "POST",
+      "endpoint": "api_council_core_approve",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/council/core/reject",
+      "method": "POST",
+      "endpoint": "api_council_core_reject",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/fetch",
+      "method": "POST",
+      "endpoint": "api_fetch",
+      "test_nodeid": "tests/test_tools_api_runtime.py::test_fetch_private_hosts_require_explicit_server_allow"
+    },
+    {
+      "service": "5003",
+      "rule": "/iron-dome/auto-harden",
+      "method": "POST",
+      "endpoint": "api_iron_dome_auto_harden",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/iron-dome/patterns",
+      "method": "POST",
+      "endpoint": "api_iron_dome_patterns_add",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/jobs/<job_id>",
+      "method": "GET",
+      "endpoint": "api_get_job",
+      "test_nodeid": "tests/test_tools_api_async_jobs.py::test_poll_queued_job_returns_202"
+    },
+    {
+      "service": "5003",
+      "rule": "/laf/smoke_login",
+      "method": "POST",
+      "endpoint": "api_laf_smoke_login",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/legal/<skill_name>",
+      "method": "POST",
+      "endpoint": "api_legal_skill",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/meetings",
+      "method": "POST",
+      "endpoint": "api_book_meeting",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/melchior/skills/sync",
+      "method": "POST",
+      "endpoint": "api_melchior_sync_skills",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/osc/external/case_status",
+      "method": "POST",
+      "endpoint": "external_osc_case_status",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/osc/external/chat",
+      "method": "POST",
+      "endpoint": "external_osc_chat",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_external_chat_and_vision_success_use_offline_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/recall",
+      "method": "POST",
+      "endpoint": "api_recall",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/remember",
+      "method": "POST",
+      "endpoint": "api_remember",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/research",
+      "method": "POST",
+      "endpoint": "api_research",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/search",
+      "method": "POST",
+      "endpoint": "api_search",
+      "test_nodeid": "tests/test_tools_api_runtime.py::test_search_emits_pre_and_post_events"
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/ocr",
+      "method": "POST",
+      "endpoint": "api_shortcut_ocr",
+      "test_nodeid": "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_ocr_returns_plaintext_on_success"
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/summarize",
+      "method": "POST",
+      "endpoint": "api_shortcut_summarize",
+      "test_nodeid": "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_summarize_returns_plaintext"
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/transcribe",
+      "method": "POST",
+      "endpoint": "api_shortcut_transcribe",
+      "test_nodeid": "tests/test_tools_api_shortcut_endpoints.py::test_shortcut_transcribe_returns_plaintext"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills",
+      "method": "POST",
+      "endpoint": "api_create_skill",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/acquire",
+      "method": "POST",
+      "endpoint": "api_acquire_skill",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/canary/start",
+      "method": "POST",
+      "endpoint": "api_skill_canary_start",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/canary/stop",
+      "method": "POST",
+      "endpoint": "api_skill_canary_stop",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/ci",
+      "method": "POST",
+      "endpoint": "api_skill_ci",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/discover",
+      "method": "POST",
+      "endpoint": "api_discover_skills",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/import/toolsai-auto-skill",
+      "method": "POST",
+      "endpoint": "api_import_toolsai_auto_skill",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/install",
+      "method": "POST",
+      "endpoint": "api_install_skill",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/internalize",
+      "method": "POST",
+      "endpoint": "api_skill_internalize",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/internalize/codebase",
+      "method": "POST",
+      "endpoint": "api_skill_internalize_codebase",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/release",
+      "method": "GET",
+      "endpoint": "api_skill_release_state",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/rollback",
+      "method": "POST",
+      "endpoint": "api_skill_rollback",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/run",
+      "method": "POST",
+      "endpoint": "api_run_skill",
+      "test_nodeid": "tests/test_tools_api_async_jobs.py::test_sync_skill_run_succeeds"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/stable",
+      "method": "POST",
+      "endpoint": "api_skill_set_stable",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/teach",
+      "method": "POST",
+      "endpoint": "api_skill_teach",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/teach/file",
+      "method": "POST",
+      "endpoint": "api_skill_teach_file",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/versions",
+      "method": "POST",
+      "endpoint": "api_skill_versions",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_tools_success_paths_use_exact_in_memory_provider_adapters"
+    },
+    {
+      "service": "5003",
+      "rule": "/summarize",
+      "method": "POST",
+      "endpoint": "api_summarize",
+      "test_nodeid": "tests/test_tools_api_runtime.py::test_summarize_circuit_breaker_degraded_path_emits_post_event"
+    },
+    {
+      "service": "5003",
+      "rule": "/vision",
+      "method": "POST",
+      "endpoint": "api_vision",
+      "test_nodeid": "tests/v3/test_route_certification_tools_success.py::test_external_chat_and_vision_success_use_offline_provider_adapters"
+    }
+  ]
+}

@@ -7,28 +7,49 @@ file-review-orchestrator -- 閱卷系統協調器
 
 Usage (CLI):
     python action.py --task 'apply {"court_code":"TPD","year":"114","case_type":"訴","case_number":"123"}'
+    python action.py --task 'scheduled_check'
     python action.py --task 'download'
     python action.py --task 'check_emails'
     python action.py --task 'help'
 """
 import argparse
+import os
+import sys
+
+# A cron job executes this file by its absolute path.  In that mode Python
+# places the skill directory, not the sealed release root, at sys.path[0].
+# Bootstrap the release root before importing any MAGI package so the same
+# command works without an ambient PYTHONPATH.
+_magi_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _magi_root not in sys.path:
+    sys.path.insert(0, _magi_root)
+
+from magi_v3 import fcntl_compat as fcntl
+from magi_v3.file_review_receipts import (
+    PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+    normalize_signature_hashes,
+    portal_download_snapshot,
+    portal_observed_epoch,
+    portal_snapshot_fingerprint,
+    signature_set_hash,
+)
 import glob
+import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import threading
-import sys
 import traceback
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 import subprocess
+import time
 import uuid
 
 # Ensure .env is loaded (critical when run as subprocess)
-_magi_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _env_path = os.path.join(_magi_root, ".env")
 if os.path.isfile(_env_path):
     try:
@@ -57,9 +78,14 @@ except Exception:
 
 from api.runtime_paths import (
     get_config_path,
+    get_file_review_pending_path,
     get_json_dir,
     get_module_path,
     get_orch_dir,
+    get_payment_proof_registry_path,
+    get_payment_proof_upload_queue_path,
+    get_payment_proof_upload_store_dir,
+    get_payment_registry_path,
     get_skill_python,
 )
 try:
@@ -69,6 +95,11 @@ except ImportError:
 from api.case_path_mapper import translate_case_path_to_local
 from api.case_display import display_client_name as _canonical_display_client_name
 from api.product_runtime import apply_product_runtime_env, product_profile_report
+from scripts.ops.background_task_locks import (
+    FILE_REVIEW_PORTAL_LOCK_NAME,
+    acquire_lock,
+    file_review_portal_lock_path,
+)
 try:
     from skills.ops import flow_ledger as _flow_ledger
 except ImportError:
@@ -84,7 +115,12 @@ _VENV_PY = str(get_skill_python())
 try:
     _target_prefix = os.path.realpath(str(Path(_VENV_PY).expanduser().parent.parent))
     _current_prefix = os.path.realpath(sys.prefix)
-    if os.path.exists(_VENV_PY) and _current_prefix != _target_prefix:
+    if (
+        __name__ == "__main__"
+        and os.environ.get("MAGI_DISABLE_SKILL_VENV_REEXEC") != "1"
+        and os.path.exists(_VENV_PY)
+        and _current_prefix != _target_prefix
+    ):
         os.execv(_VENV_PY, [_VENV_PY, __file__, *sys.argv[1:]])
 except Exception:
     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 79, exc_info=True)
@@ -94,21 +130,155 @@ except Exception:
 # ---------------------------------------------------------------------------
 CODE_DIR = ORCH_DIR
 CONFIG_PATH = str(get_config_path("config.json"))
-DEFAULT_DOWNLOAD_FOLDER = os.path.expanduser("~/Desktop/MAGI_v2/閱卷下載")
+
+_FILE_REVIEW_STATE_OVERRIDE = os.environ.get("MAGI_FILE_REVIEW_STATE_DIR", "").strip()
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+_FILE_REVIEW_STATE_DIR = (
+    os.path.abspath(os.path.expanduser(_FILE_REVIEW_STATE_OVERRIDE))
+    if _FILE_REVIEW_STATE_OVERRIDE
+    else (
+        os.path.join(os.path.abspath(os.path.expanduser(_RUNTIME_OVERRIDE)), "file-review")
+        if _RUNTIME_OVERRIDE
+        else ""
+    )
+)
+
+
+def _default_download_folder() -> str:
+    if _FILE_REVIEW_STATE_DIR:
+        return os.path.join(_FILE_REVIEW_STATE_DIR, "downloads")
+    root = os.environ.get("MAGI_ROOT_DIR", _magi_root).strip() or _magi_root
+    return os.path.join(os.path.abspath(os.path.expanduser(root)), "閱卷下載")
+
+
+DEFAULT_DOWNLOAD_FOLDER = _default_download_folder()
 JSON_DIR = str(get_json_dir())
-BG_JOB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bg_jobs")
+BG_JOB_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_FILE_REVIEW_BG_JOB_DIR", "").strip())
+    or (
+        os.path.join(_FILE_REVIEW_STATE_DIR, "bg-jobs")
+        if _FILE_REVIEW_STATE_DIR
+        else os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bg_jobs")
+    )
+)
 RECENT_ACTIVITY_STATE_FILE = ".recent_activity_notified.json"
+
+# Resolve the mutable queue only when a queue operation is requested.  A sealed
+# release must still fail closed at that point, but importing read-only portal
+# checks must not require a write-path binding.  ``None`` also keeps the
+# explicit test/runtime override surface backwards compatible.
+PAYMENT_PROOF_UPLOAD_QUEUE_PATH: Path | None = None
+PAYMENT_PROOF_UPLOAD_STORE_DIR = get_payment_proof_upload_store_dir()
 
 # Safety-first defaults: never auto-route uncertain cases.
 os.environ.setdefault("MAGI_ALLOW_RISKY_CASE_SCAN", "0")
 os.environ.setdefault("MAGI_ALLOW_FILENAME_HEURISTIC_ARCHIVE", "1")
 os.environ.setdefault("MAGI_REQUIRE_CASE_SIGNAL_FOR_AUTO", "1")
 os.environ.setdefault("MAGI_ALLOW_LOOSE_CASE_FOLDER_FALLBACK", "0")
-os.environ.setdefault("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "1")
+os.environ.setdefault("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "0")
+# A successfully verified portal row must not be clicked every few minutes.
+# The manager binds this registry to the portal row signature and expires it,
+# so a changed row is retried immediately and an unchanged row is rechecked
+# after the bounded TTL instead of being hidden forever.
+os.environ.setdefault("MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP", "1")
 os.environ.setdefault("MAGI_ENABLE_PRECLICK_SMART_SKIP", "1")
 
 logger = logging.getLogger("file-review-orchestrator")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", stream=sys.stderr)
+
+
+def _acquire_file_review_portal_lock(owner: str):
+    """Try to reserve the one cross-process court/Playwright resource domain."""
+    return acquire_lock(
+        FILE_REVIEW_PORTAL_LOCK_NAME,
+        owner=f"file-review:{owner}",
+        kind="court_portal_playwright",
+        blocking=False,
+        path=file_review_portal_lock_path(),
+    )
+
+
+def _portal_deferred_result(lock, owner: str, *, success: bool = True) -> dict:
+    active = dict(getattr(lock, "active_owner", None) or {})
+    lock_info = lock.as_dict() if callable(getattr(lock, "as_dict", None)) else {
+        "acquired": False,
+        "domain": FILE_REVIEW_PORTAL_LOCK_NAME,
+        "active_owner": active,
+    }
+    return {
+        "success": bool(success),
+        "ok": True,
+        "status": "deferred",
+        "deferred": True,
+        "skipped": True,
+        "reason": "file_review_portal_busy",
+        "owner": owner,
+        "active_pid": int(active.get("pid") or 0),
+        "active_owner": str(active.get("owner") or ""),
+        "lock": lock_info,
+        "message": "法院入口目前由其他作業使用，本次安全延後，未啟動第二個 Chromium。",
+    }
+
+
+def _portal_serialized(owner: str):
+    """Make a portal command nonblocking and mutually exclusive across processes."""
+    def decorator(func):
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            if (
+                owner == "downloadable_probe"
+                and not bool(kwargs.get("read_only"))
+                and not _truthy(os.environ.get("MAGI_FILE_REVIEW_PRIMARY_OWNER", "0"))
+                and not _truthy(os.environ.get("MAGI_FILE_REVIEW_FORCE_RUN", "0"))
+            ):
+                owner_state = _fresh_file_review_auto_owner_state()
+                if owner_state.get("fresh"):
+                    return {
+                        "success": True,
+                        "ok": True,
+                        "status": "delegated",
+                        "skipped": True,
+                        "deferred": False,
+                        "reason": "primary_owner_active",
+                        "owner": "file_review_auto",
+                        "owner_state": owner_state,
+                        "count": 0,
+                        "downloadable_count": 0,
+                        "items": [],
+                        "message": "閱卷常駐巡查正常；本排程為備援，未重複開啟法院入口。",
+                    }
+            lock = _acquire_file_review_portal_lock(owner)
+            if not lock.acquired:
+                logger.info("Court portal busy; deferring %s", owner)
+                return _portal_deferred_result(lock, owner)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                lock.release()
+        return wrapped
+    return decorator
+
+
+def _lower_background_priority() -> bool:
+    """Yield CPU to interactive apps while long portal downloads run."""
+    try:
+        increment = int(os.environ.get("MAGI_FILE_REVIEW_NICE_INCREMENT", "10") or "10")
+    except (TypeError, ValueError):
+        increment = 10
+    if increment <= 0:
+        return False
+
+    try:
+        current = os.getpriority(os.PRIO_PROCESS, 0)
+        os.setpriority(os.PRIO_PROCESS, 0, min(19, current + increment))
+        return True
+    except (AttributeError, OSError):
+        try:
+            os.nice(increment)
+            return True
+        except (AttributeError, OSError):
+            logger.debug("Unable to lower background worker priority", exc_info=True)
+            return False
 
 
 def _flow_slug(value: str) -> str:
@@ -117,6 +287,10 @@ def _flow_slug(value: str) -> str:
 
 def _safe_create_flow_mirror(task_name: str, *, metadata: Optional[Dict[str, Any]] = None) -> str:
     if not str(task_name or "").strip():
+        return ""
+    if os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") == "real_entrypoint_fixture_v1":
+        # Certification must not open the production flow ledger.  The task
+        # body still runs to a terminal result against its bounded provider.
         return ""
     payload = dict(metadata or {})
     run_bits = [datetime.now().strftime("%Y%m%d_%H%M%S"), _flow_slug(task_name)]
@@ -201,10 +375,11 @@ def _safe_finalize_flow(flow_id: str, result: Dict[str, Any]) -> None:
             blockers.append("cancel_requested")
         elif result_key == "ready":
             flow_status = "blocked"
-            ok = True
+            ok = False
             blockers.append("manual_confirmation_required")
         elif bool(result.get("manual_required")):
             flow_status = "blocked"
+            ok = False
             blockers.append(str(result.get("manual_reason") or "manual_required").strip())
         elif status_key == "already_running":
             flow_status = "succeeded"
@@ -248,8 +423,8 @@ def _result_step_status(result: Dict[str, Any]) -> Tuple[str, bool]:
     if bool(result.get("cancelled")) or str(result.get("status") or "").strip().lower() == "cancelled":
         return "cancelled", False
     ok = bool(result.get("success", result.get("ok")))
-    if ok and str(result.get("result") or "").strip().lower() == "ready":
-        return "blocked", True
+    if str(result.get("result") or "").strip().lower() == "ready" or bool(result.get("manual_required")):
+        return "blocked", False
     if ok:
         return "succeeded", True
     return "failed", False
@@ -324,49 +499,237 @@ def _run_with_flow(
     _safe_finalize_flow(flow_id, result)
     return result
 
-def _cleanup_old_downloads(download_folder: str, max_days: int = 15):
-    """Clean up downloaded YYYYMMDD date-folders older than max_days.
+def _coerce_retention_days(value: object, default: int) -> int:
+    try:
+        days = int(str(value).strip())
+    except Exception:
+        days = int(default)
+    return max(1, days)
 
-    Applies to: 閱卷下載/, 筆錄下載/, 法扶資料/ 下的 YYYYMMDD 暫存資料夾。
+
+def _retention_days_from_env(name: str, default: int) -> int:
+    return _coerce_retention_days(os.environ.get(name, default), default)
+
+
+def _folder_name_age_days(name: str, *, today: Optional[datetime] = None) -> Optional[int]:
+    if not (str(name or "").isdigit() and len(str(name or "")) == 8):
+        return None
+    try:
+        folder_day = datetime.strptime(str(name), "%Y%m%d").date()
+    except Exception:
+        return None
+    today_day = (today or datetime.now()).date()
+    return (today_day - folder_day).days
+
+
+def _dir_size_bytes(path: str) -> int:
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue
+    except Exception:
+        return 0
+    return total
+
+
+def _cleanup_old_downloads(
+    download_folder: str,
+    max_days: int = 7,
+    *,
+    pending_max_days: Optional[int] = None,
+    quarantine_max_days: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Clean up disposable MAGI download staging folders older than max_days.
+
+    Applies to: 閱卷下載/, 筆錄下載/, 法扶資料/ 下的 YYYYMMDD 暫存資料夾，
+    plus disposable duplicate/error quarantine date-folders and _待歸檔 date
+    folders.  _待歸檔 uses a longer retention because it may need human triage.
     """
+    summary = {
+        "success": True,
+        "download_folder": download_folder,
+        "dry_run": bool(dry_run),
+        "max_days": max_days,
+        "pending_max_days": pending_max_days,
+        "quarantine_max_days": quarantine_max_days,
+        "deleted": [],
+        "would_delete": [],
+        "freed_bytes": 0,
+        "error": "",
+    }
     if not download_folder or not os.path.exists(download_folder):
-        return
+        summary["success"] = False
+        summary["error"] = "download_folder_missing"
+        return summary
 
     # [Safety Guard] Ensure we only delete inside a MAGI folder, protecting case folders
     abs_folder = os.path.abspath(download_folder)
     safe_markers = ("MAGI", "閱卷下載", "筆錄下載", "法扶資料")
     if not any(m in abs_folder for m in safe_markers):
         logger.warning("Safety abort: download_folder %s does not contain safe markers. Cleanup aborted to protect case folders.", abs_folder)
-        return
+        summary["success"] = False
+        summary["error"] = "unsafe_download_folder"
+        return summary
 
-    import time, shutil
+    import time
     try:
+        max_days = _retention_days_from_env("MAGI_FILE_REVIEW_STAGING_RETENTION_DAYS", max_days)
+        pending_max_days = _retention_days_from_env(
+            "MAGI_FILE_REVIEW_PENDING_RETENTION_DAYS",
+            pending_max_days if pending_max_days is not None else 14,
+        )
+        quarantine_max_days = _retention_days_from_env(
+            "MAGI_FILE_REVIEW_QUARANTINE_RETENTION_DAYS",
+            quarantine_max_days if quarantine_max_days is not None else 14,
+        )
+        summary["max_days"] = max_days
+        summary["pending_max_days"] = pending_max_days
+        summary["quarantine_max_days"] = quarantine_max_days
         now = time.time()
+
+        def _is_expired(item_path: str, item_name: str, days: int) -> bool:
+            age_days = _folder_name_age_days(item_name)
+            if age_days is not None:
+                return age_days >= days
+            try:
+                return (now - os.path.getmtime(item_path)) > (days * 86400)
+            except OSError:
+                return False
+
+        def _delete_dir(item_path: str, reason: str) -> None:
+            size = _dir_size_bytes(item_path)
+            row = {"path": item_path, "reason": reason, "size_bytes": size}
+            if dry_run:
+                summary["would_delete"].append(row)
+                return
+            shutil.rmtree(item_path, ignore_errors=True)
+            summary["deleted"].append(row)
+            summary["freed_bytes"] += size
+            logger.info("Cleaned up old download staging folder: %s", item_path)
+
         for item in os.listdir(download_folder):
             item_path = os.path.join(download_folder, item)
-            # Only clean up YYYYMMDD folders
-            if not os.path.isdir(item_path) or not item.isdigit() or len(item) != 8:
+            if not os.path.isdir(item_path) or _folder_name_age_days(item) is None:
                 continue
             try:
-                # use modification time of the folder
-                mtime = os.path.getmtime(item_path)
-                if (now - mtime) > (max_days * 86400):
-                    shutil.rmtree(item_path, ignore_errors=True)
-                    logger.info("Cleaned up old download folder: %s", item_path)
+                if _is_expired(item_path, item, max_days):
+                    _delete_dir(item_path, "dated_staging")
             except Exception as e:
                 logger.warning("Failed to check/cleanup %s: %s", item_path, e)
+
+        for container, retention_days, reason in (
+            ("_duplicate_downloads", quarantine_max_days, "duplicate_quarantine"),
+            ("_ignored_downloads", quarantine_max_days, "ignored_downloads"),
+            ("_待歸檔", pending_max_days, "pending_unarchived"),
+        ):
+            cpath = os.path.join(download_folder, container)
+            if not os.path.isdir(cpath):
+                continue
+            for item in os.listdir(cpath):
+                item_path = os.path.join(cpath, item)
+                if not os.path.isdir(item_path) or _folder_name_age_days(item) is None:
+                    continue
+                try:
+                    if _is_expired(item_path, item, retention_days):
+                        _delete_dir(item_path, reason)
+                except Exception as e:
+                    logger.warning("Failed to check/cleanup %s: %s", item_path, e)
     except Exception as e:
         logger.warning("Cleanup old downloads failed: %s", e)
+        summary["success"] = False
+        summary["error"] = str(e)[:200]
+    return summary
 
 
-def _cleanup_all_download_folders(base_dir: str, max_days: int = 15):
+def _cleanup_all_download_folders(
+    base_dir: str,
+    max_days: int = 7,
+    *,
+    pending_max_days: Optional[int] = None,
+    quarantine_max_days: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
     """對 閱卷下載/、筆錄下載/、法扶資料/ 都執行舊資料夾清理。"""
+    out = {"success": True, "base_dir": base_dir, "folders": [], "deleted_count": 0, "would_delete_count": 0, "freed_bytes": 0}
     if not base_dir:
-        return
+        out["success"] = False
+        return out
     for sub in ("閱卷下載", "筆錄下載", "法扶資料"):
         folder = os.path.join(base_dir, sub)
         if os.path.isdir(folder):
-            _cleanup_old_downloads(folder, max_days=max_days)
+            summary = _cleanup_old_downloads(
+                folder,
+                max_days=max_days,
+                pending_max_days=pending_max_days,
+                quarantine_max_days=quarantine_max_days,
+                dry_run=dry_run,
+            )
+            out["folders"].append(summary)
+            out["deleted_count"] += len(summary.get("deleted") or [])
+            out["would_delete_count"] += len(summary.get("would_delete") or [])
+            out["freed_bytes"] += int(summary.get("freed_bytes") or 0)
+            if not summary.get("success", False):
+                out["success"] = False
+    return out
+
+
+def _download_cleanup_base_candidates(download_folder: str = "") -> List[str]:
+    """Return likely MAGI runtime roots that may contain download staging folders."""
+    candidates: List[str] = []
+
+    # V3 schedule certification must exercise the real cleanup body without
+    # even enumerating live staging roots.  The caller supplies an owned
+    # fixture root carrying a marker; a malformed adapter request fails closed
+    # instead of falling through to the production candidates below.
+    if os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") == "real_entrypoint_fixture_v1":
+        fixture_raw = os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT", "").strip()
+        fixture = Path(fixture_raw).expanduser() if fixture_raw else None
+        marker = fixture / ".magi-v3-schedule-fixture" if fixture else None
+        if (
+            os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+            or fixture is None
+            or marker is None
+            or not marker.is_file()
+        ):
+            return []
+        fixture_resolved = fixture.resolve()
+        requested = Path(download_folder).expanduser().resolve() if download_folder else None
+        if requested is None or fixture_resolved not in requested.parents:
+            return []
+        base = requested.parent
+        return [str(base)] if base.is_dir() else []
+
+    def _add(path: str) -> None:
+        raw = str(path or "").strip()
+        if not raw:
+            return
+        expanded = os.path.abspath(os.path.expanduser(raw))
+        if expanded not in candidates:
+            candidates.append(expanded)
+
+    if download_folder:
+        _add(os.path.dirname(download_folder))
+    env_download = os.environ.get("MAGI_EEFILE_DOWNLOAD_FOLDER", "").strip()
+    if env_download:
+        _add(os.path.dirname(env_download))
+    _add(os.environ.get("MAGI_ROOT_DIR", ""))
+    _add(_magi_root)
+    _add(os.environ.get("MAGI_LIVE_RUNTIME_ROOT", ""))
+    _add(os.environ.get("MAGI_RUNTIME_ROOT", ""))
+    _add(os.path.join(Path.home(), "Library", "Application Support", "MAGI", "runtime", "MAGI_v3"))
+
+    existing = []
+    for base in candidates:
+        if not os.path.isdir(base):
+            continue
+        if any(os.path.isdir(os.path.join(base, sub)) for sub in ("閱卷下載", "筆錄下載", "法扶資料")):
+            existing.append(base)
+    return existing
 
 
 def _eventlog(event: str, *, ok: Optional[bool] = None, payload: Optional[dict] = None, tags: Optional[dict] = None) -> None:
@@ -429,7 +792,8 @@ class _SimpleCase:
 class _SimpleMariaDB:
     """
     輕量 DB wrapper（避免 legalbridge_core import 牽扯 linebot 等完整依賴）。
-    只提供 file_review_automation 需要的方法：execute/fetch_all/find_case/translate_path_to_local。
+    只提供 file_review_automation 需要的方法：
+    execute/fetch_one/fetch_all/find_case/translate_path_to_local。
     """
 
     def __init__(self, db_config: dict, path_hints: Optional[dict] = None):
@@ -484,6 +848,31 @@ class _SimpleMariaDB:
                     conn.close()
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 261, exc_info=True)
+
+    def fetch_one(self, query: str, params: tuple = None, as_dict: bool = True):
+        conn = None
+        try:
+            conn = self.get_connection()
+            if as_dict:
+                cur = conn.cursor()
+            else:
+                import pymysql
+                cur = conn.cursor(pymysql.cursors.Cursor)
+            cur.execute(query, params)
+            return cur.fetchone()
+        except Exception:
+            return None
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "silent-catch at %s:%s",
+                    __name__,
+                    "fetch_one_close",
+                    exc_info=True,
+                )
 
     def find_case(self, case_number: str):
         if not case_number:
@@ -642,6 +1031,13 @@ def _ok(payload: dict) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BrokenPipeError:
         pass
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            return 1
+        if payload.get("manual_required") or payload.get("blocked"):
+            return 1
+        if str(payload.get("result") or "").strip().lower() == "ready":
+            return 1
     return 0
 
 
@@ -768,6 +1164,12 @@ def _portal_login_failure_message(mgr, *, action_label: str) -> Tuple[str, str, 
         return code, detail, f"❌ 閱卷登入失敗：驗證碼未通過，已中斷{action_label}。"
     if code == "auth_failed":
         return code, detail, f"❌ 閱卷登入失敗：帳號或密碼被拒絕，已中斷{action_label}。"
+    if code == "login_page_timeout":
+        return code, detail, f"❌ 閱卷入口連線逾時，已中斷{action_label}；系統稍後會用全新連線重試。"
+    if code == "login_redirect_unexpected":
+        return code, detail, f"❌ 閱卷登入被導向非預期頁面，已中斷{action_label}。"
+    if code == "login_contract_changed":
+        return code, detail, f"❌ 閱卷登入頁欄位結構異常，已中斷{action_label}；需檢查法院入口頁。"
     return code, detail, f"❌ 閱卷登入失敗，可能驗證碼連錯或系統維護，已中斷{action_label}。"
 
 
@@ -835,12 +1237,8 @@ def _pip_install(pkgs):
         logger.warning("pip install exception: %s", e)
         return False
 
-def _ensure_runtime_deps():
-    """
-    Best-effort dependency bootstrap for:
-    - Gmail API (google-api-python-client + auth libs)
-    - DB (pymysql)
-    """
+def _missing_runtime_deps() -> List[str]:
+    """Return missing runtime packages without modifying the environment."""
     need = []
     try:
         import googleapiclient  # noqa: F401
@@ -854,12 +1252,27 @@ def _ensure_runtime_deps():
         import holidays  # noqa: F401
     except Exception:
         need += ["holidays"]
+    return sorted(set(need))
+
+
+def _ensure_runtime_deps():
+    """
+    Best-effort dependency bootstrap for non-read-only operational commands.
+
+    Health probes must call ``_missing_runtime_deps`` instead so inspection
+    never installs packages or contacts package indexes.
+    """
+    need = _missing_runtime_deps()
     if need:
-        logger.info("Installing missing deps (best-effort): %s", ", ".join(sorted(set(need))))
-        _pip_install(sorted(set(need)))
+        logger.info("Installing missing deps (best-effort): %s", ", ".join(need))
+        _pip_install(need)
 
 def _json_path(name: str) -> str:
     """Resolve credential/token file under JSON_DIR if present."""
+    if name == "filereview_token.pickle":
+        declared = os.environ.get("MAGI_FILE_REVIEW_TOKEN_PATH", "").strip()
+        if declared:
+            return declared
     try:
         p = os.path.join(JSON_DIR, name)
         if JSON_DIR and os.path.exists(p):
@@ -966,24 +1379,29 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
                  topic_key: str = "filereview"):
     """Send a file (image/PDF/etc.) to admin via TG and DC."""
     if not flag:
-        return
+        return False
     if _notifications_suppressed():
         logger.info("File notification suppressed by MAGI_FILE_REVIEW_SUPPRESS_NOTIFY: %s", os.path.basename(file_path or ""))
-        return
+        return False
     if not file_path or not os.path.isfile(file_path):
         logger.warning("_notify_file: file not found: %s", file_path)
-        return
+        return False
+    sent_any = False
     # 1) Telegram via LAFNotifier
     try:
         import sys
         if CODE_DIR not in sys.path:
             sys.path.insert(0, CODE_DIR)
         from line_notifier import LAFNotifier
-        LAFNotifier().notify_admin_with_files(
+        result = LAFNotifier().notify_admin_with_files(
             caption or os.path.basename(file_path), [file_path],
             topic_key=topic_key, source="file_review_orchestrator",
         )
-        logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
+        if _notification_file_result_ok(result):
+            sent_any = True
+            logger.info("File sent via LAFNotifier (TG): %s", os.path.basename(file_path))
+        else:
+            logger.warning("LAFNotifier file send did not confirm delivery for: %s result=%s", os.path.basename(file_path), result)
     except Exception as e:
         logger.warning("LAFNotifier send failed: %s", e)
         # TG fallback via red_phone
@@ -991,32 +1409,428 @@ def _notify_file(file_path: str, caption: str = "", flag: bool = True,
             from skills.ops.red_phone import send_file_admin  # type: ignore
             result = send_file_admin(file_path, caption=caption, topic_key=topic_key)
             if result.get("ok"):
+                sent_any = True
                 logger.info("File sent via red_phone (TG fallback): %s", os.path.basename(file_path))
             else:
                 logger.warning("red_phone send_file_admin returned: %s", result)
         except Exception as e2:
             logger.warning("red_phone TG fallback also failed: %s", e2)
-    # 2) Discord — always attempt regardless of TG result
+    # LAFNotifier already sends files to TG and DC. Use direct DC only as fallback.
+    if not sent_any:
+        try:
+            from skills.ops.red_phone import send_discord_bot_file  # type: ignore
+            ok = send_discord_bot_file(
+                file_path,
+                caption=caption or os.path.basename(file_path),
+                topic_key=topic_key,
+                source="file_review_orchestrator",
+            )
+            if ok:
+                sent_any = True
+                logger.info("File sent via Discord bot fallback: %s", os.path.basename(file_path))
+            else:
+                logger.warning("send_discord_bot_file returned False for: %s", os.path.basename(file_path))
+        except Exception as e3:
+            logger.warning("Discord file send failed: %s", e3)
+    return sent_any
+
+
+def _is_valid_payment_pdf_file(path: str) -> bool:
+    """Return True only for real PDF payment files, not OLA JSON/HTML error payloads."""
+    if not path or not os.path.isfile(path):
+        return False
+    lowered_path = str(path or "").lower()
+    filename = os.path.basename(lowered_path)
+    if "_ignored_downloads" in lowered_path or ".invalid_artifact" in filename:
+        return False
+    if not str(path).lower().endswith(".pdf"):
+        return False
     try:
-        from skills.ops.red_phone import send_discord_bot_file  # type: ignore
-        ok = send_discord_bot_file(
-            file_path,
-            caption=caption or os.path.basename(file_path),
-            topic_key=topic_key,
-            source="file_review_orchestrator",
-        )
-        if ok:
-            logger.info("File sent via Discord bot: %s", os.path.basename(file_path))
+        with open(path, "rb") as f:
+            chunk = f.read(4096)
+    except Exception:
+        return False
+    if not chunk.lstrip().startswith(b"%PDF"):
+        return False
+    lowered = chunk.decode("utf-8", errors="ignore").lower()
+    return not any(marker in lowered for marker in ("<html", "<!doctype html", "messagetext", "\"status\"", "\"controller\""))
+
+
+def _payment_delivery_state_path(download_folder: str) -> str:
+    return os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, ".payment_pdf_delivery_state.json")
+
+
+def _load_payment_delivery_state(download_folder: str) -> dict:
+    path = _payment_delivery_state_path(download_folder)
+    if not os.path.exists(path):
+        return {"version": 1, "sent_files": {}, "pending_files": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if not isinstance(data, dict):
+            raise ValueError("state_not_dict")
+    except Exception:
+        return {"version": 1, "sent_files": {}, "pending_files": {}}
+    data.setdefault("version", 1)
+    data.setdefault("sent_files", {})
+    data.setdefault("pending_files", {})
+    if not isinstance(data.get("sent_files"), dict):
+        data["sent_files"] = {}
+    if not isinstance(data.get("pending_files"), dict):
+        data["pending_files"] = {}
+    return data
+
+
+def _save_payment_delivery_state(download_folder: str, state: dict) -> None:
+    path = _payment_delivery_state_path(download_folder)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save payment PDF delivery state: %s", e)
+
+
+def _payment_file_delivery_key(path: str) -> str:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return "sha256:" + h.hexdigest()
+    except Exception:
+        try:
+            st = os.stat(path)
+            return f"path:{os.path.realpath(path)}:{int(st.st_size)}:{int(st.st_mtime)}"
+        except Exception:
+            return f"path:{os.path.realpath(path or '')}"
+
+
+def _payment_file_already_delivered(path: str, download_folder: str) -> bool:
+    key = _payment_file_delivery_key(path)
+    state = _load_payment_delivery_state(download_folder)
+    return bool(key and key in (state.get("sent_files") or {}))
+
+
+def _mark_payment_file_delivered(path: str, download_folder: str, caption: str = "") -> None:
+    key = _payment_file_delivery_key(path)
+    if not key:
+        return
+    state = _load_payment_delivery_state(download_folder)
+    sent_files = state.setdefault("sent_files", {})
+    sent_files[key] = {
+        "path": os.path.realpath(path),
+        "name": os.path.basename(path),
+        "caption": caption,
+        "sent_at": datetime.now().isoformat(),
+        "size": os.path.getsize(path) if os.path.exists(path) else 0,
+    }
+    pending_files = state.setdefault("pending_files", {})
+    if isinstance(pending_files, dict):
+        pending_files.pop(key, None)
+    state["updated_at"] = datetime.now().isoformat()
+    _save_payment_delivery_state(download_folder, state)
+
+
+def _mark_payment_file_delivery_failed(path: str, download_folder: str, caption: str = "", error: str = "") -> None:
+    key = _payment_file_delivery_key(path)
+    if not key:
+        return
+    state = _load_payment_delivery_state(download_folder)
+    pending_files = state.setdefault("pending_files", {})
+    previous = pending_files.get(key) if isinstance(pending_files, dict) else {}
+    attempts = 0
+    if isinstance(previous, dict):
+        try:
+            attempts = int(previous.get("attempts") or 0)
+        except Exception:
+            attempts = 0
+    if isinstance(pending_files, dict):
+        pending_files[key] = {
+            "path": os.path.realpath(path),
+            "name": os.path.basename(path),
+            "caption": caption,
+            "last_attempt_at": datetime.now().isoformat(),
+            "attempts": attempts + 1,
+            "size": os.path.getsize(path) if os.path.exists(path) else 0,
+            "last_error": str(error or "notify_file_returned_false")[:240],
+        }
+    state["updated_at"] = datetime.now().isoformat()
+    _save_payment_delivery_state(download_folder, state)
+
+
+def _notification_file_result_ok(result: object) -> bool:
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict):
+        for key in ("ok", "delivered", "telegram", "discord"):
+            if bool(result.get(key)):
+                return True
+        acked = result.get("acked")
+        if isinstance(acked, list) and acked:
+            return True
+        return False
+    return bool(result)
+
+
+def _payment_delivery_filename_component(value: str, default: str = "") -> str:
+    text = str(value or "")
+    text = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", text)
+    text = re.sub(r"\s+", "", text).strip("._- ")
+    return (text or default or "").strip()[:90]
+
+
+def _payment_proof_case_key(case_number: str) -> str:
+    text = str(case_number or "").strip()
+    if not text:
+        return ""
+    compact = re.sub(r"[\s._/-]+", "", text)
+    compact = compact.replace("年度", "").replace("年", "").replace("字第", "").replace("字", "").replace("號", "")
+    m = re.match(r"(\d{2,3})([^\d]+?)(0*\d+)$", compact)
+    if not m:
+        return ""
+    return f"{m.group(1)}.{m.group(2)}.{int(m.group(3)):06d}"
+
+
+PAYMENT_PROOF_SCHEMA = "magi.payment-proof/v2"
+
+
+def _payment_proof_event_identity(info: dict | None = None, explicit: str = "") -> str:
+    """Return a stable review/payment occurrence identity when available."""
+    if str(explicit or "").strip():
+        return str(explicit).strip()[:512]
+    info = info if isinstance(info, dict) else {}
+    for key in ("payment_event_id", "portal_row_id", "rowid", "p_payid", "payid", "pay_id", "payment_id"):
+        value = str(info.get(key) or "").strip()
+        if value:
+            return value[:512]
+    return ""
+
+
+def _payment_proof_dedup_key(raw_case_id: str, file_sha256: str, event_id: str = "") -> str:
+    """Opaque v2 key; known portal/payment events cannot collide on case+SHA alone."""
+    payload = "|".join((str(raw_case_id or "").strip(), str(file_sha256 or "").strip().lower(), str(event_id or "").strip()))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _write_payment_proof_registry_atomic(path: str, registry: dict) -> None:
+    """Durably replace the registry so a successful upload cannot corrupt it."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            json.dump(registry, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, target)
+        try:
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            logging.getLogger(__name__).debug("registry directory fsync unavailable", exc_info=True)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _payment_proof_record_matches(record: object, file_sha256: str, event_id: str = "") -> bool:
+    """Only a v2 proof with the same content and occurrence may be deduped."""
+    if not isinstance(record, dict) or record.get("proof_schema") != PAYMENT_PROOF_SCHEMA:
+        return False
+    if str(record.get("file_sha256") or "").strip().lower() != str(file_sha256 or "").strip().lower():
+        return False
+    recorded_event = str(record.get("payment_event_id") or "").strip()
+    return not event_id or recorded_event == event_id
+
+
+def _payment_proof_registry_matches(
+    registry: object, raw_case_id: str, file_sha256: str, event_id: str = ""
+) -> bool:
+    if not isinstance(registry, dict):
+        return False
+    record = registry.get(raw_case_id)
+    if not isinstance(record, dict):
+        return False
+    candidates = [record]
+    nested = record.get("proofs")
+    if isinstance(nested, list):
+        candidates.extend(nested)
+    return any(_payment_proof_record_matches(item, file_sha256, event_id) for item in candidates)
+
+
+def _payment_proof_registry_upsert(registry: dict, raw_case_id: str, record: dict) -> None:
+    """Preserve multiple proof occurrences for one case without trusting legacy rows."""
+    previous = registry.get(raw_case_id)
+    proofs = []
+    if isinstance(previous, dict):
+        old_proofs = previous.get("proofs")
+        if isinstance(old_proofs, list):
+            proofs.extend(item for item in old_proofs if isinstance(item, dict))
+        elif previous.get("proof_schema") == PAYMENT_PROOF_SCHEMA:
+            proofs.append(previous)
+    proofs.append(dict(record))
+    registry[raw_case_id] = {**record, "proofs": proofs}
+
+
+def _payment_proof_event_uploaded(case_number: str, download_folder: str, event_id: str) -> bool:
+    event_id = str(event_id or "").strip()
+    target_case = _normalize_case_token(case_number)
+    if not event_id or not target_case:
+        return False
+    proof_path = str(get_payment_proof_registry_path(download_folder or DEFAULT_DOWNLOAD_FOLDER))
+    try:
+        with open(proof_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    for raw_case_id, record in data.items():
+        # Registry rows are case-scoped; an event identifier from another
+        # case must never suppress this case's new payment occurrence.
+        case_key = _normalize_case_token(raw_case_id)
+        if not case_key or case_key != target_case:
+            continue
+        candidates = [record] if isinstance(record, dict) else []
+        if isinstance(record, dict) and isinstance(record.get("proofs"), list):
+            candidates.extend(item for item in record["proofs"] if isinstance(item, dict))
+        for candidate in candidates:
+            if (
+                candidate.get("proof_schema") == PAYMENT_PROOF_SCHEMA
+                and str(candidate.get("file_sha256") or "").strip()
+                and str(candidate.get("payment_event_id") or "").strip() == event_id
+                and _normalize_case_token(str(candidate.get("raw_case_id") or raw_case_id)) == case_key
+            ):
+                return True
+    return False
+
+
+def _payment_proof_already_uploaded(case_number: str, download_folder: str, event_id: str = "") -> bool:
+    """Case-only legacy rows never suppress a new payment occurrence."""
+    return _payment_proof_event_uploaded(case_number, download_folder, event_id)
+
+
+def _same_payment_file_payload(path_a: str, path_b: str) -> bool:
+    try:
+        if not (os.path.isfile(path_a) and os.path.isfile(path_b)):
+            return False
+        return _payment_file_delivery_key(path_a) == _payment_file_delivery_key(path_b)
+    except Exception:
+        return False
+
+
+def _payment_delivery_copy_path(path: str, label: str, download_folder: str) -> str:
+    parts = [
+        _payment_delivery_filename_component(part)
+        for part in re.split(r"[｜|]", str(label or ""))
+        if _payment_delivery_filename_component(part)
+    ]
+    if len(parts) >= 2:
+        party, case_no = parts[0], parts[1]
+    elif len(parts) == 1:
+        party = parts[0]
+        case_no = ""
+    else:
+        party = ""
+        case_no = ""
+
+    if not party:
+        party = "未辨識當事人"
+    if not case_no:
+        original_stem = _payment_delivery_filename_component(Path(path).stem, default="未辨識案號")
+        case_no = original_stem if not original_stem.isdigit() else "未辨識案號"
+
+    base_stem = "_".join(part for part in ("繳費單", party, case_no) if part)
+    delivery_dir = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, ".payment_delivery_files")
+    os.makedirs(delivery_dir, exist_ok=True)
+    ext = os.path.splitext(path)[1].lower() or ".pdf"
+    dst = os.path.join(delivery_dir, f"{base_stem}{ext}")
+    if os.path.exists(dst) and not _same_payment_file_payload(path, dst):
+        short_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:8]
+        dst = os.path.join(delivery_dir, f"{base_stem}_{short_hash}{ext}")
+    return dst
+
+
+def _prepare_payment_pdf_delivery_copy(path: str, label: str, download_folder: str) -> str:
+    try:
+        dst = _payment_delivery_copy_path(path, label, download_folder)
+        if os.path.realpath(path) != os.path.realpath(dst):
+            if not (os.path.exists(dst) and _same_payment_file_payload(path, dst)):
+                shutil.copy2(path, dst)
+        return dst
+    except Exception as e:
+        logger.warning("Failed to create renamed payment PDF delivery copy for %s: %s", os.path.basename(path), e)
+        return path
+
+
+def _send_payment_pdf_files(
+    file_paths: List[str],
+    *,
+    download_folder: str,
+    caption_prefix: str,
+    notify: bool = True,
+    captions_by_path: Optional[Dict[str, str]] = None,
+    notice_keys_by_path: Optional[Dict[str, Iterable[str]]] = None,
+) -> dict:
+    """Send valid, not-yet-delivered payment PDFs and persist delivery state."""
+    unique: List[str] = []
+    seen: Set[str] = set()
+    invalid = 0
+    already_sent = 0
+    notice_seen = 0
+    for raw in file_paths or []:
+        path = str(raw or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if not _is_valid_payment_pdf_file(path):
+            invalid += 1
+            continue
+        if _payment_file_already_delivered(path, download_folder):
+            already_sent += 1
+            continue
+        # Text-notice dedup must never suppress attachment delivery. The file
+        # SHA registry above is the authoritative delivery dedup.
+        unique.append(path)
+
+    sent = 0
+    failed = 0
+    skipped_notify = 0
+    for idx, path in enumerate(unique, 1):
+        label = (captions_by_path or {}).get(path) or os.path.basename(path)
+        caption = f"{caption_prefix} ({idx}/{len(unique)}): {label}"
+        if not notify:
+            skipped_notify += 1
+            continue
+        delivery_path = _prepare_payment_pdf_delivery_copy(path, label, download_folder)
+        if _notification_file_result_ok(_notify_file(delivery_path, caption=caption, flag=True, topic_key="filereview_payment")):
+            sent += 1
+            _mark_payment_file_delivered(path, download_folder, caption=caption)
         else:
-            logger.warning("send_discord_bot_file returned False for: %s", os.path.basename(file_path))
-    except Exception as e3:
-        logger.warning("Discord file send failed: %s", e3)
+            failed += 1
+            _mark_payment_file_delivery_failed(path, download_folder, caption=caption)
+    return {
+        "eligible": len(unique),
+        "sent": sent,
+        "failed": failed,
+        "skipped_notify": skipped_notify,
+        "invalid": invalid,
+        "already_sent": already_sent,
+        "notice_seen": notice_seen,
+        "pending": failed,
+    }
 
 
 # ---------------------------------------------------------------------------
 # DB Helper
 # ---------------------------------------------------------------------------
-def _get_db_manager(cfg: dict):
+def _get_db_manager(cfg: dict, *, read_only: bool = False):
     try:
         # 在 Keeper/主 DB 未開機時，強制用本機 DB（避免 legalbridge_core 嘗試 VPN/3306 造成噪音與延遲）
         prefer_local = os.environ.get("MAGI_PREFER_LOCAL_DB", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -1033,7 +1847,8 @@ def _get_db_manager(cfg: dict):
             logger.info("DB manager: prefer local DB (MAGI_PREFER_LOCAL_DB=1), fallback to simple db.")
         else:
             logger.warning("DB manager not available (fallback to simple db): %s", e)
-        _ensure_runtime_deps()
+        if not read_only:
+            _ensure_runtime_deps()
         profiles = _pick_db_profiles(cfg)
         for p in profiles:
             dbc = p.get("config") or {}
@@ -1130,7 +1945,7 @@ def _resolve_court_code(text: str) -> str:
 # ---------------------------------------------------------------------------
 # 閱卷聲請確認碼 pending 管理
 # ---------------------------------------------------------------------------
-_REVIEW_PENDING_FILE = os.path.join(os.path.dirname(__file__), ".review_submit_pending.json")
+_REVIEW_PENDING_FILE = str(get_file_review_pending_path(_magi_root))
 
 
 def _load_review_pending() -> dict:
@@ -1147,6 +1962,7 @@ def _load_review_pending() -> dict:
 
 def _save_review_pending(data: dict):
     try:
+        os.makedirs(os.path.dirname(_REVIEW_PENDING_FILE) or ".", exist_ok=True)
         with open(_REVIEW_PENDING_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -1212,6 +2028,7 @@ def _resolve_review_confirm(token_str: str):
 # ---------------------------------------------------------------------------
 # Core Commands
 # ---------------------------------------------------------------------------
+@_portal_serialized("apply")
 def cmd_apply(court_code: str, year: str, case_type: str,
               case_number: str, client_name: str = "",
               auto_submit: bool = False, notify: bool = True,
@@ -1401,6 +2218,7 @@ def cmd_apply(court_code: str, year: str, case_type: str,
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
+@_portal_serialized("paper_apply")
 def cmd_paper_apply(court_code: str, year: str, case_type: str,
                     case_number: str, client_name: str = "",
                     appointment_date: str = "", appointment_time: str = "下午",
@@ -1588,6 +2406,7 @@ def cmd_paper_apply(court_code: str, year: str, case_type: str,
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
 
 
+@_portal_serialized("upload_attachment")
 def cmd_upload_attachment(court_code: str, year: str, case_type: str,
                          case_number: str, client_name: str = "",
                          file_path: str = "", file_remark: str = "委任狀",
@@ -1670,9 +2489,233 @@ def cmd_upload_attachment(court_code: str, year: str, case_type: str,
 # ---------------------------------------------------------------------------
 # 繳費憑證上傳
 # ---------------------------------------------------------------------------
+def _payment_proof_upload_queue_path() -> Path:
+    return PAYMENT_PROOF_UPLOAD_QUEUE_PATH or get_payment_proof_upload_queue_path()
+
+
+def _payment_proof_queue_lock_path() -> Path:
+    return Path(str(_payment_proof_upload_queue_path()) + ".lock")
+
+
+def _payment_proof_queue_read_unlocked() -> dict:
+    path = _payment_proof_upload_queue_path()
+    if not path.exists():
+        return {"version": 1, "jobs": {}}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Payment-proof queue is unreadable; preserving fail-closed state", exc_info=True)
+        return {"version": 1, "jobs": {}, "read_error": True}
+    if not isinstance(value, dict) or not isinstance(value.get("jobs"), dict):
+        return {"version": 1, "jobs": {}, "read_error": True}
+    return value
+
+
+def _payment_proof_queue_write_unlocked(value: dict) -> None:
+    path = _payment_proof_upload_queue_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(value or {})
+    payload["version"] = 1
+    payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _with_payment_proof_queue_lock(callback):
+    lock_path = _payment_proof_queue_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            return callback()
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _payment_proof_file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _enqueue_payment_proof_upload(
+    *,
+    image_path: str,
+    info: dict,
+    case_hint: str = "",
+) -> dict:
+    """Persist a portal-busy upload before the channel removes its temp file."""
+    source = Path(image_path)
+    if not source.is_file():
+        return {"success": False, "error": "payment_proof_source_missing"}
+
+    file_sha = _payment_proof_file_sha256(str(source))
+    raw_case_id = str(info.get("raw_case_id") or "").strip()
+    event_id = _payment_proof_event_identity(info)
+    job_id = hashlib.sha256(f"{file_sha}|{raw_case_id}|{event_id}".encode("utf-8")).hexdigest()[:24]
+    suffix = source.suffix.lower() if source.suffix else ".png"
+    store_dir = Path(PAYMENT_PROOF_UPLOAD_STORE_DIR)
+    store_dir.mkdir(parents=True, exist_ok=True)
+    stored_path = store_dir / f"{job_id}{suffix}"
+    if not stored_path.exists():
+        tmp = store_dir / f".{stored_path.name}.{os.getpid()}.tmp"
+        shutil.copy2(source, tmp)
+        if _payment_proof_file_sha256(str(tmp)) != file_sha:
+            tmp.unlink(missing_ok=True)
+            return {"success": False, "error": "payment_proof_copy_hash_mismatch"}
+        os.replace(tmp, stored_path)
+
+    now = time.time()
+
+    def update() -> dict:
+        queue = _payment_proof_queue_read_unlocked()
+        if queue.get("read_error"):
+            return {"success": False, "error": "payment_proof_queue_unreadable"}
+        jobs = queue.setdefault("jobs", {})
+        previous = jobs.get(job_id) if isinstance(jobs.get(job_id), dict) else {}
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": previous.get("created_at") or datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "next_attempt_at": min(float(previous.get("next_attempt_at") or now + 60), now + 60),
+            "attempts": int(previous.get("attempts") or 0),
+            "file_path": str(stored_path),
+            "file_sha256": file_sha,
+            "source_filename": source.name,
+            "case_hint": str(case_hint or "")[:500],
+            "court_code": str(info.get("court_code") or ""),
+            "year": str(info.get("year") or ""),
+            "case_type": str(info.get("case_type") or ""),
+            "case_number": str(info.get("case_number") or ""),
+            "client_name": str(info.get("client_name") or ""),
+            "raw_case_id": raw_case_id,
+            "payment_event_id": event_id,
+            "last_reason": "file_review_portal_busy",
+        }
+        _payment_proof_queue_write_unlocked(queue)
+        return {"success": True, "job_id": job_id, "file_path": str(stored_path)}
+
+    return _with_payment_proof_queue_lock(update)
+
+
+def _payment_proof_queue_snapshot() -> dict:
+    return _with_payment_proof_queue_lock(_payment_proof_queue_read_unlocked)
+
+
+def cmd_process_payment_proof_queue(notify: bool = True, max_items: int = 3) -> dict:
+    """Retry due payment-proof uploads; one portal owner is still enforced below."""
+    now = time.time()
+    queue = _payment_proof_queue_snapshot()
+    jobs = queue.get("jobs") if isinstance(queue.get("jobs"), dict) else {}
+    due = [
+        dict(job)
+        for job in jobs.values()
+        if isinstance(job, dict)
+        and str(job.get("status") or "pending") == "pending"
+        and float(job.get("next_attempt_at") or 0) <= now
+    ]
+    due.sort(key=lambda job: (float(job.get("next_attempt_at") or 0), str(job.get("created_at") or "")))
+    due = due[:max(1, min(int(max_items or 1), 10))]
+    results: List[dict] = []
+
+    for job in due:
+        job_id = str(job.get("job_id") or "")
+        file_path = str(job.get("file_path") or "")
+        if not file_path or not os.path.isfile(file_path):
+            result = {"success": False, "error": "queued_file_missing"}
+        elif _payment_proof_file_sha256(file_path) != str(job.get("file_sha256") or ""):
+            result = {"success": False, "error": "queued_file_hash_mismatch"}
+        else:
+            result = cmd_upload_payment_proof(
+                court_code=str(job.get("court_code") or ""),
+                year=str(job.get("year") or ""),
+                case_type=str(job.get("case_type") or ""),
+                case_number=str(job.get("case_number") or ""),
+                client_name=str(job.get("client_name") or ""),
+                file_path=file_path,
+                payment_event_id=str(job.get("payment_event_id") or ""),
+                notify=False,
+            )
+        results.append({"job_id": job_id, **dict(result or {})})
+
+        def update_result() -> None:
+            current = _payment_proof_queue_read_unlocked()
+            current_jobs = current.setdefault("jobs", {})
+            entry = current_jobs.get(job_id)
+            if not isinstance(entry, dict):
+                return
+            terminal = bool(result.get("success")) and (
+                (
+                    str(result.get("result") or "") == "Uploaded"
+                    and result.get("proof_receipt_committed") is True
+                )
+                or (
+                    str(result.get("result") or "") == "exact_duplicate_verified"
+                    and result.get("proof_schema") == PAYMENT_PROOF_SCHEMA
+                    and bool(result.get("proof_sha256"))
+                    and result.get("proof_receipt_committed") is True
+                )
+            )
+            if terminal:
+                current_jobs.pop(job_id, None)
+                _payment_proof_queue_write_unlocked(current)
+                try:
+                    Path(file_path).unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Unable to remove completed payment-proof queue file", exc_info=True)
+                return
+            attempts = int(entry.get("attempts") or 0) + (0 if result.get("deferred") else 1)
+            entry["attempts"] = attempts
+            entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            entry["last_reason"] = str(result.get("reason") or result.get("error") or "retry_failed")[:200]
+            if attempts >= 12:
+                entry["status"] = "needs_attention"
+            else:
+                delay = 120 if result.get("deferred") else min(3600, 60 * (2 ** min(attempts, 6)))
+                entry["next_attempt_at"] = time.time() + delay
+            current_jobs[job_id] = entry
+            _payment_proof_queue_write_unlocked(current)
+
+        _with_payment_proof_queue_lock(update_result)
+
+        if bool(result.get("success")) and (
+            (
+                str(result.get("result") or "") == "Uploaded"
+                and result.get("proof_receipt_committed") is True
+            )
+            or (
+                str(result.get("result") or "") == "exact_duplicate_verified"
+                and result.get("proof_schema") == PAYMENT_PROOF_SCHEMA
+                and bool(result.get("proof_sha256"))
+                and result.get("proof_receipt_committed") is True
+            )
+        ):
+            _notify(str(result.get("message") or "✅ 繳費憑證已自動上傳。"), notify, topic_key="filereview_payment")
+        elif result.get("deferred"):
+            break
+
+    after = _payment_proof_queue_snapshot()
+    after_jobs = after.get("jobs") if isinstance(after.get("jobs"), dict) else {}
+    pending_count = sum(1 for job in after_jobs.values() if isinstance(job, dict) and job.get("status") == "pending")
+    needs_attention_count = sum(1 for job in after_jobs.values() if isinstance(job, dict) and job.get("status") == "needs_attention")
+    return {
+        "success": needs_attention_count == 0,
+        "processed_count": len(results),
+        "pending_count": pending_count,
+        "needs_attention_count": needs_attention_count,
+        "results": results,
+    }
+
+
+@_portal_serialized("upload_payment_proof")
 def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                              case_number: str, client_name: str = "",
-                             file_path: str = "", notify: bool = True) -> dict:
+                             file_path: str = "", notify: bool = True,
+                             payment_event_id: str = "") -> dict:
     """Upload payment proof screenshot to an existing file review application."""
     if not all([court_code, year, case_type, case_number]):
         return {"success": False, "error": "missing required fields"}
@@ -1692,7 +2735,10 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
     # 去重檢查
     case_num_padded = str(case_number).zfill(6)
     raw_case_id = f"{year}.{case_type}.{case_num_padded}"
-    registry_path = os.path.join(creds.get("download_folder", "./閱卷下載"), "payment_proof_registry.json")
+    file_sha256 = _payment_proof_file_sha256(file_path)
+    event_id = _payment_proof_event_identity(explicit=payment_event_id)
+    dedup_key = _payment_proof_dedup_key(raw_case_id, file_sha256, event_id)
+    registry_path = str(get_payment_proof_registry_path(creds.get("download_folder", "./閱卷下載")))
     proof_registry = {}
     if os.path.exists(registry_path):
         try:
@@ -1701,19 +2747,28 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1011, exc_info=True)
 
-    # DB-backed dedup (primary), JSON fallback
-    _proof_already_done = raw_case_id in proof_registry
+    # Legacy case-only rows (and legacy DB keys) are not proof identity.
+    _proof_already_done = _payment_proof_registry_matches(
+        proof_registry, raw_case_id, file_sha256, event_id
+    )
     if not _proof_already_done:
         try:
             from skills.ops.dedup_db import is_done as _dd_is_done
-            _proof_already_done = _dd_is_done("payment_proof", raw_case_id)
+            _proof_already_done = _dd_is_done("payment_proof", dedup_key)
         except Exception:
             pass
     if _proof_already_done:
-        msg = f"ℹ️ {raw_case_id} 繳費憑證已上傳過 ({proof_registry.get(raw_case_id, {}).get('uploaded_at', '?')})，跳過"
+        msg = f"ℹ️ {raw_case_id} 此繳費憑證已上傳過，跳過"
         logger.info(msg)
         _notify(msg, notify, topic_key="filereview_payment")
-        return {"success": True, "result": "Skipped", "message": msg}
+        return {
+            "success": True,
+            "result": "exact_duplicate_verified",
+            "proof_schema": PAYMENT_PROOF_SCHEMA,
+            "proof_sha256": file_sha256,
+            "proof_receipt_committed": True,
+            "message": msg,
+        }
 
     try:
         mod = _ensure_imports()
@@ -1743,6 +2798,8 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                 "case_type": case_type,
                 "case_number": str(case_number),
                 "client_name": client_name,
+                "payment_event_id": event_id,
+                "pay_id": event_id,
             }
             # 複製並改名為含「繳費憑證」的檔名讓 OLA 自動辨識
             import shutil as _shutil
@@ -1760,23 +2817,35 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                 msg = f"✅ 繳費憑證已上傳 — {label}"
                 # 記錄到 registry
                 from datetime import datetime as _dt
-                proof_registry[raw_case_id] = {
+                _payment_proof_registry_upsert(proof_registry, raw_case_id, {
+                    "proof_schema": PAYMENT_PROOF_SCHEMA,
                     "uploaded_at": _dt.now().isoformat(),
                     "court_code": court_code,
                     "file": os.path.basename(file_path),
-                }
+                    "file_sha256": file_sha256,
+                    "payment_event_id": event_id,
+                })
                 try:
-                    os.makedirs(os.path.dirname(registry_path), exist_ok=True)
-                    with open(registry_path, "w", encoding="utf-8") as _wf:
-                        json.dump(proof_registry, _wf, ensure_ascii=False, indent=2)
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1073, exc_info=True)
+                    _write_payment_proof_registry_atomic(registry_path, proof_registry)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("payment proof registry commit failed: %s", exc)
+                    msg = "❌ 繳費憑證已送出但 terminal proof 未落盤，保留待 reconciliation"
+                    _notify(msg, notify, topic_key="filereview_payment")
+                    return {
+                        "success": False,
+                        "result": "registry_not_committed",
+                        "deferred": True,
+                        "reason": "payment_proof_registry_write_failed",
+                        "proof_receipt_committed": False,
+                        "message": msg,
+                    }
                 # DB dedup sync
                 try:
                     from skills.ops.dedup_db import mark_done as _dd_mark
-                    _dd_mark("payment_proof", raw_case_id, metadata={
+                    _dd_mark("payment_proof", dedup_key, metadata={
                         "court_code": court_code, "file": os.path.basename(file_path),
-                        "source": "cmd_upload_payment_proof",
+                        "file_sha256": file_sha256, "payment_event_id": event_id,
+                        "proof_schema": PAYMENT_PROOF_SCHEMA, "source": "cmd_upload_payment_proof",
                     })
                 except Exception:
                     pass
@@ -1787,6 +2856,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
 
             _notify(msg, notify, topic_key="filereview_payment")
             return {"success": result == "Uploaded", "result": result,
+                    "proof_receipt_committed": result == "Uploaded",
                     "case": label, "message": msg}
 
         finally:
@@ -1800,6 +2870,7 @@ def cmd_upload_payment_proof(court_code: str, year: str, case_type: str,
                 "traceback": traceback.format_exc()[-500:]}
 
 
+@_portal_serialized("upload_payment_proofs_batch")
 def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
                                     notify: bool = True) -> dict:
     """
@@ -1863,7 +2934,7 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
     # ── 去重: 載入已上傳記錄 ──
     cfg = _load_config()
     creds = _get_credentials(cfg)
-    registry_path = os.path.join(creds.get("download_folder", "./閱卷下載"), "payment_proof_registry.json")
+    registry_path = str(get_payment_proof_registry_path(creds.get("download_folder", "./閱卷下載")))
     proof_registry = {}
     if os.path.exists(registry_path):
         try:
@@ -1876,11 +2947,13 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
     new_list = []
     for p in parsed_list:
         key = p.get("raw_case_id", "")
-        _already = key in proof_registry
+        file_sha256 = _payment_proof_file_sha256(str(p.get("file_path") or ""))
+        event_id = _payment_proof_event_identity(p)
+        _already = _payment_proof_registry_matches(proof_registry, key, file_sha256, event_id)
         if not _already and key:
             try:
                 from skills.ops.dedup_db import is_done as _dd_is_done
-                _already = _dd_is_done("payment_proof", key)
+                _already = _dd_is_done("payment_proof", _payment_proof_dedup_key(key, file_sha256, event_id))
             except Exception:
                 pass
         if _already:
@@ -1933,6 +3006,8 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
                 "year": p["year"],
                 "case_type": p["case_type"],
                 "case_number": p["case_number"],
+                "payment_event_id": _payment_proof_event_identity(p),
+                "pay_id": str(p.get("pay_id") or ""),
             }
             label = f"{p['court_code']} {p['year']}年{p['case_type']}字第{p['case_number']}號"
             # 複製並改名為「繳費憑證_案號.png」讓 OLA 自動辨識
@@ -1960,29 +3035,41 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
             })
 
             if result == "Uploaded":
-                _notify(f"✅ 繳費憑證已上傳 — {label}", notify, topic_key="filereview_payment")
                 # 記錄到 registry 避免重複上傳
                 from datetime import datetime as _dt
-                proof_registry[p["raw_case_id"]] = {
+                proof_sha256 = _payment_proof_file_sha256(str(p["file_path"]))
+                _payment_proof_registry_upsert(proof_registry, p["raw_case_id"], {
+                    "proof_schema": PAYMENT_PROOF_SCHEMA,
                     "uploaded_at": _dt.now().isoformat(),
                     "court_code": p["court_code"],
                     "court_name": p["court_name"],
                     "file": os.path.basename(p["file_path"]),
                     "amount": p.get("amount", ""),
-                }
+                    "file_sha256": proof_sha256,
+                    "payment_event_id": _payment_proof_event_identity(p),
+                })
+                proof_receipt_committed = False
                 try:
-                    os.makedirs(os.path.dirname(registry_path), exist_ok=True)
-                    with open(registry_path, "w", encoding="utf-8") as _wf:
-                        json.dump(proof_registry, _wf, ensure_ascii=False, indent=2)
-                except Exception:
-                    logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 1262, exc_info=True)
+                    _write_payment_proof_registry_atomic(registry_path, proof_registry)
+                    proof_receipt_committed = True
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("payment proof batch registry commit failed: %s", exc)
+                    results[-1]["result"] = "registry_not_committed"
+                    results[-1]["proof_receipt_committed"] = False
+                    continue
+                results[-1]["proof_receipt_committed"] = proof_receipt_committed
+                _notify(f"✅ 繳費憑證已上傳 — {label}", notify, topic_key="filereview_payment")
                 # DB dedup sync
                 try:
                     from skills.ops.dedup_db import mark_done as _dd_mark
-                    _dd_mark("payment_proof", p["raw_case_id"], metadata={
+                    _dd_mark("payment_proof", _payment_proof_dedup_key(
+                        p["raw_case_id"], proof_sha256, _payment_proof_event_identity(p)
+                    ), metadata={
                         "court_code": p["court_code"], "court_name": p["court_name"],
                         "file": os.path.basename(p["file_path"]),
-                        "source": "cmd_upload_payment_proofs_batch",
+                        "file_sha256": proof_sha256,
+                        "payment_event_id": _payment_proof_event_identity(p),
+                        "proof_schema": PAYMENT_PROOF_SCHEMA, "source": "cmd_upload_payment_proofs_batch",
                     })
                 except Exception:
                     pass
@@ -2011,7 +3098,11 @@ def cmd_upload_payment_proofs_batch(screenshot_dir: str = "",
     }
 
 
-def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) -> dict:
+def cmd_upload_payment_proof_from_image(
+    image_path: str,
+    notify: bool = True,
+    case_hint: str = "",
+) -> dict:
     """
     從通道（LINE/DC/TG）傳來的繳費截圖，自動解析案號並上傳至 OLA。
 
@@ -2034,14 +3125,48 @@ def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) ->
 
     # Step 1: 解析截圖
     logger.info("💰 Parsing payment screenshot from channel: %s", image_path)
-    info = mod.FileReviewManager.parse_payment_screenshot(image_path)
-    if not info or not info.get("court_code") or not info.get("year"):
+    image_info = mod.FileReviewManager.parse_payment_screenshot(image_path) or {}
+    hint_info = {}
+    if str(case_hint or "").strip():
+        hint_info = mod.FileReviewManager._parse_payment_text(
+            str(case_hint),
+            require_payment_context=False,
+        ) or {}
+
+    # 圖片與訊息若都含案號，兩者必須一致；衝突時 fail closed，避免上傳到別案。
+    image_case = str(image_info.get("raw_case_id") or "").strip()
+    hint_case = str(hint_info.get("raw_case_id") or "").strip()
+    if image_case and hint_case and image_case != hint_case:
         msg = (
-            "⚠️ 無法從這張截圖解析出繳費案號資訊。\n"
-            "請確認截圖包含案件繳費狀況查詢清單（含案號、法院、金額等欄位）。"
+            "⚠️ 截圖與訊息中的案號不一致，為避免上傳到錯誤案件，已停止處理。\n"
+            "請確認法院與案號後重新上傳。"
         )
         _notify(msg, notify, topic_key="filereview_payment")
-        return {"success": False, "error": "parse_failed", "message": msg}
+        return {"success": False, "error": "case_hint_conflict", "message": msg}
+
+    info = dict(image_info)
+    for field in (
+        "year", "case_type", "case_number", "court_name", "court_code",
+        "raw_case_id", "amount", "payer",
+    ):
+        if not info.get(field) and hint_info.get(field):
+            info[field] = hint_info[field]
+
+    required = ("court_code", "year", "case_type", "case_number")
+    if not all(info.get(field) for field in required):
+        msg = (
+            "⚠️ 已辨識為繳費憑證，但圖片中缺少可安全配對的法院或案號，"
+            "因此沒有上傳。\n"
+            "請在上傳訊息中一併註明法院與完整案號，例如："
+            "「臺北地院 115年度訴字第123號 繳費」。"
+        )
+        _notify(msg, notify, topic_key="filereview_payment")
+        return {
+            "success": False,
+            "error": "case_identity_incomplete",
+            "message": msg,
+            "missing_fields": [field for field in required if not info.get(field)],
+        }
 
     court_code = info["court_code"]
     year = info["year"]
@@ -2059,18 +3184,50 @@ def cmd_upload_payment_proof_from_image(image_path: str, notify: bool = True) ->
     )
 
     # Step 2: 呼叫現有的單件上傳 (含去重 + OLA 登入 + 上傳)
-    return cmd_upload_payment_proof(
+    upload_result = cmd_upload_payment_proof(
         court_code=court_code,
         year=year,
         case_type=case_type,
         case_number=case_number,
         file_path=image_path,
         notify=notify,
+        payment_event_id=_payment_proof_event_identity(info),
     )
+    if upload_result.get("deferred") and upload_result.get("reason") == "file_review_portal_busy":
+        queued = _enqueue_payment_proof_upload(
+            image_path=image_path,
+            info=info,
+            case_hint=case_hint,
+        )
+        if queued.get("success"):
+            msg = (
+                "📥 法院入口目前由其他作業使用，這張繳費憑證已加入自動上傳佇列。\n"
+                "MAGI 會在入口釋放後自動重試，完成時通知；您不需要重新上傳。"
+            )
+            return {
+                "success": True,
+                "ok": True,
+                "status": "queued",
+                "queued": True,
+                "deferred": True,
+                "reason": "file_review_portal_busy",
+                "job_id": queued.get("job_id"),
+                "message": msg,
+            }
+        return {
+            "success": False,
+            "status": "queue_failed",
+            "error": str(queued.get("error") or "payment_proof_queue_failed"),
+            "message": "❌ 法院入口忙碌，且本次未能安全儲存繳費憑證；請保留原圖並稍後重試。",
+        }
+    return upload_result
 
 
-def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
+@_portal_serialized("download_payment_slips")
+def cmd_download_payment_slips(max_days: int = 14, notify: bool = True, target_case_number: str = "") -> dict:
     """Download all pending payment slip PDFs and send via TG."""
+    if _scheduled_check_fixture_provider() is not None:
+        return _fixture_download_payment_slips()
     cfg = _load_config()
     creds = _get_credentials(cfg)
     if not creds["username"] or not creds["password"]:
@@ -2098,58 +3255,100 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
 
             mgr.navigate_to_file_review()
 
-            results = mgr.download_all_payment_slips(max_days=max_days)
+            results = mgr.download_all_payment_slips(
+                max_days=max_days,
+                target_case_number=target_case_number or None,
+            )
 
-            # Collect PDF paths — only newly downloaded (skip already_existed)
+            # Collect PDF paths.  Existing files still need delivery if the
+            # previous run downloaded them but failed to send the PDF.
             pdf_paths = []
-            case_labels = []
+            captions_by_path: Dict[str, str] = {}
+            notice_keys_by_path: Dict[str, Iterable[str]] = {}
             for r in results:
-                if r.get("already_existed"):
-                    continue
                 # 使用 all_paths 取得全部檔案，fallback 到 pdf_path
                 paths = r.get("all_paths") or []
                 if not paths:
                     p = r.get("pdf_path", "")
                     if p:
                         paths = [p]
-                for path in paths:
-                    if path and os.path.exists(path):
-                        pdf_paths.append(path)
+                valid_paths = [path for path in paths if _is_valid_payment_pdf_file(path)]
+                if r.get("already_existed"):
+                    valid_paths = [
+                        path for path in valid_paths
+                        if not _payment_file_already_delivered(path, creds["download_folder"])
+                    ]
                 party = r.get("party") or ""
                 case_no = r.get("case_number") or ""
-                if paths:
-                    case_labels.append(f"{party}｜{case_no}")
+                label = f"{party}｜{case_no}" if (party or case_no) else ""
+                notice_keys = _portal_payment_notice_keys({
+                    "case_number": case_no,
+                    "court_case_no": case_no,
+                    "party": party,
+                    "rowid": r.get("rowid") or "",
+                    "payid": r.get("payid") or r.get("p_payid") or "",
+                })
+                for path in paths:
+                    if path in valid_paths:
+                        pdf_paths.append(path)
+                        captions_by_path[path] = label or os.path.basename(path)
+                        if r.get("already_existed") and notice_keys:
+                            notice_keys_by_path[path] = notice_keys
 
             if pdf_paths:
-                # Send via TG
                 summary_lines = [f"💰 繳費單 PDF 下載完成（{len(pdf_paths)} 件）："]
-                for i, label in enumerate(case_labels, 1):
+                display_labels: List[str] = []
+                seen_labels: Set[str] = set()
+                for path in pdf_paths:
+                    label = captions_by_path.get(path) or os.path.basename(path)
+                    if label and label not in seen_labels:
+                        seen_labels.add(label)
+                        display_labels.append(label)
+                for i, label in enumerate(display_labels, 1):
                     summary_lines.append(f"  {i}. {label}")
 
                 msg = "\n".join(summary_lines)
 
-                # Send notification text first
-                _notify(msg, notify)
-
-                # Send PDFs via TG
-                for i, pdf_path in enumerate(pdf_paths):
-                    label = case_labels[i] if i < len(case_labels) else os.path.basename(pdf_path)
-                    _notify_file(pdf_path, caption=f"📄 繳費單 ({i+1}/{len(pdf_paths)}): {label}", flag=notify)
+                # Each PDF caption is the user-facing notification. Do not send
+                # a separate summary first, or the same payment slip appears
+                # twice with different wording.
+                delivery = _send_payment_pdf_files(
+                    pdf_paths,
+                    download_folder=creds["download_folder"],
+                    caption_prefix="💰 繳費單 PDF 下載完成",
+                    notify=notify,
+                    captions_by_path=captions_by_path,
+                    notice_keys_by_path=notice_keys_by_path,
+                )
+                failed = int(delivery.get("failed") or 0)
+                sent = int(delivery.get("sent") or 0)
+                success = failed == 0
 
                 return {
-                    "success": True,
+                    "success": success,
                     "count": len(pdf_paths),
                     "pdf_paths": pdf_paths,
-                    "cases": case_labels,
+                    "cases": display_labels,
+                    "delivery": delivery,
+                    "sent": sent,
+                    "failed": failed,
+                    "error": "payment_pdf_delivery_failed" if failed else "",
                     "message": msg,
                 }
             else:
                 msg = "ℹ️ 無待下載繳費單（可能全部已處理或無待繳費案件）"
-                _notify(msg, notify)
+                logger.info("Payment slip download found no pending PDFs; notification suppressed.")
                 return {
                     "success": True,
                     "count": 0,
                     "pdf_paths": [],
+                    "delivery": {
+                        "sent": 0,
+                        "failed": 0,
+                        "suppressed_noop": True,
+                    },
+                    "sent": 0,
+                    "failed": 0,
                     "message": msg,
                 }
 
@@ -2161,6 +3360,828 @@ def cmd_download_payment_slips(max_days: int = 14, notify: bool = True) -> dict:
         logger.error("Download payment slips failed: %s", error_msg)
         _notify("❌ 繳費單下載失敗: " + error_msg, notify)
         return {"success": False, "error": error_msg, "traceback": traceback.format_exc()[-500:]}
+
+
+def _scheduled_check_fixture_provider() -> Tuple[Path, Path, dict] | None:
+    """Load the bounded provider without manufacturing command results."""
+    raw_path = str(os.environ.get("MAGI_FILE_REVIEW_SCHEDULE_FIXTURE_PATH") or "").strip()
+    if not raw_path:
+        return None
+    fixture_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or not fixture_raw
+    ):
+        raise RuntimeError("file-review schedule fixture is not safely bound")
+    fixture = Path(fixture_raw).expanduser().resolve()
+    provider_path = Path(raw_path).expanduser().resolve()
+    if (
+        not (fixture / ".magi-v3-schedule-fixture").is_file()
+        or not provider_path.is_file()
+        or not provider_path.is_relative_to(fixture)
+    ):
+        raise RuntimeError("file-review schedule fixture escaped its owned root")
+    try:
+        provider = json.loads(provider_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("file-review schedule fixture is unreadable") from exc
+    if provider.get("schema") != "magi.v3.file-review-scheduled-fixture/v1":
+        raise RuntimeError("file-review schedule fixture schema is invalid")
+    emails = provider.get("emails")
+    portal_files = provider.get("portal_files")
+    if not isinstance(emails, list) or not isinstance(portal_files, list):
+        raise RuntimeError("file-review schedule fixture lists are invalid")
+    if len(emails) > 10 or len(portal_files) > 10:
+        raise RuntimeError("file-review schedule fixture exceeded its bound")
+    return fixture, provider_path, provider
+
+
+def _fixture_step_receipt(step: str, handler: str, evidence: dict) -> dict:
+    loaded = _scheduled_check_fixture_provider()
+    if loaded is None:
+        raise RuntimeError("file-review receipt requires the bounded provider")
+    fixture, provider_path, _provider = loaded
+    created_at = datetime.now().isoformat(timespec="microseconds")
+    nonce = uuid.uuid4().hex
+    input_sha256 = hashlib.sha256(
+        json.dumps(evidence, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    payload = {
+        "schema": "magi.file-review-step-receipt/v1",
+        "receipt_id": hashlib.sha256(
+            f"{step}:{handler}:{created_at}:{os.getpid()}:{nonce}:{input_sha256}".encode()
+        ).hexdigest(),
+        "step": step,
+        "handler": handler,
+        "created_at": created_at,
+        "pid": os.getpid(),
+        "nonce": nonce,
+        "input_sha256": input_sha256,
+        "provider_sha256": hashlib.sha256(provider_path.read_bytes()).hexdigest(),
+    }
+    receipt_dir = fixture / "state" / "formal-receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    target = receipt_dir / f"{step}-{nonce}.json"
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        **payload,
+        "receipt_path": target.relative_to(fixture).as_posix(),
+        "receipt_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+    }
+
+
+def _invoke_scheduled_formal_handler(
+    step: str, handler: Callable[..., dict], **kwargs
+) -> dict:
+    expected = {
+        "check_emails": "cmd_check_emails",
+        "download_payment_slips": "cmd_download_payment_slips",
+        "download": "cmd_download_background",
+    }.get(step)
+    if _scheduled_check_fixture_provider() is not None and (
+        not expected
+        or getattr(handler, "__module__", "") != __name__
+        or getattr(handler, "__name__", "") != expected
+    ):
+        raise RuntimeError(f"file-review formal handler rejected for {step}")
+    result = handler(**kwargs)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"file-review formal handler returned invalid result for {step}")
+    return result
+
+
+def _publish_scheduled_check_state(result: dict) -> None:
+    """Publish every formal LIVE portal check to the shared readiness state.
+
+    The hourly scheduler and the always-on worker share one court-portal lock.
+    Previously, only the worker wrote ``file_review_auto_state.json``.  When
+    the hourly scheduler legitimately owned the portal, the worker recorded a
+    benign ``download_already_running`` observation and the UI lost the actual
+    verified portal result.  Publishing the formal result at its source keeps
+    health, notifications, and download readiness in sync regardless of which
+    authorized owner performed the scan.
+    """
+    explicit = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_STATE") or "").strip()
+    mutable_static = str(os.environ.get("MAGI_MUTABLE_STATIC_DIR") or "").strip()
+    if not explicit and not mutable_static:
+        return
+    path = Path(explicit).expanduser() if explicit else Path(mutable_static).expanduser() / "file_review_auto_state.json"
+    steps = result.get("steps") if isinstance(result.get("steps"), dict) else {}
+    email_step = steps.get("check_emails") if isinstance(steps.get("check_emails"), dict) else {}
+    payment_step = steps.get("download_payment_slips") if isinstance(steps.get("download_payment_slips"), dict) else {}
+    download_step = steps.get("download") if isinstance(steps.get("download"), dict) else {}
+    canonical = {
+        "ok": bool(result.get("success")),
+        "degraded": bool(result.get("deferred")),
+        "skipped": bool(result.get("skipped")),
+        "reason": str(result.get("status") or "scheduled_check"),
+        "check": {
+            "ok": email_step.get("success") is not False,
+            "parsed": email_step,
+        },
+        "payment_slips": payment_step,
+        "download": download_step,
+        "portal_verified": bool(email_step.get("portal_probe_ok")),
+        "portal_probe_deferred": bool(email_step.get("portal_probe_deferred")),
+        "portal_raw_row_count": int(email_step.get("portal_raw_row_count") or 0),
+        "portal_case_count": int(email_step.get("portal_case_count") or 0),
+        "ready_to_download_count": int(email_step.get("ready_to_download_count") or 0),
+    }
+    try:
+        previous: dict = {}
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous = loaded
+        update = {
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "phase": "scheduled_check_complete",
+        }
+        prior_result = previous.get("result") if isinstance(previous.get("result"), dict) else {}
+        preserve_verified_proof = (
+            bool(result.get("success"))
+            and bool(result.get("deferred"))
+            and bool(email_step.get("portal_probe_deferred"))
+            and bool(prior_result.get("portal_verified"))
+        )
+        if preserve_verified_proof:
+            # This run observed that another owned portal task has the lock; it
+            # did not perform a new portal scan. Keep the last authoritative
+            # proof as readiness truth and publish the defer separately.
+            update["last_observation"] = canonical
+        else:
+            update["result"] = canonical
+        previous.update(update)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps(previous, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("failed to publish scheduled file-review readiness state")
+
+
+def _fresh_file_review_auto_owner_state(max_age_seconds: int = 1800) -> dict:
+    """Return verified state for the single unattended FileReview owner.
+
+    The always-on worker is the primary owner of Gmail, court-portal and
+    download work.  Cron entries are recovery owners only: when this state is
+    fresh and its PID is alive they must not open a second Gmail/Chromium
+    session.  A missing, stale or dead owner deliberately returns ``fresh``
+    false so the scheduled fallback still performs the complete check.
+    """
+    explicit = str(os.environ.get("MAGI_FILE_REVIEW_AUTO_STATE") or "").strip()
+    mutable_static = str(os.environ.get("MAGI_MUTABLE_STATIC_DIR") or "").strip()
+    if not explicit and not mutable_static:
+        return {"fresh": False, "reason": "owner_state_path_unavailable"}
+    path = (
+        Path(explicit).expanduser()
+        if explicit
+        else Path(mutable_static).expanduser() / "file_review_auto_state.json"
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid owner state")
+        updated_at = datetime.fromisoformat(str(payload.get("updated_at") or ""))
+        age_seconds = max(0, int((datetime.now(updated_at.tzinfo) - updated_at).total_seconds()))
+        pid = int(payload.get("pid") or 0)
+        if pid <= 0:
+            return {"fresh": False, "reason": "owner_pid_missing", "age_seconds": age_seconds}
+        os.kill(pid, 0)
+        phase = str(payload.get("phase") or "")
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        terminal_phase = phase in {"cycle_complete", "scheduled_check_complete", "failed", "stopped"}
+        terminal_healthy = not terminal_phase or result.get("ok") is not False
+        fresh = (
+            age_seconds <= max(300, int(max_age_seconds))
+            and phase not in {"failed", "stopped"}
+            and terminal_healthy
+        )
+        return {
+            "fresh": bool(fresh),
+            "reason": (
+                "owner_active"
+                if fresh
+                else ("owner_unhealthy" if not terminal_healthy else "owner_state_stale")
+            ),
+            "age_seconds": age_seconds,
+            "pid": pid,
+            "phase": phase,
+            "portal_verified": bool(result.get("portal_verified")),
+            "portal_probe_deferred": bool(result.get("portal_probe_deferred")),
+            "downloaded_count": int(result.get("downloaded_count") or 0),
+        }
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {"fresh": False, "reason": "owner_state_unverified"}
+
+
+def _fixture_check_emails() -> dict:
+    loaded = _scheduled_check_fixture_provider()
+    if loaded is None:
+        raise RuntimeError("file-review email provider is unavailable")
+    _fixture, _provider_path, provider = loaded
+    emails = provider["emails"]
+    downloadable = [
+        item for item in emails
+        if isinstance(item, dict) and item.get("kind") == "downloadable"
+    ]
+    ignored = [
+        item for item in emails
+        if isinstance(item, dict) and item.get("kind") != "downloadable"
+    ]
+    portal_rows = [
+        {
+            "status": "downloadable",
+            "rowid": f"fixture-row-{index}",
+            "upddt": "fixture-revision-v1",
+        }
+        for index, _raw in enumerate(provider["portal_files"])
+    ]
+    portal_receipt = portal_download_snapshot(portal_rows)
+    receipt = _fixture_step_receipt(
+        "check_emails",
+        "cmd_check_emails",
+        {"emails": emails, "downloadable": len(downloadable), "ignored": len(ignored)},
+    )
+    return {
+        "success": True,
+        "matched": len(downloadable),
+        "ignored": len(ignored),
+        "downloadable_case_numbers": [
+            str(item.get("case_number") or "") for item in downloadable
+        ],
+        "ignored_kinds": [str(item.get("kind") or "") for item in ignored],
+        "willingness_inquiries_excluded": sum(
+            item.get("kind") == "willingness_inquiry" for item in ignored
+        ),
+        "portal_probe_ok": True,
+        "portal_probe_deferred": False,
+        "portal_pending_payment_count": 0,
+        "portal_downloadable_count": len(portal_rows),
+        "ready_to_download_count": 0,
+        "download_hits": 0,
+        **portal_receipt,
+        "provider": "fixture_email_provider",
+        "execution_receipt": receipt,
+    }
+
+
+def _fixture_download_payment_slips() -> dict:
+    loaded = _scheduled_check_fixture_provider()
+    if loaded is None:
+        raise RuntimeError("file-review payment provider is unavailable")
+    _fixture, _provider_path, provider = loaded
+    payment_slips = provider.get("payment_slips") or []
+    if not isinstance(payment_slips, list) or len(payment_slips) > 10:
+        raise RuntimeError("file-review payment fixture exceeded its bound")
+    receipt = _fixture_step_receipt(
+        "download_payment_slips",
+        "cmd_download_payment_slips",
+        {"payment_slips": payment_slips},
+    )
+    return {
+        "success": True,
+        "count": 0,
+        "pdf_paths": [],
+        "provider": "fixture_payment_portal_provider",
+        "execution_receipt": receipt,
+    }
+
+
+def _fixture_download_portal_files() -> dict:
+    loaded = _scheduled_check_fixture_provider()
+    if loaded is None:
+        raise RuntimeError("file-review download provider is unavailable")
+    fixture, _provider_path, provider = loaded
+    unique_hashes: Dict[str, str] = {}
+    duplicate_files: List[str] = []
+    files: List[str] = []
+    downloaded = fixture / "state" / "downloads"
+    downloaded.mkdir(parents=True, exist_ok=True)
+    for raw in provider["portal_files"]:
+        path = (fixture / str(raw)).resolve()
+        if not path.is_file() or path.is_symlink() or not path.is_relative_to(fixture):
+            raise RuntimeError("file-review schedule fixture file is invalid")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        relative = path.relative_to(fixture).as_posix()
+        if digest in unique_hashes:
+            duplicate_files.append(relative)
+            continue
+        unique_hashes[digest] = relative
+        target = downloaded / path.name
+        shutil.copy2(path, target)
+        if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+            raise RuntimeError("file-review fixture download hash changed")
+        files.append(target.relative_to(fixture).as_posix())
+    receipt = _fixture_step_receipt(
+        "download",
+        "cmd_download",
+        {
+            "portal_files": provider["portal_files"],
+            "unique_hashes": sorted(unique_hashes),
+            "duplicates": duplicate_files,
+        },
+    )
+    portal_rows = [
+        {
+            "status": "downloadable",
+            "rowid": f"fixture-row-{index}",
+            "upddt": "fixture-revision-v1",
+        }
+        for index, _raw in enumerate(provider["portal_files"])
+    ]
+    processed_signatures = portal_download_snapshot(portal_rows)[
+        "portal_download_signature_hashes"
+    ]
+    return {
+        "success": True,
+        "downloaded_count": len(files),
+        "duplicate_count": len(duplicate_files),
+        "files": files,
+        "duplicates": duplicate_files,
+        "content_hashes": sorted(unique_hashes),
+        "portal_download_receipt_schema": PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+        "processed_portal_signature_hashes": processed_signatures,
+        "processed_portal_signature_set_hash": signature_set_hash(processed_signatures),
+        "verified_existing_portal_signature_hashes": [],
+        "verified_existing_portal_signature_set_hash": signature_set_hash([]),
+        "handled_portal_signature_hashes": processed_signatures,
+        "handled_portal_signature_set_hash": signature_set_hash(processed_signatures),
+        "provider": "fixture_review_portal_provider",
+        "execution_receipt": receipt,
+    }
+
+
+def _wait_fixture_download_terminal(queued: dict, timeout_sec: float = 30.0) -> dict:
+    job_id = str(queued.get("job_id") or "")
+    pid = int(queued.get("pid") or 0)
+    if not job_id or pid <= 1:
+        raise RuntimeError("file-review fixture background child was not started")
+    clock = __import__("time")
+    deadline = clock.monotonic() + max(1.0, timeout_sec)
+    terminal = {"done", "failed", "cancelled", "deferred", "stopped"}
+    while clock.monotonic() < deadline:
+        state = _read_download_job(job_id)
+        if str(state.get("status") or "").lower() in terminal and not state.get("running"):
+            result = state.get("result") if isinstance(state.get("result"), dict) else {}
+            return {
+                **result,
+                "success": bool(state.get("success")),
+                "queued": True,
+                "job_id": job_id,
+                "pid": pid,
+                "child_terminal": True,
+                "child_status": str(state.get("status") or ""),
+                "child_finished_at": str(state.get("finished_at") or ""),
+                "queue_receipt": queued.get("execution_receipt"),
+                "terminal_state_sha256": hashlib.sha256(
+                    json.dumps(state, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+            }
+        clock.sleep(0.02)
+    raise RuntimeError(f"file-review fixture child did not reach terminal state: {job_id}")
+
+
+def _reconcile_scheduled_download(
+    email_result: dict, download_result: dict
+) -> dict:
+    """Bind a green download step to the portal rows that triggered it.
+
+    A successful command invocation is not evidence that a currently
+    downloadable portal row was handled.  In particular, the download worker
+    may return a clean zero-file result while the preceding authoritative
+    portal probe saw actionable rows.  Require those rows to be accounted for
+    by either a verified PDF or the existing-file signature check.
+    """
+    result = dict(download_result or {})
+    raw_expected = email_result.get("portal_downloadable_count")
+    expected_count_contract = bool(
+        type(raw_expected) is int and raw_expected >= 0
+    )
+    expected = raw_expected if expected_count_contract else 0
+
+    def exact_signature_list(value) -> tuple[list[str], bool]:
+        normalized = normalize_signature_hashes(value if type(value) is list else [])
+        return normalized, bool(type(value) is list and value == normalized)
+
+    raw_expected_signatures = email_result.get("portal_download_signature_hashes")
+    expected_signatures, expected_signatures_exact = exact_signature_list(
+        raw_expected_signatures
+    )
+    expected_set_hash = email_result.get("portal_download_signature_set_hash")
+    probe_fingerprint = email_result.get("portal_probe_snapshot_fingerprint")
+    probe_observed_at = str(
+        email_result.get("portal_probe_observed_at") or ""
+    ).strip()
+    processed_signatures, processed_signatures_exact = exact_signature_list(
+        result.get("processed_portal_signature_hashes")
+    )
+    verified_existing_signatures, verified_existing_signatures_exact = exact_signature_list(
+        result.get("verified_existing_portal_signature_hashes")
+    )
+    mismatch_deferred_fields_present = bool(
+        "mismatch_deferred_portal_signature_hashes" in result
+        or "mismatch_deferred_portal_signature_set_hash" in result
+    )
+    mismatch_deferred_reason = bool(
+        str(result.get("reason") or "").strip()
+        == "court_payload_identity_mismatch"
+    )
+    mismatch_deferred_signatures, mismatch_deferred_signatures_exact = (
+        exact_signature_list(result.get("mismatch_deferred_portal_signature_hashes"))
+        if mismatch_deferred_fields_present or mismatch_deferred_reason
+        else ([], True)
+    )
+    handled_signatures = normalize_signature_hashes(
+        [*processed_signatures, *verified_existing_signatures]
+    )
+    declared_handled_signatures, declared_handled_signatures_exact = exact_signature_list(
+        result.get("handled_portal_signature_hashes")
+    )
+    expected_signature_contract = bool(
+        expected_count_contract
+        and expected_signatures_exact
+        and expected == len(expected_signatures)
+        and expected_set_hash == signature_set_hash(expected_signatures)
+        and probe_fingerprint == portal_snapshot_fingerprint(expected_signatures)
+        and portal_observed_epoch(probe_observed_at) is not None
+        and str(email_result.get("portal_download_receipt_schema") or "")
+        == PORTAL_DOWNLOAD_RECEIPT_SCHEMA
+    )
+    handled_signature_contract = bool(
+        processed_signatures_exact
+        and verified_existing_signatures_exact
+        and declared_handled_signatures_exact
+        and declared_handled_signatures == handled_signatures
+        and str(result.get("portal_download_receipt_schema") or "")
+        == PORTAL_DOWNLOAD_RECEIPT_SCHEMA
+        and result.get("processed_portal_signature_set_hash")
+        == signature_set_hash(processed_signatures)
+        and result.get("verified_existing_portal_signature_set_hash")
+        == signature_set_hash(verified_existing_signatures)
+        and result.get("handled_portal_signature_set_hash")
+        == signature_set_hash(handled_signatures)
+    )
+    mismatch_deferred_contract = bool(
+        mismatch_deferred_signatures_exact
+        and (
+            (
+                not mismatch_deferred_fields_present
+                and not mismatch_deferred_reason
+            )
+            or (
+                mismatch_deferred_fields_present
+                and result.get("mismatch_deferred_portal_signature_set_hash")
+                == signature_set_hash(mismatch_deferred_signatures)
+                and (
+                    (
+                        bool(mismatch_deferred_signatures)
+                        and mismatch_deferred_reason
+                        and result.get("deferred") is True
+                        and set(mismatch_deferred_signatures).isdisjoint(
+                            handled_signatures
+                        )
+                        and set(mismatch_deferred_signatures).issubset(
+                            expected_signatures
+                        )
+                    )
+                    or (
+                        not mismatch_deferred_signatures
+                        and not mismatch_deferred_reason
+                    )
+                )
+            )
+        )
+    )
+    accounted_signatures = normalize_signature_hashes(
+        [*handled_signatures, *mismatch_deferred_signatures]
+    )
+    accounted = (
+        len(set(expected_signatures) & set(accounted_signatures))
+        if (
+            expected_signature_contract
+            and handled_signature_contract
+            and mismatch_deferred_contract
+        )
+        else 0
+    )
+    verified = bool(
+        result.get("success") is True
+        and expected_signature_contract
+        and handled_signature_contract
+        and mismatch_deferred_contract
+        and set(expected_signatures).issubset(accounted_signatures)
+        and (
+            not bool(result.get("deferred"))
+            or bool(mismatch_deferred_signatures)
+        )
+    )
+    result.update(
+        {
+            "expected_portal_downloadable_count": expected,
+            "accounted_portal_downloadable_count": accounted,
+            "download_reconciliation_verified": verified,
+            "portal_download_receipt_schema": PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+            "expected_portal_signature_hashes": expected_signatures,
+            "expected_portal_signature_set_hash": signature_set_hash(expected_signatures),
+            "handled_portal_signature_hashes": handled_signatures,
+            "handled_portal_signature_set_hash": signature_set_hash(handled_signatures),
+            "mismatch_deferred_portal_signature_hashes": mismatch_deferred_signatures,
+            "mismatch_deferred_portal_signature_set_hash": signature_set_hash(
+                mismatch_deferred_signatures
+            ),
+            "accounted_portal_signature_hashes": accounted_signatures,
+            "accounted_portal_signature_set_hash": signature_set_hash(
+                accounted_signatures
+            ),
+            "reconciled_probe_snapshot_fingerprint": probe_fingerprint,
+            "reconciled_probe_observed_at": probe_observed_at,
+        }
+    )
+    if (
+        result.get("success") is True
+        and not bool(result.get("deferred"))
+        and not verified
+    ):
+        result.update(
+            {
+                "success": False,
+                "status": "failed",
+                "reason": "portal_downloadable_not_reconciled",
+                "error": "portal_downloadable_not_reconciled",
+                "message": (
+                    "法院入口顯示可下載資料，但本輪沒有取得完整 PDF "
+                    "或已存在檔案的簽章證據；已保留供下輪重試。"
+                ),
+            }
+        )
+    return result
+
+
+def cmd_scheduled_check(notify: bool = True) -> dict:
+    """Cron entrypoint for the complete file-review pipeline.
+
+    The old cron invoked only ``download``, which covered review-volume download
+    but not the payment/Gmail/portal scan.  Keep one explicit entrypoint so the
+    scheduled job and health checks exercise the same path.
+
+    Courts may upload review materials in batches.  Case-level skipping stays
+    disabled, while verified button rows use the manager's signature-bound,
+    expiring registry.  This still discovers changed rows immediately without
+    repeatedly clicking the same unchanged download control every few minutes.
+    """
+    if (
+        not _truthy(os.environ.get("MAGI_FILE_REVIEW_PRIMARY_OWNER", "0"))
+        and not _truthy(os.environ.get("MAGI_FILE_REVIEW_FORCE_RUN", "0"))
+    ):
+        owner_state = _fresh_file_review_auto_owner_state()
+        if owner_state.get("fresh"):
+            return {
+                "success": True,
+                "status": "delegated",
+                "skipped": True,
+                "deferred": False,
+                "reason": "primary_owner_active",
+                "owner": "file_review_auto",
+                "owner_state": owner_state,
+                "steps": {},
+                "message": "閱卷常駐巡查正常；本排程為備援，未重複掃描 Gmail 或法院入口。",
+            }
+
+    incremental_env_keys = (
+        "MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP",
+        "MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP",
+    )
+    previous_incremental_env = {key: os.environ.get(key) for key in incremental_env_keys}
+    os.environ["MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP"] = "0"
+    os.environ["MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP"] = "1"
+    portal_env_key = "MAGI_FILE_REVIEW_CHECK_WITH_PORTAL"
+    previous_portal_env = os.environ.get(portal_env_key)
+    download_budget_env_key = "MAGI_FILE_REVIEW_DOWNLOAD_MAX_RUNTIME_SEC"
+    previous_download_budget = os.environ.get(download_budget_env_key)
+    if previous_download_budget is None:
+        # The outer cron owns a 900-second envelope.  Leave enough time for
+        # popup cleanup, browser shutdown and the structured result to land;
+        # unfinished document buttons are persisted and resumed next hour.
+        os.environ[download_budget_env_key] = "540"
+    steps: Dict[str, dict] = {}
+
+    try:
+        fixture_provider = _scheduled_check_fixture_provider()
+        if fixture_provider is None:
+            # The regular lightweight email monitor may intentionally disable
+            # portal access, but the formal hourly gate needs one authoritative
+            # portal snapshot to decide whether payment/download work exists.
+            os.environ[portal_env_key] = "1"
+        email_result = _invoke_scheduled_formal_handler(
+            "check_emails", cmd_check_emails, notify=notify, notify_empty=False
+        )
+        steps["check_emails"] = email_result
+        portal_probe_transient_deferred = bool(
+            not email_result.get("portal_probe_ok")
+            and not email_result.get("portal_probe_deferred")
+            and not email_result.get("portal_failure_alert")
+            and _is_transient_portal_probe_failure(
+                {
+                    "error": email_result.get("portal_probe_error"),
+                    "error_code": email_result.get("portal_probe_error_code"),
+                }
+            )
+        )
+
+        try:
+            max_days = int(os.environ.get("MAGI_FILE_REVIEW_PAYMENT_SLIP_MAX_DAYS", "14") or "14")
+        except Exception:
+            max_days = 14
+        max_days = max(1, min(max_days, 60))
+        if fixture_provider is not None:
+            steps["download_payment_slips"] = _invoke_scheduled_formal_handler(
+                "download_payment_slips",
+                cmd_download_payment_slips,
+                max_days=max_days,
+                notify=notify,
+            )
+        elif bool(email_result.get("portal_probe_deferred")):
+            steps["download_payment_slips"] = {
+                "success": True,
+                "status": "deferred",
+                "deferred": True,
+                "skipped": True,
+                "reason": "portal_probe_deferred",
+            }
+        elif not bool(email_result.get("portal_probe_ok")):
+            steps["download_payment_slips"] = {
+                "success": True,
+                "status": "deferred",
+                "deferred": True,
+                "skipped": True,
+                "reason": (
+                    "portal_probe_transient_retry"
+                    if portal_probe_transient_deferred
+                    else "portal_probe_failed"
+                ),
+            }
+        elif int(email_result.get("portal_pending_payment_count") or 0) <= 0:
+            steps["download_payment_slips"] = {
+                "success": True,
+                "status": "skipped",
+                "skipped": True,
+                "deferred": False,
+                "reason": "verified_no_pending_payment",
+                "downloaded_count": 0,
+            }
+        else:
+            steps["download_payment_slips"] = _invoke_scheduled_formal_handler(
+                "download_payment_slips",
+                cmd_download_payment_slips,
+                max_days=max_days,
+                notify=notify,
+            )
+
+        if fixture_provider is not None:
+            download_queued = _invoke_scheduled_formal_handler(
+                "download", cmd_download_background, case_number="", notify=notify
+            )
+            steps["download"] = (
+                _wait_fixture_download_terminal(download_queued)
+                if download_queued.get("success")
+                else download_queued
+            )
+        elif bool(email_result.get("portal_probe_deferred")):
+            # Another court-portal owner already holds the serialized resource.
+            # A second login cannot add evidence and is likely to strand another
+            # Chromium process, so preserve the deferred state for the next run.
+            steps["download"] = {
+                "success": True,
+                "status": "deferred",
+                "deferred": True,
+                "skipped": True,
+                "reason": "portal_probe_deferred",
+                "message": "入口列表正由其他作業使用，卷宗下載安全延後。",
+            }
+        elif portal_probe_transient_deferred:
+            steps["download"] = {
+                "success": True,
+                "status": "deferred",
+                "deferred": True,
+                "skipped": True,
+                "reason": "portal_probe_transient_retry",
+                "error": str(email_result.get("portal_probe_error") or "portal_probe_failed"),
+                "message": "法院入口暫時無法開啟，本輪安全延後並於下個排程重試。",
+            }
+        elif not bool(email_result.get("portal_probe_ok")):
+            steps["download"] = {
+                "success": False,
+                "status": "failed",
+                "deferred": False,
+                "skipped": True,
+                "reason": "portal_probe_failed",
+                "error": str(email_result.get("portal_probe_error") or "portal_probe_failed"),
+                "message": "法院入口探測失敗，本輪不啟動完整下載；下個排程重試。",
+            }
+        elif (
+            bool(email_result.get("portal_probe_ok"))
+            and int(email_result.get("portal_downloadable_count") or 0) <= 0
+            and int(email_result.get("ready_to_download_count") or 0) <= 0
+            and int(email_result.get("download_hits") or 0) <= 0
+        ):
+            # The formal portal scan already proved that there is no actionable
+            # review material.  Reopening SSO and walking every historical row
+            # here used to consume the entire 900-second cron envelope and then
+            # leave Playwright with a broken pipe.  The next hourly scan still
+            # re-probes the portal, so this does not suppress future uploads.
+            steps["download"] = {
+                "success": True,
+                "status": "skipped",
+                "skipped": True,
+                "deferred": False,
+                "reason": "verified_no_download_signal",
+                "downloaded_count": 0,
+                "portal_download_receipt_schema": PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+                "processed_portal_signature_hashes": [],
+                "processed_portal_signature_set_hash": signature_set_hash([]),
+                "verified_existing_portal_signature_hashes": [],
+                "verified_existing_portal_signature_set_hash": signature_set_hash([]),
+                "handled_portal_signature_hashes": [],
+                "handled_portal_signature_set_hash": signature_set_hash([]),
+                "message": "入口與信箱均已驗證無可下載卷宗，本輪不重複登入。",
+            }
+        else:
+            # A queued child only proves that process creation succeeded. It
+            # does not prove that the court popup reached a terminal state.
+            # Keep cron attached to the real outcome so a popup timeout cannot
+            # be recorded as a green scheduled run.
+            steps["download"] = _invoke_scheduled_formal_handler(
+                "download", cmd_download_sync, case_number="", notify=notify
+            )
+        steps["download"] = _reconcile_scheduled_download(
+            email_result, steps.get("download") or {}
+        )
+    finally:
+        if previous_portal_env is None:
+            os.environ.pop(portal_env_key, None)
+        else:
+            os.environ[portal_env_key] = previous_portal_env
+        if previous_download_budget is None:
+            os.environ.pop(download_budget_env_key, None)
+        else:
+            os.environ[download_budget_env_key] = previous_download_budget
+        for key, value in previous_incremental_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    failed_steps = [
+        name
+        for name, result in steps.items()
+        if isinstance(result, dict) and result.get("success") is False
+    ]
+    deferred_steps = [
+        name
+        for name, result in steps.items()
+        if isinstance(result, dict) and bool(result.get("deferred"))
+    ]
+    ok = not failed_steps
+    message = (
+        "閱卷排程本輪未完成項目已保留，將自動續跑"
+        if ok and deferred_steps
+        else "閱卷排程完整檢查完成"
+        if ok
+        else "閱卷排程完整檢查有步驟失敗：" + "、".join(failed_steps)
+    )
+    fixture_provider = _scheduled_check_fixture_provider()
+    result = {
+        "success": ok,
+        "status": "deferred" if ok and deferred_steps else ("done" if ok else "failed"),
+        "deferred": bool(deferred_steps),
+        "skipped": bool(deferred_steps),
+        "message": message,
+        "failed_steps": failed_steps,
+        "deferred_steps": deferred_steps,
+        "steps": steps,
+        "provider_quality_certified": False if fixture_provider is not None else None,
+        "provider_role": "bounded_email_and_portal_fixture" if fixture_provider is not None else "live_email_and_portal",
+    }
+    if fixture_provider is not None:
+        result["execution_receipt"] = _fixture_step_receipt(
+            "scheduled_check",
+            "cmd_scheduled_check",
+            {
+                "step_receipt_ids": [
+                    str((value.get("execution_receipt") or {}).get("receipt_id") or "")
+                    for value in steps.values()
+                ],
+                "child_terminal": bool((steps.get("download") or {}).get("child_terminal")),
+            },
+        )
+    else:
+        _publish_scheduled_check_state(result)
+    return result
 
 
 def cmd_confirm_apply(token: str, notify: bool = True, flow_id: str = "",
@@ -2262,8 +4283,11 @@ def cmd_probe(court_code: str, year: str, case_type: str,
     )
 
 
+@_portal_serialized("download")
 def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
     """Download approved file review materials."""
+    if _scheduled_check_fixture_provider() is not None:
+        return _fixture_download_portal_files()
     case_number = str(case_number or "").strip()
     # 防呆：避免把「姓名/描述詞」誤當案號，造成只鎖單案下載。
     if case_number and not re.search(r"\d", case_number):
@@ -2304,14 +4328,48 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
         mod = _ensure_imports()
         db = _get_db_manager(cfg)
 
-        mgr = mod.FileReviewManager(
-            username=creds["username"],
-            password=creds["password"],
-            download_folder=creds["download_folder"],
-            db_manager=db,
-            headless=True,
-            log_callback=lambda msg: logger.info(msg),
-        )
+        def _new_download_manager():
+            return mod.FileReviewManager(
+                username=creds["username"],
+                password=creds["password"],
+                download_folder=creds["download_folder"],
+                db_manager=db,
+                headless=True,
+                log_callback=lambda msg: logger.info(msg),
+            )
+
+        def _manager_nav_error_code(manager) -> str:
+            return str(getattr(manager, "last_navigation_error_code", "") or "").strip()
+
+        def _manager_download_error_code(manager) -> str:
+            return str(getattr(manager, "last_download_error_code", "") or "").strip()
+
+        def _manager_download_error_events(manager) -> list[dict]:
+            raw = getattr(manager, "last_download_error_events", None)
+            if isinstance(raw, list):
+                events = [
+                    {
+                        "code": str(item.get("code") or "").strip(),
+                        "detail": str(item.get("detail") or "").strip()[:500],
+                    }
+                    for item in raw
+                    if isinstance(item, dict) and str(item.get("code") or "").strip()
+                ]
+                if events:
+                    return events
+            code = _manager_download_error_code(manager)
+            if not code:
+                return []
+            return [
+                {
+                    "code": code,
+                    "detail": str(
+                        getattr(manager, "last_download_error_detail", "") or ""
+                    ).strip()[:500],
+                }
+            ]
+
+        mgr = _new_download_manager()
 
         try:
             logger.info("Logging into SSO for download...")
@@ -2332,6 +4390,42 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             _safe_flow_step_status(flow_id, "portal_login", status="succeeded", detail="SSO login ok", ok=True)
 
             nav_ok = mgr.navigate_to_file_review()
+            if not nav_ok and _manager_nav_error_code(mgr) == "invalid_csrf_token":
+                logger.warning("法院入口 CSRF token 失效；關閉舊 session 後重試一次")
+                _safe_flow_step_status(
+                    flow_id,
+                    "portal_login",
+                    status="running",
+                    detail="invalid_csrf_token; retrying fresh session",
+                    ok=True,
+                )
+                try:
+                    mgr.close()
+                except Exception:
+                    pass
+                mgr = _new_download_manager()
+                if not mgr.login():
+                    error_code, error_detail, msg = _portal_login_failure_message(mgr, action_label="CSRF 重試下載")
+                    logger.error(msg)
+                    if error_detail:
+                        logger.error("閱卷登入失敗 detail: %s", error_detail)
+                    _notify(msg, notify)
+                    _safe_flow_step_status(flow_id, "portal_login", status="failed", detail=error_code, ok=False)
+                    _mark_notify_step(flow_id, notify=notify, detail=msg)
+                    out = {"success": False, "error": error_code}
+                    if error_detail:
+                        out["error_detail"] = error_detail
+                    _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
+                    return out
+                nav_ok = mgr.navigate_to_file_review()
+                if not nav_ok and _manager_nav_error_code(mgr) == "invalid_csrf_token":
+                    msg = "法院入口 CSRF token 失效，重開 session 後仍失敗。"
+                    _notify("❌ 閱卷下載失敗: " + msg, notify)
+                    _safe_flow_step_status(flow_id, "portal_login", status="failed", detail="invalid_csrf_token", ok=False)
+                    _mark_notify_step(flow_id, notify=notify, detail=msg)
+                    out = {"success": False, "error": "invalid_csrf_token", "error_detail": msg}
+                    _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
+                    return out
             if not nav_ok:
                 logger.warning("navigate_to_file_review failed; will attempt download from current portal page")
 
@@ -2344,6 +4438,279 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             _safe_flow_step_status(flow_id, "portal_download", status="running", detail=case_number or "all cases")
             downloaded = mgr.check_and_download_available(
                 target_case_number=case_number if case_number else None
+            )
+            if not downloaded and _manager_download_error_code(mgr) == "invalid_csrf_token":
+                logger.warning("下載列表 CSRF token 失效；關閉舊 session 後重試一次")
+                _safe_flow_step_status(
+                    flow_id,
+                    "portal_download",
+                    status="running",
+                    detail="invalid_csrf_token; retrying fresh session",
+                    ok=True,
+                )
+                try:
+                    mgr.close()
+                except Exception:
+                    pass
+                mgr = _new_download_manager()
+                if not mgr.login():
+                    error_code, error_detail, msg = _portal_login_failure_message(mgr, action_label="CSRF 重試下載")
+                    logger.error(msg)
+                    if error_detail:
+                        logger.error("閱卷登入失敗 detail: %s", error_detail)
+                    _notify(msg, notify)
+                    _safe_flow_step_status(flow_id, "portal_login", status="failed", detail=error_code, ok=False)
+                    _mark_notify_step(flow_id, notify=notify, detail=msg)
+                    out = {"success": False, "error": error_code}
+                    if error_detail:
+                        out["error_detail"] = error_detail
+                    _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
+                    return out
+                nav_ok = mgr.navigate_to_file_review()
+                if not nav_ok and _manager_nav_error_code(mgr) == "invalid_csrf_token":
+                    msg = "法院入口 CSRF token 失效，重開 session 後仍失敗。"
+                    _notify("❌ 閱卷下載失敗: " + msg, notify)
+                    _safe_flow_step_status(flow_id, "portal_download", status="failed", detail="invalid_csrf_token", ok=False)
+                    _mark_notify_step(flow_id, notify=notify, detail=msg)
+                    out = {"success": False, "error": "invalid_csrf_token", "error_detail": msg}
+                    _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
+                    return out
+                downloaded = mgr.check_and_download_available(
+                    target_case_number=case_number if case_number else None
+                )
+                if not downloaded and _manager_download_error_code(mgr) == "invalid_csrf_token":
+                    msg = "下載列表 CSRF token 失效，重開 session 後仍失敗。"
+                    _notify("❌ 閱卷下載失敗: " + msg, notify)
+                    _safe_flow_step_status(flow_id, "portal_download", status="failed", detail="invalid_csrf_token", ok=False)
+                    _mark_notify_step(flow_id, notify=notify, detail=msg)
+                    out = {"success": False, "error": "invalid_csrf_token", "error_detail": msg}
+                    _eventlog("filereview:download:done", ok=False, payload=out, tags={"case_number": case_number} if case_number else {})
+                    return out
+
+            download_error_events = _manager_download_error_events(mgr)
+            blocking_download_errors = [
+                item
+                for item in download_error_events
+                if item.get("code") not in _DOWNLOAD_TRANSIENT_ERRORS
+            ]
+            selected_download_error = (
+                blocking_download_errors[-1]
+                if blocking_download_errors
+                else download_error_events[-1]
+                if download_error_events
+                else {}
+            )
+            download_error_code = str(
+                selected_download_error.get("code") or ""
+            ).strip()
+            if download_error_code:
+                error_detail = str(selected_download_error.get("detail") or "").strip()
+                transient_only = bool(download_error_events) and not blocking_download_errors
+                identity_mismatch_events = [
+                    item
+                    for item in download_error_events
+                    if str(item.get("code") or "").strip()
+                    == "case_identity_mismatch"
+                ]
+                if identity_mismatch_events:
+                    # This is not an incomplete download: the court returned a
+                    # complete PDF for another case.  The manager has already
+                    # quarantined it and persisted a row-scoped cooldown.  Keep
+                    # the immutable mismatch evidence, but do not let the
+                    # generic incomplete-download streak turn this safely
+                    # handled upstream condition into a recurring red alert.
+                    _record_download_failure_state(
+                        creds["download_folder"],
+                        success=True,
+                    )
+                    unresolved_count = len(identity_mismatch_events)
+                    downloaded_count = len(downloaded or [])
+                    msg = (
+                        "法院入口本次回傳其他案件的卷宗；MAGI 已隔離且未歸檔，"
+                        "將在該列資料更新後自動重驗，不需人工重傳。"
+                    )
+                    logger.warning("%s count=%s", msg, unresolved_count)
+                    processed_portal_signatures = normalize_signature_hashes(
+                        getattr(
+                            mgr,
+                            "last_download_processed_signature_hashes",
+                            set(),
+                        )
+                    )
+                    verified_existing_portal_signatures = normalize_signature_hashes(
+                        getattr(
+                            mgr,
+                            "last_download_verified_existing_signature_hashes",
+                            set(),
+                        )
+                    )
+                    mismatch_deferred_portal_signatures = normalize_signature_hashes(
+                        getattr(
+                            mgr,
+                            "last_download_mismatch_deferred_signature_hashes",
+                            set(),
+                        )
+                    )
+                    handled_portal_signatures = normalize_signature_hashes(
+                        [
+                            *processed_portal_signatures,
+                            *verified_existing_portal_signatures,
+                        ]
+                    )
+                    _safe_flow_step_status(
+                        flow_id,
+                        "portal_download",
+                        status="deferred",
+                        detail="court_payload_identity_mismatch",
+                        ok=True,
+                    )
+                    out = {
+                        "success": True,
+                        "status": "partial" if downloaded_count else "deferred",
+                        "deferred": True,
+                        "reason": "court_payload_identity_mismatch",
+                        "message": msg,
+                        "downloaded_count": downloaded_count,
+                        "unresolved_count": unresolved_count,
+                        "retry_streak": 0,
+                        "files": [str(path) for path in (downloaded or [])[:10]],
+                        "portal_download_receipt_schema": PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+                        "processed_portal_signature_hashes": processed_portal_signatures,
+                        "processed_portal_signature_set_hash": signature_set_hash(
+                            processed_portal_signatures
+                        ),
+                        "verified_existing_portal_signature_hashes": verified_existing_portal_signatures,
+                        "verified_existing_portal_signature_set_hash": signature_set_hash(
+                            verified_existing_portal_signatures
+                        ),
+                        "handled_portal_signature_hashes": handled_portal_signatures,
+                        "handled_portal_signature_set_hash": signature_set_hash(
+                            handled_portal_signatures
+                        ),
+                        "mismatch_deferred_portal_signature_hashes": mismatch_deferred_portal_signatures,
+                        "mismatch_deferred_portal_signature_set_hash": signature_set_hash(
+                            mismatch_deferred_portal_signatures
+                        ),
+                    }
+                    _eventlog(
+                        "filereview:download:deferred",
+                        ok=True,
+                        payload=out,
+                        tags={"case_number": case_number} if case_number else {},
+                    )
+                    return out
+                if transient_only:
+                    unresolved_count = len(download_error_events)
+                    downloaded_count = len(downloaded or [])
+                    # The aggregate alert says that *no* verifiable PDF was
+                    # produced.  It is therefore factually wrong to advance
+                    # that global streak when this same sweep already returned
+                    # one or more complete PDFs.  Keep the unresolved controls
+                    # queued, but treat verified progress as success for the
+                    # zero-download circuit breaker.
+                    retry_meta = _record_download_failure_state(
+                        creds["download_folder"],
+                        error_key=download_error_code,
+                        success=bool(downloaded_count),
+                    )
+                    if not bool(retry_meta.get("should_alert")):
+                        msg = (
+                            f"閱卷下載部分完成，另有 {unresolved_count} 個法院下載項目"
+                            "尚未產生完整 PDF，已保留至下一輪自動重試。"
+                            if downloaded_count
+                            else (
+                                f"本輪有 {unresolved_count} 個法院下載項目尚未產生完整 PDF，"
+                                "已安全延後並會在下一輪自動重試。"
+                            )
+                        )
+                        logger.warning(
+                            "%s code=%s streak=%s/%s detail=%s",
+                            msg,
+                            download_error_code,
+                            retry_meta.get("failure_streak"),
+                            retry_meta.get("threshold"),
+                            error_detail,
+                        )
+                        _safe_flow_step_status(
+                            flow_id,
+                            "portal_download",
+                            status="deferred",
+                            detail="download_retry_pending",
+                            ok=True,
+                        )
+                        out = {
+                            "success": True,
+                            "status": "partial" if downloaded_count else "deferred",
+                            "deferred": True,
+                            "reason": "download_retry_pending",
+                            "message": msg,
+                            "downloaded_count": downloaded_count,
+                            "unresolved_count": unresolved_count,
+                            "retry_streak": int(retry_meta.get("failure_streak") or 0),
+                            "retry_threshold": int(retry_meta.get("threshold") or 0),
+                            "files": [str(path) for path in (downloaded or [])[:10]],
+                        }
+                        _eventlog(
+                            "filereview:download:deferred",
+                            ok=True,
+                            payload=out,
+                            tags={"case_number": case_number} if case_number else {},
+                        )
+                        return out
+
+                msg = (
+                    "法院閱卷入口連續多輪未產生可驗證的完整 PDF，"
+                    "已保留自動重試證據，需檢查入口下載狀態。"
+                    if transient_only
+                    else (
+                        "法院閱卷入口未完成可驗證的下載流程："
+                        f"{download_error_code}"
+                    )
+                )
+                logger.error("%s detail=%s", msg, error_detail)
+                _notify("❌ 閱卷下載失敗: " + msg, notify)
+                _safe_flow_step_status(
+                    flow_id,
+                    "portal_download",
+                    status="failed",
+                    detail=download_error_code,
+                    ok=False,
+                )
+                _mark_notify_step(flow_id, notify=notify, detail=msg)
+                out = {
+                    "success": False,
+                    "error": download_error_code,
+                    "error_detail": error_detail,
+                    "downloaded_count": len(downloaded or []),
+                    "files": [str(path) for path in (downloaded or [])[:10]],
+                }
+                _eventlog(
+                    "filereview:download:done",
+                    ok=False,
+                    payload=out,
+                    tags={"case_number": case_number} if case_number else {},
+                )
+                return out
+
+            _record_download_failure_state(
+                creds["download_folder"], success=True
+            )
+
+            download_deferred = bool(
+                getattr(mgr, "last_download_deferred", False)
+            )
+            download_deferred_reason = str(
+                getattr(mgr, "last_download_deferred_reason", "")
+                or "download_time_budget_exhausted"
+            )
+            download_total_count = max(
+                0, int(getattr(mgr, "last_download_total_count", 0) or 0)
+            )
+            download_processed_count = max(
+                0, int(getattr(mgr, "last_download_processed_count", 0) or 0)
+            )
+            download_remaining_count = max(
+                0, download_total_count - download_processed_count
             )
 
             count = len(downloaded) if downloaded else 0
@@ -2387,10 +4754,19 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             _safe_flow_step_status(
                 flow_id,
                 "portal_download",
-                status="succeeded",
-                detail=f"download complete ({count} files)",
+                status="deferred" if download_deferred else "succeeded",
+                detail=(
+                    f"download partial ({download_processed_count}/{download_total_count} rows)"
+                    if download_deferred
+                    else f"download complete ({count} files)"
+                ),
                 ok=True,
-                metadata={"downloaded_count": count},
+                metadata={
+                    "downloaded_count": count,
+                    "processed_count": download_processed_count,
+                    "total_count": download_total_count,
+                    "remaining_count": download_remaining_count,
+                },
             )
 
             # ── Post-download: auto-bookmark downloaded PDFs ──
@@ -2545,8 +4921,32 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
 
             _dl_base = os.path.dirname(creds.get("download_folder", DEFAULT_DOWNLOAD_FOLDER))
             if _dl_base:
-                _cleanup_all_download_folders(_dl_base, max_days=15)
+                _cleanup_all_download_folders(_dl_base)
 
+            verified_existing_count = len(smart_skipped)
+            processed_portal_signatures = normalize_signature_hashes(
+                getattr(mgr, "last_download_processed_signature_hashes", set())
+            )
+            verified_existing_portal_signatures = normalize_signature_hashes(
+                getattr(
+                    mgr,
+                    "last_download_verified_existing_signature_hashes",
+                    set(),
+                )
+            )
+            mismatch_deferred_portal_signatures = normalize_signature_hashes(
+                getattr(
+                    mgr,
+                    "last_download_mismatch_deferred_signature_hashes",
+                    set(),
+                )
+            )
+            handled_portal_signatures = normalize_signature_hashes(
+                [
+                    *processed_portal_signatures,
+                    *verified_existing_portal_signatures,
+                ]
+            )
             out = {"success": True, "downloaded_count": count,
                    "files": [str(f) for f in (downloaded or [])[:10]],
                    "items": items[:50] if items else [],
@@ -2554,7 +4954,57 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                    "exported": exported if exported else None,
                    "review_download_count": review_count,
                    "payment_download_count": payment_count,
+                   "verified_existing_count": verified_existing_count,
+                   "accounted_downloadable_count": count + verified_existing_count,
+                   "processed_count": download_processed_count,
+                   "total_count": download_total_count,
+                   "remaining_count": download_remaining_count,
+                   "portal_download_receipt_schema": PORTAL_DOWNLOAD_RECEIPT_SCHEMA,
+                   "processed_portal_signature_hashes": processed_portal_signatures,
+                   "processed_portal_signature_set_hash": signature_set_hash(processed_portal_signatures),
+                   "verified_existing_portal_signature_hashes": verified_existing_portal_signatures,
+                   "verified_existing_portal_signature_set_hash": signature_set_hash(verified_existing_portal_signatures),
+                   "handled_portal_signature_hashes": handled_portal_signatures,
+                   "handled_portal_signature_set_hash": signature_set_hash(handled_portal_signatures),
+                   "mismatch_deferred_portal_signature_hashes": mismatch_deferred_portal_signatures,
+                   "mismatch_deferred_portal_signature_set_hash": signature_set_hash(mismatch_deferred_portal_signatures),
                    "message": msg}
+            if download_deferred:
+                out.update(
+                    {
+                        "status": "partial" if count else "deferred",
+                        "deferred": True,
+                        "reason": download_deferred_reason,
+                        "processed_count": download_processed_count,
+                        "total_count": download_total_count,
+                        "remaining_count": download_remaining_count,
+                    }
+                )
+            if count > 0:
+                # Queue only cases with new evidence. This is best-effort;
+                # the immutable archive receipt remains the source of truth.
+                event_cases = {str(case_number or "").strip()}
+                for item in items or []:
+                    if isinstance(item, dict):
+                        event_cases.add(str(item.get("case_number") or "").strip())
+                event_source = hashlib.sha256(
+                    "\0".join(sorted(str(value) for value in (downloaded or []))).encode(
+                        "utf-8", errors="replace"
+                    )
+                ).hexdigest()
+                for event_case in sorted(event_cases):
+                    if re.fullmatch(r"20\d{2}-\d{4}", event_case):
+                        try:
+                            from magi_v3.business_events import emit_case_evidence_event
+
+                            emit_case_evidence_event(
+                                domain="file_review",
+                                case_number=event_case,
+                                source=event_source,
+                                evidence_kind="court_download",
+                            )
+                        except Exception:
+                            logger.warning("case evidence event could not be queued", exc_info=True)
             _eventlog("filereview:download:done", ok=True, payload={"case_number": case_number, "downloaded_count": count, "files": out.get("files", [])[:3]}, tags={"case_number": case_number} if case_number else {})
             return out
 
@@ -2572,14 +5022,21 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
         return out
 
 
+def cmd_download_sync(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
+    """Alias for explicit sync mode: always force blocking download flow."""
+    return cmd_download(case_number=case_number, notify=notify, flow_id=flow_id)
+
+
 def cmd_download_background(case_number: str = "", notify: bool = True, flow_id: str = "") -> dict:
     """
     Queue download job in background and return immediately.
     """
-    cfg = _load_config()
-    creds = _get_credentials(cfg)
-    if not creds["username"] or not creds["password"]:
-        return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
+    fixture_active = _scheduled_check_fixture_provider() is not None
+    if not fixture_active:
+        cfg = _load_config()
+        creds = _get_credentials(cfg)
+        if not creds["username"] or not creds["password"]:
+            return {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
 
     case_number = str(case_number or "").strip()
     if not case_number and _truthy(os.environ.get("MAGI_FILE_REVIEW_BLOCK_BULK_DOWNLOAD", "0")):
@@ -2644,6 +5101,16 @@ def cmd_download_background(case_number: str = "", notify: bool = True, flow_id:
     ]
     env = os.environ.copy()
     env["MAGI_FILE_REVIEW_DOWNLOAD_BACKGROUND"] = "0"
+    # The worker must import the same source tree and persist into the exact
+    # queue directory selected by its parent.  A legacy runtime .pth can
+    # otherwise put the installed V2 package ahead of this candidate script,
+    # and late environment changes can make parent/child poll different roots.
+    inherited_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+    env["PYTHONPATH"] = str(_magi_root) + (
+        os.pathsep + inherited_pythonpath if inherited_pythonpath else ""
+    )
+    env["MAGI_ROOT_DIR"] = str(_magi_root)
+    env["MAGI_FILE_REVIEW_BG_JOB_DIR"] = BG_JOB_DIR
     try:
         os.makedirs(BG_JOB_DIR, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as lf:
@@ -2673,7 +5140,7 @@ def cmd_download_background(case_number: str = "", notify: bool = True, flow_id:
             payload={"job_id": job_id, "case_number": payload["case_number"]},
             tags={"case_number": payload["case_number"]} if payload["case_number"] else {},
         )
-        return {
+        result = {
             "success": True,
             "queued": True,
             "job_id": job_id,
@@ -2682,6 +5149,13 @@ def cmd_download_background(case_number: str = "", notify: bool = True, flow_id:
             "log_path": log_path,
             "message": msg,
         }
+        if fixture_active:
+            result["execution_receipt"] = _fixture_step_receipt(
+                "download_queue",
+                "cmd_download_background",
+                {"job_id": job_id, "pid": int(proc.pid), "case_number": payload["case_number"]},
+            )
+        return result
     except Exception as e:
         err = f"spawn_failed: {e}"
         _safe_flow_step_status(flow_id, "queue", status="failed", detail=err, ok=False)
@@ -2713,6 +5187,10 @@ def cmd_download_worker(payload: dict) -> dict:
     if not job_id:
         return {"success": False, "error": "missing_job_id"}
 
+    # Browser automation can briefly consume substantial CPU and memory.  Its
+    # children inherit this niceness, preserving input-method responsiveness.
+    _lower_background_priority()
+
     _write_download_job(
         job_id,
         {
@@ -2737,18 +5215,28 @@ def cmd_download_worker(payload: dict) -> dict:
         _safe_finalize_flow(flow_id, cancelled)
         return {"success": False, "job_id": job_id, "cancelled": True}
     out = cmd_download(case_number=case_number, notify=notify, flow_id=flow_id)
+    deferred = bool(out.get("deferred"))
     _write_download_job(
         job_id,
         {
-            "status": "cancelled" if bool(out.get("cancelled")) else ("done" if bool(out.get("success")) else "failed"),
+            "status": "deferred" if deferred else ("cancelled" if bool(out.get("cancelled")) else ("done" if bool(out.get("success")) else "failed")),
             "running": False,
             "success": bool(out.get("success")),
+            "deferred": deferred,
+            "skipped": bool(out.get("skipped")),
             "finished_at": datetime.now().isoformat(),
             "result": out,
         },
     )
     _safe_finalize_flow(flow_id, out)
-    return {"success": bool(out.get("success")), "job_id": job_id}
+    return {
+        "success": bool(out.get("success")),
+        "job_id": job_id,
+        "status": "deferred" if deferred else ("done" if bool(out.get("success")) else "failed"),
+        "deferred": deferred,
+        "skipped": bool(out.get("skipped")),
+        "reason": str(out.get("reason") or ""),
+    }
 
 
 def cmd_download_status(job_id: str = "") -> dict:
@@ -2769,7 +5257,11 @@ def cmd_download_status(job_id: str = "") -> dict:
             st = _write_download_job(jid, {"running": False, "status": "stopped", "finished_at": datetime.now().isoformat()})
         else:
             st = _write_download_job(jid, {"running": False})
-    st["success"] = True
+    status_name = str(st.get("status") or "").strip().lower()
+    if status_name in {"failed", "stopped", "cancelled"} or st.get("success") is False:
+        st["success"] = False
+    else:
+        st["success"] = True
     return st
 
 
@@ -2819,7 +5311,7 @@ def _merge_dismissed_payment_maps(download_folder: str, dismissed_payments: Opti
 
 
 def _load_payment_proof_case_tokens(download_folder: str) -> Set[str]:
-    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_proof_registry.json")
+    path = str(get_payment_proof_registry_path(download_folder or DEFAULT_DOWNLOAD_FOLDER))
     if not os.path.exists(path):
         return set()
     try:
@@ -2830,10 +5322,19 @@ def _load_payment_proof_case_tokens(download_folder: str) -> Set[str]:
     if not isinstance(data, dict):
         return set()
     tokens: Set[str] = set()
-    for key in data.keys():
-        norm = _normalize_case_token(key)
-        if norm:
-            tokens.add(norm)
+    for raw_case_id, record in data.items():
+        candidates = [record] if isinstance(record, dict) else []
+        if isinstance(record, dict) and isinstance(record.get("proofs"), list):
+            candidates.extend(item for item in record["proofs"] if isinstance(item, dict))
+        for candidate in candidates:
+            if candidate.get("proof_schema") != PAYMENT_PROOF_SCHEMA or not candidate.get("file_sha256"):
+                continue
+            event_id = str(candidate.get("payment_event_id") or "").strip()
+            case_token = _normalize_case_token(raw_case_id)
+            if case_token and event_id:
+                # Keep the occurrence proof case-scoped.  A pay id/row id is
+                # not sufficient proof if another case happens to reuse it.
+                tokens.add(f"{case_token}|{event_id}")
     return tokens
 
 
@@ -2859,6 +5360,23 @@ def _normalize_case_token(val: str) -> str:
         if cleaned:
             out.append(cleaned.lower())
     return "".join(out)
+
+
+def _expand_payment_notice_key(key: object) -> Set[str]:
+    """Expand legacy web_payment raw-case keys into normalized case keys."""
+    raw_key = str(key or "").strip()
+    if not raw_key.startswith("web_payment:"):
+        return set()
+    out: Set[str] = {raw_key}
+    if raw_key.startswith("web_payment:case:") or raw_key.startswith("web_payment:payid:") or raw_key.startswith("web_payment:rowid:"):
+        return out
+    raw_case = raw_key[len("web_payment:"):].strip()
+    if not raw_case:
+        return out
+    norm = _normalize_case_token(raw_case)
+    if norm:
+        out.add(f"web_payment:case:{norm}")
+    return out
 
 
 def _case_display_cache_key(item: dict) -> str:
@@ -2975,15 +5493,27 @@ def _portal_item_is_paid(item: dict) -> bool:
         return False
     paystatus = str(item.get("paystatus") or "").strip()
     p_status = str(item.get("p_status") or "").strip().upper()
-    payment_flag = str(item.get("payment_flag") or item.get("payment") or "").strip().upper()
     status_name = str(item.get("status_name") or item.get("statusnm") or "").strip()
-    combined_text = " ".join(
-        str(item.get(field) or "").strip()
-        for field in ("status_name", "statusnm", "result_text", "row_text")
+    row_text = re.sub(r"\s+", "", str(item.get("row_text") or ""))
+    explicit_paid = any(
+        marker in row_text
+        for marker in ("已繳費", "繳費完成", "繳訖", "收據", "繳費憑證")
     )
-    if paystatus == "1" or p_status == "Y" or payment_flag == "Y":
+    explicit_waived = any(
+        marker in row_text
+        for marker in ("無須繳納費用", "無需繳費", "不需繳費", "免繳費")
+    )
+    explicit_pending = "待繳費" in row_text and not explicit_paid and not explicit_waived
+    if explicit_pending:
+        return False
+    if explicit_paid or explicit_waived:
         return True
-    return any(kw in f"{status_name} {combined_text}" for kw in ("已繳", "繳費完成", "收據", "繳訖", "繳費憑證"))
+    # p_status=Y means that the payment slip has been generated and is
+    # available for download.  paystatus meanings vary across OLA versions;
+    # neither is payment proof.  Suppress only explicit terminal evidence.
+    if p_status == "Y":
+        return False
+    return any(kw in status_name for kw in ("已繳", "繳費完成", "繳訖"))
 
 
 _PORTAL_COURT_PICKUP_DONE_MARKERS = (
@@ -3148,6 +5678,8 @@ def _portal_item_is_court_pickup_ready(item: dict) -> bool:
 def _portal_item_is_actionable_pending(item: dict) -> bool:
     if not isinstance(item, dict) or item.get("status") != "pending_payment":
         return False
+    if _portal_item_has_done_or_expired_marker(item):
+        return False
     if _portal_item_is_court_pickup_ready(item):
         return False
     if _portal_item_is_paid(item):
@@ -3161,9 +5693,28 @@ def _portal_item_is_actionable_pending(item: dict) -> bool:
     )
     paystatus = str(item.get("paystatus") or "").strip()
 
-    has_pending_signal = ("待繳費" in combined_text) or paystatus == "2"
+    payment_flag = str(item.get("payment_flag") or item.get("payment") or "").strip().upper()
+    has_pending_signal = ("待繳費" in combined_text) or paystatus == "1" or payment_flag == "Y"
     has_approved_signal = ("同意" in status_name) or (not status_name and status_code in {"3", "6", ""})
     return has_pending_signal and has_approved_signal
+
+
+def _portal_item_is_recent_payment(item: dict, *, days: Optional[int] = None) -> bool:
+    """Keep the OLA history table from resurfacing years-old payment rows."""
+    if not isinstance(item, dict):
+        return False
+    if days is None:
+        try:
+            days = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PAYMENT_ACTION_DAYS", "120") or "120")
+        except Exception:
+            days = 120
+    days = max(14, min(int(days or 120), 365))
+    today = datetime.now().date()
+    deadline = _parse_portal_date(item.get("pay_deadline") or item.get("deadline"))
+    if deadline is not None and -14 <= (deadline - today).days <= 365:
+        return True
+    applied = _parse_portal_date(item.get("applydt"))
+    return applied is not None and -days <= (applied - today).days <= 7
 
 
 def _portal_item_search_blob(item: dict) -> Tuple[str, str]:
@@ -3192,9 +5743,16 @@ def _portal_item_search_blob(item: dict) -> Tuple[str, str]:
 def _portal_item_has_uploaded_proof(item: dict, proof_case_tokens: Set[str]) -> bool:
     if not proof_case_tokens or not isinstance(item, dict):
         return False
+    case_token = ""
     for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
-        norm = _normalize_case_token(item.get(field) or "")
-        if norm and norm in proof_case_tokens:
+        case_token = _normalize_case_token(item.get(field) or "")
+        if case_token:
+            break
+    if not case_token:
+        return False
+    for field in ("rowid", "p_payid", "payid", "pay_id"):
+        event_id = str(item.get(field) or "").strip()
+        if event_id and f"{case_token}|{event_id}" in proof_case_tokens:
             return True
     return False
 
@@ -3203,6 +5761,17 @@ def _portal_payment_notice_keys(item: dict) -> List[str]:
     if not isinstance(item, dict):
         return []
     keys: List[str] = []
+    payid = str(item.get("payid") or item.get("p_payid") or "").strip()
+    rowid = str(item.get("rowid") or "").strip()
+    # A case may receive more than one review-payment request.  Once OLA gives
+    # us an occurrence id, case-only keys must not suppress a later request.
+    if payid:
+        keys.append(f"web_payment:payid:{payid}")
+    if rowid:
+        keys.append(f"web_payment:rowid:{rowid}")
+    if keys:
+        return keys
+
     party = str(item.get("party") or item.get("client_name") or "").strip()
     for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
         raw = str(item.get(field) or "").strip()
@@ -3214,12 +5783,6 @@ def _portal_payment_notice_keys(item: dict) -> List[str]:
             keys.append(f"web_payment:case:{norm}")
             if party:
                 keys.append(f"web_payment:case:{norm}:{party}")
-    payid = str(item.get("payid") or item.get("p_payid") or "").strip()
-    if payid:
-        keys.append(f"web_payment:payid:{payid}")
-    rowid = str(item.get("rowid") or "").strip()
-    if rowid:
-        keys.append(f"web_payment:rowid:{rowid}")
     out: List[str] = []
     seen: Set[str] = set()
     for key in keys:
@@ -3238,16 +5801,22 @@ def _load_payment_notified_keys(download_folder: str) -> Set[str]:
             data = json.load(f) or {}
     except Exception:
         return set()
+    raw_keys: Iterable[object]
     if isinstance(data, list):
-        return {str(x) for x in data if str(x).startswith("web_payment:")}
-    if isinstance(data, dict):
-        return {str(k) for k in data.keys() if str(k).startswith("web_payment:")}
-    return set()
+        raw_keys = data
+    elif isinstance(data, dict):
+        raw_keys = data.keys()
+    else:
+        return set()
+    out: Set[str] = set()
+    for key in raw_keys:
+        out.update(_expand_payment_notice_key(key))
+    return out
 
 
 def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
-    """Load case/party tokens for payment slips that already have local files."""
-    path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_registry.json")
+    """Load occurrence ids, with case tokens only for legacy id-less rows."""
+    path = str(get_payment_registry_path(download_folder or DEFAULT_DOWNLOAD_FOLDER))
     if not os.path.exists(path):
         return set()
     try:
@@ -3260,11 +5829,37 @@ def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
         if not isinstance(entry, dict):
             continue
         files = [str(x).strip() for x in (entry.get("file_paths") or []) if str(x).strip()]
-        has_existing_file = any(os.path.isfile(fp) for fp in files)
-        if not has_existing_file:
+        valid_existing_files = [fp for fp in files if _is_valid_payment_pdf_file(fp)]
+        if not valid_existing_files:
             names = [str(x).strip() for x in (entry.get("files") or []) if str(x).strip()]
-            has_existing_file = bool(names)
-        if not has_existing_file:
+            # Legacy registries sometimes stored only a basename. A basename
+            # is not completion evidence unless the actual PDF still exists in
+            # the download root or its dated child directory.
+            candidates: List[str] = []
+            for name in names:
+                candidates.append(os.path.join(download_folder, name))
+                candidates.extend(glob.glob(os.path.join(download_folder, "*", name)))
+            valid_existing_files = [fp for fp in candidates if _is_valid_payment_pdf_file(fp)]
+        # Download success and notification success are distinct states. Keep
+        # the portal item actionable until at least one valid PDF hash has an
+        # acknowledged delivery receipt, so a failed TG/DC send is retried.
+        if not any(
+            _payment_file_already_delivered(fp, download_folder)
+            for fp in valid_existing_files
+        ):
+            continue
+        rowid = str(entry.get("rowid") or "").strip()
+        payid = str(entry.get("p_payid") or entry.get("payid") or "").strip()
+        key_text = str(key or "").strip()
+        if not rowid and key_text.startswith("rowid:"):
+            rowid = key_text.split(":", 1)[1].strip()
+        if not payid and key_text.startswith("payid:"):
+            payid = key_text.split(":", 1)[1].strip()
+        if rowid:
+            tokens.add(f"rowid:{rowid}")
+        if payid:
+            tokens.add(f"payid:{payid}")
+        if rowid or payid:
             continue
         party = str(entry.get("party") or "").strip()
         for raw in (entry.get("case_number"), entry.get("yyidno"), entry.get("showyyidno")):
@@ -3280,9 +5875,37 @@ def _load_processed_payment_tokens(download_folder: str) -> Set[str]:
     return tokens
 
 
+def _payment_notice_keys_seen(keys: Iterable[str], notified_keys: Set[str]) -> bool:
+    for key in keys or []:
+        raw = str(key or "").strip()
+        if not raw:
+            continue
+        expanded = _expand_payment_notice_key(raw) or {raw}
+        if any(item in notified_keys for item in expanded):
+            return True
+    try:
+        from skills.ops.dedup_db import is_done as _dd_is_done
+        return any(
+            _dd_is_done("filereview_payment", str(key or "").strip())
+            for key in keys or []
+            if str(key or "").strip()
+        )
+    except Exception:
+        return False
+
+
 def _portal_item_has_processed_payment(item: dict, processed_tokens: Set[str]) -> bool:
     if not processed_tokens or not isinstance(item, dict):
         return False
+    rowid = str(item.get("rowid") or "").strip()
+    payid = str(item.get("payid") or item.get("p_payid") or "").strip()
+    occurrence_tokens = {
+        token
+        for token in (f"rowid:{rowid}" if rowid else "", f"payid:{payid}" if payid else "")
+        if token
+    }
+    if occurrence_tokens:
+        return bool(occurrence_tokens.intersection(processed_tokens))
     party = str(item.get("party") or item.get("client_name") or "").strip()
     for field in ("court_case_no", "case_number", "showyyidno", "yyidno"):
         norm = _normalize_case_token(item.get(field) or "")
@@ -3298,18 +5921,11 @@ def _portal_item_has_processed_payment(item: dict, processed_tokens: Set[str]) -
 def _is_portal_payment_notice_seen(item: dict, download_folder: str,
                                    notified_keys: Optional[Set[str]] = None,
                                    processed_tokens: Optional[Set[str]] = None) -> bool:
-    keys = _portal_payment_notice_keys(item)
-    if not keys:
-        return False
-    notified = notified_keys if notified_keys is not None else _load_payment_notified_keys(download_folder)
-    if any(key in notified for key in keys):
-        return True
-    try:
-        from skills.ops.dedup_db import is_done as _dd_is_done
-        if any(_dd_is_done("filereview_payment", key) for key in keys):
-            return True
-    except Exception:
-        pass
+    """Return True only after a verifiable payment PDF was acquired.
+
+    Notification keys are intentionally ignored here: an earlier text alert is
+    not evidence that the payment-slip attachment was downloaded or delivered.
+    """
     tokens = processed_tokens if processed_tokens is not None else _load_processed_payment_tokens(download_folder)
     return _portal_item_has_processed_payment(item, tokens)
 
@@ -3448,26 +6064,28 @@ def _filter_not_yet_downloaded(
     *,
     file_review_manager: Optional[object] = None,
 ) -> list:
-    """Filter out portal items whose download BUTTON has already been clicked.
+    """Keep downloadable portal items with bounded row-level re-checks.
 
-    改用 button-level (rowid) dedup（symmetric with file_review_automation.py 修補）：
-    - 已點過 rowid → 視為下載過按鈕 → 過濾掉
-    - 沒點過 rowid → 視為新按鈕（即使同案 yyidno 之前下載過卷宗或繳費單）→ 保留
-    - artifact_type=='payment_slip' 的 registry entry 不算「卷宗已下載」
+    整案永久跳過仍為 opt-in。按鈕級 registry 則只在 portal 列簽章未變且
+    TTL 尚未屆滿時過濾；新附件導致列更新時會立即重新進入下載。
     """
     if not dl_items:
         return []
+    button_level_skip = _truthy(os.environ.get("MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP", "1"))
+    case_level_skip = _truthy(os.environ.get("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "0"))
 
     # ── Button-level dedup（首選）──
-    clicked_rowids: Set[str] = set()
+    clicked_rowids: Dict[str, dict] = {}
     if download_folder:
         clicked_path = os.path.join(download_folder, "clicked_rowids.json")
         if os.path.exists(clicked_path):
             try:
                 with open(clicked_path, "r", encoding="utf-8") as f:
                     clicked_data = json.load(f) or {}
-                for k in clicked_data.keys():
-                    clicked_rowids.add(str(k).strip())
+                if isinstance(clicked_data, dict):
+                    for key, value in clicked_data.items():
+                        if str(key).strip() and isinstance(value, dict):
+                            clicked_rowids[str(key).strip()] = value
             except Exception:
                 pass
 
@@ -3485,33 +6103,60 @@ def _filter_not_yet_downloaded(
     for it in dl_items:
         case_num = (it.get("case_number") or "").strip()
         rowid = str(it.get("rowid") or "").strip()
-        # Button-level：rowid 已點過 → 跳過
-        if rowid and rowid in clicked_rowids:
-            # Portal is authoritative for this surface.  If OLA still shows the
-            # online-download button and has no download date, the local click
-            # registry is stale (often caused by a prior empty popup/payment-only
-            # run) and must not suppress notification.
-            portal_isdown = str(it.get("isdown") or "").strip().upper()
-            portal_downdt = str(it.get("downdt") or "").strip()
-            if portal_isdown or portal_downdt:
-                continue
+        # A changed row is never filtered.  An unchanged row is filtered only
+        # within the bounded re-check interval; legacy entries without a stored
+        # signature still expire by timestamp.
+        clicked_entry = clicked_rowids.get(rowid) if rowid else None
+        skip_recent_unchanged_row = False
+        if button_level_skip and rowid and isinstance(clicked_entry, dict):
+            signature_fields = (
+                "rowid", "no", "yyidno", "showyyidno", "c60yyidno", "isdown",
+                "downdt", "upddt", "updated_at", "updtime", "limitdt", "paylimitdt",
+            )
+            current_signature = "|".join(
+                f"{name}={str(it.get(name) or '').strip()}" for name in signature_fields
+            )
+            stored_signature = str(clicked_entry.get("row_signature") or "")
+            try:
+                clicked_at = datetime.fromisoformat(
+                    str(clicked_entry.get("last_clicked") or clicked_entry.get("first_clicked") or "")
+                )
+                age_minutes = max(0.0, (datetime.now() - clicked_at).total_seconds() / 60.0)
+            except Exception:
+                age_minutes = float("inf")
+            try:
+                ttl_minutes = max(
+                    1,
+                    int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "1440") or "1440"),
+                )
+            except Exception:
+                ttl_minutes = 1440
+            signature_unchanged = not stored_signature or current_signature == stored_signature
+            skip_recent_unchanged_row = signature_unchanged and age_minutes < ttl_minutes
+        if skip_recent_unchanged_row:
+            # A row is registered only after a complete review PDF is verified.
+            # OLA does not reliably fill isdown/downdt, so those presentation
+            # fields cannot override the signature-bound, expiring receipt.
+            continue
         if not case_num:
             result.append(it)
             continue
-        # 卷宗下載過（非繳費單）→ 跳過
-        if _db_available:
+        # Case-level skip is opt-in.  A previously downloaded case may receive
+        # additional review files in a later court upload batch.
+        if case_level_skip and _db_available:
             try:
                 if _dd_is_done("download", case_num):
                     continue
             except Exception:
                 pass
         item_tokens = _review_download_case_tokens(it)
-        if item_tokens and item_tokens.intersection(json_downloaded):
-            continue
-        if case_num in json_downloaded:
-            continue
-        if _manager_has_archived_review_files(file_review_manager, it):
-            continue
+        if case_level_skip:
+            if item_tokens and item_tokens.intersection(json_downloaded):
+                continue
+            if case_num in json_downloaded:
+                continue
+            if _manager_has_archived_review_files(file_review_manager, it):
+                continue
         result.append(it)
     return result
 
@@ -3526,7 +6171,12 @@ def _collapse_portal_items(
     chosen = {}
     raw_items = [it for it in (items or []) if isinstance(it, dict)]
     for item in raw_items:
-        key = _portal_item_case_key(item) or f"row:{len(chosen)}:{id(item)}"
+        if _portal_item_is_actionable_pending(item):
+            occurrence = str(item.get("rowid") or item.get("payid") or "").strip()
+            key = f"payment:{occurrence}" if occurrence else _portal_item_case_key(item)
+        else:
+            key = _portal_item_case_key(item)
+        key = key or f"row:{len(chosen)}:{id(item)}"
         prev = chosen.get(key)
         if prev is None or _portal_item_priority(item) > _portal_item_priority(prev):
             chosen[key] = item
@@ -3535,6 +6185,8 @@ def _collapse_portal_items(
     dismissed_map = _merge_dismissed_payment_maps(download_folder, dismissed_payments)
     proof_case_tokens = _load_payment_proof_case_tokens(download_folder)
     downloaded_review_tokens = _load_downloaded_review_tokens(download_folder)
+    payment_notified_keys = _load_payment_notified_keys(download_folder) if download_folder else set()
+    processed_payment_tokens = _load_processed_payment_tokens(download_folder) if download_folder else set()
     downloadable = []
     downloadable_raw_count = 0
     downloadable_skipped_count = 0
@@ -3568,9 +6220,18 @@ def _collapse_portal_items(
             continue
         if not _portal_item_is_actionable_pending(item):
             continue
+        if not _portal_item_is_recent_payment(item):
+            continue
         if dismissed_map and _is_portal_item_dismissed(item, dismissed_map):
             continue
         if proof_case_tokens and _portal_item_has_uploaded_proof(item, proof_case_tokens):
+            continue
+        if download_folder and _is_portal_payment_notice_seen(
+            item,
+            download_folder,
+            notified_keys=payment_notified_keys,
+            processed_tokens=processed_payment_tokens,
+        ):
             continue
         if _portal_item_has_downloaded_review(item, downloaded_review_tokens):
             continue
@@ -3611,6 +6272,7 @@ def _format_portal_probe_error(result: dict) -> str:
     label_map = {
         "sso_login_failed": "法院單一登入失敗，請重新登入或確認驗證碼",
         "navigate_failed": "無法進入閱卷系統入口",
+        "invalid_csrf_token": "法院入口 CSRF token 失效，MAGI 會重開 session 後重試",
         "ola_error_page": "法院入口回傳錯誤頁，MAGI 已改用重試與連續失敗門檻處理",
         "popup_timeout": "法院入口新視窗逾時",
         "new_window_timeout": "法院入口新視窗逾時",
@@ -3653,6 +6315,22 @@ _PORTAL_PROBE_TRANSIENT_ERRORS = {
     "new_window_timeout",
     "navigate_failed",
     "navigation_exception",
+    "invalid_csrf_token",
+    "review_menu_not_found",
+}
+
+_DOWNLOAD_TRANSIENT_ERRORS = {
+    "direct_download_incomplete",
+    "popup_download_incomplete",
+    # The list page can expose a download button before the nested popup frame
+    # is ready.  A single miss is an upstream timing condition, not evidence
+    # that MAGI or the case mapping failed.  Keep the row queued and escalate
+    # only through the existing consecutive-failure threshold.
+    "popup_nested_frame_timeout",
+    # A late file owned by the preceding portal row is quarantined before it
+    # can reach any case folder.  Keep the authoritative row/button queued and
+    # retry automatically; only a consecutive threshold becomes actionable.
+    "case_identity_mismatch",
 }
 
 
@@ -3713,6 +6391,75 @@ def _record_portal_probe_state(download_folder: str, result: dict) -> dict:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_record_portal_probe_state/write", exc_info=True)
+    payload["should_alert"] = bool(streak >= threshold)
+    return payload
+
+
+def _download_failure_state_path(download_folder: str) -> str:
+    base = str(download_folder or DEFAULT_DOWNLOAD_FOLDER).strip() or DEFAULT_DOWNLOAD_FOLDER
+    return os.path.join(base, ".download_failure_state.json")
+
+
+def _record_download_failure_state(
+    download_folder: str,
+    *,
+    error_key: str = "",
+    success: bool = False,
+) -> dict:
+    """Persist bounded retry evidence for incomplete browser downloads.
+
+    A single Chromium timing miss is not a system fault.  It remains queued
+    for the next scheduled run and becomes actionable only after the same
+    failure recurs for the configured number of consecutive download runs.
+    """
+    path = _download_failure_state_path(download_folder)
+    if success:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "could not clear download failure state", exc_info=True
+            )
+        return {"failure_streak": 0, "should_alert": False, "error_key": ""}
+
+    key = str(error_key or "unknown").strip() or "unknown"
+    prev: dict = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                prev = json.load(fh) or {}
+    except Exception:
+        prev = {}
+    previous_key = str(prev.get("error_key") or "")
+    streak = int(prev.get("failure_streak") or 0)
+    streak = streak + 1 if previous_key == key else 1
+    try:
+        threshold = int(
+            os.environ.get("MAGI_FILE_REVIEW_DOWNLOAD_FAILURE_NOTIFY_STREAK", "3")
+            or "3"
+        )
+    except Exception:
+        threshold = 3
+    threshold = max(1, threshold)
+    payload = {
+        "error_key": key,
+        "failure_streak": streak,
+        "threshold": threshold,
+        "last_failure_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "could not persist download failure state", exc_info=True
+        )
     payload["should_alert"] = bool(streak >= threshold)
     return payload
 
@@ -3787,8 +6534,6 @@ def _save_recent_activity_state(download_folder: str, state: dict) -> None:
 def _recent_activity_fingerprint(item: dict) -> str:
     if not isinstance(item, dict):
         return ""
-    processed_at = item.get("processed_at")
-    processed_at_text = processed_at.isoformat() if isinstance(processed_at, datetime) else str(processed_at or "").strip()
     case_key = _portal_item_case_key(
         {
             "case_number": item.get("case_number"),
@@ -3803,9 +6548,33 @@ def _recent_activity_fingerprint(item: dict) -> str:
         case_key,
         str(item.get("detail") or "").strip(),
         str(item.get("count") or "").strip(),
-        processed_at_text,
     ]
     return "|".join(parts)
+
+
+def _recent_payment_activity_file_paths(item: dict) -> List[str]:
+    if not isinstance(item, dict):
+        return []
+    paths = item.get("file_paths")
+    if not isinstance(paths, list):
+        return []
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw in paths:
+        path = str(raw or "").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if _is_valid_payment_pdf_file(path):
+            out.append(path)
+    return out
+
+
+def _recent_payment_activity_has_undelivered_pdf(item: dict, download_folder: str) -> bool:
+    for path in _recent_payment_activity_file_paths(item):
+        if not _payment_file_already_delivered(path, download_folder):
+            return True
+    return False
 
 
 def _prune_recent_activity_bucket(bucket: dict, keep_days: int = 30) -> dict:
@@ -3867,7 +6636,10 @@ def _filter_unnotified_recent_activity(records: List[dict], download_folder: str
         # JSON fallback
         if not _already:
             _already = fp in bucket
-        if _already:
+        if _already and not (
+            bucket_name == "recent_payment_activity"
+            and _recent_payment_activity_has_undelivered_pdf(item, download_folder)
+        ):
             continue
         fresh.append(item)
     return fresh
@@ -3899,7 +6671,7 @@ def _mark_recent_activity_notified(records: List[dict], download_folder: str, bu
 
 
 def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[dict]:
-    registry_path = os.path.join(download_folder or DEFAULT_DOWNLOAD_FOLDER, "payment_registry.json")
+    registry_path = str(get_payment_registry_path(download_folder or DEFAULT_DOWNLOAD_FOLDER))
     if not os.path.exists(registry_path):
         return []
     try:
@@ -3916,12 +6688,18 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[d
         dt = _parse_iso_datetime(entry.get("processed_at") or "")
         if dt is None or dt.timestamp() < cutoff:
             continue
-        files = entry.get("file_paths") if isinstance(entry.get("file_paths"), list) else []
+        file_paths = [str(fp).strip() for fp in (entry.get("file_paths") or []) if str(fp).strip()]
+        valid_file_paths = [fp for fp in file_paths if _is_valid_payment_pdf_file(fp)]
+        files = file_paths
         if not files and isinstance(entry.get("files"), list):
             files = entry.get("files") or []
-        file_count = len([fp for fp in files if str(fp or "").strip()])
+        file_count = len(valid_file_paths) if valid_file_paths else len([fp for fp in files if str(fp or "").strip()])
         case_number = str(entry.get("case_number") or entry.get("yyidno") or "").strip()
         party = str(entry.get("party") or "").strip()
+        if _payment_proof_already_uploaded(
+            case_number, download_folder, _payment_proof_event_identity(entry)
+        ):
+            continue
         # Fallback: 從檔名解析當事人姓名（繳費單_[當事人H]_115.原金訴.000044.pdf）
         if not party:
             for fn in (entry.get("files") or []):
@@ -3939,6 +6717,7 @@ def _load_recent_payment_activity(download_folder: str, days: int = 7) -> List[d
             "count": file_count,
             "source": "payment_registry",
             "key": str(key or ""),
+            "file_paths": valid_file_paths,
         }
         rec_key = _portal_item_case_key({"case_number": case_number, "party": party, "payid": str(entry.get("p_payid") or "")}) or f"payment:{key}"
         prev = chosen.get(rec_key)
@@ -4015,6 +6794,106 @@ def _format_recent_activity_block(title: str, records: List[dict], limit: int = 
     return lines
 
 
+def _payment_pdf_text(path: str, max_chars: int = 2500) -> str:
+    if not _is_valid_payment_pdf_file(path):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["pdftotext", path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return (proc.stdout or "")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _payment_pdf_scan_roots(download_folder: str) -> List[str]:
+    """Return the managed download root plus explicitly opted-in import roots.
+
+    Never sweep a user's general Downloads directory implicitly: it may contain
+    unrelated sensitive PDFs.  A manual-download inbox is included only when
+    an operator configures it through ``MAGI_FILE_REVIEW_IMPORT_DIRS``.
+    """
+    roots = [download_folder or DEFAULT_DOWNLOAD_FOLDER]
+    roots.extend(
+        item.strip()
+        for item in os.environ.get("MAGI_FILE_REVIEW_IMPORT_DIRS", "").split(os.pathsep)
+        if item.strip()
+    )
+    seen: set[str] = set()
+    return [root for root in roots if os.path.isdir(root) and not (root in seen or seen.add(root))]
+
+
+def _load_recent_unregistered_payment_pdfs(download_folder: str, days: int = 2) -> List[dict]:
+    """Find valid payment-slip PDFs that landed outside payment_registry."""
+    roots = _payment_pdf_scan_roots(download_folder)
+    if not roots:
+        return []
+    cutoff = datetime.now().timestamp() - (max(1, int(days or 2)) * 86400)
+    candidates: List[str] = []
+    for base in roots:
+        for root in [base, os.path.join(base, datetime.now().strftime("%Y%m%d"))]:
+            if not os.path.isdir(root):
+                continue
+            try:
+                for name in os.listdir(root):
+                    path = os.path.join(root, name)
+                    if not os.path.isfile(path) or not name.lower().endswith(".pdf"):
+                        continue
+                    if os.path.getmtime(path) < cutoff:
+                        continue
+                    if _is_valid_payment_pdf_file(path):
+                        candidates.append(path)
+            except Exception:
+                continue
+
+    chosen: Dict[str, dict] = {}
+    for path in candidates:
+        text = _payment_pdf_text(path)
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if "規費繳款單" not in compact and "待補費案件繳費資訊" not in compact:
+            continue
+        case_number = ""
+        m = re.search(r"案\s*號\s*[:：]\s*([0-9]{2,3})\s*年\s*([^\d\s]{1,12})\s*字\s*第?\s*0*([0-9]+)\s*號?", text)
+        if m:
+            case_number = f"{m.group(1)}年度{m.group(2)}字第{int(m.group(3)):06d}號"
+        if not case_number:
+            m = re.search(r"([0-9]{2,3})\s*年\s*([^\d\s]{1,12})\s*字\s*0*([0-9]+)\s*號", compact)
+            if m:
+                case_number = f"{m.group(1)}年度{m.group(2)}字第{int(m.group(3)):06d}號"
+        party = ""
+        m = re.search(r"應繳款人\s*[:：]?\s*([^\n\r]{1,20})", text)
+        if m:
+            party = re.sub(r"\s+", "", m.group(1)).strip()
+        if not party:
+            m = re.search(r"應繳款人\s*[:：]?\s*\n+\s*([^\n\r]{1,20})", text)
+            if m:
+                party = re.sub(r"\s+", "", m.group(1)).strip()
+        # A raw PDF has no authoritative portal occurrence id.  Do not apply
+        # case-level proof dedup here; surface it for explicit reconciliation.
+        record_key = _portal_item_case_key({"case_number": case_number, "party": party}) or _payment_file_delivery_key(path)
+        dt = datetime.fromtimestamp(os.path.getmtime(path))
+        record = {
+            "processed_at": dt,
+            "party": party or "(未知)",
+            "case_number": case_number or os.path.basename(path),
+            "detail": "已下載繳費單（1 份）",
+            "count": 1,
+            "artifact_type": "payment_slip",
+            "source": "payment_pdf_scan",
+            "key": record_key,
+            "file_paths": [path],
+        }
+        prev = chosen.get(record_key)
+        if prev is None or dt > prev["processed_at"]:
+            chosen[record_key] = record
+    return list(chosen.values())
+
+
 def _load_recent_download_activity(days: int = 7) -> List[dict]:
     if not os.path.isdir(BG_JOB_DIR):
         return []
@@ -4068,9 +6947,14 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                     "count": 0,
                     "artifact_type": artifact_type,
                     "detail": detail,
+                    "file_paths": [],
                 },
             )
             grouped[rec_key]["count"] += 1
+            for path_hint in (item.get("dst"), item.get("file"), item.get("path")):
+                path_text = str(path_hint or "").strip()
+                if path_text and os.path.isfile(path_text):
+                    grouped[rec_key].setdefault("file_paths", []).append(path_text)
         for rec_key, payload in grouped.items():
             artifact_type = str(payload.get("artifact_type") or "review_download").strip()
             record = {
@@ -4083,6 +6967,10 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
                 "artifact_type": artifact_type,
                 "source": "download_job",
                 "key": os.path.basename(path),
+                "file_paths": [
+                    fp for fp in (payload.get("file_paths") or [])
+                    if _is_valid_payment_pdf_file(fp) or artifact_type != "payment_slip"
+                ],
             }
             prev = chosen.get(rec_key)
             if prev is None or dt > prev["processed_at"]:
@@ -4091,7 +6979,11 @@ def _load_recent_download_activity(days: int = 7) -> List[dict]:
 
 
 def _load_recent_processed_activity(download_folder: str, days: int = 7, limit: int = 8) -> List[dict]:
-    merged = _load_recent_payment_activity(download_folder, days=days) + _load_recent_download_activity(days=days)
+    merged = (
+        _load_recent_payment_activity(download_folder, days=days)
+        + _load_recent_unregistered_payment_pdfs(download_folder, days=min(days, 2))
+        + _load_recent_download_activity(days=days)
+    )
     merged.sort(key=lambda it: it.get("processed_at") or datetime.min, reverse=True)
     out = []
     seen = set()
@@ -4210,6 +7102,27 @@ def _filter_urgent_pending_payments(items: list, days: int = 7,
     return {"overdue": overdue, "urgent": urgent, "unknown": unknown}
 
 
+def _portal_payment_scan_chain(items: list, *, download_folder: str = "") -> dict:
+    """Pure scheduled-scan adapter: classify, collapse and build one notice queue.
+
+    Keeping this side-effect-free makes the coverage contract testable before a
+    scheduler or notifier is allowed to touch a real portal or message channel.
+    """
+    collapsed = _collapse_portal_items(items, download_folder=download_folder)
+    groups = _filter_urgent_pending_payments(
+        collapsed["items"], days=14, download_folder=download_folder
+    )
+    queue = groups["overdue"] + groups["urgent"] + groups["unknown"]
+    return {
+        "probe_candidate_count": int(collapsed["raw_count"]),
+        "coverage_candidate_count": int(collapsed["count"]),
+        "pending_payment_count": int(collapsed["pending_payment_count"]),
+        "notification_queue_count": len(queue),
+        "notification_queue": queue,
+        "collapsed": collapsed,
+    }
+
+
 def _should_emit_payment_check_notice(
     *,
     pay_hits: int,
@@ -4217,17 +7130,28 @@ def _should_emit_payment_check_notice(
     portal_pending: int,
     portal_pending_changed: bool,
     portal_probe_ok: bool,
+    portal_deferred: bool = False,
 ) -> bool:
     """Only emit payment-check notices for actionable payment work."""
     if int(pay_notified or 0) > 0:
         return True
     if int(portal_pending or 0) > 0 and bool(portal_pending_changed):
         return True
-    # If the portal was not verified, keep Gmail payment hits visible so a portal
-    # outage does not hide a real payment notice.
-    if not portal_probe_ok and int(pay_hits or 0) > 0:
-        return True
+    # A Gmail search hit is observation evidence, not actionable work.  The
+    # manager separately emits the real PDF/case notification and increments
+    # ``pay_notified``.  Re-emitting a generic summary merely because portal
+    # verification failed (or was deferred) repeats old, already-receipted mail.
+    # Portal failures have their own streak/cooldown alert path.
     return False
+
+
+def _should_emit_empty_check_warning(
+    *,
+    user_visible_warning: str,
+    notify_empty: bool,
+) -> bool:
+    """Do not turn an internal Gmail warning into a misleading scan summary."""
+    return bool(str(user_visible_warning or "").strip() and notify_empty)
 
 
 def _save_portal_notify_state(
@@ -4250,8 +7174,117 @@ def _save_portal_notify_state(
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 2630, exc_info=True)
 
 
+def _should_emit_review_check_notice(
+    *,
+    download_email_hits: int,
+    pickup_email_hits: int,
+    ready_to_download_count: int,
+    portal_downloadable: int,
+    portal_downloadable_changed: bool,
+    portal_pickup: int,
+    portal_pickup_changed: bool,
+    scan_errors: int,
+    portal_failure_alert: bool,
+) -> bool:
+    """Only emit review-check notices for work the user can act on now.
+
+    OLA can show a "線上下載" button before the clerk actually uploads files.
+    Those rows and Gmail download notices are hints for the downloader, not
+    user-facing events.  The user should only be notified after cmd_download
+    has obtained and archived real review files.
+    """
+    _ = (
+        download_email_hits,
+        ready_to_download_count,
+        portal_downloadable,
+        portal_downloadable_changed,
+    )
+    if int(pickup_email_hits or 0) > 0:
+        return True
+    if int(portal_pickup or 0) > 0 and bool(portal_pickup_changed):
+        return True
+    if int(scan_errors or 0) > 0:
+        return True
+    if bool(portal_failure_alert):
+        return True
+    return False
+
+
+def _ready_to_download_items(manager) -> list[dict]:
+    items = []
+    for info in getattr(manager, "ready_to_download", None) or []:
+        items.append(
+            {
+                "court_case_no": str(getattr(info, "court_case_no", "") or ""),
+                "laf_case_no": str(getattr(info, "laf_case_no", "") or ""),
+                "application_no": str(getattr(info, "application_no", "") or ""),
+                "client_name": str(getattr(info, "client_name", "") or ""),
+                "court": str(getattr(info, "court", "") or ""),
+            }
+        )
+    return items
+
+
+def _probe_portal_for_email_check(creds: dict, db, empty_summary: dict) -> dict:
+    """Run the optional live-portal portion without competing for Chromium."""
+    lock = _acquire_file_review_portal_lock("check_emails.portal_probe")
+    if not lock.acquired:
+        logger.info("Court portal busy; deferring check_emails portal probe")
+        return _portal_deferred_result(lock, "check_emails.portal_probe", success=False)
+
+    try:
+        logger.info("Checking live portal list for pending-payment/downloadable rows...")
+        probe_mod = _ensure_portal_probe_imports()
+        try:
+            max_attempts = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES", "2") or "2")
+        except Exception:
+            max_attempts = 2
+        max_attempts = max(1, min(max_attempts, 3))
+        last_summary = empty_summary
+        for attempt in range(1, max_attempts + 1):
+            probe_mgr = probe_mod.FileReviewManager(
+                username=creds["username"],
+                password=creds["password"],
+                download_folder=creds["download_folder"],
+                db_manager=db,
+                headless=True,
+                log_callback=lambda msg: logger.info(msg),
+            )
+            try:
+                last_summary = probe_mgr.probe_downloadable_from_portal() or empty_summary
+                last_summary["probe_module"] = getattr(probe_mod, "__file__", "")
+                last_summary["attempts"] = attempt
+            finally:
+                probe_mgr.close()
+            if bool(last_summary.get("success")) or not _is_transient_portal_probe_failure(last_summary):
+                break
+            if attempt < max_attempts:
+                logger.warning(
+                    "Portal probe transient failure (%s); retrying with a fresh session (%d/%d)",
+                    _portal_probe_error_key(last_summary),
+                    attempt + 1,
+                    max_attempts,
+                )
+        return last_summary
+    except Exception as portal_e:
+        logger.warning("Portal probe in check_emails failed: %s", portal_e)
+        return {
+            "success": False,
+            "error": str(portal_e)[:200],
+            "count": 0,
+            "downloadable_count": 0,
+            "court_pickup_count": 0,
+            "pending_payment_count": 0,
+            "probe_module": "",
+        }
+    finally:
+        lock.release()
+
+
 def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
     """Scan Gmail for payment notices and delivery notifications."""
+    if _scheduled_check_fixture_provider() is not None:
+        return _fixture_check_emails()
     _eventlog("filereview:gmail_check:start")
     _ensure_runtime_deps()
     cfg = _load_config()
@@ -4289,51 +7322,8 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             }
             with_portal = (os.environ.get("MAGI_FILE_REVIEW_CHECK_WITH_PORTAL", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
             if with_portal:
-                try:
-                    logger.info("Checking live portal list for pending-payment/downloadable rows...")
-                    probe_mod = _ensure_portal_probe_imports()
-                    try:
-                        max_attempts = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES", "2") or "2")
-                    except Exception:
-                        max_attempts = 2
-                    max_attempts = max(1, min(max_attempts, 3))
-                    last_summary = portal_summary
-                    for attempt in range(1, max_attempts + 1):
-                        probe_mgr = probe_mod.FileReviewManager(
-                            username=creds["username"],
-                            password=creds["password"],
-                            download_folder=creds["download_folder"],
-                            db_manager=db,
-                            headless=True,
-                            log_callback=lambda msg: logger.info(msg),
-                        )
-                        try:
-                            last_summary = probe_mgr.probe_downloadable_from_portal() or portal_summary
-                            last_summary["probe_module"] = getattr(probe_mod, "__file__", "")
-                            last_summary["attempts"] = attempt
-                        finally:
-                            probe_mgr.close()
-                        if bool(last_summary.get("success")) or not _is_transient_portal_probe_failure(last_summary):
-                            break
-                        if attempt < max_attempts:
-                            logger.warning(
-                                "Portal probe transient failure (%s); retrying with a fresh session (%d/%d)",
-                                _portal_probe_error_key(last_summary),
-                                attempt + 1,
-                                max_attempts,
-                            )
-                    portal_summary = last_summary
-                except Exception as portal_e:
-                    logger.warning("Portal probe in check_emails failed: %s", portal_e)
-                    portal_summary = {
-                        "success": False,
-                        "error": str(portal_e)[:200],
-                        "count": 0,
-                        "downloadable_count": 0,
-                        "court_pickup_count": 0,
-                        "pending_payment_count": 0,
-                        "probe_module": "",
-                    }
+                portal_summary = _probe_portal_for_email_check(creds, db, portal_summary)
+            portal_deferred = bool(portal_summary.get("deferred"))
 
             pay_hits = int(scan_summary.get("payment_hits") or 0)
             pay_notified = int(scan_summary.get("payment_notified") or 0)
@@ -4373,6 +7363,9 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             portal_pickup = int(portal_effective.get("court_pickup_count") or 0)
             portal_pickup_history = int(portal_effective.get("court_pickup_history_count") or 0)
             portal_pending = int(portal_effective.get("pending_payment_count") or 0)
+            portal_download_receipt = portal_download_snapshot(
+                portal_effective.get("items") or []
+            )
             recent_activity_all = _load_recent_processed_activity(creds["download_folder"], days=7, limit=8)
             recent_payment_activity_all = [
                 it for it in recent_activity_all if _activity_artifact_kind(it) == "payment_slip"
@@ -4400,7 +7393,9 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 f"- 可下載通知：{dl_hits} 封，可到院閱卷通知：{pickup_hits} 封（待下載佇列 {ready_cnt} 件）",
             ]
             if with_portal:
-                if bool(portal_summary.get("success")):
+                if portal_deferred:
+                    review_lines.append("- ⏸️ 入口列表正由其他作業使用，本輪安全延後")
+                elif bool(portal_summary.get("success")):
                     _downloadable_note = f"{portal_downloadable} 件"
                     if portal_downloadable_skipped:
                         _downloadable_note = f"{portal_downloadable} 件（已歸檔/已下載略過 {portal_downloadable_skipped} 件）"
@@ -4510,11 +7505,11 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
             _portal_downloadable_changed = (portal_downloadable != _prev_downloadable)
             _portal_pickup_changed = (portal_pickup != _prev_pickup)
             _portal_pending_changed = (portal_pending != _prev_pending)
-            _portal_probe_ok = bool(portal_summary.get("success")) if with_portal else False
+            _portal_probe_ok = bool(portal_summary.get("success")) if with_portal and not portal_deferred else False
             _portal_failure_meta = (
-                _record_portal_probe_state(creds["download_folder"], portal_summary)
-                if with_portal
-                else {"failure_streak": 0, "should_alert": False, "error_key": ""}
+                {"failure_streak": 0, "should_alert": False, "error_key": ""}
+                if portal_deferred or not with_portal
+                else _record_portal_probe_state(creds["download_folder"], portal_summary)
             )
             _portal_failure_alert = bool(_portal_failure_meta.get("should_alert"))
             try:
@@ -4528,15 +7523,18 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 portal_pending=portal_payment_due_count,
                 portal_pending_changed=_portal_pending_changed,
                 portal_probe_ok=_portal_probe_ok,
-            )
-            review_signal = bool(
-                dl_hits > 0
-                or pickup_hits > 0
-                or ready_cnt > 0
-                or (portal_downloadable > 0 and _portal_downloadable_changed)
-                or (portal_pickup > 0 and _portal_pickup_changed)
-                or err_cnt > 0
-                or _portal_failure_alert
+                portal_deferred=portal_deferred,
+            ) or bool(recent_payment_activity)
+            review_signal = _should_emit_review_check_notice(
+                download_email_hits=dl_hits,
+                pickup_email_hits=pickup_hits,
+                ready_to_download_count=ready_cnt,
+                portal_downloadable=portal_downloadable,
+                portal_downloadable_changed=_portal_downloadable_changed,
+                portal_pickup=portal_pickup,
+                portal_pickup_changed=_portal_pickup_changed,
+                scan_errors=err_cnt,
+                portal_failure_alert=_portal_failure_alert,
             )
             download_signal = bool(recent_review_download_activity)
             section_messages: List[Tuple[str, str]] = []  # (msg, topic_key)
@@ -4572,49 +7570,75 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 or review_signal
                 or download_signal
             )
-            # ── DC 靜音策略 ──
-            # 定期檢查但沒有新資訊時，只發 TG（quiet_cron 不在 DC mirror 白名單中）；
-            # 有新的、需要使用者處理的資訊時才鏡像到 DC。
-            _has_new_actionable_info = bool(
-                payment_signal          # 有真正待處理的繳費資訊
-                or dl_hits > 0          # 有新閱卷通知信件
-                or pickup_hits > 0      # 有新到院閱卷通知信件
-                or ready_cnt > 0        # 有待下載佇列
-                or (portal_downloadable > 0 and _portal_downloadable_changed)  # 入口新增可下載卷宗
-                or (portal_pickup > 0 and _portal_pickup_changed)  # 可到院閱卷
-                or download_signal      # 有新卷宗下載
-                or err_cnt > 0          # 有掃描錯誤
-                or _portal_failure_alert  # 連續入口失敗才提醒，避免法院短暫抖動洗版
-            )
             # 無新資訊時不推播；手動/cron 呼叫仍會在 out["message"] 回傳摘要。
             should_notify_now = notify and has_something_to_notify
-            if should_notify_now or (warn and notify_empty):
+            if should_notify_now or _should_emit_empty_check_warning(
+                user_visible_warning=warn_message,
+                notify_empty=notify_empty,
+            ):
                 if section_messages:
+                    sent_payment_section = False
+                    sent_review_section = False
                     for section_msg, section_topic in section_messages:
-                        # 無新可處理資訊 → quiet_cron → TG only；有新資訊 → 原 topic → TG + DC
-                        effective_topic = section_topic if _has_new_actionable_info else "quiet_cron"
-                        _notify(section_msg, True, topic_key=effective_topic)
+                        # check_emails 是巡檢摘要；單筆繳費通知與實際下載完成
+                        # 已由各自流程發送。這裡固定 TG-only，避免同一案件
+                        # 以「檢查完成 / 回報」文案再鏡像到業務 DC。
+                        _notify(section_msg, True, topic_key="quiet_cron")
+                        if section_topic == "filereview_payment":
+                            sent_payment_section = True
+                        elif section_topic == "filereview_download":
+                            sent_review_section = True
                     if should_notify_now:
-                        _mark_recent_activity_notified(
-                            recent_payment_activity,
-                            creds["download_folder"],
-                            "recent_payment_activity",
-                        )
-                        _mark_recent_activity_notified(
-                            recent_review_download_activity,
-                            creds["download_folder"],
-                            "recent_review_download_activity",
-                        )
+                        if sent_payment_section:
+                            recent_payment_paths: List[str] = []
+                            recent_payment_captions: Dict[str, str] = {}
+                            for item in recent_payment_activity:
+                                party = _canonical_display_client_name(
+                                    item,
+                                    name_keys=("party", "client_name", "name"),
+                                )
+                                case_no = str(item.get("case_number") or "").strip()
+                                label = f"{party}｜{case_no}" if (party or case_no) else ""
+                                for path in _recent_payment_activity_file_paths(item):
+                                    recent_payment_paths.append(path)
+                                    if label:
+                                        recent_payment_captions[path] = label
+                            _payment_file_stats = _send_payment_pdf_files(
+                                recent_payment_paths,
+                                download_folder=creds["download_folder"],
+                                caption_prefix="📄 近期繳費單 PDF",
+                                notify=True,
+                                captions_by_path=recent_payment_captions,
+                            )
+                            if (
+                                _payment_file_stats.get("sent", 0) > 0
+                                or _payment_file_stats.get("eligible", 0) == 0
+                            ):
+                                _mark_recent_activity_notified(
+                                    recent_payment_activity,
+                                    creds["download_folder"],
+                                    "recent_payment_activity",
+                                )
+                        if sent_review_section:
+                            _mark_recent_activity_notified(
+                                recent_review_download_activity,
+                                creds["download_folder"],
+                                "recent_review_download_activity",
+                            )
                     if warn_message:
                         _notify(warn_message, True)
                 else:
-                    _notify(msg, True, topic_key="quiet_cron")
+                    # With no actionable section, emit only the concrete repair
+                    # notice.  Never disguise it as a successful payment scan.
+                    _notify(warn_message, True, topic_key="quiet_cron")
             if _portal_probe_ok and (notify or portal_pending == 0):
                 # 即使待繳費歸零且不發通知，也要寫入 0；否則舊的非零狀態
                 # 會讓下一次真正出現待繳費時被誤判成「沒有變動」。
                 _save_portal_notify_state(
                     _portal_state_path,
-                    portal_downloadable=portal_downloadable,
+                    # 可下載按鈕不代表書記官已上傳卷宗；不寫入通知去重狀態，
+                    # 讓下載器下輪仍可重試，直到真的下載並歸檔後才通知。
+                    portal_downloadable=0,
                     portal_pickup=portal_pickup,
                     portal_pending=portal_pending,
                 )
@@ -4626,6 +7650,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "download_hits": dl_hits,
                 "pickup_hits": pickup_hits,
                 "ready_to_download_count": ready_cnt,
+                "ready_to_download_items": _ready_to_download_items(mgr),
                 "scan_errors": err_cnt,
                 "portal_count": portal_count,
                 "portal_raw_row_count": portal_raw_count,
@@ -4635,7 +7660,10 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                 "portal_court_pickup_count": portal_pickup,
                 "portal_court_pickup_history_count": portal_pickup_history,
                 "portal_pending_payment_count": portal_pending,
+                **portal_download_receipt,
+                "portal_status_semantics": "ola-current-state-v2",
                 "portal_probe_ok": bool(portal_summary.get("success")),
+                "portal_probe_deferred": portal_deferred,
                 "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
                 "portal_probe_error_code": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error_code") or ""),
                 "portal_probe_module": str(portal_summary.get("probe_module") or ""),
@@ -4668,7 +7696,9 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
                     "portal_court_pickup_count": portal_pickup,
                     "portal_court_pickup_history_count": portal_pickup_history,
                     "portal_pending_payment_count": portal_pending,
+                    "portal_status_semantics": "ola-current-state-v2",
                     "portal_probe_ok": bool(portal_summary.get("success")),
+                    "portal_probe_deferred": portal_deferred,
                     "portal_probe_error": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error") or ""),
                     "portal_probe_error_code": "" if bool(portal_summary.get("success")) else str(portal_summary.get("error_code") or ""),
                     "portal_probe_module": str(portal_summary.get("probe_module") or ""),
@@ -4690,7 +7720,7 @@ def cmd_check_emails(notify: bool = True, notify_empty: bool = True) -> dict:
         _eventlog("filereview:gmail_check:done", ok=False, payload=out)
         return out
 
-def cmd_preview_emails(days: int = 7) -> dict:
+def cmd_preview_emails(days: int = 7, read_only: bool = False) -> dict:
     """正式信件掃描 + 通知預覽（不下載、不標記 processed、不發通知）。"""
     try:
         day_n = int(days or os.environ.get("MAGI_FILE_REVIEW_PREVIEW_DAYS", "21") or "21")
@@ -4702,14 +7732,23 @@ def cmd_preview_emails(days: int = 7) -> dict:
         max_n = 60
     day_n = max(1, min(day_n, 120))
     max_n = max(10, min(max_n, 200))
-    _eventlog("filereview:gmail_preview:start", payload={"days": day_n, "max_results": max_n})
-    _ensure_runtime_deps()
+    if read_only:
+        missing_deps = _missing_runtime_deps()
+        if missing_deps:
+            return {
+                "success": False,
+                "error": "dependency_missing",
+                "missing_dependencies": missing_deps,
+            }
+    else:
+        _eventlog("filereview:gmail_preview:start", payload={"days": day_n, "max_results": max_n})
+        _ensure_runtime_deps()
     cfg = _load_config()
     creds = _get_credentials(cfg)
 
     try:
         mod = _ensure_imports()
-        db = _get_db_manager(cfg)
+        db = _get_db_manager(cfg, read_only=read_only)
 
         mgr = mod.FileReviewManager(
             username=creds["username"],
@@ -4729,7 +7768,7 @@ def cmd_preview_emails(days: int = 7) -> dict:
             if warn:
                 wl0 = warn.lower()
                 auto_restore = (os.environ.get("MAGI_GMAIL_AUTO_RESTORE_BACKUP", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
-                if auto_restore and (("need_interactive_oauth" in wl0) or ("invalid_grant" in wl0)):
+                if not read_only and auto_restore and (("need_interactive_oauth" in wl0) or ("invalid_grant" in wl0)):
                     rt = _restore_latest_token_backup(_json_path("filereview_token.pickle"))
                     if rt.get("success"):
                         logger.info("Preview Gmail restored token from backup: %s", rt.get("restored_from"))
@@ -4744,7 +7783,8 @@ def cmd_preview_emails(days: int = 7) -> dict:
                         "hint": "請執行 `reauth_gmail` 重新授權（會開啟瀏覽器授權）。",
                     }
             out = {"success": True, "count": len(items), "items": items}
-            _eventlog("filereview:gmail_preview:done", ok=True, payload={"count": len(items)})
+            if not read_only:
+                _eventlog("filereview:gmail_preview:done", ok=True, payload={"count": len(items)})
             return out
         finally:
             mgr.close()
@@ -4753,19 +7793,28 @@ def cmd_preview_emails(days: int = 7) -> dict:
         error_msg = str(e)[:200]
         logger.error("Email preview failed: %s", error_msg)
         out = {"success": False, "error": error_msg}
-        _eventlog("filereview:gmail_preview:done", ok=False, payload=out)
+        if not read_only:
+            _eventlog("filereview:gmail_preview:done", ok=False, payload=out)
         return out
 
 
+@_portal_serialized("downloadable_probe")
 def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                            target_case_number: str = "",
-                           dump_raw: bool = False) -> dict:
+                           dump_raw: bool = False,
+                           require_portal: bool = False,
+                           read_only: bool = False) -> dict:
     """
     法院端狀態掃描（唯讀，不下載、不改資料）：
     回傳法院入口列表中「目前有線上下載按鈕」或「待繳費」的案件。
     已歸檔閱卷資料、已下載登錄與已上傳繳費證明的案件會先去重。
     1) 優先掃法院入口「列表式查看」（最接近實際可下載狀態）
     2) 補充 Gmail 通知預覽（避免漏看通知信）
+
+    ``require_portal`` is for the production health gate: Gmail may provide
+    diagnostics for interactive use, but cannot turn a portal outage green.
+    ``read_only`` suppresses flow/event persistence, dependency bootstrap,
+    token recovery, and notifications for health probes.
     """
     try:
         day_n = int(days or os.environ.get("MAGI_FILE_REVIEW_PREVIEW_DAYS", "30") or "30")
@@ -4773,18 +7822,42 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         day_n = 21
     day_n = max(1, min(day_n, 120))
 
+    if read_only:
+        missing_deps = _missing_runtime_deps()
+        if missing_deps:
+            dependency_error = {
+                "success": False,
+                "error": "dependency_missing",
+                "missing_dependencies": missing_deps,
+            }
+            return {
+                "success": False,
+                "error": "dependency_missing",
+                "missing_dependencies": missing_deps,
+                "source": "none",
+                "count": 0,
+                "downloadable_count": 0,
+                "items": [],
+                "items_total": 0,
+                "items_truncated": False,
+                "portal": dependency_error,
+                "gmail": dependency_error,
+                "message": "唯讀健檢缺少必要依賴，未執行 portal 或 Gmail 探測。",
+            }
+
     portal_r = {"success": False, "error": "portal_probe_not_run"}
     portal_dismissed_map: dict = {}
     creds = {"download_folder": DEFAULT_DOWNLOAD_FOLDER}
     try:
-        _ensure_runtime_deps()
+        if not read_only:
+            _ensure_runtime_deps()
         cfg = _load_config()
         creds = _get_credentials(cfg)
         if not creds["username"] or not creds["password"]:
             portal_r = {"success": False, "error": "missing credentials — set MAGI_JUDICIAL_EEFILE_USERNAME/PASSWORD in .env"}
         else:
             mod = _ensure_portal_probe_imports()
-            db = _get_db_manager(cfg)
+            db = _get_db_manager(cfg, read_only=read_only)
             try:
                 max_attempts = int(os.environ.get("MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES", "2") or "2")
             except Exception:
@@ -4856,10 +7929,11 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         portal_r = {"success": False, "error": str(e)[:240]}
 
     portal_ok = bool(portal_r.get("success"))
-    force_gmail = (os.environ.get("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
-    want_gmail = force_gmail or (not portal_ok)
+    gmail_default = "0" if read_only else "1"
+    force_gmail = (os.environ.get("MAGI_FILE_REVIEW_PROBE_WITH_GMAIL", gmail_default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    want_gmail = force_gmail or (not portal_ok and not require_portal)
     if want_gmail:
-        gmail_r = cmd_preview_emails(days=day_n)
+        gmail_r = cmd_preview_emails(days=day_n, read_only=read_only)
     else:
         gmail_r = {"success": False, "skipped": True, "message": "skipped_by_portal_primary"}
     gmail_items = gmail_r.get("items") if isinstance(gmail_r.get("items"), list) else []
@@ -4886,6 +7960,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 dismissed_payments=portal_dismissed_map,
             )
         effective_items = portal_effective.get("items") or []
+        portal_download_receipt = portal_download_snapshot(effective_items)
         items = effective_items[:report_limit]
         raw_count = int(portal_r.get("count") or len(raw_items) or 0)
         case_count = int(portal_effective.get("case_count") or 0)
@@ -4919,6 +7994,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
             "court_pickup_count": court_pickup_count,
             "court_pickup_history_count": court_pickup_history_count,
             "pending_payment_count": pending_payment_count,
+            **portal_download_receipt,
             "items": items,
             "items_total": len(effective_items),
             "items_truncated": len(effective_items) > len(items),
@@ -4932,6 +8008,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
                 "court_pickup_count": court_pickup_count,
                 "court_pickup_history_count": court_pickup_history_count,
                 "pending_payment_count": pending_payment_count,
+                **portal_download_receipt,
                 "items_total": len(effective_items),
                 "error": portal_r.get("error") if not bool(portal_r.get("success")) else "",
                 "probe_module": str(portal_r.get("probe_module") or ""),
@@ -4953,7 +8030,7 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
         if portal_r.get("error"):
             msg += f"；入口列表探測失敗：{_format_portal_probe_error(portal_r)}"
         out = {
-            "success": bool(gmail_r.get("success")),
+            "success": False if require_portal else bool(gmail_r.get("success")),
             "source": source,
             "count": count,
             "downloadable_count": downloadable_count,
@@ -4973,23 +8050,24 @@ def cmd_downloadable_probe(days: int = 30, notify: bool = False,
             "message": msg,
         }
 
-    if notify:
+    if notify and not read_only:
         _notify(f"📮 閱卷可下載判定：{out.get('message')}", True)
 
-    _eventlog(
-        "filereview:gmail_downloadable_probe:done",
-        ok=bool(out.get("success")),
-        payload={
-            "source": source,
-            "count": int(out.get("count") or 0),
-            "downloadable_count": int(out.get("downloadable_count") or 0),
-            "court_pickup_count": int(out.get("court_pickup_count") or 0),
-            "pending_payment_count": int(out.get("pending_payment_count") or 0),
-            "portal_ok": bool(portal_r.get("success")),
-            "portal_probe_module": str(portal_r.get("probe_module") or ""),
-            "gmail_ok": bool(gmail_r.get("success")),
-        },
-    )
+    if not read_only:
+        _eventlog(
+            "filereview:gmail_downloadable_probe:done",
+            ok=bool(out.get("success")),
+            payload={
+                "source": source,
+                "count": int(out.get("count") or 0),
+                "downloadable_count": int(out.get("downloadable_count") or 0),
+                "court_pickup_count": int(out.get("court_pickup_count") or 0),
+                "pending_payment_count": int(out.get("pending_payment_count") or 0),
+                "portal_ok": bool(portal_r.get("success")),
+                "portal_probe_module": str(portal_r.get("probe_module") or ""),
+                "gmail_ok": bool(gmail_r.get("success")),
+            },
+        )
     return out
 
 
@@ -5031,6 +8109,72 @@ def cmd_reauth_gmail(notify: bool = True) -> dict:
         out = {"success": False, "error": error_msg}
         _eventlog("filereview:reauth:done", ok=False, payload=out)
         return out
+
+
+def cmd_cleanup_downloads(
+    max_days: int = 7,
+    pending_max_days: int = 14,
+    quarantine_max_days: int = 14,
+    dry_run: bool = False,
+) -> dict:
+    """Clean disposable file-review download staging on a regular schedule."""
+    cfg = _load_config()
+    creds = _get_credentials(cfg)
+    download_folder = creds.get("download_folder") or DEFAULT_DOWNLOAD_FOLDER
+    base_dirs = _download_cleanup_base_candidates(download_folder)
+    summary = {
+        "success": True,
+        "base_dirs": base_dirs,
+        "runs": [],
+        "deleted_count": 0,
+        "would_delete_count": 0,
+        "freed_bytes": 0,
+    }
+    for base_dir in base_dirs:
+        run = _cleanup_all_download_folders(
+            base_dir,
+            max_days=_coerce_retention_days(max_days, 7),
+            pending_max_days=_coerce_retention_days(pending_max_days, 14),
+            quarantine_max_days=_coerce_retention_days(quarantine_max_days, 14),
+            dry_run=bool(dry_run),
+        )
+        summary["runs"].append(run)
+        summary["deleted_count"] += int(run.get("deleted_count") or 0)
+        summary["would_delete_count"] += int(run.get("would_delete_count") or 0)
+        summary["freed_bytes"] += int(run.get("freed_bytes") or 0)
+        if not run.get("success", False):
+            summary["success"] = False
+
+    deleted_count = int(summary.get("deleted_count") or 0)
+    would_delete_count = int(summary.get("would_delete_count") or 0)
+    freed_bytes = int(summary.get("freed_bytes") or 0)
+    if dry_run:
+        msg = f"閱卷暫存清理 dry-run：將清 {would_delete_count} 個資料夾"
+    else:
+        msg = f"閱卷暫存清理完成：清除 {deleted_count} 個資料夾，釋放 {freed_bytes / (1024 ** 3):.2f} GB"
+    out = {
+        "success": bool(summary.get("success", True)),
+        "message": msg,
+        "download_folder": download_folder,
+        "base_dirs": base_dirs,
+        "max_days": max_days,
+        "pending_max_days": pending_max_days,
+        "quarantine_max_days": quarantine_max_days,
+        "dry_run": bool(dry_run),
+        "summary": summary,
+    }
+    _eventlog(
+        "filereview:cleanup_downloads:done",
+        ok=bool(out.get("success")),
+        payload={
+            "dry_run": bool(dry_run),
+            "deleted_count": deleted_count,
+            "would_delete_count": would_delete_count,
+            "freed_bytes": freed_bytes,
+            "base_dirs": base_dirs,
+        },
+    )
+    return out
 
 
 def cmd_check_stale(days: int = 90, notify: bool = True) -> dict:
@@ -5458,6 +8602,7 @@ def main() -> int:
             r = cmd_upload_payment_proof_from_image(
                 image_path=cmd_data.get("image_path", ""),
                 notify=cmd_data.get("notify", True),
+                case_hint=cmd_data.get("case_hint", ""),
             )
             try:
                 print(json.dumps(r, ensure_ascii=False))
@@ -5490,7 +8635,9 @@ def main() -> int:
                 'download {"case_number":"..."}',
                 'download_status {"job_id":"latest"}',
                 "download_payment_slips",
+                'cleanup_downloads {"max_days":7,"pending_max_days":14,"quarantine_max_days":14,"dry_run":true}',
                 'upload_payment_proof {"court_code":"HLD","year":"114","case_type":"原金訴","case_number":"166","file_path":"/path/to/screenshot.png"}',
+                "process_payment_proof_queue",
                 "upload_payment_proofs_batch",
                 "check_emails",
                 "preview_emails",
@@ -5511,6 +8658,7 @@ def main() -> int:
                 "紙本閱卷 <法院> <案號> <當事人> <MMDD時段> ...（如 0407下午 0408上午）",
                 "下載閱卷",
                 "下載閱卷 <案號>",
+                "排程閱卷檢查",
                 "下載繳費單",
                 "上傳繳費憑證",
                 "批次上傳繳費憑證",
@@ -5648,10 +8796,35 @@ def main() -> int:
             lambda flow_id: cmd_download_payment_slips(
                 max_days=int(payload.get("max_days", 14) or 14),
                 notify=_boolish(payload.get("notify"), True),
+                target_case_number=str(payload.get("target_case_number") or payload.get("case_number") or "").strip(),
             ),
-            metadata={"max_days": int(payload.get("max_days", 14) or 14)},
+            metadata={
+                "max_days": int(payload.get("max_days", 14) or 14),
+                "target_case_number": str(payload.get("target_case_number") or payload.get("case_number") or "").strip(),
+            },
             step_name="payment_slip_scan",
             detail=f"max_days={int(payload.get('max_days', 14) or 14)}",
+        )
+        return _ok(r)
+
+    if task.startswith("cleanup_downloads"):
+        payload = _load_jsonish(task[len("cleanup_downloads"):].strip())
+        r = cmd_cleanup_downloads(
+            max_days=int(payload.get("max_days", payload.get("days", 7)) or 7),
+            pending_max_days=int(payload.get("pending_max_days", 14) or 14),
+            quarantine_max_days=int(payload.get("quarantine_max_days", 14) or 14),
+            dry_run=_boolish(payload.get("dry_run"), False),
+        )
+        return _ok(r)
+
+    if task.startswith("scheduled_check") or task in ("排程閱卷檢查", "閱卷排程檢查"):
+        payload = _load_jsonish(task[len("scheduled_check"):].strip()) if task.startswith("scheduled_check") else {}
+        r = _run_with_flow(
+            "scheduled_check",
+            lambda flow_id: cmd_scheduled_check(notify=_boolish(payload.get("notify"), True)),
+            metadata={"source": "cron"},
+            step_name="scheduled_file_review_check",
+            detail="check_emails + download_payment_slips + download",
         )
         return _ok(r)
 
@@ -5668,6 +8841,13 @@ def main() -> int:
             notify=_boolish(payload.get("notify"), True),
         )
         return _ok(r)
+
+    if task.startswith("process_payment_proof_queue"):
+        payload = _load_jsonish(task[len("process_payment_proof_queue"):].strip())
+        return _ok(cmd_process_payment_proof_queue(
+            notify=_boolish(payload.get("notify"), True),
+            max_items=int(payload.get("max_items", 3) or 3),
+        ))
 
     if task.startswith("upload_payment_proofs_batch") or task == "批次上傳繳費憑證":
         payload = _load_jsonish(task[len("upload_payment_proofs_batch"):].strip()) if task.startswith("upload_payment_proofs_batch") else {}
@@ -5731,29 +8911,45 @@ def main() -> int:
         )
         return _ok(r)
 
-    if task in ("preview_emails", "閱卷通知預覽", "預覽閱卷通知"):
-        r = _run_with_flow(
-            "preview_emails",
-            lambda flow_id: cmd_preview_emails(),
-            step_name="email_preview",
-            detail="preview emails",
-        )
+    if task.startswith("preview_emails") or task in ("閱卷通知預覽", "預覽閱卷通知"):
+        payload = _load_jsonish(task[len("preview_emails"):].strip()) if task.startswith("preview_emails") else {}
+        kwargs = {
+            "days": int(payload.get("days", 7) or 7),
+            "read_only": _boolish(payload.get("read_only"), False),
+        }
+        if kwargs["read_only"]:
+            r = cmd_preview_emails(**kwargs)
+        else:
+            r = _run_with_flow(
+                "preview_emails",
+                lambda flow_id: cmd_preview_emails(**kwargs),
+                step_name="email_preview",
+                detail="preview emails",
+            )
         return _ok(r)
 
     if task.startswith("downloadable_probe") or task in ("可下載判定", "閱卷可下載判定"):
         payload = _load_jsonish(task[len("downloadable_probe"):].strip()) if task.startswith("downloadable_probe") else {}
-        r = _run_with_flow(
-            "downloadable_probe",
-            lambda flow_id: cmd_downloadable_probe(
-                days=int(payload.get("days", 30) or 30),
-                notify=_boolish(payload.get("notify"), False),
-                target_case_number=str(payload.get("target_case_number") or "").strip(),
-                dump_raw=_boolish(payload.get("dump_raw"), False),
-            ),
-            metadata={"days": int(payload.get("days", 30) or 30)},
-            step_name="downloadable_probe",
-            detail=f"days={int(payload.get('days', 30) or 30)}",
-        )
+        kwargs = {
+            "days": int(payload.get("days", 30) or 30),
+            "notify": _boolish(payload.get("notify"), False),
+            "target_case_number": str(payload.get("target_case_number") or "").strip(),
+            "dump_raw": _boolish(payload.get("dump_raw"), False),
+            "require_portal": _boolish(payload.get("require_portal"), False),
+            "read_only": _boolish(payload.get("read_only"), False),
+        }
+        if kwargs["read_only"]:
+            r = cmd_downloadable_probe(**kwargs)
+        else:
+            r = _run_with_flow(
+                "downloadable_probe",
+                lambda flow_id: cmd_downloadable_probe(
+                    **kwargs,
+                ),
+                metadata={"days": kwargs["days"]},
+                step_name="downloadable_probe",
+                detail=f"days={kwargs['days']}",
+            )
         return _ok(r)
 
     if task.startswith("download_status"):
@@ -5770,8 +8966,8 @@ def main() -> int:
         payload = _load_jsonish(task[len("download_sync"):].strip())
         cn = payload.get("case_number", "")
         r = _run_with_flow(
-            "download",
-            lambda flow_id: cmd_download(case_number=cn, notify=_boolish(payload.get("notify"), True), flow_id=flow_id),
+            "download_sync",
+            lambda flow_id: cmd_download_sync(case_number=cn, notify=_boolish(payload.get("notify"), True), flow_id=flow_id),
             metadata={"case_number": cn},
         )
         return _ok(r)

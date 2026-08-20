@@ -14,9 +14,10 @@ async function loadTodos() {
     renderTodos();
 }
 
-function isTodoDone(status) {
+function isTodoDone(status, row) {
+    if (row && row.is_done !== undefined) return Boolean(row.is_done);
     const text = String(status || '').trim().toLowerCase();
-    return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消'].includes(text);
+    return ['completed', 'done', '已完成', '完成', 'cancelled', 'canceled', '取消', 'deleted', '已刪除', '刪除', 'calendar_deduped'].includes(text);
 }
 
 function renderTodos() {
@@ -43,7 +44,7 @@ function renderTodos() {
         gridId: "todosCalendarCardGrid",
         emptyId: "todosCalendarEmpty",
         summaryId: "todosCalendarSummary",
-        summaryPrefix: "行事曆事件",
+        summaryPrefix: "案件行程來源待辦",
         mode: "calendar",
     });
 }
@@ -57,8 +58,8 @@ function renderTodoBoard({ items, gridId, emptyId, summaryId, summaryPrefix, mod
     if (summaryEl) {
         const sourceCounts = countTodoSources(items);
         const detail = mode === "calendar"
-            ? `calendar_events ${sourceCounts.calendar_events || 0}，行事曆事件待辦 ${sourceCounts.calendar_todo || 0}，Google 日曆匯入 ${sourceCounts.gcal_import || 0}`
-            : "來源：case_todos（排除 Google 日曆匯入）";
+            ? `MAGI 行事曆 ${sourceCounts.calendar_events || 0}，行事曆事件待辦 ${sourceCounts.calendar_todo || 0}，Google 日曆匯入 ${sourceCounts.gcal_import || 0}`
+            : "來源：OSC 手動或 PDF 建立待辦（排除 Google 日曆匯入）";
         summaryEl.textContent = `${summaryPrefix || "待辦"} ${items.length} 筆｜${detail}`;
     }
 
@@ -73,7 +74,7 @@ function renderTodoBoard({ items, gridId, emptyId, summaryId, summaryPrefix, mod
     // Classify: overdue, today, future, completed
     const classified = items.map(r => {
         const dateStr = r.todo_date || '';
-        const isDone = isTodoDone(r.status);
+        const isDone = isTodoDone(r.status, r);
         let group = 3; // future
         if (isDone) group = 4;
         else if (dateStr && dateStr < todayStr) group = 1; // overdue
@@ -146,12 +147,11 @@ function calendarEventToTodoItem(r) {
 }
 
 function importedCalendarTodoToItem(r) {
-    const source = String(r.source_file || "").trim();
-    const isGoogleImport = source.startsWith("gcal_import");
+    const key = typeof oscTodoSourceKey === "function" ? oscTodoSourceKey(r) : (String(r.source_file || "").trim().startsWith("gcal_import") ? "gcal_import" : "calendar_todo");
     return {
         ...r,
-        _source: isGoogleImport ? "gcal_import" : "calendar_todo",
-        _sourceLabel: isGoogleImport ? "Google 日曆匯入" : "行事曆事件待辦",
+        _source: key,
+        _sourceLabel: typeof oscTodoSourceLabel === "function" ? oscTodoSourceLabel(r) : (key === "gcal_import" ? "Google 日曆匯入" : "行事曆事件待辦"),
     };
 }
 
@@ -199,7 +199,7 @@ async function editTodo(id, targetPrefix = "todo_") {
 }
 
 async function delTodo(id) {
-    if (!confirm(`確定刪除待辦 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除待辦 ${id}？`)) return;
     await api(`/api/osc/todos/${id}`, "DELETE");
     await loadTodos();
     await loadMeta();

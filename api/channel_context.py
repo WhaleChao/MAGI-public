@@ -82,7 +82,11 @@ def reverse_lookup_telegram_topic(
         return ""
 
     magi_root = _get_magi_root(magi_root)
-    state_file = os.path.join(magi_root, ".agent", "telegram_channel_state.json")
+    agent_dir = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+    state_file = os.path.join(
+        agent_dir or os.path.join(magi_root, ".agent"),
+        "telegram_channel_state.json",
+    )
 
     try:
         if not os.path.exists(state_file):
@@ -131,7 +135,11 @@ def reverse_lookup_discord_channel(channel_id: str, magi_root: str = "") -> str:
         return ""
 
     magi_root = _get_magi_root(magi_root)
-    channel_map_file = os.path.join(magi_root, ".agent", "discord_channel_map.json")
+    agent_dir = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+    channel_map_file = os.path.join(
+        agent_dir or os.path.join(magi_root, ".agent"),
+        "discord_channel_map.json",
+    )
 
     try:
         if not os.path.exists(channel_map_file):

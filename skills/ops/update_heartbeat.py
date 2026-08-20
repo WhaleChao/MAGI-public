@@ -3,6 +3,7 @@
 
 import os
 import sys
+from pathlib import Path
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 MAGI_DIR = _MAGI_ROOT
@@ -25,7 +26,7 @@ def get_melchior_status():
     return "🔴 Offline"
 
 def generate_heartbeat():
-    heartbeat_path = "/Users/ai/.openclaw/workspace/HEARTBEAT.md"
+    heartbeat_path = Path.home() / ".openclaw" / "workspace" / "HEARTBEAT.md"
     
     status_content = f"""# MAGI System Heartbeat
 

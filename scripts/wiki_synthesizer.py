@@ -62,7 +62,19 @@ if MAGI_ROOT not in sys.path:
 logger = logging.getLogger("wiki_synthesizer")
 
 # ── Config ──────────────────────────────────────────────────────────
-AGENT_DIR = Path(MAGI_ROOT) / ".agent"
+def _resolve_agent_dir() -> Path:
+    raw = (
+        os.environ.get("MAGI_OBSIDIAN_AGENT_DIR")
+        or os.environ.get("MAGI_SHARED_AGENT_DIR")
+        or os.environ.get("MAGI_AGENT_DIR")
+        or ""
+    ).strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path(MAGI_ROOT) / ".agent"
+
+
+AGENT_DIR = _resolve_agent_dir()
 AGENT_DIR.mkdir(exist_ok=True)
 
 WIKI_STATE_PATH = AGENT_DIR / "wiki_synthesizer_state.json"
@@ -71,6 +83,15 @@ INGEST_STATE_PATH = AGENT_DIR / "obsidian_ingest_state.json"
 INDEX_PATH = AGENT_DIR / "obsidian_index.json"
 
 WIKI_FOLDER = "30_Wiki"  # Inside vault
+WIKI_PAGE_NAMES = (
+    "overview",
+    "timeline",
+    "parties",
+    "issues",
+    "evidence",
+    "tasks",
+    "procedural_status",
+)
 
 # Max chars to feed LLM per synthesis call
 # E4B on 6GB runs safely at ~3K chars; 26B can handle 8K. Default to 3K to protect E4B.
@@ -173,11 +194,10 @@ def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool
     """
     prev = state.get("cases", {}).get(case_number, {})
     prev_hashes = prev.get("source_hashes", {})
+    structural_only = os.environ.get("MAGI_WIKI_STRUCTURAL_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
-    # Re-synthesize retryable fallbacks, such as multi-document cases where
-    # an LLM merge is materially better.  Single-note cases can safely keep
-    # the structural overview without becoming nightly churn.
-    if prev and not prev.get("llm_synthesized", True) and prev.get("fallback_retryable", True):
+    prev_pages = prev.get("wiki_pages") or {}
+    if prev and any(page not in prev_pages for page in WIKI_PAGE_NAMES):
         return True
 
     for note in notes:
@@ -190,6 +210,43 @@ def _case_needs_update(case_number: str, notes: List[Dict], state: Dict) -> bool
     for prev_path in prev_hashes:
         if prev_path not in current_paths:
             return True
+
+    # Re-synthesize retryable fallbacks, such as multi-document cases where
+    # an LLM merge is materially better.  Source changes above always win over
+    # cooldown, so a new filing is reflected immediately.
+    if (
+        prev
+        and not structural_only
+        and not prev.get("llm_synthesized", True)
+        and prev.get("fallback_retryable", True)
+    ):
+        # A busy/unavailable model used to make every fallback case retry on
+        # every nightly run.  With many cases, 90s direct + 30s gateway waits
+        # could exceed the one-hour scheduler timeout and produce a permanent
+        # red loop.  Cool down each fallback independently; the per-run limit
+        # in the cron command then naturally rotates through the backlog.
+        try:
+            retry_hours = max(
+                1.0,
+                float(os.environ.get("MAGI_WIKI_FALLBACK_RETRY_HOURS", "72") or "72"),
+            )
+        except (TypeError, ValueError):
+            retry_hours = 72.0
+        last_retry_raw = str(
+            prev.get("fallback_retry_at")
+            or prev.get("synthesized_at")
+            or ""
+        ).strip()
+        if last_retry_raw:
+            try:
+                last_retry = datetime.fromisoformat(last_retry_raw.replace("Z", "+00:00"))
+                now = datetime.now(tz=last_retry.tzinfo)
+                age_hours = max(0.0, (now - last_retry).total_seconds() / 3600)
+                if age_hours < retry_hours:
+                    return False
+            except (TypeError, ValueError):
+                pass
+        return True
 
     return False
 
@@ -225,11 +282,17 @@ def _omlx_chat_direct(prompt: str, timeout: int = 60, max_tokens: int = 500) -> 
 
 
 def _extract_note_text(abs_path: str, max_chars: int = 5000) -> str:
-    """Extract the Full Text section from an Obsidian note."""
+    """Extract structured summary first, then Full Text from an Obsidian note."""
     try:
         content = Path(abs_path).read_text("utf-8", errors="replace")
     except Exception:
         return ""
+
+    structured = re.search(r"##\s+摘要\s*\n(.+?)(?=\n##\s+Full Text|\Z)", content, re.DOTALL)
+    if structured:
+        text = structured.group(0).strip()
+        if len(text) >= 80:
+            return text[:max_chars] + ("\n...[截斷]" if len(text) > max_chars else "")
 
     # Try to find ## Full Text section
     match = re.search(r"## Full Text\s*\n(.+)", content, re.DOTALL)
@@ -330,6 +393,7 @@ def _synthesize_overview(
     # Use direct oMLX call (bypasses gateway's hardcoded max_tokens=2048).
     max_tokens = int(os.environ.get("MAGI_WIKI_MAX_TOKENS", "500"))
     timeout_sec = int(os.environ.get("MAGI_WIKI_LLM_TIMEOUT", "90"))
+    gateway_timeout_sec = int(os.environ.get("MAGI_WIKI_GATEWAY_TIMEOUT", "30"))
 
     resp = _omlx_chat_direct(prompt, timeout=timeout_sec, max_tokens=max_tokens)
     if resp and len(resp) >= 100:
@@ -343,7 +407,7 @@ def _synthesize_overview(
     if resp is not None:
         logger.warning("LLM response too short for %s (%d chars)", case_number, len(resp))
     try:
-        result = gw.chat(prompt, task_type="general", timeout=30)
+        result = gw.chat(prompt, task_type="general", timeout=gateway_timeout_sec)
         if result.get("success"):
             gw_resp = result.get("response", "").strip()
             if gw_resp and len(gw_resp) >= 100:
@@ -518,6 +582,137 @@ def _structural_overview(
     return "\n".join(lines)
 
 
+def _note_display_name(note: Dict) -> str:
+    return Path(note["path"]).stem.replace("summary__", "")
+
+
+def _clean_note_line(line: str) -> str:
+    line = re.sub(r"^[\s>*#-]*(?:\d{1,3}|[０-９]{1,3})\s*", "", str(line or ""))
+    line = re.sub(r"\s+", " ", line).strip(" -:：，,")
+    return line[:240]
+
+
+def _iter_note_lines(notes: List[Dict], *, max_chars_per_note: int = 4000) -> List[Tuple[Dict, str]]:
+    rows: List[Tuple[Dict, str]] = []
+    for note in notes[:MAX_NOTES_PER_CASE]:
+        text = _extract_note_text(note["abs_path"], max_chars=max_chars_per_note)
+        if not text:
+            continue
+        for raw in re.split(r"[\n。；;]+", text):
+            line = _clean_note_line(raw)
+            if len(line) < 8:
+                continue
+            rows.append((note, line))
+    return rows
+
+
+def _source_line(note: Dict, line: str) -> str:
+    return f"- {line} → 來源：[[{Path(note['path']).stem}]]"
+
+
+def _pick_structural_lines(
+    rows: List[Tuple[Dict, str]],
+    keywords: Tuple[str, ...],
+    *,
+    limit: int = 20,
+) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for note, line in rows:
+        if not any(k in line for k in keywords):
+            continue
+        key = re.sub(r"\s+", "", line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(_source_line(note, line))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_timeline_page(case_number: str, client_name: str, notes: List[Dict], rows: List[Tuple[Dict, str]]) -> str:
+    date_pat = re.compile(r"(\d{2,3}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{8})")
+    items = []
+    seen = set()
+    for note, line in rows:
+        if not date_pat.search(line):
+            continue
+        key = re.sub(r"\s+", "", line)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(_source_line(note, line))
+        if len(items) >= 40:
+            break
+    if not items:
+        items = ["- 未見可解析日期。"]
+    return "\n".join([f"# {case_number} {client_name} 事件時間軸", "", *items])
+
+
+def _build_structural_pages(case_number: str, client_name: str, notes: List[Dict]) -> Dict[str, str]:
+    rows = _iter_note_lines(notes)
+    doc_lines = []
+    for note in sorted(notes, key=lambda n: n["path"]):
+        doc_lines.append(f"- [[{Path(note['path']).stem}]]")
+
+    overview = _structural_overview(case_number, client_name, notes)
+    pages = {
+        "overview": overview,
+        "timeline": _build_timeline_page(case_number, client_name, notes, rows),
+        "parties": "\n".join([
+            f"# {case_number} {client_name} 當事人與關係",
+            "",
+            *(_pick_structural_lines(
+                rows,
+                ("原告", "被告", "聲請人", "相對人", "債權人", "債務人", "告訴人", "代理人", "法定代理人"),
+                limit=40,
+            ) or ["- 未見明確當事人/角色資料。"]),
+        ]),
+        "issues": "\n".join([
+            f"# {case_number} {client_name} 爭點清單",
+            "",
+            *(_pick_structural_lines(
+                rows,
+                ("爭點", "主張", "抗辯", "否認", "承認", "理由", "不成立", "犯罪事實", "構成要件"),
+                limit=40,
+            ) or ["- 未見明確爭點。"]),
+        ]),
+        "evidence": "\n".join([
+            f"# {case_number} {client_name} 證據清單",
+            "",
+            *(_pick_structural_lines(
+                rows,
+                ("證據", "存摺", "交易", "匯款", "明細", "照片", "截圖", "附件", "卷", "錄音", "紀錄"),
+                limit=50,
+            ) or ["- 未見明確證據資料。"]),
+            "",
+            "## 來源文件",
+            "",
+            *doc_lines[:80],
+        ]),
+        "tasks": "\n".join([
+            f"# {case_number} {client_name} 期限與待辦",
+            "",
+            *(_pick_structural_lines(
+                rows,
+                ("期限", "應於", "前提出", "補正", "開庭", "庭期", "調解", "續行", "到庭", "上訴", "抗告", "不變期間"),
+                limit=50,
+            ) or ["- 未見明確期限或待辦。"]),
+        ]),
+        "procedural_status": "\n".join([
+            f"# {case_number} {client_name} 程序狀態",
+            "",
+            *(_pick_structural_lines(
+                rows,
+                ("法院", "年度", "字第", "通知", "裁定", "判決", "起訴", "不起訴", "調解", "準備程序", "宣示", "諭知"),
+                limit=50,
+            ) or ["- 未見明確程序狀態。"]),
+        ]),
+    }
+    return pages
+
+
 def _ingest_wiki_to_vectors(
     vault: Path,
     case_number: str,
@@ -556,6 +751,35 @@ def _ingest_wiki_to_vectors(
     except Exception as e:
         logger.warning("Vector ingest failed for %s/%s: %s", case_number, page_name, e)
         return {"success": False, "error": str(e)}
+
+
+def _update_obsidian_index_for_wiki(vault: Path, wiki_path: Path, vr: Dict) -> None:
+    """Keep knowledge_lint's Obsidian index in sync with synthesized wiki pages."""
+    try:
+        rel = str(wiki_path.relative_to(vault))
+        content = wiki_path.read_text(encoding="utf-8", errors="replace")
+        st = wiki_path.stat()
+        idx: Dict
+        if INDEX_PATH.exists():
+            idx = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            if not isinstance(idx, dict):
+                idx = {"notes": {}, "updated_at": ""}
+        else:
+            idx = {"notes": {}, "updated_at": ""}
+        notes = idx.setdefault("notes", {})
+        notes[rel] = {
+            "hash": hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16],
+            "mtime": int(st.st_mtime),
+            "doc_key": str(vr.get("doc_key") or ""),
+            "chunks": int(vr.get("chunks_written") or 0) if vr.get("success") else 0,
+            "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        idx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        tmp = INDEX_PATH.with_suffix(f"{INDEX_PATH.suffix}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(INDEX_PATH)
+    except Exception as e:
+        logger.warning("Obsidian index update failed for wiki page %s: %s", wiki_path, e)
 
 
 # ── Main synthesis loop ─────────────────────────────────────────────
@@ -630,45 +854,71 @@ def synthesize(
         if not quiet:
             print(f"\n[{i}/{len(cases_to_update)}] {case_number} ({client_name}) — {len(notes)} 份筆記")
 
-        # Synthesize overview (LLM path)
-        overview = _synthesize_overview(case_number, client_name, notes, gw)
+        # Synthesize overview (LLM path).  Commercial release and recovery
+        # jobs can opt into structural-only mode so stale wiki state can be
+        # repaired even when the local LLM sidecar is busy or restarting.
+        structural_only = os.environ.get("MAGI_WIKI_STRUCTURAL_ONLY", "0").strip().lower() in {"1", "true", "yes", "on"}
+        overview = None if structural_only else _synthesize_overview(case_number, client_name, notes, gw)
 
-        # Structural fallback: always produce a wiki page even if LLM fails
+        # Structural fallback: always produce wiki pages even if LLM fails.
+        pages = _build_structural_pages(case_number, client_name, notes)
         used_fallback = False
-        if not overview:
-            overview = _structural_overview(case_number, client_name, notes)
+        if overview:
+            pages["overview"] = overview
+        else:
+            overview = pages["overview"]
             used_fallback = True
             if not quiet:
-                if len(notes) <= 1:
+                if structural_only:
+                    print("  📋 結構式總覽（MAGI_WIKI_STRUCTURAL_ONLY）")
+                elif len(notes) <= 1:
                     print("  📋 單一來源，使用結構式總覽")
                 else:
                     print("  ⚠️  LLM 失敗，使用結構式 fallback（夜間 cron 補齊）")
 
-        # Write wiki page (with wikilinks injected)
-        wiki_path = _write_wiki_page(vault, case_number, client_name, overview, "overview", notes=notes)
-        if not quiet:
-            label = "📋 結構式" if used_fallback else "✅ LLM"
-            print(f"  {label} 寫入 {wiki_path.relative_to(vault)}")
-
-        # Ingest to vectors (skip if --no-ingest; Phase 4 ingest handles it separately)
-        if skip_ingest:
-            chunks = 0
-        else:
-            vr = _ingest_wiki_to_vectors(vault, case_number, client_name, overview, "overview")
-            chunks = vr.get("chunks_written", 0) if vr.get("success") else 0
+        wiki_pages: Dict[str, str] = {}
+        chunks = 0
+        for page_name in WIKI_PAGE_NAMES:
+            page_content = pages.get(page_name, "").strip()
+            if not page_content:
+                continue
+            wiki_path = _write_wiki_page(vault, case_number, client_name, page_content, page_name, notes=notes)
+            wiki_pages[page_name] = str(wiki_path.relative_to(vault))
             if not quiet:
-                print(f"  📊 向量化 {chunks} chunks")
+                label = "📋 結構式" if (used_fallback or page_name != "overview") else "✅ LLM"
+                print(f"  {label} 寫入 {wiki_path.relative_to(vault)}")
+
+            if skip_ingest:
+                vr = {"success": False, "chunks_written": 0}
+                _update_obsidian_index_for_wiki(vault, wiki_path, vr)
+            else:
+                vr = _ingest_wiki_to_vectors(vault, case_number, client_name, page_content, page_name)
+                page_chunks = vr.get("chunks_written", 0) if vr.get("success") else 0
+                chunks += page_chunks
+                _update_obsidian_index_for_wiki(vault, wiki_path, vr)
+                if not quiet:
+                    print(f"  📊 {page_name} 向量化 {page_chunks} chunks")
 
         # Update state
+        previous_case_state = state.setdefault("cases", {}).get(case_number, {})
+        fallback_retry_count = (
+            int(previous_case_state.get("fallback_retry_count") or 0) + 1
+            if used_fallback and len(notes) > 1
+            else 0
+        )
         state.setdefault("cases", {})[case_number] = {
             "client_name": client_name,
             "source_hashes": {n["path"]: n["content_hash"] for n in notes},
             "note_count": len(notes),
-            "wiki_page": str(wiki_path.relative_to(vault)),
+            "wiki_page": wiki_pages.get("overview", ""),
+            "wiki_pages": wiki_pages,
+            "required_pages": list(WIKI_PAGE_NAMES),
             "synthesized_at": datetime.now().isoformat(),
             "vector_chunks": chunks,
             "llm_synthesized": not used_fallback,
             "fallback_retryable": bool(used_fallback and len(notes) > 1),
+            "fallback_retry_at": datetime.now().isoformat() if used_fallback else "",
+            "fallback_retry_count": fallback_retry_count,
         }
         _save_state(state)
         synthesized += 1

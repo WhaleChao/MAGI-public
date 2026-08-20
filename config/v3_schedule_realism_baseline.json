@@ -1,0 +1,4694 @@
+{
+  "schema_version": 2,
+  "status": "incomplete",
+  "captured_at": "2026-08-11T04:32:52.869749+00:00",
+  "source_evidence": {
+    "job_definitions_path": "cron_jobs.json",
+    "job_definitions_sha256": "21778907c9efb4ea2b65688c653287b34288d8248bab9f08ac3a05d9652677f5",
+    "logical_definition_sha256": "21da77816a562dfba79ded3928a58b6dcb9cdaca8b0a8fa4f1369807cfe35187",
+    "runtime_state_source": "cron_state.json",
+    "runtime_state_sha256": "c3fda4c39b255f96e528fcfb5e48e944e6daf518668a69ad5ce689256d25ece2",
+    "runtime_state_read_only_snapshot": true,
+    "raw_runtime_state_included": false,
+    "legacy_naive_timestamp_timezone": "Asia/Taipei",
+    "observation_timestamps_normalized_to_utc": true,
+    "observation_command_binding": "canonical_argv_sha256_v1",
+    "runtime_source_evidence_receipt_sha256": "9ad9c181d20a798272642bd14fa11df0b0407ba09723c42f30db0480d5e50ef4"
+  },
+  "coverage": {
+    "job_definitions": 105,
+    "enabled_job_definitions": 95,
+    "enabled_jobs_with_successful_duration": 89,
+    "enabled_jobs_without_successful_duration": 6,
+    "minimum_samples_per_job_for_percentile": 3,
+    "jobs_meeting_minimum_samples": 84,
+    "global_duration_percentile_available": false
+  },
+  "observations": [
+    {
+      "job_id": "job_1770699415",
+      "command_sha256": "41b7ff0b4c548f10bce98bee188cfcdb0416b411b8d48680c98aae4f66ae04b3",
+      "duration_seconds": 0.725,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-11T01:00:39.897806+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.282,
+          "observed_at": "2026-07-14T01:00:35.969005+00:00"
+        },
+        {
+          "duration_seconds": 4.984,
+          "observed_at": "2026-07-15T01:00:53.778554+00:00"
+        },
+        {
+          "duration_seconds": 0.787,
+          "observed_at": "2026-08-01T01:00:33.295610+00:00"
+        },
+        {
+          "duration_seconds": 0.645,
+          "observed_at": "2026-08-04T01:00:49.747523+00:00"
+        },
+        {
+          "duration_seconds": 0.708,
+          "observed_at": "2026-08-05T01:00:17.099599+00:00"
+        },
+        {
+          "duration_seconds": 0.839,
+          "observed_at": "2026-08-09T01:00:08.625987+00:00"
+        },
+        {
+          "duration_seconds": 0.725,
+          "observed_at": "2026-08-11T01:00:39.897806+00:00"
+        }
+      ],
+      "duration_p95_seconds": 4.984
+    },
+    {
+      "job_id": "job_1770705679",
+      "command_sha256": "e15b6f3db236bcd3cf287eea6552e2f12067ef8ea9f2fbea00a319226093a2f3",
+      "duration_seconds": 43.82,
+      "sample_count": 2,
+      "successful": true,
+      "observed_at": "2026-08-11T02:01:04.192344+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 341.756,
+          "observed_at": "2026-08-09T08:06:47.123421+00:00"
+        },
+        {
+          "duration_seconds": 43.82,
+          "observed_at": "2026-08-11T02:01:04.192344+00:00"
+        }
+      ]
+    },
+    {
+      "job_id": "job_1770948489644_0726cf",
+      "command_sha256": "b26548964d76f281114e400ba1145788b5ea916f6e8377e64a8d540d3dabf554",
+      "duration_seconds": 5.796,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:30:47.583016+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 36.601,
+          "observed_at": "2026-07-13T20:31:06.232554+00:00"
+        },
+        {
+          "duration_seconds": 4.203,
+          "observed_at": "2026-07-14T20:30:32.592420+00:00"
+        },
+        {
+          "duration_seconds": 12.866,
+          "observed_at": "2026-07-31T20:30:24.518397+00:00"
+        },
+        {
+          "duration_seconds": 13.937,
+          "observed_at": "2026-08-03T20:30:25.555980+00:00"
+        },
+        {
+          "duration_seconds": 12.651,
+          "observed_at": "2026-08-04T20:30:55.017649+00:00"
+        },
+        {
+          "duration_seconds": 11.95,
+          "observed_at": "2026-08-05T20:30:40.713108+00:00"
+        },
+        {
+          "duration_seconds": 7.184,
+          "observed_at": "2026-08-08T20:30:13.400036+00:00"
+        },
+        {
+          "duration_seconds": 5.796,
+          "observed_at": "2026-08-10T20:30:47.583016+00:00"
+        }
+      ],
+      "duration_p95_seconds": 36.601
+    },
+    {
+      "job_id": "job_1770948489644_c5a469",
+      "command_sha256": "f6195eab0cba611f5fbd661b77b598b12603f0df8f3f0f9ec9ff2372c72270ba",
+      "duration_seconds": 799.304,
+      "sample_count": 11,
+      "successful": true,
+      "observed_at": "2026-08-09T12:32:54.550975+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 56.873,
+          "observed_at": "2026-08-01T06:01:00.040391+00:00"
+        },
+        {
+          "duration_seconds": 46.846,
+          "observed_at": "2026-08-01T10:01:27.875270+00:00"
+        },
+        {
+          "duration_seconds": 58.052,
+          "observed_at": "2026-08-04T00:02:02.770934+00:00"
+        },
+        {
+          "duration_seconds": 54.083,
+          "observed_at": "2026-08-04T08:01:57.827816+00:00"
+        },
+        {
+          "duration_seconds": 56.505,
+          "observed_at": "2026-08-04T12:04:01.219016+00:00"
+        },
+        {
+          "duration_seconds": 57.544,
+          "observed_at": "2026-08-04T16:01:01.703702+00:00"
+        },
+        {
+          "duration_seconds": 56.91,
+          "observed_at": "2026-08-05T00:01:02.518318+00:00"
+        },
+        {
+          "duration_seconds": 54.32,
+          "observed_at": "2026-08-05T16:04:39.288509+00:00"
+        },
+        {
+          "duration_seconds": 50.14,
+          "observed_at": "2026-08-05T20:09:13.756270+00:00"
+        },
+        {
+          "duration_seconds": 61.754,
+          "observed_at": "2026-08-06T00:28:51.570233+00:00"
+        },
+        {
+          "duration_seconds": 799.304,
+          "observed_at": "2026-08-09T12:32:54.550975+00:00"
+        }
+      ],
+      "duration_p95_seconds": 799.304
+    },
+    {
+      "job_id": "job_1770949442096_9e8adf",
+      "command_sha256": "88cfc17589cf44ffdbf67f368745c52cdd998549c7675b2e2f00dc1e461ed002",
+      "duration_seconds": 6.436,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T17:15:07.764450+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 33.937,
+          "observed_at": "2026-07-13T17:16:01.166689+00:00"
+        },
+        {
+          "duration_seconds": 6.554,
+          "observed_at": "2026-07-14T17:15:32.272467+00:00"
+        },
+        {
+          "duration_seconds": 4.425,
+          "observed_at": "2026-07-31T17:15:08.863245+00:00"
+        },
+        {
+          "duration_seconds": 7.473,
+          "observed_at": "2026-08-03T17:15:11.681695+00:00"
+        },
+        {
+          "duration_seconds": 6.601,
+          "observed_at": "2026-08-04T17:15:11.259822+00:00"
+        },
+        {
+          "duration_seconds": 6.463,
+          "observed_at": "2026-08-05T17:16:04.526768+00:00"
+        },
+        {
+          "duration_seconds": 6.029,
+          "observed_at": "2026-08-08T17:15:10.983104+00:00"
+        },
+        {
+          "duration_seconds": 6.436,
+          "observed_at": "2026-08-10T17:15:07.764450+00:00"
+        }
+      ],
+      "duration_p95_seconds": 33.937
+    },
+    {
+      "job_id": "job_accounting_monthly_bonus",
+      "command_sha256": "889b40ab6b233dda12fc2a4575afaf515a0618b1f8371b127f5a0b689e402288",
+      "duration_seconds": 18.959,
+      "sample_count": 5,
+      "successful": true,
+      "observed_at": "2026-08-10T04:00:52.976375+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 22.336,
+          "observed_at": "2026-08-01T04:00:28.795330+00:00"
+        },
+        {
+          "duration_seconds": 19.067,
+          "observed_at": "2026-08-03T04:00:24.801501+00:00"
+        },
+        {
+          "duration_seconds": 21.952,
+          "observed_at": "2026-08-05T04:01:15.541250+00:00"
+        },
+        {
+          "duration_seconds": 23.96,
+          "observed_at": "2026-08-09T04:00:24.277021+00:00"
+        },
+        {
+          "duration_seconds": 18.959,
+          "observed_at": "2026-08-10T04:00:52.976375+00:00"
+        }
+      ],
+      "duration_p95_seconds": 23.96
+    },
+    {
+      "job_id": "job_accounting_sheet_import",
+      "command_sha256": "d719d7358f6018e9fbda5db9e53db6a8e15e600c044a6d64a687a1e014e4312f",
+      "duration_seconds": 20.609,
+      "sample_count": 3,
+      "successful": true,
+      "observed_at": "2026-08-10T01:22:01.049079+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 22.059,
+          "observed_at": "2026-08-03T01:21:58.611531+00:00"
+        },
+        {
+          "duration_seconds": 23.266,
+          "observed_at": "2026-08-07T01:22:18.687059+00:00"
+        },
+        {
+          "duration_seconds": 20.609,
+          "observed_at": "2026-08-10T01:22:01.049079+00:00"
+        }
+      ],
+      "duration_p95_seconds": 23.266
+    },
+    {
+      "job_id": "job_api_token_health_check",
+      "command_sha256": "a1a8fcc9d609172468c5edb5085c6b4a56ca1584111c209551fa2e55df8a7e8f",
+      "duration_seconds": 2.479,
+      "sample_count": 15,
+      "successful": true,
+      "observed_at": "2026-08-11T04:11:41.496740+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.888,
+          "observed_at": "2026-07-14T10:10:12.496040+00:00"
+        },
+        {
+          "duration_seconds": 0.759,
+          "observed_at": "2026-07-14T16:10:26.381028+00:00"
+        },
+        {
+          "duration_seconds": 0.727,
+          "observed_at": "2026-07-14T22:10:31.903971+00:00"
+        },
+        {
+          "duration_seconds": 0.761,
+          "observed_at": "2026-07-15T10:10:24.063253+00:00"
+        },
+        {
+          "duration_seconds": 1.887,
+          "observed_at": "2026-08-01T04:11:10.154180+00:00"
+        },
+        {
+          "duration_seconds": 1.276,
+          "observed_at": "2026-08-01T10:11:43.861852+00:00"
+        },
+        {
+          "duration_seconds": 2.533,
+          "observed_at": "2026-08-03T22:12:00.949242+00:00"
+        },
+        {
+          "duration_seconds": 1.977,
+          "observed_at": "2026-08-04T04:11:13.529785+00:00"
+        },
+        {
+          "duration_seconds": 2.051,
+          "observed_at": "2026-08-04T10:11:06.656698+00:00"
+        },
+        {
+          "duration_seconds": 2.065,
+          "observed_at": "2026-08-04T16:11:08.171831+00:00"
+        },
+        {
+          "duration_seconds": 33.944,
+          "observed_at": "2026-08-04T22:12:34.926368+00:00"
+        },
+        {
+          "duration_seconds": 1.99,
+          "observed_at": "2026-08-05T16:11:48.686784+00:00"
+        },
+        {
+          "duration_seconds": 2.329,
+          "observed_at": "2026-08-05T22:11:08.669790+00:00"
+        },
+        {
+          "duration_seconds": 2.043,
+          "observed_at": "2026-08-09T10:11:04.110642+00:00"
+        },
+        {
+          "duration_seconds": 2.479,
+          "observed_at": "2026-08-11T04:11:41.496740+00:00"
+        }
+      ],
+      "duration_p95_seconds": 33.944
+    },
+    {
+      "job_id": "job_backup_market_watchlist",
+      "command_sha256": "e8aac4d584d9d032b62b35e12e3a710122ca78ab4088ce29d5ac817d411fd52b",
+      "duration_seconds": 0.343,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:25:00.653984+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.061,
+          "observed_at": "2026-07-13T19:25:28.711058+00:00"
+        },
+        {
+          "duration_seconds": 0.07,
+          "observed_at": "2026-07-14T19:25:27.587305+00:00"
+        },
+        {
+          "duration_seconds": 0.588,
+          "observed_at": "2026-07-31T19:25:00.853782+00:00"
+        },
+        {
+          "duration_seconds": 0.345,
+          "observed_at": "2026-08-03T19:25:00.553360+00:00"
+        },
+        {
+          "duration_seconds": 0.26,
+          "observed_at": "2026-08-04T19:25:00.515567+00:00"
+        },
+        {
+          "duration_seconds": 1.694,
+          "observed_at": "2026-08-05T19:25:06.364795+00:00"
+        },
+        {
+          "duration_seconds": 0.331,
+          "observed_at": "2026-08-08T19:25:00.615512+00:00"
+        },
+        {
+          "duration_seconds": 0.343,
+          "observed_at": "2026-08-10T19:25:00.653984+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1.694
+    },
+    {
+      "job_id": "job_benchmark_osc_todos",
+      "command_sha256": "d1495e14e58294245d281d41d0dc44882c416a0f97374dc55bb5191cbbbd30f1",
+      "duration_seconds": 21.325,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:50:25.739411+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.517,
+          "observed_at": "2026-07-13T19:50:30.605081+00:00"
+        },
+        {
+          "duration_seconds": 1.65,
+          "observed_at": "2026-07-14T19:50:29.512281+00:00"
+        },
+        {
+          "duration_seconds": 1.821,
+          "observed_at": "2026-07-31T19:50:06.056409+00:00"
+        },
+        {
+          "duration_seconds": 1.135,
+          "observed_at": "2026-08-03T19:50:05.625292+00:00"
+        },
+        {
+          "duration_seconds": 1.155,
+          "observed_at": "2026-08-04T19:50:03.985809+00:00"
+        },
+        {
+          "duration_seconds": 1.854,
+          "observed_at": "2026-08-05T19:52:23.526248+00:00"
+        },
+        {
+          "duration_seconds": 1.405,
+          "observed_at": "2026-08-08T19:50:04.555906+00:00"
+        },
+        {
+          "duration_seconds": 21.325,
+          "observed_at": "2026-08-10T19:50:25.739411+00:00"
+        }
+      ],
+      "duration_p95_seconds": 21.325
+    },
+    {
+      "job_id": "job_benchmark_pdf_bookmarker",
+      "command_sha256": "408eb73d1e7c849c888ef833d10455bc8de1e86e6a6f4274f3cf6ffc75d8bf4c",
+      "duration_seconds": 239.013,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-09T06:44:11.107605+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 76.275,
+          "observed_at": "2026-07-14T06:42:03.057174+00:00"
+        },
+        {
+          "duration_seconds": 74.145,
+          "observed_at": "2026-07-15T06:41:34.729033+00:00"
+        },
+        {
+          "duration_seconds": 309.51,
+          "observed_at": "2026-07-31T06:46:09.691624+00:00"
+        },
+        {
+          "duration_seconds": 292.082,
+          "observed_at": "2026-08-01T06:45:02.118644+00:00"
+        },
+        {
+          "duration_seconds": 328.321,
+          "observed_at": "2026-08-03T06:46:28.746158+00:00"
+        },
+        {
+          "duration_seconds": 291.732,
+          "observed_at": "2026-08-04T06:51:52.782126+00:00"
+        },
+        {
+          "duration_seconds": 318.15,
+          "observed_at": "2026-08-05T06:52:47.634674+00:00"
+        },
+        {
+          "duration_seconds": 239.013,
+          "observed_at": "2026-08-09T06:44:11.107605+00:00"
+        }
+      ],
+      "duration_p95_seconds": 328.321
+    },
+    {
+      "job_id": "job_benchmark_pdf_namer",
+      "command_sha256": "30b5afa12fe62bd884f2f754311934bbb46f34ac27d996b9db14f945debc7f87",
+      "duration_seconds": 452.919,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-09T06:39:43.516915+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 367.965,
+          "observed_at": "2026-07-14T06:36:54.632838+00:00"
+        },
+        {
+          "duration_seconds": 366.333,
+          "observed_at": "2026-07-15T06:36:26.735878+00:00"
+        },
+        {
+          "duration_seconds": 439.026,
+          "observed_at": "2026-07-31T06:39:40.654380+00:00"
+        },
+        {
+          "duration_seconds": 435.472,
+          "observed_at": "2026-08-01T06:37:24.189617+00:00"
+        },
+        {
+          "duration_seconds": 429.884,
+          "observed_at": "2026-08-03T06:38:40.045502+00:00"
+        },
+        {
+          "duration_seconds": 439.809,
+          "observed_at": "2026-08-04T06:38:29.302512+00:00"
+        },
+        {
+          "duration_seconds": 453.014,
+          "observed_at": "2026-08-05T06:37:59.833555+00:00"
+        },
+        {
+          "duration_seconds": 452.919,
+          "observed_at": "2026-08-09T06:39:43.516915+00:00"
+        }
+      ],
+      "duration_p95_seconds": 453.014
+    },
+    {
+      "job_id": "job_business_module_live_check",
+      "command_sha256": "b254f5fdf54fd532fbc4c27f69e94df298309ced1559da31dbb16463d497b565",
+      "duration_seconds": 221.98,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-09T10:33:58.952699+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 93.224,
+          "observed_at": "2026-07-13T19:12:01.716760+00:00"
+        },
+        {
+          "duration_seconds": 103.466,
+          "observed_at": "2026-07-14T19:12:10.745458+00:00"
+        },
+        {
+          "duration_seconds": 219.278,
+          "observed_at": "2026-07-31T19:13:41.203903+00:00"
+        },
+        {
+          "duration_seconds": 175.517,
+          "observed_at": "2026-08-04T01:19:42.875964+00:00"
+        },
+        {
+          "duration_seconds": 216.221,
+          "observed_at": "2026-08-05T17:12:56.899282+00:00"
+        },
+        {
+          "duration_seconds": 216.221,
+          "observed_at": "2026-08-05T21:38:34.865169+00:00"
+        },
+        {
+          "duration_seconds": 167.538,
+          "observed_at": "2026-08-05T23:27:14.566518+00:00"
+        },
+        {
+          "duration_seconds": 221.98,
+          "observed_at": "2026-08-09T10:33:58.952699+00:00"
+        }
+      ],
+      "duration_p95_seconds": 221.98
+    },
+    {
+      "job_id": "job_business_readiness_snapshot",
+      "command_sha256": "fb9db03d7e71c912feef336e39528368fa1fff1c67b2507db3aea8047bfaa2de",
+      "duration_seconds": 34.168,
+      "sample_count": 30,
+      "successful": true,
+      "observed_at": "2026-08-11T04:25:00.451445+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.511,
+          "observed_at": "2026-07-14T10:22:12.365501+00:00"
+        },
+        {
+          "duration_seconds": 0.514,
+          "observed_at": "2026-07-14T10:32:12.663329+00:00"
+        },
+        {
+          "duration_seconds": 0.547,
+          "observed_at": "2026-07-14T11:32:14.521362+00:00"
+        },
+        {
+          "duration_seconds": 0.513,
+          "observed_at": "2026-07-14T12:22:15.888122+00:00"
+        },
+        {
+          "duration_seconds": 0.48,
+          "observed_at": "2026-07-14T21:52:30.784101+00:00"
+        },
+        {
+          "duration_seconds": 0.825,
+          "observed_at": "2026-07-14T22:22:31.475756+00:00"
+        },
+        {
+          "duration_seconds": 0.576,
+          "observed_at": "2026-07-14T22:32:31.366087+00:00"
+        },
+        {
+          "duration_seconds": 1.064,
+          "observed_at": "2026-07-15T01:22:50.333224+00:00"
+        },
+        {
+          "duration_seconds": 0.609,
+          "observed_at": "2026-07-15T13:12:28.857676+00:00"
+        },
+        {
+          "duration_seconds": 0.573,
+          "observed_at": "2026-07-15T14:02:38.653545+00:00"
+        },
+        {
+          "duration_seconds": 0.625,
+          "observed_at": "2026-07-15T14:42:36.520763+00:00"
+        },
+        {
+          "duration_seconds": 2.0,
+          "observed_at": "2026-07-15T15:02:45.456072+00:00"
+        },
+        {
+          "duration_seconds": 2.17,
+          "observed_at": "2026-08-01T06:22:09.334786+00:00"
+        },
+        {
+          "duration_seconds": 1.518,
+          "observed_at": "2026-08-01T10:32:47.729798+00:00"
+        },
+        {
+          "duration_seconds": 1.584,
+          "observed_at": "2026-08-01T10:42:49.223658+00:00"
+        },
+        {
+          "duration_seconds": 2.281,
+          "observed_at": "2026-08-04T01:02:51.699785+00:00"
+        },
+        {
+          "duration_seconds": 2.34,
+          "observed_at": "2026-08-04T09:52:03.587242+00:00"
+        },
+        {
+          "duration_seconds": 2.233,
+          "observed_at": "2026-08-04T12:12:08.560638+00:00"
+        },
+        {
+          "duration_seconds": 2.073,
+          "observed_at": "2026-08-04T12:34:39.636109+00:00"
+        },
+        {
+          "duration_seconds": 2.277,
+          "observed_at": "2026-08-04T12:44:41.463647+00:00"
+        },
+        {
+          "duration_seconds": 2.104,
+          "observed_at": "2026-08-04T17:04:04.692465+00:00"
+        },
+        {
+          "duration_seconds": 2.246,
+          "observed_at": "2026-08-04T18:24:10.425188+00:00"
+        },
+        {
+          "duration_seconds": 2.31,
+          "observed_at": "2026-08-04T19:34:04.041537+00:00"
+        },
+        {
+          "duration_seconds": 8.749,
+          "observed_at": "2026-08-04T19:44:10.638350+00:00"
+        },
+        {
+          "duration_seconds": 1.672,
+          "observed_at": "2026-08-05T00:14:10.124028+00:00"
+        },
+        {
+          "duration_seconds": 14.183,
+          "observed_at": "2026-08-05T17:34:38.439460+00:00"
+        },
+        {
+          "duration_seconds": 2.327,
+          "observed_at": "2026-08-05T21:34:56.916446+00:00"
+        },
+        {
+          "duration_seconds": 1.671,
+          "observed_at": "2026-08-06T01:24:55.218617+00:00"
+        },
+        {
+          "duration_seconds": 2.105,
+          "observed_at": "2026-08-09T13:34:53.928591+00:00"
+        },
+        {
+          "duration_seconds": 34.168,
+          "observed_at": "2026-08-11T04:25:00.451445+00:00"
+        }
+      ],
+      "duration_p95_seconds": 14.183
+    },
+    {
+      "job_id": "job_case_index_sync",
+      "command_sha256": "a8ed71cbcadf0ac2444311fc53f2157f0a022c218324e2e75571f97eabea14dc",
+      "duration_seconds": 1.491,
+      "sample_count": 10,
+      "successful": true,
+      "observed_at": "2026-08-10T16:00:02.901049+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.356,
+          "observed_at": "2026-07-13T16:00:26.632556+00:00"
+        },
+        {
+          "duration_seconds": 0.362,
+          "observed_at": "2026-07-14T16:00:25.366786+00:00"
+        },
+        {
+          "duration_seconds": 1.714,
+          "observed_at": "2026-07-31T16:00:07.637636+00:00"
+        },
+        {
+          "duration_seconds": 1.463,
+          "observed_at": "2026-08-03T16:00:43.116585+00:00"
+        },
+        {
+          "duration_seconds": 1.799,
+          "observed_at": "2026-08-04T16:00:05.981425+00:00"
+        },
+        {
+          "duration_seconds": 1.874,
+          "observed_at": "2026-08-05T17:14:56.062886+00:00"
+        },
+        {
+          "duration_seconds": 1.874,
+          "observed_at": "2026-08-05T21:31:28.126662+00:00"
+        },
+        {
+          "duration_seconds": 1.874,
+          "observed_at": "2026-08-05T23:27:27.655638+00:00"
+        },
+        {
+          "duration_seconds": 1.794,
+          "observed_at": "2026-08-08T16:00:50.779781+00:00"
+        },
+        {
+          "duration_seconds": 1.491,
+          "observed_at": "2026-08-10T16:00:02.901049+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1.874
+    },
+    {
+      "job_id": "job_debug_cleanup",
+      "command_sha256": "91526b33b358c273768c6635a61fa536d7cc72d7b8e0dfd00b65768e6fe7a36c",
+      "duration_seconds": 0.762,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T21:00:01.099484+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.23,
+          "observed_at": "2026-07-13T21:00:30.492574+00:00"
+        },
+        {
+          "duration_seconds": 0.294,
+          "observed_at": "2026-07-14T21:00:30.017258+00:00"
+        },
+        {
+          "duration_seconds": 0.204,
+          "observed_at": "2026-07-31T21:01:18.365329+00:00"
+        },
+        {
+          "duration_seconds": 0.332,
+          "observed_at": "2026-08-03T21:03:23.186260+00:00"
+        },
+        {
+          "duration_seconds": 0.255,
+          "observed_at": "2026-08-04T21:01:11.633348+00:00"
+        },
+        {
+          "duration_seconds": 0.39,
+          "observed_at": "2026-08-05T21:13:31.495252+00:00"
+        },
+        {
+          "duration_seconds": 0.831,
+          "observed_at": "2026-08-08T21:06:06.725426+00:00"
+        },
+        {
+          "duration_seconds": 0.762,
+          "observed_at": "2026-08-10T21:00:01.099484+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.831
+    },
+    {
+      "job_id": "job_disk_cleanup_healthcheck",
+      "command_sha256": "8cf1b912e318242d799f3d7a13084e62379a303598b15bcecf61a2c5c9a21ce5",
+      "duration_seconds": 2.06,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:31:44.074917+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 73.163,
+          "observed_at": "2026-07-13T19:56:42.330015+00:00"
+        },
+        {
+          "duration_seconds": 3.702,
+          "observed_at": "2026-07-14T19:55:31.703165+00:00"
+        },
+        {
+          "duration_seconds": 2.389,
+          "observed_at": "2026-07-31T20:09:10.005848+00:00"
+        },
+        {
+          "duration_seconds": 2.546,
+          "observed_at": "2026-08-03T19:55:07.974198+00:00"
+        },
+        {
+          "duration_seconds": 49.256,
+          "observed_at": "2026-08-04T19:57:53.164552+00:00"
+        },
+        {
+          "duration_seconds": 12.243,
+          "observed_at": "2026-08-05T19:55:34.493601+00:00"
+        },
+        {
+          "duration_seconds": 1.773,
+          "observed_at": "2026-08-08T20:05:08.002941+00:00"
+        },
+        {
+          "duration_seconds": 2.06,
+          "observed_at": "2026-08-10T20:31:44.074917+00:00"
+        }
+      ],
+      "duration_p95_seconds": 73.163
+    },
+    {
+      "job_id": "job_disk_low_water_alarm",
+      "command_sha256": "0df02415551fe9831138a49bf83c9f732a432f721d10e566cdc9646f044d40ac",
+      "duration_seconds": 1.477,
+      "sample_count": 23,
+      "successful": true,
+      "observed_at": "2026-08-11T04:05:38.774800+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.065,
+          "observed_at": "2026-07-14T10:05:11.343566+00:00"
+        },
+        {
+          "duration_seconds": 0.047,
+          "observed_at": "2026-07-14T11:05:13.209031+00:00"
+        },
+        {
+          "duration_seconds": 0.061,
+          "observed_at": "2026-07-14T12:05:14.875935+00:00"
+        },
+        {
+          "duration_seconds": 0.054,
+          "observed_at": "2026-07-14T21:05:29.831777+00:00"
+        },
+        {
+          "duration_seconds": 0.041,
+          "observed_at": "2026-07-14T22:06:24.437088+00:00"
+        },
+        {
+          "duration_seconds": 0.058,
+          "observed_at": "2026-07-15T01:05:48.915719+00:00"
+        },
+        {
+          "duration_seconds": 0.053,
+          "observed_at": "2026-07-15T13:05:28.176176+00:00"
+        },
+        {
+          "duration_seconds": 0.074,
+          "observed_at": "2026-07-15T14:05:29.251407+00:00"
+        },
+        {
+          "duration_seconds": 0.058,
+          "observed_at": "2026-07-15T15:05:36.520949+00:00"
+        },
+        {
+          "duration_seconds": 0.212,
+          "observed_at": "2026-08-01T06:05:04.352852+00:00"
+        },
+        {
+          "duration_seconds": 0.129,
+          "observed_at": "2026-08-01T10:05:41.821120+00:00"
+        },
+        {
+          "duration_seconds": 0.23,
+          "observed_at": "2026-08-04T00:05:05.794937+00:00"
+        },
+        {
+          "duration_seconds": 0.176,
+          "observed_at": "2026-08-04T09:05:02.565419+00:00"
+        },
+        {
+          "duration_seconds": 0.199,
+          "observed_at": "2026-08-04T12:05:05.181263+00:00"
+        },
+        {
+          "duration_seconds": 0.197,
+          "observed_at": "2026-08-04T17:05:02.973550+00:00"
+        },
+        {
+          "duration_seconds": 0.167,
+          "observed_at": "2026-08-04T18:05:04.878240+00:00"
+        },
+        {
+          "duration_seconds": 0.238,
+          "observed_at": "2026-08-04T19:05:12.018715+00:00"
+        },
+        {
+          "duration_seconds": 0.201,
+          "observed_at": "2026-08-05T00:05:07.251073+00:00"
+        },
+        {
+          "duration_seconds": 0.2,
+          "observed_at": "2026-08-05T17:05:33.214240+00:00"
+        },
+        {
+          "duration_seconds": 0.268,
+          "observed_at": "2026-08-05T21:06:03.505254+00:00"
+        },
+        {
+          "duration_seconds": 0.22,
+          "observed_at": "2026-08-06T00:05:04.919599+00:00"
+        },
+        {
+          "duration_seconds": 0.201,
+          "observed_at": "2026-08-09T13:05:47.226217+00:00"
+        },
+        {
+          "duration_seconds": 1.477,
+          "observed_at": "2026-08-11T04:05:38.774800+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.268
+    },
+    {
+      "job_id": "job_distill_train_gemma",
+      "command_sha256": "2cc837ff9387f948720690f05d47323dcd1453d32e6d8361ddf627720ecbaa50",
+      "duration_seconds": 3.746,
+      "sample_count": 3,
+      "successful": true,
+      "observed_at": "2026-08-09T04:11:38.189351+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1633.905,
+          "observed_at": "2026-07-12T03:27:16.395321+00:00"
+        },
+        {
+          "duration_seconds": 2.462,
+          "observed_at": "2026-08-02T04:02:03.072299+00:00"
+        },
+        {
+          "duration_seconds": 3.746,
+          "observed_at": "2026-08-09T04:11:38.189351+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1633.905
+    },
+    {
+      "job_id": "job_drive_case_sync_bidirectional",
+      "command_sha256": "acdcbd12f5634e4e55ae5fee633b6c51951114b977e70e315bb137ba0b0080a2",
+      "duration_seconds": 3.563,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-10T23:03:24.776471+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 477.635,
+          "observed_at": "2026-08-01T04:58:57.860633+00:00"
+        },
+        {
+          "duration_seconds": 525.12,
+          "observed_at": "2026-08-03T23:01:45.577571+00:00"
+        },
+        {
+          "duration_seconds": 505.181,
+          "observed_at": "2026-08-04T10:59:25.377930+00:00"
+        },
+        {
+          "duration_seconds": 3.445,
+          "observed_at": "2026-08-04T16:51:03.665748+00:00"
+        },
+        {
+          "duration_seconds": 49.086,
+          "observed_at": "2026-08-04T22:54:19.960514+00:00"
+        },
+        {
+          "duration_seconds": 3.839,
+          "observed_at": "2026-08-05T16:54:35.292831+00:00"
+        },
+        {
+          "duration_seconds": 2.94,
+          "observed_at": "2026-08-05T22:51:03.160676+00:00"
+        },
+        {
+          "duration_seconds": 381.973,
+          "observed_at": "2026-08-09T11:05:33.208879+00:00"
+        },
+        {
+          "duration_seconds": 3.563,
+          "observed_at": "2026-08-10T23:03:24.776471+00:00"
+        }
+      ],
+      "duration_p95_seconds": 525.12
+    },
+    {
+      "job_id": "job_empty_case_shell_cleanup",
+      "command_sha256": "31d5fe26bb438b4ac17343e1a4a1c7d5c1d42e731c6f0b828a0ba12cc018ec58",
+      "duration_seconds": 2.631,
+      "sample_count": 27,
+      "successful": true,
+      "observed_at": "2026-08-11T04:23:03.395486+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.938,
+          "observed_at": "2026-07-14T10:08:12.252444+00:00"
+        },
+        {
+          "duration_seconds": 0.923,
+          "observed_at": "2026-07-14T10:23:12.812914+00:00"
+        },
+        {
+          "duration_seconds": 0.915,
+          "observed_at": "2026-07-14T10:38:13.228437+00:00"
+        },
+        {
+          "duration_seconds": 0.897,
+          "observed_at": "2026-07-14T11:23:14.630557+00:00"
+        },
+        {
+          "duration_seconds": 2.9,
+          "observed_at": "2026-07-14T12:23:18.313502+00:00"
+        },
+        {
+          "duration_seconds": 0.883,
+          "observed_at": "2026-07-14T21:53:31.203388+00:00"
+        },
+        {
+          "duration_seconds": 0.929,
+          "observed_at": "2026-07-14T22:23:31.601534+00:00"
+        },
+        {
+          "duration_seconds": 15.769,
+          "observed_at": "2026-07-15T01:24:05.072110+00:00"
+        },
+        {
+          "duration_seconds": 1.221,
+          "observed_at": "2026-07-15T13:08:29.396342+00:00"
+        },
+        {
+          "duration_seconds": 1.054,
+          "observed_at": "2026-07-15T14:08:30.261335+00:00"
+        },
+        {
+          "duration_seconds": 0.971,
+          "observed_at": "2026-07-15T14:38:30.639428+00:00"
+        },
+        {
+          "duration_seconds": 1.068,
+          "observed_at": "2026-07-15T15:08:37.601434+00:00"
+        },
+        {
+          "duration_seconds": 1.311,
+          "observed_at": "2026-08-01T06:23:08.688243+00:00"
+        },
+        {
+          "duration_seconds": 1.078,
+          "observed_at": "2026-08-01T10:38:48.022821+00:00"
+        },
+        {
+          "duration_seconds": 2.514,
+          "observed_at": "2026-08-04T00:53:07.227492+00:00"
+        },
+        {
+          "duration_seconds": 1.512,
+          "observed_at": "2026-08-04T09:38:07.306011+00:00"
+        },
+        {
+          "duration_seconds": 3.589,
+          "observed_at": "2026-08-04T12:08:09.162303+00:00"
+        },
+        {
+          "duration_seconds": 1.26,
+          "observed_at": "2026-08-04T12:38:39.375972+00:00"
+        },
+        {
+          "duration_seconds": 1.42,
+          "observed_at": "2026-08-04T17:08:04.722317+00:00"
+        },
+        {
+          "duration_seconds": 5.493,
+          "observed_at": "2026-08-04T18:23:13.465325+00:00"
+        },
+        {
+          "duration_seconds": 1.432,
+          "observed_at": "2026-08-04T19:38:02.278638+00:00"
+        },
+        {
+          "duration_seconds": 0.544,
+          "observed_at": "2026-08-05T00:08:08.130679+00:00"
+        },
+        {
+          "duration_seconds": 0.865,
+          "observed_at": "2026-08-05T17:38:16.953266+00:00"
+        },
+        {
+          "duration_seconds": 0.548,
+          "observed_at": "2026-08-05T21:38:01.280505+00:00"
+        },
+        {
+          "duration_seconds": 1.248,
+          "observed_at": "2026-08-06T01:23:54.601925+00:00"
+        },
+        {
+          "duration_seconds": 0.879,
+          "observed_at": "2026-08-09T13:38:01.338154+00:00"
+        },
+        {
+          "duration_seconds": 2.631,
+          "observed_at": "2026-08-11T04:23:03.395486+00:00"
+        }
+      ],
+      "duration_p95_seconds": 5.493
+    },
+    {
+      "job_id": "job_file_review_check",
+      "command_sha256": "2cd2f1c83e97527297cb3340489a380ab5e01ae2951d576a682e92b4a0f72ef0",
+      "duration_seconds": 49.861,
+      "sample_count": 11,
+      "successful": true,
+      "observed_at": "2026-08-11T03:40:50.032469+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 54.761,
+          "observed_at": "2026-07-14T10:01:05.844588+00:00"
+        },
+        {
+          "duration_seconds": 86.32,
+          "observed_at": "2026-07-15T01:02:15.126135+00:00"
+        },
+        {
+          "duration_seconds": 90.688,
+          "observed_at": "2026-07-15T10:01:53.579362+00:00"
+        },
+        {
+          "duration_seconds": 5.304,
+          "observed_at": "2026-07-31T10:40:05.526908+00:00"
+        },
+        {
+          "duration_seconds": 5.735,
+          "observed_at": "2026-08-03T10:40:05.936196+00:00"
+        },
+        {
+          "duration_seconds": 373.796,
+          "observed_at": "2026-08-04T09:46:13.869575+00:00"
+        },
+        {
+          "duration_seconds": 368.925,
+          "observed_at": "2026-08-04T10:46:09.113400+00:00"
+        },
+        {
+          "duration_seconds": 26.364,
+          "observed_at": "2026-08-05T16:21:31.225966+00:00"
+        },
+        {
+          "duration_seconds": 26.364,
+          "observed_at": "2026-08-05T21:32:49.334142+00:00"
+        },
+        {
+          "duration_seconds": 9.073,
+          "observed_at": "2026-08-07T10:40:09.297961+00:00"
+        },
+        {
+          "duration_seconds": 49.861,
+          "observed_at": "2026-08-11T03:40:50.032469+00:00"
+        }
+      ],
+      "duration_p95_seconds": 373.796
+    },
+    {
+      "job_id": "job_file_review_downloadable_probe_dense",
+      "command_sha256": "af69b8d67a9abbb3880eef730d4ed00deb1be0623d19e832ee7649409b329c26",
+      "duration_seconds": 121.729,
+      "sample_count": 16,
+      "successful": true,
+      "observed_at": "2026-08-11T04:23:02.040496+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 47.733,
+          "observed_at": "2026-07-14T10:20:59.627961+00:00"
+        },
+        {
+          "duration_seconds": 38.231,
+          "observed_at": "2026-07-14T11:20:51.939025+00:00"
+        },
+        {
+          "duration_seconds": 39.899,
+          "observed_at": "2026-07-14T12:20:55.313437+00:00"
+        },
+        {
+          "duration_seconds": 38.708,
+          "observed_at": "2026-07-14T12:40:54.594414+00:00"
+        },
+        {
+          "duration_seconds": 60.441,
+          "observed_at": "2026-07-15T01:21:49.764600+00:00"
+        },
+        {
+          "duration_seconds": 42.112,
+          "observed_at": "2026-07-15T12:41:09.705140+00:00"
+        },
+        {
+          "duration_seconds": 51.906,
+          "observed_at": "2026-07-31T12:41:03.802113+00:00"
+        },
+        {
+          "duration_seconds": 50.642,
+          "observed_at": "2026-08-04T00:40:53.654742+00:00"
+        },
+        {
+          "duration_seconds": 0.693,
+          "observed_at": "2026-08-04T09:41:00.857484+00:00"
+        },
+        {
+          "duration_seconds": 56.321,
+          "observed_at": "2026-08-04T11:41:57.462080+00:00"
+        },
+        {
+          "duration_seconds": 0.853,
+          "observed_at": "2026-08-04T12:21:09.153042+00:00"
+        },
+        {
+          "duration_seconds": 57.855,
+          "observed_at": "2026-08-04T12:41:36.387907+00:00"
+        },
+        {
+          "duration_seconds": 0.63,
+          "observed_at": "2026-08-05T12:40:16.104316+00:00"
+        },
+        {
+          "duration_seconds": 55.737,
+          "observed_at": "2026-08-06T01:22:48.705474+00:00"
+        },
+        {
+          "duration_seconds": 258.672,
+          "observed_at": "2026-08-07T12:53:36.752101+00:00"
+        },
+        {
+          "duration_seconds": 121.729,
+          "observed_at": "2026-08-11T04:23:02.040496+00:00"
+        }
+      ],
+      "duration_p95_seconds": 258.672
+    },
+    {
+      "job_id": "job_file_review_staging_cleanup",
+      "command_sha256": "533c31909a1f13a372233254657a13edd82658dd0b4784e7f29365274d4ab07c",
+      "duration_seconds": 47.5,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:48:40.314268+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.878,
+          "observed_at": "2026-07-13T19:47:29.920877+00:00"
+        },
+        {
+          "duration_seconds": 0.142,
+          "observed_at": "2026-07-14T19:47:33.015519+00:00"
+        },
+        {
+          "duration_seconds": 1.069,
+          "observed_at": "2026-07-31T19:47:04.745671+00:00"
+        },
+        {
+          "duration_seconds": 0.568,
+          "observed_at": "2026-08-03T19:47:04.410790+00:00"
+        },
+        {
+          "duration_seconds": 35.79,
+          "observed_at": "2026-08-04T19:47:38.168904+00:00"
+        },
+        {
+          "duration_seconds": 2.511,
+          "observed_at": "2026-08-05T19:47:22.712525+00:00"
+        },
+        {
+          "duration_seconds": 0.823,
+          "observed_at": "2026-08-08T19:47:03.494181+00:00"
+        },
+        {
+          "duration_seconds": 47.5,
+          "observed_at": "2026-08-10T19:48:40.314268+00:00"
+        }
+      ],
+      "duration_p95_seconds": 47.5
+    },
+    {
+      "job_id": "job_function_health_index",
+      "command_sha256": "bc955caf5f52f80af48dd6bf498658ffa690be529a9d4f1931eaaf048492db6a",
+      "duration_seconds": 8.367,
+      "sample_count": 4,
+      "successful": true,
+      "observed_at": "2026-08-09T13:33:00.006526+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.664,
+          "observed_at": "2026-07-13T22:10:33.175928+00:00"
+        },
+        {
+          "duration_seconds": 2.133,
+          "observed_at": "2026-07-15T01:32:11.504268+00:00"
+        },
+        {
+          "duration_seconds": 1.568,
+          "observed_at": "2026-08-01T03:24:08.427760+00:00"
+        },
+        {
+          "duration_seconds": 8.367,
+          "observed_at": "2026-08-09T13:33:00.006526+00:00"
+        }
+      ],
+      "duration_p95_seconds": 8.367
+    },
+    {
+      "job_id": "job_health_report",
+      "command_sha256": "0f7e894aabe1dd908e0c99c74e5ed5e8f02deb4088bc670f68a9e5f649003bbc",
+      "duration_seconds": 2.005,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T22:30:35.222335+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.7,
+          "observed_at": "2026-07-13T22:30:32.486276+00:00"
+        },
+        {
+          "duration_seconds": 1.467,
+          "observed_at": "2026-07-14T22:30:32.210701+00:00"
+        },
+        {
+          "duration_seconds": 0.477,
+          "observed_at": "2026-07-31T22:30:03.235750+00:00"
+        },
+        {
+          "duration_seconds": 2.339,
+          "observed_at": "2026-08-03T22:30:06.092002+00:00"
+        },
+        {
+          "duration_seconds": 5.603,
+          "observed_at": "2026-08-04T22:52:28.619134+00:00"
+        },
+        {
+          "duration_seconds": 2.161,
+          "observed_at": "2026-08-05T22:30:21.137590+00:00"
+        },
+        {
+          "duration_seconds": 2.101,
+          "observed_at": "2026-08-08T22:30:57.252412+00:00"
+        },
+        {
+          "duration_seconds": 2.005,
+          "observed_at": "2026-08-10T22:30:35.222335+00:00"
+        }
+      ],
+      "duration_p95_seconds": 5.603
+    },
+    {
+      "job_id": "job_heavy_translation_quality_live",
+      "command_sha256": "0ccb612b5865a39c34d08cb38b71beebf7187d66864ff622211853aabc266a79",
+      "duration_seconds": 109.814,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:27:19.946801+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 21.338,
+          "observed_at": "2026-07-13T20:25:50.795292+00:00"
+        },
+        {
+          "duration_seconds": 35.057,
+          "observed_at": "2026-07-14T20:26:03.386434+00:00"
+        },
+        {
+          "duration_seconds": 25.366,
+          "observed_at": "2026-07-31T20:25:36.042170+00:00"
+        },
+        {
+          "duration_seconds": 23.375,
+          "observed_at": "2026-08-03T20:25:34.049108+00:00"
+        },
+        {
+          "duration_seconds": 35.211,
+          "observed_at": "2026-08-04T20:26:16.746352+00:00"
+        },
+        {
+          "duration_seconds": 37.041,
+          "observed_at": "2026-08-05T20:26:09.706910+00:00"
+        },
+        {
+          "duration_seconds": 33.466,
+          "observed_at": "2026-08-08T20:25:38.467833+00:00"
+        },
+        {
+          "duration_seconds": 109.814,
+          "observed_at": "2026-08-10T20:27:19.946801+00:00"
+        }
+      ],
+      "duration_p95_seconds": 109.814
+    },
+    {
+      "job_id": "job_insight_sync",
+      "command_sha256": "7bd394e11491639cb765380381fec98e54446ae2ca0fd039a3765cb2508b69cb",
+      "duration_seconds": 1.665,
+      "sample_count": 20,
+      "successful": true,
+      "observed_at": "2026-08-11T04:11:40.654709+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.684,
+          "observed_at": "2026-07-14T10:10:12.065882+00:00"
+        },
+        {
+          "duration_seconds": 0.527,
+          "observed_at": "2026-07-14T12:10:15.549495+00:00"
+        },
+        {
+          "duration_seconds": 0.429,
+          "observed_at": "2026-07-14T20:10:28.634845+00:00"
+        },
+        {
+          "duration_seconds": 0.481,
+          "observed_at": "2026-07-14T22:10:30.951831+00:00"
+        },
+        {
+          "duration_seconds": 0.485,
+          "observed_at": "2026-07-15T00:10:32.618640+00:00"
+        },
+        {
+          "duration_seconds": 0.416,
+          "observed_at": "2026-07-15T12:10:27.104827+00:00"
+        },
+        {
+          "duration_seconds": 0.559,
+          "observed_at": "2026-07-15T14:10:29.786960+00:00"
+        },
+        {
+          "duration_seconds": 1.919,
+          "observed_at": "2026-08-01T06:11:07.086521+00:00"
+        },
+        {
+          "duration_seconds": 1.058,
+          "observed_at": "2026-08-01T10:11:43.656531+00:00"
+        },
+        {
+          "duration_seconds": 1.945,
+          "observed_at": "2026-08-04T00:11:08.543787+00:00"
+        },
+        {
+          "duration_seconds": 2.015,
+          "observed_at": "2026-08-04T08:11:08.065273+00:00"
+        },
+        {
+          "duration_seconds": 1.976,
+          "observed_at": "2026-08-04T12:11:08.141381+00:00"
+        },
+        {
+          "duration_seconds": 2.016,
+          "observed_at": "2026-08-04T16:11:08.107539+00:00"
+        },
+        {
+          "duration_seconds": 1.876,
+          "observed_at": "2026-08-04T18:11:07.672922+00:00"
+        },
+        {
+          "duration_seconds": 1.298,
+          "observed_at": "2026-08-05T00:11:09.157780+00:00"
+        },
+        {
+          "duration_seconds": 1.853,
+          "observed_at": "2026-08-05T16:11:48.540345+00:00"
+        },
+        {
+          "duration_seconds": 1.266,
+          "observed_at": "2026-08-05T20:11:25.486847+00:00"
+        },
+        {
+          "duration_seconds": 1.34,
+          "observed_at": "2026-08-06T00:11:06.563986+00:00"
+        },
+        {
+          "duration_seconds": 1.955,
+          "observed_at": "2026-08-09T12:11:08.655314+00:00"
+        },
+        {
+          "duration_seconds": 1.665,
+          "observed_at": "2026-08-11T04:11:40.654709+00:00"
+        }
+      ],
+      "duration_p95_seconds": 2.015
+    },
+    {
+      "job_id": "job_judgment_retry_evening",
+      "command_sha256": "8d87df6de734150d111963de4b88f8d3901e63d1fed52d84d922ab41bdc3a582",
+      "duration_seconds": 1.753,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-10T14:30:57.731815+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 10.117,
+          "observed_at": "2026-07-13T14:30:33.667098+00:00"
+        },
+        {
+          "duration_seconds": 0.325,
+          "observed_at": "2026-07-14T14:30:18.665422+00:00"
+        },
+        {
+          "duration_seconds": 2.245,
+          "observed_at": "2026-07-15T14:30:31.737819+00:00"
+        },
+        {
+          "duration_seconds": 2.191,
+          "observed_at": "2026-07-31T14:30:54.331971+00:00"
+        },
+        {
+          "duration_seconds": 1.982,
+          "observed_at": "2026-08-03T14:30:27.335142+00:00"
+        },
+        {
+          "duration_seconds": 3.171,
+          "observed_at": "2026-08-04T14:30:51.622872+00:00"
+        },
+        {
+          "duration_seconds": 10.751,
+          "observed_at": "2026-08-05T14:30:20.525039+00:00"
+        },
+        {
+          "duration_seconds": 2.382,
+          "observed_at": "2026-08-08T14:30:16.230364+00:00"
+        },
+        {
+          "duration_seconds": 1.753,
+          "observed_at": "2026-08-10T14:30:57.731815+00:00"
+        }
+      ],
+      "duration_p95_seconds": 10.751
+    },
+    {
+      "job_id": "job_judicial_api_afternoon",
+      "command_sha256": "265fc48d004af34c621630b3ebc8359b0bbac988b92e58d8b02fee4d5706e425",
+      "duration_seconds": 9.752,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-09T08:12:17.344406+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 3.819,
+          "observed_at": "2026-07-14T07:30:10.976298+00:00"
+        },
+        {
+          "duration_seconds": 4.521,
+          "observed_at": "2026-07-15T07:30:26.532962+00:00"
+        },
+        {
+          "duration_seconds": 16.577,
+          "observed_at": "2026-07-31T07:30:52.303219+00:00"
+        },
+        {
+          "duration_seconds": 17.797,
+          "observed_at": "2026-08-01T07:30:34.994196+00:00"
+        },
+        {
+          "duration_seconds": 13.582,
+          "observed_at": "2026-08-03T07:31:21.387409+00:00"
+        },
+        {
+          "duration_seconds": 21.283,
+          "observed_at": "2026-08-04T07:32:30.269242+00:00"
+        },
+        {
+          "duration_seconds": 4.485,
+          "observed_at": "2026-08-05T07:30:50.024563+00:00"
+        },
+        {
+          "duration_seconds": 9.752,
+          "observed_at": "2026-08-09T08:12:17.344406+00:00"
+        }
+      ],
+      "duration_p95_seconds": 21.283
+    },
+    {
+      "job_id": "job_judicial_api_backlog_clear",
+      "command_sha256": "11cfacbcb208bff6ab5b56fe49869aa7b879c92d7fecf91ded495d569d900f47",
+      "duration_seconds": 7.837,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-09T13:31:59.313086+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 4.994,
+          "observed_at": "2026-07-13T13:30:27.283940+00:00"
+        },
+        {
+          "duration_seconds": 13.377,
+          "observed_at": "2026-07-14T13:30:30.493968+00:00"
+        },
+        {
+          "duration_seconds": 7.577,
+          "observed_at": "2026-07-15T13:30:36.200137+00:00"
+        },
+        {
+          "duration_seconds": 18.739,
+          "observed_at": "2026-07-31T13:30:39.856432+00:00"
+        },
+        {
+          "duration_seconds": 25.454,
+          "observed_at": "2026-08-03T13:32:41.526256+00:00"
+        },
+        {
+          "duration_seconds": 22.807,
+          "observed_at": "2026-08-05T13:31:46.766167+00:00"
+        },
+        {
+          "duration_seconds": 7.837,
+          "observed_at": "2026-08-09T13:31:59.313086+00:00"
+        }
+      ],
+      "duration_p95_seconds": 25.454
+    },
+    {
+      "job_id": "job_judicial_api_evening",
+      "command_sha256": "10bb146f3895829710fee1b0b75fd9a7b630ce07891b70c4b46fc41caed6a10a",
+      "duration_seconds": 5.66,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-09T11:31:34.723760+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.617,
+          "observed_at": "2026-07-13T11:30:20.320222+00:00"
+        },
+        {
+          "duration_seconds": 2.908,
+          "observed_at": "2026-07-14T11:30:16.812284+00:00"
+        },
+        {
+          "duration_seconds": 3.915,
+          "observed_at": "2026-07-15T11:30:29.365571+00:00"
+        },
+        {
+          "duration_seconds": 14.968,
+          "observed_at": "2026-07-31T11:30:23.009859+00:00"
+        },
+        {
+          "duration_seconds": 17.912,
+          "observed_at": "2026-08-03T11:33:25.510267+00:00"
+        },
+        {
+          "duration_seconds": 15.822,
+          "observed_at": "2026-08-04T11:31:22.222815+00:00"
+        },
+        {
+          "duration_seconds": 5.395,
+          "observed_at": "2026-08-05T11:30:12.737267+00:00"
+        },
+        {
+          "duration_seconds": 5.66,
+          "observed_at": "2026-08-09T11:31:34.723760+00:00"
+        }
+      ],
+      "duration_p95_seconds": 17.912
+    },
+    {
+      "job_id": "job_judicial_api_morning",
+      "command_sha256": "af4d179516575949fa33ae81604079194fb5da14fcdc81306154a707ba33f0be",
+      "duration_seconds": 10.271,
+      "sample_count": 6,
+      "successful": true,
+      "observed_at": "2026-08-07T22:59:12.054702+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 8.11,
+          "observed_at": "2026-07-13T22:40:39.150036+00:00"
+        },
+        {
+          "duration_seconds": 7.862,
+          "observed_at": "2026-07-14T22:40:38.780242+00:00"
+        },
+        {
+          "duration_seconds": 18.529,
+          "observed_at": "2026-07-31T22:40:23.123362+00:00"
+        },
+        {
+          "duration_seconds": 19.607,
+          "observed_at": "2026-08-03T23:02:21.511021+00:00"
+        },
+        {
+          "duration_seconds": 8.782,
+          "observed_at": "2026-08-05T22:40:29.326009+00:00"
+        },
+        {
+          "duration_seconds": 10.271,
+          "observed_at": "2026-08-07T22:59:12.054702+00:00"
+        }
+      ],
+      "duration_p95_seconds": 19.607
+    },
+    {
+      "job_id": "job_judicial_api_night_pull",
+      "command_sha256": "ec90755abe248c44509df8a6bdee371a188de78dab367e2bb8462ad1ebc6ab73",
+      "duration_seconds": 873.673,
+      "sample_count": 6,
+      "successful": true,
+      "observed_at": "2026-08-08T16:20:07.028350+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 364.724,
+          "observed_at": "2026-07-13T16:11:31.021191+00:00"
+        },
+        {
+          "duration_seconds": 686.949,
+          "observed_at": "2026-07-14T16:16:51.867291+00:00"
+        },
+        {
+          "duration_seconds": 761.587,
+          "observed_at": "2026-07-31T16:17:48.542648+00:00"
+        },
+        {
+          "duration_seconds": 730.467,
+          "observed_at": "2026-08-03T16:17:53.243846+00:00"
+        },
+        {
+          "duration_seconds": 1301.06,
+          "observed_at": "2026-08-05T16:40:14.975204+00:00"
+        },
+        {
+          "duration_seconds": 873.673,
+          "observed_at": "2026-08-08T16:20:07.028350+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1301.06
+    },
+    {
+      "job_id": "job_judicial_api_noon",
+      "command_sha256": "7c529c52a387381060e25fb03b1e404f5a60aad3608a729f6a170a2d0d922800",
+      "duration_seconds": 5.888,
+      "sample_count": 6,
+      "successful": true,
+      "observed_at": "2026-08-09T04:21:06.300009+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 5.21,
+          "observed_at": "2026-07-14T03:30:47.173413+00:00"
+        },
+        {
+          "duration_seconds": 17.327,
+          "observed_at": "2026-08-01T04:31:17.582949+00:00"
+        },
+        {
+          "duration_seconds": 11.879,
+          "observed_at": "2026-08-03T04:32:48.211061+00:00"
+        },
+        {
+          "duration_seconds": 14.215,
+          "observed_at": "2026-08-04T04:36:14.878578+00:00"
+        },
+        {
+          "duration_seconds": 5.546,
+          "observed_at": "2026-08-05T04:45:05.757053+00:00"
+        },
+        {
+          "duration_seconds": 5.888,
+          "observed_at": "2026-08-09T04:21:06.300009+00:00"
+        }
+      ],
+      "duration_p95_seconds": 17.327
+    },
+    {
+      "job_id": "job_knowledge_lint",
+      "command_sha256": "05e90ba66dac72a37cabbfb8b82f2230176b5121b889a15b558070bde7db729d",
+      "duration_seconds": 47.037,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-10T21:48:32.323068+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 44.745,
+          "observed_at": "2026-07-13T21:48:15.508512+00:00"
+        },
+        {
+          "duration_seconds": 46.0,
+          "observed_at": "2026-07-14T21:48:16.259925+00:00"
+        },
+        {
+          "duration_seconds": 38.815,
+          "observed_at": "2026-07-31T21:47:42.475066+00:00"
+        },
+        {
+          "duration_seconds": 70.956,
+          "observed_at": "2026-08-03T21:50:58.758709+00:00"
+        },
+        {
+          "duration_seconds": 47.828,
+          "observed_at": "2026-08-05T21:47:50.134430+00:00"
+        },
+        {
+          "duration_seconds": 43.867,
+          "observed_at": "2026-08-08T21:48:19.434682+00:00"
+        },
+        {
+          "duration_seconds": 47.037,
+          "observed_at": "2026-08-10T21:48:32.323068+00:00"
+        }
+      ],
+      "duration_p95_seconds": 70.956
+    },
+    {
+      "job_id": "job_laf_condition_dedup_scan",
+      "command_sha256": "f4b845ad4a408f9b1151853b1d055b6f22e85163966d73f728494c7afa8e9baf",
+      "duration_seconds": 60.479,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T04:28:05.206989+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 68.088,
+          "observed_at": "2026-07-14T00:36:40.845201+00:00"
+        },
+        {
+          "duration_seconds": 105.794,
+          "observed_at": "2026-07-15T00:37:11.040159+00:00"
+        },
+        {
+          "duration_seconds": 58.732,
+          "observed_at": "2026-08-01T04:29:59.316828+00:00"
+        },
+        {
+          "duration_seconds": 54.119,
+          "observed_at": "2026-08-03T04:31:30.342396+00:00"
+        },
+        {
+          "duration_seconds": 67.767,
+          "observed_at": "2026-08-04T04:34:08.201062+00:00"
+        },
+        {
+          "duration_seconds": 63.696,
+          "observed_at": "2026-08-05T04:42:04.099248+00:00"
+        },
+        {
+          "duration_seconds": 856.699,
+          "observed_at": "2026-08-09T04:39:16.946765+00:00"
+        },
+        {
+          "duration_seconds": 60.479,
+          "observed_at": "2026-08-10T04:28:05.206989+00:00"
+        }
+      ],
+      "duration_p95_seconds": 856.699
+    },
+    {
+      "job_id": "job_laf_condition_draft",
+      "command_sha256": "76d9bc1b4bc2d222a67a86ab3f08a1b21056d0610832f0e9af105f8c5d35d30a",
+      "duration_seconds": 89.327,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-11T00:43:20.230818+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 31.438,
+          "observed_at": "2026-07-14T00:41:04.323163+00:00"
+        },
+        {
+          "duration_seconds": 32.059,
+          "observed_at": "2026-07-15T00:40:57.387828+00:00"
+        },
+        {
+          "duration_seconds": 22.555,
+          "observed_at": "2026-08-01T00:40:51.608477+00:00"
+        },
+        {
+          "duration_seconds": 28.91,
+          "observed_at": "2026-08-04T00:41:32.076721+00:00"
+        },
+        {
+          "duration_seconds": 607.076,
+          "observed_at": "2026-08-05T17:27:26.646239+00:00"
+        },
+        {
+          "duration_seconds": 607.076,
+          "observed_at": "2026-08-05T20:59:52.127757+00:00"
+        },
+        {
+          "duration_seconds": 806.449,
+          "observed_at": "2026-08-06T00:55:17.750574+00:00"
+        },
+        {
+          "duration_seconds": 67.714,
+          "observed_at": "2026-08-09T00:41:11.236473+00:00"
+        },
+        {
+          "duration_seconds": 89.327,
+          "observed_at": "2026-08-11T00:43:20.230818+00:00"
+        }
+      ],
+      "duration_p95_seconds": 806.449
+    },
+    {
+      "job_id": "job_laf_gmail_dispatch_scan",
+      "command_sha256": "fad4d6cf8269c5e4088d589d6c947b344eef494e9951df506fff0f4802fc5630",
+      "duration_seconds": 5.991,
+      "sample_count": 29,
+      "successful": true,
+      "observed_at": "2026-08-11T04:32:06.303024+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.503,
+          "observed_at": "2026-07-14T10:17:14.094000+00:00"
+        },
+        {
+          "duration_seconds": 2.486,
+          "observed_at": "2026-07-14T10:32:14.627159+00:00"
+        },
+        {
+          "duration_seconds": 2.496,
+          "observed_at": "2026-07-14T11:32:16.466214+00:00"
+        },
+        {
+          "duration_seconds": 2.775,
+          "observed_at": "2026-07-14T12:17:17.994048+00:00"
+        },
+        {
+          "duration_seconds": 2.831,
+          "observed_at": "2026-07-14T21:48:19.096772+00:00"
+        },
+        {
+          "duration_seconds": 2.816,
+          "observed_at": "2026-07-14T22:17:33.387690+00:00"
+        },
+        {
+          "duration_seconds": 4.41,
+          "observed_at": "2026-07-14T22:32:35.189947+00:00"
+        },
+        {
+          "duration_seconds": 2.429,
+          "observed_at": "2026-07-15T01:17:51.598654+00:00"
+        },
+        {
+          "duration_seconds": 5.19,
+          "observed_at": "2026-07-15T13:02:33.244879+00:00"
+        },
+        {
+          "duration_seconds": 8.931,
+          "observed_at": "2026-07-15T14:02:38.074269+00:00"
+        },
+        {
+          "duration_seconds": 5.553,
+          "observed_at": "2026-07-15T14:32:35.067007+00:00"
+        },
+        {
+          "duration_seconds": 6.969,
+          "observed_at": "2026-07-15T15:02:43.430224+00:00"
+        },
+        {
+          "duration_seconds": 6.735,
+          "observed_at": "2026-08-01T06:17:12.928895+00:00"
+        },
+        {
+          "duration_seconds": 5.013,
+          "observed_at": "2026-08-01T10:32:51.236218+00:00"
+        },
+        {
+          "duration_seconds": 5.183,
+          "observed_at": "2026-08-01T10:47:05.670535+00:00"
+        },
+        {
+          "duration_seconds": 6.281,
+          "observed_at": "2026-08-04T01:02:55.688707+00:00"
+        },
+        {
+          "duration_seconds": 7.296,
+          "observed_at": "2026-08-04T09:47:08.028204+00:00"
+        },
+        {
+          "duration_seconds": 7.486,
+          "observed_at": "2026-08-04T12:17:14.806745+00:00"
+        },
+        {
+          "duration_seconds": 6.983,
+          "observed_at": "2026-08-04T12:32:44.219832+00:00"
+        },
+        {
+          "duration_seconds": 7.42,
+          "observed_at": "2026-08-04T17:02:09.584159+00:00"
+        },
+        {
+          "duration_seconds": 7.37,
+          "observed_at": "2026-08-04T18:17:14.321363+00:00"
+        },
+        {
+          "duration_seconds": 7.258,
+          "observed_at": "2026-08-04T19:32:08.797675+00:00"
+        },
+        {
+          "duration_seconds": 35.803,
+          "observed_at": "2026-08-04T19:47:38.175622+00:00"
+        },
+        {
+          "duration_seconds": 7.084,
+          "observed_at": "2026-08-05T00:17:16.164279+00:00"
+        },
+        {
+          "duration_seconds": 47.196,
+          "observed_at": "2026-08-05T17:33:07.236597+00:00"
+        },
+        {
+          "duration_seconds": 8.072,
+          "observed_at": "2026-08-05T21:33:02.270950+00:00"
+        },
+        {
+          "duration_seconds": 7.071,
+          "observed_at": "2026-08-06T01:17:12.644180+00:00"
+        },
+        {
+          "duration_seconds": 3.805,
+          "observed_at": "2026-08-09T13:33:55.523406+00:00"
+        },
+        {
+          "duration_seconds": 5.991,
+          "observed_at": "2026-08-11T04:32:06.303024+00:00"
+        }
+      ],
+      "duration_p95_seconds": 35.803
+    },
+    {
+      "job_id": "job_laf_nightly_audit",
+      "command_sha256": "e6c44bc6626f23d8a1f9a73f1372f6ed580531b3956a1a2d03f4af218b340510",
+      "duration_seconds": 481.29,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:33:01.585906+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 277.256,
+          "observed_at": "2026-07-13T19:00:05.432963+00:00"
+        },
+        {
+          "duration_seconds": 269.871,
+          "observed_at": "2026-07-14T18:59:56.846543+00:00"
+        },
+        {
+          "duration_seconds": 453.587,
+          "observed_at": "2026-07-31T19:59:38.196455+00:00"
+        },
+        {
+          "duration_seconds": 398.2,
+          "observed_at": "2026-08-03T19:31:38.426989+00:00"
+        },
+        {
+          "duration_seconds": 528.444,
+          "observed_at": "2026-08-04T19:42:50.159585+00:00"
+        },
+        {
+          "duration_seconds": 966.016,
+          "observed_at": "2026-08-05T22:38:15.916740+00:00"
+        },
+        {
+          "duration_seconds": 397.836,
+          "observed_at": "2026-08-08T21:09:43.598427+00:00"
+        },
+        {
+          "duration_seconds": 481.29,
+          "observed_at": "2026-08-10T19:33:01.585906+00:00"
+        }
+      ],
+      "duration_p95_seconds": 966.016
+    },
+    {
+      "job_id": "job_laf_pending_scan",
+      "command_sha256": "06f2197ef62d8c2c9f837b5eddfc37099bb8b3dcc192c034001ad17ba0be5573",
+      "duration_seconds": 1.416,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-11T00:30:33.423932+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.309,
+          "observed_at": "2026-07-14T00:30:34.983668+00:00"
+        },
+        {
+          "duration_seconds": 2.262,
+          "observed_at": "2026-07-15T00:30:27.425349+00:00"
+        },
+        {
+          "duration_seconds": 1.251,
+          "observed_at": "2026-08-01T00:30:28.368193+00:00"
+        },
+        {
+          "duration_seconds": 1.35,
+          "observed_at": "2026-08-04T00:30:02.571663+00:00"
+        },
+        {
+          "duration_seconds": 23.799,
+          "observed_at": "2026-08-05T00:30:35.196166+00:00"
+        },
+        {
+          "duration_seconds": 1.28,
+          "observed_at": "2026-08-06T00:30:51.480993+00:00"
+        },
+        {
+          "duration_seconds": 1.455,
+          "observed_at": "2026-08-09T00:30:02.694976+00:00"
+        },
+        {
+          "duration_seconds": 1.416,
+          "observed_at": "2026-08-11T00:30:33.423932+00:00"
+        }
+      ],
+      "duration_p95_seconds": 23.799
+    },
+    {
+      "job_id": "job_laf_portal_new_files_scan",
+      "command_sha256": "3a815e7698db973552a893165dff467563da9dcdc62624375eba0df5ad943046",
+      "duration_seconds": 65.982,
+      "sample_count": 16,
+      "successful": true,
+      "observed_at": "2026-08-10T23:06:39.160657+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 42.851,
+          "observed_at": "2026-07-14T10:15:54.379602+00:00"
+        },
+        {
+          "duration_seconds": 41.535,
+          "observed_at": "2026-07-14T16:16:06.564837+00:00"
+        },
+        {
+          "duration_seconds": 78.064,
+          "observed_at": "2026-07-14T22:16:48.619047+00:00"
+        },
+        {
+          "duration_seconds": 42.343,
+          "observed_at": "2026-07-15T10:16:05.551188+00:00"
+        },
+        {
+          "duration_seconds": 65.134,
+          "observed_at": "2026-08-01T04:46:05.186956+00:00"
+        },
+        {
+          "duration_seconds": 108.688,
+          "observed_at": "2026-08-01T10:46:48.819134+00:00"
+        },
+        {
+          "duration_seconds": 65.034,
+          "observed_at": "2026-08-03T23:05:07.254522+00:00"
+        },
+        {
+          "duration_seconds": 62.391,
+          "observed_at": "2026-08-04T04:47:03.865231+00:00"
+        },
+        {
+          "duration_seconds": 61.135,
+          "observed_at": "2026-08-04T10:49:01.988444+00:00"
+        },
+        {
+          "duration_seconds": 192.385,
+          "observed_at": "2026-08-04T16:48:12.640778+00:00"
+        },
+        {
+          "duration_seconds": 286.487,
+          "observed_at": "2026-08-04T23:00:19.366634+00:00"
+        },
+        {
+          "duration_seconds": 66.514,
+          "observed_at": "2026-08-05T17:14:44.358584+00:00"
+        },
+        {
+          "duration_seconds": 66.514,
+          "observed_at": "2026-08-05T21:32:44.775195+00:00"
+        },
+        {
+          "duration_seconds": 70.871,
+          "observed_at": "2026-08-05T23:28:38.114269+00:00"
+        },
+        {
+          "duration_seconds": 60.877,
+          "observed_at": "2026-08-09T10:47:01.344536+00:00"
+        },
+        {
+          "duration_seconds": 65.982,
+          "observed_at": "2026-08-10T23:06:39.160657+00:00"
+        }
+      ],
+      "duration_p95_seconds": 286.487
+    },
+    {
+      "job_id": "job_laf_portal_retry_once",
+      "command_sha256": "0dd79d21342327e14e7f47ae80ccdee5c553cac4e3ea63d1a88af9008971288a",
+      "duration_seconds": 1.47,
+      "sample_count": 15,
+      "successful": true,
+      "observed_at": "2026-08-11T04:25:01.857600+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.603,
+          "observed_at": "2026-08-01T06:25:09.299824+00:00"
+        },
+        {
+          "duration_seconds": 1.199,
+          "observed_at": "2026-08-01T10:25:46.294256+00:00"
+        },
+        {
+          "duration_seconds": 1.637,
+          "observed_at": "2026-08-04T00:25:01.889661+00:00"
+        },
+        {
+          "duration_seconds": 1.668,
+          "observed_at": "2026-08-04T09:25:06.117049+00:00"
+        },
+        {
+          "duration_seconds": 1.115,
+          "observed_at": "2026-08-04T11:25:06.889894+00:00"
+        },
+        {
+          "duration_seconds": 2.386,
+          "observed_at": "2026-08-04T12:25:38.529653+00:00"
+        },
+        {
+          "duration_seconds": 6.631,
+          "observed_at": "2026-08-04T16:25:40.727923+00:00"
+        },
+        {
+          "duration_seconds": 1.577,
+          "observed_at": "2026-08-04T18:25:09.969293+00:00"
+        },
+        {
+          "duration_seconds": 3.913,
+          "observed_at": "2026-08-04T19:25:04.156086+00:00"
+        },
+        {
+          "duration_seconds": 2.139,
+          "observed_at": "2026-08-04T23:25:02.379669+00:00"
+        },
+        {
+          "duration_seconds": 1.651,
+          "observed_at": "2026-08-05T17:26:01.611196+00:00"
+        },
+        {
+          "duration_seconds": 1.582,
+          "observed_at": "2026-08-05T21:25:34.773466+00:00"
+        },
+        {
+          "duration_seconds": 8.206,
+          "observed_at": "2026-08-06T01:26:01.837489+00:00"
+        },
+        {
+          "duration_seconds": 1.806,
+          "observed_at": "2026-08-09T13:25:52.304856+00:00"
+        },
+        {
+          "duration_seconds": 1.47,
+          "observed_at": "2026-08-11T04:25:01.857600+00:00"
+        }
+      ],
+      "duration_p95_seconds": 8.206
+    },
+    {
+      "job_id": "job_legacy_judgment_resummary_quality",
+      "command_sha256": "c76260a48db93e92e7e8bca3d50c72e49e9a438cd66ed7904066321e2aa93cbc",
+      "duration_seconds": 6.128,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-09T13:30:57.515751+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 346.736,
+          "observed_at": "2026-08-04T12:36:23.548795+00:00"
+        },
+        {
+          "duration_seconds": 1.152,
+          "observed_at": "2026-08-04T12:48:40.391781+00:00"
+        },
+        {
+          "duration_seconds": 458.099,
+          "observed_at": "2026-08-04T17:07:39.959271+00:00"
+        },
+        {
+          "duration_seconds": 479.354,
+          "observed_at": "2026-08-04T18:08:03.102861+00:00"
+        },
+        {
+          "duration_seconds": 339.544,
+          "observed_at": "2026-08-04T19:20:53.228561+00:00"
+        },
+        {
+          "duration_seconds": 0.959,
+          "observed_at": "2026-08-05T00:04:08.014546+00:00"
+        },
+        {
+          "duration_seconds": 433.493,
+          "observed_at": "2026-08-05T21:38:07.246201+00:00"
+        },
+        {
+          "duration_seconds": 5.341,
+          "observed_at": "2026-08-06T01:30:59.850187+00:00"
+        },
+        {
+          "duration_seconds": 6.128,
+          "observed_at": "2026-08-09T13:30:57.515751+00:00"
+        }
+      ],
+      "duration_p95_seconds": 479.354
+    },
+    {
+      "job_id": "job_magi_self_repair_guardian",
+      "command_sha256": "96d0cd93a7785d43ac877f7a2ed0194cbfc838291e420ca8b46af99d8395b7a1",
+      "duration_seconds": 12.08,
+      "sample_count": 6,
+      "successful": true,
+      "observed_at": "2026-08-08T22:16:00.227593+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.673,
+          "observed_at": "2026-07-13T22:15:35.217913+00:00"
+        },
+        {
+          "duration_seconds": 1.976,
+          "observed_at": "2026-07-15T01:31:54.227051+00:00"
+        },
+        {
+          "duration_seconds": 1.583,
+          "observed_at": "2026-08-01T03:24:06.852414+00:00"
+        },
+        {
+          "duration_seconds": 1.737,
+          "observed_at": "2026-08-04T01:20:22.708786+00:00"
+        },
+        {
+          "duration_seconds": 13.526,
+          "observed_at": "2026-08-05T23:32:05.088728+00:00"
+        },
+        {
+          "duration_seconds": 12.08,
+          "observed_at": "2026-08-08T22:16:00.227593+00:00"
+        }
+      ],
+      "duration_p95_seconds": 13.526
+    },
+    {
+      "job_id": "job_market_briefing_script",
+      "command_sha256": "d947035e539ce148ef6f04ee6c224a4c7b3a0a65e7dcf20a858295b303a7d46f",
+      "duration_seconds": 652.293,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-11T01:33:11.663679+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 415.063,
+          "observed_at": "2026-07-14T00:52:28.372313+00:00"
+        },
+        {
+          "duration_seconds": 458.993,
+          "observed_at": "2026-07-15T00:53:04.386284+00:00"
+        },
+        {
+          "duration_seconds": 508.453,
+          "observed_at": "2026-07-31T01:01:45.077556+00:00"
+        },
+        {
+          "duration_seconds": 477.423,
+          "observed_at": "2026-08-04T00:54:00.974054+00:00"
+        },
+        {
+          "duration_seconds": 492.749,
+          "observed_at": "2026-08-05T00:53:29.450375+00:00"
+        },
+        {
+          "duration_seconds": 518.148,
+          "observed_at": "2026-08-06T00:54:30.052738+00:00"
+        },
+        {
+          "duration_seconds": 453.17,
+          "observed_at": "2026-08-07T00:54:38.673880+00:00"
+        },
+        {
+          "duration_seconds": 652.293,
+          "observed_at": "2026-08-11T01:33:11.663679+00:00"
+        }
+      ],
+      "duration_p95_seconds": 652.293
+    },
+    {
+      "job_id": "job_model_live_gate",
+      "command_sha256": "1cfdfea0a45f707234df2a7b48e623a7d6d3726b6a1bec3754c5ed60f693f792",
+      "duration_seconds": 0.385,
+      "sample_count": 23,
+      "successful": true,
+      "observed_at": "2026-08-11T04:10:39.234267+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.085,
+          "observed_at": "2026-07-14T10:10:11.473660+00:00"
+        },
+        {
+          "duration_seconds": 0.097,
+          "observed_at": "2026-07-14T11:10:13.408745+00:00"
+        },
+        {
+          "duration_seconds": 0.081,
+          "observed_at": "2026-07-14T12:10:15.108246+00:00"
+        },
+        {
+          "duration_seconds": 0.093,
+          "observed_at": "2026-07-14T21:10:29.936594+00:00"
+        },
+        {
+          "duration_seconds": 0.077,
+          "observed_at": "2026-07-14T22:10:31.033481+00:00"
+        },
+        {
+          "duration_seconds": 0.094,
+          "observed_at": "2026-07-15T01:10:49.038947+00:00"
+        },
+        {
+          "duration_seconds": 0.097,
+          "observed_at": "2026-07-15T13:10:28.314678+00:00"
+        },
+        {
+          "duration_seconds": 0.081,
+          "observed_at": "2026-07-15T14:10:29.874010+00:00"
+        },
+        {
+          "duration_seconds": 0.093,
+          "observed_at": "2026-07-15T15:10:36.680690+00:00"
+        },
+        {
+          "duration_seconds": 0.431,
+          "observed_at": "2026-08-01T06:10:05.429191+00:00"
+        },
+        {
+          "duration_seconds": 0.3,
+          "observed_at": "2026-08-01T10:10:42.755694+00:00"
+        },
+        {
+          "duration_seconds": 0.5,
+          "observed_at": "2026-08-04T00:10:06.944522+00:00"
+        },
+        {
+          "duration_seconds": 0.374,
+          "observed_at": "2026-08-04T09:10:03.368258+00:00"
+        },
+        {
+          "duration_seconds": 0.445,
+          "observed_at": "2026-08-04T12:10:06.478556+00:00"
+        },
+        {
+          "duration_seconds": 0.41,
+          "observed_at": "2026-08-04T16:10:06.359073+00:00"
+        },
+        {
+          "duration_seconds": 0.395,
+          "observed_at": "2026-08-04T18:10:05.997452+00:00"
+        },
+        {
+          "duration_seconds": 0.382,
+          "observed_at": "2026-08-04T19:10:13.048996+00:00"
+        },
+        {
+          "duration_seconds": 0.396,
+          "observed_at": "2026-08-05T00:10:08.237940+00:00"
+        },
+        {
+          "duration_seconds": 0.339,
+          "observed_at": "2026-08-05T17:10:57.380821+00:00"
+        },
+        {
+          "duration_seconds": 0.448,
+          "observed_at": "2026-08-05T21:10:00.675841+00:00"
+        },
+        {
+          "duration_seconds": 0.482,
+          "observed_at": "2026-08-06T01:10:15.267104+00:00"
+        },
+        {
+          "duration_seconds": 0.392,
+          "observed_at": "2026-08-09T13:10:48.217974+00:00"
+        },
+        {
+          "duration_seconds": 0.385,
+          "observed_at": "2026-08-11T04:10:39.234267+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.482
+    },
+    {
+      "job_id": "job_nas_recycle_heavy_cleanup",
+      "command_sha256": "9ab6359413a4598f271f1bbd8a7c3f0714f0db0cd07e3bf7d58f835a33663cf6",
+      "duration_seconds": 67.156,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:21:24.635770+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.332,
+          "observed_at": "2026-07-13T20:20:30.725979+00:00"
+        },
+        {
+          "duration_seconds": 1.115,
+          "observed_at": "2026-07-14T20:20:29.448551+00:00"
+        },
+        {
+          "duration_seconds": 1.959,
+          "observed_at": "2026-07-31T20:21:11.823301+00:00"
+        },
+        {
+          "duration_seconds": 1.974,
+          "observed_at": "2026-08-03T20:21:11.913676+00:00"
+        },
+        {
+          "duration_seconds": 14.634,
+          "observed_at": "2026-08-04T20:21:55.257384+00:00"
+        },
+        {
+          "duration_seconds": 5.106,
+          "observed_at": "2026-08-05T20:21:31.055879+00:00"
+        },
+        {
+          "duration_seconds": 3.516,
+          "observed_at": "2026-08-08T20:21:07.465836+00:00"
+        },
+        {
+          "duration_seconds": 67.156,
+          "observed_at": "2026-08-10T20:21:24.635770+00:00"
+        }
+      ],
+      "duration_p95_seconds": 67.156
+    },
+    {
+      "job_id": "job_nightly_autopilot",
+      "command_sha256": "5c8d296389c03b3a3a25f82d449674c78ee1777889f385db47588206735cc257",
+      "duration_seconds": 956.006,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-10T14:20:59.656107+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 3894.681,
+          "observed_at": "2026-07-13T15:05:17.075835+00:00"
+        },
+        {
+          "duration_seconds": 2062.069,
+          "observed_at": "2026-07-14T14:34:39.987209+00:00"
+        },
+        {
+          "duration_seconds": 1849.398,
+          "observed_at": "2026-07-15T14:31:18.486523+00:00"
+        },
+        {
+          "duration_seconds": 1.226,
+          "observed_at": "2026-07-31T14:05:51.010404+00:00"
+        },
+        {
+          "duration_seconds": 1475.598,
+          "observed_at": "2026-08-03T14:26:56.540201+00:00"
+        },
+        {
+          "duration_seconds": 1.566,
+          "observed_at": "2026-08-04T14:08:45.781247+00:00"
+        },
+        {
+          "duration_seconds": 2081.462,
+          "observed_at": "2026-08-05T14:39:47.327556+00:00"
+        },
+        {
+          "duration_seconds": 1272.064,
+          "observed_at": "2026-08-08T14:26:19.022129+00:00"
+        },
+        {
+          "duration_seconds": 956.006,
+          "observed_at": "2026-08-10T14:20:59.656107+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3894.681
+    },
+    {
+      "job_id": "job_nightly_regression",
+      "command_sha256": "5ad5a391ca81fec96225105844f9ad49a55a496e0d6297045e3e761d80877144",
+      "duration_seconds": 47.027,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T18:31:39.297079+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 40.263,
+          "observed_at": "2026-07-13T18:31:08.064607+00:00"
+        },
+        {
+          "duration_seconds": 51.916,
+          "observed_at": "2026-07-14T18:31:18.726422+00:00"
+        },
+        {
+          "duration_seconds": 29.048,
+          "observed_at": "2026-07-31T18:31:38.248780+00:00"
+        },
+        {
+          "duration_seconds": 31.071,
+          "observed_at": "2026-08-03T18:30:41.720947+00:00"
+        },
+        {
+          "duration_seconds": 56.052,
+          "observed_at": "2026-08-04T18:31:05.476262+00:00"
+        },
+        {
+          "duration_seconds": 82.93,
+          "observed_at": "2026-08-05T18:31:31.995544+00:00"
+        },
+        {
+          "duration_seconds": 26.991,
+          "observed_at": "2026-08-08T18:30:39.485639+00:00"
+        },
+        {
+          "duration_seconds": 47.027,
+          "observed_at": "2026-08-10T18:31:39.297079+00:00"
+        }
+      ],
+      "duration_p95_seconds": 82.93
+    },
+    {
+      "job_id": "job_obsidian_acceptance_gate",
+      "command_sha256": "ca27035268c814fc7a45bbaee9939c55134dc917e6e9847451a5ff75fef1fe62",
+      "duration_seconds": 32.763,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T22:00:55.346105+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 29.401,
+          "observed_at": "2026-07-13T22:01:02.146654+00:00"
+        },
+        {
+          "duration_seconds": 34.157,
+          "observed_at": "2026-07-14T22:01:05.489564+00:00"
+        },
+        {
+          "duration_seconds": 33.603,
+          "observed_at": "2026-07-31T22:00:39.393424+00:00"
+        },
+        {
+          "duration_seconds": 36.027,
+          "observed_at": "2026-08-03T22:01:28.121829+00:00"
+        },
+        {
+          "duration_seconds": 36.403,
+          "observed_at": "2026-08-04T22:01:13.168173+00:00"
+        },
+        {
+          "duration_seconds": 53.62,
+          "observed_at": "2026-08-05T22:00:58.201053+00:00"
+        },
+        {
+          "duration_seconds": 28.188,
+          "observed_at": "2026-08-08T22:01:05.709385+00:00"
+        },
+        {
+          "duration_seconds": 32.763,
+          "observed_at": "2026-08-10T22:00:55.346105+00:00"
+        }
+      ],
+      "duration_p95_seconds": 53.62
+    },
+    {
+      "job_id": "job_obsidian_duplicate_cleanup",
+      "command_sha256": "44413bf8016d349f17c56233ecf3b0ceece5c1b9f7dc9c189c08b11d41b1281e",
+      "duration_seconds": 103.468,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:17:49.572762+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.269,
+          "observed_at": "2026-07-13T20:10:31.711432+00:00"
+        },
+        {
+          "duration_seconds": 2.058,
+          "observed_at": "2026-07-14T20:10:30.474322+00:00"
+        },
+        {
+          "duration_seconds": 10.591,
+          "observed_at": "2026-07-31T20:11:18.656505+00:00"
+        },
+        {
+          "duration_seconds": 11.143,
+          "observed_at": "2026-08-03T20:11:19.567846+00:00"
+        },
+        {
+          "duration_seconds": 12.519,
+          "observed_at": "2026-08-04T20:11:51.252756+00:00"
+        },
+        {
+          "duration_seconds": 7.351,
+          "observed_at": "2026-08-05T20:11:31.560350+00:00"
+        },
+        {
+          "duration_seconds": 11.642,
+          "observed_at": "2026-08-08T20:11:13.537937+00:00"
+        },
+        {
+          "duration_seconds": 103.468,
+          "observed_at": "2026-08-10T20:17:49.572762+00:00"
+        }
+      ],
+      "duration_p95_seconds": 103.468
+    },
+    {
+      "job_id": "job_obsidian_ingest",
+      "command_sha256": "220551f3cb53954569ddd1b9c8f2871484aea045c16be4f769188d82f9881d50",
+      "duration_seconds": 33.704,
+      "sample_count": 2,
+      "successful": true,
+      "observed_at": "2026-08-10T23:25:33.943133+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 76.153,
+          "observed_at": "2026-08-08T23:43:53.956509+00:00"
+        },
+        {
+          "duration_seconds": 33.704,
+          "observed_at": "2026-08-10T23:25:33.943133+00:00"
+        }
+      ]
+    },
+    {
+      "job_id": "job_obsidian_repair_notes",
+      "command_sha256": "a5a09cdda2aa5813f00c0b9abe2e7137e7738f88149dc59affe2041d6a562a42",
+      "duration_seconds": 648.745,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-08T23:03:41.255491+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 458.188,
+          "observed_at": "2026-07-13T19:35:06.863752+00:00"
+        },
+        {
+          "duration_seconds": 456.453,
+          "observed_at": "2026-07-14T19:35:03.999700+00:00"
+        },
+        {
+          "duration_seconds": 512.095,
+          "observed_at": "2026-07-31T22:28:32.903688+00:00"
+        },
+        {
+          "duration_seconds": 567.018,
+          "observed_at": "2026-08-03T22:52:33.291093+00:00"
+        },
+        {
+          "duration_seconds": 530.419,
+          "observed_at": "2026-08-04T23:17:54.320160+00:00"
+        },
+        {
+          "duration_seconds": 471.611,
+          "observed_at": "2026-08-05T22:32:09.854944+00:00"
+        },
+        {
+          "duration_seconds": 648.745,
+          "observed_at": "2026-08-08T23:03:41.255491+00:00"
+        }
+      ],
+      "duration_p95_seconds": 648.745
+    },
+    {
+      "job_id": "job_obsidian_vector_reindex_notes",
+      "command_sha256": "fe71a2f636b9933d590e20954bad3434a18eb46cbda7fbfb5736e6728541c0d1",
+      "duration_seconds": 16.353,
+      "sample_count": 4,
+      "successful": true,
+      "observed_at": "2026-08-05T21:10:16.595212+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.072,
+          "observed_at": "2026-07-13T20:50:30.416155+00:00"
+        },
+        {
+          "duration_seconds": 6.784,
+          "observed_at": "2026-07-31T21:25:07.161956+00:00"
+        },
+        {
+          "duration_seconds": 3.328,
+          "observed_at": "2026-08-03T22:35:07.979265+00:00"
+        },
+        {
+          "duration_seconds": 16.353,
+          "observed_at": "2026-08-05T21:10:16.595212+00:00"
+        }
+      ],
+      "duration_p95_seconds": 16.353
+    },
+    {
+      "job_id": "job_obsidian_vector_reindex_wiki",
+      "command_sha256": "8a2e0ce1dc0370ccb32176533a6e779d828baffa9bd1fb61ead09155f5b07d8e",
+      "duration_seconds": 2.462,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-08T21:54:39.173965+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.504,
+          "observed_at": "2026-07-13T21:20:31.147847+00:00"
+        },
+        {
+          "duration_seconds": 1.57,
+          "observed_at": "2026-07-14T21:20:31.625442+00:00"
+        },
+        {
+          "duration_seconds": 2.865,
+          "observed_at": "2026-07-31T21:30:03.185930+00:00"
+        },
+        {
+          "duration_seconds": 3.54,
+          "observed_at": "2026-08-03T22:37:08.607973+00:00"
+        },
+        {
+          "duration_seconds": 42.269,
+          "observed_at": "2026-08-04T21:38:48.195286+00:00"
+        },
+        {
+          "duration_seconds": 2.527,
+          "observed_at": "2026-08-05T21:30:56.317903+00:00"
+        },
+        {
+          "duration_seconds": 2.462,
+          "observed_at": "2026-08-08T21:54:39.173965+00:00"
+        }
+      ],
+      "duration_p95_seconds": 42.269
+    },
+    {
+      "job_id": "job_omlx_profile_guard",
+      "command_sha256": "5215946dfad804f5a0f57d67fe378c7e7d38ea41403dec8dcfbb307cbb9c789b",
+      "duration_seconds": 0.604,
+      "sample_count": 30,
+      "successful": true,
+      "observed_at": "2026-08-11T04:18:49.743056+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.154,
+          "observed_at": "2026-07-14T10:30:12.229532+00:00"
+        },
+        {
+          "duration_seconds": 0.141,
+          "observed_at": "2026-07-14T11:30:14.053160+00:00"
+        },
+        {
+          "duration_seconds": 0.166,
+          "observed_at": "2026-07-14T12:15:15.332167+00:00"
+        },
+        {
+          "duration_seconds": 0.144,
+          "observed_at": "2026-07-14T21:45:30.382829+00:00"
+        },
+        {
+          "duration_seconds": 0.16,
+          "observed_at": "2026-07-14T22:00:31.186062+00:00"
+        },
+        {
+          "duration_seconds": 0.149,
+          "observed_at": "2026-07-14T22:16:48.773340+00:00"
+        },
+        {
+          "duration_seconds": 0.152,
+          "observed_at": "2026-07-14T22:30:32.370354+00:00"
+        },
+        {
+          "duration_seconds": 0.139,
+          "observed_at": "2026-07-15T01:30:49.564880+00:00"
+        },
+        {
+          "duration_seconds": 0.153,
+          "observed_at": "2026-07-15T13:00:28.168905+00:00"
+        },
+        {
+          "duration_seconds": 0.157,
+          "observed_at": "2026-07-15T14:00:29.944397+00:00"
+        },
+        {
+          "duration_seconds": 0.181,
+          "observed_at": "2026-07-15T14:30:31.925414+00:00"
+        },
+        {
+          "duration_seconds": 93.329,
+          "observed_at": "2026-07-15T15:02:09.762721+00:00"
+        },
+        {
+          "duration_seconds": 0.658,
+          "observed_at": "2026-08-01T06:15:06.482876+00:00"
+        },
+        {
+          "duration_seconds": 0.489,
+          "observed_at": "2026-08-01T10:30:46.529226+00:00"
+        },
+        {
+          "duration_seconds": 0.511,
+          "observed_at": "2026-08-01T10:45:00.630978+00:00"
+        },
+        {
+          "duration_seconds": 0.487,
+          "observed_at": "2026-08-04T01:03:50.008693+00:00"
+        },
+        {
+          "duration_seconds": 0.532,
+          "observed_at": "2026-08-04T09:48:01.344136+00:00"
+        },
+        {
+          "duration_seconds": 0.473,
+          "observed_at": "2026-08-04T12:03:05.192557+00:00"
+        },
+        {
+          "duration_seconds": 0.53,
+          "observed_at": "2026-08-04T12:33:37.873518+00:00"
+        },
+        {
+          "duration_seconds": 1.188,
+          "observed_at": "2026-08-04T12:48:40.349401+00:00"
+        },
+        {
+          "duration_seconds": 0.578,
+          "observed_at": "2026-08-04T17:03:02.955075+00:00"
+        },
+        {
+          "duration_seconds": 0.626,
+          "observed_at": "2026-08-04T18:18:07.783646+00:00"
+        },
+        {
+          "duration_seconds": 0.588,
+          "observed_at": "2026-08-04T19:33:02.244951+00:00"
+        },
+        {
+          "duration_seconds": 0.57,
+          "observed_at": "2026-08-04T19:48:03.149177+00:00"
+        },
+        {
+          "duration_seconds": 0.61,
+          "observed_at": "2026-08-04T23:48:04.542927+00:00"
+        },
+        {
+          "duration_seconds": 7.382,
+          "observed_at": "2026-08-05T17:33:23.833924+00:00"
+        },
+        {
+          "duration_seconds": 0.427,
+          "observed_at": "2026-08-05T21:33:54.774869+00:00"
+        },
+        {
+          "duration_seconds": 3.385,
+          "observed_at": "2026-08-06T01:18:09.155880+00:00"
+        },
+        {
+          "duration_seconds": 0.732,
+          "observed_at": "2026-08-09T13:35:00.848533+00:00"
+        },
+        {
+          "duration_seconds": 0.604,
+          "observed_at": "2026-08-11T04:18:49.743056+00:00"
+        }
+      ],
+      "duration_p95_seconds": 7.382
+    },
+    {
+      "job_id": "job_omlx_switch_day",
+      "command_sha256": "7dddf06937f20d3c9e7024cf69ee67965df7840e2dedb8fd8eab495da549becc",
+      "duration_seconds": 30.225,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T22:55:40.633710+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.251,
+          "observed_at": "2026-07-13T22:55:30.995009+00:00"
+        },
+        {
+          "duration_seconds": 0.231,
+          "observed_at": "2026-07-14T22:55:31.371562+00:00"
+        },
+        {
+          "duration_seconds": 33.972,
+          "observed_at": "2026-07-31T22:55:34.865282+00:00"
+        },
+        {
+          "duration_seconds": 48.262,
+          "observed_at": "2026-08-03T22:55:49.091030+00:00"
+        },
+        {
+          "duration_seconds": 495.069,
+          "observed_at": "2026-08-04T23:03:47.816719+00:00"
+        },
+        {
+          "duration_seconds": 30.213,
+          "observed_at": "2026-08-05T22:55:31.155489+00:00"
+        },
+        {
+          "duration_seconds": 37.116,
+          "observed_at": "2026-08-08T22:56:30.336696+00:00"
+        },
+        {
+          "duration_seconds": 30.225,
+          "observed_at": "2026-08-10T22:55:40.633710+00:00"
+        }
+      ],
+      "duration_p95_seconds": 495.069
+    },
+    {
+      "job_id": "job_omlx_switch_night",
+      "command_sha256": "1d1e291707208819b2b6482f16bcc7582c7e87d58526a6cfa6be0734c74016da",
+      "duration_seconds": 0.353,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-10T14:04:03.782991+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 109.246,
+          "observed_at": "2026-07-13T13:52:11.392607+00:00"
+        },
+        {
+          "duration_seconds": 94.191,
+          "observed_at": "2026-07-14T13:51:51.818742+00:00"
+        },
+        {
+          "duration_seconds": 116.853,
+          "observed_at": "2026-07-15T13:52:25.749174+00:00"
+        },
+        {
+          "duration_seconds": 217.417,
+          "observed_at": "2026-07-31T13:54:01.314935+00:00"
+        },
+        {
+          "duration_seconds": 276.814,
+          "observed_at": "2026-08-03T13:54:55.967065+00:00"
+        },
+        {
+          "duration_seconds": 37.544,
+          "observed_at": "2026-08-04T13:57:26.530615+00:00"
+        },
+        {
+          "duration_seconds": 351.316,
+          "observed_at": "2026-08-05T13:59:55.164395+00:00"
+        },
+        {
+          "duration_seconds": 0.351,
+          "observed_at": "2026-08-08T14:04:07.080878+00:00"
+        },
+        {
+          "duration_seconds": 0.353,
+          "observed_at": "2026-08-10T14:04:03.782991+00:00"
+        }
+      ],
+      "duration_p95_seconds": 351.316
+    },
+    {
+      "job_id": "job_operational_hardening_audit",
+      "command_sha256": "4973adbf9db8a0293ab4c509ce5d361bacf8784f7000802170af68ae374ffec9",
+      "duration_seconds": 3.057,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-11T00:50:18.169711+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.645,
+          "observed_at": "2026-07-14T00:50:34.019091+00:00"
+        },
+        {
+          "duration_seconds": 0.633,
+          "observed_at": "2026-07-15T01:20:46.201220+00:00"
+        },
+        {
+          "duration_seconds": 2.138,
+          "observed_at": "2026-08-01T00:50:32.876383+00:00"
+        },
+        {
+          "duration_seconds": 2.348,
+          "observed_at": "2026-08-04T00:50:06.511398+00:00"
+        },
+        {
+          "duration_seconds": 1.812,
+          "observed_at": "2026-08-05T00:51:16.619987+00:00"
+        },
+        {
+          "duration_seconds": 2.495,
+          "observed_at": "2026-08-06T00:51:54.864038+00:00"
+        },
+        {
+          "duration_seconds": 2.767,
+          "observed_at": "2026-08-09T00:50:08.445456+00:00"
+        },
+        {
+          "duration_seconds": 3.057,
+          "observed_at": "2026-08-11T00:50:18.169711+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3.057
+    },
+    {
+      "job_id": "job_optimize_report",
+      "command_sha256": "fb342602e24ea95beb401ddcefed30ae404282727f5dfd5d738499daf985a90f",
+      "duration_seconds": 0.803,
+      "sample_count": 9,
+      "successful": true,
+      "observed_at": "2026-08-10T08:00:05.746926+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.099,
+          "observed_at": "2026-07-14T10:39:13.757333+00:00"
+        },
+        {
+          "duration_seconds": 0.174,
+          "observed_at": "2026-07-15T08:00:22.991808+00:00"
+        },
+        {
+          "duration_seconds": 0.554,
+          "observed_at": "2026-07-31T08:00:07.238347+00:00"
+        },
+        {
+          "duration_seconds": 0.856,
+          "observed_at": "2026-08-01T08:00:22.314870+00:00"
+        },
+        {
+          "duration_seconds": 0.712,
+          "observed_at": "2026-08-02T08:00:33.097011+00:00"
+        },
+        {
+          "duration_seconds": 0.929,
+          "observed_at": "2026-08-04T08:00:04.454425+00:00"
+        },
+        {
+          "duration_seconds": 0.892,
+          "observed_at": "2026-08-05T08:00:06.009457+00:00"
+        },
+        {
+          "duration_seconds": 0.785,
+          "observed_at": "2026-08-09T08:00:05.947514+00:00"
+        },
+        {
+          "duration_seconds": 0.803,
+          "observed_at": "2026-08-10T08:00:05.746926+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.929
+    },
+    {
+      "job_id": "job_osc_auto_backup",
+      "command_sha256": "5e0791bd914ef6dffb2b9ab82b40d6285497991562c08bf5f470d6a0a7524a04",
+      "duration_seconds": 2.499,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:00:02.807918+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.487,
+          "observed_at": "2026-07-13T19:00:28.730583+00:00"
+        },
+        {
+          "duration_seconds": 0.45,
+          "observed_at": "2026-07-14T19:00:27.486375+00:00"
+        },
+        {
+          "duration_seconds": 3.202,
+          "observed_at": "2026-07-31T19:00:03.484684+00:00"
+        },
+        {
+          "duration_seconds": 3.457,
+          "observed_at": "2026-08-03T19:00:03.700319+00:00"
+        },
+        {
+          "duration_seconds": 2.725,
+          "observed_at": "2026-08-04T19:00:13.455131+00:00"
+        },
+        {
+          "duration_seconds": 2.023,
+          "observed_at": "2026-08-05T19:00:02.299087+00:00"
+        },
+        {
+          "duration_seconds": 2.969,
+          "observed_at": "2026-08-08T19:00:03.338167+00:00"
+        },
+        {
+          "duration_seconds": 2.499,
+          "observed_at": "2026-08-10T19:00:02.807918+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3.457
+    },
+    {
+      "job_id": "job_osc_events_refresh",
+      "command_sha256": "f2614e476c1ba07a1fa32eb26aa6a0067366109a4e0715fc8d49003d8b3d8ba4",
+      "duration_seconds": 895.319,
+      "sample_count": 4,
+      "successful": true,
+      "observed_at": "2026-08-11T04:17:10.603038+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.358,
+          "observed_at": "2026-08-05T19:53:24.243962+00:00"
+        },
+        {
+          "duration_seconds": 3.192,
+          "observed_at": "2026-08-06T00:26:52.812150+00:00"
+        },
+        {
+          "duration_seconds": 1553.713,
+          "observed_at": "2026-08-09T12:00:53.944595+00:00"
+        },
+        {
+          "duration_seconds": 895.319,
+          "observed_at": "2026-08-11T04:17:10.603038+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1553.713
+    },
+    {
+      "job_id": "job_osc_index_cases",
+      "command_sha256": "4febb019bb59c857fbe611581bc8d6930c2825be22c0b0aba14c2b8e326dbb30",
+      "duration_seconds": 761.679,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T04:39:46.432484+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.255,
+          "observed_at": "2026-07-13T23:00:32.052333+00:00"
+        },
+        {
+          "duration_seconds": 107.534,
+          "observed_at": "2026-07-15T01:08:12.510372+00:00"
+        },
+        {
+          "duration_seconds": 518.814,
+          "observed_at": "2026-08-01T04:28:38.940492+00:00"
+        },
+        {
+          "duration_seconds": 538.66,
+          "observed_at": "2026-08-03T04:28:58.771638+00:00"
+        },
+        {
+          "duration_seconds": 414.763,
+          "observed_at": "2026-08-04T04:32:56.223923+00:00"
+        },
+        {
+          "duration_seconds": 636.647,
+          "observed_at": "2026-08-05T04:40:36.890671+00:00"
+        },
+        {
+          "duration_seconds": 49.454,
+          "observed_at": "2026-08-09T04:20:49.663435+00:00"
+        },
+        {
+          "duration_seconds": 761.679,
+          "observed_at": "2026-08-10T04:39:46.432484+00:00"
+        }
+      ],
+      "duration_p95_seconds": 761.679
+    },
+    {
+      "job_id": "job_osc_overdue_todo_reconcile",
+      "command_sha256": "77dc6d9fce906c4ecef2ff6972a859b2e3692ead1ed2b8870903cda91473dd9a",
+      "duration_seconds": 0.44,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T20:16:06.517858+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.146,
+          "observed_at": "2026-07-13T20:15:29.500631+00:00"
+        },
+        {
+          "duration_seconds": 0.11,
+          "observed_at": "2026-07-14T20:15:28.379248+00:00"
+        },
+        {
+          "duration_seconds": 0.474,
+          "observed_at": "2026-07-31T20:15:09.227906+00:00"
+        },
+        {
+          "duration_seconds": 0.749,
+          "observed_at": "2026-08-03T20:15:09.995907+00:00"
+        },
+        {
+          "duration_seconds": 0.418,
+          "observed_at": "2026-08-04T20:15:39.965834+00:00"
+        },
+        {
+          "duration_seconds": 0.382,
+          "observed_at": "2026-08-05T20:15:25.322710+00:00"
+        },
+        {
+          "duration_seconds": 0.591,
+          "observed_at": "2026-08-08T20:15:03.395823+00:00"
+        },
+        {
+          "duration_seconds": 0.44,
+          "observed_at": "2026-08-10T20:16:06.517858+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.749
+    },
+    {
+      "job_id": "job_osc_todo_governance",
+      "command_sha256": "778f5aa3d9cd4230178ed4da0e884de7a56c0484316c9878c9e1a1ad48110026",
+      "duration_seconds": 5841.091,
+      "sample_count": 4,
+      "successful": true,
+      "observed_at": "2026-08-10T22:38:38.917028+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.262,
+          "observed_at": "2026-08-04T20:09:40.567606+00:00"
+        },
+        {
+          "duration_seconds": 2.619,
+          "observed_at": "2026-08-05T19:54:24.707142+00:00"
+        },
+        {
+          "duration_seconds": 4699.419,
+          "observed_at": "2026-08-09T01:05:20.136249+00:00"
+        },
+        {
+          "duration_seconds": 5841.091,
+          "observed_at": "2026-08-10T22:38:38.917028+00:00"
+        }
+      ],
+      "duration_p95_seconds": 5841.091
+    },
+    {
+      "job_id": "job_pdf_bookmark_label_repair",
+      "command_sha256": "336c7113108a36f67f5d55bf1bea2afd9da5ed935b87015267dcfa91ac273242",
+      "duration_seconds": 1749.89,
+      "sample_count": 2,
+      "successful": true,
+      "observed_at": "2026-08-05T21:09:05.914933+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.099,
+          "observed_at": "2026-07-13T20:35:29.823274+00:00"
+        },
+        {
+          "duration_seconds": 1749.89,
+          "observed_at": "2026-08-05T21:09:05.914933+00:00"
+        }
+      ]
+    },
+    {
+      "job_id": "job_pdf_bookmark_large_volume_repair",
+      "command_sha256": "d8b84d68c5947094d9a6a4d76a79ac760a001ae0f12863b94dc7178a303066f4",
+      "duration_seconds": 61.324,
+      "sample_count": 5,
+      "successful": true,
+      "observed_at": "2026-08-10T20:56:27.407206+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 49.14,
+          "observed_at": "2026-07-13T20:56:19.250045+00:00"
+        },
+        {
+          "duration_seconds": 50.877,
+          "observed_at": "2026-07-14T20:56:20.176702+00:00"
+        },
+        {
+          "duration_seconds": 392.38,
+          "observed_at": "2026-08-05T21:02:31.455570+00:00"
+        },
+        {
+          "duration_seconds": 464.143,
+          "observed_at": "2026-08-08T21:02:48.553364+00:00"
+        },
+        {
+          "duration_seconds": 61.324,
+          "observed_at": "2026-08-10T20:56:27.407206+00:00"
+        }
+      ],
+      "duration_p95_seconds": 464.143
+    },
+    {
+      "job_id": "job_pdf_bookmarker_self_test",
+      "command_sha256": "857c770eaa161f253f2f1e4338f9c57b5b4e276d04bdc8a04ef373b84d752bd1",
+      "duration_seconds": 1.447,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:21:51.285289+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.322,
+          "observed_at": "2026-07-13T19:20:28.907455+00:00"
+        },
+        {
+          "duration_seconds": 0.29,
+          "observed_at": "2026-07-14T19:20:27.716259+00:00"
+        },
+        {
+          "duration_seconds": 1.753,
+          "observed_at": "2026-07-31T19:21:03.052214+00:00"
+        },
+        {
+          "duration_seconds": 1.252,
+          "observed_at": "2026-08-03T19:21:05.439581+00:00"
+        },
+        {
+          "duration_seconds": 1.217,
+          "observed_at": "2026-08-04T19:21:16.051636+00:00"
+        },
+        {
+          "duration_seconds": 34.836,
+          "observed_at": "2026-08-05T19:22:32.359276+00:00"
+        },
+        {
+          "duration_seconds": 1.787,
+          "observed_at": "2026-08-08T19:21:08.235495+00:00"
+        },
+        {
+          "duration_seconds": 1.447,
+          "observed_at": "2026-08-10T19:21:51.285289+00:00"
+        }
+      ],
+      "duration_p95_seconds": 34.836
+    },
+    {
+      "job_id": "job_pdf_namer_nightly",
+      "command_sha256": "f6d37d5998897936cddc205a1426da02e0ef8e4763a7d1afbf2c8b857df7dd3b",
+      "duration_seconds": 3310.474,
+      "sample_count": 6,
+      "successful": true,
+      "observed_at": "2026-08-08T19:23:20.044942+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1710.095,
+          "observed_at": "2026-07-13T15:28:54.657857+00:00"
+        },
+        {
+          "duration_seconds": 2220.165,
+          "observed_at": "2026-07-14T15:37:19.353970+00:00"
+        },
+        {
+          "duration_seconds": 439.281,
+          "observed_at": "2026-07-15T15:07:55.709153+00:00"
+        },
+        {
+          "duration_seconds": 1076.486,
+          "observed_at": "2026-07-31T18:01:57.308184+00:00"
+        },
+        {
+          "duration_seconds": 1090.774,
+          "observed_at": "2026-08-03T17:58:11.021534+00:00"
+        },
+        {
+          "duration_seconds": 3310.474,
+          "observed_at": "2026-08-08T19:23:20.044942+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3310.474
+    },
+    {
+      "job_id": "job_pdf_namer_self_test",
+      "command_sha256": "ab2715a2b8a01fcfb60964270fb0587c5a9131ff9c0f388cf0f389aab750f2d2",
+      "duration_seconds": 22.171,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:16:00.017975+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 6.958,
+          "observed_at": "2026-07-13T19:15:35.521797+00:00"
+        },
+        {
+          "duration_seconds": 6.173,
+          "observed_at": "2026-07-14T19:15:33.532802+00:00"
+        },
+        {
+          "duration_seconds": 27.193,
+          "observed_at": "2026-07-31T19:15:30.030215+00:00"
+        },
+        {
+          "duration_seconds": 21.435,
+          "observed_at": "2026-08-03T19:15:24.482892+00:00"
+        },
+        {
+          "duration_seconds": 26.326,
+          "observed_at": "2026-08-04T19:15:40.025363+00:00"
+        },
+        {
+          "duration_seconds": 33.325,
+          "observed_at": "2026-08-05T19:15:58.903047+00:00"
+        },
+        {
+          "duration_seconds": 43.87,
+          "observed_at": "2026-08-08T19:15:49.084404+00:00"
+        },
+        {
+          "duration_seconds": 22.171,
+          "observed_at": "2026-08-10T19:16:00.017975+00:00"
+        }
+      ],
+      "duration_p95_seconds": 43.87
+    },
+    {
+      "job_id": "job_purge_persona",
+      "command_sha256": "cc309ae78b1b48e203d224fb07913f7df7c79810a4ab27d7fd56c19435b5787a",
+      "duration_seconds": 0.674,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:45:53.093205+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.276,
+          "observed_at": "2026-07-13T19:45:29.288828+00:00"
+        },
+        {
+          "duration_seconds": 0.262,
+          "observed_at": "2026-07-14T19:45:28.049234+00:00"
+        },
+        {
+          "duration_seconds": 1.186,
+          "observed_at": "2026-07-31T19:45:04.532282+00:00"
+        },
+        {
+          "duration_seconds": 0.693,
+          "observed_at": "2026-08-03T19:45:04.098599+00:00"
+        },
+        {
+          "duration_seconds": 0.618,
+          "observed_at": "2026-08-04T19:45:02.752869+00:00"
+        },
+        {
+          "duration_seconds": 3.461,
+          "observed_at": "2026-08-05T19:45:20.858771+00:00"
+        },
+        {
+          "duration_seconds": 0.668,
+          "observed_at": "2026-08-08T19:45:02.787124+00:00"
+        },
+        {
+          "duration_seconds": 0.674,
+          "observed_at": "2026-08-10T19:45:53.093205+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3.461
+    },
+    {
+      "job_id": "job_reprocess_insights",
+      "command_sha256": "2ac000cb6b88d23a89f1fa886f89b0ee33384adafd2842117011ab3170161bcf",
+      "duration_seconds": 6.429,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T16:30:26.554759+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 17.354,
+          "observed_at": "2026-07-13T16:30:43.819975+00:00"
+        },
+        {
+          "duration_seconds": 9.097,
+          "observed_at": "2026-07-14T16:30:34.390311+00:00"
+        },
+        {
+          "duration_seconds": 15.213,
+          "observed_at": "2026-07-31T16:31:15.991690+00:00"
+        },
+        {
+          "duration_seconds": 7.174,
+          "observed_at": "2026-08-03T16:30:53.732918+00:00"
+        },
+        {
+          "duration_seconds": 22.381,
+          "observed_at": "2026-08-04T16:30:57.476690+00:00"
+        },
+        {
+          "duration_seconds": 18.194,
+          "observed_at": "2026-08-05T16:30:54.163330+00:00"
+        },
+        {
+          "duration_seconds": 3.401,
+          "observed_at": "2026-08-08T16:30:40.025783+00:00"
+        },
+        {
+          "duration_seconds": 6.429,
+          "observed_at": "2026-08-10T16:30:26.554759+00:00"
+        }
+      ],
+      "duration_p95_seconds": 22.381
+    },
+    {
+      "job_id": "job_research_brief_daily",
+      "command_sha256": "fcc3e5ecb199993d0107618f232563f0e119a44959375978da838d4c49b5bdc9",
+      "duration_seconds": 144.329,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-09T03:31:28.613532+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 250.636,
+          "observed_at": "2026-07-13T23:39:41.833509+00:00"
+        },
+        {
+          "duration_seconds": 514.73,
+          "observed_at": "2026-07-14T23:44:06.322393+00:00"
+        },
+        {
+          "duration_seconds": 549.287,
+          "observed_at": "2026-08-01T03:34:09.527508+00:00"
+        },
+        {
+          "duration_seconds": 149.275,
+          "observed_at": "2026-08-03T03:27:29.394082+00:00"
+        },
+        {
+          "duration_seconds": 1407.125,
+          "observed_at": "2026-08-04T03:48:27.364621+00:00"
+        },
+        {
+          "duration_seconds": 165.659,
+          "observed_at": "2026-08-05T03:32:40.309510+00:00"
+        },
+        {
+          "duration_seconds": 144.329,
+          "observed_at": "2026-08-09T03:31:28.613532+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1407.125
+    },
+    {
+      "job_id": "job_resource_governor",
+      "command_sha256": "f30ebac59ae6c5c17974ca1a3b4e84a6946a49dcc45e190f997383b8ae5da228",
+      "duration_seconds": 0.462,
+      "sample_count": 24,
+      "successful": true,
+      "observed_at": "2026-08-11T04:20:00.621177+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.092,
+          "observed_at": "2026-07-14T10:20:11.890625+00:00"
+        },
+        {
+          "duration_seconds": 0.112,
+          "observed_at": "2026-07-14T11:20:13.702556+00:00"
+        },
+        {
+          "duration_seconds": 0.095,
+          "observed_at": "2026-07-14T12:20:15.409368+00:00"
+        },
+        {
+          "duration_seconds": 0.092,
+          "observed_at": "2026-07-14T21:20:30.050692+00:00"
+        },
+        {
+          "duration_seconds": 0.087,
+          "observed_at": "2026-07-14T22:20:32.509032+00:00"
+        },
+        {
+          "duration_seconds": 0.093,
+          "observed_at": "2026-07-15T01:20:49.319450+00:00"
+        },
+        {
+          "duration_seconds": 0.086,
+          "observed_at": "2026-07-15T12:20:27.077893+00:00"
+        },
+        {
+          "duration_seconds": 0.101,
+          "observed_at": "2026-07-15T13:20:28.471393+00:00"
+        },
+        {
+          "duration_seconds": 0.113,
+          "observed_at": "2026-07-15T14:20:29.501695+00:00"
+        },
+        {
+          "duration_seconds": 0.456,
+          "observed_at": "2026-08-01T06:20:07.222626+00:00"
+        },
+        {
+          "duration_seconds": 0.315,
+          "observed_at": "2026-08-01T10:20:44.523465+00:00"
+        },
+        {
+          "duration_seconds": 0.438,
+          "observed_at": "2026-08-04T00:20:08.797989+00:00"
+        },
+        {
+          "duration_seconds": 0.393,
+          "observed_at": "2026-08-04T09:20:04.276221+00:00"
+        },
+        {
+          "duration_seconds": 0.379,
+          "observed_at": "2026-08-04T11:20:05.275341+00:00"
+        },
+        {
+          "duration_seconds": 0.708,
+          "observed_at": "2026-08-04T12:20:08.816995+00:00"
+        },
+        {
+          "duration_seconds": 0.401,
+          "observed_at": "2026-08-04T16:20:33.605947+00:00"
+        },
+        {
+          "duration_seconds": 0.445,
+          "observed_at": "2026-08-04T18:20:07.923734+00:00"
+        },
+        {
+          "duration_seconds": 0.432,
+          "observed_at": "2026-08-04T19:20:15.064977+00:00"
+        },
+        {
+          "duration_seconds": 0.415,
+          "observed_at": "2026-08-04T23:20:05.551372+00:00"
+        },
+        {
+          "duration_seconds": 0.392,
+          "observed_at": "2026-08-05T17:20:59.407565+00:00"
+        },
+        {
+          "duration_seconds": 0.34,
+          "observed_at": "2026-08-05T21:20:32.613753+00:00"
+        },
+        {
+          "duration_seconds": 0.331,
+          "observed_at": "2026-08-06T01:20:06.471458+00:00"
+        },
+        {
+          "duration_seconds": 0.532,
+          "observed_at": "2026-08-09T13:20:49.987888+00:00"
+        },
+        {
+          "duration_seconds": 0.462,
+          "observed_at": "2026-08-11T04:20:00.621177+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.532
+    },
+    {
+      "job_id": "job_self_repair_reporter",
+      "command_sha256": "eb7b357b414ec9751385032c83bdc10d696302f04298837de08349b146144611",
+      "duration_seconds": 2.64,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-10T22:20:13.225555+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 9.588,
+          "observed_at": "2026-07-13T22:20:40.290668+00:00"
+        },
+        {
+          "duration_seconds": 1.793,
+          "observed_at": "2026-07-14T22:20:32.414366+00:00"
+        },
+        {
+          "duration_seconds": 1.103,
+          "observed_at": "2026-07-31T22:20:01.895064+00:00"
+        },
+        {
+          "duration_seconds": 3.511,
+          "observed_at": "2026-08-03T22:20:05.032502+00:00"
+        },
+        {
+          "duration_seconds": 4.977,
+          "observed_at": "2026-08-05T22:20:05.641555+00:00"
+        },
+        {
+          "duration_seconds": 3.032,
+          "observed_at": "2026-08-08T22:20:03.951119+00:00"
+        },
+        {
+          "duration_seconds": 2.64,
+          "observed_at": "2026-08-10T22:20:13.225555+00:00"
+        }
+      ],
+      "duration_p95_seconds": 9.588
+    },
+    {
+      "job_id": "job_slow_archive_closed_cases",
+      "command_sha256": "ec5c6adec70b8afc3f7b3ec8bd73be53aafe52a15c0afacd4034f6ebeb035f6d",
+      "duration_seconds": 0.314,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-10T21:40:32.336437+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.085,
+          "observed_at": "2026-07-13T21:40:30.608627+00:00"
+        },
+        {
+          "duration_seconds": 0.083,
+          "observed_at": "2026-07-14T21:40:30.333047+00:00"
+        },
+        {
+          "duration_seconds": 0.365,
+          "observed_at": "2026-07-31T21:40:02.673535+00:00"
+        },
+        {
+          "duration_seconds": 0.373,
+          "observed_at": "2026-08-03T21:40:40.060929+00:00"
+        },
+        {
+          "duration_seconds": 0.336,
+          "observed_at": "2026-08-05T21:40:01.294080+00:00"
+        },
+        {
+          "duration_seconds": 3.496,
+          "observed_at": "2026-08-08T21:41:01.642848+00:00"
+        },
+        {
+          "duration_seconds": 0.314,
+          "observed_at": "2026-08-10T21:40:32.336437+00:00"
+        }
+      ],
+      "duration_p95_seconds": 3.496
+    },
+    {
+      "job_id": "job_smoke_external_chat",
+      "command_sha256": "307fc91b3da1f64d33ffce41ac0322ee7a7e369fe2b044a183d564da9233f4ec",
+      "duration_seconds": 2.606,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T22:45:02.879019+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 4.181,
+          "observed_at": "2026-07-13T22:45:35.281166+00:00"
+        },
+        {
+          "duration_seconds": 1.423,
+          "observed_at": "2026-07-14T22:45:32.414783+00:00"
+        },
+        {
+          "duration_seconds": 2.757,
+          "observed_at": "2026-07-31T22:45:02.847908+00:00"
+        },
+        {
+          "duration_seconds": 3.148,
+          "observed_at": "2026-08-03T22:45:03.383138+00:00"
+        },
+        {
+          "duration_seconds": 108.33,
+          "observed_at": "2026-08-04T22:55:19.610643+00:00"
+        },
+        {
+          "duration_seconds": 2.486,
+          "observed_at": "2026-08-05T22:45:02.716117+00:00"
+        },
+        {
+          "duration_seconds": 2.969,
+          "observed_at": "2026-08-08T22:45:03.233807+00:00"
+        },
+        {
+          "duration_seconds": 2.606,
+          "observed_at": "2026-08-10T22:45:02.879019+00:00"
+        }
+      ],
+      "duration_p95_seconds": 108.33
+    },
+    {
+      "job_id": "job_tailscale_funnel_healthcheck",
+      "command_sha256": "35d6ef3e1b31110f30d49c893751ebb80b74cb19f7c1a8d6e87320640b962043",
+      "duration_seconds": 7.477,
+      "sample_count": 29,
+      "successful": true,
+      "observed_at": "2026-08-11T04:30:07.651056+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.144,
+          "observed_at": "2026-07-14T10:20:11.950703+00:00"
+        },
+        {
+          "duration_seconds": 0.154,
+          "observed_at": "2026-07-14T10:30:12.234540+00:00"
+        },
+        {
+          "duration_seconds": 0.139,
+          "observed_at": "2026-07-14T11:30:14.196953+00:00"
+        },
+        {
+          "duration_seconds": 0.15,
+          "observed_at": "2026-07-14T12:20:15.472713+00:00"
+        },
+        {
+          "duration_seconds": 0.175,
+          "observed_at": "2026-07-14T21:50:30.459998+00:00"
+        },
+        {
+          "duration_seconds": 0.137,
+          "observed_at": "2026-07-14T22:00:31.327629+00:00"
+        },
+        {
+          "duration_seconds": 0.267,
+          "observed_at": "2026-07-14T22:20:32.783117+00:00"
+        },
+        {
+          "duration_seconds": 0.132,
+          "observed_at": "2026-07-14T22:30:32.507099+00:00"
+        },
+        {
+          "duration_seconds": 0.144,
+          "observed_at": "2026-07-15T01:30:49.580351+00:00"
+        },
+        {
+          "duration_seconds": 0.168,
+          "observed_at": "2026-07-15T13:10:28.489823+00:00"
+        },
+        {
+          "duration_seconds": 0.228,
+          "observed_at": "2026-07-15T14:00:30.176935+00:00"
+        },
+        {
+          "duration_seconds": 0.192,
+          "observed_at": "2026-07-15T14:40:36.033976+00:00"
+        },
+        {
+          "duration_seconds": 0.212,
+          "observed_at": "2026-07-15T15:10:36.808407+00:00"
+        },
+        {
+          "duration_seconds": 7.406,
+          "observed_at": "2026-08-01T06:20:14.188711+00:00"
+        },
+        {
+          "duration_seconds": 7.116,
+          "observed_at": "2026-08-01T10:40:54.422810+00:00"
+        },
+        {
+          "duration_seconds": 7.182,
+          "observed_at": "2026-08-04T01:00:56.296372+00:00"
+        },
+        {
+          "duration_seconds": 8.018,
+          "observed_at": "2026-08-04T09:50:09.109051+00:00"
+        },
+        {
+          "duration_seconds": 11.66,
+          "observed_at": "2026-08-04T12:10:17.677417+00:00"
+        },
+        {
+          "duration_seconds": 9.34,
+          "observed_at": "2026-08-04T12:30:46.162648+00:00"
+        },
+        {
+          "duration_seconds": 8.181,
+          "observed_at": "2026-08-04T12:50:47.543415+00:00"
+        },
+        {
+          "duration_seconds": 8.259,
+          "observed_at": "2026-08-04T17:00:10.104024+00:00"
+        },
+        {
+          "duration_seconds": 10.569,
+          "observed_at": "2026-08-04T18:30:20.143202+00:00"
+        },
+        {
+          "duration_seconds": 7.979,
+          "observed_at": "2026-08-04T19:50:10.821974+00:00"
+        },
+        {
+          "duration_seconds": 8.923,
+          "observed_at": "2026-08-05T00:10:16.770127+00:00"
+        },
+        {
+          "duration_seconds": 7.776,
+          "observed_at": "2026-08-05T17:40:08.002936+00:00"
+        },
+        {
+          "duration_seconds": 7.631,
+          "observed_at": "2026-08-05T21:40:08.595525+00:00"
+        },
+        {
+          "duration_seconds": 7.593,
+          "observed_at": "2026-08-06T01:31:02.092905+00:00"
+        },
+        {
+          "duration_seconds": 6.839,
+          "observed_at": "2026-08-09T13:40:07.630263+00:00"
+        },
+        {
+          "duration_seconds": 7.477,
+          "observed_at": "2026-08-11T04:30:07.651056+00:00"
+        }
+      ],
+      "duration_p95_seconds": 10.569
+    },
+    {
+      "job_id": "job_transcript_indexer",
+      "command_sha256": "be7dabcfabddbef1da55392b44e20e14208400c5010e8c9e5fcb0bb46f29eae4",
+      "duration_seconds": 207.386,
+      "sample_count": 12,
+      "successful": true,
+      "observed_at": "2026-08-10T22:35:00.825593+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 12.133,
+          "observed_at": "2026-07-13T22:30:42.924118+00:00"
+        },
+        {
+          "duration_seconds": 33.248,
+          "observed_at": "2026-07-14T13:30:50.369340+00:00"
+        },
+        {
+          "duration_seconds": 45.353,
+          "observed_at": "2026-07-14T22:31:16.103346+00:00"
+        },
+        {
+          "duration_seconds": 34.955,
+          "observed_at": "2026-07-15T13:31:03.586274+00:00"
+        },
+        {
+          "duration_seconds": 19.479,
+          "observed_at": "2026-07-31T22:31:22.430714+00:00"
+        },
+        {
+          "duration_seconds": 18.372,
+          "observed_at": "2026-08-03T22:31:22.269972+00:00"
+        },
+        {
+          "duration_seconds": 71.671,
+          "observed_at": "2026-08-04T13:31:48.298709+00:00"
+        },
+        {
+          "duration_seconds": 189.128,
+          "observed_at": "2026-08-05T17:29:02.657559+00:00"
+        },
+        {
+          "duration_seconds": 189.128,
+          "observed_at": "2026-08-05T20:46:25.017587+00:00"
+        },
+        {
+          "duration_seconds": 29.333,
+          "observed_at": "2026-08-05T22:31:48.351054+00:00"
+        },
+        {
+          "duration_seconds": 345.795,
+          "observed_at": "2026-08-09T13:36:37.170137+00:00"
+        },
+        {
+          "duration_seconds": 207.386,
+          "observed_at": "2026-08-10T22:35:00.825593+00:00"
+        }
+      ],
+      "duration_p95_seconds": 345.795
+    },
+    {
+      "job_id": "job_transcript_self_test",
+      "command_sha256": "86206ab80b918f9b508fa9ef44c235d3416fe5a32e796014869ccff618e09d61",
+      "duration_seconds": 3.61,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T19:05:16.542549+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1.59,
+          "observed_at": "2026-07-13T19:05:29.880775+00:00"
+        },
+        {
+          "duration_seconds": 1.422,
+          "observed_at": "2026-07-14T19:05:28.626806+00:00"
+        },
+        {
+          "duration_seconds": 4.479,
+          "observed_at": "2026-07-31T19:05:05.539554+00:00"
+        },
+        {
+          "duration_seconds": 3.237,
+          "observed_at": "2026-08-03T19:05:04.407639+00:00"
+        },
+        {
+          "duration_seconds": 2.939,
+          "observed_at": "2026-08-04T19:05:14.712948+00:00"
+        },
+        {
+          "duration_seconds": 3.25,
+          "observed_at": "2026-08-05T19:05:04.411021+00:00"
+        },
+        {
+          "duration_seconds": 3.779,
+          "observed_at": "2026-08-08T19:05:06.358542+00:00"
+        },
+        {
+          "duration_seconds": 3.61,
+          "observed_at": "2026-08-10T19:05:16.542549+00:00"
+        }
+      ],
+      "duration_p95_seconds": 4.479
+    },
+    {
+      "job_id": "job_transcript_sync",
+      "command_sha256": "e0826ecf05e068ca9230ab6e5202906cce062f967e4d6e45e542e1108235b05a",
+      "duration_seconds": 0.686,
+      "sample_count": 13,
+      "successful": true,
+      "observed_at": "2026-08-09T11:18:29.521916+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 1365.476,
+          "observed_at": "2026-07-13T22:23:16.389465+00:00"
+        },
+        {
+          "duration_seconds": 667.13,
+          "observed_at": "2026-07-14T13:11:23.644962+00:00"
+        },
+        {
+          "duration_seconds": 1222.129,
+          "observed_at": "2026-07-14T22:20:52.490015+00:00"
+        },
+        {
+          "duration_seconds": 721.734,
+          "observed_at": "2026-07-15T13:12:29.742391+00:00"
+        },
+        {
+          "duration_seconds": 1083.307,
+          "observed_at": "2026-07-31T22:19:09.286033+00:00"
+        },
+        {
+          "duration_seconds": 782.501,
+          "observed_at": "2026-08-03T23:19:05.091608+00:00"
+        },
+        {
+          "duration_seconds": 1.009,
+          "observed_at": "2026-08-04T12:48:40.150751+00:00"
+        },
+        {
+          "duration_seconds": 1367.768,
+          "observed_at": "2026-08-04T16:39:19.921761+00:00"
+        },
+        {
+          "duration_seconds": 0.449,
+          "observed_at": "2026-08-04T23:06:27.841642+00:00"
+        },
+        {
+          "duration_seconds": 0.531,
+          "observed_at": "2026-08-05T16:43:39.108554+00:00"
+        },
+        {
+          "duration_seconds": 0.764,
+          "observed_at": "2026-08-05T19:53:22.667467+00:00"
+        },
+        {
+          "duration_seconds": 0.504,
+          "observed_at": "2026-08-06T01:15:05.826899+00:00"
+        },
+        {
+          "duration_seconds": 0.686,
+          "observed_at": "2026-08-09T11:18:29.521916+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1367.768
+    },
+    {
+      "job_id": "job_translator_ape_regression",
+      "command_sha256": "a10ce7d04dbc23e9fe8aef1f4d4f3845c3803980cd608ec83abbfa392045ec5d",
+      "duration_seconds": 51.501,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T05:15:53.503605+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 28.401,
+          "observed_at": "2026-07-14T05:16:12.938833+00:00"
+        },
+        {
+          "duration_seconds": 23.464,
+          "observed_at": "2026-07-15T05:15:42.040171+00:00"
+        },
+        {
+          "duration_seconds": 52.52,
+          "observed_at": "2026-08-01T05:15:55.729901+00:00"
+        },
+        {
+          "duration_seconds": 57.402,
+          "observed_at": "2026-08-03T05:16:01.364179+00:00"
+        },
+        {
+          "duration_seconds": 53.424,
+          "observed_at": "2026-08-04T05:16:00.831568+00:00"
+        },
+        {
+          "duration_seconds": 58.2,
+          "observed_at": "2026-08-05T05:16:02.595355+00:00"
+        },
+        {
+          "duration_seconds": 43.496,
+          "observed_at": "2026-08-09T05:15:48.352088+00:00"
+        },
+        {
+          "duration_seconds": 51.501,
+          "observed_at": "2026-08-10T05:15:53.503605+00:00"
+        }
+      ],
+      "duration_p95_seconds": 58.2
+    },
+    {
+      "job_id": "job_weekend_resummary",
+      "command_sha256": "60d05514ad69bd84d8562d6de9afbe368f1f032b094f89220d06293dfd85dce0",
+      "duration_seconds": 476.052,
+      "sample_count": 2,
+      "successful": true,
+      "observed_at": "2026-08-02T00:17:56.150402+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 5932.943,
+          "observed_at": "2026-07-11T23:45:09+00:00"
+        },
+        {
+          "duration_seconds": 476.052,
+          "observed_at": "2026-08-02T00:17:56.150402+00:00"
+        }
+      ]
+    },
+    {
+      "job_id": "job_weekly_cache_cleanup",
+      "command_sha256": "f818b7d8aff3d93e196e23869839b25ec610b7c9fcd0625612cdd94226e01e96",
+      "duration_seconds": 12.337,
+      "sample_count": 3,
+      "successful": true,
+      "observed_at": "2026-08-08T20:12:14.457370+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 2.316,
+          "observed_at": "2026-07-11T20:10:17.599743+00:00"
+        },
+        {
+          "duration_seconds": 6.286,
+          "observed_at": "2026-08-01T20:12:15.039128+00:00"
+        },
+        {
+          "duration_seconds": 12.337,
+          "observed_at": "2026-08-08T20:12:14.457370+00:00"
+        }
+      ],
+      "duration_p95_seconds": 12.337
+    },
+    {
+      "job_id": "job_weekly_legal_crawl",
+      "command_sha256": "4e00507f8bc9474f308afba705ca032b84462a3516697f49b8269b8fd19dc436",
+      "duration_seconds": 243.959,
+      "sample_count": 2,
+      "successful": true,
+      "observed_at": "2026-08-08T19:05:04.500035+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 5.883,
+          "observed_at": "2026-07-11T19:00:20.430041+00:00"
+        },
+        {
+          "duration_seconds": 243.959,
+          "observed_at": "2026-08-08T19:05:04.500035+00:00"
+        }
+      ]
+    },
+    {
+      "job_id": "job_wiki_synthesizer",
+      "command_sha256": "02acddd1550e8e671239b3e8563a43a12c91759f1f281596b68a9c7904a96263",
+      "duration_seconds": 1615.282,
+      "sample_count": 3,
+      "successful": true,
+      "observed_at": "2026-08-10T21:27:12.912947+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 202.28,
+          "observed_at": "2026-08-05T20:48:19.000054+00:00"
+        },
+        {
+          "duration_seconds": 1668.275,
+          "observed_at": "2026-08-08T21:42:49.058789+00:00"
+        },
+        {
+          "duration_seconds": 1615.282,
+          "observed_at": "2026-08-10T21:27:12.912947+00:00"
+        }
+      ],
+      "duration_p95_seconds": 1668.275
+    },
+    {
+      "job_id": "job_worldmonitor_intel",
+      "command_sha256": "e47cb5f89ca3e577edde7dad2c32e5802fc7c0c560dadd3e70a259eafafdb0cd",
+      "duration_seconds": 16.995,
+      "sample_count": 8,
+      "successful": true,
+      "observed_at": "2026-08-10T04:30:17.248559+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 26.759,
+          "observed_at": "2026-07-14T00:00:57.915376+00:00"
+        },
+        {
+          "duration_seconds": 24.022,
+          "observed_at": "2026-07-15T00:00:55.992644+00:00"
+        },
+        {
+          "duration_seconds": 20.622,
+          "observed_at": "2026-08-01T04:30:20.705454+00:00"
+        },
+        {
+          "duration_seconds": 27.18,
+          "observed_at": "2026-08-03T04:32:03.427427+00:00"
+        },
+        {
+          "duration_seconds": 20.942,
+          "observed_at": "2026-08-04T04:35:21.538092+00:00"
+        },
+        {
+          "duration_seconds": 21.877,
+          "observed_at": "2026-08-05T04:43:22.492708+00:00"
+        },
+        {
+          "duration_seconds": 28.379,
+          "observed_at": "2026-08-09T04:40:30.200747+00:00"
+        },
+        {
+          "duration_seconds": 16.995,
+          "observed_at": "2026-08-10T04:30:17.248559+00:00"
+        }
+      ],
+      "duration_p95_seconds": 28.379
+    },
+    {
+      "job_id": "pdfnamer_docling_layout",
+      "command_sha256": "7e3d478a1a15bfccafc6761fb1fb6a36f801243be4e83d995217daf95a8f5c5a",
+      "duration_seconds": 0.354,
+      "sample_count": 7,
+      "successful": true,
+      "observed_at": "2026-08-10T19:19:49.669325+00:00",
+      "baseline_kind": "rolling_successful_production_observations",
+      "samples": [
+        {
+          "duration_seconds": 0.082,
+          "observed_at": "2026-07-13T18:40:27.969859+00:00"
+        },
+        {
+          "duration_seconds": 0.076,
+          "observed_at": "2026-07-14T18:40:26.943610+00:00"
+        },
+        {
+          "duration_seconds": 0.389,
+          "observed_at": "2026-07-31T19:08:01.913583+00:00"
+        },
+        {
+          "duration_seconds": 0.335,
+          "observed_at": "2026-08-03T19:08:02.000542+00:00"
+        },
+        {
+          "duration_seconds": 0.344,
+          "observed_at": "2026-08-05T19:00:00.613619+00:00"
+        },
+        {
+          "duration_seconds": 0.478,
+          "observed_at": "2026-08-08T19:24:07.661130+00:00"
+        },
+        {
+          "duration_seconds": 0.354,
+          "observed_at": "2026-08-10T19:19:49.669325+00:00"
+        }
+      ],
+      "duration_p95_seconds": 0.478
+    }
+  ],
+  "invalidated_observations": [
+    {
+      "job_id": "job_drive_case_sync_all_files",
+      "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
+      "observed_command_sha256": "7a9b858c877ba1fc657c3a33a5b0e707df338b368289891e9e1817439947f7ba",
+      "current_command_sha256": "1ba9ae0521a041d68f525b776daf8b25cc34fdc8402b74598900fa085710c497",
+      "invalidated_sample_count": 2,
+      "last_observed_at": "2026-08-06T00:53:08.664717+00:00"
+    },
+    {
+      "job_id": "job_nas_pdf_ocr_worker_offpeak",
+      "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
+      "observed_command_sha256": "ae1fcf57fe1beb47d83a66917cd915d31577e93dfe50157da56d1e130c43a4d0",
+      "current_command_sha256": "764c4d893dbbbf43bba0c6d1d8bf0ba0480897ba44c72826bcdc471042918978",
+      "invalidated_sample_count": 2,
+      "last_observed_at": "2026-07-15T01:30:29.260476+00:00"
+    },
+    {
+      "job_id": "job_nightly_bookmark_regex",
+      "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
+      "observed_command_sha256": "b8f828a2b8cbfa6351c765370f720773feefc4873aac4a26e00c71c5765a918c",
+      "current_command_sha256": "d9d627c5cf170ae42f2da470a70beeeb2771eeaedc16573694f3cc06d817df7d",
+      "invalidated_sample_count": 2,
+      "last_observed_at": "2026-07-14T18:17:32.859144+00:00"
+    },
+    {
+      "job_id": "job_weekend_bookmark",
+      "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
+      "observed_command_sha256": "3203d7deda2a22b645e259f931219150f65ce88c6191d516601d4aa893fd9f90",
+      "current_command_sha256": "8760b871762ff2a3d9b1980796772a2ddfe3f13a0844cbe90dc115de237eecc3",
+      "invalidated_sample_count": 1,
+      "last_observed_at": "2026-07-11T04:41:11.711351+00:00"
+    }
+  ],
+  "duration_policy": {
+    "single_observation_is_not_a_percentile": true,
+    "timeout_is_not_a_measured_duration": true,
+    "ledger_lifecycle_latency_is_not_a_job_body_duration": true,
+    "missing_duration_action": "record_gap",
+    "global_substitution_allowed": false
+  },
+  "representative_body_allowlist": [
+    {
+      "job_id": "job_pdf_bookmarker_self_test",
+      "entrypoint": "skills/pdf-bookmarker/action.py",
+      "arguments": [
+        "--task",
+        "self_test"
+      ],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_pdf_namer_self_test",
+      "entrypoint": "skills/pdf-namer/action.py",
+      "arguments": [
+        "--task",
+        "self_test"
+      ],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_resource_governor",
+      "entrypoint": "scripts/ops/resource_governor.py",
+      "arguments": [
+        "--json",
+        "status"
+      ],
+      "expected_success_field": "ok",
+      "expected_success_value": true,
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny",
+        "runtime_metric_write": "sandbox_rebased"
+      }
+    },
+    {
+      "job_id": "job_transcript_self_test",
+      "entrypoint": "skills/transcript-downloader/action.py",
+      "arguments": [
+        "--task",
+        "self_test"
+      ],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_benchmark_osc_todos",
+      "entrypoint": "scripts/ops/benchmark_osc_todos.py",
+      "arguments": [],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_disk_low_water_alarm",
+      "entrypoint": "scripts/ops/disk_low_water_alarm.py",
+      "arguments": [],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_debug_cleanup",
+      "entrypoint": "scripts/ops/debug_cleanup.py",
+      "arguments": [],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    },
+    {
+      "job_id": "job_weekly_cache_cleanup",
+      "entrypoint": "scripts/ops/weekly_cache_cleanup.py",
+      "arguments": [],
+      "expected_success_field": "success",
+      "adapter": {
+        "mode": "real_entrypoint_dry_run_v1",
+        "dry_run": true,
+        "fixture_root_required": true,
+        "network": "deny_seatbelt",
+        "notifications": "deny",
+        "writes": "fixture_root_only"
+      },
+      "sandbox": {
+        "network": "deny",
+        "writes": "temporary_workdir_only",
+        "production_runtime_read": "deny",
+        "production_agent_read": "deny",
+        "nas_read": "deny",
+        "production_database_read": "deny"
+      }
+    }
+  ],
+  "known_gaps": [
+    {
+      "code": "DURATION_COVERAGE_INCOMPLETE",
+      "affected_enabled_jobs": 5,
+      "detail": "No successful last_duration_sec observation exists in the captured scheduler state."
+    },
+    {
+      "code": "DURATION_SAMPLE_DEPTH_INCOMPLETE",
+      "affected_enabled_jobs": 10,
+      "detail": "Fewer than three successful duration samples exist for these jobs, so their production p95 cannot be claimed."
+    },
+    {
+      "code": "REPRESENTATIVE_BODY_COVERAGE_INCOMPLETE",
+      "affected_enabled_jobs": 86,
+      "detail": "Only 8 exact, side-effect-free commands are approved for the offline sandbox."
+    }
+  ]
+}

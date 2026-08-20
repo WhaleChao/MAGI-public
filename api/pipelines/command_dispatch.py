@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import uuid
 
 from api.command_registry import CommandContext
 from api.case_display import display_case_label
@@ -21,9 +23,23 @@ from api.runtime_paths import (
     get_laf_script,
     get_legacy_code_root,
     get_magi_root_dir,
+    get_runtime_dir,
     get_skill_python,
     legacy_code_enabled,
 )
+try:
+    from api.routing.command_prefixes import split_heavy_prefix
+except Exception:
+    _HEAVY_PREFIX_FALLBACK_RE = re.compile(
+        r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+        r"\s*[:：,，、。!！?？\-–—]*\s*",
+        re.IGNORECASE,
+    )
+
+    def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+        text = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+        match = _HEAVY_PREFIX_FALLBACK_RE.match(text)
+        return (True, text[match.end():].strip()) if match else (False, text)
 
 # Fallback registry — primary path uses orch._cmd_registry (set in Orchestrator.__init__)
 _cmd_registry = None
@@ -33,6 +49,18 @@ logger = logging.getLogger("Orchestrator")
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
 # ── Lazy module-level helpers (mirrors orchestrator.py top-level) ──
+
+def _delivery_result_ok(result):
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, dict):
+        for key in ("ok", "delivered", "telegram", "discord"):
+            if bool(result.get(key)):
+                return True
+        acked = result.get("acked")
+        return isinstance(acked, list) and bool(acked)
+    return bool(result)
+
 
 def _lazy_brain(fn_name):
     def _wrapper(*a, **kw):
@@ -109,18 +137,143 @@ def _parse_subprocess_json(stdout_text: str):
             try:
                 return json.loads(block)
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 111, exc_info=True)
     try:
         return json.loads(stdout_text)
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 115, exc_info=True)
     m = _RE_JSON_TAIL.search(stdout_text)
     if m:
         try:
             return json.loads(m.group(1))
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 121, exc_info=True)
     return None
+
+
+def _short_diag_text(value, limit: int = 900) -> str:
+    """Return a compact one-line diagnostic string for user-facing failure messages."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            value = str(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+def _laf_failure_code_and_detail(data: dict, stdout_text: str = "", stderr_text: str = "", *, action: str = ""):
+    """Normalize LAF subprocess failures so users never see a bare ``unknown``."""
+    if not isinstance(data, dict):
+        return "subprocess_result_unparsed", _short_diag_text(stdout_text or stderr_text)
+    raw_error = _short_diag_text(data.get("error"), 120)
+    err = raw_error if raw_error and raw_error.lower() != "unknown" else ""
+    detail_parts = []
+    for key in (
+        "detail",
+        "message",
+        "portal_error",
+        "last_portal_error",
+        "reason",
+        "hint",
+        "portal_status",
+    ):
+        val = _short_diag_text(data.get(key))
+        if val and val not in detail_parts and val.lower() != "unknown":
+            detail_parts.append(val)
+    preview = data.get("preview") if isinstance(data.get("preview"), dict) else {}
+    for key in ("png", "html"):
+        val = _short_diag_text(preview.get(key), 260)
+        if val:
+            detail_parts.append(f"{key}: {val}")
+    if not detail_parts:
+        for text in (stderr_text, stdout_text):
+            val = _short_diag_text(text, 700)
+            if val:
+                detail_parts.append(val)
+                break
+    if not err:
+        err = "portal_prefill_failed" if action == "go_live" else "portal_draft_failed"
+    return err, "；".join(detail_parts)
+
+
+def _laf_missing_required_docs_message(payload_obj: dict, data: dict) -> str:
+    """Build a missing-document reply while preserving actionable orchestrator hints."""
+    action_label = payload_obj.get("action_label", "回報") if isinstance(payload_obj, dict) else "回報"
+    docs = data.get("docs") if isinstance(data.get("docs"), dict) else {}
+    unrecognized = data.get("unrecognized_closing_folder_files")
+    if not isinstance(unrecognized, list):
+        unrecognized = docs.get("unrecognized_closing_folder_files") if isinstance(docs.get("unrecognized_closing_folder_files"), list) else []
+    if unrecognized:
+        names = [os.path.basename(str(path)) or str(path) for path in unrecognized[:5]]
+        lines = [
+            f"❌ 法扶{action_label}暫停：終局文件資料夾已有檔案，但檔名或內容無法安全判別。",
+            "這不是缺檔；請將檔名補上『判決／裁定／不起訴處分書／確定證明書』等文件種類後再重試。",
+            "無法判別的檔案：",
+            *(f"• {name}" for name in names),
+        ]
+        if len(unrecognized) > len(names):
+            lines.append(f"• ...另有 {len(unrecognized) - len(names)} 份")
+        return "\n".join(lines)
+    missing = data.get("missing") if isinstance(data.get("missing"), list) else []
+    miss_txt = "、".join(str(x) for x in missing) if missing else "必要文件"
+    lines = [
+        f"❌ 法扶{action_label}失敗：缺少文件：{miss_txt}",
+        "請先把文件放入對應案件資料夾後再重試。",
+    ]
+
+    hint = _short_diag_text(data.get("hint"), 500)
+    if hint:
+        lines.append(f"提示：{hint}")
+
+    misfiled = data.get("misfiled_closing_basis_files")
+    if not isinstance(misfiled, list):
+        misfiled = docs.get("misfiled_closing_basis_files") if isinstance(docs.get("misfiled_closing_basis_files"), list) else []
+    if misfiled:
+        names = []
+        for path in misfiled[:5]:
+            name = os.path.basename(str(path)) or str(path)
+            names.append(name)
+        lines.append("疑似放錯位置的終局文件：")
+        lines.extend(f"• {name}" for name in names)
+        if len(misfiled) > len(names):
+            lines.append(f"• ...另有 {len(misfiled) - len(names)} 份")
+        if not hint:
+            lines.append("請移至 10_判決書或終局裁定及處分 後重試。")
+
+    return "\n".join(lines)
+
+
+def _record_laf_failure_diag(payload_obj: dict, data: dict, stdout_text: str, stderr_text: str, *, err: str, detail: str) -> str:
+    """Persist every LAF report failure for retry/debug instead of losing it in chat."""
+    try:
+        _diag_dir = str(get_runtime_dir())
+        os.makedirs(_diag_dir, exist_ok=True)
+        _fail_path = os.path.join(_diag_dir, "laf_portal_draft_failures.jsonl")
+        _fail_record = {
+            "ts": __import__("time").time(),
+            "ts_iso": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+            "action": payload_obj.get("action"),
+            "client_name": payload_obj.get("client_name"),
+            "laf_case_no": payload_obj.get("laf_case_no"),
+            "case_number": payload_obj.get("case_number"),
+            "error": err,
+            "detail": detail,
+            "stderr_tail": (stderr_text or "")[-4000:],
+            "stdout_tail": (stdout_text or "")[-4000:],
+            "data": data if isinstance(data, dict) else None,
+        }
+        with open(_fail_path, "a", encoding="utf-8") as _fp:
+            _fp.write(json.dumps(_fail_record, ensure_ascii=False, default=str) + "\n")
+        return _fail_path
+    except Exception as exc:
+        logger.warning("LAF failure diagnostic dump failed: %s", exc)
+        return ""
 _RE_PAYMENT_DISMISS = re.compile(r"^(.+?)\s*(?:已經繳費了|已經繳費|繳費完畢了|已繳費|繳費完畢|繳費了)\s*$")
 _RE_CASE_NUMBER = re.compile(r"(\d{2,3})\s*(?:年度?)?\s*([^\d\s年月日]+)\s*(?:字)?\s*(?:第)?\s*(\d+)\s*(?:號)?")
 _RE_CASE_TYPE_STRIP = re.compile(r"(字第|字|第)")
@@ -132,11 +285,50 @@ _RE_SUMMARIZ = re.compile(r'\bsummariz')
 _RE_SUMMARY = re.compile(r'\bsummary\b')
 
 
+def _is_laf_pending_scan_command(message: str) -> bool:
+    text = str(message or "").strip()
+    return "法扶" in text and any(k in text for k in ("未開辦掃描", "待開辦掃描", "開辦掃描"))
+
+
+def _format_laf_pending_scan_result(data: dict) -> str:
+    if not isinstance(data, dict) or not data.get("ok"):
+        err = _short_diag_text((data or {}).get("error") if isinstance(data, dict) else data)
+        return f"❌ 法扶未開辦掃描失敗：{err or 'unknown'}"
+    lines = ["📋 法扶未開辦掃描完成"]
+    lines.append(f"待開辦：{int(data.get('pending_open') or 0)} 件")
+    lines.append(f"待報結：{int(data.get('pending_report') or 0)} 件")
+    open_cases = data.get("open_cases") if isinstance(data.get("open_cases"), list) else []
+    report_cases = data.get("report_cases") if isinstance(data.get("report_cases"), list) else []
+    if open_cases:
+        lines.append("待開辦清單：")
+        for case in open_cases[:10]:
+            lines.append(
+                f"  • {case.get('case_number') or '-'} {case.get('client_name') or '-'}"
+                f" — {case.get('deadline_info') or ''}".rstrip()
+            )
+    if report_cases:
+        lines.append("待報結清單：")
+        for case in report_cases[:10]:
+            lines.append(f"  • {case.get('case_number') or '-'} {case.get('client_name') or '-'}")
+    if not open_cases and not report_cases:
+        lines.append("目前沒有符合條件的案件。")
+    return "\n".join(lines)
+
+
 def handle_command(orch, user_id, message, role="user", platform="LINE"):
     """
     Routes commands to Melchior or System Skills.
     Uses CommandRegistry for extensible dispatch, falls back to legacy if-elif.
     """
+    heavy_opt_in, message = split_heavy_prefix(message)
+    if heavy_opt_in:
+        try:
+            from flask import g as _flask_g, has_app_context as _has_app_context
+            if _has_app_context():
+                _flask_g.heavy_opt_in = True
+        except Exception:
+            logger.debug("command_dispatch: skipped Flask heavy flag outside request context", exc_info=True)
+
     msg_lower = message.lower()
     msg_stripped = _strip_cmd_prefix(msg_lower)
 
@@ -154,6 +346,26 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         registry_result = registry.dispatch(ctx)
         if registry_result is not None:
             return registry_result
+
+    if _is_laf_pending_scan_command(message):
+        script = os.path.join(str(get_magi_root_dir()), "skills", "osc-orchestrator", "action.py")
+        task = 'laf_pending_scan {"notify": false, "limit": 100}'
+        try:
+            proc = subprocess.run(
+                [str(get_skill_python()), script, "--task", task],
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("MAGI_LAF_PENDING_SCAN_TIMEOUT_SEC", "300") or "300"),
+            )
+            if proc.returncode != 0:
+                detail = _short_diag_text(proc.stderr or proc.stdout)
+                return f"❌ 法扶未開辦掃描失敗（code={proc.returncode}）：{detail or 'unknown'}"
+            data = _parse_subprocess_json(proc.stdout or "")
+            return _format_laf_pending_scan_result(data or {"ok": False, "error": "result_unparsed"})
+        except subprocess.TimeoutExpired:
+            return "❌ 法扶未開辦掃描逾時，已停止本次掃描。"
+        except Exception as exc:
+            return f"❌ 法扶未開辦掃描失敗：{type(exc).__name__}: {str(exc)[:200]}"
 
     # ── Fuzzy typo correction for Chinese commands ──────────────────────
     # Only attempt if this is NOT already a recursive fuzzy-corrected call.
@@ -234,7 +446,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             if VISION_AVAILABLE:
                 model_line += "\nOCR 引擎：`macOS Vision`（零 GPU）"
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 236, exc_info=True)
         gpu_line = ""
         if rt.get("gpu_used_mb") is not None and rt.get("gpu_total_mb") is not None:
             gpu_line = f"\nMelchior GPU：{float(rt['gpu_used_mb'])/1024.0:.2f}/{float(rt['gpu_total_mb'])/1024.0:.2f} GB"
@@ -405,6 +617,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         return orch._run_inline_translation_command(user_id, message)
 
     if any(message.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]) or msg_lower.startswith("summarize ") or msg_lower.startswith("summary ") or any(msg_stripped.startswith(p) for p in ["摘要 ", "摘要\n", "精簡摘要 ", "精簡摘要\n", "詳細摘要 ", "詳細摘要\n", "短摘要 ", "長摘要 "]):
+        from api.pipelines.specialized_commands import run_inline_summary_command
+        return run_inline_summary_command(orch, message)
+
+    from api.pipelines.specialized_commands import looks_like_inline_summary_command
+    if looks_like_inline_summary_command(message):
         from api.pipelines.specialized_commands import run_inline_summary_command
         return run_inline_summary_command(orch, message)
 
@@ -1183,19 +1400,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
     _progress_reported_hit = any(k in message for k in ("已回報", "已經回報", "已完成回報", "進度已回報", "進度回報已完成"))
     if _progress_reported_hit and role == "admin":
         _target = ""
-        _m = re.search(
-            r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40}?)"
-            r"\s*(?:的)?(?:法扶)?(?:進度)?(?:已經|已)?(?:完成)?回報",
-            message,
-        )
-        if not _m:
-            _m = re.search(
-                r"(?:進度)?(?:已經|已)(?:完成)?回報\s*"
-                r"(?P<target>\d{6,8}-[A-Za-z]-\d{3}|\d{4}-\d{4}|[一-龥A-Za-z][一-龥A-Za-z0-9_.\\- ]{1,40})",
-                message,
-            )
-        if _m:
-            _target = str(_m.group("target") or "").strip(" ，,。；;：:")
+        try:
+            from api.pipelines.message_router import extract_laf_progress_reported_target
+            _target = extract_laf_progress_reported_target(message)
+        except Exception:
+            _target = ""
         if _target:
             try:
                 _orch_dir = os.path.join(_MAGI_ROOT, "casper_ecosystem", "law_firm_orchestrators")
@@ -1262,13 +1471,13 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                 try:
                     orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1256, exc_info=True)
             except Exception as e:
                 reply = f"❌ 法扶{label}批次失敗：{type(e).__name__}: {e}"
                 try:
                     orch._notify(reply, topic_key=f"laf_{action_type}" if action_type == "condition" else "laf_closing")
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1262, exc_info=True)
 
         import threading as _th
         _th.Thread(
@@ -1372,8 +1581,11 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                             shot_path = str(preview.get("png") or "").strip()
                             if isinstance(preview.get("html_export"), dict):
                                 html_url = str(preview.get("html_export", {}).get("url") or "").strip()
+                            _preview_only = str(data.get("safety_mode") or "") == "preview_only"
                             if action == "go_live":
                                 lines = [f"✅ 法扶{payload_obj.get('action_label','回報')}已完成填寫（尚未送出）"]
+                            elif _preview_only:
+                                lines = [f"✅ 法扶{payload_obj.get('action_label','回報')}已完成安全預填與預覽（未存檔、未送出）"]
                             else:
                                 lines = [f"✅ 法扶{payload_obj.get('action_label','回報')}已完成存檔（未送出）"]
                             target_parts = [x for x in [cname, laf_no, osc_no] if x]
@@ -1498,20 +1710,28 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                             result_text = "\n".join(lines)
                             # 傳送截圖圖片（go_live + closing 都需要）
                             _screenshot_sent = False
-                            if action in ("go_live", "closing") and shot_path and os.path.isfile(shot_path):
+                            if (action in ("go_live", "closing") or _preview_only) and shot_path and os.path.isfile(shot_path):
                                 try:
                                     from skills.ops.red_phone import send_file_admin, send_discord_bot_file
                                     _caption = result_text[:800]
                                     _laf_topic = "laf_go_live" if action == "go_live" else ("laf_closing" if action == "closing" else "laf")
                                     _plat = str(platform_name or "").strip().lower()
                                     if _plat == "telegram":
-                                        send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        _screenshot_sent = _delivery_result_ok(
+                                            send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        )
                                     elif _plat == "discord":
-                                        send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        _screenshot_sent = _delivery_result_ok(
+                                            send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        )
                                     else:
-                                        send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
-                                        send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
-                                    _screenshot_sent = True  # 避免 notification_callback 重複發送
+                                        _tg_ok = _delivery_result_ok(
+                                            send_file_admin(file_path=shot_path, caption=_caption, topic_key=_laf_topic)
+                                        )
+                                        _dc_ok = _delivery_result_ok(
+                                            send_discord_bot_file(file_path=shot_path, caption=_caption, topic_key=_laf_topic, source=_laf_topic)
+                                        )
+                                        _screenshot_sent = bool(_tg_ok or _dc_ok)
                                 except Exception as _img_err:
                                     logger.warning("LAF screenshot send failed: %s", _img_err)
                             # 回寫 DB：closing 成功 → legal_aid_status = "已結案，待送出"
@@ -1530,7 +1750,20 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 except Exception as _db_err2:
                                     logger.warning("closing DB status update failed: %s", _db_err2)
                         else:
-                            err = str(data.get("error") or "unknown").strip()
+                            err, detail = _laf_failure_code_and_detail(
+                                data,
+                                stdout_text=stdout_text,
+                                stderr_text=stderr_text,
+                                action=action,
+                            )
+                            _diag_path = _record_laf_failure_diag(
+                                payload_obj,
+                                data,
+                                stdout_text,
+                                stderr_text,
+                                err=err,
+                                detail=detail,
+                            )
                             if err == "missing_target":
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}失敗：缺少目標。\n"
@@ -1547,12 +1780,7 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "請重送：`... 疑義回報 原因 <你的原因>`"
                                 )
                             elif err == "missing_required_docs":
-                                missing = data.get("missing") if isinstance(data.get("missing"), list) else []
-                                miss_txt = "、".join(str(x) for x in missing) if missing else "必要文件"
-                                result_text = (
-                                    f"❌ 法扶{payload_obj.get('action_label','回報')}失敗：缺少文件：{miss_txt}\n"
-                                    "請先把文件放入對應案件資料夾後再重試。"
-                                )
+                                result_text = _laf_missing_required_docs_message(payload_obj, data)
                             elif err == "missing_required_dates":
                                 missing = data.get("missing") if isinstance(data.get("missing"), list) else []
                                 miss_txt = "、".join(str(x) for x in missing) if missing else "必要日期"
@@ -1577,48 +1805,23 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                     "請回覆：`<當事人/案號> 結案回報 原因 <理由>`"
                                 )
                             elif err == "portal_prefill_failed":
-                                detail = str(data.get("detail") or data.get("message") or "").strip()
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}預填失敗。\n"
                                     "開辦沒有暫存流程；MAGI 只會先填寫並截圖，確認後才送出。\n"
                                     f"{'原因：' + detail if detail else '請稍後重試，或手動在法扶系統確認。'}"
                                 )
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                             elif err == "portal_draft_failed":
-                                detail = str(data.get("detail") or data.get("message") or "").strip()
-                                # 把 subprocess stderr / stdout 完整 dump，方便事後追查 portal 為何失敗
-                                try:
-                                    from api.runtime_paths import get_magi_root_dir as _grd
-                                    _diag_dir = os.path.join(str(_grd()), ".runtime")
-                                    os.makedirs(_diag_dir, exist_ok=True)
-                                    _fail_path = os.path.join(_diag_dir, "laf_portal_draft_failures.jsonl")
-                                    _fail_record = {
-                                        "ts": __import__("time").time(),
-                                        "ts_iso": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
-                                        "action": payload_obj.get("action"),
-                                        "client_name": payload_obj.get("client_name"),
-                                        "laf_case_no": payload_obj.get("laf_case_no"),
-                                        "case_number": payload_obj.get("case_number"),
-                                        "detail": detail,
-                                        "stderr_tail": stderr_text[-4000:] if stderr_text else "",
-                                        "stdout_tail": stdout_text[-4000:] if stdout_text else "",
-                                        "data": data if isinstance(data, dict) else None,
-                                    }
-                                    with open(_fail_path, "a", encoding="utf-8") as _fp:
-                                        _fp.write(json.dumps(_fail_record, ensure_ascii=False, default=str) + "\n")
-                                    logger.warning(
-                                        "[LAF portal_draft_failed] action=%s client=%s laf_no=%s — stderr/stdout dumped to %s",
-                                        payload_obj.get("action"), payload_obj.get("client_name"),
-                                        payload_obj.get("laf_case_no"), _fail_path,
-                                    )
-                                except Exception as _dump_err:
-                                    logger.warning("portal_draft_failed dump failed: %s", _dump_err)
                                 result_text = (
                                     f"❌ 法扶{payload_obj.get('action_label','回報')}表單填寫失敗。\n"
                                     "可能原因：法扶網站登入逾時、頁面載入異常或按鈕找不到。\n"
-                                    "請稍後重試，或手動在法扶系統確認。"
+                                    "MAGI 已留下診斷並會依排程重試；若同案連續失敗，請以診斷截圖確認入口網頁面。"
                                 )
                                 if detail:
                                     result_text += f"\n細節：{detail[:300]}"
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                             elif err == "identity_needs_manual_confirmation":
                                 _identity = data.get("identity") or {}
                                 _reason = _identity.get("manual_reason", "")
@@ -1652,6 +1855,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
                                 result_text = "\n".join(_hint_lines)
                             else:
                                 result_text = f"❌ 法扶{payload_obj.get('action_label','回報')}存檔失敗：{err}"
+                                if detail:
+                                    result_text += f"\n細節：{detail[:300]}"
+                                if _diag_path:
+                                    result_text += f"\n診斷已記錄：{_diag_path}"
                     else:
                         result_text = f"✅ 法扶{payload_obj.get('action_label','回報')}流程完成（未送出）。\n{stdout_text[:1200] if stdout_text else '(無輸出)'}"
             except subprocess.TimeoutExpired:
@@ -1670,13 +1877,44 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
             except Exception as notify_err:
                 logger.warning(f"LAF report callback failed: {notify_err}")
 
-        # 2026-03-29: removed local import threading (use module-level import)
-        thread = threading.Thread(
-            target=run_laf_report,
-            args=(str(user_id), laf_payload, platform_hint),
-            daemon=True,
-        )
-        thread.start()
+        # Durable portal worker:
+        # The old implementation ran ``run_laf_report`` in a daemon thread
+        # inside the Discord/LINE process.  A coordinated daemon restart kills
+        # that thread, so users receive "已啟動" and then silence.  Portal
+        # automation is long-running; launch it as an independent worker that
+        # owns completion/failure notifications.
+        try:
+            _worker_script = os.path.join(_MAGI_ROOT, "scripts", "ops", "laf_report_worker.py")
+            _job_id = f"laf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+            _payload_for_worker = dict(laf_payload)
+            _payload_for_worker.update({
+                "job_id": _job_id,
+                "requester_user_id": str(user_id),
+                "platform": platform_hint,
+            })
+            _worker_log = str(get_runtime_dir() / f"laf_report_worker_launch_{_job_id}.log")
+            os.makedirs(os.path.dirname(_worker_log), exist_ok=True)
+            _env = os.environ.copy()
+            _env.setdefault("MAGI_ROOT_DIR", _MAGI_ROOT)
+            _env.setdefault("MAGI_LAF_REPORT_TIMEOUT_SEC", str(timeout_sec))
+            with open(_worker_log, "ab") as _lf:
+                subprocess.Popen(
+                    [
+                        skill_python,
+                        _worker_script,
+                        "--payload-json",
+                        json.dumps(_payload_for_worker, ensure_ascii=False),
+                    ],
+                    cwd=_MAGI_ROOT,
+                    env=_env,
+                    stdout=_lf,
+                    stderr=_lf,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except Exception as _launch_err:
+            logger.exception("LAF durable worker launch failed: %s", _launch_err)
+            return f"❌ 法扶{laf_payload.get('action_label','回報')}背景任務啟動失敗：{_launch_err}"
 
         target_hint = laf_payload.get("client_name") or laf_payload.get("laf_case_no") or laf_payload.get("case_number") or "（未指定）"
         if str(laf_payload.get("action") or "") == "go_live":
@@ -2221,7 +2459,10 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
         return f"⏳ 正在執行{scope}模擬測試，完成後會主動回報結果…"
 
     # File-review download/check commands (chat-callable formal skill command)
-    review_dl_aliases = ["下載閱卷", "閱卷下載", "檢查閱卷信箱", "閱卷到期檢查", "閱卷到期", "閱卷期限"]
+    review_dl_aliases = [
+        "下載閱卷", "閱卷下載", "檢查閱卷信箱", "閱卷到期檢查", "閱卷到期", "閱卷期限",
+        "下載繳費單",
+    ]
     if any(msg_lower.startswith(alias) for alias in review_dl_aliases) or any(msg_stripped.startswith(alias) for alias in review_dl_aliases):
 
         review_script = f"{_MAGI_ROOT}/skills/file-review-orchestrator/action.py"
@@ -2473,68 +2714,6 @@ def handle_command(orch, user_id, message, role="user", platform="LINE"):
 
 
 def list_skills(orch):
-    """
-    Dynamically lists available skills by parsing SKILL.md frontmatter.
-    """
-    import os
-    from skills.catalog import iter_top_level_skill_dirs
+    from api.pipelines.skill_listing import build_skill_list_response
 
-    skill_roots = [
-        (f"{_MAGI_ROOT}/skills", "magi"),
-        (os.path.join(os.path.expanduser("~"), ".openclaw", "skills"), "openclaw"),
-    ]
-    skills_found = []
-
-    # Scan for all SKILL.md files
-    try:
-        for skills_dir, source in skill_roots:
-            if not os.path.isdir(skills_dir):
-                continue
-            for entry in iter_top_level_skill_dirs(skills_dir):
-                skill_path = os.path.join(entry.path, "SKILL.md")
-                try:
-                    with open(skill_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    # Simple frontmatter parsing (no yaml dependency)
-                    name = entry.name
-                    desc = "No description"
-                    if content.startswith("---"):
-                        parts = content.split("---", 2)
-                        if len(parts) >= 3:
-                            for line in parts[1].strip().split("\n"):
-                                line = line.strip()
-                                if line.startswith("name:"):
-                                    name = line.split(":", 1)[1].strip().strip("'\"")
-                                elif line.startswith("description:"):
-                                    desc = line.split(":", 1)[1].strip().strip("'\"")
-                    # Truncate long descriptions
-                    if len(desc) > 80:
-                        desc = desc[:77] + "..."
-                    skills_found.append({"name": name, "desc": desc, "source": source})
-                except Exception:
-                    skills_found.append({"name": entry.name, "desc": "(Unable to parse)", "source": source})
-    except Exception as e:
-        logger.error(f"Error scanning skills: {e}")
-        return "❌ 無法讀取技能列表。"
-
-    # Format Output
-    response = f"🧩 **MAGI 技能列表 (Skill Matrix)**\n"
-    response += f"📦 已安裝 **{len(skills_found)}** 個技能模組\n\n"
-
-    # Emoji map
-    emoji_map = {
-        "bridge": "🌉", "memory": "🧠", "research": "🌐",
-        "law-firm": "⚖️", "browser": "🖥️", "identity": "🪪",
-        "evolution": "🧬", "apple": "🍎", "ops": "⚙️",
-        "maintenance": "🔧", "source_control": "📂", "synology": "💾",
-        "brain_manager": "🧠"
-    }
-
-    for skill in sorted(skills_found, key=lambda s: s["name"]):
-        emoji = emoji_map.get(skill["name"], "📌")
-        src = str(skill.get("source") or "magi")
-        response += f"{emoji} **{skill['name']}** [{src}]\n"
-        response += f"  _{skill['desc']}_\n\n"
-
-    response += "💡 *您可以直接對我下達相關指令，例如「查詢行程」、「分析程式碼」等。*"
-    return response
+    return build_skill_list_response(_MAGI_ROOT, logger=logger)

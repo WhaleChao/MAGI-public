@@ -13,6 +13,7 @@ red_phone (existing alert channel, PII-scrubbed before sending).
 from __future__ import annotations
 
 import json as _json
+import hashlib
 import logging
 import os
 import re
@@ -68,25 +69,109 @@ _ERROR_COLLAPSE: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"FileNotFoundError|No such file", re.I), "FileNotFound"),
     (re.compile(r"PermissionError|Access denied", re.I), "PermissionDenied"),
     (re.compile(r"OperationalError|MySQL|MariaDB|DB\s+error", re.I), "DBError"),
-    (re.compile(r"SSL|certificate verify|CERTIFICATE_VERIFY_FAILED", re.I), "SSLError"),
+    (
+        re.compile(
+            r"\bSSL(?:Error)?\b|certificate verify|CERTIFICATE_VERIFY_FAILED",
+            re.I,
+        ),
+        "SSLError",
+    ),
     (re.compile(r"subprocess.*exit.*[1-9]\d*|returncode=[1-9]|non-zero exit", re.I), "SubprocessFailed"),
     (re.compile(r"OOM|out of memory|killed|SIGKILL", re.I), "OOM"),
     (re.compile(r"Exception|Error|Traceback", re.I), "GeneralError"),
 ]
+
+_ERROR_DISPLAY_LABELS = {
+    "Timeout": "逾時",
+    "ConnectionRefused": "連線被拒",
+    "ModuleNotFound": "缺少模組",
+    "FileNotFound": "找不到檔案",
+    "PermissionDenied": "權限不足",
+    "DBError": "資料庫錯誤",
+    "SSLError": "SSL 憑證錯誤",
+    "SubprocessFailed": "子程序失敗",
+    "OOM": "記憶體不足",
+    "GeneralError": "一般錯誤",
+    "Unknown": "未知錯誤",
+}
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _stdout_tail_payload(error_text: str) -> Dict[str, Any]:
+    """Parse a JSON stdout_tail payload embedded in issue agenda errors."""
+    marker = "stdout_tail="
+    idx = str(error_text or "").find(marker)
+    if idx < 0:
+        return {}
+    start = error_text.find("{", idx + len(marker))
+    if start < 0:
+        return {}
+    try:
+        payload, _end = _json.JSONDecoder().raw_decode(error_text[start:])
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resource_governor_label(payload: Dict[str, Any]) -> str:
+    reasons = [str(item) for item in (payload.get("reasons") or [])]
+    if any(reason.startswith("disk_free") for reason in reasons):
+        if any(reason.startswith(("swap_used", "free_plus_inactive")) for reason in reasons):
+            return "資源壓力"
+        return "磁碟空間不足"
+    if any(reason.startswith(("swap_used", "free_plus_inactive")) for reason in reasons):
+        return "記憶體壓力"
+    if payload.get("level") in {"throttle", "core_only", "critical"}:
+        return "資源壓力"
+    return ""
+
+
+def _resource_governor_detail(payload: Dict[str, Any]) -> str:
+    snapshot = payload.get("snapshot") if isinstance(payload, dict) else {}
+    if not isinstance(snapshot, dict):
+        return ""
+    parts = []
+    swap = snapshot.get("swap_used_gb")
+    free = snapshot.get("free_plus_inactive_gb")
+    disk = snapshot.get("disk_free_gb")
+    try:
+        if swap is not None:
+            parts.append(f"swap {float(swap):.2f}GB")
+        if free is not None:
+            parts.append(f"可用記憶體 {float(free):.2f}GB")
+        if disk is not None:
+            parts.append(f"磁碟 {float(disk):.2f}GB")
+    except Exception:
+        return ""
+    return "、".join(parts[:3])
+
+
 def _error_label(error_text: str) -> str:
     if not error_text:
         return "Unknown"
+    payload = _stdout_tail_payload(error_text)
+    resource_label = _resource_governor_label(payload)
+    if resource_label:
+        return resource_label
     snippet = error_text[:300]
     for pat, label in _ERROR_COLLAPSE:
         if pat.search(snippet):
             return label
     return "GeneralError"
+
+
+def _error_detail(error_text: str) -> str:
+    payload = _stdout_tail_payload(error_text)
+    if _resource_governor_label(payload):
+        return _resource_governor_detail(payload)
+    return ""
+
+
+def _display_error_label(label: str) -> str:
+    return _ERROR_DISPLAY_LABELS.get(str(label or ""), str(label or "未知錯誤"))
 
 
 def _job_label(command: str) -> str:
@@ -97,12 +182,25 @@ def _job_label(command: str) -> str:
     m = re.search(r"cron:([a-z0-9_]+)", command, re.I)
     if m:
         return m.group(1)
+    # Some legacy issue producers used a fixed, privacy-safe operation slug
+    # instead of the canonical cron id.  Map only known slugs; never publish
+    # an arbitrary command fragment.
+    fixed_slug_jobs = {
+        "weekend_resummary": "job_weekend_resummary",
+    }
+    normalized = str(command or "").strip().lower()
+    if normalized in fixed_slug_jobs:
+        return fixed_slug_jobs[normalized]
     # python ... action.py --task xxx
     m2 = re.search(r"action\.py\s+--task\s+(\S+)", command)
     if m2:
-        return m2.group(1)
-    # Truncate to 60 chars
-    return command[:60].strip()
+        task = m2.group(1)
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", task):
+            return task
+        return "unknown"
+    # Never publish an arbitrary command fragment: it can contain a case path,
+    # query, token, or other operator-only context.
+    return "unknown"
 
 
 def _load_agenda(lookback_sec: float) -> List[Dict[str, Any]]:
@@ -136,25 +234,32 @@ def _group_records(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     groups: Dict[str, Dict[str, Any]] = {}
     for rec in records:
         job = _job_label(rec.get("command", ""))
-        err = _error_label(rec.get("error", ""))
+        error_text = rec.get("error", "") or ""
+        err = _error_label(error_text)
         key = f"{job}|{err}"
+        rec_ts = float(rec.get("ts", 0) or 0)
         if key not in groups:
             groups[key] = {
                 "job": job,
                 "error_label": err,
+                "trace": hashlib.sha256(f"{job}|{err}".encode("utf-8")).hexdigest()[:12],
                 "count": 0,
-                "first_ts": rec.get("ts", 0),
-                "last_ts": rec.get("ts", 0),
+                "first_ts": rec_ts,
+                "last_ts": rec_ts,
                 "severity": rec.get("severity", "High"),
-                "sample_error": (rec.get("error", "") or "")[:300],
+                "sample_error": error_text[:300],
+                "last_detail": _error_detail(error_text),
                 "days_seen": set(),
             }
         g = groups[key]
         g["count"] += 1
-        g["last_ts"] = max(g["last_ts"], rec.get("ts", 0))
-        g["first_ts"] = min(g["first_ts"], rec.get("ts", 0))
+        if rec_ts >= float(g.get("last_ts") or 0):
+            g["last_ts"] = rec_ts
+            g["sample_error"] = error_text[:300]
+            g["last_detail"] = _error_detail(error_text)
+        g["first_ts"] = min(g["first_ts"], rec_ts)
         # Track which calendar dates this failure appeared on
-        day = datetime.fromtimestamp(rec.get("ts", 0), tz=timezone.utc).strftime("%Y-%m-%d")
+        day = datetime.fromtimestamp(rec_ts, tz=timezone.utc).strftime("%Y-%m-%d")
         g["days_seen"].add(day)
     return groups
 
@@ -184,6 +289,12 @@ def _parse_ts(value: Any) -> float:
 
 
 def _load_cron_last_run_ts() -> Dict[str, float]:
+    """Return per-job last successful run timestamps.
+
+    The function name is kept for compatibility with older tests/call sites.
+    Recovery must be based on a successful completion, not merely a later
+    dispatch or failed run.
+    """
     state_path = _STATE_PATH.parent / "cron_state.json"
     try:
         data = _json.loads(state_path.read_text(encoding="utf-8"))
@@ -195,21 +306,110 @@ def _load_cron_last_run_ts() -> Dict[str, float]:
     for job_id, value in data.items():
         if not isinstance(value, dict):
             continue
-        ts = _parse_ts(value.get("last_run"))
+        ts = _parse_ts(value.get("last_success_at"))
+        if not ts and value.get("last_success") is True:
+            ts = _parse_ts(value.get("last_result_at")) or _parse_ts(value.get("last_run"))
+        if not ts and "last_success_at" not in value and "last_success" not in value:
+            ts = _parse_ts(value.get("last_run"))
         if ts:
             out[str(job_id)] = ts
     return out
 
 
-def _load_cron_job_map() -> Dict[str, Dict[str, Any]]:
-    cron_path = Path(_PROJECT_ROOT) / "cron_jobs.json"
+def _load_cron_current_results() -> Dict[str, Dict[str, Any]]:
+    """Return the latest explicit cron completion contract for each job."""
+
+    state_path = _STATE_PATH.parent / "cron_state.json"
     try:
-        data = _json.loads(cron_path.read_text(encoding="utf-8"))
+        data = _json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    results: Dict[str, Dict[str, Any]] = {}
+    for job_id, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        result_ts = _parse_ts(value.get("last_result_at")) or _parse_ts(
+            value.get("last_complete_at")
+        )
+        returncode = value.get("last_returncode", value.get("returncode"))
+        explicit_success = (
+            value.get("last_success") is True
+            and str(value.get("last_status") or "").strip().lower() == "success"
+            and returncode in {None, 0}
+            and not str(value.get("last_error") or "").strip()
+        )
+        results[str(job_id)] = {
+            "result_ts": result_ts,
+            "explicit_success": explicit_success,
+        }
+    return results
+
+
+def _load_cron_job_map() -> Dict[str, Dict[str, Any]]:
+    try:
+        from magi_v3.external_inputs import load_bound_cron_jobs
+
+        data = list(load_bound_cron_jobs(_PROJECT_ROOT).jobs)
     except Exception:
         return {}
     if not isinstance(data, list):
         return {}
     return {str(job.get("id") or ""): job for job in data if isinstance(job, dict) and job.get("id")}
+
+
+def _guardian_unresolved_jobs() -> set[str]:
+    """Return job ids still open in the newest guardian report.
+
+    A later cron success proves only that one invocation completed.  It cannot
+    clear a guardian finding until that finding is absent from the guardian's
+    own latest result.
+    """
+    path = _STATE_PATH.parent / "magi_self_repair_guardian_latest.json"
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+
+    unresolved_ids = payload.get("unresolved_issue_ids") or []
+    if not unresolved_ids:
+        unresolved_ids = [
+            item.get("id")
+            for item in (payload.get("issues") or [])
+            if isinstance(item, dict)
+            and str(item.get("status") or "") not in {"resolved", "ignored"}
+            and str(item.get("severity") or "") != "info"
+        ]
+    joined = "\n".join(str(item or "") for item in unresolved_ids)
+    return set(re.findall(r"\bjob_[A-Za-z0-9_\-]+\b", joined))
+
+
+def _latest_operational_audit_is_green(issue_ts: float) -> bool:
+    path = _STATE_PATH.parent / "operational_hardening_audit_latest.json"
+    try:
+        if not path.exists() or path.stat().st_mtime <= float(issue_ts or 0):
+            return False
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    cron = data.get("cron") if isinstance(data.get("cron"), dict) else {}
+    gmail = data.get("gmail_monitor") if isinstance(data.get("gmail_monitor"), dict) else {}
+    if "parse_failure_count" not in cron or "collision_count" not in cron or "ok" not in gmail:
+        return False
+    try:
+        cron_green = (
+            int(cron.get("parse_failure_count")) == 0
+            and int(cron.get("collision_count")) == 0
+        )
+    except Exception:
+        cron_green = False
+    gmail_green = gmail.get("ok") is True
+    return cron_green and gmail_green
 
 
 def _current_omlx_models(timeout_sec: float = 1.5) -> List[str]:
@@ -225,36 +425,72 @@ def _annotate_group_status(groups: Dict[str, Dict[str, Any]], *, now_ts: Optiona
     now_ts = float(now_ts or time.time())
     stale_sec = max(1, _STALE_HOURS) * 3600.0
     cron_last_run = _load_cron_last_run_ts()
+    cron_current_results = _load_cron_current_results()
     cron_jobs = _load_cron_job_map()
     current_omlx_models = _current_omlx_models()
+    try:
+        from magi_v3.model_recovery import assess_omlx_recovery
+    except Exception:
+        assess_omlx_recovery = None
+    guardian_unresolved_jobs = _guardian_unresolved_jobs()
     for group in groups.values():
         job = str(group.get("job") or "")
         last_ts = float(group.get("last_ts") or 0)
         last_success_ts = cron_last_run.get(job, 0.0)
+        current_result = cron_current_results.get(job) or {}
+        current_result_ts = float(current_result.get("result_ts") or 0)
+        explicit_current_success = current_result.get("explicit_success") is True
         sample_error = str(group.get("sample_error") or "")
-        if job == "job_omlx_switch_day" and any("e4b" in model.lower() for model in current_omlx_models):
+        job_meta = cron_jobs.get(job) or {}
+        omlx_recovery = (
+            assess_omlx_recovery(
+                _STATE_PATH.parent,
+                job_id=job,
+                failed_at=last_ts,
+            )
+            if assess_omlx_recovery is not None
+            and job in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"}
+            else {"recovered": False}
+        )
+        if omlx_recovery.get("recovered"):
+            group["status"] = "recovered"
+            group["status_reason"] = "最新模型 LIVE 閘門已驗證服務恢復"
+        elif job == "job_omlx_switch_day" and any("e4b" in model.lower() for model in current_omlx_models):
             group["status"] = "recovered"
             group["status_reason"] = "目前 8080 已是日間 E4B"
-        elif job == "job_omlx_switch_night" and any("26b" in model.lower() for model in current_omlx_models):
+        elif job_meta and job_meta.get("enabled") is False:
             group["status"] = "recovered"
-            group["status_reason"] = "目前 8080 已是夜間 26B"
+            group["status_reason"] = "工作已停用，不再排程"
+        elif job == "job_operational_hardening_audit" and _latest_operational_audit_is_green(last_ts):
+            group["status"] = "recovered"
+            group["status_reason"] = "最新營運硬化健檢已轉綠"
         elif (
             job == "job_nightly_autopilot"
-            and int((cron_jobs.get(job) or {}).get("timeout_sec") or 0) >= 28800
+            and int(job_meta.get("timeout_sec") or 0) >= 28800
             and ("judicial_api_night_thread" in sample_error or "exit=-9" in sample_error)
         ):
             group["status"] = "recovered"
             group["status_reason"] = "nightly timeout 已調整為 8 小時"
         elif (
             job == "job_weekend_bookmark"
-            and int((cron_jobs.get(job) or {}).get("timeout_sec") or 0) >= 21600
+            and int(job_meta.get("timeout_sec") or 0) >= 21600
             and ("exit=-15" in sample_error or "timeout" in sample_error.lower())
         ):
             group["status"] = "recovered"
             group["status_reason"] = "週末書籤 timeout 已調整為 6 小時"
-        elif last_success_ts > last_ts + 30:
+        elif (
+            explicit_current_success
+            and current_result_ts >= last_ts - 5
+            and job not in guardian_unresolved_jobs
+        ):
+            group["status"] = "recovered"
+            group["status_reason"] = "同次 cron 已有明確成功結果"
+        elif last_success_ts > last_ts + 30 and job not in guardian_unresolved_jobs:
             group["status"] = "recovered"
             group["status_reason"] = "cron 後續已再執行"
+        elif last_success_ts > last_ts + 30 and job in guardian_unresolved_jobs:
+            group["status"] = "active"
+            group["status_reason"] = "guardian 仍有未解問題，後續 cron 成功不足以結案"
         elif last_ts and (now_ts - last_ts) > stale_sec:
             group["status"] = "stale"
             group["status_reason"] = f"超過 {_STALE_HOURS} 小時未復發"
@@ -271,120 +507,55 @@ def _is_persistent(group: Dict[str, Any]) -> bool:
 def _fmt_ts(ts: float) -> str:
     if not ts:
         return "N/A"
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m/%d %H:%M UTC")
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Asia/Taipei")
+    except Exception:
+        tz = datetime.now().astimezone().tzinfo
+    return datetime.fromtimestamp(ts, tz=tz).strftime("%m/%d %H:%M 台灣時間")
+
+
+def _group_detail_suffix(group: Dict[str, Any]) -> str:
+    detail = str(group.get("last_detail") or "").strip()
+    return f"（{detail}）" if detail else ""
 
 
 def _build_report(groups: Dict[str, Dict[str, Any]]) -> str:
-    """Build human-readable Telegram report text."""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lookback = _LOOKBACK_DAYS
-
+    """Build the external report from allowlisted, non-sensitive fields only."""
     active_groups = [g for g in groups.values() if g.get("status", "active") == "active"]
-    recovered_groups = [g for g in groups.values() if g.get("status") == "recovered"]
-    stale_groups = [g for g in groups.values() if g.get("status") == "stale"]
-
-    persistent = [g for g in active_groups if _is_persistent(g)]
-    recurring = [g for g in active_groups if not _is_persistent(g) and g["count"] >= 2]
-    one_off = [g for g in active_groups if g["count"] == 1]
-
-    persistent.sort(key=lambda g: -g["count"])
-    recurring.sort(key=lambda g: -g["count"])
-
-    lines: List[str] = [
-        f"🔧 MAGI 自我修復週報 ({now_str})",
-        f"過去 {lookback} 天 issue agenda 分析",
-        "",
-    ]
-
-    total_records = sum(g["count"] for g in groups.values())
-    active_records = sum(g["count"] for g in active_groups)
-    lines.append(
-        f"📊 總計：{total_records} 筆失敗 / {len(groups)} 種問題；"
-        f"待處理 {active_records} 筆 / {len(active_groups)} 種，持續性故障 {len(persistent)} 個"
-    )
-    if recovered_groups or stale_groups:
-        lines.append(f"🧹 已降噪：已恢復 {len(recovered_groups)} 種 / 舊紀錄 {len(stale_groups)} 種")
-    lines.append("")
-
-    # --- Persistent failures ---
-    if persistent:
-        lines.append("🚨 持續性故障（需人工介入）")
-        for g in persistent[:_REPORT_MAX_JOBS]:
-            days_str = f"{len(g['days_seen'])} 天"
-            lines.append(
-                f"  • {g['job']}"
-                f" — {g['error_label']} × {g['count']} 次 ({days_str})"
-                f"，最後：{_fmt_ts(g['last_ts'])}"
+    active_groups.sort(key=lambda g: (-int(g.get("count") or 0), str(g.get("job") or "")))
+    lines: List[str] = [f"MAGI 自我修復狀態：待處理 {len(active_groups)} 項"]
+    cron_jobs = _load_cron_job_map()
+    for group in active_groups[:_REPORT_MAX_JOBS]:
+        job_id = str(group.get("job") or "unknown")
+        job_meta = cron_jobs.get(job_id) or {}
+        label = str(job_meta.get("desc") or "").strip()
+        if not label:
+            label = "未分類系統檢查" if job_id == "unknown" else job_id
+        lines.append(
+            "• {job}：{error}。MAGI 會依既有排程重試並重新驗證。".format(
+                job=label,
+                error=_display_error_label(str(group.get("error_label") or "Unknown")),
             )
-        if len(persistent) > _REPORT_MAX_JOBS:
-            lines.append(f"  …另 {len(persistent) - _REPORT_MAX_JOBS} 個持續性問題略")
-        lines.append("")
-
-    # --- Recurring (2+ times but not persistent) ---
-    if recurring:
-        lines.append("⚠️ 重複失敗（觀察中）")
-        for g in recurring[:8]:
-            lines.append(
-                f"  • {g['job']}"
-                f" — {g['error_label']} × {g['count']} 次"
-                f"，最後：{_fmt_ts(g['last_ts'])}"
-            )
-        if len(recurring) > 8:
-            lines.append(f"  …另 {len(recurring) - 8} 個重複問題略")
-        lines.append("")
-
-    # --- One-off ---
-    if one_off:
-        lines.append(f"ℹ️ 單次失敗：{len(one_off)} 個（略）")
-        lines.append("")
-
-    if recovered_groups or stale_groups:
-        lines.append("✅ 已恢復或過期的重複失敗（不列為待處理）")
-        quieted = sorted(recovered_groups + stale_groups, key=lambda g: float(g.get("last_ts") or 0), reverse=True)
-        for g in quieted[:5]:
-            lines.append(
-                f"  • {g['job']} — {g['error_label']} × {g['count']} 次，"
-                f"最後：{_fmt_ts(g['last_ts'])}（{g.get('status_reason', '已降噪')}）"
-            )
-        if len(quieted) > 5:
-            lines.append(f"  …另 {len(quieted) - 5} 個已降噪問題略")
-        lines.append("")
-
-    # --- Sample errors for persistent ---
-    if persistent:
-        lines.append("🔍 持續性故障樣本錯誤")
-        for g in persistent[:3]:
-            sample = g["sample_error"][:150].replace("\n", " ").strip()
-            lines.append(f"  [{g['job']}] {sample}")
-        lines.append("")
-
-    # --- Recommendation ---
-    if persistent:
-        lines.append("📋 建議行動")
-        for g in persistent[:5]:
-            job = g["job"]
-            err = g["error_label"]
-            if err == "Timeout":
-                action = f"增加 {job} 的 timeout 或改善網路/NAS 穩定性"
-            elif err == "ModuleNotFound":
-                action = f"重裝 {job} 的依賴，或確認 skill 路徑正確"
-            elif err == "DBError":
-                action = f"確認 MariaDB 連線與 {job} 的 DB 憑證"
-            elif err == "SubprocessFailed":
-                action = f"手動跑 {job}，查 stderr 確認 exit code"
-            elif err == "OOM":
-                action = f"{job} OOM — 考慮降低批次量或增加記憶體配置"
-            else:
-                action = f"查 .runtime/issue_agenda.jsonl 找 {job} 詳細 traceback"
-            lines.append(f"  → {job}：{action}")
-        lines.append("")
-
-    if not groups:
-        lines.append("✅ 過去 7 天無任何失敗記錄！")
-    elif not active_groups:
-        lines.append("✅ 過去 7 天的失敗均已恢復或過期，暫無待處理故障。")
-
+        )
+    if not active_groups:
+        lines.append("目前沒有待處理問題。")
     return "\n".join(lines)
+
+
+def _redact_external_text(text: str) -> str:
+    """Defence in depth before a report leaves the local process."""
+    redacted = str(text or "")
+    patterns = (
+        (r"(?i)(?:token|api[_-]?key|password|secret)=[^\s&]+", "<REDACTED_SECRET>"),
+        (r"[?&][A-Za-z0-9_.-]+=[^\s&]+", "<REDACTED_QUERY>"),
+        (r"/(?:Users|Volumes|private|var|tmp)/[^\s]+", "<REDACTED_PATH>"),
+        (r"\b\d{3,4}[-_]?\d{3,}[-_A-Za-z0-9]*\b", "<REDACTED_CASE>"),
+    )
+    for pattern, replacement in patterns:
+        redacted = re.sub(pattern, replacement, redacted)
+    return redacted
 
 
 def _load_state() -> Dict[str, Any]:
@@ -436,10 +607,10 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
     persistent_count = sum(1 for g in active_groups if g["days_seen_count"] >= _PERSIST_THRESHOLD)
     total_failures = sum(g["count"] for g in groups.values())
 
-    report_text = _build_report(
+    report_text = _redact_external_text(_build_report(
         # Re-add days_seen as a set for _build_report
         {k: {**g, "days_seen": set(g["days_seen"])} for k, g in groups.items()}
-    )
+    ))
 
     result = {
         "success": True,
@@ -458,7 +629,6 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
 
     if dry_run:
         print(report_text)
-        _save_state(result)
         return result
 
     # --- Send via red_phone ---
@@ -474,7 +644,7 @@ def run_report(*, dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
     except Exception as e:
         logger.error("Failed to send report via red_phone: %s", e)
         result["sent"] = False
-        result["send_error"] = str(e)
+        result["send_error"] = _redact_external_text(str(e))
 
     _save_state(result)
     return result

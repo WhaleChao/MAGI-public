@@ -12,6 +12,8 @@ import os
 import re
 import time
 
+from api.laf_case_classifier import clean_laf_case_reason
+
 logger = logging.getLogger("Orchestrator")
 
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -26,11 +28,26 @@ def looks_like_capability_question(message: str) -> bool:
     text = str(message or "").strip()
     if not text:
         return False
-    # Must end with question particle
-    if not re.search(r"[嗎嘛呢？\?]$", text):
+    compact = re.sub(r"\s+", "", text.lower())
+    explicit_meta_question = bool(re.search(
+        r"(?:(?:你|magi|casper|這個系統|這套系統).{0,10}"
+        r"(?:可以|能|會|能做|能做到|做得到|可以做).{0,10}"
+        r"(?:什麼|甚麼|哪些|何事|事情|事|功能|能力)|"
+        r"(?:有什麼|有哪些)(?:功能|能力|技能)|"
+        r"(?:功能|能力|技能|指令)(?:列表|清單|一覽))",
+        compact,
+        re.IGNORECASE,
+    ))
+    # Most capability questions end with a question particle; explicit meta
+    # prompts like "請問你能做到什麼事" are common in the web UI and may omit it.
+    if not explicit_meta_question and not re.search(r"[嗎嘛呢？\?]$", text):
         return False
     # Must contain ability-asking keywords
-    if not re.search(r"(可以|可不可以|能不能|會不會|如何|怎麼|有沒有辦法|能否|可否)", text, re.IGNORECASE):
+    if not explicit_meta_question and not re.search(
+        r"(可以|可不可以|能不能|會不會|你能|你會|能做|能做到|如何|怎麼|有沒有辦法|能否|可否)",
+        text,
+        re.IGNORECASE,
+    ):
         return False
     # If message contains concrete objects/context, it's an ACTION request, not a capability question.
     # Only match true object nouns and demonstratives that point to actual content.
@@ -92,7 +109,16 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
             with open(definitions_path, "r", encoding="utf-8") as f:
                 payload = json.load(f) or {}
             for tool in payload.get("tools") or []:
-                if not isinstance(tool, dict) or str(tool.get("name") or "").strip() != str(skill or "").strip():
+                if not isinstance(tool, dict):
+                    continue
+                try:
+                    from skills.catalog import is_public_definition_tool
+
+                    if not is_public_definition_tool(tool, include_deprecated=False):
+                        continue
+                except Exception:
+                    logger.debug("skill definition visibility probe failed", exc_info=True)
+                if str(tool.get("name") or "").strip() != str(skill or "").strip():
                     continue
                 skill_prop = (((tool.get("parameters") or {}).get("properties") or {}).get("skill") or {})
                 default_folder = str(skill_prop.get("default") or "").strip()
@@ -165,7 +191,7 @@ def generic_skill_dispatch(orch, skill: str, message: str) -> tuple[bool, str]:
     try:
         result = run_skill_action(
             found_dir, message,
-            timeout_sec=60, auto_repair=False, auto_install_deps=True,
+            timeout_sec=60, auto_repair=False, auto_install_deps=False,
         )
         if result.get("success"):
             output = result.get("output", "").strip()
@@ -264,6 +290,13 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         return False, ""
     if len(text) > 600:
         return False, ""
+    try:
+        from api.routing.route_policy import user_declines_tool_dispatch
+
+        if user_declines_tool_dispatch(text):
+            return False, ""
+    except Exception:
+        logger.debug("Tool-dispatch decline policy check failed; continuing with semantic routing.", exc_info=True)
 
     safe_skills = {
         "web_search": "command", "translate_document": "command",
@@ -271,7 +304,7 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         "image_generate": "command", "judgment_search": "command",
         "run_judgment_collector": "command", "rss_subscribe": "command",
         "memory_search": "command", "transcript_query": "command",
-        "pdf_annotate": "command", "stock_briefing": "command",
+        "stock_briefing": "command",
         "court_hearing": "command", "judgment_trend": "command",
         "labor_law_calc": "command", "tri_sage_translate": "command",
         "summarize_text": "command", "tri_sage_transcribe": "command",
@@ -282,9 +315,13 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
     min_conf = {"phrase": 0.30, "semantic": 0.36, "llm": 0.46}
 
     try:
-        from skills.bridge.semantic_router import route as _semantic_route, suggest_trigger
+        from skills.bridge.semantic_router import deprecated_route_hint, route as _semantic_route, suggest_trigger
     except Exception:
         return False, ""
+
+    hint = deprecated_route_hint(text)
+    if hint:
+        return True, hint
 
     try:
         sr = _semantic_route(text)
@@ -301,6 +338,15 @@ def try_safe_semantic_skill_route(orch, user_id: str, message: str, role: str, p
         return False, ""
     if confidence < float(min_conf.get(method, 0.38)):
         return False, ""
+    try:
+        from api.routing.route_policy import is_generic_word_only, is_high_risk_skill, should_dispatch_skill
+
+        if is_generic_word_only(text):
+            return False, ""
+        if is_high_risk_skill(skill) and not should_dispatch_skill(skill, confidence, text, intent="CHAT", method=method):
+            return False, ""
+    except Exception:
+        logger.debug("route policy semantic dispatch probe failed", exc_info=True)
 
     synthetic = suggest_trigger(skill, text)
     route_mode = safe_skills[skill]
@@ -591,7 +637,7 @@ def dispatch_case_management(message, user_id="", platform=""):
         case_number = parts[0] if len(parts) > 0 else ""
         client_name = parts[1] if len(parts) > 1 else ""
         case_type = parts[2] if len(parts) > 2 else ""
-        case_reason = " ".join(parts[3:]) if len(parts) > 3 else ""
+        case_reason = clean_laf_case_reason(" ".join(parts[3:]) if len(parts) > 3 else "")
         if not client_name:
             return "請提供當事人姓名，例如：建案 114原訴24 王大明 民事 侵權行為"
 
@@ -703,7 +749,9 @@ def dispatch_client_management(message, user_id="", platform=""):
         if not name:
             return "請提供當事人姓名。"
 
-        row_id = "cli-%s" % _uuid.uuid4().hex[:10]
+        from api.osc.client_ids import generate_next_client_id
+
+        row_id = generate_next_client_id()
         try:
             _osc_exec(
                 "INSERT INTO clients (id, name, phone, address, status) VALUES (%s,%s,%s,%s,%s)",
@@ -791,7 +839,7 @@ def dispatch_accounting(message, user_id="", platform=""):
         try:
             case_id = _osc_resolve_case_id(client_or_case)
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 795, exc_info=True)
 
     # Use first case if still not found
     if not case_id and client_or_case:
@@ -804,7 +852,7 @@ def dispatch_accounting(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 808, exc_info=True)
 
     if not case_id:
         return "找不到案件「%s」，請先建案或直接使用案號。" % (client_or_case or "")
@@ -886,7 +934,7 @@ def dispatch_quotation(message, user_id="", platform=""):
             if row:
                 case_id = row.get("id")
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 890, exc_info=True)
 
         row_id = "quot-%s" % _uuid.uuid4().hex[:8]
         today = _date.today().strftime("%Y-%m-%d")
@@ -988,20 +1036,43 @@ def dispatch_calendar_event(message, user_id="", platform=""):
     todo_inserted = False
     try:
         from api.osc.utils import _osc_exec
-        _osc_exec(
-            "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, 'pending')",
-            (
-                event_case_number,
-                "",
-                "開庭" if is_court else "開會",
-                start_dt.strftime("%Y-%m-%d"),
-                start_dt.strftime("%H:%M:%S"),
-                "%s — %s" % (title, location) if location else title,
-            ),
-            fetch=None,
+        todo_type = "開庭" if is_court else "開會"
+        todo_date = start_dt.strftime("%Y-%m-%d")
+        todo_time = start_dt.strftime("%H:%M:%S")
+        todo_desc = "%s — %s" % (title, location) if location else title
+        source_file = "manual_dispatch:calendar_event"
+        existing, _ = _osc_exec(
+            """
+            SELECT id FROM case_todos
+            WHERE case_number=%s
+              AND todo_type=%s
+              AND todo_date=%s
+              AND todo_time=%s
+              AND description=%s
+              AND (status IS NULL OR status='' OR status!='deleted')
+            LIMIT 1
+            """,
+            (event_case_number, todo_type, todo_date, todo_time, todo_desc),
+            fetch="one",
         )
-        todo_inserted = True
+        if existing:
+            todo_inserted = True
+        else:
+            _osc_exec(
+                "INSERT INTO case_todos (case_number, client_name, todo_type, todo_date, todo_time, description, source_file, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')",
+                (
+                    event_case_number,
+                    "",
+                    todo_type,
+                    todo_date,
+                    todo_time,
+                    todo_desc,
+                    source_file,
+                ),
+                fetch=None,
+            )
+            todo_inserted = True
     except Exception as _dbe:
         logger.warning("dispatch_calendar_event db insert failed: %s", _dbe)
 
@@ -1040,9 +1111,6 @@ def dispatch_ai_draft(message, user_id="", platform=""):
     # type: (str, str, str) -> Optional[str]
     """口語化書狀 AI 草擬：草擬起訴狀 / 答辯狀 / 聲請狀。"""
     import re as _re
-    import subprocess as _sp
-    import sys as _sys
-
     text = (message or "").strip()
 
     _DRAFT_KEYWORDS = ["草擬", "草稿", "幫我寫", "幫我草擬", "幫我起草"]
@@ -1067,7 +1135,7 @@ def dispatch_ai_draft(message, user_id="", platform=""):
         return None
 
     # Extract case number
-    case_m = _re.search(r"(\d{2,3}(?:年度?)?\w+?字第?\d+號?)", text)
+    case_m = _re.search(r"(20\d{2}-\d{4}|\d{2,3}(?:年度?)?\w+?字第?\d+號?)", text)
     case_number = case_m.group(1) if case_m else ""
 
     # Extract reason / title
@@ -1078,95 +1146,104 @@ def dispatch_ai_draft(message, user_id="", platform=""):
         text = text.replace(case_number, " ")
     reason = " ".join(text.split()).strip()
 
-    try:
-        from api.osc.utils import _osc_exec
-    except Exception as e:
-        logger.warning("dispatch_ai_draft: cannot import _osc_exec: %s", e)
-        return None
-
-    # Look up case from DB
-    case_row = None
-    if case_number:
-        like = "%%%s%%" % case_number
-        try:
-            case_row, _ = _osc_exec(
-                "SELECT id, case_number, client_name, court_case_no, case_reason FROM cases WHERE case_number LIKE %s OR court_case_no LIKE %s ORDER BY updated_at DESC LIMIT 1",
-                (like, like), fetch="one",
-            )
-        except Exception:
-            pass
-
-    _case_no = case_number or (case_row.get("case_number") if case_row else "")
-    _client = (case_row.get("client_name") if case_row else "") or ""
-    _reason = reason or (case_row.get("case_reason") if case_row else "") or ""
-    prompt = (
-        "你是台灣執業律師的書狀助理。請根據以下資訊草擬一份%s，"
-        "格式參照台灣民事訴訟法書狀格式，包含當事人欄、案由、事實及理由各段。\n"
-        "案件：%s　當事人：%s　案由：%s\n"
-        "請直接輸出書狀內文，不要加說明。"
-    ) % (doc_type, _case_no or "（未指定）", _client or "（未指定）", _reason or "（未指定）")
-
-    import urllib.request as _ureq2, json as _jdraft
-
-    def _call_llm(url, model, timeout_sec):
-        # type: (str, str, int) -> str
-        """呼叫 OpenAI-compatible /v1/chat/completions，回傳 content 字串；失敗拋例外。"""
-        _body = _jdraft.dumps({
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 4096,
-            "stream": False,
-        }).encode()
-        _req = _ureq2.Request(
-            url.rstrip("/") + "/v1/chat/completions",
-            data=_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    if not case_number:
+        return (
+            "為避免把資料配到錯誤案件，請先提供完整法院案號或事務所案件編號；"
+            "例如：「幫我草擬答辯狀，2026-0049」。"
         )
-        with _ureq2.urlopen(_req, timeout=timeout_sec) as _resp:
-            _data = _jdraft.loads(_resp.read().decode())
-        _choices = _data.get("choices") or []
-        return (_choices[0].get("message", {}).get("content", "") if _choices else "").strip()
 
-    # ── 1. 優先走 oMLX（MAGI_OMLX_CHAT_URL，預設 26B）——先確認模型已載入 ──
-    _omlx_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080")
-    _omlx_model = os.environ.get("MAGI_TEXT_PRIMARY_MODEL") or "gemma-4-26b-a4b-it-4bit"
-    _omlx_timeout = int(os.environ.get("MAGI_DRAFT_OMLX_TIMEOUT_SEC", "120"))
-    draft_text = ""
-    _omlx_ready = False
     try:
-        _h = _ureq2.urlopen(_omlx_url + "/health", timeout=3)
-        _hd = json.loads(_h.read().decode())
-        _omlx_ready = int(_hd.get("engine_pool", {}).get("loaded_count", 0)) > 0
-    except Exception:
-        pass
-    if _omlx_ready:
-        try:
-            draft_text = _call_llm(_omlx_url, _omlx_model, _omlx_timeout)
-        except Exception as _omlx_err:
-            logger.info("dispatch_ai_draft oMLX fail: %s", _omlx_err)
-    else:
-        logger.info("dispatch_ai_draft: oMLX not ready (loaded_count=0), skipping to Ollama")
+        from api.osc.drafts import (
+            _osc_build_draft_context,
+            _osc_clean_draft_output,
+            _osc_generate_draft_with_nvidia,
+        )
+        from api.legal_research_quality import validate_text_against_citation_lock
+        from api.osc.saas_workbench import quality_check
 
-    # ── 2. Fallback: Ollama (gemma4:e4b，port 11434) ──
-    if not draft_text:
-        _ollama_url = os.environ.get("MAGI_DRAFT_OLLAMA_URL", "http://127.0.0.1:11434")
-        _ollama_model = os.environ.get("MAGI_DRAFT_OLLAMA_MODEL", "gemma4:e4b")
-        _ollama_timeout = int(os.environ.get("MAGI_DRAFT_OLLAMA_TIMEOUT_SEC", "180"))
-        try:
-            draft_text = _call_llm(_ollama_url, _ollama_model, _ollama_timeout)
-        except Exception as _ol_err:
-            logger.warning("dispatch_ai_draft Ollama also failed: %s", _ol_err)
+        context = _osc_build_draft_context(
+            {
+                "case_number": case_number,
+                "doc_type": doc_type,
+                "reason": reason,
+                "augment_legal_sources": True,
+            }
+        )
+    except Exception as exc:
+        logger.warning("dispatch_ai_draft context lookup failed: %s", exc)
+        return "目前無法安全核對案件資料，因此沒有生成書狀。請確認案號是否完整後再試一次。"
 
-    if draft_text:
-        return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text[:800])
+    if not (context.get("case") or {}):
+        return "找不到可唯一配對的案件，因此沒有生成書狀。請提供事務所案件編號或完整法院案號。"
 
-    # ── 3. Last-resort: casper collab/chat ──
+    missing = []
+    for label, key in (
+        ("法院／地檢署", "court_name"),
+        ("我方當事人", "plaintiff"),
+        ("案件事實", "case_facts"),
+    ):
+        if not str(context.get(key) or "").strip():
+            missing.append(label)
+    if doc_type in {"起訴狀", "答辯狀", "準備狀"} and not str(context.get("defendant") or "").strip():
+        missing.append("對造當事人")
+    if missing:
+        return (
+            "為避免模型猜寫，這次沒有生成書狀。請先補齊："
+            + "、".join(missing)
+            + "。補齊後我會再依案件資料草擬。"
+        )
+
+    prompt = str(context.get("prompt") or "").strip()
     try:
-        from api.osc.drafts import _osc_generate_draft_with_casper
-        draft_text = _osc_generate_draft_with_casper(prompt)
-        if draft_text:
-            return "📝 %s 草稿（前段預覽）：\n\n%s\n\n（完整版請至系統 Web 介面查看）" % (doc_type, draft_text[:800])
-    except Exception as e:
-        logger.warning("dispatch_ai_draft casper fallback error: %s", e)
-    return "⚠️ 書狀草擬失敗（本機模型記憶體不足，oMLX 26B 需要 14GB 可用 RAM）。請關閉其他應用程式後重試。"
+        draft_text, model_name = _osc_generate_draft_with_nvidia(prompt)
+        cleaned = _osc_clean_draft_output(draft_text)
+    except Exception as exc:
+        logger.warning("dispatch_ai_draft NVIDIA generation failed: %s", exc)
+        return (
+            "書狀草擬服務目前無法完成經過去識別與品質驗證的生成；"
+            "本次沒有改用較弱模型，也沒有產生未驗證草稿。請稍後再試。"
+        )
+
+    citation_validation = validate_text_against_citation_lock(
+        cleaned,
+        context.get("citation_lock") or {},
+    )
+    assessment = quality_check(
+        {
+            "mode": "draft",
+            "strict_export": True,
+            "draft_text": cleaned,
+            "case_number": context.get("case_number") or "",
+            "reason": context.get("reason") or "",
+            "doc_type": context.get("doc_type") or doc_type,
+            "court_name": context.get("court_name") or "",
+            "plaintiff": context.get("plaintiff") or "",
+            "defendant": context.get("defendant") or "",
+            "case_facts": context.get("case_facts") or "",
+            "grounding_text": prompt,
+            "selected_documents": context.get("selected_documents") or [],
+            "selected_insights": context.get("selected_insights") or [],
+            "citation_validation": citation_validation,
+            "source_paths": [
+                str(item.get("resolved_path") or item.get("file_path") or "")
+                for item in (context.get("selected_documents") or [])
+                if isinstance(item, dict) and (item.get("resolved_path") or item.get("file_path"))
+            ],
+        }
+    )
+    if not citation_validation.get("ok") or not assessment.get("pass"):
+        messages = [
+            str(item.get("message") or "").strip()
+            for item in (assessment.get("issues") or [])
+            if isinstance(item, dict) and str(item.get("message") or "").strip()
+        ]
+        if not citation_validation.get("ok"):
+            messages.insert(0, "草稿出現白名單以外或無法核對原文的裁判引用")
+        detail = "、".join(messages[:4]) or "內容未通過事實與結構檢查"
+        return "草稿已被品質閘門攔截，沒有提供未驗證內容。需處理：%s。" % detail
+
+    return (
+        "📝 %s 草稿（已通過事實錨定與結構檢查；模型：%s）：\n\n%s\n\n"
+        "（仍須由律師確認法律判斷；完整版請至系統 Web 介面查看）"
+        % (doc_type, model_name or "NVIDIA", cleaned[:800])
+    )

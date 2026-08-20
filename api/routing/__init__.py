@@ -6,6 +6,15 @@ from api.routing.route_policy import (
     should_cache_intent,
     should_dispatch_skill,
 )
+from api.routing.intent_contract import (
+    IntentDecision,
+    NormalizedIntent,
+    classify_intent_contract,
+    looks_like_agentic_request,
+    normalize_message_intent,
+    route_intent_for_decision,
+    should_bypass_stateful_forms,
+)
 
 # Phase 1 registries
 from api.routing.service_registry import get_service, get_service_url, get_service_host_port
@@ -29,6 +38,13 @@ __all__ = [
     "is_generic_word_only",
     "should_cache_intent",
     "should_dispatch_skill",
+    "IntentDecision",
+    "NormalizedIntent",
+    "classify_intent_contract",
+    "looks_like_agentic_request",
+    "normalize_message_intent",
+    "route_intent_for_decision",
+    "should_bypass_stateful_forms",
     # Service registry
     "get_service",
     "get_service_url",
@@ -54,4 +70,3 @@ __all__ = [
     "InferenceRouter",
     "RoutingTelemetry",
 ]
-

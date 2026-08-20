@@ -16,7 +16,8 @@ DB_CONFIG = {
     'user': os.environ.get("DB_USER", "casper_service"),
     'password': os.environ.get("DB_PASSWORD", ""),
     'host': os.environ.get("DB_HOST", "127.0.0.1"),
-    'database': 'magi_brain',
+    'port': int(os.environ.get("DB_PORT", "3306") or "3306"),
+    'database': os.environ.get("MAGI_BRAIN_DB_NAME", "magi_brain"),
 }
 
 def migrate_synced_column(cursor):

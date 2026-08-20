@@ -1,0 +1,163 @@
+{
+  "schema": "magi.business-recovery-contracts/v1",
+  "defaults": {
+    "max_attempts": 3,
+    "retry_delays_seconds": [60, 300, 900],
+    "failure_mode": "fail_closed",
+    "success_evidence": "structured_terminal_result",
+    "idempotency_key_env": "MAGI_IDEMPOTENCY_KEY"
+  },
+  "domains": {
+    "case_intake_lifecycle": {
+      "label": "建案、案件索引與結案路徑",
+      "owner_job_ids": [
+        "job_laf_gmail_dispatch_scan",
+        "job_osc_index_cases",
+        "job_slow_archive_closed_cases",
+        "job_empty_case_shell_cleanup"
+      ],
+      "verification_job_ids": ["job_business_readiness_snapshot", "job_business_module_live_check"]
+    },
+    "legal_aid": {
+      "label": "法扶派案、附件、開辦與報結",
+      "owner_job_ids": [
+        "job_laf_pending_scan",
+        "job_laf_nightly_audit",
+        "job_laf_portal_new_files_scan",
+        "job_laf_condition_dedup_scan",
+        "job_laf_condition_draft",
+        "job_laf_portal_retry_once"
+      ],
+      "verification_job_ids": ["job_business_module_live_check"]
+    },
+    "file_review_payment": {
+      "label": "閱卷通知、繳費單、入口下載與歸檔",
+      "owner_job_ids": [
+        "job_file_review_check",
+        "job_file_review_downloadable_probe_dense",
+        "job_file_review_staging_cleanup"
+      ],
+      "verification_job_ids": ["job_business_module_live_check"]
+    },
+    "transcript": {
+      "label": "筆錄下載、配對、歸檔與索引",
+      "owner_job_ids": [
+        "job_transcript_sync",
+        "job_transcript_indexer",
+        "job_transcript_self_test"
+      ],
+      "verification_job_ids": ["job_business_module_live_check"]
+    },
+    "calendar_deadlines": {
+      "label": "PDF 待辦、筆錄待辦、期限與 Google 日曆",
+      "owner_job_ids": [
+        "job_osc_events_refresh",
+        "job_osc_todo_governance",
+        "job_osc_overdue_todo_reconcile",
+        "job_benchmark_osc_todos"
+      ],
+      "verification_job_ids": ["job_business_readiness_snapshot", "job_business_module_live_check"]
+    },
+    "storage_sync": {
+      "label": "NAS、Google Drive、備份與案件卡同步",
+      "owner_job_ids": [
+        "job_drive_case_sync_bidirectional",
+        "job_drive_case_sync_all_files",
+        "job_case_index_sync",
+        "job_osc_auto_backup"
+      ],
+      "verification_job_ids": ["job_business_module_live_check"]
+    },
+    "documents": {
+      "label": "PDF 命名、OCR、書籤、版面與文件品質",
+      "owner_job_ids": [
+        "job_pdf_namer_nightly",
+        "job_benchmark_pdf_namer",
+        "job_pdf_namer_self_test",
+        "job_weekend_bookmark",
+        "job_nightly_bookmark_regex",
+        "job_nas_pdf_ocr_worker_offpeak",
+        "job_pdf_bookmarker_self_test",
+        "job_benchmark_pdf_bookmarker",
+        "job_pdf_bookmark_label_repair",
+        "job_pdf_bookmark_large_volume_repair",
+        "pdfnamer_docling_layout"
+      ],
+      "verification_job_ids": ["job_pdf_namer_self_test", "job_pdf_bookmarker_self_test"]
+    },
+    "knowledge_research": {
+      "label": "裁判搜尋、實務見解、摘要與知識庫",
+      "owner_job_ids": [
+        "job_1770705679",
+        "job_weekly_legal_crawl",
+        "job_judgment_retry_evening",
+        "job_reprocess_insights",
+        "job_legacy_judgment_resummary_quality",
+        "job_judicial_api_night_pull",
+        "job_judicial_api_morning",
+        "job_judicial_api_noon",
+        "job_judicial_api_afternoon",
+        "job_judicial_api_evening",
+        "job_judicial_api_backlog_clear",
+        "job_obsidian_ingest",
+        "job_obsidian_repair_notes",
+        "job_obsidian_duplicate_cleanup",
+        "job_obsidian_vector_reindex_notes",
+        "job_obsidian_vector_reindex_wiki",
+        "job_obsidian_acceptance_gate",
+        "job_insight_sync",
+        "job_wiki_synthesizer",
+        "job_knowledge_lint"
+      ],
+      "verification_job_ids": ["job_knowledge_lint", "job_obsidian_acceptance_gate"]
+    },
+    "translation_analysis": {
+      "label": "翻譯、長文分析與研究摘要",
+      "owner_job_ids": [
+        "job_translator_ape_regression",
+        "job_heavy_translation_quality_live",
+        "job_research_brief_daily",
+        "job_worldmonitor_intel"
+      ],
+      "verification_job_ids": ["job_heavy_translation_quality_live"]
+    },
+    "accounting": {
+      "label": "帳務匯入與獎金結算",
+      "owner_job_ids": ["job_accounting_sheet_import", "job_accounting_monthly_bonus"],
+      "verification_job_ids": ["job_business_readiness_snapshot"]
+    },
+    "market": {
+      "label": "股票報告、預測與追蹤清單",
+      "owner_job_ids": ["job_market_briefing_script", "job_backup_market_watchlist"],
+      "verification_job_ids": ["job_business_readiness_snapshot"]
+    },
+    "notifications_access": {
+      "label": "通知送達、OAuth、外網入口與功能健康",
+      "owner_job_ids": [
+        "job_api_token_health_check",
+        "job_tailscale_funnel_healthcheck",
+        "job_business_module_live_check",
+        "job_function_health_index",
+        "job_business_readiness_snapshot",
+        "job_health_report",
+        "job_1770699415",
+        "job_magi_self_repair_guardian",
+        "job_self_repair_reporter"
+      ],
+      "verification_job_ids": ["job_function_health_index", "job_business_module_live_check"]
+    },
+    "agent_automation": {
+      "label": "MAGI 工具路由、自動化、技能與回歸測試",
+      "owner_job_ids": [
+        "job_1770948489644_0726cf",
+        "job_1770948489644_c5a469",
+        "job_1770949442096_9e8adf",
+        "job_nightly_regression",
+        "job_smoke_external_chat",
+        "job_nightly_autopilot",
+        "job_operational_hardening_audit"
+      ],
+      "verification_job_ids": ["job_nightly_regression", "job_smoke_external_chat"]
+    }
+  }
+}

@@ -18,18 +18,27 @@ import hashlib
 import threading
 from typing import List, Tuple, Dict, Optional
 from datetime import datetime
+from pathlib import Path
+
+from skills.overlay import skill_overlay_dir
 
 
 # =============================================================================
 # Configuration
 # =============================================================================
+_IRON_DOME_STATE_DIR = Path(
+    os.environ.get("MAGI_IRON_DOME_STATE_DIR", "").strip()
+    or skill_overlay_dir() / ".iron-dome"
+).expanduser()
+_LEGACY_DYNAMIC_RULES_PATH = f"{_MAGI_ROOT}/skills/evolution/iron_dome_dynamic_rules.json"
+_LEGACY_PATTERNS_CACHE_FILE = f"{_MAGI_ROOT}/static/iron_dome_patterns.json"
 IRON_DOME_DYNAMIC_RULES_PATH = os.environ.get(
     "MAGI_IRON_DOME_DYNAMIC_RULES_PATH",
-    f"{_MAGI_ROOT}/skills/evolution/iron_dome_dynamic_rules.json",
+    str(_IRON_DOME_STATE_DIR / "dynamic_rules.json"),
 )
 PATTERNS_CACHE_FILE = os.environ.get(
     "MAGI_IRON_DOME_PATTERNS_CACHE_FILE",
-    f"{_MAGI_ROOT}/static/iron_dome_patterns.json",
+    str(_IRON_DOME_STATE_DIR / "patterns_cache.json"),
 )
 
 # =============================================================================
@@ -194,10 +203,13 @@ def _compile_regexes(dynamic_patterns: List[dict] = None) -> None:
 
 
 def _load_dynamic_state() -> dict:
-    if not os.path.exists(IRON_DOME_DYNAMIC_RULES_PATH):
+    path = IRON_DOME_DYNAMIC_RULES_PATH
+    if not os.path.exists(path) and os.path.exists(_LEGACY_DYNAMIC_RULES_PATH):
+        path = _LEGACY_DYNAMIC_RULES_PATH
+    if not os.path.exists(path):
         return {"patterns": []}
     try:
-        with open(IRON_DOME_DYNAMIC_RULES_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"patterns": []}
@@ -209,6 +221,8 @@ def _reload_patterns(force: bool = False) -> bool:
     
     # Check cache file (synced from other nodes)
     cache_path = PATTERNS_CACHE_FILE
+    if not os.path.exists(cache_path) and os.path.exists(_LEGACY_PATTERNS_CACHE_FILE):
+        cache_path = _LEGACY_PATTERNS_CACHE_FILE
     has_cache = os.path.exists(cache_path)
     
     if has_cache:

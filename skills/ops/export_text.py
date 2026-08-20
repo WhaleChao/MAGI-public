@@ -2,7 +2,8 @@
 """
 export_text.py
 ==============
-將長文字輸出成 /static/exports 下的 TXT，並產生可下載連結（若可推得 public base URL）。
+將長文字輸出成 static/exports 下的 TXT，並產生登入保護的
+/exports 下載連結（若可推得 public base URL）。
 
 設計目標：
 - 供 Orchestrator / skills 共用，避免只有 LINE webhook server 才能 export。
@@ -22,11 +23,13 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 
 MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-AGENT_DIR = os.path.abspath(os.path.join(MAGI_ROOT, ".agent"))
+AGENT_DIR = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_AGENT_DIR") or os.path.join(MAGI_ROOT, ".agent"))
+)
 LINE_LAST_BASE_URL_FILE = os.environ.get(
     "MAGI_LINE_LAST_BASE_URL_FILE",
     os.path.join(AGENT_DIR, "line_last_base_url.json"),
@@ -34,7 +37,12 @@ LINE_LAST_BASE_URL_FILE = os.environ.get(
 
 EXPORTS_DIR = os.environ.get(
     "MAGI_EXPORTS_DIR",
-    os.path.abspath(os.path.join(MAGI_ROOT, "static", "exports")),
+    os.path.abspath(
+        os.path.join(
+            os.path.expanduser(os.environ.get("MAGI_MUTABLE_STATIC_DIR") or os.path.join(MAGI_ROOT, "static")),
+            "exports",
+        )
+    ),
 )
 
 
@@ -172,7 +180,11 @@ def export_txt(text: str, *, prefix: str = "casper") -> dict:
         with open(path, "w", encoding="utf-8") as f:
             f.write(s + "\n")
         base = _load_public_base_url()
-        url = (base.rstrip("/") + f"/static/exports/{filename}") if base else ""
+        url = (
+            base.rstrip("/") + f"/exports/{quote(filename, safe='')}"
+            if base
+            else ""
+        )
         return {"success": True, "path": path, "filename": filename, "url": url}
     except Exception as e:
         return {"success": False, "error": str(e)}

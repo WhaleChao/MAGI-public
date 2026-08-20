@@ -1,0 +1,382 @@
+{
+  "schema_version": 1,
+  "timezone": "Asia/Taipei",
+  "campaign_state": "certifying_offline",
+  "armed": true,
+  "production_release": "v2",
+  "maximum_simultaneously_active_magi_releases": 1,
+  "offline_campaign": {
+    "validation_strategy": "accelerated_24h_event_coverage",
+    "maximum_completion_hours": 24,
+    "minimum_consecutive_days": 1,
+    "required_independent_passes": 7,
+    "validation_pass_profiles": [
+      {
+        "profile_id": "ordinary_week",
+        "replay_start_local": "2026-07-13T00:00:00+08:00",
+        "fault_seed": 1101
+      },
+      {
+        "profile_id": "thirty_one_day_month_end",
+        "replay_start_local": "2026-07-27T00:00:00+08:00",
+        "fault_seed": 2203
+      },
+      {
+        "profile_id": "thirty_day_month_end",
+        "replay_start_local": "2026-04-27T00:00:00+08:00",
+        "fault_seed": 3307
+      },
+      {
+        "profile_id": "non_leap_february_boundary",
+        "replay_start_local": "2027-02-22T00:00:00+08:00",
+        "fault_seed": 4409
+      },
+      {
+        "profile_id": "leap_day_boundary",
+        "replay_start_local": "2028-02-26T00:00:00+08:00",
+        "fault_seed": 5519
+      },
+      {
+        "profile_id": "year_boundary",
+        "replay_start_local": "2026-12-28T00:00:00+08:00",
+        "fault_seed": 6637
+      },
+      {
+        "profile_id": "day_or_weekday_cron_boundary",
+        "replay_start_local": "2026-08-29T00:00:00+08:00",
+        "fault_seed": 7753
+      }
+    ],
+    "temporal_risks_deferred_to_post_cutover_monitoring": [
+      "wall_clock_memory_and_swap_drift",
+      "weekday_weekend_external_service_variation",
+      "credential_and_session_expiry",
+      "sleep_wake_and_thermal_variation"
+    ],
+    "required_before_live_validation": true,
+    "harness_certification": {
+      "status": "certified",
+      "verified_workloads": [
+        {
+          "workload": "golden_business_flows",
+          "evidence_schema": "actual_handler_golden_flow_v1",
+          "test_target": "tests/v3/test_actual_route_replay.py",
+          "required_measurements": [
+            "required_domains",
+            "covered_domains",
+            "missing_domains",
+            "actual_handler_flows",
+            "actual_handler_route_methods"
+          ]
+        },
+        {
+          "workload": "hundred_cycle_worker_reap_soak",
+          "evidence_schema": "structured_offline_probe_v1",
+          "test_target": "tests/v3/test_campaign_offline_probes.py",
+          "required_measurements": [
+            "cycles_completed",
+            "process_groups_gone",
+            "active_workers_after",
+            "governor_slots_after",
+            "fd_drift"
+          ]
+        },
+        {
+          "workload": "ime_candidate_window_pressure_probe",
+          "evidence_schema": "structured_native_probe_v1",
+          "test_target": "tests/v3/test_ime_candidate_native.py",
+          "required_measurements": [
+            "cycles_completed",
+            "candidate_windows_detected",
+            "candidate_window_failures",
+            "candidate_latency_p95_ms",
+            "pressure_allocated_mb",
+            "unsaved_documents_remaining"
+          ]
+        },
+        {
+          "workload": "health_1000_model_free",
+          "evidence_schema": "magi.v3.health-probe-certification/v1",
+          "test_target": "scripts/v3_validation/health_certification.py",
+          "required_measurements": [
+            "probe_count",
+            "successful_probes",
+            "failed_probes",
+            "model_imports",
+            "models_loaded",
+            "state_mutations"
+          ]
+        },
+        {
+          "workload": "346_route_contract_replay",
+          "evidence_schema": "magi.v3.route-certification/v1",
+          "test_target": "scripts/v3_validation/route_certification.py",
+          "required_measurements": [
+            "pinned_routes",
+            "fully_replayed_routes",
+            "remaining_routes",
+            "pinned_route_methods",
+            "representative_success_path_passed",
+            "remaining_route_methods",
+            "validation_profile_id"
+          ]
+        },
+        {
+          "workload": "seven_day_schedule_10x_arrival_2x_duration_replay",
+          "evidence_schema": "magi.v3.schedule-capacity-certification/v1",
+          "test_target": "scripts/v3_validation/schedule_capacity_certification.py",
+          "required_measurements": [
+            "enabled_jobs",
+            "jobs_with_three_samples",
+            "measured_ledger_arrivals",
+            "lost_jobs",
+            "duplicate_jobs",
+            "deadline_misses"
+          ]
+        },
+        {
+          "workload": "fault_injection",
+          "evidence_schema": "magi.v3.fault-realism/v1",
+          "test_target": "scripts/v3_validation/fault_realism.py",
+          "required_measurements": [
+            "scenarios_passed",
+            "lost_committed_jobs",
+            "duplicate_committed_jobs",
+            "notification_dlq_recovery"
+          ]
+        },
+        {
+          "workload": "fault_recovery_certification",
+          "evidence_schema": "magi.v3.fault-certification/v1",
+          "test_target": "scripts/v3_validation/fault_certification.py",
+          "required_measurements": [
+            "apfs_enospc",
+            "sqlite_wal_fsync_io_error",
+            "logical_transaction_boundary_sweep",
+            "mach_clock_sigkill"
+          ]
+        },
+        {
+          "workload": "matched_v2_v3_performance",
+          "evidence_schema": "magi.v3.resource-performance-certification/v1",
+          "test_target": "scripts/v3_validation/resource_performance_certification.py",
+          "required_measurements": [
+            "matched_handler_mariadb_session_workload",
+            "remote_smb_receipt",
+            "semantic_equivalence",
+            "maximum_p95_ratio"
+          ]
+        }
+      ],
+      "historical_arming_blockers": [
+        {
+          "code": "SCHEDULE_LOAD_REALISM_INCOMPLETE",
+          "workload": "seven_day_schedule_10x_arrival_2x_duration_replay",
+          "current_test_target": "tests/v3/test_schedule_realism.py",
+          "missing_evidence": "safe representative real job-body coverage for every enabled job and at least three successful samples per job; body and p95 coverage counts are derived from bound realism evidence, and global p95 remains unavailable",
+          "partial_evidence": {
+            "definitions": 102,
+            "enabled_definitions": 93,
+            "virtual_days": 7,
+            "arrival_multiplier": 10,
+            "duration_multiplier": 2,
+            "base_arrivals": 5547,
+            "measured_ledger_arrivals": 55470,
+            "lost_jobs": 0,
+            "duplicate_jobs": 0,
+            "deadline_misses": 0,
+            "representative_body_coverage_source": "bound_schedule_realism_evidence",
+            "jobs_with_production_duration_observation": 93,
+            "production_duration_gaps": 0,
+            "production_p95_coverage_source": "bound_schedule_realism_baseline",
+            "global_production_p95_available": false,
+            "test_targets": [
+              "tests/v3/test_campaign_offline_probes.py",
+              "tests/v3/test_schedule_realism.py"
+            ]
+          }
+        },
+        {
+          "code": "FAULT_CAMPAIGN_REALISM_INCOMPLETE",
+          "workload": "fault_injection",
+          "current_test_target": "tests/v3/test_fault_realism.py",
+          "missing_evidence": "physical-disk APFS ENOSPC, true power interruption and machine-instruction-offset SIGKILL drills; current evidence includes a disposable APFS sparse-image ENOSPC run, the complete 37-stage logical transaction sweep, six unsynchronized bounded-time SIGKILL offsets, and a real custom SQLite VFS WAL xSync injection returning SQLITE_IOERR_FSYNC with rollback/reopen invariants",
+          "partial_evidence": {
+            "scenarios_passed": 6,
+            "scenarios_total": 6,
+            "lost_committed_jobs": 0,
+            "duplicate_committed_jobs": 0,
+            "sigkill_commit_window_cycles": 12,
+            "sigkill_payloads": 384,
+            "logical_transaction_boundary_sigkill_stages": 37,
+            "bounded_time_offset_sigkill_cycles": 6,
+            "bounded_time_offset_sigkill_offsets_us": [
+              0,
+              50,
+              250,
+              1000,
+              5000,
+              20000
+            ],
+            "sqlite_wal_synchronous_full_verified": true,
+            "logical_transaction_boundary_partial_payloads": 0,
+            "acknowledged_loss": 0,
+            "partial_payloads": 0,
+            "sandbox_apfs_sparse_image_enospc": true,
+            "apfs_sparse_image_capacity_bytes": 33554432,
+            "apfs_sqlite_error_code": 13,
+            "physical_apfs_enospc": false,
+            "physical_power_interruption": false,
+            "custom_sqlite_vfs_power_loss": false,
+            "sqlite_vfs_fsync_io_error_injection": true,
+            "arbitrary_instruction_offset_sigkill": false,
+            "scenarios": [
+              "wal_reopen",
+              "bounded_sqlite_disk_full",
+              "atomic_fsync_injection",
+              "worker_crash",
+              "timeout",
+              "notification_storm_dlq"
+            ],
+            "test_targets": [
+              "tests/v3/test_fault_realism.py",
+              "tests/v3/test_campaign_offline_probes.py",
+              "tests/v3/test_fault_certification.py",
+              "tests/v3/test_physical_fault_drill.py"
+            ]
+          }
+        },
+        {
+          "code": "MATCHED_PRODUCTION_PERFORMANCE_NOT_IMPLEMENTED",
+          "workload": "matched_v2_v3_performance",
+          "current_test_target": "tests/v3/test_perf_compat.py",
+          "missing_evidence": "representative production business workloads measured sequentially against release thresholds with real MariaDB/session/NAS and folder/archive behavior; actual production V2 /livez versus native V3 gateway /livez passes, while V2 versus V3 /api/osc/cases GET plus one bounded idempotent POST upsert are semantically matched only on identical disposable SQLite corpora",
+          "partial_evidence": {
+            "scope": "same-host sequential actual production V2 /livez versus native V3 gateway /livez plus actual V2 versus native V3 /api/osc/cases GET and bounded idempotent POST on identical isolated 32-row SQLite corpora and one Python runtime",
+            "runs": 3,
+            "requests_per_run": 1000,
+            "total_requests_per_arm_per_run_including_cold_and_warmup": 1101,
+            "total_requests_across_three_runs_and_two_arms": 6606,
+            "total_get_requests_across_three_runs_and_two_arms": 3306,
+            "total_post_requests_across_three_runs_and_two_arms": 3300,
+            "latency_samples_across_three_runs_and_two_arms": 6000,
+            "response_drift": 0,
+            "measured_percentiles": [
+              "p50",
+              "p95",
+              "p99"
+            ],
+            "cold_start_measured": true,
+            "production_v2_handler_measured": true,
+            "native_v3_handler_measured": true,
+            "native_v3_gateway_probe_measured": true,
+            "production_business_workload_measured": false,
+            "representative_synthetic_business_corpus_defined": true,
+            "native_business_handler_available": true,
+            "matched_synthetic_business_get_measured": true,
+            "synthetic_business_post_measured": true,
+            "synthetic_business_measured_methods": [
+              "GET",
+              "POST"
+            ],
+            "synthetic_business_requests_per_iteration": 2,
+            "synthetic_business_post_transactions_per_arm": 550,
+            "synthetic_business_post_transaction_events": {
+              "begin": 550,
+              "insert": 0,
+              "update": 550,
+              "commit": 550,
+              "rollback": 0
+            },
+            "synthetic_business_post_transcript_equivalent": true,
+            "synthetic_business_target_state_equivalent": true,
+            "production_business_release_thresholds_applied": false,
+            "synthetic_business_corpus_rows": 32,
+            "synthetic_business_corpus_sha256": "03656f6b83c9c6411faff65a28db04fc2a09156872aa4c3272e463ff416f1961",
+            "rss_evidence_measured": true,
+            "file_descriptor_evidence_measured": true,
+            "release_gateway_thresholds_applied": true,
+            "gateway_thresholds_passed": true,
+            "v2_livez_p50_us": 260.625,
+            "v2_livez_p95_us": 290.834,
+            "v2_livez_p99_us": 331.48,
+            "native_v3_livez_p50_us": 155.458,
+            "native_v3_livez_p95_us": 183.092,
+            "native_v3_livez_p99_us": 216.968,
+            "native_v3_to_v2_p95_ratio": 0.629541,
+            "v2_rss_growth_bytes": 4243456,
+            "native_v3_rss_growth_bytes": 3112960,
+            "v2_fd_drift": 0,
+            "native_v3_fd_drift": 0,
+            "gateway_livez_p95_us": 183.092,
+            "gateway_added_overhead_p95_us": 0.0,
+            "gateway_added_overhead_p99_us": 0.0,
+            "v2_synthetic_osc_mixed_get_post_p50_us": 3476.417,
+            "v2_synthetic_osc_mixed_get_post_p95_us": 3757.046,
+            "v2_synthetic_osc_mixed_get_post_p99_us": 4254.345,
+            "native_v3_synthetic_osc_mixed_get_post_p50_us": 1889.812,
+            "native_v3_synthetic_osc_mixed_get_post_p95_us": 3359.941,
+            "native_v3_synthetic_osc_mixed_get_post_p99_us": 3644.945,
+            "v2_synthetic_osc_fd_drift": 0,
+            "native_v3_synthetic_osc_fd_drift": 0,
+            "claim": "actual production V2 versus native V3 gateway /livez passes; native V3 OSC GET and one bounded idempotent POST upsert match actual V2 handler semantics and side-effect transcripts on disposable SQLite only, with no production-business, MariaDB/session/NAS, folder/archive, or release-threshold claim",
+            "test_target": "tests/v3/test_perf_compat.py"
+          }
+        }
+      ],
+      "arming_blockers": []
+    },
+    "workloads": [
+      "346_route_contract_replay",
+      "seven_day_schedule_10x_arrival_2x_duration_replay",
+      "golden_business_flows",
+      "fault_injection",
+      "fault_recovery_certification",
+      "matched_v2_v3_performance",
+      "hundred_cycle_worker_reap_soak",
+      "ime_candidate_window_pressure_probe",
+      "health_1000_model_free"
+    ]
+  },
+  "isolated_live_validation": {
+    "required_runs": 3,
+    "minimum_spacing_hours": 0,
+    "minimum_reset_minutes": 10,
+    "completion_window_hours": 24,
+    "allowed_window": {"start": "00:00", "end": "23:59"},
+    "allowed_local_dates": ["2026-07-22"],
+    "maximum_duration_minutes": 30,
+    "external_writes_enabled": false,
+    "same_host_sequence": [
+      "enter_maintenance_blackout",
+      "drain_v2",
+      "stop_v2_completely",
+      "verify_v2_zero_owners",
+      "start_v3_validation_once",
+      "run_approved_read_only_and_sandbox_probes",
+      "stop_v3_completely",
+      "verify_v3_zero_owners",
+      "restore_v2_once",
+      "verify_v2_readiness_and_integrity",
+      "exit_maintenance_blackout"
+    ],
+    "abort_if_any_owner_overlap": true,
+    "automatic_restore_v2_after_each_pre_cutover_run": true
+  },
+  "dress_rehearsal": {
+    "required_cold_rollback_runs": 3,
+    "maximum_rto_seconds": 120,
+    "lost_committed_jobs": 0,
+    "duplicate_committed_jobs": 0
+  },
+  "final_replacement": {
+    "schedule_state": "not_scheduled_until_all_hard_gates_pass",
+    "allowed_window": {"start": "02:00", "end": "04:00"},
+    "required_evidence_source": "config/v3_cutover_gates.json",
+    "campaign_runner_command": "<candidate>/bin/magi-v3-python <candidate>/scripts/v3_campaign/runner.py --release-root <candidate> --state-dir <campaign-state-dir> --campaign-id <campaign-id> --release-sha <release-sha> --hardware-id <hardware-id> --gate-config-sha256 <gate-config-sha256>",
+    "evidence_compiler_command": "<candidate>/bin/magi-v3-python <candidate>/scripts/v3_evidence_compiler.py --release-root <candidate> --campaign-report <campaign-report> --output <campaign-evidence-dir> --gate-config <candidate>/config/v3_cutover_gates.json --campaign-id <campaign-id> --release-sha <release-sha> --hardware-id <hardware-id> --gate-config-sha256 <gate-config-sha256>",
+    "release_gate_command": "<candidate>/bin/magi-v3-python <candidate>/scripts/v3_release_gate.py --config <candidate>/config/v3_cutover_gates.json --evidence-dir <campaign-evidence-dir> --campaign-id <campaign-id> --release-sha <release-sha> --hardware-id <hardware-id> --gate-config-sha256 <gate-config-sha256>",
+    "requires_decision": "GO",
+    "v2_after_success": "stopped_cold_rollback_artifact"
+  }
+}

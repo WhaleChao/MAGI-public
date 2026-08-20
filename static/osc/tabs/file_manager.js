@@ -30,10 +30,28 @@
         selectedRel: null,
         selectedType: null,
         selectedName: '',
+        selectedEntries: [],
+        lastSelectedRel: null,
         movePending: null,
+        dragMove: null,
         lastCaseResults: [],
         driveRoots: [],
     };
+    const FM_INTERNAL_DRAG_TYPE = 'application/x-paperclip-file-manager-rel';
+    const FM_MOBILE_QUERY = window.matchMedia('(max-width: 760px)');
+
+    function isMobileFileManager() {
+        return !!(FM_MOBILE_QUERY && FM_MOBILE_QUERY.matches);
+    }
+
+    function focusFilePaneOnMobile() {
+        if (!isMobileFileManager()) return;
+        const main = document.querySelector('#fileManager .fm-main');
+        if (!main) return;
+        window.requestAnimationFrame(() => {
+            main.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    }
 
     // ── Icons ──────────────────────────────────────────────────────────
     const ICON_FOLDER = '📂';
@@ -104,9 +122,9 @@
         const url = '/api/osc/folders/browse?'
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
-            + '&show_hidden=' + (FM.showHidden ? '1' : '0');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+            + '&show_hidden=' + (FM.showHidden ? '1' : '0')
+            + '&summarize_dirs=0';
+        return api(url);
     }
 
     async function apiTree(basePath, relativePath) {
@@ -114,8 +132,7 @@
             + 'base_path=' + encodeURIComponent(basePath)
             + '&relative_path=' + encodeURIComponent(relativePath || '')
             + '&show_hidden=' + (FM.showHidden ? '1' : '0');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+        return api(url);
     }
 
     async function apiCaseSearch(query) {
@@ -123,13 +140,11 @@
         const statusScope = q ? 'all' : 'working';
         const url = '/api/osc/cases?limit=120&category=全部&status_scope=' + encodeURIComponent(statusScope)
             + (q ? '&q=' + encodeURIComponent(q) : '');
-        const r = await fetch(url, { credentials: 'same-origin' });
-        return r.json();
+        return api(url);
     }
 
     async function apiDriveRoots() {
-        const r = await fetch('/api/osc/folders/roots', { credentials: 'same-origin' });
-        return r.json();
+        return api('/api/osc/folders/roots');
     }
 
     function caseResultMeta(c) {
@@ -299,6 +314,7 @@
         head.className = 'fm-tree-node';
         head.dataset.rootId = root.id || '';
         head.dataset.rel = node.relative_path || '';
+        head.dataset.fmDropTarget = 'folder';
         const tw = document.createElement('span');
         tw.className = 'tw';
         tw.textContent = node.has_subdirs ? '▶' : '';
@@ -357,6 +373,8 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         cancelMovePending(false);
         FM.hasLoadedEntries = false;
         FM.lastEntries = { folders: [], files: [] };
@@ -387,14 +405,14 @@
         const pieces = [];
         const rootName = rootDisplayName();
         pieces.push('<span class="crumb' + (parts.length === 0 ? ' current' : '')
-            + '" data-rel="" title="' + escapeHTML(rootName) + '">📁 ' + escapeHTML(rootName) + '</span>');
+            + '" data-rel="" data-fm-drop-target="folder" title="' + escapeHTML(rootName) + '">📁 ' + escapeHTML(rootName) + '</span>');
         let acc = '';
         parts.forEach((p, i) => {
             acc = acc ? acc + '/' + p : p;
             const last = i === parts.length - 1;
             pieces.push('<span class="sep">›</span>');
             pieces.push('<span class="crumb' + (last ? ' current' : '')
-                + '" data-rel="' + escapeHTML(acc) + '" title="' + escapeHTML(p) + '">' + escapeHTML(p) + '</span>');
+                + '" data-rel="' + escapeHTML(acc) + '" data-fm-drop-target="folder" title="' + escapeHTML(p) + '">' + escapeHTML(p) + '</span>');
         });
         bc.innerHTML = pieces.join('');
         bc.querySelectorAll('.crumb').forEach(el => {
@@ -511,7 +529,7 @@
                     ? (f.child_files + ' 檔 ' + (f.child_folders ? '/ ' + f.child_folders + ' 子夾 ' : '')
                        + (f.child_size_label || ''))
                     : '';
-                html += '<tr class="fm-row dir" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir" data-name="' + escapeHTML(f.name) + '">'
+                html += '<tr class="fm-row dir" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path) + '" data-type="dir" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(meta) + '</td>'
@@ -526,7 +544,7 @@
             html += '<table class="fm-table"><thead><tr>'
                 + '<th>名稱</th><th>大小</th><th>修改時間</th><th class="fm-actions-head">操作</th></tr></thead><tbody>';
             for (const f of files) {
-                html += '<tr class="fm-row file" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
+                html += '<tr class="fm-row file" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path) + '" data-type="file" data-name="' + escapeHTML(f.name) + '">'
                     + '<td><span class="fm-icon">' + iconFor(f) + '</span><span class="fm-name" title="'
                     + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span></td>'
                     + '<td class="fm-meta">' + escapeHTML(f.size_label || '') + '</td>'
@@ -562,7 +580,7 @@
         const meta = f.type === 'dir'
             ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
             : (f.size_label || '');
-        return '<div class="fm-grid-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+        return '<div class="fm-grid-item ' + f.type + '" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path)
             + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
             + '<span class="fm-grid-icon">' + iconFor(f) + '</span>'
             + '<div class="fm-grid-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</div>'
@@ -584,7 +602,7 @@
         const meta = f.type === 'dir'
             ? ((f.child_files != null) ? (f.child_files + ' 檔') : '')
             : (f.size_label || '');
-        return '<li class="fm-compact-item ' + f.type + '" data-rel="' + escapeHTML(f.relative_path)
+        return '<li class="fm-compact-item ' + f.type + '" draggable="true" data-fm-entry="1" data-rel="' + escapeHTML(f.relative_path)
             + '" data-type="' + f.type + '" data-name="' + escapeHTML(f.name) + '">'
             + '<span class="fm-icon">' + iconFor(f) + '</span>'
             + '<span class="fm-compact-name" title="' + escapeHTML(f.name) + '">' + escapeHTML(f.name) + '</span>'
@@ -601,6 +619,10 @@
             return '<div class="fm-file-actions">'
                 + '<button type="button" class="fm-action-btn" data-fm-action="open" data-rel="' + rel
                 + '" data-type="dir" data-name="' + name + '" title="開啟資料夾">開啟</button>'
+                + '<button type="button" class="fm-action-btn" data-fm-action="rename" data-rel="' + rel
+                + '" data-type="dir" data-name="' + name + '" title="重新命名資料夾">改名</button>'
+                + '<button type="button" class="fm-action-btn danger" data-fm-action="trash" data-rel="' + rel
+                + '" data-type="dir" data-name="' + name + '" title="移到回收區">刪除</button>'
                 + '</div>';
         }
         return '<div class="fm-file-actions">'
@@ -610,6 +632,8 @@
             + '" data-type="file" data-name="' + name + '" title="建立並複製分享連結">分享</button>'
             + '<button type="button" class="fm-action-btn" data-fm-action="download" data-rel="' + rel
             + '" data-type="file" data-name="' + name + '" title="下載檔案">下載</button>'
+            + '<button type="button" class="fm-action-btn danger" data-fm-action="trash" data-rel="' + rel
+            + '" data-type="file" data-name="' + name + '" title="移到回收區">刪除</button>'
             + '</div>';
     }
 
@@ -626,8 +650,9 @@
             const type = el.dataset.type;
             el.addEventListener('click', (ev) => {
                 if (ev.target.closest('.fm-action-btn')) return;
-                if (ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
-                selectEntry(rel, type, el);
+                const mode = ev.shiftKey ? 'range' : ((ev.metaKey || ev.ctrlKey) ? 'toggle' : 'replace');
+                selectEntry(rel, type, el, { mode });
+                if (mode !== 'replace') return;
                 if (type === 'dir') {
                     navigateTo(rel);
                 } else {
@@ -639,20 +664,80 @@
         });
     }
 
-    function selectEntry(rel, type, el) {
-        FM.selectedRel = rel;
-        FM.selectedType = type;
-        FM.selectedName = (el && el.dataset && el.dataset.name) || pathBaseName(rel);
+    function entryFromElement(el) {
+        if (!el || !el.dataset) return null;
+        const rel = el.dataset.rel || '';
+        if (!rel) return null;
+        return {
+            basePath: FM.basePath,
+            rel,
+            type: el.dataset.type || 'file',
+            name: el.dataset.name || pathBaseName(rel),
+        };
+    }
+
+    function dedupeEntries(entries) {
+        const seen = new Set();
+        const out = [];
+        (entries || []).forEach(entry => {
+            if (!entry || !entry.rel || seen.has(entry.rel)) return;
+            seen.add(entry.rel);
+            out.push(entry);
+        });
+        return out;
+    }
+
+    function applySelectedEntries(entries) {
+        const selected = dedupeEntries(entries);
+        FM.selectedEntries = selected;
+        const last = selected[selected.length - 1] || null;
+        FM.selectedRel = last ? last.rel : null;
+        FM.selectedType = last ? last.type : null;
+        FM.selectedName = last ? last.name : '';
         const main = document.getElementById('fmEntriesArea');
-        if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
-        if (el) el.classList.add('selected');
+        if (main) {
+            const rels = new Set(selected.map(item => item.rel));
+            main.querySelectorAll('[data-fm-entry="1"]').forEach(node => {
+                node.classList.toggle('selected', rels.has(node.dataset.rel || ''));
+            });
+        }
         updateSelectionControls();
+    }
+
+    function selectEntry(rel, type, el, options) {
+        const mode = (options && options.mode) || 'replace';
+        const entry = entryFromElement(el) || { basePath: FM.basePath, rel, type, name: pathBaseName(rel) };
+        const main = document.getElementById('fmEntriesArea');
+        if (mode === 'range' && main && FM.lastSelectedRel) {
+            const nodes = Array.from(main.querySelectorAll('[data-fm-entry="1"]'));
+            const start = nodes.findIndex(node => (node.dataset.rel || '') === FM.lastSelectedRel);
+            const end = nodes.findIndex(node => (node.dataset.rel || '') === rel);
+            if (start >= 0 && end >= 0) {
+                const lo = Math.min(start, end);
+                const hi = Math.max(start, end);
+                applySelectedEntries(nodes.slice(lo, hi + 1).map(entryFromElement));
+                return;
+            }
+        }
+        if (mode === 'toggle') {
+            const exists = (FM.selectedEntries || []).some(item => item.rel === rel);
+            const next = exists
+                ? (FM.selectedEntries || []).filter(item => item.rel !== rel)
+                : [...(FM.selectedEntries || []), entry];
+            FM.lastSelectedRel = rel;
+            applySelectedEntries(next);
+            return;
+        }
+        FM.lastSelectedRel = rel;
+        applySelectedEntries([entry]);
     }
 
     function clearSelection() {
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         const main = document.getElementById('fmEntriesArea');
         if (main) main.querySelectorAll('.selected').forEach(n => n.classList.remove('selected'));
         updateSelectionControls();
@@ -663,11 +748,14 @@
         const moveBtn = document.getElementById('fmMoveBtn');
         const trashBtn = document.getElementById('fmTrashBtn');
         const shareBtn = document.getElementById('fmShareBtn');
-        const hasSelection = !!(FM.basePath && FM.selectedRel);
-        const hasFileSelection = hasSelection && FM.selectedType === 'file';
+        const count = (FM.selectedEntries || []).length;
+        const hasSelection = !!(FM.basePath && count);
+        const hasFileSelection = count === 1 && FM.selectedType === 'file';
         if (nameEl) {
-            nameEl.textContent = hasSelection ? ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))) : '尚未選取檔案';
-            nameEl.title = hasSelection ? FM.selectedRel : '';
+            nameEl.textContent = hasSelection
+                ? (count > 1 ? ('已選取 ' + count + ' 個項目') : ('已選取：' + (FM.selectedName || pathBaseName(FM.selectedRel))))
+                : '尚未選取檔案';
+            nameEl.title = hasSelection ? (FM.selectedEntries || []).map(item => item.rel).join('\n') : '';
         }
         if (moveBtn) moveBtn.disabled = !hasSelection;
         if (trashBtn) trashBtn.disabled = !hasSelection;
@@ -682,7 +770,15 @@
         const seq = ++FM.treeSeq;
         const baseAtStart = FM.basePath;
         root.innerHTML = '<div class="fm-loading-inline">載入樹狀…</div>';
-        const data = await apiTree(FM.basePath, '');
+        let data;
+        try {
+            data = await apiTree(FM.basePath, '');
+        } catch (e) {
+            if (seq === FM.treeSeq && baseAtStart === FM.basePath) {
+                root.innerHTML = '<div class="fm-empty">⚠️ ' + escapeHTML(e.message || e) + '</div>';
+            }
+            return;
+        }
         if (seq !== FM.treeSeq || baseAtStart !== FM.basePath) return;
         if (!data || data.ok === false) {
             const friendly = (data && data.message) || (data && data.error) || '未知錯誤';
@@ -710,6 +806,7 @@
         const head = document.createElement('div');
         head.className = 'fm-tree-node';
         head.dataset.rel = node.relative_path || '';
+        head.dataset.fmDropTarget = 'folder';
         const tw = document.createElement('span');
         tw.className = 'tw';
         tw.textContent = node.has_subdirs ? '▶' : '';
@@ -733,7 +830,13 @@
                 childWrap.className = 'fm-tree-children';
                 childWrap.innerHTML = '<div class="fm-loading-inline">…</div>';
                 wrap.appendChild(childWrap);
-                const data = await apiTree(FM.basePath, node.relative_path || '');
+                let data;
+                try {
+                    data = await apiTree(FM.basePath, node.relative_path || '');
+                } catch (e) {
+                    childWrap.innerHTML = '<div class="fm-loading-inline">載入失敗：' + escapeHTML(e.message || e) + '</div>';
+                    return;
+                }
                 childWrap.innerHTML = '';
                 if (data && data.ok && (data.children || []).length) {
                     for (const c of data.children) {
@@ -769,9 +872,21 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         updateSelectionControls();
         setStatus('載入中…');
-        const data = await apiBrowse(FM.basePath, rel);
+        let data;
+        try {
+            data = await apiBrowse(FM.basePath, rel);
+        } catch (e) {
+            if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
+            FM.loading = false;
+            const msg = e.message || e || '未知錯誤';
+            setStatus('載入失敗：' + msg, true);
+            renderEntries({ ok: false, error: msg });
+            return;
+        }
         if (seq !== FM.navSeq || baseAtStart !== FM.basePath) return;
         FM.loading = false;
         if (!data || data.ok === false) {
@@ -784,6 +899,7 @@
         renderBreadcrumb();
         renderEntries(data);
         highlightTree(FM.currentRel);
+        focusFilePaneOnMobile();
     }
 
     async function setRoot(basePath, meta) {
@@ -799,6 +915,8 @@
         FM.selectedRel = null;
         FM.selectedType = null;
         FM.selectedName = '';
+        FM.selectedEntries = [];
+        FM.lastSelectedRel = null;
         cancelMovePending(false);
         FM.hasLoadedEntries = false;
         FM.lastEntries = { folders: [], files: [] };
@@ -808,17 +926,7 @@
         await navigateTo('');
     }
 
-    // ── Preview Modal (Phase 2 commit 8) ──────────────────────────────
-    async function apiPreview(filePath) {
-        const url = '/api/osc/files/preview?path=' + encodeURIComponent(filePath);
-        const r = await fetch(url, { credentials: 'same-origin' });
-        const ct = (r.headers.get('Content-Type') || '').toLowerCase();
-        if (ct.includes('application/json')) {
-            return { json: await r.json(), blob: null, contentType: ct, status: r.status };
-        }
-        return { json: null, blob: await r.blob(), contentType: ct, status: r.status };
-    }
-
+    // ── Preview Modal (shared implementation in osc-utils.js) ─────────
     function buildLocalPath(rel) {
         const sep = FM.basePath.includes('\\') ? '\\' : '/';
         const r = (rel || '').replace(/\//g, sep);
@@ -843,176 +951,16 @@
         }, 80);
     }
 
-    let _previewBlobUrl = null;
-    function clearPreviewBlob() {
-        if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
-    }
-
     async function openPreview(rel, name) {
-        const modal = document.getElementById('fmPreviewModal');
-        const title = document.getElementById('fmPreviewTitle');
-        const body = document.getElementById('fmPreviewBody');
-        const dl = document.getElementById('fmPreviewDownload');
-        if (!modal || !body) return;
-        modal.hidden = false;
-        title.textContent = name || rel;
-        body.classList.remove('padded');
-        body.innerHTML = '<div class="fm-preview-loading"><div class="spinner"></div>'
-            + '正在載入預覽…<br><span style="font-size:11px;">Office 檔案首次轉檔需要 3–8 秒</span></div>';
-
         const fullPath = buildLocalPath(rel);
-        if (dl) dl.href = '/api/osc/files/content?path=' + encodeURIComponent(fullPath);
-
-        let res;
-        try {
-            res = await apiPreview(fullPath);
-        } catch (e) {
-            body.innerHTML = '<div class="fm-empty">預覽失敗：' + escapeHTML(String(e && e.message || e)) + '</div>';
-            return;
-        }
-
-        if (res.blob && res.blob.size > 0) {
-            clearPreviewBlob();
-            _previewBlobUrl = URL.createObjectURL(res.blob);
-            const ct = res.contentType;
-            if (ct.includes('application/pdf')) {
-                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + _previewBlobUrl + '">';
-            } else if (ct.startsWith('image/')) {
-                body.classList.add('padded');
-                body.innerHTML = '<img class="fm-preview-img" src="' + _previewBlobUrl + '">';
-            } else {
-                body.innerHTML = '<embed class="fm-preview-pdf" src="' + _previewBlobUrl + '" type="' + ct + '">';
-            }
-            return;
-        }
-
-        const j = res.json;
-        if (!j) { body.innerHTML = '<div class="fm-empty">預覽回傳為空</div>'; return; }
-        if (j.ok === false) { body.innerHTML = renderJsonError(j, fullPath); return; }
-        const kind = j.kind || '';
-        if (kind === 'pdf' || kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'text') {
-            const url = j.content_url || ('/api/osc/files/content?path=' + encodeURIComponent(fullPath) + '&inline=1');
-            if (kind === 'pdf') {
-                body.innerHTML = '<embed class="fm-preview-pdf" type="application/pdf" src="' + url + '">';
-            } else if (kind === 'image') {
-                body.classList.add('padded');
-                body.innerHTML = '<img class="fm-preview-img" src="' + url + '">';
-            } else if (kind === 'audio') {
-                body.classList.add('padded');
-                body.innerHTML = '<audio class="fm-preview-media" controls src="' + url + '"></audio>';
-            } else if (kind === 'video') {
-                body.classList.add('padded');
-                body.innerHTML = '<video class="fm-preview-media" controls src="' + url + '"></video>';
-            } else if (kind === 'text') {
-                body.classList.add('padded');
-                try {
-                    const tr = await fetch(url, { credentials: 'same-origin' });
-                    const txt = await tr.text();
-                    body.innerHTML = '<pre class="fm-preview-text">' + escapeHTML(txt.slice(0, 500000)) + '</pre>';
-                } catch (e) {
-                    body.innerHTML = '<div class="fm-empty">文字載入失敗</div>';
-                }
-            }
-            return;
-        }
-        if (kind === 'csv') { body.innerHTML = renderCsvPreview(j); return; }
-        if (kind === 'email') { body.innerHTML = renderEmailPreview(j); return; }
-        if (kind === 'zip') { body.innerHTML = renderZipPreview(j); return; }
-        if (kind === 'other') { body.innerHTML = renderHexPreview(j, name || rel); return; }
-        body.innerHTML = '<div class="fm-empty">不支援的預覽類型：' + escapeHTML(kind) + '</div>';
-    }
-
-    function renderJsonError(j, fullPath) {
-        return '<div class="fm-empty">預覽失敗：' + escapeHTML(j.error || 'unknown') + '<br><br>'
-            + '<a class="btn-mini" href="/api/osc/files/content?path=' + encodeURIComponent(fullPath)
-            + '" download>⬇ 直接下載原檔</a></div>';
-    }
-
-    function renderCsvPreview(j) {
-        const headers = j.headers || [];
-        const rows = j.rows || [];
-        let html = '<div class="fm-preview-section"><span class="label">列數</span><span class="val">'
-            + rows.length + (j.truncated ? '+ (前 500 列)' : '') + '</span></div>';
-        html += '<div style="overflow:auto;"><table class="fm-preview-table">';
-        if (headers.length) {
-            html += '<thead><tr>';
-            headers.forEach(h => html += '<th>' + escapeHTML(h) + '</th>');
-            html += '</tr></thead>';
-        }
-        html += '<tbody>';
-        rows.forEach(r => {
-            html += '<tr>';
-            r.forEach(c => html += '<td title="' + escapeHTML(c) + '">' + escapeHTML(c) + '</td>');
-            html += '</tr>';
+        return openFilePreview(fullPath, name || pathBaseName(rel), {
+            fileManagerActions: true,
+            onStatus: (message, isError) => setStatus(message, isError),
         });
-        html += '</tbody></table></div>';
-        return html;
-    }
-
-    function renderEmailPreview(j) {
-        let html = '';
-        ['from', 'to', 'cc', 'subject', 'date'].forEach(k => {
-            const v = j[k] || '';
-            if (!v) return;
-            html += '<div class="fm-preview-section"><span class="label">' + k.toUpperCase()
-                + '</span><span class="val">' + escapeHTML(v) + '</span></div>';
-        });
-        if (j.attachments && j.attachments.length) {
-            html += '<div class="fm-preview-section"><span class="label">附件</span><span class="val">'
-                + j.attachments.length + '</span></div>';
-            html += '<ul class="fm-preview-attachments">';
-            j.attachments.forEach(a => {
-                html += '<li>📎 ' + escapeHTML(a.filename || '(unnamed)')
-                    + ' <span style="color:#888;font-size:11px;">(' + escapeHTML(a.content_type || '')
-                    + (a.size ? ', ' + Math.round(a.size / 1024) + ' KB' : '') + ')</span></li>';
-            });
-            html += '</ul>';
-        }
-        const body = j.body_text || j.body_html || '';
-        if (body) {
-            if (j.body_html) {
-                html += '<div class="fm-preview-section"><span class="label">內文 (HTML)</span></div>';
-                html += '<iframe class="fm-preview-iframe" sandbox srcdoc="' + escapeHTML(body)
-                    + '" style="height:60vh;border-top:1px solid #eee;"></iframe>';
-            } else {
-                html += '<div class="fm-preview-section"><span class="label">內文</span></div>';
-                html += '<pre class="fm-preview-text">' + escapeHTML(body) + '</pre>';
-            }
-        }
-        return html;
-    }
-
-    function renderZipPreview(j) {
-        const items = j.items || [];
-        let html = '<div class="fm-preview-section"><span class="label">項目數</span><span class="val">'
-            + items.length + (j.truncated ? '+' : '') + '</span></div>';
-        html += '<div style="overflow:auto;"><table class="fm-preview-table">'
-            + '<thead><tr><th>名稱</th><th>大小</th><th>壓縮</th><th>修改</th></tr></thead><tbody>';
-        items.forEach(it => {
-            html += '<tr><td title="' + escapeHTML(it.name) + '">' + (it.is_dir ? '📁 ' : '📄 ')
-                + escapeHTML(it.name) + '</td>'
-                + '<td>' + (it.size != null ? Math.round(it.size / 1024) + ' KB' : '') + '</td>'
-                + '<td>' + (it.compressed_size != null ? Math.round(it.compressed_size / 1024) + ' KB' : '') + '</td>'
-                + '<td>' + escapeHTML(it.modified || '') + '</td></tr>';
-        });
-        html += '</tbody></table></div>';
-        return html;
-    }
-
-    function renderHexPreview(j, name) {
-        let html = '<div class="fm-preview-section"><span class="label">檔名</span><span class="val">'
-            + escapeHTML(name) + '</span></div>';
-        if (j.size != null) html += '<div class="fm-preview-section"><span class="label">大小</span><span class="val">' + j.size + ' bytes</span></div>';
-        if (j.mime) html += '<div class="fm-preview-section"><span class="label">MIME</span><span class="val">' + escapeHTML(j.mime) + '</span></div>';
-        html += '<div class="fm-preview-section"><span class="label">前 ' + (j.shown_bytes || 256) + ' bytes (hex dump)</span></div>';
-        html += '<pre class="fm-preview-text">' + escapeHTML(j.hex || '') + '</pre>';
-        return html;
     }
 
     function closePreview() {
-        const modal = document.getElementById('fmPreviewModal');
-        if (modal) modal.hidden = true;
-        clearPreviewBlob();
+        closeFilePreview();
     }
 
     async function refresh() {
@@ -1021,40 +969,20 @@
 
     // ── Rename / move-to-trash API (Phase 2 commit 11) ───────────────
     async function apiRename(basePath, relativePath, newName) {
-        const r = await fetch('/api/osc/folders/rename', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, new_name: newName }),
-        });
-        return r.json();
+        return api('/api/osc/folders/rename', 'POST', { base_path: basePath, relative_path: relativePath, new_name: newName });
     }
     async function apiMoveToTrash(basePath, relativePath) {
-        const r = await fetch('/api/osc/folders/move', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, source_relative_path: relativePath, to_trash: true }),
-        });
-        return r.json();
+        return api('/api/osc/folders/move', 'POST', { base_path: basePath, source_relative_path: relativePath, to_trash: true });
     }
     async function apiMove(basePath, sourceRelativePath, targetRelativePath) {
-        const r = await fetch('/api/osc/folders/move', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                base_path: basePath,
-                source_relative_path: sourceRelativePath,
-                target_relative_path: targetRelativePath || '',
-            }),
+        return api('/api/osc/folders/move', 'POST', {
+            base_path: basePath,
+            source_relative_path: sourceRelativePath,
+            target_relative_path: targetRelativePath || '',
         });
-        return r.json();
     }
     async function apiShareFile(fullPath) {
-        const r = await fetch('/api/osc/files/share', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: fullPath }),
-        });
-        return r.json();
+        return api('/api/osc/files/share', 'POST', { path: fullPath });
     }
 
     async function createShareLink(rel, name) {
@@ -1063,7 +991,12 @@
             return;
         }
         const fullPath = buildLocalPath(rel);
-        const r = await apiShareFile(fullPath);
+        let r;
+        try {
+            r = await apiShareFile(fullPath);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (!r || !r.ok) {
             const msg = r && r.error === 'share_public_base_required'
                 ? '尚未設定獨立分享入口。為避免洩漏 MAGI/Paperclip 主控台外網網址，請先到 MAGI 調整頁面設定分享入口。'
@@ -1075,7 +1008,9 @@
             await navigator.clipboard.writeText(r.url);
             setStatus('已建立並複製分享連結：' + (name || pathBaseName(rel)));
         } catch (e) {
-            window.prompt('分享連結（不含檔案路徑）：', r.url);
+            if (typeof showCustomDialog === 'function') {
+                showCustomDialog('MAGI說｜分享連結', '<p>瀏覽器暫時不允許自動複製，請手動複製下列分享連結。</p><input value="' + esc(r.url) + '" readonly style="box-sizing:border-box;width:100%;border:1px solid #d2d7df;border-radius:8px;padding:10px 12px;font-size:14px">');
+            }
             setStatus('已建立分享連結：' + (name || pathBaseName(rel)));
         }
         setTimeout(() => setStatus(''), 3500);
@@ -1089,15 +1024,19 @@
         const pending = FM.movePending;
         bar.hidden = !pending;
         if (nameEl && pending) {
-            nameEl.textContent = pending.name || pathBaseName(pending.rel);
-            nameEl.title = pending.rel;
+            const entries = pendingEntries(pending);
+            nameEl.textContent = entries.length > 1
+                ? (entries.length + ' 個項目')
+                : (pending.name || pathBaseName(pending.rel));
+            nameEl.title = entries.map(entry => entry.rel).join('\n');
         }
         if (hereBtn && pending) {
             const target = FM.currentRel || '';
-            const fromParent = parentRel(pending.rel);
-            const invalidNested = pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'));
-            hereBtn.disabled = !FM.basePath || target === fromParent || invalidNested;
-            hereBtn.title = invalidNested ? '不能把資料夾移到自己底下' : (target === fromParent ? '已在這個資料夾' : '移到目前資料夾');
+            const reason = invalidMoveReason(pending, target);
+            hereBtn.disabled = !FM.basePath || !!reason;
+            hereBtn.title = reason === 'nested_target'
+                ? '不能把資料夾移到自己底下'
+                : (reason === 'same_parent' ? '已在這個資料夾' : '移到目前資料夾');
         }
     }
 
@@ -1107,19 +1046,132 @@
         return parts.join('/');
     }
 
+    function dataTransferTypes(e) {
+        return Array.from((e && e.dataTransfer && e.dataTransfer.types) || []);
+    }
+
+    function hasInternalMoveDrag(e) {
+        return dataTransferTypes(e).includes(FM_INTERNAL_DRAG_TYPE) || !!FM.dragMove;
+    }
+
+    function internalMovePayload(e) {
+        if (!e || !e.dataTransfer) return FM.dragMove;
+        const raw = e.dataTransfer.getData(FM_INTERNAL_DRAG_TYPE);
+        if (raw) {
+            try { return JSON.parse(raw); } catch (_) {}
+        }
+        return FM.dragMove;
+    }
+
+    function pendingEntries(pending) {
+        if (!pending) return [];
+        if (Array.isArray(pending.entries) && pending.entries.length) return pending.entries;
+        return [pending].filter(entry => entry && entry.rel);
+    }
+
+    function moveTargetRelFromElement(target) {
+        const el = target && target.closest
+            ? target.closest('[data-fm-drop-target="folder"], [data-fm-entry="1"]')
+            : null;
+        if (!el) return FM.currentRel || '';
+        if (el.dataset.fmDropTarget === 'folder') return el.dataset.rel || '';
+        if (el.dataset.type === 'dir') return el.dataset.rel || '';
+        return FM.currentRel || '';
+    }
+
+    function invalidMoveReason(pending, targetRel) {
+        const entries = pendingEntries(pending);
+        if (!entries.length) return 'missing_source';
+        if (!FM.basePath || entries.some(entry => entry.basePath !== FM.basePath)) return 'different_base';
+        const target = targetRel || '';
+        if (entries.every(entry => target === parentRel(entry.rel))) return 'same_parent';
+        if (entries.some(entry => entry.type === 'dir' && (target === entry.rel || target.startsWith(entry.rel + '/')))) {
+            return 'nested_target';
+        }
+        return '';
+    }
+
+    function moveErrorText(error) {
+        const msg = String(error || '');
+        if (msg.includes('target_exists')) return '目標資料夾已有同名項目，請先改名或刪除原項目。';
+        if (msg.includes('nested_target')) return '不能把資料夾移到自己或自己的子資料夾底下。';
+        if (msg.includes('target_dir_not_found')) return '目標資料夾目前不存在或尚未同步。';
+        if (msg.includes('source_not_found')) return '來源檔案已不存在或尚未同步。';
+        return msg || '未知';
+    }
+
+    function markFmDropTarget(el, active) {
+        if (!el) return;
+        const target = el.closest && el.closest('[data-fm-drop-target="folder"], [data-fm-entry="1"]');
+        if (!target) return;
+        if (active) target.classList.add('fm-drop-target');
+        else target.classList.remove('fm-drop-target');
+    }
+
+    async function moveDraggedEntry(e) {
+        const pending = internalMovePayload(e);
+        const target = moveTargetRelFromElement(e.target);
+        const reason = invalidMoveReason(pending, target);
+        if (reason === 'same_parent') {
+            setStatus('這個項目已經在目標資料夾。', true);
+            return;
+        }
+        if (reason === 'nested_target') {
+            setStatus('不能把資料夾移到自己底下。', true);
+            return;
+        }
+        if (reason) {
+            setStatus('只能在同一個案件根目錄內移動檔案或資料夾。', true);
+            return;
+        }
+        await moveEntriesToTarget(pending, target);
+    }
+
+    async function moveEntriesToTarget(pending, target) {
+        const entries = pendingEntries(pending);
+        const label = entries.length > 1 ? (entries.length + ' 個項目') : (entries[0].name || pathBaseName(entries[0].rel));
+        setStatus('移動中：' + label + ' …');
+        const errors = [];
+        let moved = 0;
+        for (const entry of entries) {
+            let r;
+            try {
+                r = await apiMove(FM.basePath, entry.rel, target);
+            } catch (e) {
+                r = (e && e.payload) || { ok: false, error: e.message || e };
+            }
+            if (r && r.ok) moved += 1;
+            else errors.push((entry.name || pathBaseName(entry.rel)) + '：' + moveErrorText(r && r.error));
+        }
+        if (!errors.length) {
+            clearSelection();
+            setStatus('已移動：' + label);
+            await navigateTo(FM.currentRel || '');
+            setTimeout(() => setStatus(''), 2200);
+        } else {
+            if (moved) await navigateTo(FM.currentRel || '');
+            setStatus('移動完成 ' + moved + ' 個，失敗 ' + errors.length + ' 個：' + errors.slice(0, 2).join('；'), true);
+        }
+    }
+
     function startMoveSelected(rel, type, name) {
         if (!FM.basePath || !rel) {
             setStatus('請先選取要移動的檔案或資料夾。', true);
             return;
         }
+        const selected = (FM.selectedEntries || []).length > 1
+            ? FM.selectedEntries
+            : [{ basePath: FM.basePath, rel, type: type || FM.selectedType || 'file', name: name || FM.selectedName || pathBaseName(rel) }];
         FM.movePending = {
             basePath: FM.basePath,
             rel,
             type: type || FM.selectedType || 'file',
             name: name || FM.selectedName || pathBaseName(rel),
+            entries: selected,
         };
         updateMovePendingBar();
-        setStatus('已準備移動「' + FM.movePending.name + '」；請切到目標資料夾後按「移到目前資料夾」。');
+        const label = selected.length > 1 ? (selected.length + ' 個項目') : ('「' + FM.movePending.name + '」');
+        setStatus('已準備移動' + label + '；請切到目標資料夾後按「移到目前資料夾」。');
     }
 
     function cancelMovePending(showStatus) {
@@ -1134,31 +1186,23 @@
     async function movePendingHere() {
         const pending = FM.movePending;
         if (!pending) return;
-        if (!FM.basePath || FM.basePath !== pending.basePath) {
+        const entries = pendingEntries(pending);
+        if (!FM.basePath || entries.some(entry => entry.basePath !== FM.basePath)) {
             setStatus('目標資料夾不在同一個案件根目錄，請重新選取。', true);
             return;
         }
         const target = FM.currentRel || '';
-        const fromParent = parentRel(pending.rel);
-        if (target === fromParent) {
-            setStatus('這個檔案已經在目前資料夾。', true);
+        const reason = invalidMoveReason(pending, target);
+        if (reason === 'same_parent') {
+            setStatus('選取項目已經在目前資料夾。', true);
             return;
         }
-        if (pending.type === 'dir' && (target === pending.rel || target.startsWith(pending.rel + '/'))) {
+        if (reason === 'nested_target') {
             setStatus('不能把資料夾移到自己底下。', true);
             return;
         }
-        const r = await apiMove(FM.basePath, pending.rel, target);
-        if (r && r.ok) {
-            const movedName = pending.name || pathBaseName(pending.rel);
-            FM.movePending = null;
-            clearSelection();
-            setStatus('已移動到目前資料夾：' + movedName);
-            await navigateTo(target);
-            setTimeout(() => setStatus(''), 2500);
-        } else {
-            setStatus('移動失敗：' + ((r && r.error) || '未知'), true);
-        }
+        await moveEntriesToTarget(pending, target);
+        FM.movePending = null;
         updateMovePendingBar();
     }
 
@@ -1225,18 +1269,13 @@
     document.addEventListener('scroll', closeContextMenu, true);
 
     async function runContextAction(act, rel, type, name) {
+        const el = document.querySelector('#fmEntriesArea [data-rel="' + cssEsc(rel) + '"]');
+        if (el) selectEntry(rel, type, el);
         const fullPath = buildLocalPath(rel);
         if (act === 'preview' && type === 'file') return openPreview(rel, name);
         if (act === 'pdf-tool' && type === 'file') return openPdfToolFromFileManager(rel);
         if (act === 'download') {
-            const url = '/api/osc/files/content?path=' + encodeURIComponent(fullPath);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = name || '';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            return;
+            return startFileDownload(fullPath, name, { onStatus: setStatus });
         }
         if (act === 'share' && type === 'file') return createShareLink(rel, name);
         if (act === 'copy-path') {
@@ -1261,32 +1300,41 @@
         if (act === 'open' && type === 'dir') return navigateTo(rel);
         if (act === 'preview' && type === 'file') return openPreview(rel, name);
         if (act === 'share' && type === 'file') return createShareLink(rel, name);
+        if (act === 'move') return startMoveSelected(rel, type, name);
+        if (act === 'rename') return renameSelected(rel, name);
+        if (act === 'trash') return trashSelected(rel, name);
         if (act === 'download' && type === 'file') {
-            const url = '/api/osc/files/content?path=' + encodeURIComponent(buildLocalPath(rel));
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = name || '';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
+            return startFileDownload(buildLocalPath(rel), name, { onStatus: setStatus });
         }
     }
 
     async function renameSelected(rel, oldName) {
         if (!rel) return;
-        const newName = prompt('新名稱：', oldName || '');
+        const newName = typeof showPrompt === 'function'
+            ? await showPrompt('MAGI說', '新名稱：', oldName || '')
+            : null;
         if (newName == null) return;
         const trimmed = newName.trim();
         if (!trimmed || trimmed === oldName) return;
-        const r = await apiRename(FM.basePath, rel, trimmed);
+        let r;
+        try {
+            r = await apiRename(FM.basePath, rel, trimmed);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (r && r.ok) { setStatus('已重新命名為：' + trimmed); refresh(); setTimeout(() => setStatus(''), 2500); }
         else setStatus('重新命名失敗：' + ((r && r.error) || '未知'), true);
     }
 
     async function trashSelected(rel, name) {
         if (!rel) return;
-        if (!confirm('將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
-        const r = await apiMoveToTrash(FM.basePath, rel);
+        if (!await showConfirm('MAGI說', '將「' + (name || rel) + '」移到回收桶（.trash 子資料夾）？\n\n（此操作可從 .trash 內手動還原；不會永久刪除。）')) return;
+        let r;
+        try {
+            r = await apiMoveToTrash(FM.basePath, rel);
+        } catch (e) {
+            r = (e && e.payload) || { ok: false, error: e.message || e };
+        }
         if (r && r.ok) { setStatus('已移到回收桶：' + r.new_relative_path); refresh(); setTimeout(() => setStatus(''), 3000); }
         else setStatus('移到回收桶失敗：' + ((r && r.error) || '未知'), true);
     }
@@ -1299,22 +1347,20 @@
     const MAX_PARALLEL = 3;
     let _uploadConflictPolicy = null;     // null | overwrite-all | skip-all
     const _ensuredFolders = new Set();
+    const _activeUploadBatches = new Set();
 
     async function apiMkdir(basePath, relativePath, name) {
-        const r = await fetch('/api/osc/folders/mkdir', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ base_path: basePath, relative_path: relativePath, name }),
-        });
-        return r.json();
+        return api('/api/osc/folders/mkdir', 'POST', { base_path: basePath, relative_path: relativePath, name });
     }
 
-    function openConflictDialog(name) {
+    function openConflictDialog(name, message) {
         return new Promise(resolve => {
             const m = document.getElementById('fmConflictModal');
             const body = document.getElementById('fmConflictBody');
             if (!m || !body) return resolve('skip');
-            body.innerHTML = '<b>' + escapeHTML(name) + '</b> 已存在於目前資料夾。請選擇處理方式：';
+            body.innerHTML = message
+                ? message
+                : '<b>' + escapeHTML(name) + '</b> 已存在於目前資料夾。請選擇處理方式：';
             m.hidden = false;
             const handler = (ev) => {
                 const btn = ev.target.closest('[data-conflict-act]');
@@ -1328,6 +1374,75 @@
             };
             m.addEventListener('click', handler);
         });
+    }
+
+    function uploadFilePath(file) {
+        const raw = String((file && (file.webkitRelativePath || file.relativePath)) || (file && file.name) || '').replace(/\\/g, '/');
+        const parts = raw.split('/').map(p => p.trim()).filter(Boolean);
+        return parts.length ? parts.join('/') : ((file && file.name) || '');
+    }
+
+    function uploadFileIdentity(file) {
+        return [
+            uploadFilePath(file),
+            Number((file && file.size) || 0),
+            Number((file && file.lastModified) || 0),
+            String((file && file.type) || ''),
+        ].join('|');
+    }
+
+    function uniqueUploadFiles(fileList) {
+        const seen = new Set();
+        return Array.from(fileList || []).filter(file => {
+            const key = uploadFileIdentity(file);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function pathDir(path) {
+        const parts = String(path || '').split('/').filter(Boolean);
+        parts.pop();
+        return parts.join('/');
+    }
+
+    function currentFolderNames() {
+        return new Set((FM.lastEntries.folders || []).map(f => String(f.name || '')));
+    }
+
+    async function buildUploadQueue(fileList) {
+        const existing = currentFolderNames();
+        const rawFiles = Array.from(fileList || []).map(file => ({ file, fullRel: uploadFilePath(file), overwrite: false }));
+        const conflicts = new Set();
+        rawFiles.forEach(item => {
+            const parts = item.fullRel.split('/').filter(Boolean);
+            if (parts.length > 1 && existing.has(parts[0])) conflicts.add(parts[0]);
+        });
+        if (!conflicts.size) return rawFiles;
+
+        const names = Array.from(conflicts).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+        const msg = '<p>你上傳的資料夾已存在：</p><p><b>' + names.map(escapeHTML).join('、')
+            + '</b></p><p>請選擇處理方式。選「覆蓋」會覆蓋同一路徑下的同名檔案；不會刪除既有資料夾內其他檔案。</p>';
+        const choice = await openConflictDialog('同名資料夾', msg);
+        if (choice === 'skip' || choice === 'skip-all') {
+            return rawFiles.filter(item => !conflicts.has(item.fullRel.split('/').filter(Boolean)[0] || ''));
+        }
+        if (choice === 'overwrite' || choice === 'overwrite-all') {
+            return rawFiles.map(item => {
+                const root = item.fullRel.split('/').filter(Boolean)[0] || '';
+                return conflicts.has(root) ? { ...item, overwrite: true } : item;
+            });
+        }
+        if (choice === 'rename') {
+            const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+            return rawFiles.map(item => {
+                const parts = item.fullRel.split('/').filter(Boolean);
+                if (parts.length > 1 && conflicts.has(parts[0])) parts[0] = parts[0] + '_' + stamp;
+                return { ...item, fullRel: parts.join('/') };
+            });
+        }
+        return rawFiles;
     }
 
     function showQueue() {
@@ -1365,13 +1480,36 @@
     async function uploadFiles(fileList) {
         if (!FM.basePath) { setStatus('尚未開啟資料夾', true); return; }
         if (!fileList || !fileList.length) return;
+        const files = uniqueUploadFiles(fileList);
+        if (!files.length) return;
+        const batchKey = [FM.basePath, FM.currentRel || '', files.map(uploadFileIdentity).sort().join('\n')].join('\n');
+        if (_activeUploadBatches.has(batchKey)) {
+            setStatus('相同檔案已在上傳，不會重複送出。');
+            return;
+        }
+        _activeUploadBatches.add(batchKey);
+        try {
+            await uploadFilesOnce(files);
+        } finally {
+            _activeUploadBatches.delete(batchKey);
+        }
+    }
+
+    async function uploadFilesOnce(fileList) {
         _uploadConflictPolicy = null;
         showQueue();
 
-        const queue = Array.from(fileList).map((f, i) => ({
+        const planned = await buildUploadQueue(fileList);
+        if (!planned.length) {
+            setStatus('沒有檔案需要上傳。');
+            hideQueue();
+            return;
+        }
+        const queue = planned.map((item, i) => ({
             id: 'u' + Date.now() + '_' + i,
-            file: f,
-            relPath: (f.webkitRelativePath || '').split('/').slice(0, -1).join('/'),
+            file: item.file,
+            relPath: pathDir(item.fullRel),
+            overwrite: !!item.overwrite,
         }));
         queue.forEach(q => addQueueRow(q.id, (q.relPath ? q.relPath + '/' : '') + q.file.name));
 
@@ -1430,7 +1568,7 @@
     }
 
     async function uploadSingle(q, targetRel) {
-        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        let overwrite = q.overwrite || (_uploadConflictPolicy === 'overwrite-all');
         for (let attempt = 0; attempt < 3; attempt++) {
             const fd = new FormData();
             fd.append('base_path', FM.basePath);
@@ -1475,17 +1613,31 @@
             const xhr = new XMLHttpRequest();
             xhr.open('POST', url);
             xhr.withCredentials = true;
+            xhr.timeout = 180000;
+            const csrf = _csrfToken();
+            if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
             xhr.upload.onprogress = (ev) => {
                 if (!ev.lengthComputable) return;
                 const pct = Math.round(ev.loaded / ev.total * 95);
-                setQueueProgress(qid, pct, '上傳中… ' + pct + '%');
+                const label = pct >= 95
+                    ? '檔案已傳送，伺服器正在歸檔…'
+                    : '上傳中… ' + pct + '%';
+                setQueueProgress(qid, pct, label);
             };
             xhr.onload = () => {
-                let json = null;
-                try { json = JSON.parse(xhr.responseText); } catch (_) {}
-                resolve({ status: xhr.status, json });
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    reject(new Error('伺服器未完成歸檔（HTTP ' + xhr.status + '）；請稍後重新上傳。'));
+                    return;
+                }
+                try {
+                    resolve({ status: xhr.status, json: JSON.parse(xhr.responseText) });
+                } catch (_) {
+                    reject(new Error('伺服器回覆無法辨識；請重新整理清單確認後再上傳。'));
+                }
             };
-            xhr.onerror = () => reject(new Error('network_error'));
+            xhr.onerror = () => reject(new Error('網路連線中斷，本次上傳未完成。'));
+            xhr.ontimeout = () => reject(new Error('伺服器歸檔超過三分鐘；請重新整理清單確認結果，不要立即重複上傳。'));
+            xhr.onabort = () => reject(new Error('上傳已中止。'));
             xhr.send(fd);
         });
     }
@@ -1493,7 +1645,7 @@
     async function uploadChunked(q, targetRel) {
         const sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
         const total = Math.ceil(q.file.size / CHUNK_SIZE);
-        let overwrite = (_uploadConflictPolicy === 'overwrite-all');
+        let overwrite = q.overwrite || (_uploadConflictPolicy === 'overwrite-all');
         for (let i = 0; i < total; i++) {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, q.file.size);
@@ -1509,9 +1661,10 @@
             fd.append('chunk', blob, q.file.name + '.part' + i);
 
             const r = await fetch('/api/osc/files/upload-chunked', {
-                method: 'POST', credentials: 'same-origin', body: fd,
+                method: 'POST', credentials: 'same-origin', headers: csrfHeaders(), body: fd,
             });
-            const j = await r.json();
+            const j = await r.json().catch(() => ({ ok: false, error: r.statusText || 'chunk_failed' }));
+            if (!r.ok && j.ok !== false) j.ok = false;
             if (!j.ok) {
                 if (j.error === 'file_exists') {
                     if (_uploadConflictPolicy === 'skip-all') return { skipped: true };
@@ -1533,7 +1686,10 @@
     function bindDropZone() {
         const main = document.querySelector('#fileManager .fm-main');
         const dz = document.getElementById('fmDropZone');
-        if (!main || !dz) return;
+        // FM.init may also be reached from openWithBasePath.  A second drop
+        // listener would submit the same browser DataTransfer again.
+        if (!main || !dz || main._fmDropBound) return;
+        main._fmDropBound = true;
         let depth = 0;
         main.addEventListener('dragenter', (e) => {
             if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
@@ -1569,6 +1725,114 @@
             const files = Array.from(dt.files || []);
             if (files.length) await uploadFiles(files);
         });
+    }
+
+    function bindInternalMoveDrag() {
+        const main = document.getElementById('fmEntriesArea');
+        if (main && !main._fmMoveDragBound) {
+            main._fmMoveDragBound = true;
+            main.addEventListener('dragstart', (e) => {
+                const el = e.target.closest('[data-fm-entry="1"]');
+                if (!el || e.target.closest('.fm-action-btn')) return;
+                const entry = {
+                    basePath: FM.basePath,
+                    rel: el.dataset.rel || '',
+                    type: el.dataset.type || 'file',
+                    name: el.dataset.name || pathBaseName(el.dataset.rel || ''),
+                };
+                if (!entry.basePath || !entry.rel) return;
+                if (!(FM.selectedEntries || []).some(item => item.rel === entry.rel)) {
+                    applySelectedEntries([entry]);
+                    FM.lastSelectedRel = entry.rel;
+                }
+                const entries = (FM.selectedEntries || []).length ? FM.selectedEntries : [entry];
+                const payload = entries.length > 1
+                    ? { basePath: FM.basePath, rel: entry.rel, type: entry.type, name: entries.length + ' 個項目', entries }
+                    : entry;
+                FM.dragMove = payload;
+                try {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData(FM_INTERNAL_DRAG_TYPE, JSON.stringify(payload));
+                    e.dataTransfer.setData('text/plain', payload.name);
+                } catch (_) {}
+                el.classList.add('fm-entry-dragging');
+            });
+            main.addEventListener('dragend', () => {
+                FM.dragMove = null;
+                main.querySelectorAll('.fm-entry-dragging,.fm-drop-target').forEach(el => {
+                    el.classList.remove('fm-entry-dragging', 'fm-drop-target');
+                });
+            });
+            main.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                markFmDropTarget(e.target, true);
+            });
+            main.addEventListener('dragleave', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                markFmDropTarget(e.target, false);
+            });
+            main.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                e.preventDefault();
+                main.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
+
+        const tree = document.getElementById('fmTree');
+        if (tree && !tree._fmMoveDropBound) {
+            tree._fmMoveDropBound = true;
+            tree.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                target.classList.add('fm-drop-target');
+            });
+            tree.addEventListener('dragleave', (e) => {
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (target) target.classList.remove('fm-drop-target');
+            });
+            tree.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                tree.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
+
+        const bc = document.getElementById('fmBreadcrumb');
+        if (bc && !bc._fmMoveDropBound) {
+            bc._fmMoveDropBound = true;
+            bc.addEventListener('dragover', (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                target.classList.add('fm-drop-target');
+            });
+            bc.addEventListener('dragleave', (e) => {
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (target) target.classList.remove('fm-drop-target');
+            });
+            bc.addEventListener('drop', async (e) => {
+                if (!hasInternalMoveDrag(e)) return;
+                const target = e.target.closest('[data-fm-drop-target="folder"]');
+                if (!target) return;
+                e.preventDefault();
+                bc.querySelectorAll('.fm-drop-target').forEach(el => el.classList.remove('fm-drop-target'));
+                await moveDraggedEntry(e);
+                FM.dragMove = null;
+            });
+        }
     }
 
     function collectEntries(entry, prefix, out) {
@@ -1612,6 +1876,7 @@
         const caseRefreshBtn = document.getElementById('fmCaseRefreshBtn');
         const caseSearchInput = document.getElementById('fmCaseSearchInput');
         const rootOverviewBtn = document.getElementById('fmRootOverviewBtn');
+        const backToCasesBtn = document.getElementById('fmBackToCasesBtn');
         const hiddenToggle = document.getElementById('fmShowHiddenToggle');
 
         if (goBtn && !goBtn._fmBound) {
@@ -1634,6 +1899,20 @@
             rootOverviewBtn.addEventListener('click', () => {
                 if (FM.driveRoots && FM.driveRoots.length) showDriveOverview();
                 else loadDriveRoots();
+            });
+        }
+        if (backToCasesBtn && !backToCasesBtn._fmBound) {
+            backToCasesBtn._fmBound = true;
+            backToCasesBtn.addEventListener('click', () => {
+                closeFilePreview();
+                if (typeof jumpToPaperclipTab === 'function') jumpToPaperclipTab('cases');
+                else {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+                    const casesView = document.getElementById('cases');
+                    if (casesView) casesView.classList.add('active');
+                    if (typeof state !== 'undefined') state.activeTab = 'cases';
+                }
             });
         }
         if (caseSearchInput && !caseSearchInput._fmBound) {
@@ -1764,9 +2043,14 @@
             mkdirBtn._fmBound = true;
             mkdirBtn.addEventListener('click', async () => {
                 if (!FM.basePath) { setStatus('請先開啟資料夾', true); return; }
-                const name = prompt('新資料夾名稱：');
+                const name = await showPrompt('MAGI說', '新資料夾名稱：', '');
                 if (!name) return;
-                const r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
+                let r;
+                try {
+                    r = await apiMkdir(FM.basePath, FM.currentRel, name.trim());
+                } catch (e) {
+                    r = (e && e.payload) || { ok: false, error: e.message || e };
+                }
                 if (r && r.ok) { setStatus('已建立資料夾：' + name); refresh(); setTimeout(() => setStatus(''), 2000); }
                 else setStatus('建立失敗：' + ((r && r.error) || '未知'), true);
             });
@@ -1830,6 +2114,11 @@
         }
         updateSelectionControls();
         bindDropZone();
+        bindInternalMoveDrag();
+
+        // openWithBasePath uses this marker to avoid binding global handlers
+        // again after the initial page-load initialization.
+        FM._initialized = true;
 
         // Phase 2 commit 11: keyboard shortcuts (F2 rename / Del trash)
         if (!document._fmKeysBound) {

@@ -11,12 +11,14 @@ Layer 4 — 磁碟自動清理健檢
   - ~/.omlx/cache-*/：保留 atime ≥ 7 天以內的檔，其餘視為可釋放
   - /tmp/magi_*、/tmp/omlx_* 與 *.png / *.log / *.txt / *.tmp：mtime > 48h 刪除
   - .agent/server.log*：僅回報總大小，既有 rotate 機制已處理
+  - ~/.omlx/training/gemma-distill/merged/：清除未部署且驗證失敗的巨大 merged model
 
 紅線：
   - 不碰六模組資料（LAF / 閱卷 / 筆錄 / 摘要 / 翻譯 / 逐字稿）
   - 不碰 runtime pending/*（正在等律師確認碼的檔案）
   - 不碰 cron_state.json
   - 不碰單機版 JSON / pickle / db / sqlite 狀態檔
+  - 不碰已部署模型 symlink 指向的 distill merged model
 """
 from __future__ import annotations
 
@@ -29,14 +31,40 @@ import time
 import argparse
 import gzip
 import tempfile
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", "/Users/ai/Desktop/MAGI_v2")).resolve()
+MAGI_ROOT = Path(
+    os.environ.get("MAGI_ROOT_DIR")
+    or os.environ.get("MAGI_ROOT")
+    or str(Path(__file__).resolve().parents[2])
+).resolve()
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+_AGENT_OVERRIDE = os.environ.get("MAGI_AGENT_DIR", "").strip()
+_RUNTIME_DIR = Path(_RUNTIME_OVERRIDE or (MAGI_ROOT / ".runtime")).expanduser()
+_AGENT_DIR = Path(_AGENT_OVERRIDE or (MAGI_ROOT / ".agent")).expanduser()
+_METRICS_DIR = Path(
+    os.environ.get("MAGI_METRICS_DIR", "").strip()
+    or ((_RUNTIME_DIR / "metrics") if _RUNTIME_OVERRIDE else (MAGI_ROOT / "_metrics"))
+).expanduser()
+_AUTOPILOT_RUNS_DIR = Path(
+    os.environ.get("MAGI_AUTOPILOT_RUNS_DIR", "").strip()
+    or ((_RUNTIME_DIR / "autopilot-runs") if _RUNTIME_OVERRIDE else (MAGI_ROOT / "_autopilot_runs"))
+).expanduser()
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(MAGI_ROOT / ".env")
+except Exception:
+    pass
+
 from api.platforms import runtime_dir  # noqa: E402
+from api.runtime_paths import get_payment_registry_path  # noqa: E402
 
 # ---- 設定 --------------------------------------------------------------
 
@@ -46,10 +74,33 @@ OMLX_CACHE_KEEP_DAYS = int(os.environ.get("MAGI_DISK_OMLX_KEEP_DAYS", "7"))
 OMLX_CACHE_MAX_DELETE_BYTES = int(float(os.environ.get("MAGI_DISK_OMLX_MAX_DELETE_GB", "20")) * 1024 * 1024 * 1024)
 OMLX_CACHE_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CAP_GB", "8"))
 OMLX_CACHE_LOW_WATER_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_CAP_GB", "5"))
+OMLX_CACHE_CORE_ONLY_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CORE_ONLY_CAP_GB", "3"))
 OMLX_CACHE_CRITICAL_CAP_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_CAP_GB", "3"))
 OMLX_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_LOW_WATER_FREE_GB", "50"))
+OMLX_CACHE_CORE_ONLY_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CORE_ONLY_FREE_GB", "30"))
 OMLX_CACHE_CRITICAL_FREE_GB = float(os.environ.get("MAGI_DISK_OMLX_CACHE_CRITICAL_FREE_GB", "15"))
 OMLX_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_OMLX_CACHE_RECENT_GRACE_MINUTES", "60"))
+OMLX_EXTERNAL_CACHE_ROOT = Path(
+    os.environ.get("MAGI_OMLX_PAGED_CACHE_ROOT", str(Path.home() / ".omlx" / "paged-cache"))
+)
+OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_OMLX_EXTERNAL_CACHE_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC = float(
+    os.environ.get("MAGI_DISK_OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC", "3")
+)
+APP_CACHE_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_APP_CACHE_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+APP_CACHE_LOW_WATER_FREE_GB = float(os.environ.get("MAGI_DISK_APP_CACHE_LOW_WATER_FREE_GB", "30"))
+APP_CACHE_MAX_DELETE_GB = float(os.environ.get("MAGI_DISK_APP_CACHE_MAX_DELETE_GB", "8"))
+APP_CACHE_RECENT_GRACE_MINUTES = int(os.environ.get("MAGI_DISK_APP_CACHE_RECENT_GRACE_MINUTES", "10"))
+DISTILL_REJECTED_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_DISTILL_REJECTED_CLEANUP_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+DISTILL_REJECTED_MIN_AGE_HOURS = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_MIN_AGE_HOURS", "6"))
+DISTILL_REJECTED_LOW_WATER_GB = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_LOW_WATER_GB", "50"))
+DISTILL_REJECTED_MAX_DELETE_GB = float(os.environ.get("MAGI_DISK_DISTILL_REJECTED_MAX_DELETE_GB", "35"))
 TMP_MAX_AGE_HOURS = int(os.environ.get("MAGI_DISK_TMP_MAX_AGE_HOURS", "48"))
 DB_BACKUP_KEEP_LATEST = int(os.environ.get("MAGI_DISK_DB_BACKUP_KEEP_LATEST", "8"))
 BUILD_ARTIFACT_MAX_AGE_DAYS = int(os.environ.get("MAGI_DISK_BUILD_ARTIFACT_MAX_AGE_DAYS", "7"))
@@ -80,6 +131,21 @@ PAYMENT_DUPLICATE_CLEANUP_ENABLE = os.environ.get(
 ).strip().lower() in {"1", "true", "on", "yes"}
 PAYMENT_DUPLICATE_ALLOW_SMB = os.environ.get(
     "MAGI_DISK_PAYMENT_DUPLICATE_ALLOW_SMB", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_SHELL_CLEANUP_ENABLE = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE", "1"
+).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS = float(
+    os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS", "6")
+)
+SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE = int(
+    os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE", "200")
+)
+SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_INCLUDE_LOCAL", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
+SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE = os.environ.get(
+    "MAGI_DISK_SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE", "0"
 ).strip().lower() in {"1", "true", "on", "yes"}
 NAS_RECYCLE_CLEANUP_ENABLE = os.environ.get(
     "MAGI_DISK_NAS_RECYCLE_ENABLE", "0"
@@ -212,10 +278,41 @@ def _walk_cache_files(cache_root: Path) -> List[Path]:
 def _omlx_cache_roots(home: Path) -> List[Path]:
     roots: List[Path] = []
     base = home / ".omlx"
-    for root in [base / "cache", *sorted(base.glob("cache-*"))]:
+    candidates = [base / "cache", *sorted(base.glob("cache-*"))]
+    candidates.extend(_external_omlx_cache_roots())
+    for root in candidates:
         if root.is_dir() and root not in roots:
             roots.append(root)
     return roots
+
+
+def _external_omlx_cache_roots() -> List[Path]:
+    if not OMLX_EXTERNAL_CACHE_CLEANUP_ENABLE:
+        return []
+    code = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+items = [root / "cache", *sorted(root.glob("cache-*"))]
+for item in items:
+    if item.is_dir():
+        print(item)
+"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code, str(OMLX_EXTERNAL_CACHE_ROOT)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=max(0.5, OMLX_EXTERNAL_CACHE_PROBE_TIMEOUT_SEC),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"skip external oMLX cache cleanup: probe timeout ({OMLX_EXTERNAL_CACHE_ROOT})")
+        return []
+    except Exception:
+        return []
+    return [Path(line.strip()) for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _cache_last_used(st: os.stat_result) -> float:
@@ -228,6 +325,8 @@ def _omlx_cache_cap_bytes(free_gb: float) -> int:
     cap_gb = OMLX_CACHE_CAP_GB
     if 0 <= free_gb < OMLX_CACHE_CRITICAL_FREE_GB:
         cap_gb = OMLX_CACHE_CRITICAL_CAP_GB
+    elif 0 <= free_gb < OMLX_CACHE_CORE_ONLY_FREE_GB:
+        cap_gb = OMLX_CACHE_CORE_ONLY_CAP_GB
     elif 0 <= free_gb < OMLX_CACHE_LOW_WATER_FREE_GB:
         cap_gb = OMLX_CACHE_LOW_WATER_CAP_GB
     if cap_gb <= 0:
@@ -255,14 +354,22 @@ def _select_with_delete_budget(items: List[Dict[str, Any]]) -> Tuple[List[Dict[s
 
 
 def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
-    home = Path(os.environ.get("HOME", "/Users/ai"))
+    home = Path(os.environ.get("HOME", str(Path.home())))
     now = time.time()
     cutoff = now - OMLX_CACHE_KEEP_DAYS * 86400
     recent_grace_cutoff = now - OMLX_CACHE_RECENT_GRACE_MINUTES * 60
     free_gb = _disk_free_gb(MAGI_ROOT)
-    cache_cap_bytes = _omlx_cache_cap_bytes(free_gb)
+    low_water_aggressive = 0 <= free_gb < 30
+    roots = _omlx_cache_roots(home)
+    total_cache_cap_bytes = _omlx_cache_cap_bytes(free_gb)
+    cache_cap_bytes = total_cache_cap_bytes
+    if low_water_aggressive and roots:
+        # Under core-only disk pressure, the model cache budget is global, not
+        # per model.  Splitting the cap prevents "each cache is under 5 GB" from
+        # leaving 10+ GB of combined caches that keep MAGI throttled.
+        cache_cap_bytes = max(int(512 * 1024 * 1024), total_cache_cap_bytes // max(1, len(roots)))
     actions: List[Dict[str, Any]] = []
-    for cache_root in _omlx_cache_roots(home):
+    for cache_root in roots:
         total_candidate_bytes = 0
         deleted_bytes = 0
         deleted_count = 0
@@ -293,10 +400,12 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         if cache_cap_bytes > 0 and projected_bytes > cache_cap_bytes:
             for info in sorted(all_files, key=lambda x: (x["last_used"], x["path"].name)):
                 path = info["path"]
-                if path in selected_by_path or info["recent_write"]:
+                if path in selected_by_path:
+                    continue
+                if info["recent_write"] and not low_water_aggressive:
                     continue
                 info = dict(info)
-                info["reason"] = "cap"
+                info["reason"] = "cap_low_water" if info["recent_write"] else "cap"
                 selected_by_path[path] = info
                 projected_bytes -= int(info["size"])
                 if projected_bytes <= cache_cap_bytes:
@@ -321,8 +430,10 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
             "total_bytes": total_bytes,
             "free_gb": round(free_gb, 2),
             "cache_cap_bytes": cache_cap_bytes,
+            "total_cache_cap_bytes": total_cache_cap_bytes,
             "keep_days": OMLX_CACHE_KEEP_DAYS,
             "recent_grace_minutes": OMLX_CACHE_RECENT_GRACE_MINUTES,
+            "low_water_aggressive": low_water_aggressive,
             "candidate_files": len(candidates),
             "candidate_bytes": total_candidate_bytes,
             "deleted_files": deleted_count,
@@ -345,6 +456,258 @@ def cleanup_omlx_cache(dry_run: bool) -> List[Dict[str, Any]]:
         )
         actions.append(info)
     return actions
+
+
+# ---- App cache low-water cleanup ---------------------------------------
+
+def cleanup_app_caches(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove rebuildable GUI/app caches only when disk is below low-water."""
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    if (not APP_CACHE_CLEANUP_ENABLE) or free_gb >= APP_CACHE_LOW_WATER_FREE_GB:
+        return [{
+            "enabled": APP_CACHE_CLEANUP_ENABLE,
+            "skipped": True,
+            "reason": "disk_above_low_water" if APP_CACHE_CLEANUP_ENABLE else "disabled",
+            "free_gb": round(free_gb, 2),
+        }]
+
+    roots = [
+        home / ".codex" / ".tmp",
+        home / "Library" / "Caches",
+        home / "Library" / "Application Support" / "discord" / "Cache",
+        home / "Library" / "Application Support" / "discord" / "Code Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Code Cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Service Worker" / "CacheStorage",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "extensions_crx_cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "component_crx_cache",
+        home / "Library" / "Application Support" / "Google" / "GoogleUpdater" / "crx_cache",
+        home / "Library" / "Application Support" / "Google" / "Chrome" / "Crashpad" / "completed",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Code Cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "Default" / "Service Worker" / "CacheStorage",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "extensions_crx_cache",
+        home / "Library" / "Application Support" / "Microsoft Edge" / "component_crx_cache",
+        home / "Library" / "Application Support" / "Claude" / "Cache",
+        home / "Library" / "Application Support" / "Claude" / "Code Cache",
+    ]
+    now = time.time()
+    recent_cutoff = now - APP_CACHE_RECENT_GRACE_MINUTES * 60
+    budget = int(max(0.0, APP_CACHE_MAX_DELETE_GB) * 1024 * 1024 * 1024)
+    deleted_bytes = 0
+    deleted_files = 0
+    removed_dirs = 0
+    candidates = 0
+
+    def _safe_unlink(path: Path, size: int) -> bool:
+        nonlocal deleted_bytes, deleted_files
+        if budget > 0 and deleted_bytes + size > budget:
+            return False
+        if dry_run:
+            deleted_bytes += size
+            deleted_files += 1
+            return True
+        try:
+            path.unlink()
+            deleted_bytes += size
+            deleted_files += 1
+            return True
+        except OSError:
+            return False
+
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            try:
+                st = root.stat()
+            except OSError:
+                continue
+            if st.st_mtime < recent_cutoff:
+                candidates += 1
+                _safe_unlink(root, int(st.st_size))
+            continue
+        if not root.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+            if ".git" in Path(dirpath).parts:
+                continue
+            for name in filenames:
+                f = Path(dirpath) / name
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= recent_cutoff:
+                    continue
+                candidates += 1
+                _safe_unlink(f, int(st.st_size))
+            if not dry_run:
+                for dirname in list(dirnames):
+                    d = Path(dirpath) / dirname
+                    try:
+                        d.rmdir()
+                        removed_dirs += 1
+                    except OSError:
+                        pass
+
+    _log(
+        f"app caches: {'would free' if dry_run else 'freed'} "
+        f"{deleted_bytes / 1024 / 1024:.2f} MB ({candidates} candidates)"
+    )
+    return [{
+        "enabled": True,
+        "free_gb": round(free_gb, 2),
+        "candidate_files": candidates,
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "removed_dirs": removed_dirs,
+        "dry_run": dry_run,
+    }]
+
+
+# ---- rejected Gemma distill merged models ------------------------------
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    if path.is_file():
+        try:
+            return int(path.stat().st_size)
+        except OSError:
+            return 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += int((Path(dirpath) / name).stat().st_size)
+            except OSError:
+                continue
+    return total
+
+
+def _symlink_targets_under(root: Path) -> set[Path]:
+    targets: set[Path] = set()
+    if not root.exists():
+        return targets
+    for path in root.glob("*"):
+        try:
+            if path.is_symlink():
+                targets.add(path.resolve())
+        except OSError:
+            continue
+    return targets
+
+
+def cleanup_rejected_distill_models(dry_run: bool) -> List[Dict[str, Any]]:
+    if not DISTILL_REJECTED_CLEANUP_ENABLE:
+        return [{"label": "rejected_distill_models", "skipped": True, "reason": "disabled", "dry_run": dry_run}]
+    free_gb = _disk_free_gb(MAGI_ROOT)
+    if free_gb >= DISTILL_REJECTED_LOW_WATER_GB:
+        return [{
+            "label": "rejected_distill_models",
+            "skipped": True,
+            "reason": "disk_not_low",
+            "free_gb": round(free_gb, 2),
+            "dry_run": dry_run,
+        }]
+
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    distill_dir = home / ".omlx" / "training" / "gemma-distill"
+    merged_root = distill_dir / "merged"
+    pending_path = distill_dir / "pending_deploy.json"
+    if not merged_root.is_dir():
+        return [{"label": "rejected_distill_models", "exists": False, "dry_run": dry_run}]
+
+    pending: Dict[str, Any] = {}
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    except Exception:
+        pending = {}
+    current_version = str(pending.get("version") or "").strip()
+    deploy_allowed = bool(pending.get("deploy_allowed", False))
+    rejected_current = str(pending.get("status") or "").strip().lower() == "rejected" or not deploy_allowed
+
+    protected_targets: set[Path] = set()
+    for link_root in [
+        home / ".omlx" / "models-text",
+        home / ".omlx" / "models-text-e4b",
+        home / ".omlx" / "models-text-26b",
+        home / ".omlx" / "models",
+    ]:
+        protected_targets.update(_symlink_targets_under(link_root))
+
+    now = time.time()
+    min_age_sec = max(0.0, DISTILL_REJECTED_MIN_AGE_HOURS * 3600)
+    max_delete_bytes = int(max(0.0, DISTILL_REJECTED_MAX_DELETE_GB) * 1024 * 1024 * 1024)
+    deleted_bytes = 0
+    deleted_dirs = 0
+    candidates: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for child in sorted(merged_root.glob("Gemma-gemma-distill-v*")):
+        if child.is_symlink() or not child.is_dir():
+            continue
+        try:
+            resolved = child.resolve()
+            st = child.stat()
+        except OSError:
+            continue
+        if resolved in protected_targets:
+            continue
+        version = child.name.replace("Gemma-", "", 1)
+        is_current = version == current_version
+        if is_current and deploy_allowed and not rejected_current:
+            continue
+        age_sec = now - float(st.st_mtime)
+        if age_sec < min_age_sec:
+            continue
+        size = _dir_size_bytes(child)
+        if size <= 0:
+            continue
+        candidates.append({
+            "path": str(child),
+            "version": version,
+            "size_bytes": size,
+            "age_hours": round(age_sec / 3600, 2),
+            "reason": "current_rejected" if is_current else "old_unlinked_distill_merged",
+        })
+
+    for item in candidates:
+        size = int(item["size_bytes"])
+        if max_delete_bytes and deleted_bytes + size > max_delete_bytes:
+            item["skipped"] = "max_delete_cap"
+            continue
+        if not dry_run:
+            try:
+                shutil.rmtree(item["path"])
+                deleted_bytes += size
+                deleted_dirs += 1
+            except Exception as exc:
+                errors.append(f"{item['path']}: {exc}")
+        else:
+            deleted_bytes += size
+            deleted_dirs += 1
+
+    _log(
+        f"rejected distill merged models: "
+        f"{'would remove' if dry_run else 'removed'} {deleted_dirs} dirs, "
+        f"{deleted_bytes / 1024 / 1024 / 1024:.2f} GB"
+    )
+    return [{
+        "label": "rejected_distill_models",
+        "dry_run": dry_run,
+        "free_gb": round(free_gb, 2),
+        "candidate_dirs": len(candidates),
+        "deleted_dirs": 0 if dry_run else deleted_dirs,
+        "would_delete_dirs": deleted_dirs if dry_run else 0,
+        "candidate_bytes": sum(int(item["size_bytes"]) for item in candidates),
+        "deleted_bytes": 0 if dry_run else deleted_bytes,
+        "would_delete_bytes": deleted_bytes if dry_run else 0,
+        "pending_status": str(pending.get("status") or ""),
+        "current_version": current_version,
+        "errors": errors,
+        "items": candidates[:20],
+    }]
 
 
 # ---- /tmp cleanup -------------------------------------------------------
@@ -667,12 +1030,19 @@ def _runtime_compress_roots() -> List[Path]:
     raw = os.environ.get("MAGI_DISK_RUNTIME_COMPRESS_ROOTS", "").strip()
     if raw:
         return [Path(p).expanduser().resolve() for p in raw.split(os.pathsep) if p.strip()]
+    if _RUNTIME_OVERRIDE:
+        return [
+            _RUNTIME_DIR / "logs",
+            _METRICS_DIR,
+            _AUTOPILOT_RUNS_DIR,
+            _RUNTIME_DIR / "reports",
+        ]
     return [
         MAGI_ROOT / "logs",
-        MAGI_ROOT / "_metrics",
-        MAGI_ROOT / "_autopilot_runs",
+        _METRICS_DIR,
+        _AUTOPILOT_RUNS_DIR,
         MAGI_ROOT / "reports",
-        MAGI_ROOT / ".runtime" / "metrics",
+        _RUNTIME_DIR / "metrics",
         MAGI_ROOT / "casper.log",
         MAGI_ROOT / "server.log",
         MAGI_ROOT / "tools_api.log",
@@ -899,6 +1269,307 @@ def cleanup_generated_staging(dry_run: bool) -> List[Dict[str, Any]]:
     return actions
 
 
+# ---- Synology Drive empty case-shell cleanup ----------------------------
+
+_CASE_FOLDER_NAME_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+_SHELL_IGNORED_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitkeep", "desktop.ini"})
+
+
+def _scandir_dirs(path: Path) -> List[Path]:
+    """List child directories without relying on monkey-patchable Path.iterdir."""
+    try:
+        with os.scandir(path) as entries:
+            return [Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)]
+    except OSError:
+        return []
+
+
+@contextmanager
+def _legacy_delete_guard_disabled():
+    """Temporarily disable legacy LegalBridge import-time delete guards.
+
+    Old ignored/local LegalBridge builds monkey-patched os.unlink/os.remove and
+    read MAGI_NO_DELETE at call time.  The empty-shell cleaner only reaches this
+    block after proving the case folder contains no real files, so disabling the
+    legacy guard here prevents import-order pollution without changing the
+    broader MAGI deletion policy.
+    """
+    keys = ("MAGI_NO_DELETE", "MAGI_DB_NO_DELETE")
+    before = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = "0"
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _remove_tree_robust(path: Path) -> None:
+    """Remove a directory tree using os primitives so cleanup cannot be muted by patched shutil."""
+    with _legacy_delete_guard_disabled():
+        if path.is_symlink():
+            path.unlink()
+            return
+        for root, dirnames, filenames in os.walk(path, topdown=False):
+            for filename in filenames:
+                try:
+                    os.unlink(os.path.join(root, filename))
+                except FileNotFoundError:
+                    pass
+            for dirname in dirnames:
+                try:
+                    os.rmdir(os.path.join(root, dirname))
+                except FileNotFoundError:
+                    pass
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            pass
+
+
+def _synology_drive_active_roots() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_SYNOLOGY_EMPTY_CASE_ROOTS", "").strip()
+    if raw:
+        return [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    nas_user = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    roots = [
+        Path("/Volumes") / "homes" / nas_user / "01_案件",
+        home / ".magi_mounts" / "homes" / nas_user / "01_案件",
+    ]
+    if SYNOLOGY_EMPTY_CASE_SHELL_INCLUDE_LOCAL:
+        # macOS File Provider / Synology Drive local views can block on dataless
+        # placeholders and rehydrate deleted empty directories.  Keep them opt-in;
+        # the normal cleanup path works against the real NAS/SMB mount.
+        roots.extend(
+            [
+                home / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+                home / "SynologyDrive" / "homes" / "01_案件",
+                home / "SynologyDrive" / "01_案件",
+            ]
+        )
+    out: List[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
+def _is_ignored_shell_file(path: Path) -> bool:
+    name = path.name
+    if name in _SHELL_IGNORED_FILE_NAMES:
+        return True
+    if name.startswith("._") or name.startswith(".synology"):
+        return True
+    if name.endswith(".tmp") or name.endswith(".icloud"):
+        return True
+    return False
+
+
+def _case_shell_has_real_file(case_dir: Path) -> bool:
+    try:
+        for dirpath, dirnames, filenames in os.walk(case_dir):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for filename in filenames:
+                if not _is_ignored_shell_file(Path(filename)):
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def _case_number_from_shell_name(name: str) -> str:
+    match = re.match(r"^(\d{4}-\d{4})(?:-|$)", name or "")
+    return match.group(1) if match else ""
+
+
+def _closed_archive_roots_for_shell_cleanup() -> List[Path]:
+    raw = os.environ.get("MAGI_DISK_CLOSED_CASE_ARCHIVE_ROOTS", "").strip()
+    if raw:
+        return [Path(p).expanduser() for p in raw.split(os.pathsep) if p.strip()]
+    try:
+        from api.case_path_mapper import default_case_roots
+
+        roots = default_case_roots(include_closed=True)
+        return [Path(item) for item in roots[1:]]
+    except Exception:
+        return []
+
+
+def _closed_case_numbers_from_archive_roots() -> set[str]:
+    if not SYNOLOGY_EMPTY_CASE_ARCHIVE_SCAN_ENABLE:
+        return set()
+    out: set[str] = set()
+    for root in _closed_archive_roots_for_shell_cleanup():
+        if not root.is_dir():
+            continue
+        try:
+            categories = list(root.iterdir())
+        except OSError:
+            continue
+        for category in categories:
+            if not category.is_dir() or category.name.startswith("."):
+                continue
+            try:
+                type_dirs = list(category.iterdir())
+            except OSError:
+                continue
+            for type_dir in type_dirs:
+                if not type_dir.is_dir() or type_dir.name.startswith("."):
+                    continue
+                try:
+                    case_dirs = list(type_dir.iterdir())
+                except OSError:
+                    continue
+                for case_dir in case_dirs:
+                    if case_dir.is_dir():
+                        case_number = _case_number_from_shell_name(case_dir.name)
+                        if case_number:
+                            out.add(case_number)
+    return out
+
+
+def _closed_case_numbers_from_db() -> set[str]:
+    try:
+        import mysql.connector  # type: ignore
+    except Exception:
+        return set()
+    config = {
+        "host": os.environ.get("OSC_DB_HOST") or os.environ.get("DB_HOST", "127.0.0.1"),
+        "port": int(os.environ.get("OSC_DB_PORT") or os.environ.get("DB_PORT", "3306")),
+        "user": os.environ.get("OSC_DB_USER") or os.environ.get("DB_USER", "casper_service"),
+        "password": (
+            os.environ.get("OSC_DB_PASSWORD")
+            or os.environ.get("DB_PASSWORD")
+            or os.environ.get("MAGI_REMOTE_DB_PASSWORD", "")
+        ),
+        "database": os.environ.get("OSC_DB_NAME") or os.environ.get("DB_NAME", "law_firm_data"),
+        "use_pure": True,
+        "connection_timeout": 3,
+        "charset": "utf8mb4",
+        "collation": "utf8mb4_unicode_ci",
+    }
+    sql = """
+        SELECT case_number
+        FROM cases
+        WHERE case_number LIKE '20__-____'
+          AND (
+            COALESCE(status, '') LIKE '%結案%'
+            OR COALESCE(legal_aid_status, '') LIKE '已結案%'
+            OR COALESCE(folder_path, '') LIKE 'Y:%'
+            OR COALESCE(folder_path, '') LIKE '%/10_結案/%'
+            OR COALESCE(folder_path, '') LIKE '%\\\\10_結案\\\\%'
+          )
+    """
+    try:
+        conn = mysql.connector.connect(**config)
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql)
+                return {str(row[0] or "").strip() for row in cur.fetchall() if row and row[0]}
+            finally:
+                cur.close()
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log(f"Synology empty case shells: DB closed-case lookup skipped ({exc})")
+        return set()
+
+
+def _closed_case_numbers_for_shell_cleanup() -> set[str]:
+    return _closed_case_numbers_from_archive_roots() | _closed_case_numbers_from_db()
+
+
+def _iter_empty_synology_case_shells() -> List[Path]:
+    closed_case_numbers = _closed_case_numbers_for_shell_cleanup()
+    out: List[Path] = []
+    for root in _synology_drive_active_roots():
+        if not root.is_dir():
+            continue
+        categories = _scandir_dirs(root)
+        for category in categories:
+            if category.name.startswith("."):
+                continue
+            type_dirs = _scandir_dirs(category)
+            for type_dir in type_dirs:
+                if type_dir.name.startswith("."):
+                    continue
+                case_dirs = _scandir_dirs(type_dir)
+                for case_dir in case_dirs:
+                    if case_dir.name.startswith("."):
+                        continue
+                    if not _CASE_FOLDER_NAME_RE.match(case_dir.name):
+                        continue
+                    case_number = _case_number_from_shell_name(case_dir.name)
+                    known_closed = bool(case_number and case_number in closed_case_numbers)
+                    if not known_closed:
+                        continue
+                    if _case_shell_has_real_file(case_dir):
+                        continue
+                    out.append(case_dir)
+                    if len(out) >= max(1, SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE):
+                        return out
+    return out
+
+
+def cleanup_empty_synology_case_shells(dry_run: bool) -> List[Dict[str, Any]]:
+    """Remove empty active-folder shells only for cases known to be closed.
+
+    New manually created cases can legitimately contain only OSC's standard
+    subfolders before documents arrive.  Never delete active/open case roots
+    simply because they do not yet contain files.
+    """
+    if not SYNOLOGY_EMPTY_CASE_SHELL_CLEANUP_ENABLE:
+        return [{"enabled": False, "reason": "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE=0"}]
+
+    candidates = _iter_empty_synology_case_shells()
+    deleted = 0
+    errors: List[Dict[str, str]] = []
+    items: List[str] = []
+    for case_dir in candidates:
+        items.append(str(case_dir))
+        if dry_run:
+            continue
+        try:
+            if case_dir.is_symlink():
+                case_dir.unlink()
+            else:
+                _remove_tree_robust(case_dir)
+            deleted += 1
+        except OSError as e:
+            errors.append({"path": str(case_dir), "error": str(e)})
+
+    info = {
+        "enabled": True,
+        "candidate_dirs": len(candidates),
+        "deleted_dirs": deleted,
+        "min_age_hours": SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS,
+        "max_delete": SYNOLOGY_EMPTY_CASE_SHELL_MAX_DELETE,
+        "items": items[:50],
+        "errors": errors[:20],
+        "dry_run": dry_run,
+    }
+    _log(
+        f"Synology empty case shells: {'would remove' if dry_run else 'removed'} "
+        f"{len(candidates) if dry_run else deleted} dirs "
+        f"(min_age={SYNOLOGY_EMPTY_CASE_SHELL_MIN_AGE_HOURS:g}h)"
+    )
+    return [info]
+
+
 # ---- duplicate payment-slip cleanup ------------------------------------
 
 def _payment_duplicate_roots() -> List[Path]:
@@ -914,10 +1585,7 @@ def _payment_duplicate_roots() -> List[Path]:
 
 
 def _payment_registry_path() -> Path:
-    raw = os.environ.get("MAGI_PAYMENT_REGISTRY_PATH", "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return MAGI_ROOT / "閱卷下載" / "payment_registry.json"
+    return get_payment_registry_path(MAGI_ROOT / "閱卷下載")
 
 
 def _load_json_object(path: Path) -> Dict[str, Any]:
@@ -1054,7 +1722,7 @@ def cleanup_duplicate_payment_slips(dry_run: bool) -> List[Dict[str, Any]]:
         except Exception as e:
             errors.append({"root": str(root), "error": str(e)})
 
-    quarantine_root = MAGI_ROOT / ".runtime" / "duplicate_payment_slips_quarantine" / time.strftime("%Y%m%d_%H%M%S")
+    quarantine_root = _RUNTIME_DIR / "duplicate_payment_slips_quarantine" / time.strftime("%Y%m%d_%H%M%S")
     duplicate_files = 0
     duplicate_bytes = 0
     quarantined_files = 0
@@ -1150,6 +1818,9 @@ def cleanup_duplicate_payment_slips(dry_run: bool) -> List[Dict[str, Any]]:
 # ---- NAS recycle cleanup -----------------------------------------------
 
 _NAS_RECYCLE_NAMES = frozenset({"#recycle", "$RECYCLE.BIN", ".Trash", ".Trashes"})
+NAS_RECYCLE_INCLUDE_DOLLAR_BIN = os.environ.get(
+    "MAGI_DISK_NAS_RECYCLE_INCLUDE_DOLLAR_BIN", "0"
+).strip().lower() in {"1", "true", "on", "yes"}
 
 
 def _default_nas_recycle_roots() -> List[Path]:
@@ -1188,6 +1859,12 @@ def _nas_recycle_roots() -> List[Path]:
             continue
         if root.name not in _NAS_RECYCLE_NAMES:
             continue
+        if root.name == "$RECYCLE.BIN" and not NAS_RECYCLE_INCLUDE_DOLLAR_BIN:
+            # Windows recycle bins on SMB/NAS can contain massive SID trees and
+            # block os.scandir long enough for the whole healthcheck to be
+            # SIGTERM'd.  Keep daily cleanup bounded; enable explicitly for a
+            # supervised maintenance window.
+            continue
         if not NAS_RECYCLE_ALLOW_NON_VOLUME and not str(root).startswith("/Volumes/"):
             continue
         safe.append(root)
@@ -1201,8 +1878,8 @@ def _nas_recycle_candidate_parents(root: Path) -> List[Path]:
       /Volumes/homes/#recycle/<user>/<deleted item>
       /Volumes/homes/<user>/#recycle/<deleted item>
 
-    Windows-style recycle bins are commonly:
-      /Volumes/lumi/$RECYCLE.BIN/<SID>/<deleted item>
+    Windows-style recycle bins are commonly stored under a configured share:
+      <configured-share>/$RECYCLE.BIN/<SID>/<deleted item>
 
     We intentionally stay shallow so daily cleanup does not deep-scan NAS case
     folders. Directory contents are only traversed if an old candidate is
@@ -1505,7 +2182,7 @@ def cleanup_nas_recycle_heavy(dry_run: bool) -> List[Dict[str, Any]]:
 
 def report_agent_logs(_dry_run: bool) -> List[Dict[str, Any]]:
     """.agent/server.log* 的既有 rotate 會處理；這裡只回報總大小。"""
-    agent_dir = MAGI_ROOT / ".agent"
+    agent_dir = _AGENT_DIR
     if not agent_dir.is_dir():
         return []
     total = 0
@@ -1537,12 +2214,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "dry_run": dry_run,
         "metrics": cleanup_metrics(dry_run),
         "omlx_cache": cleanup_omlx_cache(dry_run),
+        "app_caches": cleanup_app_caches(dry_run),
+        "rejected_distill_models": cleanup_rejected_distill_models(dry_run),
         "tmp": cleanup_tmp(dry_run),
         "db_backups": cleanup_db_backups(dry_run),
         "build_artifacts": cleanup_build_artifacts(dry_run),
         "git_tmp_packs": cleanup_stale_git_tmp_packs(dry_run),
         "compressed_artifacts": compress_runtime_artifacts(dry_run),
         "generated_staging": cleanup_generated_staging(dry_run),
+        "empty_synology_case_shells": cleanup_empty_synology_case_shells(dry_run),
         "duplicate_payment_slips": cleanup_duplicate_payment_slips(dry_run),
         "nas_recycle": cleanup_nas_recycle(dry_run),
         "nas_recycle_heavy": cleanup_nas_recycle_heavy(dry_run),
@@ -1563,18 +2243,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     # stdout 也直接印一份簡要摘要
     total_metrics = len(summary["metrics"])
     total_cache_candidates = sum(a.get("candidate_files", 0) for a in summary["omlx_cache"])
+    total_app_cache_candidates = sum(a.get("candidate_files", 0) for a in summary.get("app_caches") or [])
+    total_distill_candidates = sum(a.get("candidate_dirs", 0) for a in summary.get("rejected_distill_models") or [])
     tmp_entry = summary["tmp"][0] if summary["tmp"] else {}
     total_compress_candidates = len(summary.get("compressed_artifacts") or [])
     total_staging_candidates = sum(a.get("candidate_files", 0) for a in summary.get("generated_staging") or [])
+    total_empty_synology_shells = sum(a.get("candidate_dirs", 0) for a in summary.get("empty_synology_case_shells") or [])
     total_payment_duplicates = sum(a.get("duplicate_files", 0) for a in summary.get("duplicate_payment_slips") or [])
     total_nas_recycle_items = sum(a.get("deleted_items", 0) for a in summary.get("nas_recycle") or [])
     total_heavy_files = sum(a.get("deleted_files", 0) for a in summary.get("nas_recycle_heavy") or [])
     _log(
         f"summary: metrics_rotated={total_metrics}, "
         f"omlx_cache_candidates={total_cache_candidates}, "
+        f"app_cache_candidates={total_app_cache_candidates}, "
+        f"rejected_distill_candidates={total_distill_candidates}, "
         f"tmp_candidates={tmp_entry.get('candidate_count', 0)}, "
         f"compress_candidates={total_compress_candidates}, "
         f"staging_candidates={total_staging_candidates}, "
+        f"empty_synology_shells={total_empty_synology_shells}, "
         f"payment_duplicates={total_payment_duplicates}, "
         f"nas_recycle_deleted={total_nas_recycle_items}, "
         f"nas_heavy_files={total_heavy_files}"

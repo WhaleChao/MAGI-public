@@ -12,11 +12,13 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
@@ -32,7 +34,9 @@ if MAGI_ROOT not in sys.path:
 if SKILL_DIR not in sys.path:
     sys.path.insert(0, SKILL_DIR)
 
+from state_paths import prepare_write, read_path, state_path
 from api.case_path_mapper import default_case_roots, preferred_case_roots
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
 
 # Load .env
 _env_path = os.path.join(MAGI_ROOT, ".env")
@@ -48,13 +52,27 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(
-            os.path.join(SKILL_DIR, "_nightly_train.log"),
-            encoding="utf-8",
-        ),
     ],
 )
 logger = logging.getLogger("nightly-train")
+
+
+def _enable_main_file_logging() -> Path:
+    """Attach the nightly log only for CLI execution, never during import."""
+    log_path = prepare_write(state_path("logs/nightly_train.log"))
+    root_logger = logging.getLogger()
+    resolved = log_path.resolve(strict=False)
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            try:
+                if Path(handler.baseFilename).resolve(strict=False) == resolved:
+                    return log_path
+            except Exception:
+                continue
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    root_logger.addHandler(handler)
+    return log_path
 
 _CASE_ROOTS = preferred_case_roots(include_closed=False)
 _FALLBACK_CASE_ROOTS = default_case_roots(include_closed=False)
@@ -62,8 +80,17 @@ CASE_ROOT = os.environ.get(
     "MAGI_CASE_ROOT",
     _CASE_ROOTS[0] if _CASE_ROOTS else (_FALLBACK_CASE_ROOTS[0] if _FALLBACK_CASE_ROOTS else str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件")),
 )
-REPORT_PATH = os.path.join(SKILL_DIR, "_nightly_report.json")
+REPORT_PATH = str(state_path("_nightly_report.json"))
 DATE_PREFIX_RE = re.compile(r"^(20\d{6})")
+_STRONG_SYNTHETIC_CASE_MARKERS = (
+    "2026-9998",
+    "測試消債",
+    "magi-live-delete",
+    "magi-csv-live-delete",
+)
+_CASE_FOLDER_SYNTHETIC_MARKERS = ("測試", "test", "dummy", "fake", "sample")
+_CASE_FOLDER_RE = re.compile(r"^\d{4}-\d{4}(?:-|$)")
+_TRANSIENT_STORAGE_ERRNOS = {5, 6, 19, 35, 60, 110}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -98,6 +125,32 @@ def _parse_existing_filename(fn: str) -> dict:
     return info
 
 
+def _is_synthetic_case_path(path: str) -> bool:
+    for part in [p for p in str(path or "").replace("\\", "/").split("/") if p]:
+        lowered = part.lower()
+        if any(marker in lowered for marker in _STRONG_SYNTHETIC_CASE_MARKERS):
+            return True
+        if _CASE_FOLDER_RE.match(part) and any(marker in lowered for marker in _CASE_FOLDER_SYNTHETIC_MARKERS):
+            return True
+    return False
+
+
+def _is_transient_storage_error(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and int(getattr(exc, "errno", 0) or 0) in _TRANSIENT_STORAGE_ERRNOS
+
+
+def _sha256_file(path: str, *, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a PDF without loading the whole case file into MAGI's memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _normalize_date(d: str) -> Optional[str]:
     """Ensure YYYYMMDD format."""
     if not d:
@@ -111,6 +164,7 @@ def _normalize_date(d: str) -> Optional[str]:
 def _subfolder_label(subfolder: str) -> Optional[str]:
     """Map subfolder name to category label for validation."""
     mapping = {
+        JUDGMENT_FOLDER_LABEL: "判決",
         "判決書": "判決",
         "法院通知或程序裁定": "法院通知",
         "我方歷次書狀": "書狀_我方",
@@ -141,10 +195,35 @@ def collect_samples(
     if not os.path.isdir(case_root):
         logger.error("案件資料夾不存在: %s", case_root)
         return samples
+    fixture_root: Path | None = None
+    if os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") == "real_entrypoint_fixture_v1":
+        fixture_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+        fixture_root = Path(fixture_raw).expanduser().resolve() if fixture_raw else None
+        root = Path(case_root).expanduser().resolve()
+        if (
+            os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+            or fixture_root is None
+            or not (fixture_root / ".magi-v3-schedule-fixture").is_file()
+            or not root.is_dir()
+            or not root.is_relative_to(fixture_root)
+        ):
+            raise RuntimeError("pdf-namer nightly fixture case root is not safely bound")
 
-    for root, dirs, files in os.walk(case_root):
+    def _raise_transient_walk_error(exc: OSError) -> None:
+        if _is_transient_storage_error(exc):
+            raise exc
+        logger.warning("略過無法讀取的資料夾: %s", type(exc).__name__)
+
+    for root, dirs, files in os.walk(case_root, onerror=_raise_transient_walk_error):
         # Skip hidden and system dirs
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = [
+            d
+            for d in dirs
+            if not d.startswith(".")
+            and (fixture_root is not None or not _is_synthetic_case_path(os.path.join(root, d)))
+        ]
+        if fixture_root is None and _is_synthetic_case_path(root):
+            continue
         subfolder = os.path.basename(root)
         label = _subfolder_label(subfolder)
         if not label:
@@ -155,6 +234,11 @@ def collect_samples(
             if not DATE_PREFIX_RE.match(fn):
                 continue  # Only use properly named files as ground truth
             fp = os.path.join(root, fn)
+            if fixture_root is not None:
+                raw_target = Path(fp)
+                target = raw_target.resolve()
+                if raw_target.is_symlink() or not target.is_relative_to(fixture_root):
+                    raise RuntimeError("pdf-namer nightly fixture PDF escaped its owned root")
             samples.append({
                 "path": fp,
                 "filename": fn,
@@ -174,19 +258,42 @@ def analyze_one(pdf_path: str) -> dict:
     Training mode: disable fast-prefix shortcut so stamp OCR is always tested,
     giving meaningful stamp_verified metrics.
     """
-    _prev_trust = os.environ.get("MAGI_PDF_NAMER_TRUST_PREFIX_FIRST")
-    os.environ["MAGI_PDF_NAMER_TRUST_PREFIX_FIRST"] = "0"
+    # Each sample runs in a bounded child so OCR/image libraries cannot retain
+    # hundreds of megabytes across the full nightly batch.  This also keeps the
+    # input method and interactive API responsive while training is active.
+    env = os.environ.copy()
+    env["MAGI_PDF_NAMER_TRUST_PREFIX_FIRST"] = "0"
+    timeout = max(
+        30,
+        min(600, int(os.environ.get("MAGI_PDF_NAMER_TRAIN_SAMPLE_TIMEOUT_SEC", "180"))),
+    )
     try:
-        from action import task_analyze
-        raw = task_analyze(pdf_path)
-        return json.loads(raw)
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if _prev_trust is None:
-            os.environ.pop("MAGI_PDF_NAMER_TRUST_PREFIX_FIRST", None)
-        else:
-            os.environ["MAGI_PDF_NAMER_TRUST_PREFIX_FIRST"] = _prev_trust
+        completed = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(SKILL_DIR, "action.py"),
+                "--task",
+                "analyze",
+                "--path",
+                pdf_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "sample_timeout"}
+    except Exception as exc:
+        return {"error": f"sample_worker_failure:{type(exc).__name__}"}
+    if completed.returncode != 0:
+        return {"error": f"sample_worker_exit:{completed.returncode}"}
+    try:
+        parsed = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return {"error": "sample_worker_invalid_json"}
+    return parsed if isinstance(parsed, dict) else {"error": "sample_worker_invalid_payload"}
 
 
 def _validate_filename_format(filename: str) -> dict:
@@ -195,28 +302,14 @@ def _validate_filename_format(filename: str) -> dict:
 
     Returns dict with: valid (bool), issues (list of str)
     """
-    issues = []
     if not filename:
         return {"valid": False, "issues": ["空檔名"]}
-    bn = os.path.splitext(filename)[0]
-
-    # Check date prefix
-    if not re.match(r"^20\d{6}\s", bn):
-        issues.append("缺少 YYYYMMDD 日期前綴")
-
-    # Check space separator (not underscore)
-    if "_" in bn[:12]:
-        issues.append("日期後用底線而非空格分隔")
-
-    # Check parentheses for party
-    if "（" not in bn and "(" not in bn:
-        issues.append("缺少當事人括號")
-
-    # Check court name presence
-    if "法院" not in bn and "法扶" not in bn:
-        issues.append("缺少法院名稱")
-
-    return {"valid": len(issues) == 0, "issues": issues}
+    try:
+        from naming_validator import validate_filename
+    except ImportError:
+        return {"valid": False, "issues": ["命名驗證器無法載入"]}
+    valid, issues = validate_filename(filename)
+    return {"valid": bool(valid), "issues": list(issues)}
 
 
 def compare_result(ground_truth: dict, predicted: dict) -> dict:
@@ -283,7 +376,21 @@ def run_training(
                 started.strftime("%Y-%m-%d %H:%M"), max_files, dry_run)
 
     # Step 1: Collect samples
-    samples = collect_samples(max_files=max_files)
+    try:
+        samples = collect_samples(max_files=max_files)
+    except OSError as exc:
+        if not _is_transient_storage_error(exc):
+            raise
+        return {
+            "ok": False,
+            "status": "deferred",
+            "deferred": True,
+            "reason": "storage_device_temporarily_unavailable",
+            "started": started.isoformat(),
+            "total_samples": 0,
+            "analyzed": 0,
+            "errors": 0,
+        }
     logger.info("收集到 %d 個樣本", len(samples))
     if not samples:
         return {"error": "no_samples", "started": started.isoformat()}
@@ -302,6 +409,7 @@ def run_training(
     method_counter = Counter()
     label_accuracy: Dict[str, Dict[str, int]] = defaultdict(lambda: {"correct": 0, "total": 0})
     errors = 0
+    storage_deferred = False
 
     for i, sample in enumerate(samples):
         if i > 0 and i % 20 == 0:
@@ -352,12 +460,26 @@ def run_training(
         if comp["date_match"]:
             label_accuracy[label]["correct"] += 1
 
+        # The production analyzer does not always return a content hash.  Do
+        # not reopen a remote NAS PDF merely to enrich a nightly quality
+        # sample: a disconnected SMB volume can leave that read in an
+        # uninterruptible kernel wait, outside the analyzer's per-sample
+        # timeout.  The hash is optional evidence here; naming quality is
+        # measured from the already bounded analyzer result.
+        pdf_sha256 = predicted.get("pdf_sha256") or None
+
         results.append({
             "filename": sample["filename"],
             "label": label,
             "comparison": comp,
             "predicted_filename": predicted.get("suggested_filename"),
             "predicted_doc_type": predicted.get("doc_type"),
+            "pdf_sha256": pdf_sha256,
+            "pdf_sha256_available": bool(pdf_sha256),
+            "parsed_page_count": predicted.get("parsed_page_count"),
+            "parsed_text_sha256": predicted.get("parsed_text_sha256"),
+            "provider_quality_certified": predicted.get("provider_quality_certified"),
+            "provider_role": predicted.get("provider_role") or "live_pdf_namer_model",
         })
 
     # Step 3: Compute metrics
@@ -367,6 +489,10 @@ def run_training(
     party_acc = (party_correct / party_total * 100) if party_total else 0
 
     report = {
+        "ok": bool(results) and not storage_deferred,
+        "status": "deferred" if storage_deferred else ("completed" if results else "failed"),
+        "deferred": storage_deferred,
+        "reason": "storage_device_temporarily_unavailable" if storage_deferred else "",
         "started": started.isoformat(),
         "elapsed_sec": round(elapsed, 1),
         "total_samples": len(samples),
@@ -388,6 +514,15 @@ def run_training(
             "format_issues": dict(format_issue_counter.most_common()),
         },
         "date_methods": dict(method_counter.most_common()),
+        "sample_manifest": results,
+        "provider_quality_certified": not any(
+            item.get("provider_quality_certified") is False for item in results
+        ),
+        "provider_role": (
+            "deterministic_pdf_naming_proposal_fixture"
+            if any(item.get("provider_quality_certified") is False for item in results)
+            else "live_pdf_namer_model"
+        ),
         "per_label_accuracy": {
             label: {
                 "correct": v["correct"],
@@ -460,19 +595,19 @@ def run_training(
     # Step 4c: Log what nightly_train produces vs what naming pipeline actually uses
     # This helps diagnose the feedback loop disconnect
     report["feedback_loop_status"] = {
-        "learned_rules_path": os.path.join(SKILL_DIR, "_learned_filename_rules.json"),
-        "learned_rules_exist": os.path.exists(os.path.join(SKILL_DIR, "_learned_filename_rules.json")),
-        "corrections_path": os.path.join(SKILL_DIR, "_corrections.json"),
-        "corrections_exist": os.path.exists(os.path.join(SKILL_DIR, "_corrections.json")),
-        "db_rules_cache_path": os.path.join(SKILL_DIR, "db_rules_cache.json"),
-        "db_rules_cache_exist": os.path.exists(os.path.join(SKILL_DIR, "db_rules_cache.json")),
+        "learned_rules_path": str(read_path("_learned_filename_rules.json")),
+        "learned_rules_exist": read_path("_learned_filename_rules.json").exists(),
+        "corrections_path": str(read_path("_corrections.json")),
+        "corrections_exist": read_path("_corrections.json").exists(),
+        "db_rules_cache_path": str(read_path("db_rules_cache.json")),
+        "db_rules_cache_exist": read_path("db_rules_cache.json").exists(),
         "pipeline_uses_learned_rules": True,  # Connected in Phase 1A
         "pipeline_uses_db_templates": True,   # Connected in Phase 1B
     }
 
     # Save report
     try:
-        with open(REPORT_PATH, "w", encoding="utf-8") as f:
+        with open(prepare_write(REPORT_PATH), "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         logger.info("報告已存: %s", REPORT_PATH)
     except Exception as e:
@@ -481,7 +616,7 @@ def run_training(
     return report
 
 
-_THRESHOLD_STATE_PATH = os.path.join(SKILL_DIR, "_threshold_state.json")
+_THRESHOLD_STATE_PATH = str(state_path("_threshold_state.json"))
 
 
 def _auto_adjust_filing_threshold(report: dict):
@@ -503,9 +638,10 @@ def _auto_adjust_filing_threshold(report: dict):
 
     # Load current state
     state = {}
-    if os.path.exists(_THRESHOLD_STATE_PATH):
+    threshold_read_path = read_path("_threshold_state.json")
+    if threshold_read_path.exists():
         try:
-            state = json.loads(Path(_THRESHOLD_STATE_PATH).read_text(encoding="utf-8") or "{}")
+            state = json.loads(threshold_read_path.read_text(encoding="utf-8") or "{}")
         except Exception:
             pass
 
@@ -536,7 +672,7 @@ def _auto_adjust_filing_threshold(report: dict):
         "party_acc": party_acc,
     })
 
-    Path(_THRESHOLD_STATE_PATH).write_text(
+    prepare_write(_THRESHOLD_STATE_PATH).write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
@@ -612,13 +748,19 @@ if __name__ == "__main__":
                         help="只分析不更新規則")
     parser.add_argument("--report-only", action="store_true",
                         help="只輸出報告，不更新規則、不發通知")
+    parser.add_argument("--json-out", default="", help="另存完整 JSON 報告")
     args = parser.parse_args()
+    _enable_main_file_logging()
 
     report = run_training(
         max_files=args.max_files,
         dry_run=args.dry_run,
         report_only=args.report_only,
     )
+    if args.json_out:
+        output = Path(args.json_out).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     # Print summary to stdout
     m = report.get("metrics", {})
@@ -626,3 +768,12 @@ if __name__ == "__main__":
     print(f"當事人精確度: {m.get('party_accuracy_pct', 0)}%")
     print(f"收文章辨識: {m.get('stamp_verified_count', 0)}")
     print(f"不一致: {report.get('mismatches_count', 0)}")
+    if os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") == "real_entrypoint_fixture_v1":
+        if report.get("error") or int(report.get("analyzed") or 0) < 1 or int(report.get("errors") or 0) > 0:
+            raise SystemExit(1)
+    if report.get("status") == "deferred":
+        raise SystemExit(75)
+    if (
+        report.get("error") or report.get("status") == "failed"
+    ) and not (args.dry_run or args.report_only):
+        raise SystemExit(1)

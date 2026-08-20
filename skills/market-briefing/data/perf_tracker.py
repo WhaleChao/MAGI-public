@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,8 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── 路徑推導 ─────────────────────────────────────────────────────
 _SKILL_DIR = Path(__file__).resolve().parent.parent  # market-briefing/
 _MAGI_ROOT = _SKILL_DIR.parents[1]
-_AGENT_DIR = _MAGI_ROOT / ".agent"
+_LEGACY_AGENT_DIR = _MAGI_ROOT / ".agent"
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR") or str(_LEGACY_AGENT_DIR)).expanduser()
 PERF_PATH = _AGENT_DIR / "market_perf_history.json"
+_LEGACY_PERF_PATH = _LEGACY_AGENT_DIR / "market_perf_history.json"
+_MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR") or str(_MAGI_ROOT / "static")
+).expanduser()
 
 # Import shared indicators
 from data.indicators import _clamp, _pct, _safe_mean
@@ -30,6 +36,11 @@ _DEFAULT_MODEL_PARAMS = {
     "bias": 0.0,
     "updated_at": "",
 }
+
+_QUALITY_WINDOW = 180
+_MIN_QUALITY_SAMPLES = 60
+_MIN_VERIFIED_HIT_RATE = 52.0
+_MIN_BASELINE_EDGE = 2.0
 
 
 def _tz_now() -> datetime:
@@ -58,7 +69,7 @@ def _save_json(path: Path, payload: Any) -> None:
 
 def _notify_log(event: str, detail: str = "", notify_log_path: Optional[Path] = None) -> None:
     if notify_log_path is None:
-        notify_log_path = _MAGI_ROOT / "static" / "market_briefing_notify.log"
+        notify_log_path = _MUTABLE_STATIC_DIR / "market_briefing_notify.log"
     try:
         notify_log_path.parent.mkdir(parents=True, exist_ok=True)
         ts = _tz_now().strftime("%Y-%m-%d %H:%M:%S")
@@ -81,7 +92,10 @@ def _save_cache(cache: Dict[str, Any], cache_path: Path) -> None:
 
 
 def _load_perf() -> Dict[str, Any]:
-    d = _load_json(PERF_PATH, {})
+    read_path = PERF_PATH
+    if not read_path.exists() and PERF_PATH.resolve(strict=False) != _LEGACY_PERF_PATH.resolve(strict=False):
+        read_path = _LEGACY_PERF_PATH
+    d = _load_json(read_path, {})
     if not isinstance(d, dict):
         d = {}
     if not isinstance(d.get("records"), list):
@@ -150,6 +164,83 @@ def _sign(v: float, eps: float = 0.15) -> int:
     if v < -eps:
         return -1
     return 0
+
+
+def _resolved_rows(perf: Dict[str, Any], market: str = "") -> List[Dict[str, Any]]:
+    market_key = str(market or "").strip().upper()
+    rows = [
+        row
+        for row in (perf.get("records") or [])
+        if isinstance(row, dict)
+        and row.get("resolved_date")
+        and row.get("actual_ret_pct") is not None
+        and (not market_key or str(row.get("market") or "").strip().upper() == market_key)
+    ]
+    rows.sort(
+        key=lambda row: (
+            str(row.get("target_date") or row.get("actual_date") or ""),
+            str(row.get("symbol") or ""),
+        )
+    )
+    return rows
+
+
+def _direction_quality(
+    rows: List[Dict[str, Any]],
+    *,
+    params: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Compare directional accuracy with the best constant-direction baseline."""
+
+    directional: List[Tuple[int, int]] = []
+    for row in rows:
+        actual = _sign(float(row.get("actual_ret_pct") or 0.0))
+        if actual == 0:
+            continue
+        if params is None:
+            predicted = _sign(float(row.get("pred_pct") or 0.0))
+        else:
+            predicted = _sign(
+                _predict_pct_by_params(
+                    float(row.get("trend") or 0.0),
+                    float(row.get("mom5") or 0.0),
+                    float(row.get("vol") or 0.0),
+                    params,
+                )
+            )
+        directional.append((predicted, actual))
+
+    count = len(directional)
+    model_hits = sum(predicted == actual for predicted, actual in directional)
+    up_hits = sum(actual == 1 for _, actual in directional)
+    down_hits = sum(actual == -1 for _, actual in directional)
+    hit_rate = model_hits / count * 100.0 if count else 0.0
+    baseline = max(up_hits, down_hits) / count * 100.0 if count else 0.0
+    edge = hit_rate - baseline
+    verified = bool(
+        count >= _MIN_QUALITY_SAMPLES
+        and hit_rate >= _MIN_VERIFIED_HIT_RATE
+        and edge >= _MIN_BASELINE_EDGE
+    )
+    return {
+        "status": "verified_edge" if verified else "no_verified_edge",
+        "verified_edge": verified,
+        "sample_count": count,
+        "hit_rate": round(hit_rate, 1),
+        "baseline_hit_rate": round(baseline, 1),
+        "edge_pct_point": round(edge, 1),
+        "minimum_sample_count": _MIN_QUALITY_SAMPLES,
+        "minimum_hit_rate": _MIN_VERIFIED_HIT_RATE,
+        "minimum_edge_pct_point": _MIN_BASELINE_EDGE,
+    }
+
+
+def _market_quality_gate(perf: Dict[str, Any], market: str = "") -> Dict[str, Any]:
+    rows = _resolved_rows(perf, market)[-_QUALITY_WINDOW:]
+    result = _direction_quality(rows)
+    result["market"] = str(market or "ALL").strip().upper()
+    result["window"] = len(rows)
+    return result
 
 
 def _predict_pct_by_params(trend: float, mom5: float, vol: float, params: Dict[str, float]) -> float:
@@ -245,7 +336,7 @@ def _mae_for_params(samples: List[Dict[str, Any]], params: Dict[str, float]) -> 
 def _refresh_metrics(perf: Dict[str, Any]) -> Dict[str, Any]:
     recs = perf.get("records") if isinstance(perf.get("records"), list) else []
     solved = [r for r in recs if isinstance(r, dict) and r.get("resolved_date")]
-    recent = solved[-180:]
+    recent = solved[-_QUALITY_WINDOW:]
     if not recent:
         perf["metrics"] = {"resolved": 0, "mae_pct_point": 0.0, "hit_rate": 0.0, "last_resolved": ""}
         return perf["metrics"]
@@ -258,6 +349,7 @@ def _refresh_metrics(perf: Dict[str, Any]) -> Dict[str, Any]:
         "mae_pct_point": round(mae, 3),
         "hit_rate": round(hit, 1),
         "last_resolved": str(recent[-1].get("resolved_date") or ""),
+        "quality_gate": _market_quality_gate(perf),
     }
     return perf["metrics"]
 
@@ -312,25 +404,39 @@ def _resolve_records_and_tune(perf: Dict[str, Any]) -> Dict[str, Any]:
         and r.get("trend") is not None
         and r.get("mom5") is not None
         and r.get("vol") is not None
-    ][-240:]
-    if len(samples) >= 20:
-        fitted_uniform = _fit_params_from_samples(samples)
-        fitted_decay = _fit_params_from_samples(samples, decay=0.02)
+    ]
+    samples.sort(
+        key=lambda row: (
+            str(row.get("target_date") or row.get("actual_date") or ""),
+            str(row.get("symbol") or ""),
+        )
+    )
+    samples = samples[-240:]
+    if len(samples) >= 60:
+        split = max(40, int(len(samples) * 0.7))
+        train = samples[:split]
+        validation = samples[split:]
+        fitted_uniform = _fit_params_from_samples(train)
+        fitted_decay = _fit_params_from_samples(train, decay=0.02)
         candidates = [(f, t) for f, t in [(fitted_uniform, "uniform"), (fitted_decay, "decay")] if f]
         fitted = None
         fit_type = ""
         if candidates:
             best_mae = 999.0
             for f, t in candidates:
-                m_val = _mae_for_params(samples, f)
+                m_val = _mae_for_params(validation, f)
                 if m_val < best_mae:
                     best_mae = m_val
                     fitted = f
                     fit_type = t
         if fitted:
-            old_mae = _mae_for_params(samples, params)
-            new_mae = _mae_for_params(samples, fitted)
-            if (old_mae - new_mae) >= 0.03:
+            old_mae = _mae_for_params(validation, params)
+            new_mae = _mae_for_params(validation, fitted)
+            direction_gate = _direction_quality(validation, params=fitted)
+            if (
+                (old_mae - new_mae) >= 0.03
+                and bool(direction_gate.get("verified_edge"))
+            ):
                 lr = 0.35
                 merged = {
                     "w_trend": (1 - lr) * float(params.get("w_trend", 0.55)) + lr * float(fitted["w_trend"]),
@@ -348,11 +454,20 @@ def _resolve_records_and_tune(perf: Dict[str, Any]) -> Dict[str, Any]:
                 logs.append({
                     "ts": _tz_now().isoformat(),
                     "sample_count": len(samples),
+                    "training_count": len(train),
+                    "validation_count": len(validation),
+                    "fit_type": fit_type,
                     "old_mae": round(old_mae, 6),
                     "new_mae": round(new_mae, 6),
+                    "direction_quality": direction_gate,
                     "params": {k: round(float(v), 6) for k, v in merged.items() if k != "updated_at"},
                 })
                 perf["tuning_log"] = logs[-100:]
+            else:
+                tune_msg = (
+                    "候選權重未通過時間序列方向優勢閘門，"
+                    "維持既有權重且對外標示觀望"
+                )
 
     metrics = _refresh_metrics(perf)
     return {
@@ -449,6 +564,15 @@ def _format_perf_lines(perf: Dict[str, Any], resolve_info: Dict[str, Any]) -> Li
             f"bias={float(model_params.get('bias') or _DEFAULT_MODEL_PARAMS['bias']):+.3f}"
         ),
     ]
+    quality = metrics.get("quality_gate") if isinstance(metrics.get("quality_gate"), dict) else {}
+    if quality:
+        lines.append(
+            f"- 方向品質：{float(quality.get('hit_rate') or 0.0):.1f}%"
+            f"｜常數基準 {float(quality.get('baseline_hit_rate') or 0.0):.1f}%"
+            f"｜優勢 {float(quality.get('edge_pct_point') or 0.0):+.1f} pct"
+        )
+        if not bool(quality.get("verified_edge")):
+            lines.append("- 品質結論：尚未證明優於簡單基準；本輪只提供情境與風險，不給買賣方向。")
     tune_msg = str(resolve_info.get("tune_msg") or "").strip()
     if tune_msg:
         lines.append(f"- 校準結果：{tune_msg}")

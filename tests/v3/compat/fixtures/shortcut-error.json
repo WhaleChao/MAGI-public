@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "fixture_id": "shortcut-pdf-text-error",
+  "recorded_at": "2026-07-14T02:01:00Z",
+  "route": {
+    "service": "5003",
+    "rule": "/shortcut/pdf_text",
+    "methods": ["POST"],
+    "endpoint": "api_shortcut_pdf_text"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/shortcut/pdf_text",
+    "query": {},
+    "headers": {
+      "X-API-Key": "<redacted:x-api-key:e95fd864e4c1>",
+      "Content-Type": "multipart/form-data"
+    },
+    "content_type": "multipart/form-data",
+    "body": {},
+    "files": [
+      {
+        "field": "file",
+        "filename": "<redacted:filename:0f6f01edb879>",
+        "content_type": "application/pdf",
+        "size_bytes": 18,
+        "sha256": "26ba81e059f5547a5f9676a31013093fb984a3838b47528a7a6eacec09acf90c",
+        "content_base64": "JVBERi10ZXN0LWZpeHR1cmUK",
+        "safe_test_payload": true
+      }
+    ]
+  },
+  "response": {
+    "status": 422,
+    "headers": {"Content-Type": "text/plain; charset=utf-8"},
+    "content_type": "text/plain; charset=utf-8",
+    "body": "[error] invalid_pdf"
+  },
+  "side_effect_class": "reversible_write",
+  "expected_legacy_shape": "text_plain",
+  "redaction": {
+    "version": 1,
+    "safe_for_offline": true,
+    "raw_payload_retained": true,
+    "test_payload_only": true,
+    "applied": ["key:filename", "key:x-api-key"]
+  },
+  "replay": {
+    "mode": "offline",
+    "network_allowed": false,
+    "external_writes_allowed": false
+  }
+}

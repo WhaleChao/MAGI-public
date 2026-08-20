@@ -2,9 +2,14 @@ import sqlite3
 import os
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-DB_PATH = f"{_MAGI_ROOT}/magi_brain.db"
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+DB_PATH = os.environ.get(
+    "MAGI_BRAIN_SQLITE_PATH",
+    os.path.join(_AGENT_DIR, "magi_brain.db") if _AGENT_DIR else f"{_MAGI_ROOT}/magi_brain.db",
+)
 
 def init_db():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 

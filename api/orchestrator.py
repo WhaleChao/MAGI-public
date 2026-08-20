@@ -12,9 +12,10 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from api.thread_pools import io_pool, inference_pool
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 import threading as _threading
 
 from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
@@ -23,6 +24,35 @@ _orchestrator_tls = _threading.local()
 
 from skills.bridge.grounded_ai import ask_casper
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _v3_external_dir(env_name: str, legacy_path: str) -> str:
+    """Resolve mutable state without ever falling back into a V3 release."""
+    configured = os.environ.get(env_name, "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    if os.environ.get("MAGI_V3_RELEASE_ID", "").strip():
+        raise RuntimeError(f"{env_name} is required for an immutable V3 release")
+    return os.path.abspath(legacy_path)
+
+
+_ORCH_AGENT_DIR = _v3_external_dir("MAGI_AGENT_DIR", os.path.join(_MAGI_ROOT, ".agent"))
+_ORCH_MUTABLE_STATIC_DIR = _v3_external_dir(
+    "MAGI_MUTABLE_STATIC_DIR", os.path.join(_MAGI_ROOT, "static")
+)
+
+
+def _brain_sqlite_path() -> str:
+    configured = os.environ.get("MAGI_BRAIN_SQLITE_PATH", "").strip()
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    if os.environ.get("MAGI_AGENT_DIR", "").strip():
+        return os.path.join(_ORCH_AGENT_DIR, "magi_brain.db")
+    return os.path.join(_MAGI_ROOT, "magi_brain.db")
+
+
+def _magi_status_path() -> str:
+    return os.path.join(_ORCH_MUTABLE_STATIC_DIR, "magi_status.json")
 
 # Stability-first default:
 # disable distributed inference unless explicitly turned back on.
@@ -201,7 +231,15 @@ from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 _orch_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Orchestrator")
 if not logger.handlers:
-    _orch_file_handler = _RotatingFileHandler(f'{_MAGI_ROOT}/casper.log', maxBytes=5*1024*1024, backupCount=3)
+    # V2 historically wrote casper.log at the repository root.  V3 always
+    # supplies MAGI_AGENT_DIR and therefore keeps the release tree immutable.
+    _orch_log_root = _ORCH_AGENT_DIR if os.environ.get("MAGI_AGENT_DIR", "").strip() else _MAGI_ROOT
+    os.makedirs(_orch_log_root, exist_ok=True)
+    _orch_file_handler = _RotatingFileHandler(
+        os.path.join(_orch_log_root, "casper.log"),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+    )
     _orch_file_handler.setFormatter(_orch_log_formatter)
     logger.addHandler(_orch_file_handler)
     logger.setLevel(logging.INFO)
@@ -211,12 +249,46 @@ from api.command_registry import CommandRegistry, CommandContext
 # Global command registry — commands registered below after class definition
 _cmd_registry = CommandRegistry()
 
+
+class _BoundedHistoryMap(OrderedDict):
+    """Per-user conversation buffers with an LRU cap on identity count."""
+
+    def __init__(self, max_users: int = 5000, history_size: int = 40):
+        super().__init__()
+        self.max_users = max(1, int(max_users))
+        self.history_size = max(1, int(history_size))
+        self._lock = threading.RLock()
+
+    def __getitem__(self, key):
+        with self._lock:
+            if key not in self:
+                super().__setitem__(key, deque(maxlen=self.history_size))
+            value = super().__getitem__(key)
+            self.move_to_end(key)
+            while len(self) > self.max_users:
+                self.popitem(last=False)
+            return value
+
+    def get(self, key, default=None):
+        with self._lock:
+            if key not in self:
+                return default
+            value = super().__getitem__(key)
+            self.move_to_end(key)
+            return value
+
 # Register Apple-native commands (Spotlight, EventKit, notifications)
 try:
     from api.commands.apple_commands import register_apple_commands
     register_apple_commands(_cmd_registry)
 except Exception:
     pass  # Apple commands are optional — fail silently on non-macOS
+
+try:
+    from api.commands.forensic_transcript_commands import register_forensic_transcript_commands
+    register_forensic_transcript_commands(_cmd_registry)
+except Exception:
+    logger.warning("forensic transcript Discord command registration failed", exc_info=True)
 
 class Orchestrator:
     def __init__(self):
@@ -225,7 +297,10 @@ class Orchestrator:
         self._cmd_registry = _cmd_registry
         self._TOPIC_HANDLERS = {}  # topic_key -> handler function (populated by channel plugins)
         self.notification_callback = self._default_notification_callback
-        self.user_history = defaultdict(lambda: deque(maxlen=40))
+        self.user_history = _BoundedHistoryMap(
+            max_users=int(os.environ.get("MAGI_USER_HISTORY_MAX_USERS", "5000") or "5000"),
+            history_size=40,
+        )
         self._history_summaries: dict = {}  # user_id -> latest rolling summary str
         self._history_summaries_maxsize = 2000
         self._history_summaries_lock = threading.Lock()
@@ -235,13 +310,15 @@ class Orchestrator:
         self._chatlog_last_write_maxsize = 5000
         self._chatlog_last_write_lock = threading.Lock()
         self._rule_last_write = {}  # (user_id, platform) -> ts
+        self._rule_last_write_maxsize = 5000
         self._rule_last_write_lock = threading.Lock()
         self._forge_locks: dict = {}  # user_id -> threading.Lock for forge concurrency guard
+        self._forge_locks_guard = threading.Lock()
         self._admin_allowlist_cache = {
             "ts": 0.0,
             "line_admin_ids": set(),
         }
-        self._agent_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".agent")
+        self._agent_dir = _ORCH_AGENT_DIR
         os.makedirs(self._agent_dir, mode=0o700, exist_ok=True)
         try:
             os.chmod(self._agent_dir, 0o700)
@@ -274,23 +351,42 @@ class Orchestrator:
         self._timeout_pool = inference_pool
         self._bg_task_pool = io_pool
         self._ensure_runtime_foundations()
-        # Non-blocking oMLX health check at startup
-        try:
-            import urllib.request
+        # Import/offline certification must not create a network connection merely
+        # by constructing the orchestrator. Live startup keeps the normal probe.
+        _skip_import_probes = str(os.environ.get("MAGI_SKIP_IMPORT_PROBES") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not _skip_import_probes:
             try:
-                from api.routing.service_registry import get_service_url as _gsurl
-                _omlx_base = _gsurl("omlx_inference")
-            except Exception:
-                _omlx_base = "http://localhost:8080"
-            _omlx_url = os.environ.get("OMLX_BASE_URL", _omlx_base) + "/v1/models"
-            req = urllib.request.Request(_omlx_url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    logger.info("✅ oMLX reachable at startup")
+                try:
+                    from api.routing.service_registry import get_service_url as _gsurl
+                    _omlx_base = _gsurl("omlx_inference")
+                except Exception:
+                    _omlx_base = "http://localhost:8080"
+                from skills.ops.health_probes import probe_omlx_models
+
+                _probe_base = (
+                    os.environ.get("MAGI_OMLX_CHAT_URL")
+                    or os.environ.get("OMLX_BASE_URL")
+                    or _omlx_base
+                )
+                _probe = probe_omlx_models(timeout_sec=3, base_url=_probe_base)
+                if _probe.get("pass"):
+                    _models = ", ".join(str(x) for x in (_probe.get("models") or [])[:3])
+                    logger.info("✅ oMLX reachable at startup (%s)", _models or "models available")
                 else:
-                    logger.warning(f"⚠️ oMLX returned status {resp.status} at startup — inference may fail")
-        except Exception as _e:
-            logger.warning(f"⚠️ oMLX unreachable at startup ({_e}) — inference may fail until oMLX is running")
+                    _status = _probe.get("status_code") or "no-status"
+                    _error = _probe.get("error") or "empty model list"
+                    logger.warning(
+                        "⚠️ oMLX startup probe failed (status=%s, %s) — inference may fail until oMLX is running",
+                        _status,
+                        _error,
+                    )
+            except Exception as _e:
+                logger.warning(f"⚠️ oMLX unreachable at startup ({_e}) — inference may fail until oMLX is running")
         # ── Skill Plugin Registry ─────────────────────────────────────
         self._last_dispatch_message = ""
         self._last_dispatch_user_id = ""
@@ -1163,7 +1259,7 @@ class Orchestrator:
         if now - cache_ts < ttl and self._admin_allowlist_cache.get("line_admin_ids"):
             return set(self._admin_allowlist_cache["line_admin_ids"])
 
-        db_path = os.environ.get("MAGI_BRAIN_SQLITE_PATH", f"{_MAGI_ROOT}/magi_brain.db")
+        db_path = _brain_sqlite_path()
         ids: set[str] = set()
         try:
             if not os.path.exists(db_path):
@@ -1279,9 +1375,37 @@ class Orchestrator:
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 3928, exc_info=True)
 
+        _publish_agent_shadow = False
         try:
-            return self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            from api.agentic.shadow import (
+                observe_start as _observe_agent_start,
+                should_publish_public_agent_status as _should_publish_public_agent_status,
+            )
+
+            _publish_agent_shadow = _should_publish_public_agent_status(str(platform or ""))
+            if _publish_agent_shadow:
+                _observe_agent_start(str(message or ""))
+        except Exception:
+            logging.getLogger(__name__).debug("agent shadow start telemetry skipped", exc_info=True)
+
+        try:
+            result = self._process_message_inner(user_id, message, platform, role, attachment, correlation_id, progress_callback, channel_context=channel_context)
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                if _publish_agent_shadow:
+                    _observe_agent_finish(str(message or ""), result)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow completion telemetry skipped", exc_info=True)
+            return result
         except Exception as _fatal:
+            try:
+                from api.agentic.shadow import observe_finish as _observe_agent_finish
+
+                if _publish_agent_shadow:
+                    _observe_agent_finish(str(message or ""), None, failed=True)
+            except Exception:
+                logging.getLogger(__name__).debug("agent shadow failure telemetry skipped", exc_info=True)
             try:
                 from skills.management.issue_tracker import log_issue
 
@@ -1323,7 +1447,7 @@ class Orchestrator:
         """Get real-time MAGI node status from heartbeat."""
         import json
         import os
-        status_file = f"{_MAGI_ROOT}/static/magi_status.json"
+        status_file = _magi_status_path()
         
         try:
             if os.path.exists(status_file):
@@ -1486,9 +1610,13 @@ class Orchestrator:
         from api.domains.multimedia_flow import vision_classify_and_route_image
         return vision_classify_and_route_image(self, user_id, image_path, prompt)
 
-    def _handle_payment_proof_from_channel(self, image_path: str) -> str:
+    def _handle_payment_proof_from_channel(
+        self, image_path: str, case_hint: str = ""
+    ) -> str:
         from api.domains.multimedia_flow import handle_payment_proof_from_channel
-        return handle_payment_proof_from_channel(self, image_path)
+        return handle_payment_proof_from_channel(
+            self, image_path, case_hint=case_hint
+        )
 
     def _handle_command(self, user_id, message, role="user", platform="LINE"):
         from api.pipelines.command_dispatch import handle_command

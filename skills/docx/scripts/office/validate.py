@@ -19,6 +19,13 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+# The V3 launcher deliberately enables PYTHONSAFEPATH, so Python does not add
+# a script's directory to sys.path.  This directory is inside the verified,
+# immutable release and is the only permitted source for the bundled helpers.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from validators import DOCXSchemaValidator, PPTXSchemaValidator, RedliningValidator
 
 

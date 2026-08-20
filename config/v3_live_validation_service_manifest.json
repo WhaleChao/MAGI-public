@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "release_mode": "single_active_replacement",
+  "deployment_mode": "isolated_live_validation",
+  "services": [
+    {
+      "id": "main_http",
+      "role": "gateway",
+      "kind": "wsgi",
+      "required": true,
+      "port": 5002,
+      "factory": "magi_v3.live_validation:create_main_app"
+    },
+    {
+      "id": "tools_http",
+      "role": "gateway",
+      "kind": "wsgi",
+      "required": true,
+      "port": 5003,
+      "factory": "magi_v3.live_validation:create_tools_app"
+    },
+    {
+      "id": "website_admin",
+      "role": "control",
+      "kind": "http_server",
+      "required": true,
+      "port": 8088,
+      "factory": "magi_v3.live_validation:create_admin_server"
+    },
+    {
+      "id": "live_validation_probe",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "magi_v3/live_validation_probe_service.py"]
+    }
+  ],
+  "host_singletons": [
+    "mariadb",
+    "nas_mounts",
+    "rpc",
+    "omlx_text_8080",
+    "omlx_embedding_8081",
+    "input_method_watchdog",
+    "memory_watchdog",
+    "omlx_watchdog"
+  ],
+  "forbidden_release_processes": [
+    "daemon.py"
+  ]
+}

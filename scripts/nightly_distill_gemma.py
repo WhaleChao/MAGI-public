@@ -33,11 +33,26 @@ from contextlib import contextmanager
 from datetime import datetime, time as _t
 from pathlib import Path
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path.home() / "Desktop/MAGI_v2")))
+MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[1])))
 sys.path.insert(0, str(MAGI_ROOT))
+_SCHEDULE_FIXTURE_ROOT = (
+    Path(os.environ["MAGI_V3_SCHEDULE_FIXTURE_ROOT"]).expanduser()
+    if os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") == "1"
+    and os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT")
+    else None
+)
 
-# 日誌設定（gemma-distill 目錄可能尚不存在，先 mkdir）
-_LOG_DIR = Path.home() / ".omlx/training/gemma-distill"
+# 日誌設定（gemma-distill 目錄可能尚不存在，先 mkdir）。Keep the
+# scheduler log beside the configured mutable training workspace.
+_LOG_DIR = Path(
+    os.environ.get("GEMMA_DISTILL_DIR")
+    or (
+        str(_SCHEDULE_FIXTURE_ROOT / "workspace" / "gemma-distill")
+        if _SCHEDULE_FIXTURE_ROOT is not None
+        else ""
+    )
+    or str(Path.home() / ".omlx/training/gemma-distill")
+).expanduser()
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -53,10 +68,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("nightly_distill_gemma")
 
+
+def _child_python() -> str:
+    """Use the sealed-candidate launcher when deployment supplied one."""
+
+    sealed = bool(
+        str(os.environ.get("MAGI_V3_RELEASE_ID") or "").strip()
+        or str(os.environ.get("MAGI_V3_DEPLOYMENT_MODE") or "").strip()
+    )
+    launcher = str(os.environ.get("MAGI_V3_EXECUTABLE_PATH") or "").strip()
+    if sealed and not launcher:
+        raise RuntimeError("sealed V3 child process requires its verified launcher")
+    declared = str(
+        launcher
+        or os.environ.get("MAGI_SKILL_PYTHON")
+        or ""
+    ).strip()
+    if declared:
+        candidate = Path(declared).expanduser()
+        if (
+            candidate.is_absolute()
+            and candidate.is_file()
+            and os.access(candidate, os.X_OK)
+        ):
+            return str(candidate)
+        raise RuntimeError("bound child Python executable is unavailable or unsafe")
+    source_python = MAGI_ROOT / "venv/bin/python3"
+    if source_python.is_file() and os.access(source_python, os.X_OK):
+        return str(source_python)
+    return sys.executable
+
 # ── 路徑 ──────────────────────────────────────────────────────────────
 DISTILL_DIR = Path(os.environ.get(
     "GEMMA_DISTILL_DIR",
-    str(Path.home() / ".omlx/training/gemma-distill"),
+    str(_LOG_DIR),
 ))
 BASE_MODEL = Path(os.environ.get(
     "GEMMA_E4B_BASE_MODEL",
@@ -69,7 +114,7 @@ STATE_PATH = DISTILL_DIR / "collector_state.json"
 LOCK_PATH = DISTILL_DIR / "nightly_distill_gemma.pid"
 TRAINING_LOCK_PATH = Path(os.environ.get(
     "MAGI_TRAINING_LOCK_PATH",
-    str(MAGI_ROOT / "static" / "training.lock"),
+    str(Path.home() / "Library" / "Application Support" / "MAGI" / "training.lock"),
 ))
 
 OMLX_LABEL = "com.magi.omlx"
@@ -298,6 +343,16 @@ def safe_start_omlx() -> bool:
     return True
 
 
+def prepare_online_training() -> None:
+    """Mark training active without taking the production inference endpoint offline."""
+    _write_training_lock()
+    logger.info("Keeping oMLX 8080 online during LoRA training")
+
+
+def finish_online_training() -> None:
+    _clear_training_lock()
+
+
 # ── 手動部署入口（--deploy <version>）───────────────────────────────
 def deploy_model(version: str) -> int:
     """手動部署：切換 oMLX symlink 並跑 post-deploy test。"""
@@ -410,6 +465,109 @@ def _resource_allows_training() -> tuple[bool, str]:
         return True, "resource_governor_unavailable"
 
 
+def _run_schedule_fixture(raw_root: str, raw_output: str) -> int:
+    from scripts.ops.schedule_fixture_contract import (
+        load_schedule_fixture,
+        safety_receipt,
+        write_fixture_report,
+    )
+
+    fixture = load_schedule_fixture(raw_root, job_id="job_distill_train_gemma")
+    product_input = fixture.manifest["product_input"]
+    raw_pairs = fixture.input_path(str(product_input.get("raw_pairs") or "raw_pairs.jsonl"))
+    if not raw_pairs.is_file():
+        raise RuntimeError("bounded distill fixture raw_pairs.jsonl is missing")
+    expected = product_input.get("expected_counts")
+    if not isinstance(expected, dict):
+        raise RuntimeError("bounded distill fixture expected_counts is missing")
+    training_profile = fixture.input_path(
+        str(product_input.get("training_profile") or "training-profile.json")
+    )
+    if not training_profile.is_file():
+        raise RuntimeError("bounded distill training profile is missing")
+    global DISTILL_DIR
+    original_distill_dir = DISTILL_DIR
+    DISTILL_DIR = fixture.workspace / "gemma-distill"
+    DISTILL_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with _gemma_distill_collector_paths(raw_pairs) as collector:
+            counts = collector.count_usable_pairs()
+            split = collector.build_training_set(eval_ratio=0.25, seed=7)
+        child = subprocess.run(
+            [
+                sys.executable,
+                str(MAGI_ROOT / "scripts" / "train_gemma_e4b_lora.py"),
+                "--bounded-training-profile",
+                str(training_profile),
+            ],
+            cwd=str(MAGI_ROOT),
+            env={
+                **os.environ,
+                "PYTHONPATH": str(MAGI_ROOT),
+                "GEMMA_DISTILL_DIR": str(DISTILL_DIR),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        try:
+            training = json.loads(child.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError) as exc:
+            raise RuntimeError("bounded distill child terminal is unreadable") from exc
+    finally:
+        DISTILL_DIR = original_distill_dir
+    expected_match = all(
+        type(expected.get(key)) is int and counts.get(key) == expected.get(key)
+        for key in ("raw", "usable", "skipped")
+    )
+    checks = {
+        "fixture_sample_bound": 1 <= fixture.sample_id <= 3,
+        "usable_pair_filter_matches_fixture": expected_match,
+        "training_split_accounts_for_usable_pairs": (
+            int(split.get("train", 0)) + int(split.get("eval", 0))
+            == int(counts.get("usable", 0))
+        ),
+        "rejected_reasoning_pairs_excluded": int(split.get("skipped", 0))
+        == int(counts.get("skipped", 0)),
+        "bounded_training_child_completed": child.returncode == 0
+        and training.get("status") == "passed",
+        "optimizer_loop_executed": int(training.get("optimizer_steps", 0)) >= 2
+        and len(training.get("history") or []) == int(training.get("optimizer_steps", 0))
+        and float(training.get("final_train_loss", 0))
+        < float(training.get("initial_train_loss", 0)),
+        "checkpoints_persisted": int(training.get("checkpoint_count", 0))
+        == int(training.get("optimizer_steps", 0))
+        and len(training.get("checkpoint_sha256") or [])
+        == int(training.get("optimizer_steps", 0)),
+        "eval_reached_true_terminal": training.get("validation_pass") is True
+        and float(training.get("eval_loss", -1)) >= 0,
+        "deploy_forbidden": training.get("deploy_allowed") is False
+        and training.get("deployed") is False
+        and training.get("active_model_written") is False
+        and not (fixture.workspace / "gemma-distill" / "pending_deploy.json").exists()
+        and not (fixture.workspace / "gemma-distill" / "active_model.json").exists(),
+    }
+    success = all(checks.values())
+    report = {
+        "schema": "magi.schedule-product-result/v1",
+        "job_id": fixture.job_id,
+        "fixture_sample_id": fixture.sample_id,
+        "success": success,
+        "status": "passed" if success else "failed",
+        "checks": checks,
+        "usable_counts": counts,
+        "training_split": split,
+        "training": training,
+        "training_child_returncode": child.returncode,
+        "safety": safety_receipt(fixture),
+    }
+    output = write_fixture_report(fixture, raw_output, report)
+    report["json_out"] = str(output)
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0 if success else 1
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────
 def main() -> int:
     global _start_time
@@ -418,7 +576,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Gemma E4B 知識蒸餾週間排程")
     parser.add_argument("--deploy", metavar="VERSION", help="手動部署指定版本（不跑訓練）")
     parser.add_argument("--help-deploy", action="store_true", help="顯示部署說明")
+    parser.add_argument("--schedule-fixture-root")
+    parser.add_argument("--json-out", default="distill_train_gemma.json")
     args = parser.parse_args()
+
+    if args.schedule_fixture_root:
+        return _run_schedule_fixture(args.schedule_fixture_root, args.json_out)
 
     # 手動部署模式
     if args.deploy:
@@ -504,10 +667,9 @@ def main() -> int:
         _notify(f"Gemma 蒸餾：過濾後訓練資料不足 ({split['train']})")
         return 0
 
-    # 4. 停 oMLX
-    _check_timeout("stop_omlx")
-    logger.info("Stopping oMLX for training...")
-    safe_stop_omlx()
+    # 4. 訓練與正式推理並行。資源守門已在前面完成；不可為離線訓練中斷 8080。
+    _check_timeout("prepare_training")
+    prepare_online_training()
 
     version = None
     train_result = {}
@@ -516,7 +678,7 @@ def main() -> int:
     validation_ok = False
 
     try:
-        venv_python = str(MAGI_ROOT / "venv/bin/python3")
+        venv_python = _child_python()
         train_script = str(MAGI_ROOT / "scripts/train_gemma_e4b_lora.py")
 
         _check_timeout("train")
@@ -584,10 +746,8 @@ def main() -> int:
             logger.warning("merged_path not found, skip pending_deploy.json")
 
     finally:
-        # 6. 重啟 oMLX（無論成功失敗都重啟）
-        _check_timeout("restart_omlx")
-        logger.info("Restarting oMLX...")
-        safe_start_omlx()
+        # 6. 訓練不再停止正式推理，只需解除訓練鎖。
+        finish_online_training()
 
     # 7. 清理舊 adapters
     cleanup_old_adapters()

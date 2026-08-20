@@ -1,0 +1,1307 @@
+{
+  "schema_version": 1,
+  "inventory_fingerprint": "fb615907acc4aae3e16ed254366362046bbf5747e29d0c27c2d27b5e33afaf27",
+  "review_policy": "explicit_route_method_only",
+  "reviews": [
+    {
+      "service": "5002",
+      "rule": "/",
+      "method": "POST",
+      "endpoint": "index",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/codex-distributed/toggle",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_codex_distributed_toggle",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/drive-case-exclusions",
+      "method": "DELETE",
+      "endpoint": "admin_runtime.api_drive_case_exclusions_remove",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/drive-case-exclusions",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_drive_case_exclusions_add",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/golem/api-keys",
+      "method": "POST",
+      "endpoint": "golem_console.golem_api_keys_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/intel/refresh",
+      "method": "POST",
+      "endpoint": "dashboard_pages.intel_refresh",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/iron_dome/broadcast",
+      "method": "POST",
+      "endpoint": "iron_dome_broadcast",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/iron_dome/notify",
+      "method": "POST",
+      "endpoint": "iron_dome_notify",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/lottery/draw",
+      "method": "POST",
+      "endpoint": "lottery.lottery_draw_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/obsidian-sync",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_obsidian_sync",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/recall",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_recall",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/memory/remember",
+      "method": "POST",
+      "endpoint": "web_runtime.api_memory_remember",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/heavy-runtime",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_heavy_runtime",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/product-runtime",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_product_runtime",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/remote-access/action",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_remote_access_action",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skill-interview/reply",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_interview_reply",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skill-interview/start",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_interview_start",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/nerv/skills/<skill_name>",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_nerv_skill_detail",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/ops/process-guardian/toggle",
+      "method": "POST",
+      "endpoint": "web_runtime.process_guardian_toggle_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/backups",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_backup_create",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/backups/<filename>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_backup_delete",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_case_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_case_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/close",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_close_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/create-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_create_folder_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/laf-number/sync",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_laf_number_sync",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/laf-status",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_case_status_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/open-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_open_folder_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/quick-action",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_quick_action_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/cases/<row_id>/rename-folder",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_case_rename_folder_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/chat/upload",
+      "method": "POST",
+      "endpoint": "web_runtime.osc_chat_upload_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/case/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_case_checklist_delete",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/case/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_case_checklist_put",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_laf_checklist_delete",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_laf_checklist_put",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/checklists/legal-aid/seed",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_checklist_seed",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/discord/test",
+      "method": "POST",
+      "endpoint": "osc_settings.osc_discord_test_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-replacements",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_document_replacements_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-replacements/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_document_replacement_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_document_templates_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_document_template_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/document-templates/<int:row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_document_template_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/finalize",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_finalize_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/open",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_open_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/stamp",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_stamp_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/documents/stamp-preview",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_documents_stamp_preview_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/export",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_export_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/feedback",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_feedback_post_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/generate",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_generate_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/drafts/reuse-document",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_drafts_reuse_document_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/share",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_share_create_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/text",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_file_text_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_file_upload_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload-chunked",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_upload_chunked_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/files/upload-multi",
+      "method": "POST",
+      "endpoint": "osc_files.osc_files_upload_multi_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/mkdir",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_mkdir_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/move",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_move_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/folders/rename",
+      "method": "POST",
+      "endpoint": "osc_files.osc_folders_rename_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/forms/export",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_forms_export_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/insights/fetch-full",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_insights_fetch_full_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/labor-law/calc",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_labor_law_calc",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf-backfill",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_backfill_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf-wizard/run",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_wizard_run_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/laf/batch-status",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_laf_batch_status_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/magi-modules/run",
+      "method": "POST",
+      "endpoint": "web_runtime.osc_magi_modules_run_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf-generation-log/<int:row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_pdf_generation_log_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/pdf/calendar-scan",
+      "method": "POST",
+      "endpoint": "osc_pdf.osc_pdf_calendar_scan_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/quotations/<row_id>",
+      "method": "DELETE",
+      "endpoint": "osc_cases.osc_quotation_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/quotations/<row_id>",
+      "method": "PUT",
+      "endpoint": "osc_cases.osc_quotation_detail_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/delivery",
+      "method": "POST",
+      "endpoint": "raziel.raziel_delivery_api",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/run",
+      "method": "POST",
+      "endpoint": "raziel.raziel_run_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/raziel/tlr-preview",
+      "method": "POST",
+      "endpoint": "raziel.raziel_tlr_preview_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/client-packet",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_client_packet_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/conflict-check",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_conflict_check_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/intake",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_intake_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/notification-prefs",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_notification_prefs_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/onboarding",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_onboarding_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/saas/quality-check",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_saas_quality_check_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/osc/todos/bulk-complete-before",
+      "method": "POST",
+      "endpoint": "osc_cases.osc_todos_bulk_complete_before_api",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/self-repair",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_self_repair",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/skills/<skill_name>/rollback",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_skill_rollback",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/skills/run",
+      "method": "POST",
+      "endpoint": "dashboard_pages.api_skills_run_compat",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/system-test",
+      "method": "POST",
+      "endpoint": "admin_runtime.api_system_test",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/api/transcribe",
+      "method": "POST",
+      "endpoint": "admin_runtime.transcribe_audio",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/callback",
+      "method": "POST",
+      "endpoint": "callback",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5002",
+      "rule": "/login",
+      "method": "POST",
+      "endpoint": "login",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/register",
+      "method": "POST",
+      "endpoint": "register",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5002",
+      "rule": "/telegram/webhook",
+      "method": "POST",
+      "endpoint": "telegram.telegram_webhook",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/alert",
+      "method": "POST",
+      "endpoint": "api_alert",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/clients",
+      "method": "POST",
+      "endpoint": "api_add_client",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/code/autofix",
+      "method": "POST",
+      "endpoint": "api_code_autofix",
+      "side_effect_class": "destructive",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler can alter executable, repair, or code state; certifying replay is eligible only through an exact disposable-sandbox adapter with no live or external mutation."
+    },
+    {
+      "service": "5003",
+      "rule": "/code/skill-cycle",
+      "method": "POST",
+      "endpoint": "api_code_skill_cycle",
+      "side_effect_class": "destructive",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler can alter executable, repair, or code state; certifying replay is eligible only through an exact disposable-sandbox adapter with no live or external mutation."
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/chat",
+      "method": "POST",
+      "endpoint": "api_collab_chat",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/music",
+      "method": "POST",
+      "endpoint": "api_collab_music",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/transcribe",
+      "method": "POST",
+      "endpoint": "api_collab_transcribe",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/collab/translate",
+      "method": "POST",
+      "endpoint": "api_collab_translate",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/council/core/approve",
+      "method": "POST",
+      "endpoint": "api_council_core_approve",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/council/core/reject",
+      "method": "POST",
+      "endpoint": "api_council_core_reject",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/fetch",
+      "method": "POST",
+      "endpoint": "api_fetch",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/iron-dome/auto-harden",
+      "method": "POST",
+      "endpoint": "api_iron_dome_auto_harden",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/iron-dome/patterns",
+      "method": "POST",
+      "endpoint": "api_iron_dome_patterns_add",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/laf/smoke_login",
+      "method": "POST",
+      "endpoint": "api_laf_smoke_login",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/legal/<skill_name>",
+      "method": "POST",
+      "endpoint": "api_legal_skill",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/meetings",
+      "method": "POST",
+      "endpoint": "api_book_meeting",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/melchior/skills/sync",
+      "method": "POST",
+      "endpoint": "api_melchior_sync_skills",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/osc/external/case_status",
+      "method": "POST",
+      "endpoint": "external_osc_case_status",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/recall",
+      "method": "POST",
+      "endpoint": "api_recall",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/remember",
+      "method": "POST",
+      "endpoint": "api_remember",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/research",
+      "method": "POST",
+      "endpoint": "api_research",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/search",
+      "method": "POST",
+      "endpoint": "api_search",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/ocr",
+      "method": "POST",
+      "endpoint": "api_shortcut_ocr",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/summarize",
+      "method": "POST",
+      "endpoint": "api_shortcut_summarize",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/shortcut/transcribe",
+      "method": "POST",
+      "endpoint": "api_shortcut_transcribe",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills",
+      "method": "POST",
+      "endpoint": "api_create_skill",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/acquire",
+      "method": "POST",
+      "endpoint": "api_acquire_skill",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/canary/start",
+      "method": "POST",
+      "endpoint": "api_skill_canary_start",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/canary/stop",
+      "method": "POST",
+      "endpoint": "api_skill_canary_stop",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/ci",
+      "method": "POST",
+      "endpoint": "api_skill_ci",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/discover",
+      "method": "POST",
+      "endpoint": "api_discover_skills",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/import/toolsai-auto-skill",
+      "method": "POST",
+      "endpoint": "api_import_toolsai_auto_skill",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/install",
+      "method": "POST",
+      "endpoint": "api_install_skill",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/internalize",
+      "method": "POST",
+      "endpoint": "api_skill_internalize",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/internalize/codebase",
+      "method": "POST",
+      "endpoint": "api_skill_internalize_codebase",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/rollback",
+      "method": "POST",
+      "endpoint": "api_skill_rollback",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/run",
+      "method": "POST",
+      "endpoint": "api_run_skill",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/stable",
+      "method": "POST",
+      "endpoint": "api_skill_set_stable",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/teach",
+      "method": "POST",
+      "endpoint": "api_skill_teach",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/skills/teach/file",
+      "method": "POST",
+      "endpoint": "api_skill_teach_file",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/summarize",
+      "method": "POST",
+      "endpoint": "api_summarize",
+      "side_effect_class": "reversible_write",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler success path mutates local state; certifying replay must redirect the complete transaction and filesystem footprint to a disposable sandbox."
+    },
+    {
+      "service": "5003",
+      "rule": "/vision",
+      "method": "POST",
+      "endpoint": "api_vision",
+      "side_effect_class": "external_commit",
+      "reviewed": true,
+      "reviewed_by": "v3-route-certification-source-audit-2026-07-16",
+      "rationale": "Handler may invoke a provider, process, webhook, notification, or other external boundary; certifying replay must replace that boundary with an exact in-memory adapter and prove zero external attempts."
+    }
+  ]
+}

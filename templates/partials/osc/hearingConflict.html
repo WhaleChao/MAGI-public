@@ -1,0 +1,103 @@
+        <section id="hearingConflict" class="view">
+            <div class="view-header">
+                <div>
+                    <h2>衝庭與請假狀</h2>
+                    <div class="section-note">自動判斷只採認已確認的開庭；標題含「待確認」時一律排除。產出的 Word 是草稿，不會自動遞送法院。</div>
+                </div>
+                <button class="btn" id="hearingConflictRefreshBtn" type="button">重新掃描</button>
+            </div>
+
+            <div id="hearingConflictStatus" class="status-banner" hidden></div>
+
+            <div class="card">
+                <h3>新庭期</h3>
+                <div class="section-note">選案件後可檢查自動衝突；即使沒有自動衝突，也可在下方由人員主動產生請假狀。</div>
+                <div class="form-grid cols-3">
+                    <div class="field">
+                        <label for="hearingConflictCase">案件</label>
+                        <select id="hearingConflictCase"><option value="">請選擇案件</option></select>
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictCaseNumber">內部案號</label>
+                        <input id="hearingConflictCaseNumber" readonly>
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictAid">律師身分</label>
+                        <input id="hearingConflictAid" readonly placeholder="委任律師／扶助律師">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictTitle">行程標題</label>
+                        <input id="hearingConflictTitle" placeholder="例如：臺灣花蓮地方法院言詞辯論">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictStart">開始時間</label>
+                        <input id="hearingConflictStart" type="datetime-local">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictEnd">結束時間</label>
+                        <input id="hearingConflictEnd" type="datetime-local">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictTargetLabel">本案程序</label>
+                        <input id="hearingConflictTargetLabel" value="開庭" placeholder="言詞辯論／準備程序／調解">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictPartyRole">當事人稱謂</label>
+                        <input id="hearingConflictPartyRole" value="當事人" placeholder="原告／被告／聲請人">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictLawyer">律師姓名</label>
+                        <input id="hearingConflictLawyer" placeholder="未填時採案件承辦律師">
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn primary" id="hearingConflictCheckBtn" type="button">檢查衝庭</button>
+                    <span class="muted">「（待確認）臺灣高等法院刑事115上訴003543第十八法庭」不會被判定為開庭。</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>人工產生請假狀</h3>
+                <div class="section-note">人工模式不受自動分類限制；請指定較早排定的庭期資料。送出法院前仍須人工核對、補附件並簽章。</div>
+                <div class="form-grid cols-3">
+                    <div class="field">
+                        <label for="hearingConflictPriorStart">既有庭期</label>
+                        <input id="hearingConflictPriorStart" type="datetime-local">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictPriorCourt">既有庭期法院</label>
+                        <input id="hearingConflictPriorCourt" placeholder="例如：臺灣高等法院花蓮分院">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictPriorCaseNo">既有庭期法院案號</label>
+                        <input id="hearingConflictPriorCaseNo" placeholder="選填">
+                    </div>
+                    <div class="field">
+                        <label for="hearingConflictPriorLabel">既有程序</label>
+                        <input id="hearingConflictPriorLabel" value="開庭" placeholder="言詞辯論／準備程序／審判程序">
+                    </div>
+                    <div class="field span-2">
+                        <label for="hearingConflictManualReason">人工改期理由</label>
+                        <textarea id="hearingConflictManualReason" rows="2" placeholder="選填；未填時使用『前述庭期時間相近或重疊，代理人無法兼顧。』"></textarea>
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn warn" id="hearingConflictManualBtn" type="button">人工產生 Word 草稿</button>
+                    <a class="btn" id="hearingConflictDownload" href="#" hidden>下載最新草稿</a>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>衝突結果</h3>
+                <div id="hearingConflictResults" class="selection-list">
+                    <div class="muted">尚未檢查。</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>現有排程掃描</h3>
+                <div id="hearingConflictUpcoming" class="selection-list">
+                    <div class="muted">載入中。</div>
+                </div>
+            </div>
+        </section>

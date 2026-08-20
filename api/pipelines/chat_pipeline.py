@@ -76,6 +76,28 @@ def append_history(orch, user_id, role, content):
             source="raw_history",
             metadata={"ts": ts},
         )
+        # Preserve explicit office case identifiers as short-lived references.
+        # Only user-authored identifiers are authoritative enough for automatic
+        # pronoun resolution; assistant output may contain an unverified model
+        # claim and must not silently become future context.
+        if str(role or "").strip().lower() == "user":
+            case_pattern = re.compile(
+                r"(?:20\d{2}-\d{4}|1\d{2,3}年度[^\s，。；]{1,24}字第?\s*\d+\s*號|1\d{6,7}-[A-Z]-\d{3})",
+                re.I,
+            )
+            seen_case_ids = set()
+            for match in case_pattern.finditer(text):
+                case_id = re.sub(r"\s+", "", match.group(0)).strip()
+                if not case_id or case_id in seen_case_ids:
+                    continue
+                seen_case_ids.add(case_id)
+                orch._session_store.remember_recent(
+                    str(user_id or ""),
+                    kind="case",
+                    item_id=case_id,
+                    label=case_id,
+                    payload={"source": "user_message"},
+                )
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "append_history", exc_info=True)
     try:

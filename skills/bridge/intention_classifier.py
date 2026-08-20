@@ -14,9 +14,11 @@ logger = logging.getLogger("IntentionClassifier")
 MODEL_NAME = os.environ.get("CASPER_CLASSIFIER_MODEL", TEXT_PRIMARY_MODEL)
 
 
+_MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
 _CACHE_PERSIST_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    ".agent", "intent_classifier_cache.json",
+    _AGENT_DIR or os.path.join(_MAGI_ROOT, ".agent"),
+    "intent_classifier_cache.json",
 )
 _CACHE_SCHEMA_VERSION = 2
 _CACHE_POLICY_VERSION = 2
@@ -285,6 +287,65 @@ class IntentionClassifier:
           4. Embedding Router (conf >= 0.7) → ~0.1s（vs 原 LLM 15s）
           5. Heuristic → 兜底
         """
+        raw_text = str(text or "")
+        try:
+            from api.routing.intent_contract import (
+                KIND_AGENT_TASK,
+                KIND_BUSY_STATUS,
+                KIND_CANCEL_REQUEST,
+                KIND_CASUAL_CHAT,
+                KIND_CORRECTION_REQUEST,
+                KIND_EMPTY,
+                KIND_EXPLICIT_COMMAND,
+                KIND_EXPLICIT_TASK,
+                KIND_HELP_COMMAND,
+                KIND_META_CAPABILITY,
+                KIND_REALTIME_ACTION,
+                KIND_TOOL_CAPABILITY,
+                normalize_message_intent,
+            )
+
+            normalized = normalize_message_intent(raw_text)
+            text = normalized.text
+            contract = normalized.decision
+            authoritative_kinds = {
+                KIND_EMPTY,
+                KIND_HELP_COMMAND,
+                KIND_EXPLICIT_COMMAND,
+                KIND_META_CAPABILITY,
+                KIND_TOOL_CAPABILITY,
+                KIND_BUSY_STATUS,
+                KIND_REALTIME_ACTION,
+                KIND_CASUAL_CHAT,
+                KIND_CANCEL_REQUEST,
+                KIND_CORRECTION_REQUEST,
+                KIND_EXPLICIT_TASK,
+                KIND_AGENT_TASK,
+            }
+            if contract.kind in authoritative_kinds:
+                route_intent = normalized.route_intent
+                confidence = max(float(contract.confidence), 0.90)
+                if contract.kind == KIND_CASUAL_CHAT and not normalized.heavy_opt_in:
+                    self._cache_set((text or "").strip().lower(), route_intent, confidence=confidence)
+                return {
+                    "intent": route_intent,
+                    "confidence": confidence,
+                    "method": "intent_contract",
+                    "reason": contract.reason,
+                    "candidates": [
+                        {
+                            "method": "intent_contract",
+                            "intent": route_intent,
+                            "kind": contract.kind,
+                            "confidence": round(confidence, 3),
+                            "heavy_opt_in": normalized.heavy_opt_in,
+                        }
+                    ],
+                }
+        except Exception as contract_err:
+            logger.debug("Intent contract normalization skipped: %s", contract_err)
+            text = raw_text
+
         key = (text or "").strip().lower()
         cached = self._cache_get(key)
         if cached:

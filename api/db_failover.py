@@ -199,8 +199,11 @@ def _sync_local_to_remote() -> bool:
         report = sync_bidirectional(local_conn, remote_conn, database=db_name)
 
         # Save report
-        report_path = os.path.join(os.path.dirname(__file__), "..", ".agent",
-                                   "db_sync_report.json")
+        report_path = os.path.join(
+            os.environ.get("MAGI_AGENT_DIR")
+            or os.path.join(os.path.dirname(__file__), "..", ".agent"),
+            "db_sync_report.json",
+        )
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)

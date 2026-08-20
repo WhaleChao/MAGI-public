@@ -28,6 +28,13 @@ from pathlib import Path
 
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parent.parent.parent)))
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+RUNTIME_DIR = Path(_RUNTIME_OVERRIDE or MAGI_ROOT).expanduser()
+_EXPORTS_OVERRIDE = os.environ.get("MAGI_EXPORTS_DIR", "").strip()
+REPORT_DIR = Path(
+    os.environ.get("MAGI_APPLE_SMOKE_REPORT_DIR", "").strip()
+    or (Path(_EXPORTS_OVERRIDE).expanduser() / "reports" if _EXPORTS_OVERRIDE else MAGI_ROOT / "reports")
+).expanduser()
 sys.path.insert(0, str(MAGI_ROOT))
 
 
@@ -49,7 +56,8 @@ def _run(cmd: list[str], timeout: int = 90) -> dict:
 def _pick_default_files() -> dict:
     # PDF：優先用現成的測試檔
     pdf_candidates = [
-        MAGI_ROOT / ".cache/osc_flow_case_status/tmp_pdftest_35007/test.pdf",
+        (RUNTIME_DIR / "cache" if _RUNTIME_OVERRIDE else MAGI_ROOT / ".cache")
+        / "osc_flow_case_status/tmp_pdftest_35007/test.pdf",
     ]
     img_candidates = [
         MAGI_ROOT / "test_image.png",
@@ -173,7 +181,7 @@ def main(argv: list[str]) -> int:
     )
 
     # 寫報告檔
-    out_dir = MAGI_ROOT / "reports"
+    out_dir = REPORT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"apple_intelligence_smoke_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 

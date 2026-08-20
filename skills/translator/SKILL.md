@@ -107,6 +107,7 @@ MAGI_TRANSLATOR_APE_CHUNKS=1  # 預設開啟，在 MAGI_TRANSLATOR_APE=1 時生�
 | `MAGI_TRANSLATOR_APE_CHUNKS` | `1` | 長文分段 APE |
 | `MAGI_TRANSLATOR_APE_CHUNK_MAX_CHARS` | `1800` | 每段最大字元數 |
 | `MAGI_APPLE_TRANSLATION_TIMEOUT_SEC` | `10.0` | Apple sidecar timeout |
+| `MAGI_APPLE_TRANSLATION_PROBE_TIMEOUT_SEC` | `18.0` | Apple Translation 冷啟動可用性探測上限 |
 
 ### 回傳欄位（APE 路徑）
 

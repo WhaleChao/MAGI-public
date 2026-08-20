@@ -18,13 +18,17 @@ import subprocess
 import requests
 from datetime import datetime
 from typing import List, Dict
+from pathlib import Path
+
+from skills.overlay import skill_overlay_dir
 
 try:
-    from skills.iron_dome.core import STATIC_RULE_SETS, get_all_patterns
+    from skills.iron_dome.core import PATTERNS_CACHE_FILE, STATIC_RULE_SETS, get_all_patterns
 except ImportError:
     # Fallback during migration
     STATIC_RULE_SETS = {}
     def get_all_patterns(): return []
+    PATTERNS_CACHE_FILE = str(skill_overlay_dir() / ".iron-dome" / "patterns_cache.json")
 
 logger = logging.getLogger("IronDomeSync")
 
@@ -78,7 +82,13 @@ MAGI_NODES = {
 }
 
 CURRENT_NODE = os.environ.get("MAGI_NODE", "casper")
-PATTERNS_CACHE_FILE = f"{_MAGI_ROOT}/static/iron_dome_patterns.json"
+_IRON_DOME_STATE_DIR = Path(
+    os.environ.get("MAGI_IRON_DOME_STATE_DIR", "").strip()
+    or skill_overlay_dir() / ".iron-dome"
+).expanduser()
+PATTERNS_CACHE_FILE = os.environ.get(
+    "MAGI_IRON_DOME_PATTERNS_CACHE_FILE", PATTERNS_CACHE_FILE
+)
 
 
 def get_patterns_hash() -> str:
@@ -106,6 +116,7 @@ def export_patterns() -> Dict:
         }
         
         # Cache locally
+        os.makedirs(os.path.dirname(PATTERNS_CACHE_FILE), exist_ok=True)
         with open(PATTERNS_CACHE_FILE, 'w') as f:
             json.dump(patterns, f, indent=2, ensure_ascii=False)
         
@@ -178,7 +189,10 @@ def get_sync_status() -> Dict:
 _UPSTREAM_URL_ENV = "IRON_DOME_UPSTREAM_URL"
 _UPSTREAM_TIMEOUT  = 20   # seconds
 _MAX_UPSTREAM_RULES = 200  # hard cap – refuse oversized payloads
-_UPSTREAM_LAST_FETCH_FILE = f"{_MAGI_ROOT}/static/iron_dome_upstream_last.json"
+_UPSTREAM_LAST_FETCH_FILE = os.environ.get(
+    "MAGI_IRON_DOME_UPSTREAM_STATE_FILE",
+    str(_IRON_DOME_STATE_DIR / "upstream_last.json"),
+)
 
 
 def fetch_upstream_rules(broadcast: bool = True, dry_run: bool = False) -> Dict:

@@ -4,26 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MAGI</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260506-web-chat-format-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
+    <script src="{{ url_for('static', filename='magi-csrf.js') }}?v=20260803-rc256"></script>
 </head>
-<body>
+<body class="site-console">
+    <a class="skip-link" href="#magi-main">跳至主要內容</a>
     <header class="topbar">
         <div>
             <div class="eyebrow">MAGI</div>
             <h1>MAGI</h1>
         </div>
-        <nav class="topnav" aria-label="MAGI navigation">
+        <nav class="topnav" aria-label="MAGI 主要導覽">
             <time class="top-clock" id="top-clock" datetime="">--:--:--</time>
-            <a href="/golem">MAGI</a>
-            <a href="/osc">Paperclip</a>
-            <a href="/mobile">手機</a>
+            <a href="/golem" aria-current="page">首頁</a>
+            <a href="/osc">案件與文件</a>
+            <a href="/sentencing-trends">判決趨勢</a>
             <a href="/research">研究</a>
-            <a href="/magi-adjust">MAGI 調整</a>
-            <button id="themeToggleBtn" type="button" title="切換日間 / 夜間模式">🌙</button>
+            <a href="/status">系統檢測</a>
+            <a href="/mobile">手機</a>
+            <details class="nav-more">
+                <summary>管理</summary>
+                <div>
+                    <a href="/magi-adjust">MAGI 調整</a>
+                    <a href="/mobile-admin">手機後台</a>
+                    <a href="/dashboard/website">個人網站</a>
+                </div>
+            </details>
+            <button id="themeToggleBtn" type="button" title="切換日／夜">☾ 夜</button>
         </nav>
     </header>
 
-    <main class="console-shell">
+    <main class="console-shell" id="magi-main">
         <section class="hero-band" aria-label="MAGI 系統總覽">
             <div class="magi-core" aria-label="三 MAGI 系統">
                 <svg class="magi-lines" viewBox="0 0 660 320" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
@@ -56,14 +70,12 @@
             <div class="hero-copy">
                 <span class="system-pill" id="golem-health-pill">同步中</span>
                 <h2>MAGI</h2>
-                <p id="golem-root">案件管理、MAGI 對話、系統狀態與調整入口集中於此。</p>
-                <div class="primary-actions" aria-label="核心操作">
-                    <a class="primary-link" href="/osc">Paperclip 案件管理</a>
-                    <a class="primary-link" href="/magi-adjust">MAGI 調整</a>
-                    <a class="primary-link" href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">個人 GitHub 頁面</a>
-                    <a class="primary-link" href="/intel">全球新聞網</a>
-                    <a class="primary-link" href="/research">研究</a>
-                    <a class="primary-link" href="/mobile-admin">手機後台</a>
+                <p id="golem-root">從對話開始，或直接進入案件、行程、研究與系統狀態。</p>
+                <div class="primary-actions" aria-label="最常使用的功能">
+                    <a class="primary-link" href="/osc"><strong>案件與文件</strong><span>案件、法扶、檔案與書狀</span></a>
+                    <a class="primary-link" href="/osc?tab=todos"><strong>待辦與期限</strong><span>需要處理及人工確認事項</span></a>
+                    <a class="primary-link" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"><strong>Google 日曆</strong><span>庭期、期限與正式行程</span></a>
+                    <a class="primary-link" href="/sentencing-trends"><strong>判決趨勢</strong><span>法院、法官與案由分析</span></a>
                 </div>
             </div>
         </section>
@@ -93,15 +105,16 @@
                     </form>
                 </section>
 
-                <aside class="legal-links-panel" id="legal-links" aria-label="外部網站">
-                    <div class="panel-heading compact">
-                        <h3>外部網站</h3>
-                    </div>
+                <details class="legal-links-panel collapsible-panel" id="legal-links">
+                    <summary><span>外部網站與其他工具</span></summary>
                     <div class="external-grid">
                         <a href="https://portal.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">律師單一登入</a>
                         <a href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
                         <a href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
                         <a href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+                        <a href="/lottery">抽獎工具</a>
+                        <a href="/exam-tutor">國考練習</a>
+                        <a href="/cookie-cutter">線稿轉餅乾切模</a>
                         <a href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
                         <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
                         <a href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
@@ -110,8 +123,9 @@
                         <a href="/dashboard/website">個人網站管理</a>
                         <a href="/intel">全球新聞網</a>
                         <a href="/research">研究</a>
+                        <a href="/research/judgment-classifier">判決捕捉與分類</a>
                     </div>
-                </aside>
+                </details>
             </div>
 
             <aside class="side-flow" aria-label="系統資訊">
@@ -175,6 +189,6 @@
         </section>
     </main>
 
-    <script src="{{ url_for('static', filename='golem/golem-console.js') }}?v=20260506-web-chat-format-v1"></script>
+    <script src="{{ url_for('static', filename='golem/golem-console.js') }}?v=20260803-rc256-csrf"></script>
 </body>
 </html>

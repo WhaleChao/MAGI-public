@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 
 MAGI_ROOT = Path(__file__).resolve().parent.parent.parent
+MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or MAGI_ROOT / "static"
+).expanduser()
 os.chdir(MAGI_ROOT)
 sys.path.insert(0, str(MAGI_ROOT))
 
@@ -185,7 +188,8 @@ if ok == total - skipped and degraded == 0:
 print("═" * 55)
 
 # Save report
-report_path = MAGI_ROOT / "static" / "summarize_test_latest.json"
+report_path = MUTABLE_STATIC_DIR / "summarize_test_latest.json"
+report_path.parent.mkdir(parents=True, exist_ok=True)
 with open(report_path, "w", encoding="utf-8") as f:
     json.dump({"timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                "total": total, "ok": ok, "degraded": degraded,

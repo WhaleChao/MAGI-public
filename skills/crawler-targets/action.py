@@ -26,7 +26,12 @@ from api.runtime_paths import get_magi_root_dir, get_orch_dir, get_skill_python
 
 CODE_DIR = str(get_orch_dir())
 _MAGI_ROOT = str(get_magi_root_dir())
-STATE_PATH = os.environ.get("MAGI_CRAWL_TARGETS_PATH", os.path.join(_MAGI_ROOT, "_crawl_targets.json"))
+_LEGACY_STATE_PATH = os.path.join(_MAGI_ROOT, "_crawl_targets.json")
+_RUNTIME_DIR = (os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+STATE_PATH = (
+    (os.environ.get("MAGI_CRAWL_TARGETS_PATH") or "").strip()
+    or (os.path.join(_RUNTIME_DIR, "_crawl_targets.json") if _RUNTIME_DIR else _LEGACY_STATE_PATH)
+)
 _VENV_PY = str(get_skill_python())
 _FETCH_DELAY_SEC = float(os.environ.get("MAGI_CRAWL_FETCH_DELAY", "1.5"))
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -51,8 +56,13 @@ def _ok(payload: dict) -> int:
 
 def _load_state() -> dict:
     try:
-        if os.path.exists(STATE_PATH):
-            with open(STATE_PATH, "r", encoding="utf-8") as f:
+        candidates = [STATE_PATH]
+        if os.path.abspath(STATE_PATH) != os.path.abspath(_LEGACY_STATE_PATH):
+            candidates.append(_LEGACY_STATE_PATH)
+        for candidate in candidates:
+            if not os.path.exists(candidate):
+                continue
+            with open(candidate, "r", encoding="utf-8") as f:
                 d = json.load(f)
             if isinstance(d, dict):
                 if not isinstance(d.get("targets"), list):

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "classification": "synthetic_non_sensitive",
+  "route": {
+    "service": "5002",
+    "preview": "/api/osc/files/preview",
+    "preview_endpoint": "osc_files.osc_files_preview_api",
+    "content": "/api/osc/files/content",
+    "content_endpoint": "osc_cases.osc_file_content_api"
+  },
+  "filename": "contract-sample.pdf",
+  "content_base64": "JVBERi0xLjQKJSBub25zZW5zaXRpdmUgZml4dHVyZQowMTIzNDU2Nzg5CiUlRU9GCg==",
+  "content_sha256": "8fa0806ff01043d18d9f70f6041d55b314306db4427b32afaa5a2bbee84f1a55",
+  "content_length": 49,
+  "expected_mime": "application/pdf",
+  "range": {
+    "header": "bytes=5-13",
+    "start": 5,
+    "end": 13,
+    "body_base64": "MS40CiUgbm9u"
+  },
+  "golden_flow": {
+    "flow_id": "osc_preview_range_download_v1",
+    "expected_outcomes": {
+      "anonymous_preview_status": 302,
+      "login_status": 200,
+      "preview_status": 200,
+      "preview_kind": "pdf",
+      "range_status": 206,
+      "range_content_type": "application/pdf",
+      "range_content_disposition_prefix": "inline;",
+      "full_download_status": 200,
+      "full_download_content_type": "application/pdf",
+      "full_download_content_disposition_prefix": "attachment;",
+      "missing_status": 404,
+      "forbidden_status": 403
+    }
+  }
+}

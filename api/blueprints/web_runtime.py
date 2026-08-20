@@ -11,6 +11,7 @@ runtime objects injected from the main server bootstrap:
 
 from __future__ import annotations
 
+import logging
 import json
 import html
 import os
@@ -27,6 +28,53 @@ from typing import Any
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
+
+from api.runtime_paths import get_faiss_index_dir, get_judgments_json_path
+
+
+_PUBLIC_INTENT_LABELS = {
+    "empty": "未輸入",
+    "help_command": "功能說明",
+    "explicit_command": "系統指令",
+    "meta_capability": "能力詢問",
+    "tool_capability": "工具詢問",
+    "busy_status": "執行狀態",
+    "realtime_action": "即時資料查詢",
+    "casual_chat": "一般對話",
+    "cancel_request": "取消操作",
+    "correction_request": "更正內容",
+    "explicit_task": "工作執行",
+    "agent_task": "分析工作",
+    "stateful_reply": "補充資料",
+    "unknown": "一般對話",
+}
+
+
+def public_intent_summary(message: str) -> dict[str, Any]:
+    """Return a stable, non-sensitive intent summary for user interfaces."""
+    from api.routing.intent_contract import normalize_message_intent
+    from api.tools.policies import classify_tool_requirement
+
+    normalized = normalize_message_intent(message)
+    requirement = classify_tool_requirement(
+        normalized.text,
+        intent=normalized.route_intent,
+    )
+    uses_tool = bool(
+        normalized.allow_tool_dispatch
+        and requirement.level in {"required", "optional"}
+    )
+    label = _PUBLIC_INTENT_LABELS.get(normalized.decision.kind, "一般對話")
+    if uses_tool and normalized.decision.kind in {"agent_task", "realtime_action"}:
+        label = "資料查詢"
+    return {
+        "kind": normalized.decision.kind,
+        "label": label,
+        "route": normalized.route_intent,
+        "uses_tool": uses_tool,
+        "tool": requirement.tool_hint if uses_tool else "",
+        "heavy": normalized.heavy_route_requested,
+    }
 
 
 def _parse_etime_to_sec(raw: str) -> int:
@@ -79,14 +127,34 @@ def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dic
     return worker_markers, core_markers, core_labels
 
 
+def _agent_state_dir(magi_root: Path) -> Path:
+    return Path(
+        os.environ.get("MAGI_AGENT_DIR", "").strip() or magi_root / ".agent"
+    ).expanduser()
+
+
+def _mutable_static_dir(magi_root: Path) -> Path:
+    return Path(
+        os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or magi_root / "static"
+    ).expanduser()
+
+
 def _chat_upload_dir(magi_root: Path) -> Path:
-    path = magi_root / ".agent" / "chat_uploads"
+    path = _agent_state_dir(magi_root) / "chat_uploads"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _magi_web_outputs_dir(magi_root: Path) -> Path:
-    path = magi_root / "static" / "exports" / "magi_outputs"
+    exports_root = Path(
+        os.environ.get("MAGI_EXPORTS_DIR", "").strip()
+        or (
+            Path(os.environ["MAGI_MUTABLE_STATIC_DIR"]).expanduser() / "exports"
+            if os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip()
+            else magi_root / "static" / "exports"
+        )
+    ).expanduser()
+    path = exports_root / "magi_outputs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -118,7 +186,7 @@ def _extract_chat_upload_text_for_task(path: Path, filename: str, task: str = ""
                     "pages": pages,
                 }
         except Exception:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 120, exc_info=True)
     return _extract_chat_upload_text(path, filename)
 
 
@@ -195,8 +263,25 @@ def _web_summary_length(instruction: str) -> str:
 
 
 def _web_heavy_opt_in(instruction: str) -> bool:
+    try:
+        from api.routing.command_prefixes import split_heavy_prefix
+    except Exception:
+        import re
+
+        fallback_re = re.compile(
+            r"^\s*[＠@]\s*(?:heavy|重型)(?=$|[\s:：,，、。!！?？\-–—]|[\u4e00-\u9fff])"
+            r"\s*[:：,，、。!！?？\-–—]*\s*",
+            re.IGNORECASE,
+        )
+
+        def split_heavy_prefix(message: str) -> tuple[bool, str]:  # type: ignore[no-redef]
+            text_inner = str(message or "").replace("＠", "@").replace("\u3000", " ").lstrip()
+            match = fallback_re.match(text_inner)
+            return (True, text_inner[match.end():].strip()) if match else (False, text_inner)
+
+    has_prefix, _ = split_heavy_prefix(instruction)
     text = str(instruction or "").lower().replace("＠", "@").lstrip()
-    return text.startswith("@heavy ") or text.startswith("@重型 ") or any(
+    return has_prefix or any(
         token in text for token in (" @heavy ", "\n@heavy ", "使用 heavy", "重型模型", "深度模式")
     )
 
@@ -204,22 +289,39 @@ def _web_heavy_opt_in(instruction: str) -> bool:
 def _normalize_direct_reply(reply: str, *, task: str, source_text: str, source_filename: str, instruction: str) -> str:
     from api.handlers.output_quality_handler import (
         build_legal_document_summary_fallback,
-        detect_output_quality_issue,
         format_quality_gate_failure,
+        run_output_quality_gate,
     )
 
     output = str(reply or "").strip()
-    issue = detect_output_quality_issue(task, output, source_chars=len(source_text or ""))
-    if task == "summary" and issue:
+    gate = run_output_quality_gate(
+        task,
+        output,
+        source_chars=len(source_text or ""),
+        source_text=source_text,
+        source_name=source_filename,
+        instruction=instruction,
+    )
+    if task == "summary" and not gate.get("ok"):
         fallback = build_legal_document_summary_fallback(
             source_text,
             source_name=source_filename,
             instruction=instruction,
         )
         if fallback:
-            return fallback
-    if issue:
-        return format_quality_gate_failure(task, issue)
+            fallback_gate = run_output_quality_gate(
+                "summary",
+                fallback,
+                source_chars=len(source_text or ""),
+                source_text=source_text,
+                source_name=source_filename,
+                instruction=f"{instruction};extractive_fallback=1",
+            )
+            if fallback_gate.get("ok"):
+                return fallback
+            gate = fallback_gate
+    if not gate.get("ok"):
+        return format_quality_gate_failure(task, str(gate.get("issue") or "quality_failed"))
     return output
 
 
@@ -346,6 +448,22 @@ def _run_direct_web_upload_text_task(
                 title=original_name or "檔案翻譯",
                 user_id=user_id,
             )
+            if not bilingual_artifact and suffix == ".pdf":
+                try:
+                    from api.domains.multimedia_flow import _try_rebuild_pdf_translation_delivery
+
+                    rebuilt_reply = _try_rebuild_pdf_translation_delivery(
+                        pdf_path=str(target),
+                        filename=original_name or Path(target).name,
+                        source_text=src_text,
+                        user_id=user_id,
+                    )
+                    rebuilt_path = _path_from_export_reply(rebuilt_reply)
+                    if rebuilt_path:
+                        bilingual_artifact = _artifact_dict(rebuilt_path, label="HEAVY 完整雙語對照 Word", fmt="docx")
+                        bilingual_reply = rebuilt_reply
+                except Exception:
+                    logging.getLogger(__name__).debug("PDF translation rebuild fallback skipped", exc_info=True)
             if bilingual_artifact:
                 notes.insert(0, "📄 已產出原文/翻譯雙語對照 Word 表格。")
             elif bilingual_reply:
@@ -825,9 +943,10 @@ def create_web_runtime_blueprint(
     bp = Blueprint("web_runtime", __name__)
     isolated_runtime = magi_root is not None
     root = Path(magi_root) if magi_root else Path(__file__).resolve().parents[2]
-    agent_dir = root / ".agent"
-    process_monitor_state_path = root / "static" / "process_guardian_state.json"
-    guardian_control_path = root / "static" / "guardian_control.json"
+    agent_dir = _agent_state_dir(root)
+    mutable_static_dir = _mutable_static_dir(root)
+    process_monitor_state_path = mutable_static_dir / "process_guardian_state.json"
+    guardian_control_path = mutable_static_dir / "guardian_control.json"
 
     @bp.route("/ops/process-monitor")
     @login_required
@@ -854,7 +973,7 @@ def create_web_runtime_blueprint(
                     stats["last_ingest"] = str(_last)
                 _conn.close()
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 856, exc_info=True)
         if stats["doc_count"] == 0 and stats["last_ingest"] is None:
             # Fallback: read from doc_vector_index.json (attachment tracker only)
             try:
@@ -882,7 +1001,17 @@ def create_web_runtime_blueprint(
                 stats["obsidian"]["last_update"] = oidx.get("updated_at", "")
         except Exception as exc:
             stats["obsidian_error"] = str(exc)
-        faiss_path = root / "skills" / "memory" / "index_cache" / "mem_index.faiss"
+        from api.runtime_paths import get_faiss_active_artifact
+
+        # An explicitly supplied ``magi_root`` is an isolated workspace.  Do
+        # not let the host's V3 shared-state binding make that workspace read
+        # the LIVE FAISS index.  The normal production blueprint has no
+        # explicit root and therefore continues to use the bound shared index.
+        faiss_path = get_faiss_active_artifact(
+            "mem_index.faiss",
+            root if isolated_runtime else None,
+            honor_environment=not isolated_runtime,
+        )
         if faiss_path.exists():
             stats["faiss_size"] = faiss_path.stat().st_size
         if not isolated_runtime:
@@ -900,7 +1029,7 @@ def create_web_runtime_blueprint(
                 stats["faiss_vector_count"] = idx.total
                 stats["faiss_index_type"] = idx.index_type
             except Exception:
-                pass
+                logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 902, exc_info=True)
         return jsonify(stats)
 
     @bp.route("/api/memory/recall", methods=["POST"])
@@ -994,6 +1123,7 @@ def create_web_runtime_blueprint(
         msg = (data.get("message") or "").strip()
         if not msg:
             return jsonify({"error": "Empty message"}), 400
+        intent_summary = public_intent_summary(msg)
         reply = orchestrator.process_message(
             user_id=str(current_user.id),
             message=msg,
@@ -1006,7 +1136,14 @@ def create_web_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in osc_chat_api", exc_info=True)
         artifacts = _create_web_delivery_artifacts(root, instruction=msg, reply=str(reply or ""))
-        return jsonify({"reply": reply, "reply_html": format_web_reply_html(str(reply or "")), "artifacts": artifacts})
+        return jsonify(
+            {
+                "reply": reply,
+                "reply_html": format_web_reply_html(str(reply or "")),
+                "artifacts": artifacts,
+                "intent": intent_summary,
+            }
+        )
 
     @bp.route("/api/osc/magi-modules/run", methods=["POST"])
     @login_required
@@ -1259,13 +1396,21 @@ def create_web_runtime_blueprint(
         if uid in web_notifications:
             messages = list(web_notifications[uid])
             web_notifications[uid].clear()
+        try:
+            from api.durable_notifications import claim_for_user
+
+            messages.extend(
+                item["text"] for item in claim_for_user(user_id=uid, platform="web")
+            )
+        except Exception:
+            logger.warning("durable OSC notification poll unavailable", exc_info=True)
         return jsonify({"messages": messages})
 
     @bp.route("/api/osc/judgments_legacy", methods=["GET"])
     @login_required
     def osc_judgments_api():
         try:
-            json_path = root / "skills" / "judgment-collector" / "judgments.json"
+            json_path = get_judgments_json_path()
             if json_path.exists():
                 return jsonify(json.loads(json_path.read_text(encoding="utf-8")))
             return jsonify([])

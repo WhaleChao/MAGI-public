@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from api.model_config import TEXT_PRIMARY_MODEL, resolve_text_model
 
@@ -160,6 +161,48 @@ def _resolve_provider_model(provider_name: str, provider_cfg: dict[str, Any], re
     return resolved or model
 
 
+def _provider_is_remote(provider_name: str, provider_cfg: dict[str, Any]) -> bool:
+    if provider_name != "omlx":
+        return True
+    host = (urlparse(str(provider_cfg.get("base_url") or "")).hostname or "").lower()
+    return host not in {"", "127.0.0.1", "localhost", "::1"}
+
+
+def _prepare_remote_messages(
+    messages: list[dict],
+    *,
+    data_classification: str,
+    privacy_profile: str,
+) -> tuple[list[dict], object, dict]:
+    """Scrub every message with one in-memory mapping and no text logging."""
+    from skills.engine.pii_scrubber import build_scrubber_from_magi_db
+
+    boundary = "\u241eMAGI_REMOTE_MESSAGE_BOUNDARY_V2\u241e"
+    contents = [str((message or {}).get("content") or "") for message in messages]
+    if any(boundary in content for content in contents):
+        raise RuntimeError("privacy_boundary_collision")
+    scrubber = build_scrubber_from_magi_db()
+    result = scrubber.scrub(
+        boundary.join(contents),
+        profile=privacy_profile,
+        require_known_names=(privacy_profile == "office_confidential"),
+    )
+    if not result.safe_to_send:
+        residual = ",".join(result.residual_categories) or "none"
+        warnings = ",".join(result.warnings) or "none"
+        raise RuntimeError(f"privacy_gate_blocked:residual={residual}:warning={warnings}")
+    parts = result.scrubbed_text.split(boundary)
+    if len(parts) != len(messages):
+        raise RuntimeError("privacy_boundary_split_failed")
+    safe_messages = [
+        {**message, "content": parts[index]}
+        for index, message in enumerate(messages)
+    ]
+    certificate = result.certificate()
+    certificate["classification"] = data_classification
+    return safe_messages, result, certificate
+
+
 def _call_openai_format(
     provider_cfg: dict, messages: list[dict], **kwargs
 ) -> dict[str, Any]:
@@ -257,6 +300,9 @@ def chat(
     model: str = "",
     provider: str = "",
     messages: list[dict] | None = None,
+    data_classification: str = "office_confidential",
+    privacy_profile: str = "",
+    restore_pii: bool = True,
 ) -> dict[str, Any]:
     """
     直接呼叫 LLM，不經過 OpenClaw。
@@ -274,6 +320,14 @@ def chat(
     Returns:
         {"success": bool, "text": str, "provider": str, "model": str, "usage": dict, ...}
     """
+    classification = str(data_classification or "office_confidential").strip().lower()
+    allowed_classifications = {"office_confidential", "public_judgment", "public_source", "synthetic"}
+    if classification not in allowed_classifications:
+        return {"success": False, "error": "privacy_classification_invalid", "feature": feature}
+    effective_profile = str(privacy_profile or classification).strip().lower()
+    if effective_profile not in allowed_classifications:
+        return {"success": False, "error": "privacy_profile_invalid", "feature": feature}
+
     routing = FEATURE_ROUTING.get(feature, FEATURE_ROUTING["general"])
     primary = provider or routing["primary"]
     fallback = routing.get("fallback") if not provider else None
@@ -302,6 +356,31 @@ def chat(
         if not dispatcher:
             continue
 
+        attempt_messages = msg_list
+        scrub_result = None
+        privacy_certificate: dict[str, Any] = {}
+        is_remote = _provider_is_remote(attempt_provider, cfg)
+        if is_remote:
+            try:
+                from skills.ops.cloud_policy import cloud_models_allowed
+
+                if not cloud_models_allowed():
+                    last_error = "cloud_models_disabled"
+                    continue
+                attempt_messages, scrub_result, privacy_certificate = _prepare_remote_messages(
+                    msg_list,
+                    data_classification=classification,
+                    privacy_profile=effective_profile,
+                )
+            except Exception as privacy_exc:
+                last_error = str(privacy_exc)
+                logger.warning(
+                    "LLM remote provider blocked by privacy gate provider=%s reason=%s",
+                    attempt_provider,
+                    last_error,
+                )
+                continue
+
         use_model = _resolve_provider_model(attempt_provider, cfg, model or cfg["default_model"])
         # oMLX max_num_seqs=1 → 並行請求可能 timeout。重試一次。
         max_retries = 2 if attempt_provider == "omlx" else 1
@@ -310,13 +389,31 @@ def chat(
             try:
                 result = dispatcher(
                     cfg,
-                    msg_list,
+                    attempt_messages,
                     model=use_model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=timeout,
                 )
                 elapsed = time.monotonic() - started
+                response_text = str(result.get("text") or "")
+                if is_remote and scrub_result is not None:
+                    # Use the same independent detector before restoring local values.
+                    from skills.engine.pii_scrubber import PIIScrubber
+
+                    detector = PIIScrubber(
+                        known_names=getattr(scrub_result, "mapping", {}).values(),
+                        known_names_verified=True,
+                        source="remote_response",
+                    )
+                    residuals = detector.detect_residuals(response_text, profile=effective_profile)
+                    privacy_certificate["response_residual_categories"] = residuals
+                    if residuals:
+                        last_error = "privacy_response_blocked:" + ",".join(residuals)
+                        logger.warning("LLM remote response blocked by privacy gate provider=%s", attempt_provider)
+                        break
+                    if restore_pii:
+                        response_text = scrub_result.restore(response_text)
                 logger.info(
                     "LLM OK: provider=%s model=%s feature=%s tokens=%s elapsed=%.1fs",
                     attempt_provider, use_model, feature,
@@ -324,12 +421,13 @@ def chat(
                 )
                 return {
                     "success": True,
-                    "text": result["text"],
+                    "text": response_text,
                     "feature": feature,
                     "provider": attempt_provider,
                     "model": use_model,
                     "usage": result.get("usage", {}),
                     "elapsed_sec": round(elapsed, 2),
+                    "privacy_certificate": privacy_certificate,
                 }
             except Exception as exc:
                 elapsed = time.monotonic() - started

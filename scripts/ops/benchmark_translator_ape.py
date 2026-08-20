@@ -15,12 +15,16 @@ import json
 import os
 import sys
 import time
+import argparse
 from collections import defaultdict
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or _ROOT / "static"
+).expanduser()
 
 from skills.engine.apple_translation import is_available as _apple_avail, translate as _apple_translate
 from skills.translator._apple_post_edit import translate_with_ape
@@ -81,6 +85,71 @@ SUITE = [
 ]
 
 _CRITICAL_VALIDATOR_REASONS = {"numbers_missing", "case_numbers_missing"}
+
+
+def _load_certification_rows(suite: list[dict], *, include_gtx: bool) -> list[dict] | None:
+    """Load deterministic provider outputs for isolated benchmark execution.
+
+    The production case grouping, term scoring, critical-validator checks and
+    regression decision still execute.  The summary identifies that provider
+    quality itself was not certified by these fixture responses.
+    """
+    raw_path = os.environ.get("MAGI_TRANSLATOR_APE_FIXTURE_PATH", "").strip()
+    if not raw_path:
+        return None
+    fixture_root_raw = os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT", "").strip()
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or not fixture_root_raw
+    ):
+        raise RuntimeError("translator APE certification fixture is not safely bound")
+    fixture_root = Path(fixture_root_raw).expanduser().resolve()
+    fixture_path = Path(raw_path).expanduser().resolve()
+    if (
+        not (fixture_root / ".magi-v3-schedule-fixture").is_file()
+        or not fixture_path.is_file()
+        or not fixture_path.is_relative_to(fixture_root)
+    ):
+        raise RuntimeError("translator APE certification fixture escaped its owned root")
+    try:
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("translator APE certification fixture is unreadable") from exc
+    translations = payload.get("translations")
+    if payload.get("schema") != "magi.v3.translator-ape-fixture/v1" or not isinstance(translations, dict):
+        raise RuntimeError("translator APE certification fixture schema is invalid")
+
+    stages = (["gtx_primary"] if include_gtx else []) + ["apple_baseline", "apple_ape"]
+    rows: list[dict] = []
+    for item in suite:
+        case_id = str(item.get("id") or "")
+        fixture_case = translations.get(case_id)
+        if not isinstance(fixture_case, dict):
+            raise RuntimeError(f"translator APE fixture is missing case {case_id}")
+        for stage in stages:
+            raw = fixture_case.get(stage)
+            if not isinstance(raw, dict) or not str(raw.get("text") or "").strip():
+                raise RuntimeError(f"translator APE fixture is missing {case_id}.{stage}")
+            row = {
+                "id": case_id,
+                "stage": stage,
+                "provider": str(raw.get("provider") or "fixture_provider"),
+                "elapsed_ms": 0,
+                "text": str(raw["text"]),
+                "term_hit_rate": _term_hit_rate(str(raw["text"]), item.get("expect_terms_en") or []),
+            }
+            if stage == "apple_baseline":
+                row["success"] = bool(raw.get("success", True))
+            else:
+                row["degraded"] = bool(raw.get("degraded", False))
+            if stage == "apple_ape":
+                reasons = raw.get("validator_reasons") or []
+                if not isinstance(reasons, list):
+                    raise RuntimeError("translator APE fixture validator reasons are invalid")
+                row["validator_reasons"] = [str(reason) for reason in reasons]
+            rows.append(row)
+    return rows
 
 
 def _int_env(name: str, default: int) -> int:
@@ -215,10 +284,9 @@ def _evaluate_case_results(rows: list[dict]) -> list[dict]:
 def _write_static_result(summary: dict) -> None:
     """Write benchmark result to static/ for the web dashboard."""
     import datetime
-    static_dir = _ROOT / "static"
     try:
-        static_dir.mkdir(parents=True, exist_ok=True)
-        out_path = static_dir / "translator_ape_latest.json"
+        MUTABLE_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = MUTABLE_STATIC_DIR / "translator_ape_latest.json"
         payload = dict(summary)
         payload["generated_at"] = datetime.datetime.now().isoformat()
         # Keep rows but truncate text fields for the dashboard (don't need full translations)
@@ -254,26 +322,60 @@ def _send_dc_alert(summary: dict) -> None:
         pass  # non-fatal
 
 
-def main() -> int:
-    apple_ok, reason = _apple_avail()
-    if not apple_ok:
-        result = {"success": False, "error": f"apple_unavailable: {reason}"}
-        print(json.dumps(result, ensure_ascii=False))
-        _write_static_result(result)
-        return 2
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Benchmark Apple Translation + LLM post-edit for legal translation quality.",
+    )
+    parser.add_argument("--max-cases", type=int, default=None, help="Limit benchmark cases for low-load probes.")
+    parser.add_argument("--skip-gtx", action="store_true", help="Skip Google GTX primary comparison.")
+    parser.add_argument("--llm-timeout", type=int, default=None, help="LLM post-edit timeout in seconds.")
+    parser.add_argument("--json-out", default="", help="Optional path for full benchmark JSON.")
+    parser.add_argument("--no-static", action="store_true", help="Do not update static/translator_ape_latest.json.")
+    return parser.parse_args(argv)
 
-    # Pre-warm oMLX primary server to avoid cold-start timeout silently failing all calls.
-    # GTX path uses melchior → oMLX; APE path uses grounded_ai → oMLX.
-    _warmup_omlx(timeout_sec=60)
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.max_cases is not None:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_MAX_CASES"] = str(args.max_cases)
+    if args.skip_gtx:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_SKIP_GTX"] = "1"
+    if args.llm_timeout is not None:
+        os.environ["MAGI_TRANSLATOR_APE_BENCH_LLM_TIMEOUT_SEC"] = str(args.llm_timeout)
 
     os.environ.setdefault("MAGI_TRANSLATOR_APE", "1")
     suite = _selected_suite()
-    rows = []
-    for item in suite:
-        if not _skip_gtx():
-            rows.append(_bench_gtx(item))
-        rows.append(_bench_apple_baseline(item))
-        rows.append(_bench_ape(item))
+    fixture_rows = _load_certification_rows(suite, include_gtx=not _skip_gtx())
+    if fixture_rows is None:
+        apple_ok, reason = _apple_avail()
+        if not apple_ok:
+            result = {
+                "success": False,
+                "ok": False,
+                "status": "deferred",
+                "deferred": True,
+                "error": f"apple_unavailable: {reason}",
+            }
+            print(json.dumps(result, ensure_ascii=False))
+            if args.json_out:
+                Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.json_out).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            if not args.no_static:
+                _write_static_result(result)
+            return 75
+
+        # Pre-warm oMLX primary server to avoid cold-start timeout silently failing all calls.
+        # GTX path uses melchior → oMLX; APE path uses grounded_ai → oMLX.
+        _warmup_omlx(timeout_sec=60)
+
+        rows = []
+        for item in suite:
+            if not _skip_gtx():
+                rows.append(_bench_gtx(item))
+            rows.append(_bench_apple_baseline(item))
+            rows.append(_bench_ape(item))
+    else:
+        rows = fixture_rows
 
     gtx_rows = [r for r in rows if r["stage"] == "gtx_primary"]
     gtx_hit = (sum(r["term_hit_rate"] for r in gtx_rows) / len(gtx_rows)) if gtx_rows else None
@@ -302,11 +404,21 @@ def main() -> int:
         "case_degraded_count": case_degraded_count,
         "case_results": case_results,
         "rows": rows,
+        "provider_quality_certified": fixture_rows is None,
+        "provider_role": (
+            "live_apple_and_llm_translation"
+            if fixture_rows is None
+            else "deterministic_translation_provider_fixture"
+        ),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if args.json_out:
+        Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Write to static/ for dashboard consumption.
-    _write_static_result(summary)
+    if not args.no_static:
+        _write_static_result(summary)
 
     # Fail cron if APE regressed vs baseline or degraded >50% of the suite.
     regressed = (

@@ -13,24 +13,94 @@
             "-m",
             "py_compile",
             "api/model_config.py",
+            "api/app_factory.py",
+            "api/blueprints/admin_runtime.py",
             "api/pipelines/message_pipeline.py",
             "api/pipelines/message_router.py",
+            "api/orchestrator.py",
             "api/domains/judgment_flow.py",
             "skills/bridge/melchior_client.py",
             "skills/bridge/inference_gateway.py",
             "scripts/ops/audit_operational_hardening.py",
             "scripts/ops/smoke_test_full.py",
             "scripts/ops/run_test_suite.py",
+            "scripts/ops/magi_acceptance_gate.py",
+            "scripts/ops/function_health_index.py",
             "scripts/customer_install_wizard.py",
             "scripts/packaging/magi_install_launcher.py",
             "scripts/packaging/runtime_bootstrap.py",
             "scripts/packaging/build_installers.py",
-            "bin/release_bundle.py",
+            "scripts/packaging/validate_installer_payload.py",
+            "scripts/ci/check_hardcodes.py",
+            "scripts/ci/check_shell_true.py",
+            "scripts/ops/business_module_live_check.py",
+            "scripts/ops/public_push_guard.py",
+            "scripts/ops/token_health_check.py",
+            "scripts/ops/run_after_token_refresh.py",
             "scripts/ops/resource_governor.py",
             "scripts/ops/model_live_gate.py",
+            "scripts/ops/agent_readiness_gate.py",
+            "scripts/ops/commercial_readiness_live.py",
+            "skills/ops/config.py",
+            "skills/process-hygiene/action.py",
             "casper_ecosystem/law_firm_orchestrators/laf_vision.py"
           ],
           "timeout_sec": 30
+        },
+        {
+          "id": "hardcoded_runtime_guard",
+          "name": "No new hardcoded runtime endpoints",
+          "command": [
+            "{python}",
+            "scripts/ci/check_hardcodes.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "shell_true_guard",
+          "name": "No new unsafe shell execution",
+          "command": [
+            "{python}",
+            "scripts/ci/check_shell_true.py"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "live_conflict_audit",
+          "name": "Fast live conflict audit",
+          "command": [
+            "{python}",
+            "scripts/ops/business_module_live_check.py",
+            "--conflict-audit",
+            "--json-out",
+            ".runtime/live_conflict_audit_ci_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+        {
+          "id": "function_health_index",
+          "name": "Function health index public-safe inventory",
+          "command": [
+            "{python}",
+            "scripts/ops/function_health_index.py",
+            "--compact",
+            "--json-out",
+            ".runtime/function_health_index_ci_latest.json"
+          ],
+          "timeout_sec": 30
+        },
+        {
+          "id": "agent_readiness",
+          "name": "Agent capability contract strict gate",
+          "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--mirror-live-runtime",
+            "--json-out",
+            ".runtime/agent_readiness_ci_latest.json"
+          ],
+          "timeout_sec": 45
         },
         {
           "id": "pytest_fast_gate",
@@ -40,28 +110,40 @@
             "-m",
             "pytest",
             "-q",
-            "tests/test_arithmetic_fast_path.py",
-            "tests/test_model_config.py",
-            "tests/test_smoke_core_routes.py",
-            "tests/test_cron_monitoring_hardening.py",
-            "tests/test_intent_no_weather_for_reminder.py",
-            "tests/test_run_test_suite.py",
-            "tests/test_customer_install_wizard.py",
-            "tests/test_installer_bootstrap.py",
-            "tests/test_resource_governor.py",
-            "tests/test_model_live_gate.py",
-            "tests/test_laf_vision_ocr_consensus.py"
+            "tests/test_safe_process.py",
+            "tests/test_business_module_live_check.py",
+            "tests/test_calendar_completeness_audit.py",
+            "tests/test_calendar_document_provenance.py",
+            "tests/test_cron_status_hardening_rc157.py",
+            "tests/test_deferred_scheduled_work_rc158.py",
+            "tests/test_file_review_notifications.py",
+            "tests/test_judicial_summary_quality.py",
+            "tests/test_laf_gmail_dispatch_scan.py",
+            "tests/test_laf_portal_new_files_scan.py",
+            "tests/test_live_gate_deployment_paths.py",
+            "tests/test_message_intent_boundaries.py",
+            "tests/test_mobile_auth_routes.py",
+            "tests/test_nas_pdf_ocr_worker_lock.py",
+            "tests/test_pdf_bookmark_label_repair_resilience.py",
+            "tests/test_red_phone_config.py",
+            "tests/test_tools_api_runtime.py",
+            "tests/test_agentic_contracts.py",
+            "tests/test_agentic_planner.py",
+            "tests/test_agentic_bridges.py",
+            "tests/test_agent_readiness_gate.py",
+            "tests/v3/test_cron_service.py",
+            "tests/v3/test_function_health_operational_semantics.py"
           ],
           "timeout_sec": 120
         }
       ]
     },
     "smoke50": {
-      "description": "Backward-compatible alias for the MAGI full smoke gate; currently 62 checks with commercial release guards.",
+      "description": "Backward-compatible alias for the MAGI local full smoke gate; commercial/public release guards are opt-in.",
       "checks": [
         {
           "id": "smoke_test_full_current",
-          "name": "MAGI full smoke with commercial guards",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -73,11 +155,11 @@
       ]
     },
     "smoke62": {
-      "description": "MAGI full smoke gate with 62 checks, including commercial release and cleanroom install guards.",
+      "description": "MAGI local full smoke gate for the production machine; commercial/public release guards live in commercial-release.",
       "checks": [
         {
           "id": "smoke_test_full_62",
-          "name": "MAGI 62-check smoke",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -85,6 +167,84 @@
             ".runtime/smoke_test_full_latest.json"
           ],
           "timeout_sec": 240
+        }
+      ]
+    },
+    "acceptance-quick": {
+      "description": "Fast MAGI acceptance boundary check for local validation.",
+      "checks": [
+        {
+          "id": "magi_acceptance_quick",
+          "name": "MAGI acceptance quick boundary",
+          "command": [
+            "{python}",
+            "scripts/ops/magi_acceptance_gate.py",
+            "--profile",
+            "quick",
+            "--json-out",
+            ".runtime/magi_acceptance_quick_latest.json"
+          ],
+          "timeout_sec": 180
+        }
+      ]
+    },
+    "acceptance-full": {
+      "description": "Commit-ready MAGI acceptance boundary without external portal writes.",
+      "checks": [
+        {
+          "id": "magi_acceptance_full",
+          "name": "MAGI acceptance full boundary",
+          "command": [
+            "{python}",
+            "scripts/ops/magi_acceptance_gate.py",
+            "--profile",
+            "full",
+            "--json-out",
+            ".runtime/magi_acceptance_full_latest.json"
+          ],
+          "timeout_sec": 360
+        }
+      ]
+    },
+    "acceptance-live": {
+      "description": "Private-production acceptance boundary with non-destructive business module live checks.",
+      "checks": [
+        {
+          "id": "magi_acceptance_live",
+          "name": "MAGI acceptance live boundary",
+          "command": [
+            "{python}",
+            "scripts/ops/magi_acceptance_gate.py",
+            "--profile",
+            "live",
+            "--json-out",
+            ".runtime/magi_acceptance_live_latest.json"
+          ],
+          "timeout_sec": 1800,
+          "env": {
+            "MAGI_BUSINESS_LIVE_CHECK_NOTIFY": "0"
+          }
+        }
+      ]
+    },
+    "acceptance-weekly-deep": {
+      "description": "Weekly deep MAGI acceptance boundary including production-live suite.",
+      "checks": [
+        {
+          "id": "magi_acceptance_weekly_deep",
+          "name": "MAGI acceptance weekly deep boundary",
+          "command": [
+            "{python}",
+            "scripts/ops/magi_acceptance_gate.py",
+            "--profile",
+            "weekly-deep",
+            "--json-out",
+            ".runtime/magi_acceptance_weekly_deep_latest.json"
+          ],
+          "timeout_sec": 3600,
+          "env": {
+            "MAGI_BUSINESS_LIVE_CHECK_NOTIFY": "0"
+          }
         }
       ]
     },
@@ -109,7 +269,7 @@
             "scripts/ops/check_judicial_api_pipeline.py",
             "--json"
           ],
-          "timeout_sec": 120,
+          "timeout_sec": 240,
           "ok_returncodes": [0, 10]
         },
         {
@@ -127,6 +287,18 @@
           "env": {
             "MAGI_ISSUE_TRACKER_ENABLE": "1"
           }
+        },
+        {
+          "id": "self_repair_guardian_audit",
+          "name": "Self repair guardian audit",
+          "command": [
+            "{python}",
+            "scripts/ops/magi_self_repair_guardian.py",
+            "--mode",
+            "audit",
+            "--compact"
+          ],
+          "timeout_sec": 180
         },
         {
           "id": "resource_governor",
@@ -155,8 +327,21 @@
           "timeout_sec": 60
         },
         {
+          "id": "agent_readiness",
+          "name": "Agent capability contract strict gate",
+          "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--mirror-live-runtime",
+            "--json-out",
+            ".runtime/agent_readiness_live_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+        {
           "id": "smoke62",
-          "name": "MAGI 62-check smoke",
+          "name": "MAGI local full smoke",
           "command": [
             "{python}",
             "scripts/ops/smoke_test_full.py",
@@ -165,12 +350,26 @@
           ],
           "timeout_sec": 240
         },
-        {
-          "id": "business_modules_live",
-          "name": "LAF/file-review/transcript live check",
-          "command": [
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening audit",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_audit_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "business_modules_live",
+        "name": "LAF/file-review/transcript live check",
+        "command": [
             "{python}",
-            "scripts/ops/business_module_live_check.py"
+            "scripts/ops/business_module_live_check.py",
+            "--json-out",
+            ".runtime/business_module_live_check_latest.json"
           ],
           "timeout_sec": 900,
           "env": {
@@ -195,10 +394,11 @@
       "checks": [
         {
           "id": "public_release_audit",
-          "name": "Public release audit strict",
+          "name": "Public release audit public-isolation strict",
           "command": [
             "{python}",
             "scripts/public_release_audit.py",
+            "--public-isolation",
             "--strict"
           ],
           "timeout_sec": 180
@@ -242,9 +442,34 @@
           "timeout_sec": 60
         },
         {
-          "id": "channels_strict",
-          "name": "Messaging channel smoke strict",
+          "id": "agent_readiness",
+          "name": "Agent capability contract release gate",
           "command": [
+            "{python}",
+            "scripts/ops/agent_readiness_gate.py",
+            "--strict",
+            "--mirror-live-runtime",
+            "--json-out",
+            ".runtime/agent_readiness_release_latest.json"
+          ],
+          "timeout_sec": 45
+        },
+      {
+        "id": "operational_hardening",
+        "name": "Operational hardening release gate",
+        "command": [
+          "{python}",
+          "scripts/ops/audit_operational_hardening.py",
+          "--fail-on-red",
+          "--json-out",
+          ".runtime/operational_hardening_release_latest.json"
+        ],
+        "timeout_sec": 180
+      },
+      {
+        "id": "channels_strict",
+        "name": "Messaging channel smoke strict",
+        "command": [
             "{python}",
             "scripts/ops/smoke_three_channels.py",
             "--strict-warn"
@@ -258,7 +483,20 @@
             "{python}",
             "scripts/ops/smoke_core_routes.py",
             "--with-network",
-            "--with-heavy"
+            "--with-heavy",
+            "--json-out",
+            ".runtime/smoke_core_routes_release_latest.json"
+          ],
+          "timeout_sec": 600
+        },
+        {
+          "id": "tool_confusion_guard",
+          "name": "Tool-confusion live guard",
+          "command": [
+            "{python}",
+            "scripts/ops/tool_confusion_guard.py",
+            "--json-out",
+            ".runtime/tool_confusion_guard_release_latest.json"
           ],
           "timeout_sec": 600
         },
@@ -281,6 +519,19 @@
             ".runtime/smoke_test_full_release_latest.json"
           ],
           "timeout_sec": 240
+        },
+        {
+          "id": "function_health_gate",
+          "name": "Function health live gate",
+          "command": [
+            "{python}",
+            "scripts/ops/function_health_index.py",
+            "--compact",
+            "--fail-on-health",
+            "--json-out",
+            ".runtime/function_health_index_release_latest.json"
+          ],
+          "timeout_sec": 60
         }
       ]
     }

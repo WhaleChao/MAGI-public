@@ -6,13 +6,14 @@ Format guard for generated PDF filenames.
 Called by generate_name_proposal() before returning; adds warnings but does NOT block.
 """
 import re
+from datetime import datetime
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 # Document types that require bracket supplemental info
 _TYPES_REQUIRING_BRACKETS = frozenset([
     "判決", "裁定", "函文", "函", "庭通知書", "起訴書",
-    "不起訴處分書", "聲請書", "再議聲請書",
+    "通知", "傳票", "不起訴處分書", "聲請書", "再議聲請書",
 ])
 
 _DATE_RE = re.compile(r"^\d{8}")
@@ -71,8 +72,52 @@ _PARTY_NOISE_MARKERS = (
     "年",
     "月",
     "日",
+    "開始",
+    "應於",
+    "所提",
+    "提出",
+    "到院",
+    "地址",
+    "撤回",
+    "認可",
+    "更生",
+    "清算",
+    "自民國",
+    "申請",
+    "編號",
+    "案號",
+    "案件",
+    "姓名",
+    "欄位",
 )
 _SOURCE_NAME_RE = re.compile(r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,6})(?![\u4e00-\u9fff])")
+_PARTY_PERSON_RE = re.compile(r"^[\u4e00-\u9fff·]{2,6}(?:等[一二三四五六七八九十\d]+人)?$")
+_PARTY_ORG_MARKERS = (
+    "公司",
+    "銀行",
+    "委員會",
+    "基金會",
+    "協會",
+    "中心",
+    "政府",
+    "機關",
+    "事務所",
+    "合作社",
+    "學校",
+    "醫院",
+    "法人",
+)
+_PARTY_PLACEHOLDER_TOKENS = frozenset(
+    (
+        "案由", "統一", "當事人", "申請人", "聲請人", "相對人",
+        "原告", "被告", "上訴人", "抗告人", "債務人", "債權人",
+        "通知", "其他", "文件", "姓名", "未知", "不詳", "無",
+    )
+)
+_SUMMARY_LIMIT = 48
+_STEM_LIMIT = 110
+_PLACEHOLDER_TOKENS = ("待補摘要", "Unknown", "UNKNOWN", "無法辨識", "無法識別")
+_OCR_JUNK_RE = re.compile(r"[~�]|\s{3,}|[。；，、]{3,}")
 
 
 @lru_cache(maxsize=1)
@@ -113,7 +158,7 @@ def _to_traditional(text: str) -> str:
 
 
 def _extract_party_segment_with_span(stem: str) -> Tuple[str, Optional[Tuple[int, int]]]:
-    m = _PARTY_RE.search(stem or "")
+    m = _select_party_match(stem)
     if not m:
         return "", None
     raw = m.group(1).strip()
@@ -124,6 +169,20 @@ def _extract_party_segment_with_span(stem: str) -> Tuple[str, Optional[Tuple[int
     if rel < 0:
         return party, None
     return party, (m.start(1) + rel, m.start(1) + rel + len(party))
+
+
+def _select_party_match(stem: str):
+    for match in _PARTY_RE.finditer(stem or ""):
+        raw = match.group(1).strip()
+        party = raw.split("；", 1)[0].split(";", 1)[0].strip()
+        if not party:
+            continue
+        if re.fullmatch(r"[一二三四五六七八九十\d]+", party):
+            continue
+        if party in {"存底", "繕本", "副本", "附件", "共一份", "共二份"}:
+            continue
+        return match
+    return None
 
 
 def extract_source_name_candidates(source_hint: str) -> List[str]:
@@ -200,6 +259,39 @@ def _clean_party_noise(party: str) -> str:
     return value
 
 
+def _is_plausible_party(party: str) -> bool:
+    value = _normalize_name(party)
+    if not value or len(value) > 24:
+        return False
+    if value in _PARTY_PLACEHOLDER_TOKENS:
+        return False
+    if any(marker in value for marker in _PARTY_NOISE_MARKERS):
+        return False
+    if re.search(r"[A-Za-z]\d|\d{3,}|[:：/\\]", value):
+        return False
+    if _PARTY_PERSON_RE.fullmatch(value):
+        return True
+    return (
+        2 <= len(value) <= 24
+        and bool(re.fullmatch(r"[\u4e00-\u9fffA-Za-z·、與及等一二三四五六七八九十\d]+", value))
+        and any(marker in value for marker in _PARTY_ORG_MARKERS)
+    )
+
+
+def _compact_summary(summary: str) -> str:
+    value = re.sub(r"\s+", "", str(summary or ""))
+    value = value.replace("~", "；").replace("�", "")
+    value = re.sub(r"^[；;，,。]+", "", value)
+    value = re.sub(r"[；;，,。]+$", "", value)
+    # A filename is an index label, not a second copy of the document body.
+    # Keep at most the first two useful clauses and enforce a short hard cap.
+    clauses = [part for part in re.split(r"[；;。]", value) if part]
+    value = "；".join(clauses[:2]) if clauses else value
+    if len(value) > _SUMMARY_LIMIT:
+        value = value[: _SUMMARY_LIMIT - 1].rstrip("；，、：") + "…"
+    return value
+
+
 def sanitize_filename(name: str, source_hint: str = "") -> Tuple[str, List[str]]:
     """Apply conservative sanitization for obvious OCR pollution."""
     current = str(name or "")
@@ -234,6 +326,33 @@ def sanitize_filename(name: str, source_hint: str = "") -> Tuple[str, List[str]]
             current = stem + (".pdf" if str(name).lower().endswith(".pdf") else "")
             fixes.append("restore_source_name_variant")
 
+    # 4) Collapse OCR prose inside the supplemental bracket.  Court filenames
+    # are navigation labels; retaining whole paragraphs makes Finder/OSC
+    # unusable and can exceed SMB component limits.
+    stem = _strip_ext(current)
+    match = _select_party_match(stem)
+    if match:
+        raw = match.group(1).strip()
+        separators = ("；", ";")
+        separator = next((sep for sep in separators if sep in raw), "")
+        if separator:
+            party_part, summary_part = raw.split(separator, 1)
+            compact = _compact_summary(summary_part)
+            replacement = party_part.strip()
+            if compact:
+                replacement += f"；{compact}"
+            if replacement != raw:
+                stem = stem[: match.start(1)] + replacement + stem[match.end(1) :]
+                current = stem + (".pdf" if str(name).lower().endswith(".pdf") else "")
+                fixes.append("compact_bracket_summary")
+
+    # 5) Normalize whitespace and full-width bracket style.
+    normalized = re.sub(r"\s+", " ", current).strip()
+    normalized = normalized.replace("(", "（").replace(")", "）")
+    if normalized != current:
+        current = normalized
+        fixes.append("normalize_filename_spacing")
+
     return current, fixes
 
 
@@ -261,6 +380,33 @@ def validate_filename_quality(name: str, source_hint: str = "") -> Tuple[bool, L
             if drift_from:
                 issues.append("姓名字形與來源不一致（疑似任意繁簡/異體轉換）")
                 details["name_variant_drift"] = [drift_from, party]
+        if not _is_plausible_party(party):
+            issues.append("當事人欄不是可辨識的人名或機構名稱")
+            details["implausible_party"] = [party]
+    elif any(doc_type in stem for doc_type in _TYPES_REQUIRING_BRACKETS):
+        issues.append("需要當事人的法律文書未產生可辨識當事人")
+        details["missing_party"] = []
+
+    bracket = _select_party_match(stem)
+    if bracket:
+        raw = bracket.group(1)
+        summary = raw.split("；", 1)[1] if "；" in raw else (raw.split(";", 1)[1] if ";" in raw else "")
+        if len(summary) > _SUMMARY_LIMIT:
+            issues.append("括號摘要過長，不適合作為檔名索引")
+            details["summary_length"] = [str(len(summary)), str(_SUMMARY_LIMIT)]
+
+    if len(stem) > _STEM_LIMIT:
+        issues.append("檔名過長，會降低 Finder、OSC 與 SMB 可用性")
+        details["filename_length"] = [str(len(stem)), str(_STEM_LIMIT)]
+
+    placeholders = [token for token in _PLACEHOLDER_TOKENS if token in stem]
+    if placeholders:
+        issues.append("檔名含有待補或無法辨識的占位文字")
+        details["placeholder_tokens"] = placeholders
+
+    if _OCR_JUNK_RE.search(stem):
+        issues.append("檔名含有 OCR 雜訊或異常標點")
+        details["ocr_junk"] = [_OCR_JUNK_RE.search(stem).group(0)]
 
     return len(issues) == 0, issues, details
 
@@ -295,8 +441,8 @@ def validate_filename(name: str) -> Tuple[bool, List[str]]:
     else:
         date_part = stem[:8]
         try:
-            y, m, d = int(date_part[:4]), int(date_part[4:6]), int(date_part[6:8])
-            if not (2000 <= y <= 2099 and 1 <= m <= 12 and 1 <= d <= 31):
+            parsed = datetime.strptime(date_part, "%Y%m%d")
+            if not (2000 <= parsed.year <= 2099):
                 warnings.append(f"日期 {date_part} 超出合法範圍")
         except ValueError:
             warnings.append(f"日期 {date_part} 無法解析")

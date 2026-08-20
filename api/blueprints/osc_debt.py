@@ -29,7 +29,12 @@ import uuid
 import glob as _glob
 from urllib.parse import quote
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
+from werkzeug.utils import secure_filename
+try:
+    from flask_login import current_user
+except ModuleNotFoundError:  # public-safe test environments may omit flask-login
+    current_user = None
 
 logger = logging.getLogger("OSC_Debt")
 
@@ -38,10 +43,51 @@ osc_debt_bp = Blueprint("osc_debt", __name__)
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+@osc_debt_bp.before_request
+def _require_osc_debt_login():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    try:
+        if current_user is not None and bool(getattr(current_user, "is_authenticated", False)):
+            return None
+    except Exception:
+        logger.debug("current_user authentication probe failed", exc_info=True)
+    return jsonify({"ok": False, "error": "authentication_required"}), 401
+
+
+def _require_debt_operator():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    try:
+        from api.authz import check_authorization
+
+        allowed, reason = check_authorization("operator")
+    except Exception:
+        allowed, reason = False, "authorization_check_failed"
+    if allowed:
+        return None
+    return jsonify({"ok": False, "error": "forbidden", "reason": reason}), 403
+
+
 def _export_dir():
-    d = os.path.join(_MAGI_ROOT, "exports")
+    d = os.path.abspath(
+        os.environ.get("MAGI_EXPORTS_DIR", "").strip() or os.path.join(_MAGI_ROOT, "exports")
+    )
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _secure_temp_upload_path(temp_dir: str, filename: str) -> str:
+    safe_name = secure_filename(os.path.basename(str(filename or "").strip()))
+    if not safe_name:
+        raise ValueError("invalid_upload_filename")
+    return os.path.join(temp_dir, f"{uuid.uuid4().hex}_{safe_name}")
+
+
+def _file_meta(path: str) -> dict:
+    from api.startup import _export_file_meta
+
+    return _export_file_meta(path)
 
 
 def _save_doc(doc, form_type: str, data: dict) -> dict:
@@ -64,14 +110,15 @@ def _save_doc(doc, form_type: str, data: dict) -> dict:
 
     docx_path = os.path.join(_export_dir(), filename)
     doc.save(docx_path)
+    meta = _file_meta(docx_path)
 
     return {
         "ok": True,
         "form_type": form_type,
         "filename": os.path.basename(docx_path),
         "path": docx_path,
-        "url": f"/exports/{os.path.basename(docx_path)}",
-        "download_url": f"/api/osc/files/content?path={quote(docx_path)}",
+        "url": meta.get("url") or f"/api/osc/files/content?path={quote(docx_path, safe='')}",
+        "download_url": f"/api/osc/files/content?path={quote(docx_path, safe='')}",
         "share_path": docx_path,
         "message": f"已產生 {base_name}",
     }
@@ -81,6 +128,67 @@ def _debt_osc_exec(sql, params=(), fetch="none"):
     from api.osc.utils import _osc_exec
 
     return _osc_exec(sql, params, fetch=fetch)
+
+
+_CONTACT_FIELDS_BY_FORM = {
+    "application": ("LAWYER_NAME",),
+    "report": (
+        "LAWYER_NAME",
+        "LAWYER_ADDRESS",
+        "LAWYER_PHONE",
+        "LAWYER_MOBILE",
+    ),
+    "supplement": (
+        "LAWYER_NAME",
+        "LAWYER_ADDRESS",
+        "LAWYER_PHONE",
+        "LAWYER_MOBILE",
+    ),
+}
+_CONTACT_PAYLOAD_KEYS = {
+    "LAWYER_NAME": "lawyer_name",
+    "LAWYER_ADDRESS": "lawyer_address",
+    "LAWYER_PHONE": "lawyer_phone",
+    "LAWYER_MOBILE": "lawyer_mobile",
+}
+
+
+def _debt_setting_value(key: str, default: str = "") -> str:
+    """Read OSC settings through the same database boundary as this blueprint."""
+
+    setting_key = str(key or "").strip()
+    if not setting_key:
+        return str(default or "")
+    try:
+        row, _ = _debt_osc_exec(
+            "SELECT value FROM settings WHERE `key`=%s",
+            (setting_key,),
+            fetch="one",
+        )
+    except Exception:
+        return str(default or "")
+    value = (row or {}).get("value") if isinstance(row, dict) else None
+    text = str(value or "").strip()
+    return text or str(default or "")
+
+
+def _prepare_debt_document_data(form_type: str, data: dict) -> dict:
+    """Bind manual overrides/defaults once before invoking a document generator."""
+
+    fields = _CONTACT_FIELDS_BY_FORM.get(form_type)
+    if not fields:
+        return data
+    from api.law_firm_contact import resolve_lawyer_contact
+
+    resolved = resolve_lawyer_contact(
+        data,
+        requested_fields=fields,
+        settings_getter=_debt_setting_value,
+    )
+    prepared = dict(data)
+    for field in fields:
+        prepared[_CONTACT_PAYLOAD_KEYS[field]] = resolved[field]
+    return prepared
 
 
 def _first_debt_value(data: dict, keys: tuple[str, ...]) -> str:
@@ -273,9 +381,8 @@ def _debt_import_candidates() -> dict:
 
     try:
         from api.case_path_mapper import translate_case_path_to_local
-        from api.osc.utils import _osc_exec
 
-        rows, _ = _osc_exec(
+        rows, _ = _debt_osc_exec(
             """
             SELECT id, case_number, client_name, folder_path
             FROM cases
@@ -498,6 +605,10 @@ def debt_address_data():
     if request.method == "GET":
         return jsonify({"ok": True, **get_address_options()})
 
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
+
     # POST: 新增/更新地址
     payload = request.get_json(force=True, silent=True) or {}
     name = str(payload.get("name", "")).strip()
@@ -520,6 +631,9 @@ def debt_address_data():
 
 @osc_debt_bp.route("/api/osc/debt/generate", methods=["POST"])
 def debt_generate_document():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     from api.debt_document_generator import (
         generate_application,
         generate_asset_statement,
@@ -557,7 +671,8 @@ def debt_generate_document():
                     logger.debug("記錄債權人地址失敗: %s", name[:1] + "**", exc_info=True)
 
     try:
-        doc = generators[form_type](data)
+        document_data = _prepare_debt_document_data(form_type, data)
+        doc = generators[form_type](document_data)
     except FileNotFoundError as e:
         return jsonify({"ok": False, "error": str(e)}), 404
     except Exception as e:
@@ -586,6 +701,9 @@ def debt_generate_document():
 
 @osc_debt_bp.route("/api/osc/debt/supplement-checklist", methods=["POST"])
 def debt_supplement_checklist():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     payload = request.get_json(force=True, silent=True) or {}
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     try:
@@ -604,6 +722,9 @@ def debt_supplement_checklist():
 
 @osc_debt_bp.route("/api/osc/debt/batch-generate", methods=["POST"])
 def debt_batch_generate():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     """
     批次產生多份文件。
     body: {
@@ -647,8 +768,9 @@ def debt_batch_generate():
                     address = str(creditor.get("address") or "").strip()
                     if name and address and save_address_to_csv(name, address, "bank"):
                         saved_addresses += 1
-            doc = generators[form_type](data)
-            result = _save_doc(doc, form_type, data)
+            document_data = _prepare_debt_document_data(form_type, data)
+            doc = generators[form_type](document_data)
+            result = _save_doc(doc, form_type, document_data)
             if form_type == "creditor_list":
                 result["saved_addresses"] = saved_addresses
             if form_type == "supplement":
@@ -673,6 +795,9 @@ def debt_batch_generate():
 
 @osc_debt_bp.route("/api/osc/debt/auto-import", methods=["POST"])
 def debt_auto_import():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     """
     自動從 exports/ 目錄找到最近產生的財產說明書和債權人清冊，帶入聲請狀。
     支援兩種模式：
@@ -691,7 +816,10 @@ def debt_auto_import():
         for key in ["asset_doc", "creditor_doc"]:
             f = request.files.get(key)
             if f and f.filename:
-                save_path = os.path.join(temp_dir, f.filename)
+                try:
+                    save_path = _secure_temp_upload_path(temp_dir, f.filename)
+                except ValueError as exc:
+                    return jsonify({"ok": False, "error": str(exc)}), 400
                 f.save(save_path)
                 paths[key] = save_path
             form_path = request.form.get(f"{key}_path")
@@ -762,6 +890,9 @@ def debt_auto_import():
 
 @osc_debt_bp.route("/api/osc/debt/validate", methods=["POST"])
 def debt_validate():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     """
     驗證表單資料，回傳驗證結果。
     body: { "form_type": "...", "data": { ... } }
@@ -803,6 +934,9 @@ def debt_validate():
 
 @osc_debt_bp.route("/api/osc/debt/merge-pdf", methods=["POST"])
 def debt_merge_pdf():
+    auth_error = _require_debt_operator()
+    if auth_error:
+        return auth_error
     from api.debt_document_generator import merge_debt_pdfs
 
     uploaded_files = request.files.getlist("files[]") or request.files.getlist("files")
@@ -813,7 +947,11 @@ def debt_merge_pdf():
     file_paths = []
     for f in uploaded_files:
         if f.filename:
-            save_path = os.path.join(temp_dir, f.filename)
+            try:
+                save_path = _secure_temp_upload_path(temp_dir, f.filename)
+            except ValueError as exc:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return jsonify({"ok": False, "error": str(exc)}), 400
             f.save(save_path)
             file_paths.append(save_path)
 
@@ -830,13 +968,14 @@ def debt_merge_pdf():
         return jsonify({"ok": False, "error": f"合併失敗: {e}"}), 500
 
     shutil.rmtree(temp_dir, ignore_errors=True)
+    meta = _file_meta(output_path)
 
     return jsonify({
         "ok": True,
         "filename": os.path.basename(output_path),
         "path": output_path,
-        "url": f"/exports/{os.path.basename(output_path)}",
-        "download_url": f"/api/osc/files/content?path={quote(output_path)}",
+        "url": meta.get("url") or f"/api/osc/files/content?path={quote(output_path, safe='')}",
+        "download_url": f"/api/osc/files/content?path={quote(output_path, safe='')}",
         "share_path": output_path,
         "message": f"已合併 {len(file_paths)} 個檔案",
     })

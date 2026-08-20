@@ -1,7 +1,15 @@
 import os
+import sys
 import json
 import logging
+from pathlib import Path
 import numpy as np
+
+_SKILL_CODE_DIR = Path(__file__).resolve().parent
+if str(_SKILL_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_SKILL_CODE_DIR))
+
+from state_paths import prepare_write, read_path, state_path
 
 logger = logging.getLogger("pdf-namer-rag")
 
@@ -13,7 +21,7 @@ except ImportError:
     logger.warning("SentenceTransformers not found. RAG disabled.")
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
-TRAINING_DATA_PATH = os.path.join(SKILL_DIR, "training_data.json")
+TRAINING_DATA_PATH = state_path("training_data.json")
 
 class FeedbackRAG:
     """
@@ -33,8 +41,9 @@ class FeedbackRAG:
         logger.info("Loading RAG Model for PDF Namer Feedback Loop...")
         try:
             self.model = SentenceTransformer("all-MiniLM-L6-v2")
-            if os.path.exists(TRAINING_DATA_PATH):
-                with open(TRAINING_DATA_PATH, "r", encoding="utf-8") as f:
+            training_read_path = read_path("training_data.json")
+            if training_read_path.exists():
+                with open(training_read_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 
                 # We only embed the text_preview
@@ -89,15 +98,16 @@ class FeedbackRAG:
         
         # Append to JSON
         data = []
-        if os.path.exists(TRAINING_DATA_PATH):
+        training_read_path = read_path("training_data.json")
+        if training_read_path.exists():
             try:
-                with open(TRAINING_DATA_PATH, "r", encoding="utf-8") as f:
+                with open(training_read_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 96, exc_info=True)
         
         data.append(new_entry)
-        with open(TRAINING_DATA_PATH, "w", encoding="utf-8") as f:
+        with open(prepare_write(TRAINING_DATA_PATH), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
 # Singleton

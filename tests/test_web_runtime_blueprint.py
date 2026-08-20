@@ -88,7 +88,10 @@ def test_process_monitor_routes_render_and_toggle(tmp_path, monkeypatch):
     assert response.get_json()["enabled"] is False
 
 
-def test_memory_stats_uses_runtime_files(tmp_path):
+def test_memory_stats_uses_runtime_files(tmp_path, monkeypatch):
+    # An isolated blueprint must never be redirected to the host's LIVE index.
+    monkeypatch.setenv("FAISS_INDEX_DIR", str(tmp_path / "host-live-decoy"))
+    monkeypatch.setenv("MAGI_SHARED_STATE_DIR", str(tmp_path / "host-shared-decoy"))
     agent_dir = tmp_path / ".agent"
     agent_dir.mkdir()
     (agent_dir / "doc_vector_index.json").write_text(
@@ -189,12 +192,14 @@ def test_obsidian_sync_route_starts_ingest(tmp_path, monkeypatch):
     assert calls == [{}]
 
 
-def test_osc_chat_poll_and_judgments_routes(tmp_path):
+def test_osc_chat_poll_and_judgments_routes(tmp_path, monkeypatch):
     notifications = {"u1": [{"type": "info", "message": "hi"}]}
     orchestrator = _Orchestrator(reply="reply text")
     judgments_dir = tmp_path / "skills" / "judgment-collector"
     judgments_dir.mkdir(parents=True)
-    (judgments_dir / "judgments.json").write_text(json.dumps([{"id": 1}]), encoding="utf-8")
+    judgments_path = judgments_dir / "judgments.json"
+    judgments_path.write_text(json.dumps([{"id": 1}]), encoding="utf-8")
+    monkeypatch.setenv("MAGI_JUDGMENTS_JSON_PATH", str(judgments_path))
 
     app = _make_app(
         tmp_path,
@@ -209,8 +214,22 @@ def test_osc_chat_poll_and_judgments_routes(tmp_path):
     assert response.get_json()["reply"] == "WEB:reply text"
     assert response.get_json()["artifacts"] == []
     assert response.get_json()["reply_html"].startswith('<div class="web-reply">')
+    assert response.get_json()["intent"]["label"] == "一般對話"
+    assert response.get_json()["intent"]["uses_tool"] is False
     assert orchestrator.calls[0]["platform"] == "WEB"
     assert orchestrator.calls[0]["role"] == "admin"
+
+    response = client.post(
+        "/api/osc/chat",
+        headers={"X-User-ID": "u1"},
+        json={"message": "請查最高法院關於詐欺取財的最新見解"},
+    )
+    assert response.status_code == 200
+    intent = response.get_json()["intent"]
+    assert intent["label"] == "資料查詢"
+    assert intent["route"] == "QUERY"
+    assert intent["uses_tool"] is True
+    assert intent["tool"] == "judgment_query"
 
     response = client.get("/api/osc/poll", headers={"X-User-ID": "u1"})
     assert response.status_code == 200

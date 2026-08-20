@@ -15,11 +15,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-OUTPUT_PATH = ROOT / ".runtime" / "distill_live_latest.json"
+RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser()
+OUTPUT_PATH = RUNTIME_DIR / "distill_live_latest.json"
 
 
 def _load_env() -> None:
-    env = ROOT / ".env"
+    env = Path(os.environ.get("MAGI_ENV_FILE", "").strip() or ROOT / ".env").expanduser()
     if not env.exists():
         return
     for raw in env.read_text(encoding="utf-8").splitlines():

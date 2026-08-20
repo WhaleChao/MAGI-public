@@ -10,8 +10,13 @@ import sys
 import time
 
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUTPUT_PATH = os.path.join(MAGI_ROOT, ".runtime", "benchmark_pdf_bookmarker_latest.json")
-NAS_CASE_ROOT = "/Volumes/lumi/lumi/01_案件"
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+RUNTIME_DIR = os.path.abspath(
+    os.path.expanduser(_RUNTIME_OVERRIDE)
+    or os.path.join(MAGI_ROOT, ".runtime")
+)
+OUTPUT_PATH = os.path.join(RUNTIME_DIR, "benchmark_pdf_bookmarker_latest.json")
+NAS_CASE_ROOT = os.environ.get("MAGI_BENCHMARK_NAS_CASE_ROOT", "").strip()
 FALLBACK_ROOT = os.path.expanduser("~/Library/CloudStorage/SynologyDrive-homes/01_案件")
 FALLBACK_ROOTS = [
     os.path.expanduser("~/SynologyDrive/01_案件"),
@@ -25,7 +30,9 @@ ALLOW_NAS_SCAN = os.environ.get("MAGI_BENCHMARK_ALLOW_NAS_SCAN", "").strip().low
 MAX_SCAN_DIRS = int(os.environ.get("MAGI_BENCHMARK_MAX_SCAN_DIRS", "500"))
 RECALL_THRESHOLD = 0.85
 EMPTY_FAILURE_THRESHOLD = 0.10
-LABEL_MATCH_THRESHOLD = 0.80
+# Generated labels are deterministic product output.  A single known-invalid
+# label must fail the gate instead of being hidden inside an 80% average.
+LABEL_MATCH_THRESHOLD = 1.00
 NEEDS_MANUAL_REVIEW_THRESHOLD = int(os.environ.get("MAGI_PDF_BOOKMARKER_REVIEW_THRESHOLD", "1") or "1")
 _LEGACY_IMAGE_LABEL_RE = re.compile(r"^image\d{4,}$", re.IGNORECASE)
 _SINGLE_DOC_FILENAME_HINTS = (
@@ -46,6 +53,36 @@ def _load_module(module_name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_bookmarker_modules():
+    """Load the validator before the dynamically imported bookmarker.
+
+    The production action is normally executed as a script, where its own
+    directory is importable.  The benchmark loads it with importlib, so the
+    sibling ``bookmark_validator`` must be registered explicitly; otherwise
+    the action silently falls back to no label normalization and the health
+    gate reports filename fragments that production would not generate.
+    """
+    validator = _load_module(
+        "bookmark_validator",
+        os.path.join(MAGI_ROOT, "skills", "pdf-bookmarker", "bookmark_validator.py"),
+    )
+    previous = sys.modules.get("bookmark_validator")
+    sys.modules["bookmark_validator"] = validator
+    try:
+        bookmarker = _load_module(
+            "pdf_bookmarker_action",
+            os.path.join(MAGI_ROOT, "skills", "pdf-bookmarker", "action.py"),
+        )
+    finally:
+        if previous is None:
+            sys.modules.pop("bookmark_validator", None)
+        else:
+            sys.modules["bookmark_validator"] = previous
+    if not callable(getattr(bookmarker, "normalize_bookmark", None)):
+        raise RuntimeError("pdf-bookmarker benchmark loaded without its label validator")
+    return validator, bookmarker
 
 
 def find_pdfs(root, limit=MAX_PDFS):
@@ -155,13 +192,20 @@ def _collect_legacy_cleanup_candidate(pdf_path, observed_toc, generated_toc, cla
 
 def _build_legacy_cleanup_plan(candidates):
     ts = time.strftime("%Y%m%d_%H%M%S")
-    backup_root = os.path.join(MAGI_ROOT, ".backup", "pdf_bookmarker_legacy", ts)
+    backup_root = (
+        os.path.join(RUNTIME_DIR, "backups", "pdf_bookmarker_legacy", ts)
+        if _RUNTIME_OVERRIDE
+        else os.path.join(MAGI_ROOT, ".backup", "pdf_bookmarker_legacy", ts)
+    )
     return {
         "candidate_count": len(candidates),
         "backup_root": backup_root,
         "planner": {
             "weekend_backfill_dry_run_cmd": "./venv/bin/python scripts/weekend_bookmark_batch.py --dry-run --plan-limit 50",
-            "weekend_backfill_plan_path": os.path.join(MAGI_ROOT, ".runtime", "bookmark_backfill_plan_latest.json"),
+            "weekend_backfill_plan_path": os.path.join(
+                RUNTIME_DIR,
+                "bookmark_backfill_plan_latest.json",
+            ),
         },
         "apply_runbook": [
             "1) 先執行 benchmark dry-run，確認 candidates 與 proposed_generated_toc。",
@@ -180,14 +224,7 @@ def main():
         print("[SKIP] NAS/Synology case roots not available. Skipping bookmark benchmark.")
         return 0
 
-    validator = _load_module(
-        "bookmark_validator",
-        os.path.join(MAGI_ROOT, "skills", "pdf-bookmarker", "bookmark_validator.py"),
-    )
-    bookmarker = _load_module(
-        "pdf_bookmarker_action",
-        os.path.join(MAGI_ROOT, "skills", "pdf-bookmarker", "action.py"),
-    )
+    validator, bookmarker = _load_bookmarker_modules()
 
     pdfs = find_pdfs(case_root)
     if not pdfs:

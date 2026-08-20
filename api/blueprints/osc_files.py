@@ -16,37 +16,148 @@ Routes:
 """
 from __future__ import annotations
 
+import errno
+import functools
 import logging
 import mimetypes
 import os
 import re
 import hashlib
 import json
+import sys
 import secrets
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 from pathlib import Path
-from urllib.parse import quote
 
-from flask import Blueprint, request, jsonify, send_file, Response
+from flask import Blueprint, request, jsonify, send_file, Response, current_app, session as flask_session
 from flask_login import current_user, login_required
 
 from api.osc.utils import (
+    _osc_exec,
     _osc_is_safe_local_path,
     _osc_resolve_existing_local_path,
     _osc_local_path_candidates,
     _osc_norm_path,
     _osc_relpath_under,
     _osc_human_size,
+    _osc_replace_path_prefix_references,
+    _osc_request_path_is_allowed,
+    _osc_isdir_quick,
+    _osc_stage_bulkhead,
+    _osc_directory_io_slot,
 )
 from api.osc import preview as osc_preview
+from api.runtime_paths import get_runtime_dir
+from api.saas_audit import append_audit_event, file_ref
 
 osc_files_bp = Blueprint("osc_files", __name__)
 _log = logging.getLogger(__name__)
+_SHARE_STORE_THREAD_LOCK = threading.RLock()
+
+
+def _directory_io_route(func):
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        try:
+            with _osc_directory_io_slot():
+                return func(*args, **kwargs)
+        except OSError as exc:
+            if exc.errno != errno.EBUSY:
+                raise
+            response = jsonify(
+                {
+                    "ok": False,
+                    "error": "directory_io_busy",
+                    "message": "NAS 正在處理其他資料夾，請稍後重試。",
+                }
+            )
+            response.headers["Retry-After"] = "1"
+            return response, 503
+
+    return wrapped
+
+
+def _audit_file_event(action: str, path: str, *, status: str = "ok", metadata: dict | None = None) -> None:
+    try:
+        ref = file_ref(path)
+        payload = {"file": ref}
+        if metadata:
+            payload.update(metadata)
+        append_audit_event(
+            action,
+            resource_type="file",
+            resource_id=str(ref.get("path_hash") or ""),
+            status=status,
+            metadata=payload,
+        )
+    except Exception:
+        _log.debug("silent-catch file audit failed action=%s", action, exc_info=True)
+
+
+def _require_file_operator():
+    if current_app.config.get("LOGIN_DISABLED"):
+        return None
+    try:
+        from api.authz import check_authorization
+
+        allowed, reason = check_authorization("operator")
+    except Exception:
+        allowed, reason = False, "authorization_check_failed"
+    if allowed:
+        return None
+    return jsonify({"ok": False, "error": "forbidden", "reason": reason}), 403
+
+
+def _actor_namespace() -> str:
+    try:
+        user_id = str(getattr(current_user, "id", "") or "anonymous")
+    except Exception:
+        user_id = "anonymous"
+    try:
+        session_hint = str(flask_session.get("_id") or flask_session.get("sid") or request.cookies.get(current_app.config.get("SESSION_COOKIE_NAME", "session")) or "")
+    except Exception:
+        session_hint = ""
+    digest = hashlib.sha256(f"{user_id}|{session_hint}".encode("utf-8")).hexdigest()[:16]
+    safe_user = re.sub(r"[^A-Za-z0-9_.-]", "_", user_id)[:48] or "anonymous"
+    return f"{safe_user}-{digest}"
+
+
+@contextmanager
+def _locked_file(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        try:
+            from magi_v3 import fcntl_compat as fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            _log.debug("file lock unavailable for %s", path, exc_info=True)
+        yield
+    finally:
+        try:
+            from magi_v3 import fcntl_compat as fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            _log.debug("file unlock unavailable for %s", path, exc_info=True)
+        handle.close()
+
+
+@contextmanager
+def _share_store_guard():
+    with _SHARE_STORE_THREAD_LOCK:
+        with _locked_file(_SHARE_STORE_PATH.with_name(_SHARE_STORE_PATH.name + ".lock")):
+            yield
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -70,14 +181,100 @@ _BLOCKED_UPLOAD_EXTS = {
     ".msi", ".app", ".pkg", ".dmg", ".com", ".vbs",
 }
 
-_SHARE_STORE_PATH = Path(os.environ.get("MAGI_OSC_FILE_SHARE_STORE", "") or (
-    Path(__file__).resolve().parents[2] / ".runtime" / "osc_file_shares.json"
-))
-_SHARE_PUBLIC_BASE_FILE = Path(os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE", "") or (
-    Path(__file__).resolve().parents[2] / ".runtime" / "osc_share_public_base_url.txt"
-))
+_SHARE_STORE_PATH = Path(
+    os.environ.get("MAGI_OSC_FILE_SHARE_STORE", "").strip()
+    or get_runtime_dir() / "osc_file_shares.json"
+).expanduser()
+_SHARE_PUBLIC_BASE_FILE = Path(
+    os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE", "").strip()
+    or get_runtime_dir() / "osc_share_public_base_url.txt"
+).expanduser()
 _DEFAULT_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_TTL_SEC", str(7 * 24 * 3600)) or str(7 * 24 * 3600))
 _MAX_SHARE_TTL_SEC = int(os.environ.get("MAGI_OSC_FILE_SHARE_MAX_TTL_SEC", str(30 * 24 * 3600)) or str(30 * 24 * 3600))
+
+
+_OSC_HELPER_HOST = os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_HOST", "127.0.0.1").strip() or "127.0.0.1"
+_OSC_HELPER_PORT = int(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_PORT", "5016") or "5016")
+_OSC_HELPER_LISTDIR_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_LISTDIR_TIMEOUT_SEC", "7.0") or "7.0")
+_OSC_HELPER_STAGE_TIMEOUT = float(os.environ.get("MAGI_OSC_SHELL_NAS_HELPER_STAGE_TIMEOUT_SEC", "90") or "90")
+
+
+def _osc_shell_nas_helper_url() -> str:
+    return f"http://{_OSC_HELPER_HOST}:{_OSC_HELPER_PORT}"
+
+
+def _osc_shell_nas_helper_request(path: str, timeout: float | None = None) -> list[dict]:
+    if timeout is None:
+        timeout = _OSC_HELPER_LISTDIR_TIMEOUT
+    url = _osc_shell_nas_helper_url() + "/listdir?" + urlencode({"path": os.path.realpath(path)})
+    req = Request(url, method="GET")
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper request failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper request failed: {exc}") from exc
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper response parse failed: {exc}") from exc
+
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise OSError(f"helper rejected path: {payload.get('error') if isinstance(payload, dict) else 'invalid response'}")
+
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        raise OSError("helper returned malformed entries")
+    normalized: list[dict] = []
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        if "mtime" not in row and "mtime_ts" in row:
+            row["mtime"] = row.get("mtime_ts")
+        if "is_dir" in row and isinstance(row["is_dir"], str):
+            if str(row["is_dir"]).strip().lower() == "true":
+                row["is_dir"] = True
+            elif str(row["is_dir"]).strip().lower() == "false":
+                row["is_dir"] = False
+        normalized.append(row)
+    return normalized
+
+
+def _osc_shell_nas_stage_request(local_file: str, timeout: float | None = None) -> str:
+    if timeout is None:
+        timeout = _OSC_HELPER_STAGE_TIMEOUT
+    url = _osc_shell_nas_helper_url() + "/stage"
+    payload = json.dumps({"path": os.path.realpath(local_file)}).encode("utf-8")
+    req = Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raise OSError(f"helper stage failed: HTTP {exc.code}") from exc
+    except (URLError, TimeoutError) as exc:
+        raise OSError(f"helper stage failed: {exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        raise OSError(f"helper stage response parse failed: {exc}") from exc
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise OSError(
+            f"helper stage rejected: {data.get('error') if isinstance(data, dict) else 'invalid response'}"
+        )
+
+    staged = str(data.get("staged_path") or "").strip()
+    if not staged or not os.path.isfile(staged):
+        raise OSError("helper stage returned missing file")
+    return staged
 
 
 def _share_cache_dir() -> Path:
@@ -128,7 +325,11 @@ def _load_share_store() -> dict:
     return {"shares": {}}
 
 
-def _save_share_store(data: dict) -> None:
+def _save_share_store(data: dict, *, use_lock: bool = True) -> None:
+    if use_lock:
+        with _share_store_guard():
+            _save_share_store(data, use_lock=False)
+        return
     _SHARE_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _SHARE_STORE_PATH.with_name(
         f"{_SHARE_STORE_PATH.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
@@ -263,6 +464,7 @@ def _should_prefer_system_copy(local_file: str) -> bool:
     return norm.startswith("/Volumes/") or "/Library/CloudStorage/SynologyDrive" in norm
 
 
+@_osc_stage_bulkhead
 def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) -> str:
     """Stage a NAS-backed file locally before sending or sharing it."""
     if max_attempts is None:
@@ -281,9 +483,15 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 os.close(fd)
                 if _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
-                raise OSError("system copy staging failed")
+                # keep behaviour deterministic: if cp fails (or is flaky), fallback to
+                # direct Python copy so endpoint still works under transient copy issues.
+                logging.getLogger(__name__).warning(
+                    "system copy staging fallback triggered for: %s",
+                    local_file,
+                )
             try:
-                with os.fdopen(fd, "wb") as out, open(local_file, "rb") as src:
+                with open(tmp_path, "wb") as out, open(local_file, "rb") as src:
+                    copied_size = 0
                     while True:
                         try:
                             chunk = src.read(4 * 1024 * 1024)
@@ -292,11 +500,18 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                         if not chunk:
                             break
                         out.write(chunk)
+                        copied_size += len(chunk)
+                        # A mocked, faulty, or changing source must not be able
+                        # to fill the local disk by returning data forever.  A
+                        # successful preflight stat is an exact upper bound for
+                        # this staging attempt; a size change is retried/fails
+                        # closed instead of consuming unbounded scratch space.
+                        if expected_size is not None and copied_size > expected_size:
+                            raise OSError(
+                                "staged copy exceeded source size: "
+                                f"expected {expected_size} bytes, got at least {copied_size} bytes"
+                            )
             except OSError as e:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
                 if e.errno in (11, 35) and _copy_with_system_cp(local_file, tmp_path):
                     return tmp_path
                 raise
@@ -311,7 +526,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 315, exc_info=True)
             if e.errno in (11, 35) and attempt < max_attempts - 1:
                 time.sleep(0.25 * (2 ** attempt))
                 continue
@@ -322,7 +537,7 @@ def _stage_file_with_retry(local_file: str, *, max_attempts: int | None = None) 
                 try:
                     os.remove(tmp_path)
                 except OSError:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 326, exc_info=True)
             raise
     if last_exc:
         raise last_exc
@@ -339,16 +554,16 @@ def _read_file_with_retry(local_file: str, *, max_attempts: int = 7) -> bytes:
         try:
             os.remove(staged)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 343, exc_info=True)
 
 
 def _cleanup_file_once(path: str) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        pass
+        return
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 352, exc_info=True)
 
 
 def _share_cached_file_for_row(row: dict) -> str:
@@ -372,17 +587,35 @@ def _share_cached_file_for_row(row: dict) -> str:
     return staged
 
 
+@_osc_stage_bulkhead
 def _ensure_share_cached_copy(token_hash: str, row: dict, local_file: str) -> str:
     cached = _share_cached_file_for_row(row)
     if cached:
         return cached
-    staged = _stage_file_with_retry(local_file)
+    staged = ""
+    if _is_network_nas_path(local_file):
+        try:
+            staged = _osc_shell_nas_stage_request(local_file)
+        except OSError as exc:
+            _log.warning(
+                "share helper stage failed; fallback to local stage: file=%s err=%s",
+                local_file,
+                exc,
+            )
+
+    if not staged:
+        staged = _stage_file_with_retry(local_file)
+
     final_path = _share_cache_path(token_hash, str(row.get("name") or os.path.basename(local_file)))
     try:
         os.replace(staged, final_path)
     except Exception:
-        _cleanup_file_once(staged)
-        raise
+        try:
+            shutil.copy2(staged, final_path)
+            _cleanup_file_once(staged)
+        except Exception:
+            _cleanup_file_once(staged)
+            raise
     row["staged_path"] = final_path
     row["staged_size"] = os.path.getsize(final_path)
     row["staged_at"] = int(time.time())
@@ -506,6 +739,255 @@ def _is_hidden_name(name: str) -> bool:
     return any(p.match(name) for p in _HIDDEN_PATTERNS)
 
 
+def _is_network_nas_path(path: str) -> bool:
+    norm = (str(path or "").replace("\\", "/")).strip()
+    return (
+        norm.startswith("/Volumes/")
+        or "/.magi_mounts/" in norm
+        or norm.startswith("/Library/CloudStorage/SynologyDrive")
+        or norm.startswith("/Users/") and "/.magi_mounts/" in norm
+        or "/SynologyDrive" in norm
+    )
+
+
+def _listdir_via_subprocess(path: str, *, timeout: float = 7.0) -> list[str]:
+    code = "import os,sys,json\nprint(json.dumps(os.listdir(sys.argv[1]), ensure_ascii=False))"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir timed out: {timeout}s") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        message = stderr.splitlines()[-1] if stderr else "listdir failed"
+        errno = 0
+        m = re.search(r"Errno\s+(\d+)", message)
+        if m:
+            try:
+                errno = int(m.group(1))
+            except Exception:
+                errno = 0
+        if errno:
+            raise OSError(errno, message)
+        raise OSError(message)
+
+    output = (result.stdout or "").strip()
+    if not output:
+        return []
+    try:
+        raw = json.loads(output)
+    except Exception as exc:
+        raise OSError(f"listdir parse failed: {exc}") from exc
+    if not isinstance(raw, list):
+        raise OSError("listdir helper returned non-list")
+    return [str(item) for item in raw]
+
+
+def _listdir_with_retry(path: str, *, max_attempts: int = 5, base_delay: float = 0.12) -> list[str]:
+    """Retry transient SMB listdir failures before bubbling up."""
+    attempts = max(1, int(max_attempts))
+    last_err: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            if _is_network_nas_path(path):
+                return _listdir_via_subprocess(path, timeout=7.0)
+            return os.listdir(path)
+        except OSError as e:
+            last_err = e
+            if getattr(e, "errno", 0) in (4, 11, 35) and attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise
+        except TimeoutError as e:
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise OSError(str(e))
+    if last_err:
+        raise last_err
+    raise OSError("listdir_with_retry_failed")
+
+
+def _listdir_with_metadata_via_subprocess(path: str, *, timeout: float = 7.0) -> list[dict]:
+    """List entries and metadata in one timeout-bound subprocess call."""
+    code = (
+        "import os,sys,json,stat\n"
+        "path = sys.argv[1]\n"
+        "out = []\n"
+        "for name in os.listdir(path):\n"
+        "    full = os.path.join(path, name)\n"
+        "    item = {\n"
+        "        \"name\": name,\n"
+        "        \"is_dir\": None,\n"
+        "        \"size\": None,\n"
+        "        \"mtime\": None,\n"
+        "        \"errno\": 0,\n"
+        "    }\n"
+        "    try:\n"
+        "        st = os.stat(full)\n"
+        "        item[\"is_dir\"] = bool(st.st_mode and stat.S_ISDIR(st.st_mode))\n"
+        "        item[\"size\"] = int(st.st_size)\n"
+        "        item[\"mtime\"] = int(st.st_mtime)\n"
+        "    except Exception as e:\n"
+        "        item[\"errno\"] = int(getattr(e, \"errno\", 0) or 0)\n"
+        "        item[\"error\"] = str(e)\n"
+        "    out.append(item)\n"
+        "print(json.dumps(out, ensure_ascii=False))\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code, path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"listdir metadata timed out: {timeout}s") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        message = stderr.splitlines()[-1] if stderr else "listdir metadata failed"
+        errno = 0
+        m = re.search(r"Errno\s+(\d+)", message)
+        if m:
+            try:
+                errno = int(m.group(1))
+            except Exception:
+                errno = 0
+        if errno:
+            raise OSError(errno, message)
+        raise OSError(message)
+
+    output = (result.stdout or "").strip()
+    if not output:
+        return []
+    try:
+        raw = json.loads(output)
+    except Exception as exc:
+        raise OSError(f"listdir metadata parse failed: {exc}") from exc
+    if not isinstance(raw, list):
+        raise OSError("listdir metadata helper returned non-list")
+    return raw
+
+
+def _listdir_with_metadata_with_retry(
+    path: str,
+    *,
+    max_attempts: int = 2,
+    base_delay: float = 0.12,
+    timeout: float = 2.5,
+) -> list[dict]:
+    """Retry metadata helper for transient NAS errors and timeout."""
+    attempts = max(1, int(max_attempts))
+    last_err: OSError | None = None
+    network_path = _is_network_nas_path(path)
+    if network_path:
+        for attempt in range(attempts):
+            try:
+                return _osc_shell_nas_helper_request(path, timeout=timeout)
+            except OSError as exc:
+                last_err = exc
+                if attempt < attempts - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+                break
+        _log.info("NAS helper unavailable; falling back to local metadata listing: %s", last_err)
+
+    # The helper's child is deliberately short-lived.  If it is unavailable,
+    # the direct fallback still needs enough time for one directory scan plus
+    # per-entry metadata on SMB/File Provider mounts. Keep it in a disposable
+    # child process and try it only once: this recovery remains bounded.
+    fallback_attempts = 1 if network_path else attempts
+    fallback_timeout = max(7.0, float(timeout)) if network_path else float(timeout)
+    for attempt in range(fallback_attempts):
+        try:
+            return _listdir_with_metadata_via_subprocess(path, timeout=fallback_timeout)
+        except TimeoutError as exc:
+            last_err = OSError(str(exc))
+            if attempt < fallback_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            break
+        except OSError as exc:
+            last_err = exc
+            if getattr(exc, "errno", 0) in (4, 11, 35) and attempt < fallback_attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            break
+    if last_err:
+        raise last_err
+    raise OSError("listdir metadata failed")
+
+
+def _dir_metadata_map(
+    path: str,
+    *,
+    use_subprocess_for_network: bool = True,
+    max_attempts: int = 2,
+    timeout: float = 2.5,
+) -> dict[str, dict]:
+    if _is_network_nas_path(path) and use_subprocess_for_network:
+        rows = _listdir_with_metadata_with_retry(path, max_attempts=max_attempts, timeout=timeout)
+        return {
+            str(r.get("name")): {
+                "name": str(r.get("name")),
+                "is_dir": bool(r.get("is_dir"))
+                if str(r.get("is_dir")).lower() not in {"", "none"}
+                else r.get("is_dir"),
+                "size": None if r.get("size") is None else int(r["size"]),
+                "mtime": (
+                    None
+                    if (r.get("mtime") is None and r.get("mtime_ts") is None)
+                    else int(r.get("mtime") if r.get("mtime") is not None else r.get("mtime_ts"))
+                ),
+                "errno": int(r.get("errno") or 0),
+                "error": r.get("error"),
+            }
+            for r in rows
+            if r.get("name") is not None
+        }
+    names = _listdir_with_retry(path)
+    out = {}
+    for n in names:
+        full = os.path.join(path, n)
+        try:
+            st = os.stat(full)
+            out[n] = {
+                "name": n,
+                "is_dir": os.path.isdir(full),
+                "size": int(st.st_size),
+                "mtime": int(st.st_mtime),
+                "errno": 0,
+                "error": None,
+            }
+        except OSError as e:
+            out[n] = {
+                "name": n,
+                "is_dir": None,
+                "size": None,
+                "mtime": None,
+                "errno": int(getattr(e, "errno", 0) or 0),
+                "error": str(e),
+            }
+    return out
+
+
+def _has_network_subdir(full_path: str) -> bool:
+    """Return True when directory has at least one child directory (network-safe helper)."""
+    metadata = _dir_metadata_map(full_path)
+    for item in metadata.values():
+        if item.get("error"):
+            continue
+        if item.get("is_dir"):
+            return True
+    return False
+
+
 def _resolve_target_dir(path_str: str) -> str:
     """Resolve a possibly-Windows path to a local existing directory under allowed roots.
 
@@ -538,7 +1020,7 @@ def _resolve_with_diagnostic(path_str: str) -> tuple[str, dict]:
             from api.osc.utils import _osc_local_path_candidates
             cands = _osc_local_path_candidates(path_str)
             diag["candidates"] = [
-                {"path": c, "exists": os.path.isdir(c)}
+                {"path": c, "exists": _osc_isdir_quick(c)}
                 for c in cands
             ]
         except Exception:
@@ -554,36 +1036,71 @@ def _safe_join_under(base_real: str, relative_path: str) -> str | None:
     return target
 
 
-def _summarize_dir(dir_path: str, *, max_scan: int = 200) -> dict:
+def _summarize_dir(dir_path: str, *, max_scan: int = 200, use_network_metadata: bool | None = None) -> dict:
     """Quick summary: child file count + total size (capped to avoid hammering NAS)."""
     files = 0
     folders = 0
     total = 0
     try:
-        for i, name in enumerate(os.listdir(dir_path)):
+        use_subprocess = _is_network_nas_path(dir_path) if use_network_metadata is None else bool(use_network_metadata)
+        metadata = _dir_metadata_map(
+            dir_path,
+            use_subprocess_for_network=use_subprocess,
+            max_attempts=1,
+            timeout=1.75,
+        )
+        names = [name for name in metadata.keys()]
+        for i, name in enumerate(names):
             if i >= max_scan:
                 break
             if _is_hidden_name(name):
                 continue
-            full = os.path.join(dir_path, name)
-            try:
-                if os.path.isdir(full):
-                    folders += 1
-                else:
-                    st = os.stat(full)
-                    files += 1
-                    total += int(st.st_size)
-            except OSError:
+            info = metadata.get(name) or {}
+            if info.get("is_dir"):
+                folders += 1
                 continue
+            if info.get("is_dir") is False and not info.get("error"):
+                if isinstance(info.get("size"), int):
+                    files += 1
+                    total += int(info["size"])
+            elif use_subprocess:
+                continue
+            else:
+                full = os.path.join(dir_path, name)
+                try:
+                    if os.path.isdir(full):
+                        folders += 1
+                    else:
+                        st = os.stat(full)
+                        files += 1
+                        total += int(st.st_size)
+                except OSError:
+                    continue
     except OSError:
-        pass
+        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 580, exc_info=True)
     return {"file_count": files, "folder_count": folders, "total_size": total}
 
 
-def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -> dict | None:
+def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool, entry_meta: dict | None = None) -> dict | None:
     try:
-        is_dir = os.path.isdir(full_path)
-        st = os.stat(full_path)
+        if entry_meta is not None:
+            if entry_meta.get("error"):
+                return None
+            is_dir = bool(entry_meta.get("is_dir"))
+            st_size = entry_meta.get("size")
+            st_mtime = entry_meta.get("mtime")
+            if st_mtime is None:
+                return None
+            st_mtime_int = int(st_mtime)
+            if st_size is None and not is_dir:
+                return None
+            st_size_int = int(st_size) if st_size is not None else 0
+            is_dir = bool(is_dir)
+        else:
+            is_dir = os.path.isdir(full_path)
+            st = os.stat(full_path)
+            st_size_int = int(st.st_size)
+            st_mtime_int = int(st.st_mtime)
     except OSError:
         return None
     rel = _osc_relpath_under(base_real, full_path)
@@ -593,19 +1110,97 @@ def _entry_dict(name: str, full_path: str, base_real: str, *, summarize: bool) -
         "relative_path": rel,
         "type": "dir" if is_dir else "file",
         "ext": ext,
-        "size": None if is_dir else int(st.st_size),
-        "size_label": "" if is_dir else _osc_human_size(int(st.st_size)),
-        "modified_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        "mtime_ts": int(st.st_mtime),
+        "size": None if is_dir else st_size_int,
+        "size_label": "" if is_dir else _osc_human_size(st_size_int),
+        "modified_at": datetime.fromtimestamp(st_mtime_int).strftime("%Y-%m-%d %H:%M:%S"),
+        "mtime_ts": st_mtime_int,
         "hidden": _is_hidden_name(name),
     }
     if is_dir and summarize:
-        s = _summarize_dir(full_path)
+        s = _summarize_dir(full_path, use_network_metadata=entry_meta is not None)
         entry["child_files"] = s["file_count"]
         entry["child_folders"] = s["folder_count"]
         entry["child_total_size"] = s["total_size"]
         entry["child_size_label"] = _osc_human_size(s["total_size"])
     return entry
+
+
+def _browse_entries_with_scandir(
+    base_real: str,
+    target: str,
+    *,
+    summarize: bool = True,
+    show_hidden: bool = False,
+) -> tuple[list[dict], list[dict], int]:
+    """Legacy-compatible scanner used by browser list route.
+
+    Returns (folders, files, hidden_count).
+    """
+    names = _listdir_with_retry(target)
+    folders: list[dict] = []
+    files: list[dict] = []
+    hidden_count = 0
+
+    for name in names:
+        if _is_hidden_name(name):
+            hidden_count += 1
+            if not show_hidden:
+                continue
+
+        full = os.path.join(target, name)
+        entry = _entry_dict(name, full, base_real, summarize=summarize)
+        if entry is None:
+            continue
+        if entry["type"] == "dir":
+            folders.append(entry)
+        else:
+            files.append(entry)
+
+    folders.sort(key=lambda e: e["name"].lower())
+    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    return folders, files, hidden_count
+
+
+def _browse_entries_with_helper(
+    base_real: str,
+    target: str,
+    *,
+    summarize: bool = True,
+    show_hidden: bool = False,
+) -> tuple[list[dict], list[dict], int]:
+    """Path helper fallback when direct scandir metadata is unreliable."""
+    metadata = _dir_metadata_map(target)
+    names = sorted(metadata.keys())
+    folders: list[dict] = []
+    files: list[dict] = []
+    hidden_count = 0
+
+    for name in names:
+        if _is_hidden_name(name):
+            hidden_count += 1
+            if not show_hidden:
+                continue
+        full = os.path.join(target, name)
+        entry_meta = metadata.get(name)
+        if entry_meta and entry_meta.get("error"):
+            continue
+        entry = _entry_dict(
+            name,
+            full,
+            base_real,
+            summarize=summarize,
+            entry_meta=entry_meta if isinstance(entry_meta, dict) else None,
+        )
+        if entry is None:
+            continue
+        if entry["type"] == "dir":
+            folders.append(entry)
+        else:
+            files.append(entry)
+
+    folders.sort(key=lambda e: e["name"].lower())
+    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    return folders, files, hidden_count
 
 
 # ── routes ──────────────────────────────────────────────────────────────
@@ -616,23 +1211,28 @@ def _root_child_dirs(path_str: str, *, limit: int = 240) -> list[dict]:
     if not base_real:
         return []
     children: list[dict] = []
+    base_is_network = _is_network_nas_path(base_real)
     try:
-        for name in sorted(os.listdir(base_real), key=str.lower):
+        metadata = _dir_metadata_map(base_real)
+        base_items = sorted(metadata.keys())
+        for name in base_items:
             if _is_hidden_name(name):
                 continue
-            full = os.path.join(base_real, name)
-            if not os.path.isdir(full):
+            info = metadata.get(name) or {}
+            if not info.get("is_dir"):
                 continue
-            has_subdirs = False
-            try:
-                for sub in os.listdir(full):
-                    if _is_hidden_name(sub):
-                        continue
-                    if os.path.isdir(os.path.join(full, sub)):
-                        has_subdirs = True
-                        break
-            except OSError:
-                pass
+            full = os.path.join(base_real, name)
+            has_subdirs = True if base_is_network else False
+            if not base_is_network:
+                try:
+                    for sub in _listdir_with_retry(full):
+                        if _is_hidden_name(sub):
+                            continue
+                        if os.path.isdir(os.path.join(full, sub)):
+                            has_subdirs = True
+                            break
+                except OSError:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 636, exc_info=True)
             children.append({
                 "name": name,
                 "relative_path": _osc_relpath_under(base_real, full),
@@ -647,6 +1247,7 @@ def _root_child_dirs(path_str: str, *, limit: int = 240) -> list[dict]:
 
 @osc_files_bp.route("/api/osc/folders/roots", methods=["GET"])
 @login_required
+@_directory_io_route
 def osc_folder_roots_api():
     """Return the two business-facing case folder roots for the file manager."""
     try:
@@ -680,7 +1281,15 @@ def osc_folder_roots_api():
     return jsonify({"ok": True, "items": items})
 
 
-_CHUNK_TMP_DIR = Path(os.path.expanduser("~/.cache/paperclip-uploads"))
+_runtime_override = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+_CHUNK_TMP_DIR = Path(
+    os.environ.get("MAGI_OSC_UPLOAD_CACHE_DIR")
+    or (
+        Path(_runtime_override).expanduser() / "cache" / "paperclip-uploads"
+        if _runtime_override
+        else Path(os.path.expanduser("~/.cache/paperclip-uploads"))
+    )
+).expanduser()
 _CHUNK_SESSION_TTL_SEC = 3600  # 1 hour
 _MAX_UPLOAD_BYTES_PER_FILE = 1 * 1024 * 1024 * 1024  # 1 GB cap (chunked enabled)
 _MAX_MULTI_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB per multi-upload request
@@ -691,6 +1300,34 @@ def _check_upload_ext(filename: str) -> tuple[bool, str]:
     if ext in _BLOCKED_UPLOAD_EXTS:
         return False, f"blocked_extension:{ext}"
     return True, ""
+
+
+def _normalize_upload_relative_path(raw_path: str) -> tuple[str, str]:
+    """Normalize browser-supplied relative upload paths without allowing traversal."""
+    raw = str(raw_path or "").replace("\\", "/").strip()
+    raw = re.sub(r"^/+", "", raw)
+    parts = [p.strip() for p in raw.split("/") if p.strip()]
+    if not parts:
+        return "", "empty_filename"
+    clean_parts: list[str] = []
+    for part in parts:
+        ok, err = _validate_filename(part)
+        if not ok:
+            return "", err
+        clean_parts.append(part)
+    return "/".join(clean_parts), ""
+
+
+def _unique_path(candidate: str) -> str:
+    """Return candidate or a sibling with _N suffix; avoids same-second trash collisions."""
+    if not os.path.exists(candidate):
+        return candidate
+    stem, ext = os.path.splitext(candidate)
+    for i in range(2, 1000):
+        alt = f"{stem}_{i}{ext}"
+        if not os.path.exists(alt):
+            return alt
+    return f"{stem}_{secrets.token_hex(4)}{ext}"
 
 
 # Magic-byte signatures for executables — block even if extension is renamed.
@@ -723,7 +1360,7 @@ def _cleanup_stale_chunk_sessions():
     if not _CHUNK_TMP_DIR.exists():
         return
     now = datetime.now().timestamp()
-    for session_dir in _CHUNK_TMP_DIR.iterdir():
+    for session_dir in _CHUNK_TMP_DIR.glob("*/*"):
         try:
             if not session_dir.is_dir():
                 continue
@@ -731,6 +1368,29 @@ def _cleanup_stale_chunk_sessions():
                 shutil.rmtree(session_dir, ignore_errors=True)
         except OSError:
             continue
+    for legacy_session_dir in _CHUNK_TMP_DIR.iterdir():
+        try:
+            if not legacy_session_dir.is_dir():
+                continue
+            if any(legacy_session_dir.iterdir()):
+                continue
+            legacy_session_dir.rmdir()
+        except OSError:
+            continue
+
+
+def _chunk_session_dir(session_id: str) -> Path:
+    safe_session = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or ""))[:64]
+    return _CHUNK_TMP_DIR / _actor_namespace() / safe_session
+
+
+@contextmanager
+def _chunk_session_guard(session_id: str):
+    namespace_dir = _CHUNK_TMP_DIR / _actor_namespace()
+    namespace_dir.mkdir(parents=True, exist_ok=True)
+    safe_session = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or ""))[:64]
+    with _locked_file(namespace_dir / f"{safe_session}.lock"):
+        yield
 
 
 @osc_files_bp.route("/api/osc/files/upload-multi", methods=["POST"])
@@ -742,9 +1402,14 @@ def osc_files_upload_multi_api():
       base_path     : NAS root
       relative_path : sub-folder under base (default root)
       overwrite     : "1" to overwrite (default fail on conflict per file)
+      relative_paths: optional per-file paths from folder upload (same order as files)
       files         : multiple file fields
     Returns: per-file results array (some may succeed, some fail).
     """
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
+
     base = str(request.form.get("base_path") or "").strip()
     relative = str(request.form.get("relative_path") or "").strip().strip("/")
     overwrite = str(request.form.get("overwrite") or "").strip().lower() in {"1", "true", "yes"}
@@ -761,50 +1426,76 @@ def osc_files_upload_multi_api():
     uploads = request.files.getlist("files") or request.files.getlist("file")
     if not uploads:
         return jsonify({"ok": False, "error": "files required"}), 400
+    relative_paths = request.form.getlist("relative_paths")
+    if relative_paths and len(relative_paths) != len(uploads):
+        return jsonify({"ok": False, "error": "relative_paths_count_mismatch"}), 400
 
     results = []
     total_saved = 0
-    for up in uploads:
-        name = os.path.basename(str(up.filename or "").strip())
-        if not name:
-            results.append({"ok": False, "error": "empty_filename"})
+    for idx, up in enumerate(uploads):
+        raw_name = str(up.filename or "").strip()
+        raw_rel = relative_paths[idx] if relative_paths else raw_name
+        upload_rel, rel_err = _normalize_upload_relative_path(raw_rel)
+        if rel_err:
+            results.append({"ok": False, "name": os.path.basename(raw_name), "error": rel_err})
             continue
+        name = os.path.basename(upload_rel)
         ok, ext_err = _check_upload_ext(name)
         if not ok:
             results.append({"ok": False, "name": name, "error": ext_err})
             continue
-        dest = os.path.join(target, name)
-        if os.path.exists(dest) and not overwrite:
-            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest})
+        dest = _safe_join_under(target, upload_rel)
+        if dest is None:
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": "path_escape"})
             continue
+        dest_parent = os.path.dirname(dest)
+        if not _osc_is_safe_local_path(dest_parent, allow_missing=True):
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": "target_dir_not_allowed"})
+            continue
+        if os.path.exists(dest) and not overwrite:
+            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest, "relative_path": _osc_relpath_under(base_real, dest)})
+            continue
+        tmp_path = ""
         try:
-            up.save(dest)
-            sz = os.path.getsize(dest)
+            os.makedirs(dest_parent, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=dest_parent)
+            os.close(fd)
+            up.save(tmp_path)
+            sz = os.path.getsize(tmp_path)
         except OSError as e:
-            results.append({"ok": False, "name": name, "error": f"save_failed: {e}"})
+            if tmp_path:
+                _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": f"save_failed: {e}"})
             continue
         # Magic-byte sniff: catch executables renamed to allowed extensions.
-        sniff = _sniff_executable(dest)
+        sniff = _sniff_executable(tmp_path)
         if sniff:
-            try:
-                os.remove(dest)
-            except OSError:
-                pass
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "blocked_content_signature",
                             "detail": sniff})
             continue
         if sz > _MAX_UPLOAD_BYTES_PER_FILE:
-            os.remove(dest)
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "file_too_large",
                             "size_mb": round(sz / 1024 / 1024, 1),
                             "limit_mb": _MAX_UPLOAD_BYTES_PER_FILE // 1024 // 1024})
             continue
         total_saved += sz
         if total_saved > _MAX_MULTI_TOTAL_BYTES:
-            os.remove(dest)
+            _cleanup_file_once(tmp_path)
             results.append({"ok": False, "name": name, "error": "total_too_large",
                             "limit_mb": _MAX_MULTI_TOTAL_BYTES // 1024 // 1024})
             break
+        if os.path.exists(dest) and not overwrite:
+            _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "error": "file_exists", "path": dest, "relative_path": _osc_relpath_under(base_real, dest)})
+            continue
+        try:
+            os.replace(tmp_path, dest)
+        except OSError as e:
+            _cleanup_file_once(tmp_path)
+            results.append({"ok": False, "name": name, "relative_path": upload_rel, "error": f"replace_failed: {e}"})
+            continue
         results.append({"ok": True, "name": name, "path": dest, "size": sz,
                         "size_label": _osc_human_size(sz),
                         "relative_path": _osc_relpath_under(base_real, dest)})
@@ -834,11 +1525,15 @@ def osc_files_upload_chunked_api():
       overwrite     : "1"
       chunk         : the binary chunk data
     Behavior:
-      - Each chunk written to ~/.cache/paperclip-uploads/<session_id>/<index>.part
+      - Each chunk written to ~/.cache/paperclip-uploads/<actor_namespace>/<session_id>/<index>.part
       - On chunk_index == total_chunks - 1, concatenate all parts → write to final dest, cleanup session
       - Returns {ok, chunk_index, received, finalized?, path?}
     """
     _cleanup_stale_chunk_sessions()
+
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
 
     session_id = str(request.form.get("session_id") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{6,64}", session_id):
@@ -854,74 +1549,107 @@ def osc_files_upload_chunked_api():
     filename = os.path.basename(str(request.form.get("filename") or "").strip())
     if not filename:
         return jsonify({"ok": False, "error": "filename required"}), 400
+    name_ok, name_err = _validate_filename(filename)
+    if not name_ok:
+        return jsonify({"ok": False, "error": name_err}), 400
     ok, ext_err = _check_upload_ext(filename)
     if not ok:
         return jsonify({"ok": False, "error": ext_err}), 400
 
-    chunk_file = request.files.get("chunk")
-    if chunk_file is None:
-        return jsonify({"ok": False, "error": "chunk required"}), 400
-
-    session_dir = _CHUNK_TMP_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    part_path = session_dir / f"{chunk_index:06d}.part"
-    chunk_file.save(str(part_path))
-
-    if chunk_index < total_chunks - 1:
-        return jsonify({
-            "ok": True,
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "received": True,
-            "finalized": False,
-        })
-
-    # Last chunk → finalize
     base = str(request.form.get("base_path") or "").strip()
     relative = str(request.form.get("relative_path") or "").strip().strip("/")
     overwrite = str(request.form.get("overwrite") or "").strip().lower() in {"1", "true", "yes"}
     base_real = _resolve_target_dir(base) if base else ""
     if not base_real:
-        shutil.rmtree(session_dir, ignore_errors=True)
         return jsonify({"ok": False, "error": "base_not_found_or_not_allowed"}), 404
     target = _safe_join_under(base_real, relative)
     if target is None or not _osc_is_safe_local_path(target) or not os.path.isdir(target):
-        shutil.rmtree(session_dir, ignore_errors=True)
         return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
     dest = os.path.join(target, filename)
-    if os.path.exists(dest) and not overwrite:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        return jsonify({"ok": False, "error": "file_exists", "path": dest}), 409
 
-    # Verify all parts present
-    missing = []
-    for i in range(total_chunks):
-        if not (session_dir / f"{i:06d}.part").exists():
-            missing.append(i)
-    if missing:
-        return jsonify({"ok": False, "error": "chunks_missing", "missing": missing}), 400
+    chunk_file = request.files.get("chunk")
+    if chunk_file is None:
+        return jsonify({"ok": False, "error": "chunk required"}), 400
 
-    try:
-        with open(dest, "wb") as out:
-            for i in range(total_chunks):
-                with open(session_dir / f"{i:06d}.part", "rb") as f:
-                    shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
-        sz = os.path.getsize(dest)
-        if sz > _MAX_UPLOAD_BYTES_PER_FILE:
-            os.remove(dest)
-            return jsonify({"ok": False, "error": "file_too_large", "size_mb": round(sz / 1024 / 1024, 1)}), 413
-        sniff = _sniff_executable(dest)
-        if sniff:
-            try:
-                os.remove(dest)
-            except OSError:
-                pass
-            return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sniff}), 415
-    except OSError as e:
-        return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
-    finally:
-        shutil.rmtree(session_dir, ignore_errors=True)
+    with _chunk_session_guard(session_id):
+        session_dir = _chunk_session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        part_path = session_dir / f"{chunk_index:06d}.part"
+        chunk_file.save(str(part_path))
+        try:
+            part_size = part_path.stat().st_size
+            received_total = sum(
+                p.stat().st_size
+                for p in session_dir.glob("*.part")
+                if p.is_file()
+            )
+        except OSError as exc:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return jsonify({"ok": False, "error": f"chunk_stat_failed: {exc}"}), 500
+        if part_size > _MAX_UPLOAD_BYTES_PER_FILE or received_total > _MAX_UPLOAD_BYTES_PER_FILE:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return jsonify({
+                "ok": False,
+                "error": "file_too_large",
+                "size_mb": round(received_total / 1024 / 1024, 1),
+                "limit_mb": _MAX_UPLOAD_BYTES_PER_FILE // 1024 // 1024,
+            }), 413
 
+        if chunk_index < total_chunks - 1:
+            return jsonify({
+                "ok": True,
+                "session_id": session_id,
+                "chunk_index": chunk_index,
+                "received": True,
+                "received_bytes": received_total,
+                "finalized": False,
+            })
+
+        # Last chunk → finalize
+        if os.path.exists(dest) and not overwrite:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return jsonify({"ok": False, "error": "file_exists", "path": dest}), 409
+
+        # Verify all parts present
+        missing = []
+        for i in range(total_chunks):
+            if not (session_dir / f"{i:06d}.part").exists():
+                missing.append(i)
+        if missing:
+            return jsonify({"ok": False, "error": "chunks_missing", "missing": missing}), 400
+
+        tmp_dest = ""
+        try:
+            fd, tmp_dest = tempfile.mkstemp(prefix=".paperclip-upload-", suffix=".tmp", dir=target)
+            os.close(fd)
+            with open(tmp_dest, "wb") as out:
+                for i in range(total_chunks):
+                    with open(session_dir / f"{i:06d}.part", "rb") as f:
+                        shutil.copyfileobj(f, out, length=4 * 1024 * 1024)
+            sz = os.path.getsize(tmp_dest)
+            if sz > _MAX_UPLOAD_BYTES_PER_FILE:
+                _cleanup_file_once(tmp_dest)
+                return jsonify({"ok": False, "error": "file_too_large", "size_mb": round(sz / 1024 / 1024, 1)}), 413
+            sniff = _sniff_executable(tmp_dest)
+            if sniff:
+                _cleanup_file_once(tmp_dest)
+                return jsonify({"ok": False, "error": "blocked_content_signature", "detail": sniff}), 415
+            if os.path.exists(dest) and not overwrite:
+                _cleanup_file_once(tmp_dest)
+                return jsonify({"ok": False, "error": "file_exists", "path": dest}), 409
+            os.replace(tmp_dest, dest)
+        except OSError as e:
+            if tmp_dest:
+                _cleanup_file_once(tmp_dest)
+            return jsonify({"ok": False, "error": f"finalize_failed: {e}"}), 500
+        finally:
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+    _audit_file_event(
+        "file.upload",
+        dest,
+        metadata={"size": sz, "relative_path": _osc_relpath_under(base_real, dest), "overwrite": overwrite},
+    )
     return jsonify({
         "ok": True,
         "session_id": session_id,
@@ -952,6 +1680,10 @@ def _validate_filename(name: str) -> tuple[bool, str]:
 @osc_files_bp.route("/api/osc/folders/mkdir", methods=["POST"])
 @login_required
 def osc_folders_mkdir_api():
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
+
     payload = request.get_json(silent=True) or {}
     base = str(payload.get("base_path") or "").strip()
     relative = str(payload.get("relative_path") or "").strip().strip("/")
@@ -986,6 +1718,10 @@ def osc_folders_mkdir_api():
 @osc_files_bp.route("/api/osc/folders/rename", methods=["POST"])
 @login_required
 def osc_folders_rename_api():
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
+
     payload = request.get_json(silent=True) or {}
     base = str(payload.get("base_path") or "").strip()
     relative = str(payload.get("relative_path") or "").strip().strip("/")
@@ -1011,10 +1747,12 @@ def osc_folders_rename_api():
         os.rename(src, dst)
     except OSError as e:
         return jsonify({"ok": False, "error": f"rename_failed: {e}"}), 500
+    db_updates = _osc_replace_path_prefix_references(src, dst, exec_fn=_osc_exec)
     return jsonify({
         "ok": True,
         "new_path": dst,
         "new_relative_path": _osc_relpath_under(base_real, dst),
+        "path_references": db_updates,
     })
 
 
@@ -1026,6 +1764,10 @@ def osc_folders_move_api():
     Special: target_relative_path == ".trash" → moved to <base>/.trash/<name>_<ts>
     (per CLAUDE.md prohibited_actions: never permanent delete, always recycle).
     """
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
+
     payload = request.get_json(silent=True) or {}
     base = str(payload.get("base_path") or "").strip()
     src_rel = str(payload.get("source_relative_path") or "").strip().strip("/")
@@ -1053,11 +1795,16 @@ def osc_folders_move_api():
         os.makedirs(trash_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_name = f"{os.path.splitext(src_name)[0]}_{ts}{os.path.splitext(src_name)[1]}"
-        dst = os.path.join(trash_dir, new_name)
+        dst = _unique_path(os.path.join(trash_dir, new_name))
     else:
         target_parent = _safe_join_under(base_real, dst_rel)
         if target_parent is None or not _osc_is_safe_local_path(target_parent) or not os.path.isdir(target_parent):
             return jsonify({"ok": False, "error": "target_dir_not_found"}), 404
+        if os.path.isdir(src):
+            src_real = os.path.realpath(src)
+            target_parent_real = os.path.realpath(target_parent)
+            if target_parent_real == src_real or target_parent_real.startswith(src_real + os.sep):
+                return jsonify({"ok": False, "error": "nested_target"}), 400
         dst = os.path.join(target_parent, src_name)
         if os.path.exists(dst):
             return jsonify({"ok": False, "error": "target_exists"}), 409
@@ -1067,16 +1814,28 @@ def osc_folders_move_api():
     except OSError as e:
         return jsonify({"ok": False, "error": f"move_failed: {e}"}), 500
 
+    _audit_file_event(
+        "file.move" if not to_trash else "file.trash",
+        dst,
+        metadata={
+            "source": file_ref(src),
+            "target": file_ref(dst),
+            "to_trash": to_trash,
+            "new_relative_path": _osc_relpath_under(base_real, dst),
+        },
+    )
     return jsonify({
         "ok": True,
         "new_path": dst,
         "new_relative_path": _osc_relpath_under(base_real, dst),
         "to_trash": to_trash,
+        "source_exists": os.path.exists(src),
     })
 
 
 @osc_files_bp.route("/api/osc/folders/tree", methods=["GET"])
 @login_required
+@_directory_io_route
 def osc_folders_tree_api():
     """
     Lazy-load tree node children — sub-directories only (files excluded for tree).
@@ -1106,38 +1865,54 @@ def osc_folders_tree_api():
         return jsonify({"ok": False, "error": "path_escape"}), 400
     if not _osc_is_safe_local_path(target):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
-    if not os.path.isdir(target):
+    if not _osc_isdir_quick(target):
         return jsonify({"ok": False, "error": "folder_not_found"}), 404
 
     children = []
     try:
-        for name in sorted(os.listdir(target), key=str.lower):
+        metadata = _dir_metadata_map(target)
+        target_items = sorted(metadata.keys())
+        for name in target_items:
             if _is_hidden_name(name) and not show_hidden:
                 continue
             full = os.path.join(target, name)
-            try:
-                if not os.path.isdir(full):
+            if _is_network_nas_path(target):
+                if not (metadata.get(name) or {}).get("is_dir"):
                     continue
-            except OSError:
-                continue
-            # detect grandchild dirs to know if expandable
-            has_subdirs = False
-            try:
-                for sub in os.listdir(full):
-                    if _is_hidden_name(sub) and not show_hidden:
+            else:
+                try:
+                    if not os.path.isdir(full):
                         continue
-                    if os.path.isdir(os.path.join(full, sub)):
-                        has_subdirs = True
-                        break
-            except OSError:
-                pass
+                except OSError:
+                    continue
+            # The tree is lazy-loaded. Do not synchronously inspect every
+            # network child just to decide whether to draw an expand arrow;
+            # conservatively mark it expandable and inspect only after the
+            # user opens that one node. This bounds an SMB tree request to a
+            # single directory listing instead of N additional walks.
+            has_subdirs = _is_network_nas_path(full)
+            if not has_subdirs:
+                try:
+                    for sub in _listdir_with_retry(full):
+                        if _is_hidden_name(sub) and not show_hidden:
+                            continue
+                        if os.path.isdir(os.path.join(full, sub)):
+                            has_subdirs = True
+                            break
+                except OSError:
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 1136, exc_info=True)
             children.append({
                 "name": name,
                 "relative_path": _osc_relpath_under(base_real, full),
                 "has_subdirs": has_subdirs,
             })
     except OSError as e:
-        return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
+        _log.warning("folder tree listing failed: %s", e)
+        return jsonify({
+            "ok": False,
+            "error": "listdir_failed",
+            "message": "暫時無法讀取資料夾。請稍後重新整理，或確認 NAS 連線。",
+        }), 503
 
     return jsonify({
         "ok": True,
@@ -1149,6 +1924,7 @@ def osc_folders_tree_api():
 
 @osc_files_bp.route("/api/osc/files/preview", methods=["GET"])
 @login_required
+@_directory_io_route
 def osc_files_preview_api():
     """
     Unified preview dispatcher.
@@ -1166,6 +1942,8 @@ def osc_files_preview_api():
         return jsonify({"ok": False, "error": "path required"}), 400
     local = _osc_resolve_existing_local_path(raw, prefer_dir=False)
     if not local:
+        if not _osc_request_path_is_allowed(raw):
+            return jsonify({"ok": False, "error": "path_not_allowed"}), 403
         return jsonify({"ok": False, "error": "file_not_found"}), 404
     if not _osc_is_safe_local_path(local):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
@@ -1174,6 +1952,7 @@ def osc_files_preview_api():
 
     if kind in ("pdf", "image", "audio", "video", "text"):
         encoded_path = quote(raw, safe="")
+        _audit_file_event("file.preview", local, metadata={"kind": kind, "rendered_as": "native"})
         return jsonify({
             "ok": True, "kind": kind,
             "content_url": f"/api/osc/files/content?path={encoded_path}&inline=1",
@@ -1187,6 +1966,7 @@ def osc_files_preview_api():
         preview_source = staged_preview
     except OSError as e:
         _log.warning("preview staging failed: errno=%s file=%s", getattr(e, "errno", None), local)
+        _audit_file_event("file.preview", local, status="failed", metadata={"kind": kind, "reason": "stage_failed"})
         return jsonify({"ok": False, "kind": kind, "error": f"read_failed: {e}",
                         "fallback": "download"}), 503
 
@@ -1194,32 +1974,39 @@ def osc_files_preview_api():
         if kind == "office":
             cached = osc_preview.preview_office_to_pdf(preview_source)
             if not cached:
+                _audit_file_event("file.preview", local, status="failed", metadata={"kind": kind, "reason": "office_convert_failed"})
                 return jsonify({"ok": False, "kind": "office", "error": "office_convert_failed",
                                 "fallback": "download"}), 500
+            _audit_file_event("file.preview", local, metadata={"kind": kind, "rendered_as": "pdf"})
             return send_file(cached, mimetype="application/pdf", as_attachment=False,
                              download_name=os.path.splitext(os.path.basename(local))[0] + ".pdf")
 
         if kind == "heic":
             cached = osc_preview.preview_heic_to_jpg(preview_source)
             if not cached:
+                _audit_file_event("file.preview", local, status="failed", metadata={"kind": kind, "reason": "heic_convert_failed"})
                 return jsonify({"ok": False, "kind": "heic", "error": "heic_convert_failed",
                                 "fallback": "download"}), 500
+            _audit_file_event("file.preview", local, metadata={"kind": kind, "rendered_as": "jpg"})
             return send_file(cached, mimetype="image/jpeg", as_attachment=False,
                              download_name=os.path.splitext(os.path.basename(local))[0] + ".jpg")
 
         if kind == "csv":
             result = osc_preview.preview_csv_to_rows(preview_source)
             result["kind"] = "csv"
+            _audit_file_event("file.preview", local, metadata={"kind": kind})
             return jsonify(result)
 
         if kind == "email":
             result = osc_preview.preview_email(preview_source)
             result["kind"] = "email"
+            _audit_file_event("file.preview", local, metadata={"kind": kind})
             return jsonify(result)
 
         if kind == "zip":
             result = osc_preview.preview_zip(preview_source)
             result["kind"] = "zip"
+            _audit_file_event("file.preview", local, metadata={"kind": kind})
             return jsonify(result)
 
         # other → hex dump
@@ -1227,6 +2014,7 @@ def osc_files_preview_api():
         result["kind"] = "other"
         result["mime"], _ = mimetypes.guess_type(local)
         result["ext"] = os.path.splitext(local)[1].lower()
+        _audit_file_event("file.preview", local, metadata={"kind": "other"})
         return jsonify(result)
     finally:
         if staged_preview:
@@ -1235,6 +2023,7 @@ def osc_files_preview_api():
 
 @osc_files_bp.route("/api/osc/files/info", methods=["GET"])
 @login_required
+@_directory_io_route
 def osc_files_info_api():
     """File metadata (no content): name, size, mtime, mime, kind."""
     raw = str(request.args.get("path") or "").strip()
@@ -1242,6 +2031,8 @@ def osc_files_info_api():
         return jsonify({"ok": False, "error": "path required"}), 400
     local = _osc_resolve_existing_local_path(raw, prefer_dir=False)
     if not local:
+        if not _osc_request_path_is_allowed(raw):
+            return jsonify({"ok": False, "error": "path_not_allowed"}), 403
         return jsonify({"ok": False, "error": "file_not_found"}), 404
     if not _osc_is_safe_local_path(local):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
@@ -1271,6 +2062,10 @@ def osc_files_share_create_api():
     The public URL intentionally contains only a random token, never the NAS path,
     case folder, filename-derived slug, or OSC route name.
     """
+    auth_error = _require_file_operator()
+    if auth_error:
+        return auth_error
+
     payload = request.get_json(silent=True) or {}
     raw = str(payload.get("path") or "").strip()
     if not raw:
@@ -1305,6 +2100,7 @@ def osc_files_share_create_api():
         "created_at": now,
         "expires_at": now + ttl,
         "created_by": str(getattr(current_user, "id", "") or ""),
+        "actor_namespace": _actor_namespace(),
         "downloads": 0,
     }
     try:
@@ -1312,9 +2108,15 @@ def osc_files_share_create_api():
     except OSError as e:
         _log.warning("share create stage failed: errno=%s file=%s", getattr(e, "errno", None), local)
         return jsonify({"ok": False, "error": f"share_stage_failed: {e}"}), 503
-    data = _prune_share_store(_load_share_store())
-    data.setdefault("shares", {})[token_hash] = row
-    _save_share_store(data)
+    with _share_store_guard():
+        data = _prune_share_store(_load_share_store())
+        data.setdefault("shares", {})[token_hash] = row
+        _save_share_store(data, use_lock=False)
+    _audit_file_event(
+        "file.share.create",
+        local,
+        metadata={"ttl_sec": ttl, "url_mode": url_mode, "token_hash": token_hash[:12]},
+    )
     return jsonify({
         "ok": True,
         "url": public_url,
@@ -1332,32 +2134,38 @@ def osc_files_public_share_api(token):
     t = str(token or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{24,128}", t):
         return jsonify({"ok": False, "error": "not_found"}), 404
-    data = _prune_share_store(_load_share_store())
-    row = data.get("shares", {}).get(_share_token_hash(t))
-    if not isinstance(row, dict):
-        _save_share_store(data)
-        return jsonify({"ok": False, "error": "not_found"}), 404
     token_hash = _share_token_hash(t)
-    local = ""
-    cached = _share_cached_file_for_row(row)
-    if not cached:
-        local = _resolve_safe_file(str(row.get("raw_path") or "")) or _resolve_safe_file(str(row.get("path") or ""))
-    if not cached and not local:
-        data.get("shares", {}).pop(_share_token_hash(t), None)
-        _save_share_store(data)
-        return jsonify({"ok": False, "error": "not_found"}), 404
-    if not cached:
-        try:
-            cached = _ensure_share_cached_copy(token_hash, row, local)
-        except OSError as e:
-            _log.warning("share cache refresh failed: errno=%s file=%s", getattr(e, "errno", None), local)
-            _save_share_store(data)
-            return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
-    row["downloads"] = int(row.get("downloads") or 0) + 1
-    row["last_accessed_at"] = int(time.time())
-    _save_share_store(data)
+    with _share_store_guard():
+        data = _prune_share_store(_load_share_store())
+        row = data.get("shares", {}).get(token_hash)
+        if not isinstance(row, dict):
+            _save_share_store(data, use_lock=False)
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        local = ""
+        cached = _share_cached_file_for_row(row)
+        if not cached:
+            local = _resolve_safe_file(str(row.get("raw_path") or "")) or _resolve_safe_file(str(row.get("path") or ""))
+        if not cached and not local:
+            data.get("shares", {}).pop(token_hash, None)
+            _save_share_store(data, use_lock=False)
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        if not cached:
+            try:
+                cached = _ensure_share_cached_copy(token_hash, row, local)
+            except OSError as e:
+                _log.warning("share cache refresh failed: errno=%s file=%s", getattr(e, "errno", None), local)
+                _save_share_store(data, use_lock=False)
+                return jsonify({"ok": False, "error": f"read_failed: {e}"}), 503
+        row["downloads"] = int(row.get("downloads") or 0) + 1
+        row["last_accessed_at"] = int(time.time())
+        _save_share_store(data, use_lock=False)
     inline = str(request.args.get("inline") or "").strip().lower() in {"1", "true", "yes"}
     mime, _ = mimetypes.guess_type(str(row.get("name") or cached))
+    _audit_file_event(
+        "file.share.download",
+        str(row.get("path") or row.get("raw_path") or row.get("name") or token_hash),
+        metadata={"inline": inline, "token_hash": token_hash[:12], "downloads": int(row.get("downloads") or 0)},
+    )
     return _stream_staged_file(
         cached,
         mime=mime or "application/octet-stream",
@@ -1369,6 +2177,7 @@ def osc_files_public_share_api(token):
 
 @osc_files_bp.route("/api/osc/folders/browse", methods=["GET"])
 @login_required
+@_directory_io_route
 def osc_folders_browse_api():
     """
     List entries under a base path + optional relative path.
@@ -1376,12 +2185,18 @@ def osc_folders_browse_api():
         base_path  : NAS/Synology path of root (e.g. case folder_path)
         relative_path : sub-path under base
         show_hidden : "1" to include暫存檔 (default hidden)
-        summarize_dirs : "1" (default) to compute child file count + size
+        summarize_dirs : "1" to compute child file count + size (default off)
+
+    Directory summaries are deliberately opt-in. On an SMB/NAS path every
+    visible child directory can otherwise trigger another blocking metadata
+    walk. A single folder containing several slow grandchildren used to
+    occupy every Waitress worker, which also made unrelated preview/download
+    requests appear dead.
     """
     base = str(request.args.get("base_path") or request.args.get("path") or "").strip()
     relative = str(request.args.get("relative_path") or "").strip().strip("/")
     show_hidden = str(request.args.get("show_hidden") or "").strip().lower() in {"1", "true", "yes"}
-    summarize = str(request.args.get("summarize_dirs") or "1").strip().lower() in {"1", "true", "yes"}
+    summarize = str(request.args.get("summarize_dirs") or "0").strip().lower() in {"1", "true", "yes"}
 
     if not base:
         return jsonify({"ok": False, "error": "base_path required"}), 400
@@ -1400,32 +2215,47 @@ def osc_folders_browse_api():
         return jsonify({"ok": False, "error": "path_escape"}), 400
     if not _osc_is_safe_local_path(target):
         return jsonify({"ok": False, "error": "path_not_allowed"}), 403
-    if not os.path.isdir(target):
+    if not _osc_isdir_quick(target):
         return jsonify({"ok": False, "error": "folder_not_found"}), 404
 
+    use_nas_meta = _is_network_nas_path(target)
     try:
-        names = os.listdir(target)
-    except OSError as e:
-        return jsonify({"ok": False, "error": f"listdir_failed: {e}"}), 500
-
-    folders, files = [], []
-    hidden_count = 0
-    for name in names:
-        if _is_hidden_name(name):
-            hidden_count += 1
-            if not show_hidden:
-                continue
-        full = os.path.join(target, name)
-        entry = _entry_dict(name, full, base_real, summarize=summarize)
-        if entry is None:
-            continue
-        if entry["type"] == "dir":
-            folders.append(entry)
+        if use_nas_meta:
+            source = "folder_helper"
+            folders, files, hidden_count = _browse_entries_with_helper(
+                base_real,
+                target,
+                summarize=summarize,
+                show_hidden=show_hidden,
+            )
         else:
-            files.append(entry)
+            folders, files, hidden_count = _browse_entries_with_scandir(
+                base_real,
+                target,
+                summarize=summarize,
+                show_hidden=show_hidden,
+            )
+            source = "scandir"
+    except OSError as e:
+        # NAS folders can intermittently fail scandir; try helper once as final fallback.
+        try:
+            folders, files, hidden_count = _browse_entries_with_helper(
+                base_real,
+                target,
+                summarize=summarize,
+                show_hidden=show_hidden,
+            )
+            source = "folder_helper"
+        except OSError as e2:
+            _log.warning("folder browse failed: scandir=%s helper=%s", e, e2)
+            return jsonify({
+                "ok": False,
+                "error": "listdir_failed",
+                "message": "無法讀取資料夾。請確認 NAS 已掛載，或稍後再重新整理。",
+            }), 503
 
-    folders.sort(key=lambda e: e["name"].lower())
-    files.sort(key=lambda e: e["mtime_ts"], reverse=True)
+    if source == "scandir" and not folders and not files:
+        source = "fallback_empty"
 
     parent_relative = ""
     if target != base_real:
@@ -1439,6 +2269,7 @@ def osc_folders_browse_api():
         "parent_relative_path": parent_relative,
         "folders": folders,
         "files": files,
+        "source": source,
         "hidden_count": hidden_count,
         "show_hidden": show_hidden,
     })

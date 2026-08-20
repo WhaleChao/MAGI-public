@@ -4,22 +4,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>研究 — MAGI</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260505-research-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
 </head>
-<body>
+<body class="site-console">
+    <a class="skip-link" href="#research-main">跳至主要內容</a>
     <header class="topbar">
         <div>
             <div class="eyebrow">MAGI</div>
             <h1>研究</h1>
         </div>
-        <nav class="topnav" aria-label="研究頁面導覽">
-            <a href="/dashboard">回到 MAGI</a>
-            <a href="/intel">全球新聞網</a>
-            <a href="/osc">Paperclip</a>
+        <nav class="topnav" aria-label="MAGI 主要導覽">
+            <a href="/golem">首頁</a>
+            <a href="/osc">案件與文件</a>
+            <a href="/sentencing-trends">判決趨勢</a>
+            <a href="/research" aria-current="page">研究</a>
+            <a href="/status">系統檢測</a>
+            <a href="/mobile">手機</a>
         </nav>
     </header>
 
-    <main class="console-shell research-shell">
+    <main class="console-shell research-shell" id="research-main">
         <section class="research-hero">
             <div>
                 <span class="system-pill">每日研究來源</span>
@@ -35,6 +42,38 @@
 
         <section class="research-layout">
             <section class="research-main" aria-label="研究命名空間">
+                <article class="research-card research-tool-card">
+                    <div class="research-card-head">
+                        <div>
+                            <h3>判決捕捉與分類</h3>
+                            <p>設定布林搜尋式、法院範圍與分類規則，抓取判決原文與 PDF，產生前後文預覽及 Excel 分類表。</p>
+                        </div>
+                        <span>MAGI 工具</span>
+                    </div>
+                    <div class="source-list">
+                        <a href="/research/judgment-classifier">
+                            <strong>開啟判決捕捉與分類器</strong>
+                            <span>使用既有研究設定與雲端 AI 模型鏈</span>
+                        </a>
+                    </div>
+                </article>
+
+                <article class="research-card research-tool-card">
+                    <div class="research-card-head">
+                        <div>
+                            <h3>法官量刑與判決趨勢</h3>
+                            <p>依法院、簽署法官與案由篩選裁判，分別統計個別宣告刑、附表刑度與最後定應執行刑。</p>
+                        </div>
+                        <span>實務研究</span>
+                    </div>
+                    <div class="source-list">
+                        <a href="/sentencing-trends">
+                            <strong>開啟量刑與判決趨勢查詢</strong>
+                            <span>只有官方全文、法官簽署與刑度均可核對的資料才會納入統計</span>
+                        </a>
+                    </div>
+                </article>
+
                 {% for ns in research.namespaces %}
                 <article class="research-card">
                     <div class="research-card-head">

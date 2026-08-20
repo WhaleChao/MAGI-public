@@ -27,9 +27,13 @@ from typing import Iterable
 DEFAULT_ACTIVE_ROOTS = (
     Path("~/Library/CloudStorage/SynologyDrive-homes/01_案件").expanduser(),
 )
-DEFAULT_ARCHIVE_ROOTS = (
-    Path("/Volumes/lumi/lumi/03_工作資料/10_結案"),
-)
+try:
+    from api.case_path_mapper import default_case_roots
+
+    _configured_case_roots = default_case_roots(include_closed=True)
+    DEFAULT_ARCHIVE_ROOTS = tuple(Path(item) for item in _configured_case_roots[1:])
+except Exception:
+    DEFAULT_ARCHIVE_ROOTS = ()
 CASE_ID_RE = re.compile(r"^(\d{4}-\d{4})(?:-|$)")
 SKIP_NAMES = {".DS_Store", ".gitkeep"}
 

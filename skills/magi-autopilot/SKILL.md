@@ -46,10 +46,9 @@ triggers:
 ## 產出
 
 每次執行都會落地報告到：
-`/Users/ai/Desktop/code/_autopilot_runs/<timestamp>_<task>/report.json` 與 `report.txt`
+`${MAGI_DATA_DIR}/autopilot-runs/<timestamp>_<task>/report.json` 與 `report.txt`
 
 ## 安全策略
 
-- 預設 `MAGI_NO_DELETE=1`，並透過 `/Users/ai/Desktop/code/safe_fs.py` 保護 Synology Drive：永不刪除，只會隔離重複檔。
+- 預設 `MAGI_NO_DELETE=1`，並透過 `${MAGI_ROOT_DIR}/safe_fs.py` 保護網路儲存：永不刪除，只會隔離重複檔。
 - 任何對外系統的「送出/回報」動作不會在 `tick/nightly` 裡執行（只做掃描/下載/歸檔/入庫/預覽）。
-

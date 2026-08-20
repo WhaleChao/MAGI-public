@@ -3,66 +3,113 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0f766e">
+    <meta name="theme-color" content="#07141f">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="MAGI">
-    <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <title>MAGI Mobile</title>
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>MAGI 行動助理</title>
     <link rel="manifest" href="/mobile/manifest.webmanifest">
     <link rel="icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}" type="image/svg+xml">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='mobile/magi-mobile.svg') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='mobile/mobile.css') }}?v=20260505-mobile-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <link rel="stylesheet" href="{{ url_for('static', filename='mobile/mobile.css') }}?v=20260815-mobile-ia-v1">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
 </head>
-<body>
-    <main class="mobile-shell">
-        <header class="mobile-hero">
-            <div>
-                <span class="eyebrow">MAGI Mobile</span>
-                <h1>MAGI</h1>
-                <p>透過 Tailscale 連線到這台電腦，操作 MAGI、Paperclip 與內部後台。</p>
+<body class="site-mobile">
+    <main class="mobile-shell" id="mobileApp">
+        <header class="mobile-topbar">
+            <a class="mobile-brand" href="/mobile" aria-label="MAGI 行動助理首頁">
+                <span class="brand-mark" aria-hidden="true">M</span>
+                <span><strong>MAGI</strong><small>行動助理</small></span>
+            </a>
+            <div class="topbar-actions">
+                <span class="live-state{% if mobile.tailscale_online %} is-online{% endif %}" id="networkState">
+                    <span aria-hidden="true"></span>
+                    <span class="live-state-label">{% if mobile.tailscale_online %}已連線{% else %}連線待確認{% endif %}</span>
+                </span>
+                <button type="button" class="icon-button" data-magi-theme-toggle aria-label="切換日夜模式"></button>
             </div>
-            <span class="status-pill{% if mobile.tailscale_online %} is-online{% endif %}">
-                {% if mobile.tailscale_online %}Tailscale 已連線{% else %}Tailscale 待確認{% endif %}
-            </span>
         </header>
 
-        <section class="connection-card">
-            <span>連線網址</span>
-            <strong>{{ mobile.base_url }}</strong>
+        <section class="chat-workspace" id="conversation" aria-labelledby="chatTitle">
+            <div class="chat-heading">
+                <div>
+                    <p class="eyebrow">MAGI CONVERSATION</p>
+                    <h1 id="chatTitle">現在要處理什麼？</h1>
+                </div>
+                <button type="button" class="quiet-button" id="clearChatButton">清除畫面</button>
+            </div>
+
+            <div class="intent-status" id="mobileIntentStatus" role="status" aria-live="polite" hidden></div>
+
+            <div class="quick-actions" aria-label="常用提問">
+                <button type="button" data-prompt="請列出我今天的行程與期限，並標示需要處理的事項">今日行程</button>
+                <button type="button" data-prompt="請查詢案件狀態；若資訊不足，先問我案號或當事人">查案件</button>
+                <button type="button" data-prompt="請依序列出目前真正需要處理、即將到期與需要人工確認的事項">待辦期限</button>
+                <button type="button" data-prompt="我要查法院、法官與案由的量刑趨勢；請先詢問尚缺的條件">量刑趨勢</button>
+            </div>
+
+            <div class="chat-messages" id="mobileChatMessages" role="log" aria-live="polite" aria-relevant="additions">
+                <article class="message message-assistant">
+                    <div class="message-avatar" aria-hidden="true">M</div>
+                    <div class="message-body">
+                        <p>我已準備好。你可以直接聊天、查案件與判決，或交代一項工作；我會在回覆旁顯示辨識到的類型。</p>
+                    </div>
+                </article>
+            </div>
+
+            <div class="typing-state" id="typingState" role="status" hidden>
+                <span></span><span></span><span></span><em>MAGI 正在判讀與處理</em>
+            </div>
+
+            <form class="chat-composer" id="mobileChatForm">
+                <label class="sr-only" for="mobileChatInput">輸入給 MAGI 的訊息</label>
+                <textarea id="mobileChatInput" name="message" rows="1" maxlength="12000" placeholder="直接說出問題或要完成的工作…" required></textarea>
+                <div class="composer-actions">
+                    <button class="mode-button" type="button" id="heavyModeButton" aria-pressed="false" title="需要更深入分析時使用">
+                        <span aria-hidden="true">◆</span> 深度
+                    </button>
+                    <span class="composer-hint">Enter 送出</span>
+                    <button class="send-button" type="submit" id="mobileSendButton" aria-label="送出訊息">
+                        <span>送出</span><span aria-hidden="true">↑</span>
+                    </button>
+                </div>
+            </form>
+            <p class="privacy-note">工作與查詢會沿用 MAGI 既有權限；需要確認的動作仍會先詢問。</p>
         </section>
 
-        <section class="action-grid" aria-label="手機入口">
-            <a class="action-card primary" href="/osc">
-                <span>案件與檔案</span>
-                <strong>Paperclip</strong>
-            </a>
-            <a class="action-card" href="/golem">
-                <span>對話與總覽</span>
-                <strong>MAGI</strong>
-            </a>
-            <a class="action-card" href="/intel">
-                <span>每日摘要</span>
-                <strong>全球新聞網</strong>
-            </a>
-            <a class="action-card" href="/research">
-                <span>研究來源</span>
-                <strong>研究</strong>
-            </a>
-            <a class="action-card admin" href="/mobile-admin">
-                <span>系統設定</span>
-                <strong>手機後台</strong>
-            </a>
-            <a class="action-card admin" href="/magi-adjust">
-                <span>NERV 設定</span>
-                <strong>MAGI 調整</strong>
-            </a>
+        <section class="mobile-tools" id="tools" aria-labelledby="toolsTitle">
+            <div class="section-title">
+                <div><p class="eyebrow">WORKSPACE</p><h2 id="toolsTitle">工作入口</h2></div>
+                <span>依工作目的分類</span>
+            </div>
+            <div class="action-grid">
+                <a class="action-card primary" href="/osc"><span class="action-icon">案</span><span><strong>案件與文件</strong><small>查案件、卷宗與法扶</small></span><b>›</b></a>
+                <a class="action-card primary" href="/osc?tab=todos"><span class="action-icon">辦</span><span><strong>待辦與期限</strong><small>處理及人工確認</small></span><b>›</b></a>
+                <a class="action-card" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"><span class="action-icon">曆</span><span><strong>Google 日曆</strong><small>庭期、期限與正式行程</small></span><b>›</b></a>
+                <a class="action-card" href="/osc?tab=fileManager"><span class="action-icon">檔</span><span><strong>檔案管理</strong><small>預覽、下載與歸檔</small></span><b>›</b></a>
+                <a class="action-card" href="/sentencing-trends"><span class="action-icon">判</span><span><strong>判決趨勢</strong><small>法官與量刑分析</small></span><b>›</b></a>
+                <a class="action-card" href="/research"><span class="action-icon">研</span><span><strong>研究與見解</strong><small>來源、摘要與判決</small></span><b>›</b></a>
+                <a class="action-card" href="/intel"><span class="action-icon">報</span><span><strong>每日情報</strong><small>新聞與報告</small></span><b>›</b></a>
+                <a class="action-card" href="/status"><span class="action-icon">診</span><span><strong>系統狀態</strong><small>服務健康與待處理</small></span><b>›</b></a>
+            </div>
         </section>
 
-        <section class="install-card">
-            <h2>內部安裝</h2>
-            <p>Android 可包成 APK；iPhone 可先用 Safari 加入主畫面，之後若要 IPA 再用同一套連線設定打包。</p>
-        </section>
+        <details class="connection-details" id="more">
+            <summary>連線資訊與其他設定</summary>
+            <div><span>目前入口</span><strong>{{ mobile.base_url }}</strong></div>
+            <p>手機透過受控網路使用這台 MAGI，不必在每一台裝置重新安裝完整系統。</p>
+            <a href="/magi-adjust">開啟 MAGI 調整</a>
+        </details>
     </main>
-    <script src="{{ url_for('static', filename='mobile/mobile.js') }}?v=20260505-mobile-v1"></script>
+
+    <nav class="mobile-bottom-nav" aria-label="主要導覽">
+        <a class="is-active" href="#conversation"><span aria-hidden="true">●</span>對話</a>
+        <a href="/osc?tab=todos"><span aria-hidden="true">✓</span>待辦</a>
+        <a href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">□</span>日曆</a>
+        <a href="#more"><span aria-hidden="true">•••</span>更多</a>
+    </nav>
+    <script src="{{ url_for('static', filename='mobile/mobile.js') }}?v=20260815-mobile-ia-v1"></script>
 </body>
 </html>

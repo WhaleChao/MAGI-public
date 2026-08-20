@@ -19,8 +19,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("NightlyCouncil")
 
 # Configuration
-LOG_FILE = f"{_MAGI_ROOT}/daemon.log"
-STATUS_FILE = f"{_MAGI_ROOT}/static/magi_status.json"
+_AGENT_OVERRIDE = os.environ.get("MAGI_AGENT_DIR", "").strip()
+_MUTABLE_STATIC_OVERRIDE = os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip()
+LOG_FILE = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_DAEMON_LOG_PATH", "").strip())
+    or (
+        os.path.join(_AGENT_OVERRIDE, "daemon.log")
+        if _AGENT_OVERRIDE
+        else f"{_MAGI_ROOT}/daemon.log"
+    )
+)
+STATUS_FILE = os.path.abspath(
+    os.path.join(_MUTABLE_STATIC_OVERRIDE, "magi_status.json")
+    if _MUTABLE_STATIC_OVERRIDE
+    else f"{_MAGI_ROOT}/static/magi_status.json"
+)
 def _resolve_sync_path() -> str:
     candidates = [
         "/Volumes/SynologyDrive/04_Robot/MAGI_SYNC",
@@ -46,6 +59,10 @@ except ImportError as e:
 def sync_from_synology():
     """Sync files from Synology Drive before council starts."""
     import shutil
+
+    if os.environ.get("MAGI_V3_RELEASE_ID", "").strip():
+        logger.warning("V3 immutable release: legacy Synology code sync is disabled")
+        return "V3 immutable release：已停用 legacy 程式碼同步"
     
     if not os.path.exists(SYNOLOGY_SYNC_PATH):
         logger.warning(f"⚠️ Synology Drive not mounted: {SYNOLOGY_SYNC_PATH}")

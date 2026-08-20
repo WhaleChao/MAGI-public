@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -19,8 +20,8 @@ from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.speculative.drafters import load_drafter
 
 
-DEFAULT_MODEL = "/Users/ai/.omlx/models/gemma-4-e4b-it-4bit"
-DEFAULT_DRAFT_MODEL = "/Users/ai/.omlx/models/gemma-4-E4B-it-assistant-bf16"
+DEFAULT_MODEL = str(Path.home() / ".omlx" / "models" / "gemma-4-e4b-it-4bit")
+DEFAULT_DRAFT_MODEL = str(Path.home() / ".omlx" / "models" / "gemma-4-E4B-it-assistant-bf16")
 
 
 class ChatMessage(BaseModel):

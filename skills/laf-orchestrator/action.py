@@ -15,7 +15,9 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -108,22 +110,180 @@ def _run_orchestrator(args_list, timeout=300, extra_env=None):
                     break
                 except Exception:
                     continue
+        parse_failed = False
         if result is None and stdout:
             # Try the whole stdout as JSON
             try:
                 result = json.loads(stdout)
             except Exception:
+                parse_failed = True
                 result = {"raw_stdout": stdout[-3000:]}
+        payload_ok = True
+        if isinstance(result, dict):
+            nested = result.get("result")
+            if isinstance(nested, dict) and (nested.get("success") is False or nested.get("ok") is False):
+                payload_ok = False
+            if result.get("success") is False or result.get("ok") is False:
+                payload_ok = False
         return {
-            "success": r.returncode == 0,
+            "success": r.returncode == 0 and payload_ok and not parse_failed,
             "returncode": r.returncode,
             "result": result or {},
+            "error": "json_parse_failed" if parse_failed else (str(result.get("error") or "") if isinstance(result, dict) else ""),
             "stderr_tail": stderr[-1000:] if stderr else "",
         }
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "timeout", "timeout_seconds": timeout}
     except Exception as e:
         return {"success": False, "error": str(e)[:500]}
+
+
+def _probe_orchestrator_db(timeout: int = 20) -> dict:
+    """Probe the LAF database with a bounded, strictly read-only query.
+
+    Instantiating ``LAFOrchestrator`` also constructs the legacy
+    ``DatabaseManager``, whose constructor performs schema DDL. That made this
+    health check contend with live work and time out even when the database was
+    healthy. Use the same bound OSC profile resolver and issue only ``SELECT
+    1`` instead.
+    """
+
+    py = _choose_runtime_python()
+    code = f"""
+import json
+import logging
+import sys
+logging.disable(logging.CRITICAL)
+sys.path.insert(0, {str(MAGI_ROOT / 'skills' / 'osc-orchestrator')!r})
+from osc_headless.db import DBConfig, connect_mysql, db_config_from_env
+base = db_config_from_env(prefix='OSC_DB_')
+cfg = DBConfig(
+    host=base.host,
+    port=int(base.port),
+    user=base.user,
+    password=base.password,
+    database=base.database,
+    connection_timeout=max(1, min(5, int(base.connection_timeout or 5))),
+)
+conn = connect_mysql(cfg)
+try:
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT 1 AS healthcheck')
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+    conn.rollback()
+finally:
+    conn.close()
+print(json.dumps({{'success': bool(row), 'db': bool(row), 'read_only_probe': True}}, ensure_ascii=False))
+"""
+    try:
+        result = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=timeout, cwd=CODE_ROOT)
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "timeout"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)[:500]}
+    stdout = (result.stdout or "").strip()
+    payload = None
+    decoder = json.JSONDecoder()
+    for start in reversed([idx for idx, char in enumerate(stdout) if char == "{"]):
+        try:
+            candidate, end = decoder.raw_decode(stdout[start:])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(candidate, dict) and not stdout[start + end :].strip():
+            payload = candidate
+            break
+    if payload is None:
+        payload = {}
+    return {
+        "success": result.returncode == 0 and isinstance(payload, dict) and payload.get("success") is True,
+        "returncode": result.returncode,
+        "result": payload if isinstance(payload, dict) else {},
+        "error": "" if payload else "json_parse_failed",
+        "stderr_tail": (result.stderr or "")[-1000:],
+    }
+
+
+def _retry_error_label(result: dict) -> str:
+    """Map internal failures to a small, non-sensitive notification label."""
+    details = [
+        str(result.get("error") or ""),
+        str(result.get("stderr_tail") or ""),
+        str((result.get("result") or {}).get("error") or "") if isinstance(result.get("result"), dict) else "",
+    ]
+    text = "\n".join(details).lower()
+    if "captcha" in text:
+        return "captcha_required"
+    if "csrf" in text or "session" in text:
+        return "portal_session_invalid"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "credential" in text or "unauthorized" in text or "forbidden" in text or "login" in text:
+        return "authentication_failed"
+    if "attachment" in text or "upload" in text:
+        return "attachment_failed"
+    if "connection" in text or "network" in text or "dns" in text:
+        return "connection_failed"
+    if "json_parse_failed" in text or "json" in text:
+        return "result_parse_failed"
+    return "portal_draft_failed"
+
+
+def _retry_user_reason(error_label: str) -> str:
+    """Translate an internal retry category into plain Taiwanese usage."""
+    return {
+        "captcha_required": "法扶網站要求重新完成驗證",
+        "portal_session_invalid": "法扶網站登入狀態已失效",
+        "timeout": "法扶網站回應時間過長",
+        "authentication_failed": "法扶網站登入未完成",
+        "attachment_failed": "附件暫時未能完整上傳",
+        "connection_failed": "目前無法穩定連上法扶網站",
+        "result_parse_failed": "法扶網站回傳內容暫時無法確認",
+        "portal_draft_failed": "法扶網站暫存作業尚未完成",
+    }.get(error_label, "法扶網站暫存作業尚未完成")
+
+
+def _notify_retrying_after_failure(action: str, _target: str, result: dict) -> None:
+    """Tell business channels MAGI is retrying after a failed LAF draft run."""
+    if str(os.environ.get("MAGI_LAF_NOTIFY_RETRY_ON_FAILURE", "1")).strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        return
+    act = (action or "").strip().lower()
+    if act != "closing":
+        return
+    trace_id = f"laf-retry-{secrets.token_hex(6)}"
+    error_label = _retry_error_label(result)
+    result["retry_trace_id"] = trace_id
+    msg = (
+        "法扶結案暫存尚未完成，MAGI 正在自動重試。\n"
+        f"原因：{_retry_user_reason(error_label)}。\n"
+        "這次沒有正式送出；完成後會再回覆結果。"
+    )
+    logging.getLogger(__name__).warning(
+        "LAF retry notification queued: action=%s error_label=%s trace_id=%s",
+        act,
+        error_label,
+        trace_id,
+    )
+    try:
+        from skills.ops.red_phone import send_telegram_push_with_status, _send_discord_bot_message
+        send_telegram_push_with_status(
+            msg,
+            severity="info",
+            source="laf_closing_retry",
+            topic_key="laf_closing",
+            queue_on_fail=True,
+        )
+        _send_discord_bot_message(msg, "info", topic_key="laf_closing", source="laf_closing_retry")
+    except Exception:
+        try:
+            from api.discord_channel_router import send as _dc_send
+            _dc_send("laf_general", msg, level="info")
+        except Exception:
+            pass
 
 
 # ── task handlers ────────────────────────────────────────────────────────
@@ -139,17 +299,31 @@ def task_self_test():
     # 1) Compile check
     try:
         import py_compile
-        py_compile.compile(SOURCE_FILE, doraise=True)
+        runtime_dir = Path(
+            os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+            or Path(MAGI_ROOT) / ".runtime"
+        ).expanduser()
+        cache_dir = runtime_dir / "pycache" / "laf"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        py_compile.compile(
+            SOURCE_FILE,
+            cfile=str(cache_dir / "laf_orchestrator.pyc"),
+            doraise=True,
+        )
         report["compile"] = {"ok": True}
     except Exception as e:
         report["compile"] = {"ok": False, "error": str(e)[:500]}
         report["success"] = False
         return report
 
-    # 2) Quick DB test via orchestrator
-    r = _run_orchestrator(["--mode", "dry-run", "--help"], timeout=15)
-    report["orchestrator_reachable"] = r.get("success", False)
-    report["success"] = report["compile"]["ok"]
+    # 2) Import + one read-only DB query. Do not use --mode dry-run here: its
+    # CLI deliberately scans all pending closing cases.
+    r = _probe_orchestrator_db(timeout=20)
+    report["orchestrator_reachable"] = bool(r.get("success", False))
+    report["orchestrator_db_probe"] = r.get("result") or {}
+    if not report["orchestrator_reachable"]:
+        report["orchestrator_error"] = str(r.get("error") or "db_probe_failed")[:120]
+    report["success"] = bool(report["compile"]["ok"] and report["orchestrator_reachable"])
     return report
 
 
@@ -226,6 +400,12 @@ def task_portal_action(action, laf_case_no="", case_number="", client_name="",
 
     result = _run_orchestrator(args_list, timeout=portal_timeout)
     result["product_profile"] = product_profile_report("laf")
+    if not result.get("success") and not suppress_notify:
+        _notify_retrying_after_failure(
+            action,
+            laf_case_no or case_number or client_name,
+            result,
+        )
     return result
 
 
@@ -388,7 +568,7 @@ def main():
             laf_case_no=args.laf_case_no,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return 1 if result.get("success") is False else 0
 
     # ── progress_report (T3) ──
     # draft path: fill form + screenshot (portal-draft mode)

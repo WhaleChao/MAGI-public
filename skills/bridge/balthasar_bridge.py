@@ -8,7 +8,8 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 from api.model_config import SUMMARY_MODEL, TEXT_REVIEW_MODEL
 from skills.bridge.http_pool import get_session as _get_session
@@ -86,6 +87,13 @@ def _normalize_segments(raw) -> List[dict]:
             "end": max(st, ed),
             "text": txt,
         }
+        for key in ("avg_logprob", "no_speech_prob", "compression_ratio", "confidence"):
+            if key not in seg:
+                continue
+            try:
+                row[key] = float(seg.get(key))
+            except (TypeError, ValueError):
+                continue
         speaker = str(seg.get("speaker") or "").strip()
         if speaker:
             row["speaker"] = speaker
@@ -96,6 +104,43 @@ def _normalize_segments(raw) -> List[dict]:
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 91, exc_info=True)
     return out
+
+
+def _segment_is_uncertain(segment: dict) -> bool:
+    """Conservative Whisper quality check; absence of metrics is not failure."""
+    try:
+        if "confidence" in segment and float(segment.get("confidence")) < 0.55:
+            return True
+        if "avg_logprob" in segment and float(segment.get("avg_logprob")) < -1.0:
+            return True
+        if "no_speech_prob" in segment and float(segment.get("no_speech_prob")) > 0.60:
+            return True
+        if "compression_ratio" in segment and float(segment.get("compression_ratio")) > 2.40:
+            return True
+    except (TypeError, ValueError):
+        return False
+    return False
+
+
+def _segment_quality_summary(segments: List[dict]) -> dict:
+    uncertain = []
+    measured = 0
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        if any(key in seg for key in ("confidence", "avg_logprob", "no_speech_prob", "compression_ratio")):
+            measured += 1
+        if _segment_is_uncertain(seg):
+            uncertain.append({
+                "start": float(seg.get("start", 0.0) or 0.0),
+                "end": float(seg.get("end", seg.get("start", 0.0)) or 0.0),
+                "text": str(seg.get("text") or "").strip()[:120],
+            })
+    return {
+        "quality_measured_segments": measured,
+        "low_confidence_count": len(uncertain),
+        "low_confidence_segments": uncertain,
+    }
 
 
 def _segments_to_timestamp_text(segments: List[dict]) -> str:
@@ -136,24 +181,22 @@ def _infer_speaker_from_text(text: str) -> str:
     m2 = re.match(r"^\s*([甲乙丙丁])\s*[：:]", s)
     if m2:
         return f"SPEAKER_{m2.group(1)}"
-    if any(k in s for k in ("原告", "被告", "法官", "書記官", "檢察官")):
-        if "原告" in s:
-            return "SPEAKER_原告"
-        if "被告" in s:
-            return "SPEAKER_被告"
-        if "法官" in s:
-            return "SPEAKER_法官"
-        if "書記官" in s:
-            return "SPEAKER_書記官"
-        if "檢察官" in s:
-            return "SPEAKER_檢察官"
+    # Role words inside a sentence are not speaker evidence (for example
+    # "法官詢問被告" does not prove who uttered the sentence).  Accept
+    # only an explicit role prefix already present in the recognizer output.
+    role = re.match(r"^\s*(原告|被告|法官|書記官|檢察官|律師|證人)\s*[：:]", s)
+    if role:
+        return f"SPEAKER_{role.group(1)}"
     return ""
 
 
 def _annotate_speakers(segments: List[dict]) -> List[dict]:
     if not segments:
         return segments
-    auto_toggle = os.environ.get("MAGI_TRANSCRIBE_AUTO_SPEAKER", "1").strip().lower() in {"1", "true", "yes", "on"}
+    # Alternating labels based only on pauses looks plausible but is invented
+    # attribution.  Keep it disabled by default; production quality requires
+    # diarization evidence or an explicit label in the source transcript.
+    auto_toggle = os.environ.get("MAGI_TRANSCRIBE_AUTO_SPEAKER", "0").strip().lower() in {"1", "true", "yes", "on"}
     out: List[dict] = []
     prev_label = ""
     for i, seg in enumerate(segments):
@@ -210,7 +253,7 @@ def _secondary_split_segments(segments: List[dict], full_text: str = "") -> List
 
     min_chars = int(os.environ.get("MAGI_TRANSCRIBE_SECONDARY_SPLIT_MIN_CHARS", "22") or "22")
     min_duration = float(os.environ.get("MAGI_TRANSCRIBE_SECONDARY_SPLIT_MIN_DURATION_SEC", "2.5") or "2.5")
-    forced_dual = os.environ.get("MAGI_TRANSCRIBE_FORCE_DUAL_SPLIT", "1").strip().lower() in {"1", "true", "yes", "on"}
+    forced_dual = os.environ.get("MAGI_TRANSCRIBE_FORCE_DUAL_SPLIT", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     changed = False
     out: List[dict] = []
@@ -301,6 +344,7 @@ def _transcript_postprocess(text: str) -> str:
         "品質閘門": "品質閘門",
         "法符": "法扶",
         "閲卷": "閱卷",
+        "申請調查證據": "聲請調查證據",
     }
     for src, dst in replacements.items():
         s = s.replace(src, dst)
@@ -396,6 +440,8 @@ def _tc_review_pass(text: str, timeout: int = 30) -> str:
     if not text or len(text.strip()) < 10:
         return text
     try:
+        from skills.bridge import melchior_client
+
         prompt = (
             "請將以下文字中的簡體中文用語轉換為台灣正體中文（繁體），"
             "包括法律專有名詞（如「信息」→「資訊」、「軟件」→「軟體」、「數據」→「資料」）。"
@@ -652,6 +698,37 @@ def _resolve_whisper_bin() -> str:
     return ""
 
 
+def _resolve_whisper_model_dir() -> str:
+    """Return a writable local model cache that survives missing offload volumes."""
+    configured = (os.environ.get("MAGI_WHISPER_MODEL_DIR") or "").strip()
+    candidate = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / "Library" / "Caches" / "MAGI" / "whisper"
+    )
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Whisper model cache is unavailable: %s (%s)", candidate, exc)
+        return ""
+    return str(candidate) if candidate.is_dir() else ""
+
+
+def _resolve_preinstalled_whisper_model(model: str, model_dir: str) -> tuple[str, str]:
+    """Resolve a Whisper CLI model without permitting an implicit download."""
+
+    requested = Path(str(model or "").strip()).expanduser()
+    if requested.is_absolute():
+        return (str(requested.resolve()), str(requested.resolve())) if requested.is_file() else ("", "")
+    artifact = (Path(model_dir) / f"{requested.name}.pt").resolve()
+    if not artifact.is_file():
+        return "", ""
+    # The CLI accepts a registered model name together with --model_dir.  It
+    # will only reach its downloader when this exact artifact is absent, which
+    # is rejected above and additionally fenced by the offline environment.
+    return requested.name, str(artifact)
+
+
 def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None, initial_prompt: Optional[str] = None, model: Optional[str] = None) -> dict:
     """
     Fallback transcription using OpenAI Whisper CLI.
@@ -661,6 +738,15 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
         return {"success": False, "error": "whisper_cli_not_found"}
 
     model = (model or os.environ.get("MAGI_WHISPER_MODEL") or "medium").strip() or "medium"
+    model_dir = _resolve_whisper_model_dir()
+    if not model_dir:
+        return {"success": False, "error": "whisper_cli_model_dir_unavailable"}
+    cli_model, model_artifact = _resolve_preinstalled_whisper_model(model, model_dir)
+    if not cli_model:
+        return {
+            "success": False,
+            "error": f"whisper_cli_preinstalled_model_missing:{model}",
+        }
     timeout_sec = int(os.environ.get("MAGI_WHISPER_TIMEOUT_SEC", "900") or "900")
     timeout_sec = max(30, min(timeout_sec, 3600))
     forced_language = (language or os.environ.get("MAGI_WHISPER_LANGUAGE") or "").strip()
@@ -668,6 +754,16 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
 
     # launchd/service PATH often misses Homebrew dirs.
     run_env = os.environ.copy()
+    run_env.update(
+        {
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "MAGI_WHISPER_OFFLINE_ONLY": "1",
+            "NO_PROXY": "*",
+        }
+    )
     run_env["PATH"] = (
         run_env.get("PATH", "")
         + os.pathsep
@@ -682,7 +778,9 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
             whisper_bin,
             audio_path,
             "--model",
-            model,
+            cli_model,
+            "--model_dir",
+            model_dir,
             "--output_format",
             "json",
             "--output_dir",
@@ -730,6 +828,7 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
         timestamp_text = _segments_to_timestamp_text(segments)
         speaker_text = _segments_to_speaker_text(segments)
         speaker_count = len({str(x.get("speaker") or "").strip() for x in segments if str(x.get("speaker") or "").strip()})
+        quality = _segment_quality_summary(segments)
         if not text:
             return {"success": False, "error": "whisper_cli_empty_text"}
 
@@ -740,9 +839,11 @@ def _transcribe_with_whisper_cli(audio_path: str, language: Optional[str] = None
             "timestamp_text": timestamp_text,
             "speaker_text": speaker_text,
             "speaker_count_estimate": speaker_count,
-            "provider": "openai_whisper_cli",
-            "model": model,
+            "provider": "whisper_cli_local",
+            "model": model_artifact,
             "route": "whisper_cli_fallback",
+            "offline": True,
+            **quality,
         }
 
 def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optional[str] = None, taigi_hint: bool = False):
@@ -778,6 +879,7 @@ def transcribe(audio_path, language: Optional[str] = None, initial_prompt: Optio
                 local_res["speaker_text"] = _segments_to_speaker_text(segs)
             if segs and ("speaker_count_estimate" not in local_res):
                 local_res["speaker_count_estimate"] = len({str(x.get("speaker") or "").strip() for x in segs if str(x.get("speaker") or "").strip()})
+            local_res.update(_segment_quality_summary(segs))
             return _postprocess_transcribe_result(local_res)
         local_error = (local_res or {}).get("error", "local_mlx_failed")
     except Exception as e:

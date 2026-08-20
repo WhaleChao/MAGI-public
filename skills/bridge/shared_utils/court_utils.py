@@ -124,6 +124,72 @@ SIMPLE_COURT_MAPPING: dict[str, tuple[str, str]] = {
 }
 
 # ---------------------------------------------------------------------------
+# 簡易庭名稱 → 所屬法院全名
+#
+# OCR、閱卷與文件命名都應從這一份表取值。此前 file-review 另存了一份
+# 不完整清單，漏掉埔里、虎尾、朴子、新營、岡山、旗山、金城等簡易庭。
+# ---------------------------------------------------------------------------
+SIMPLE_COURT_PARENT: dict[str, str] = {
+    # 臺北／士林
+    "臺北簡易庭": "臺灣臺北地方法院",
+    "新店簡易庭": "臺灣臺北地方法院",
+    "士林簡易庭": "臺灣士林地方法院",
+    "內湖簡易庭": "臺灣士林地方法院",
+    # 新北
+    "板橋簡易庭": "臺灣新北地方法院",
+    "三重簡易庭": "臺灣新北地方法院",
+    "新北簡易庭": "臺灣新北地方法院",
+    # 桃竹苗
+    "桃園簡易庭": "臺灣桃園地方法院",
+    "中壢簡易庭": "臺灣桃園地方法院",
+    "新竹簡易庭": "臺灣新竹地方法院",
+    "竹北簡易庭": "臺灣新竹地方法院",
+    "竹東簡易庭": "臺灣新竹地方法院",
+    "苗栗簡易庭": "臺灣苗栗地方法院",
+    # 中彰投
+    "臺中簡易庭": "臺灣臺中地方法院",
+    "沙鹿簡易庭": "臺灣臺中地方法院",
+    "豐原簡易庭": "臺灣臺中地方法院",
+    "彰化簡易庭": "臺灣彰化地方法院",
+    "員林簡易庭": "臺灣彰化地方法院",
+    "北斗簡易庭": "臺灣彰化地方法院",
+    "南投簡易庭": "臺灣南投地方法院",
+    "埔里簡易庭": "臺灣南投地方法院",
+    # 雲嘉南
+    "雲林簡易庭": "臺灣雲林地方法院",
+    "斗六簡易庭": "臺灣雲林地方法院",
+    "虎尾簡易庭": "臺灣雲林地方法院",
+    "北港簡易庭": "臺灣雲林地方法院",
+    "嘉義簡易庭": "臺灣嘉義地方法院",
+    "朴子簡易庭": "臺灣嘉義地方法院",
+    "臺南簡易庭": "臺灣臺南地方法院",
+    "新營簡易庭": "臺灣臺南地方法院",
+    "新市簡易庭": "臺灣臺南地方法院",
+    "柳營簡易庭": "臺灣臺南地方法院",
+    # 高屏
+    "高雄簡易庭": "臺灣高雄地方法院",
+    "鳳山簡易庭": "臺灣高雄地方法院",
+    "岡山簡易庭": "臺灣橋頭地方法院",
+    "橋頭簡易庭": "臺灣橋頭地方法院",
+    "旗山簡易庭": "臺灣橋頭地方法院",
+    "屏東簡易庭": "臺灣屏東地方法院",
+    "潮州簡易庭": "臺灣屏東地方法院",
+    # 東部與離島
+    "花蓮簡易庭": "臺灣花蓮地方法院",
+    "玉里簡易庭": "臺灣花蓮地方法院",
+    "臺東簡易庭": "臺灣臺東地方法院",
+    "宜蘭簡易庭": "臺灣宜蘭地方法院",
+    "羅東簡易庭": "臺灣宜蘭地方法院",
+    "羅東辦公室": "臺灣宜蘭地方法院",
+    "基隆簡易庭": "臺灣基隆地方法院",
+    "澎湖簡易庭": "臺灣澎湖地方法院",
+    "馬公簡易庭": "臺灣澎湖地方法院",
+    "金門簡易庭": "福建金門地方法院",
+    "金城簡易庭": "福建金門地方法院",
+    "連江簡易庭": "福建連江地方法院",
+}
+
+# ---------------------------------------------------------------------------
 # Regex：從文本中擷取法院名稱
 # ---------------------------------------------------------------------------
 RE_COURT_NAME = re.compile(
@@ -142,10 +208,21 @@ RE_COURT_NAME = re.compile(
 # ---------------------------------------------------------------------------
 
 def normalize_court_name(name: str) -> str:
-    """臺/台 統一 + 為地方法院補齊「臺灣」前綴。"""
+    """臺/台 統一，簡易庭歸到所屬法院，並補齊地院前綴。"""
     if not name:
         return ""
-    name = normalize_court_char(name)
+    name = normalize_court_char(name).strip()
+    compact = re.sub(r"\s+", "", name)
+    for alias, parent in sorted(
+        SIMPLE_COURT_PARENT.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if alias in compact:
+            return parent
+    if "地院" in compact:
+        expanded = compact.replace("地院", "地方法院")
+        for full_name in COURT_OPTIONS:
+            if expanded in full_name or full_name in expanded:
+                return full_name
     if "地方法院" in name and not name.startswith(("臺灣", "福建", "最高")):
         name = "臺灣" + name
     return name
@@ -155,7 +232,7 @@ def get_court_code(court_name: str) -> Optional[str]:
     """查詢法院代碼。完全匹配優先，再做子字串 fallback。"""
     if not court_name:
         return None
-    court_name = normalize_court_char(court_name)
+    court_name = normalize_court_name(court_name)
     if court_name in COURT_OPTIONS:
         return COURT_OPTIONS[court_name]
     for name, code in COURT_OPTIONS.items():
@@ -168,11 +245,14 @@ def extract_court_name(text: str) -> str:
     """從文本中 regex 擷取法院全名並正規化。"""
     # Normalize simplified chars (OCR often renders 灣→湾, 東→东) before regex
     normalized = normalize_court_char(text or "")
+    compact = re.sub(r"\s+", "", normalized)
+    for alias, parent in sorted(
+        SIMPLE_COURT_PARENT.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if alias in compact:
+            return parent
     m = RE_COURT_NAME.search(normalized)
     if not m:
         return ""
     court = m.group(1)
-    court = normalize_court_char(court)
-    if "地方法院" in court and not court.startswith(("臺灣", "臺北", "最高")):
-        court = "臺灣" + court
-    return court
+    return normalize_court_name(court)

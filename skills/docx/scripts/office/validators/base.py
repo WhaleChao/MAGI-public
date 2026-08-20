@@ -6,7 +6,10 @@ import logging
 import re
 from pathlib import Path
 
-import defusedxml.minidom
+try:
+    import defusedxml.minidom as safe_minidom
+except ModuleNotFoundError:
+    import safe_minidom
 import lxml.etree
 
 
@@ -119,7 +122,7 @@ class BaseSchemaValidator:
         for xml_file in self.xml_files:
             try:
                 content = xml_file.read_text(encoding="utf-8")
-                dom = defusedxml.minidom.parseString(content)
+                dom = safe_minidom.parseString(content)
                 modified = False
 
                 for elem in dom.getElementsByTagName("*"):

@@ -9,6 +9,7 @@ of the auto-filed PDF area.
 """
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -24,7 +25,9 @@ if str(SCRIPT_DIR) not in sys.path:
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
-FILING_LOG = SCRIPT_DIR / "_filing_log.json"
+from state_paths import configured_read_path, prepare_write, state_path
+
+FILING_LOG = state_path("_filing_log.json")
 SCAN_ROOT = (
     Path.home()
     / "Library"
@@ -46,10 +49,11 @@ def _enabled() -> bool:
 
 
 def _collect_from_filing_log(cutoff: float) -> List[str]:
-    if not FILING_LOG.exists():
+    filing_log = configured_read_path("_filing_log.json", FILING_LOG)
+    if not filing_log.exists():
         return []
     try:
-        data = json.loads(FILING_LOG.read_text(encoding="utf-8"))
+        data = json.loads(filing_log.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning("failed to read filing log: %s", e)
         return []
@@ -116,6 +120,26 @@ def _dedupe(paths: List[str]) -> List[str]:
     return out
 
 
+def _certification_fixture_root() -> Path | None:
+    if os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1":
+        return None
+    fixture_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+    fixture = Path(fixture_raw).expanduser().resolve() if fixture_raw else None
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or fixture is None
+        or not (fixture / ".magi-v3-schedule-fixture").is_file()
+    ):
+        raise RuntimeError("nightly layout fixture is not safely bound")
+    return fixture
+
+
+def _write_manifest(payload: dict) -> Path:
+    target = prepare_write(state_path("_nightly_layout_report.json"))
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def main() -> int:
     if not _enabled():
         logger.info("MAGI_PDF_NAMER_DOCLING_ENABLED disabled; no-op")
@@ -126,18 +150,76 @@ def main() -> int:
     cutoff = time.time() - LOOKBACK_SEC
     paths = _collect_from_filing_log(cutoff) or _collect_from_scan_root(cutoff)
     paths = _dedupe(paths)
+    fixture = _certification_fixture_root()
+    if fixture is not None:
+        bounded: List[str] = []
+        for raw in paths:
+            path = Path(raw).expanduser()
+            resolved = path.resolve()
+            if path.is_symlink() or not resolved.is_file() or not resolved.is_relative_to(fixture):
+                raise RuntimeError("nightly layout PDF escaped its owned fixture root")
+            bounded.append(str(resolved))
+        paths = bounded
     if not paths:
         logger.info("no recent PDFs")
+        if fixture is not None:
+            _write_manifest(
+                {
+                    "ok": False,
+                    "status": "no_fixture_pdfs",
+                    "total": 0,
+                    "items": [],
+                    "provider_quality_certified": False,
+                }
+            )
+            return 1
         return 0
 
     ok = 0
     fail = 0
+    items = []
     for pdf_path in paths:
         sidecar = generate_layout_sidecar(pdf_path)
         if sidecar and os.path.exists(sidecar):
             ok += 1
+            sidecar_path = Path(sidecar)
+            try:
+                payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                payload = {}
+            items.append(
+                {
+                    "pdf": pdf_path,
+                    "pdf_sha256": hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest(),
+                    "sidecar": sidecar,
+                    "sidecar_sha256": hashlib.sha256(sidecar_path.read_bytes()).hexdigest(),
+                    "page_count": payload.get("page_count"),
+                    "parsed_text_sha256": payload.get("parsed_text_sha256"),
+                    "provider_quality_certified": payload.get("provider_quality_certified"),
+                    "provider_role": payload.get("provider_role") or "live_docling",
+                    "ok": bool(payload),
+                }
+            )
         else:
             fail += 1
+            items.append({"pdf": pdf_path, "sidecar": "", "ok": False})
+    manifest = {
+        "ok": fail == 0 and ok == len(paths),
+        "status": "passed" if fail == 0 and ok == len(paths) else "failed",
+        "total": len(paths),
+        "generated": ok,
+        "failed": fail,
+        "items": items,
+        "provider_quality_certified": not any(
+            item.get("provider_quality_certified") is False for item in items
+        ),
+        "provider_role": (
+            "deterministic_docling_layout_fixture"
+            if any(item.get("provider_quality_certified") is False for item in items)
+            else "live_docling"
+        ),
+    }
+    _write_manifest(manifest)
     logger.info("done: total=%d ok=%d fail=%d", len(paths), ok, fail)
     return 0 if fail == 0 else 1
 

@@ -19,7 +19,12 @@ sys.path.append(project_root)
 
 from skills.casper.code_review import review_skill
 
-TARGET_DIR = os.path.expanduser("~/Desktop/MAGI_v2/skills")
+TARGET_DIR = os.path.expanduser(
+    os.environ.get(
+        "MAGI_CODE_REVIEW_TARGET",
+        "~/Library/Application Support/MAGI/runtime/MAGI_v3/shared/skill-overlays",
+    )
+)
 
 if __name__ == "__main__":
     review_skill.run_review(TARGET_DIR)

@@ -13,12 +13,15 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
+
+from scripts.ops.token_health_check import google_token_file_lock
 
 
 DEFAULT_SPREADSHEET_ID = os.environ.get("MAGI_ACCOUNTING_SHEET_ID", "").strip()
@@ -82,12 +85,137 @@ class AccountingSheetRow:
     fingerprint: str | None = None
 
 
+@dataclass
+class AccountingSheetFetch:
+    values: list[list[Any]]
+    source_kind: str
+    source_label: str = ""
+    gid: int | None = None
+    selected_by_month: bool = False
+    date_filter_enabled: bool = True
+
+
 class AccountingImportError(RuntimeError):
     pass
 
 
 class SheetsAuthorizationRequired(AccountingImportError):
     pass
+
+
+def _certification_fixture_fetch(
+    *,
+    spreadsheet_id: str,
+    gid: int,
+    month: str | None,
+) -> AccountingSheetFetch | None:
+    """Load a release-certification sheet provider, if explicitly bound.
+
+    This path is deliberately unavailable to normal executions.  It lets the
+    schedule-body harness exercise the real parser and disposable-DB import
+    flow without opening production Google credentials or the network.
+    """
+    raw_path = str(os.environ.get("MAGI_ACCOUNTING_SHEET_FIXTURE_PATH") or "").strip()
+    if not raw_path:
+        return None
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or spreadsheet_id != "magi-certification-accounting-sheet"
+    ):
+        raise AccountingImportError("accounting certification fixture is not safely bound")
+    fixture_root_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+    if not fixture_root_raw:
+        raise AccountingImportError("accounting certification fixture root is missing")
+    fixture_root = Path(fixture_root_raw).expanduser().resolve()
+    fixture_path = Path(raw_path).expanduser().resolve()
+    if (
+        not (fixture_root / ".magi-v3-schedule-fixture").is_file()
+        or not fixture_path.is_file()
+        or not fixture_path.is_relative_to(fixture_root)
+    ):
+        raise AccountingImportError("accounting certification fixture escaped its owned root")
+    try:
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AccountingImportError("accounting certification fixture is unreadable") from exc
+    if payload.get("schema") != "magi.v3.accounting-sheet-fixture/v1":
+        raise AccountingImportError("accounting certification fixture schema is invalid")
+    values = payload.get("values")
+    if not isinstance(values, list) or not values or any(not isinstance(row, list) for row in values):
+        raise AccountingImportError("accounting certification fixture rows are invalid")
+    source_label = str(payload.get("source_label") or "certification-fixture").strip()
+    selected_by_month = bool(payload.get("selected_by_month", True))
+    return AccountingSheetFetch(
+        values=values,
+        source_kind="certification_fixture",
+        source_label=source_label,
+        gid=gid,
+        selected_by_month=selected_by_month,
+        date_filter_enabled=not selected_by_month,
+    )
+
+
+def _atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as tmp:
+            try:
+                os.fchmod(tmp.fileno(), mode)
+            except Exception:
+                pass
+            tmp.write(text)
+            tmp.flush()
+            try:
+                os.fsync(tmp.fileno())
+            except Exception:
+                pass
+            tmp_path = Path(tmp.name)
+        os.replace(str(tmp_path), path)
+        try:
+            path.chmod(mode)
+        except Exception:
+            pass
+    except Exception:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _backup_google_token(token_path: Path, *, reason: str) -> Path | None:
+    token_path = token_path.expanduser()
+    if not token_path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    backup_dir = token_path.parent / "token_backups"
+    backup_path = backup_dir / f"{token_path.name}.{reason}.{stamp}.bak"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path.write_bytes(token_path.read_bytes())
+        backup_path.chmod(0o600)
+        return backup_path
+    except Exception:
+        return None
+
+
+def _persist_google_credentials_unlocked(token_path: Path, creds: Any) -> None:
+    _atomic_write_text(token_path, creds.to_json())
+
+
+def _persist_google_credentials(token_path: Path, creds: Any) -> None:
+    with google_token_file_lock(token_path):
+        _persist_google_credentials_unlocked(token_path, creds)
+
+
+def is_revoked_google_token_error(exc: BaseException) -> bool:
+    """Return True when Google says the saved OAuth token can no longer refresh."""
+    text = str(exc).lower()
+    return "invalid_grant" in text or "expired or revoked" in text or "token has been revoked" in text
 
 
 FIXED_EXPENSE_SKIP_CATEGORIES = {"薪資", "保險", "房租", "租金支出", "人事費"}
@@ -108,6 +236,27 @@ FIXED_EXPENSE_SKIP_KEYWORDS = (
     "臺北事務所",
     "花蓮事務所",
 )
+COLLEAGUE_INCOME_CATEGORIES = {"一般案件", "法扶案件", "法律扶助案件", "指定辯護案件"}
+COLLEAGUE_EXPENSE_CATEGORIES = {
+    "郵資",
+    "影印",
+    "閱卷",
+    "文具用品",
+    "電信費",
+    "雜支",
+    "印章",
+    "稅務",
+    "水果",
+    "餅乾",
+    "飲品",
+    "祭祀",
+    "便當",
+    "保險",
+    "薪資",
+    "房租",
+    "租金支出",
+    "人事費",
+}
 
 
 def _repo_root() -> Path:
@@ -115,11 +264,15 @@ def _repo_root() -> Path:
 
 
 def _default_token_path() -> Path:
-    return Path(os.environ.get("MAGI_GOOGLE_SHEETS_TOKEN") or "~/.magi/google/sheets_token.json").expanduser()
+    return Path(
+        os.environ.get("MAGI_ACCOUNTING_GOOGLE_SHEETS_TOKEN")
+        or os.environ.get("MAGI_GOOGLE_SHEETS_TOKEN")
+        or "~/.magi/google/sheets_token.json"
+    ).expanduser()
 
 
 def _default_credentials_path() -> Path:
-    env = os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
+    env = os.environ.get("MAGI_ACCOUNTING_GOOGLE_CREDENTIALS_PATH") or os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH")
     if env:
         return Path(env).expanduser()
     return _repo_root() / "json" / "credentials.json"
@@ -164,6 +317,24 @@ def month_window(month: str | None = None, today: date | None = None) -> tuple[d
     return date(year, mon, 1), date(year, mon, last_day), f"{year:04d}-{mon:02d}"
 
 
+def sheet_title_matches_month(title: str, month: str | None) -> bool:
+    if not month:
+        return False
+    _, _, key = month_window(month)
+    year, mon = key.split("-")
+    month_int = int(mon)
+    normalized = re.sub(r"\s+", "", str(title or ""))
+    tokens = {
+        f"{year}年{month_int}月",
+        f"{year}年{mon}月",
+        f"{year}-{mon}",
+        f"{year}-{month_int}",
+        f"{year}/{mon}",
+        f"{year}/{month_int}",
+    }
+    return any(token in normalized for token in tokens)
+
+
 def normalize_header(value: Any) -> str:
     s = str(value or "").strip().lower()
     s = re.sub(r"\s+", "", s)
@@ -197,6 +368,22 @@ def _cell(row: list[Any], mapping: dict[str, int], key: str) -> str:
 def _is_header_row(row: list[Any]) -> bool:
     mapping = header_map(row)
     return "date" in mapping and ("amount" in mapping or "income" in mapping or "expense" in mapping)
+
+
+def _is_loose_colleague_month_header(row: list[Any]) -> bool:
+    """Return True for newer colleague sheets whose header only says 類別.
+
+    Some monthly tabs keep the old fixed layout (A=類別, B=時間, C=姓名/說明,
+    D=備註, E=金額) but omit the B-E header labels. Treat that as a header
+    instead of silently skipping the income section.
+    """
+    first = normalize_header(row[0] if row else "")
+    rest = [str(c or "").strip() for c in (row[1:5] if len(row) > 1 else [])]
+    return first == normalize_header("類別") and not any(rest)
+
+
+def _loose_colleague_mapping() -> dict[str, int]:
+    return {"category": 0, "date": 1, "name": 2, "memo": 3, "amount": 4}
 
 
 def _clean_category(value: str, fallback: str | None = None) -> str | None:
@@ -286,6 +473,21 @@ def _infer_type(type_text: str, amount: float) -> str:
     return "支出" if amount < 0 else "收入"
 
 
+def _infer_type_for_category(category: str | None, description: str, memo: str, amount: float) -> str:
+    category_text = str(category or "").strip()
+    if category_text in COLLEAGUE_INCOME_CATEGORIES:
+        return "收入"
+    if category_text in COLLEAGUE_EXPENSE_CATEGORIES:
+        return "支出"
+    text = " ".join([category_text, str(description or ""), str(memo or "")])
+    if "法扶" in text or re.search(r"\b\d{6,7}-[A-Z]-\d{3}\b", text):
+        if any(word in text for word in ("酬金", "委任費", "諮詢費", "法律顧問", "義辯報酬", "律師函")):
+            return "收入"
+    if any(word in text for word in ("郵資", "影印", "閱卷", "保險", "薪資", "房租", "木章", "查詢費")):
+        return "支出"
+    return "支出" if amount < 0 else "收入"
+
+
 def _fingerprint(row: AccountingSheetRow, spreadsheet_id: str, gid: int) -> str:
     payload = {
         "spreadsheet_id": spreadsheet_id,
@@ -311,6 +513,7 @@ def parse_sheet_values(
     gid: int = DEFAULT_GID,
     source_label: str = "",
     allow_no_header: bool = False,
+    filter_by_transaction_month: bool = True,
 ) -> tuple[list[AccountingSheetRow], dict[str, Any]]:
     start, end, month_key = month_window(month)
     if source_label and any(marker in source_label for marker in SKIP_OWNER_MARKERS):
@@ -323,10 +526,11 @@ def parse_sheet_values(
             "skipped_outside_month": 0,
             "skipped_invalid": 0,
             "header_rows": [],
+            "date_filter_enabled": filter_by_transaction_month,
         }
 
     header_rows: list[int] = []
-    if not any(_is_header_row(row) for row in values):
+    if not any(_is_header_row(row) or _is_loose_colleague_month_header(row) for row in values):
         if allow_no_header:
             return [], {
                 "month": month_key,
@@ -337,6 +541,7 @@ def parse_sheet_values(
                 "skipped_invalid": 0,
                 "header_rows": [],
                 "no_header": True,
+                "date_filter_enabled": filter_by_transaction_month,
             }
         raise AccountingImportError("找不到日期與金額欄位，請確認試算表標題列")
 
@@ -347,6 +552,7 @@ def parse_sheet_values(
     mapping: dict[str, int] = {}
     current_category: str | None = None
     current_type_hint: str | None = None
+    loose_fixed_layout = False
     for source_row, raw in enumerate(values, start=1):
         if not any(str(c or "").strip() for c in raw):
             continue
@@ -355,11 +561,19 @@ def parse_sheet_values(
             mapping = candidate
             header_rows.append(source_row)
             current_type_hint = None
+            loose_fixed_layout = False
             if "expense" in mapping and "income" not in mapping and "amount" not in mapping:
                 current_type_hint = "支出"
             elif "income" in mapping and "expense" not in mapping and "amount" not in mapping:
                 current_type_hint = "收入"
             current_category = None
+            continue
+        if _is_loose_colleague_month_header(raw):
+            mapping = _loose_colleague_mapping()
+            header_rows.append(source_row)
+            current_type_hint = None
+            current_category = None
+            loose_fixed_layout = True
             continue
         if not mapping:
             continue
@@ -376,7 +590,7 @@ def parse_sheet_values(
         if not tx_date:
             skipped_invalid += 1
             continue
-        if tx_date < start or tx_date > end:
+        if filter_by_transaction_month and (tx_date < start or tx_date > end):
             skipped_month += 1
             continue
 
@@ -391,9 +605,14 @@ def parse_sheet_values(
         if amount is None or amount == 0:
             skipped_invalid += 1
             continue
-        tx_type = current_type_hint or _infer_type(_cell(raw, mapping, "type"), amount)
         name = _cell(raw, mapping, "name") or _cell(raw, mapping, "description")
         memo = _cell(raw, mapping, "memo")
+        if current_type_hint:
+            tx_type = current_type_hint
+        elif loose_fixed_layout:
+            tx_type = _infer_type_for_category(category, name, memo, amount)
+        else:
+            tx_type = _infer_type(_cell(raw, mapping, "type"), amount)
         case_ref = _cell(raw, mapping, "case_ref") or _case_ref_from_name(name)
         item = AccountingSheetRow(
             source_row=source_row,
@@ -417,10 +636,18 @@ def parse_sheet_values(
         "skipped_owner": skipped_owner,
         "skipped_outside_month": skipped_month,
         "skipped_invalid": skipped_invalid,
+        "date_filter_enabled": filter_by_transaction_month,
     }
 
 
-def _load_google_credentials(token_path: Path, credentials_path: Path, *, account_hint: str, interactive: bool):
+def _load_google_credentials(
+    token_path: Path,
+    credentials_path: Path,
+    *,
+    account_hint: str,
+    interactive: bool,
+    force_auth: bool = False,
+):
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -430,16 +657,51 @@ def _load_google_credentials(token_path: Path, credentials_path: Path, *, accoun
 
     creds = None
     token_has_requested_scopes = False
-    if token_path.exists():
+    if force_auth and interactive:
+        _backup_google_token(token_path, reason="reauth")
         try:
-            token_data = json.loads(token_path.read_text(encoding="utf-8"))
-            token_scopes = set(token_data.get("scopes") or [])
-            token_has_requested_scopes = set(GOOGLE_READ_SCOPES).issubset(token_scopes)
+            token_path.unlink()
+        except FileNotFoundError:
+            pass
         except Exception:
-            token_has_requested_scopes = False
-        creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_READ_SCOPES)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+            pass
+    if token_path.exists():
+        with google_token_file_lock(token_path):
+            try:
+                token_data = json.loads(token_path.read_text(encoding="utf-8"))
+                token_scopes = set(token_data.get("scopes") or [])
+                token_has_requested_scopes = set(GOOGLE_READ_SCOPES).issubset(token_scopes)
+            except Exception:
+                token_has_requested_scopes = False
+            creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_READ_SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    _persist_google_credentials_unlocked(token_path, creds)
+                except Exception as exc:
+                    refresh_exc = exc
+                    creds = None
+                    token_has_requested_scopes = False
+                else:
+                    refresh_exc = None
+            else:
+                refresh_exc = None
+        if refresh_exc is not None:
+            exc = refresh_exc
+            if not is_revoked_google_token_error(exc):
+                raise
+            if not interactive:
+                raise SheetsAuthorizationRequired(
+                    f"Google Sheets/Drive 授權已過期或被撤銷。請執行 scripts/import_accounting_sheet.py --auth，"
+                    f"並用 {account_hint} 重新登入。"
+                ) from exc
+            _backup_google_token(token_path, reason="revoked")
+            try:
+                token_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
     has_scopes = bool(creds and creds.valid and token_has_requested_scopes and creds.has_scopes(GOOGLE_READ_SCOPES))
     if not creds or not creds.valid or not has_scopes:
         if not interactive:
@@ -458,11 +720,7 @@ def _load_google_credentials(token_path: Path, credentials_path: Path, *, accoun
             ),
         )
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
-        try:
-            token_path.chmod(0o600)
-        except Exception:
-            pass
+        _persist_google_credentials(token_path, creds)
     return creds
 
 
@@ -474,8 +732,32 @@ def fetch_sheet_values(
     credentials_path: Path | None = None,
     account_hint: str = DEFAULT_ACCOUNT_HINT,
     interactive: bool = False,
+    force_auth: bool = False,
     month: str | None = None,
 ) -> list[list[Any]]:
+    return fetch_sheet_values_with_meta(
+        spreadsheet_id=spreadsheet_id,
+        gid=gid,
+        token_path=token_path,
+        credentials_path=credentials_path,
+        account_hint=account_hint,
+        interactive=interactive,
+        force_auth=force_auth,
+        month=month,
+    ).values
+
+
+def fetch_sheet_values_with_meta(
+    *,
+    spreadsheet_id: str = DEFAULT_SPREADSHEET_ID,
+    gid: int = DEFAULT_GID,
+    token_path: Path | None = None,
+    credentials_path: Path | None = None,
+    account_hint: str = DEFAULT_ACCOUNT_HINT,
+    interactive: bool = False,
+    force_auth: bool = False,
+    month: str | None = None,
+) -> AccountingSheetFetch:
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -489,6 +771,7 @@ def fetch_sheet_values(
         credentials_path or _default_credentials_path(),
         account_hint=account_hint,
         interactive=interactive,
+        force_auth=force_auth,
     )
     service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     try:
@@ -512,8 +795,12 @@ def fetch_sheet_values(
             ) from exc
         if status in {401, 403}:
             raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google 找不到帳務表；請確認 spreadsheet_id 正確，且 {account_hint} 可讀取這份檔案。"
+            ) from exc
         if status == 400 and "Office file" in message:
-            return fetch_office_spreadsheet_values(
+            return fetch_office_spreadsheet_values_with_meta(
                 spreadsheet_id=spreadsheet_id,
                 creds=creds,
                 credentials_path=credentials_path or _default_credentials_path(),
@@ -523,9 +810,19 @@ def fetch_sheet_values(
             )
         raise
     title = None
+    selected_by_month = False
+    if month:
+        for sheet in meta.get("sheets", []):
+            props = sheet.get("properties") or {}
+            candidate = str(props.get("title") or "")
+            if sheet_title_matches_month(candidate, month):
+                title = candidate
+                gid = int(props.get("sheetId") or gid)
+                selected_by_month = True
+                break
     for sheet in meta.get("sheets", []):
         props = sheet.get("properties") or {}
-        if int(props.get("sheetId") or -1) == int(gid):
+        if not title and int(props.get("sheetId") or -1) == int(gid):
             title = props.get("title")
             break
     if not title:
@@ -541,8 +838,19 @@ def fetch_sheet_values(
         status = getattr(getattr(exc, "resp", None), "status", None)
         if status in {401, 403}:
             raise AccountingImportError("Google Sheet 讀取權限不足；請確認已用指定 Google 帳號授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google 找不到帳務表分頁；請確認 gid 正確，且 {account_hint} 可讀取這份檔案。"
+            ) from exc
         raise
-    return result.get("values", [])
+    return AccountingSheetFetch(
+        values=result.get("values", []),
+        source_kind="google_sheet",
+        source_label=str(title or ""),
+        gid=gid,
+        selected_by_month=selected_by_month,
+        date_filter_enabled=not selected_by_month,
+    )
 
 
 def fetch_office_spreadsheet_values(
@@ -554,6 +862,25 @@ def fetch_office_spreadsheet_values(
     interactive: bool,
     month: str | None = None,
 ) -> list[list[Any]]:
+    return fetch_office_spreadsheet_values_with_meta(
+        spreadsheet_id=spreadsheet_id,
+        creds=creds,
+        credentials_path=credentials_path,
+        account_hint=account_hint,
+        interactive=interactive,
+        month=month,
+    ).values
+
+
+def fetch_office_spreadsheet_values_with_meta(
+    *,
+    spreadsheet_id: str,
+    creds: Any,
+    credentials_path: Path,
+    account_hint: str,
+    interactive: bool,
+    month: str | None = None,
+) -> AccountingSheetFetch:
     try:
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -582,22 +909,25 @@ def fetch_office_spreadsheet_values(
             ) from exc
         if status in {401, 403}:
             raise AccountingImportError(f"Google Drive 讀取權限不足；請確認用 {account_hint} 授權且該帳號可讀此表。") from exc
+        if status == 404:
+            raise AccountingImportError(
+                f"Google Drive 找不到帳務 Excel 檔；請確認檔案 ID 正確，且已分享給 {account_hint}。"
+            ) from exc
         raise
 
     workbook = openpyxl.load_workbook(BytesIO(content), data_only=True, read_only=True)
-    target_month = None
-    if month:
-        _, _, target_month = month_window(month)
     best_values: list[list[Any]] | None = None
+    best_title = ""
+    best_selected_by_month = False
     best_score = -1
     for worksheet in workbook.worksheets:
         title = str(worksheet.title or "")
         if any(marker in title for marker in SKIP_OWNER_MARKERS):
             continue
-        if target_month:
-            year, mon = target_month.split("-")
-            month_tokens = {f"{year}年{int(mon)}月", f"{year}年{mon}月"}
-            if not any(token in title for token in month_tokens):
+        selected_by_month = False
+        if month:
+            selected_by_month = sheet_title_matches_month(title, month)
+            if not selected_by_month:
                 continue
         values = [[cell for cell in row] for row in worksheet.iter_rows(values_only=True)]
         score = 0
@@ -609,14 +939,25 @@ def fetch_office_spreadsheet_values(
                 score += 2
             if "owner" in mapping:
                 score += 1
+            if _is_loose_colleague_month_header(list(raw or [])):
+                score += 3
             if score >= 4:
                 break
         if score > best_score:
             best_values = values
+            best_title = title
+            best_selected_by_month = selected_by_month
             best_score = score
     if best_values is None:
         raise AccountingImportError("Excel 帳務檔內找不到可辨識的日期/金額標題列")
-    return best_values
+    return AccountingSheetFetch(
+        values=best_values,
+        source_kind="office_excel",
+        source_label=best_title,
+        gid=None,
+        selected_by_month=best_selected_by_month,
+        date_filter_enabled=not best_selected_by_month,
+    )
 
 
 def _get_osc_helpers():
@@ -669,7 +1010,7 @@ def resolve_accounting_case_ref(ref: str | None) -> str | None:
     )
     if row and row.get("id"):
         return str(row.get("id"))
-    return text
+    return None
 
 
 def _fixed_expense_family(haystack: str) -> str | None:
@@ -762,96 +1103,108 @@ def import_rows(rows: list[AccountingSheetRow], *, month: str, dry_run: bool = T
     existing_matches: list[dict[str, Any]] = []
     fixed_expense_skips: list[dict[str, Any]] = []
     fixed_expense_conflicts: list[dict[str, Any]] = []
-    for row in rows:
-        exists, _ = _osc_exec(
-            "SELECT fingerprint, transaction_id FROM accounting_import_records WHERE fingerprint=%s",
-            (row.fingerprint,),
-            fetch="one",
-        )
-        row_dict = asdict(row)
-        if exists:
-            duplicates.append(row_dict)
-            continue
-        fixed_overlap = fixed_expense_overlap_details(row)
-        if fixed_overlap:
-            row_dict["skip_reason"] = "covered_by_recurring_expense"
-            row_dict["fixed_expense_match"] = fixed_overlap
-            fixed_expense_skips.append(row_dict)
-            if fixed_overlap.get("amount_conflict"):
-                row_dict["warning"] = "colleague_sheet_amount_differs_from_recurring_expense"
-                fixed_expense_conflicts.append(row_dict)
-            continue
-        case_id = resolve_accounting_case_ref(row.case_ref)
-        existing_tx, _ = _osc_exec(
-            """
-            SELECT id FROM case_transactions
-             WHERE date=%s
-               AND type=%s
-               AND ABS(amount)=%s
-               AND COALESCE(category,'')=%s
-               AND COALESCE(description,'')=%s
-             LIMIT 1
-            """,
-            (
-                row.date,
-                row.type,
-                row.amount,
-                row.category or "",
-                row.description or "",
-            ),
-            fetch="one",
-        )
-        if existing_tx and existing_tx.get("id"):
-            row_dict["transaction_id"] = existing_tx.get("id")
-            existing_matches.append(row_dict)
-            if not dry_run:
-                _osc_exec(
-                    """
-                    INSERT INTO accounting_import_records
-                      (fingerprint, source, source_row, source_month, transaction_id, payload_json)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                    """,
-                    (
-                        row.fingerprint,
-                        "colleague_google_sheet",
-                        row.source_row,
-                        month,
-                        existing_tx.get("id"),
-                        json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
-                    ),
-                    fetch="none",
-                )
-            continue
-        if dry_run:
+    if not dry_run:
+        _osc_exec("START TRANSACTION", fetch="none")
+    try:
+        for row in rows:
+            exists, _ = _osc_exec(
+                "SELECT fingerprint, transaction_id FROM accounting_import_records WHERE fingerprint=%s",
+                (row.fingerprint,),
+                fetch="one",
+            )
+            row_dict = asdict(row)
+            if exists:
+                duplicates.append(row_dict)
+                continue
+            fixed_overlap = fixed_expense_overlap_details(row)
+            if fixed_overlap:
+                row_dict["skip_reason"] = "covered_by_recurring_expense"
+                row_dict["fixed_expense_match"] = fixed_overlap
+                fixed_expense_skips.append(row_dict)
+                if fixed_overlap.get("amount_conflict"):
+                    row_dict["warning"] = "colleague_sheet_amount_differs_from_recurring_expense"
+                    fixed_expense_conflicts.append(row_dict)
+                continue
+            case_id = resolve_accounting_case_ref(row.case_ref)
+            existing_tx, _ = _osc_exec(
+                """
+                SELECT id FROM case_transactions
+                 WHERE date=%s
+                   AND type=%s
+                   AND ABS(amount)=%s
+                   AND COALESCE(category,'')=%s
+                   AND COALESCE(description,'')=%s
+                 LIMIT 1
+                """,
+                (
+                    row.date,
+                    row.type,
+                    row.amount,
+                    row.category or "",
+                    row.description or "",
+                ),
+                fetch="one",
+            )
+            if existing_tx and existing_tx.get("id"):
+                row_dict["transaction_id"] = existing_tx.get("id")
+                existing_matches.append(row_dict)
+                if not dry_run:
+                    _osc_exec(
+                        """
+                        INSERT INTO accounting_import_records
+                          (fingerprint, source, source_row, source_month, transaction_id, payload_json)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        """,
+                        (
+                            row.fingerprint,
+                            "colleague_google_sheet",
+                            row.source_row,
+                            month,
+                            existing_tx.get("id"),
+                            json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
+                        ),
+                        fetch="none",
+                    )
+                continue
+            if dry_run:
+                imported.append(row_dict)
+                continue
+            result, _ = _osc_exec(
+                """
+                INSERT INTO case_transactions (case_id, date, type, sub_type, category, description, amount)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (case_id, row.date, row.type, row.sub_type, row.category, row.description, row.amount),
+                fetch="none",
+            )
+            tx_id = (result or {}).get("lastrowid")
+            row_dict["transaction_id"] = tx_id
+            _osc_exec(
+                """
+                INSERT INTO accounting_import_records
+                  (fingerprint, source, source_row, source_month, transaction_id, payload_json)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    row.fingerprint,
+                    "colleague_google_sheet",
+                    row.source_row,
+                    month,
+                    tx_id,
+                    json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
+                ),
+                fetch="none",
+            )
             imported.append(row_dict)
-            continue
-        result, _ = _osc_exec(
-            """
-            INSERT INTO case_transactions (case_id, date, type, sub_type, category, description, amount)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (case_id, row.date, row.type, row.sub_type, row.category, row.description, row.amount),
-            fetch="none",
-        )
-        tx_id = (result or {}).get("lastrowid")
-        _osc_exec(
-            """
-            INSERT INTO accounting_import_records
-              (fingerprint, source, source_row, source_month, transaction_id, payload_json)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                row.fingerprint,
-                "colleague_google_sheet",
-                row.source_row,
-                month,
-                tx_id,
-                json.dumps(row_dict, ensure_ascii=False, sort_keys=True),
-            ),
-            fetch="none",
-        )
-        row_dict["transaction_id"] = tx_id
-        imported.append(row_dict)
+        if not dry_run:
+            _osc_exec("COMMIT", fetch="none")
+    except Exception:
+        if not dry_run:
+            try:
+                _osc_exec("ROLLBACK", fetch="none")
+            except Exception:
+                pass
+        raise
     return {
         "ok": True,
         "dry_run": dry_run,
@@ -876,29 +1229,46 @@ def run_import(
     spreadsheet_id: str = DEFAULT_SPREADSHEET_ID,
     gid: int = DEFAULT_GID,
     interactive: bool = False,
+    force_auth: bool = False,
     account_hint: str = DEFAULT_ACCOUNT_HINT,
 ) -> dict[str, Any]:
     _, _, month_key = month_window(month)
     if not spreadsheet_id:
         raise AccountingImportError("尚未設定 MAGI_ACCOUNTING_SHEET_ID，請在 .env 設定同事帳務表檔案 ID")
-    values = fetch_sheet_values(
+    fetched = _certification_fixture_fetch(
         spreadsheet_id=spreadsheet_id,
         gid=gid,
-        interactive=interactive,
-        account_hint=account_hint,
         month=month_key,
     )
+    if fetched is None:
+        fetched = fetch_sheet_values_with_meta(
+            spreadsheet_id=spreadsheet_id,
+            gid=gid,
+            interactive=interactive,
+            force_auth=force_auth,
+            account_hint=account_hint,
+            month=month_key,
+        )
     rows, stats = parse_sheet_values(
-        values,
+        fetched.values,
         month=month_key,
         spreadsheet_id=spreadsheet_id,
-        gid=gid,
+        gid=fetched.gid if fetched.gid is not None else gid,
+        source_label=fetched.source_label,
         allow_no_header=True,
+        filter_by_transaction_month=fetched.date_filter_enabled,
     )
     result = import_rows(rows, month=month_key, dry_run=dry_run)
     result["sheet_stats"] = stats
     result["spreadsheet_id"] = spreadsheet_id
     result["gid"] = gid
+    result["source"] = {
+        "kind": fetched.source_kind,
+        "label": fetched.source_label,
+        "gid": fetched.gid,
+        "selected_by_month": fetched.selected_by_month,
+        "date_filter_enabled": fetched.date_filter_enabled,
+    }
     return result
 
 
@@ -908,6 +1278,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include-previous", action="store_true", help="同時檢查上一個月，補抓月底後登資料")
     parser.add_argument("--commit", action="store_true", help="實際寫入資料庫；預設只預覽")
     parser.add_argument("--auth", action="store_true", help="需要時開啟瀏覽器授權 Google Sheets")
+    parser.add_argument("--reauth", action="store_true", help="強制重新授權；用於 Google token 過期、撤銷或需要切換帳號")
     parser.add_argument("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID)
     parser.add_argument("--gid", type=int, default=DEFAULT_GID)
     parser.add_argument("--account-hint", default=DEFAULT_ACCOUNT_HINT)
@@ -922,7 +1293,8 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=not args.commit,
                 spreadsheet_id=args.spreadsheet_id,
                 gid=args.gid,
-                interactive=args.auth,
+                interactive=args.auth or args.reauth,
+                force_auth=args.reauth,
                 account_hint=args.account_hint,
             )
             for target_month in months

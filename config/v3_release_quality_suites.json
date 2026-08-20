@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "selection_policy": "release_manifest_bound_pytest_nodeids",
+  "v2_regression": {
+    "include_globs": [
+      "tests/test_*.py",
+      "tests/eval/test_*.py"
+    ],
+    "minimum_passed": 1
+  },
+  "v3_suites": {
+    "unit": [
+      "tests/v3/test_core_health.py",
+      "tests/v3/test_core_ledger.py",
+      "tests/v3/test_core_resource.py",
+      "tests/v3/test_core_state.py",
+      "tests/v3/test_core_supervisor.py",
+      "tests/v3/test_dispatcher.py"
+    ],
+    "contract": [
+      "tests/v3/test_compat_admin.py",
+      "tests/v3/test_compat_gateway.py",
+      "tests/v3/test_compat_http_contract_runner.py",
+      "tests/v3/test_compat_inventory.py",
+      "tests/v3/test_compat_osc_file_contract.py",
+      "tests/v3/test_compat_side_effects.py",
+      "tests/v3/test_service_manifest.py"
+    ],
+    "integration": [
+      "tests/v3/test_cron_service.py",
+      "tests/v3/test_gateway.py",
+      "tests/v3/test_native_case_filesystem.py",
+      "tests/v3/test_native_osc_cases.py",
+      "tests/v3/test_service_entrypoints.py"
+    ],
+    "e2e": [
+      "tests/v3/test_actual_route_replay.py",
+      "tests/v3/test_compat_replay.py",
+      "tests/v3/test_cutover_cli.py",
+      "tests/v3/test_cutover_core.py",
+      "tests/v3/test_cutover_execute.py",
+      "tests/v3/test_cutover_workflow.py",
+      "tests/v3/test_human_approval.py",
+      "tests/v3/test_pre_cutover.py",
+      "tests/v3/test_provisional_resource_window_execute.py",
+      "tests/v3/test_release_gate.py",
+      "tests/v3/test_isolated_live_execute.py"
+    ]
+  },
+  "quality_contract_groups": {
+    "interaction": [
+      "tests/test_agentic_contracts.py",
+      "tests/test_message_intent_boundaries.py"
+    ],
+    "agent_kernel": [
+      "tests/test_agent_readiness_gate.py",
+      "tests/test_agentic_bridges.py"
+    ],
+    "memory": [
+      "tests/test_memory_grounding.py",
+      "tests/test_memory_policy.py"
+    ],
+    "quality": [
+      "tests/test_answer_verifier.py",
+      "tests/test_document_reader.py"
+    ]
+  },
+  "golden_sets": {
+    "context": [
+      "tests/test_context_labels.py"
+    ],
+    "memory": [
+      "tests/test_memory_policy.py"
+    ],
+    "tool": [
+      "tests/test_agentic_bridges.py"
+    ],
+    "plan": [
+      "tests/test_agentic_planner.py"
+    ],
+    "answer": [
+      "tests/test_answer_verifier.py"
+    ]
+  },
+  "side_effect_test_targets": [
+    "tests/v3/test_compat_side_effects.py"
+  ],
+  "golden_flow_ids": [
+    "osc_preview_range_download_v1",
+    "nas_office_provider_session_v1"
+  ]
+}

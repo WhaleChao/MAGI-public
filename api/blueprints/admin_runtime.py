@@ -8,13 +8,22 @@ main server bootstrap.
 
 from __future__ import annotations
 
+import logging
+import copy
+import hmac
+import importlib
 import importlib.util
 import json
+from collections import deque
 import os
 import re
 import shutil
+import shlex
 import socket
 import subprocess
+import sys
+import tempfile
+import threading
 import time
 import urllib.request
 from html import escape
@@ -26,8 +35,188 @@ from typing import Any, Optional
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_login import current_user, login_required
 
+from api.pending_config import write_pending_env_updates
+from api.runtime_paths import dotenv_override_allowed, get_faiss_index_dir
+
 
 ROOT = Path(__file__).resolve().parents[2]
+_BROWSER_CORE_HEALTH_CACHE: dict[str, Any] = {"ts": 0.0, "result": None}
+_BROWSER_CORE_HEALTH_LOCK = threading.Lock()
+_PYTHON_STARTUP_HEALTH_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _mutable_static_dir(root: Path) -> Path:
+    return Path(
+        os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or root / "static"
+    ).expanduser()
+
+
+def _agent_state_dir(root: Path) -> Path:
+    return Path(
+        os.environ.get("MAGI_AGENT_DIR", "").strip() or root / ".agent"
+    ).expanduser()
+
+
+def _runtime_state_dir(root: Path) -> Path:
+    return Path(
+        os.environ.get("MAGI_RUNTIME_DIR", "").strip() or root / ".runtime"
+    ).expanduser()
+
+
+def _token_health_report_candidates(root: Path) -> list[Path]:
+    candidates = [_runtime_state_dir(root) / "token_health" / "token_health_latest.json"]
+    for key in ("MAGI_ROOT", "MAGI_ROOT_DIR"):
+        value = os.environ.get(key)
+        if value:
+            candidates.append(Path(value) / ".runtime" / "token_health" / "token_health_latest.json")
+    return candidates
+
+
+def _apple_vision_capability_metadata() -> dict[str, Any]:
+    """Report Vision availability without importing PyObjC frameworks."""
+    try:
+        available = importlib.util.find_spec("Vision") is not None
+        detail = "Vision module is installed" if available else "Vision module is not installed"
+    except Exception as exc:
+        available = False
+        detail = f"Vision metadata probe failed: {type(exc).__name__}"
+    return {
+        "available": available,
+        "status": "online" if available else "offline",
+        "engine": "macOS Vision",
+        "models": ["VNRecognizeTextRequest"] if available else [],
+        "count": 1 if available else 0,
+        "probe": "module_metadata",
+        "detail": detail,
+    }
+
+
+def _read_faiss_metadata(root: Path) -> dict[str, Any]:
+    """Read lightweight FAISS status without mapping the full vector index."""
+    from api.runtime_paths import get_faiss_active_artifact
+
+    meta_path = get_faiss_active_artifact("meta.json", root)
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        return {
+            "ok": True,
+            "vectors": int(payload.get("total") or 0),
+            "index_type": str(payload.get("index_type") or "unknown"),
+            "metadata_only": True,
+        }
+    except Exception as exc:
+        return {"ok": False, "vectors": 0, "metadata_only": True, "detail": str(exc)[:120]}
+
+
+def _browser_core_health_hard_timeout(
+    timeout_seconds: int = 15,
+    cache_ttl_seconds: int = 30,
+) -> dict[str, Any]:
+    """Run Playwright health in a child process so /health itself never hangs."""
+    now = time.time()
+    cached = _BROWSER_CORE_HEALTH_CACHE.get("result")
+    if (
+        isinstance(cached, dict)
+        and cache_ttl_seconds > 0
+        and now - float(_BROWSER_CORE_HEALTH_CACHE.get("ts") or 0.0) < cache_ttl_seconds
+    ):
+        result = dict(cached)
+        result["cached"] = True
+        return result
+
+    sync_probe = str(os.environ.get("MAGI_BROWSER_HEALTH_SYNC_PROBE", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not sync_probe:
+        return {
+            "ok": None,
+            "required": False,
+            "engine": "playwright-chromium",
+            "status": "deferred",
+            "detail": "瀏覽器核心由獨立 live 測試驗證；健康頁不同步冷啟動以避免阻塞",
+            "cached": False,
+        }
+
+    acquired = _BROWSER_CORE_HEALTH_LOCK.acquire(blocking=False)
+    if not acquired:
+        if isinstance(cached, dict):
+            result = dict(cached)
+            result["cached"] = True
+            result["stale_while_revalidate"] = True
+            result["detail"] = "瀏覽器核心檢查正在更新，先回傳上一筆結果以避免健康頁阻塞"
+            return result
+        return {
+            "ok": None,
+            "required": False,
+            "engine": "playwright-chromium",
+            "status": "probe_in_progress",
+            "detail": "瀏覽器核心檢查正在進行，本次健康頁先不阻塞",
+            "cached": False,
+        }
+
+    code = (
+        "import json;"
+        "from skills.engine.playwright_wrapper import playwright_chromium_health;"
+        f"print(json.dumps(playwright_chromium_health(timeout_seconds={int(timeout_seconds)}, cache_ttl_seconds=0), ensure_ascii=False))"
+    )
+    env = os.environ.copy()
+    env.setdefault("MAGI_ROOT", str(ROOT))
+    env.setdefault("MAGI_ROOT_DIR", str(ROOT))
+    try:
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=max(int(timeout_seconds) + 2, 3),
+            )
+        except subprocess.TimeoutExpired:
+            result = {
+                "ok": None,
+                "required": False,
+                "engine": "playwright-chromium",
+                "reason": "browser_probe_deferred",
+                "detail": f"瀏覽器核心冷啟動超過 {int(timeout_seconds) + 2} 秒，已延後檢查且不阻塞 MAGI",
+            }
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "engine": "playwright-chromium",
+                "reason": "browser_probe_failed",
+                "detail": str(exc)[:160],
+            }
+        else:
+            stdout_lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+            payload = stdout_lines[-1] if stdout_lines else "{}"
+            try:
+                result = json.loads(payload)
+            except Exception:
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_bad_output",
+                    "detail": (completed.stderr or completed.stdout or "")[-240:],
+                }
+            if completed.returncode != 0:
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_failed",
+                    "detail": (completed.stderr or completed.stdout or "")[-240:],
+                }
+            elif not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "engine": "playwright-chromium",
+                    "reason": "browser_probe_bad_output",
+                    "detail": repr(result)[:160],
+                }
+    finally:
+        _BROWSER_CORE_HEALTH_LOCK.release()
+
+    _BROWSER_CORE_HEALTH_CACHE["ts"] = now
+    _BROWSER_CORE_HEALTH_CACHE["result"] = dict(result)
+    return result
 
 
 def _wants_json_response() -> bool:
@@ -43,89 +232,186 @@ def _wants_json_response() -> bool:
 
 
 def _render_health_html(checks: dict[str, Any]) -> Response:
-    def ok_badge(ok: Any) -> str:
+    def state_for(payload: dict[str, Any], ok: Any) -> str:
+        status = str(payload.get("status") or "").strip().lower()
+        if payload.get("waiting") or status in {
+            "deferred",
+            "probe_in_progress",
+            "ok_with_waiting",
+        }:
+            return "waiting"
         if ok is True:
-            return '<span class="badge ok">正常</span>'
+            return "ok"
         if ok is False:
-            return '<span class="badge bad">需檢查</span>'
-        return '<span class="badge warn">未知</span>'
+            return "bad"
+        return "idle"
+
+    def state_badge(state: str) -> str:
+        labels = {
+            "ok": "正常",
+            "waiting": "安全等待",
+            "bad": "需處理",
+            "idle": "待檢查",
+        }
+        safe_state = state if state in labels else "idle"
+        return (
+            f'<span class="badge {safe_state}" data-state="{safe_state}">'
+            f"{escape(labels[safe_state])}</span>"
+        )
 
     status = str(checks.get("status") or "unknown")
-    status_text = "正常" if status == "operational" else "需檢查"
+    status_text = "運作正常" if status == "operational" else "需要處理"
     timestamp = datetime.fromtimestamp(float(checks.get("timestamp") or time.time())).strftime("%Y/%m/%d %H:%M:%S")
-    system = checks.get("system") if isinstance(checks.get("system"), dict) else {}
     nas = checks.get("nas") if isinstance(checks.get("nas"), dict) else {}
     omlx = checks.get("omlx") if isinstance(checks.get("omlx"), dict) else {}
     db = checks.get("db") if isinstance(checks.get("db"), dict) else {}
     faiss = checks.get("faiss") if isinstance(checks.get("faiss"), dict) else {}
+    browser_core = checks.get("browser_core") if isinstance(checks.get("browser_core"), dict) else {}
+    drive_sync = checks.get("drive_sync") if isinstance(checks.get("drive_sync"), dict) else {}
     audit = checks.get("operational_audit") if isinstance(checks.get("operational_audit"), dict) else {}
     op = checks.get("operational_health") if isinstance(checks.get("operational_health"), dict) else {}
+    ocr = checks.get("ocr") if isinstance(checks.get("ocr"), dict) else {}
+
+    def service(name: str, payload: dict[str, Any], detail: Any) -> tuple[str, str, str]:
+        return name, state_for(payload, payload.get("ok")), str(detail or "")
 
     services = [
-        ("主狀態", status == "operational", status_text),
-        ("資料庫", db.get("ok"), db.get("detail") or "MariaDB"),
-        ("推論服務", omlx.get("ok"), ", ".join(omlx.get("models") or []) or "模型狀態"),
-        ("OCR", (checks.get("ocr") or {}).get("ok") if isinstance(checks.get("ocr"), dict) else None, (checks.get("ocr") or {}).get("engine", "")),
-        ("向量資料庫", faiss.get("ok"), f"{faiss.get('vectors', '暖機中')} vectors"),
-        ("日常稽核", audit.get("ok"), "最近檢查"),
-        ("維運健康", op.get("ok"), ", ".join(op.get("degraded_reasons") or []) or "無重大異常"),
+        (
+            "主狀態",
+            "ok" if status == "operational" else "bad",
+            status_text,
+        ),
+        service("資料庫", db, db.get("detail") or "MariaDB 已連線"),
+        service("推論服務", omlx, ", ".join(omlx.get("models") or []) or "模型服務"),
+        service("OCR", ocr, ocr.get("engine") or "macOS Vision"),
+        service(
+            "瀏覽器核心",
+            browser_core,
+            browser_core.get("detail") or browser_core.get("reason") or "Playwright Chromium",
+        ),
+        service(
+            "Drive / NAS 同步",
+            drive_sync,
+            drive_sync.get("detail") or drive_sync.get("message") or "Google Drive",
+        ),
+        service("向量資料庫", faiss, f"{faiss.get('vectors', '暖機中')} vectors"),
+        service("日常稽核", audit, "最近一次檢查已完成"),
+        service(
+            "維運健康",
+            op,
+            ", ".join(op.get("degraded_reasons") or []) or "無重大異常",
+        ),
     ]
     nas_rows = "".join(
-        f"<li><strong>{escape(str(name))}</strong>{ok_badge(bool(ok))}</li>"
+        f"<li><strong>{escape(str(name))}</strong>{state_badge('ok' if ok else 'bad')}</li>"
         for name, ok in sorted(nas.items())
     ) or "<li>尚未回報</li>"
     service_cards = "".join(
         f"""
-        <article class="card">
-          <div class="card-title">{escape(name)}{ok_badge(ok)}</div>
+        <article class="card health-card" data-state="{escape(state)}">
+          <div class="card-title">{escape(name)}{state_badge(state)}</div>
           <p>{escape(str(detail or ""))}</p>
         </article>
         """
-        for name, ok, detail in services
+        for name, state, detail in services
     )
     html = f"""<!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-magi-theme="cyber">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>系統健康狀態 | MAGI</title>
+  <link rel="stylesheet" href="/static/magi-theme.css?v=20260729-cyber2">
   <style>
-    :root {{ color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; background: #f5f7fb; color: #172033; }}
-    main {{ max-width: 1080px; margin: 0 auto; padding: 24px; }}
-    header {{ display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 18px; }}
-    h1 {{ font-size: 24px; margin: 0; }}
-    .time {{ color: #5e6b81; font-size: 14px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
-    .card, .panel {{ background: #fff; border: 1px solid #dbe3ef; border-radius: 8px; padding: 14px; }}
-    .card-title {{ display: flex; justify-content: space-between; gap: 12px; font-weight: 700; }}
-    p {{ margin: 10px 0 0; color: #536176; line-height: 1.5; word-break: break-word; }}
-    .badge {{ border-radius: 999px; padding: 3px 8px; font-size: 12px; white-space: nowrap; }}
-    .ok {{ background: #e5f8ed; color: #14743d; }}
-    .bad {{ background: #ffe8e8; color: #b42318; }}
-    .warn {{ background: #fff4d6; color: #8a5b00; }}
-    ul {{ margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }}
-    li {{ display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #eef2f7; padding-top: 8px; }}
-    a {{ color: #1264d8; text-decoration: none; }}
-    @media (prefers-color-scheme: dark) {{
-      body {{ background: #111827; color: #e6edf7; }}
-      .card, .panel {{ background: #182235; border-color: #2d3b52; }}
-      p, .time {{ color: #b8c3d4; }}
-      li {{ border-color: #2d3b52; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100vh; }}
+    main {{ width: min(1180px, calc(100% - 28px)); margin: 0 auto; padding: 34px 0 44px; }}
+    .health-header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 22px;
+      align-items: flex-start;
+      margin-bottom: 24px;
+      padding: 22px 24px;
+      border: 1px solid var(--magi-line);
+      background: var(--magi-surface);
+      box-shadow: var(--magi-shadow);
+    }}
+    .eyebrow {{
+      margin: 0 0 8px;
+      color: var(--magi-accent-2) !important;
+      font: 800 .72rem/1.2 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: .18em;
+    }}
+    h1 {{ font-size: clamp(1.55rem, 4vw, 2.35rem); margin: 0; }}
+    .time {{ color: var(--magi-muted); font-size: 14px; margin-top: 8px; }}
+    .header-actions {{ display: flex; gap: 10px; align-items: center; }}
+    .home-link {{
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 13px;
+      border: 1px solid var(--magi-line);
+      background: var(--magi-surface-strong);
+      color: var(--magi-text) !important;
+      text-decoration: none;
+      font-weight: 750;
+    }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }}
+    .health-card, .nas-panel {{ min-height: 136px; padding: 18px; }}
+    .health-card[data-state="ok"] {{ border-top: 2px solid var(--magi-ok) !important; }}
+    .health-card[data-state="waiting"] {{ border-top: 2px solid var(--magi-warn) !important; }}
+    .health-card[data-state="bad"] {{ border-top: 2px solid var(--magi-bad) !important; }}
+    .health-card[data-state="idle"] {{ border-top: 2px solid var(--magi-idle) !important; }}
+    .card-title {{ display: flex; justify-content: space-between; gap: 12px; font-weight: 800; }}
+    p {{ margin: 13px 0 0; color: var(--magi-muted); line-height: 1.58; word-break: break-word; }}
+    .badge {{
+      border-radius: 2px !important;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+      color: var(--magi-text) !important;
+      background: var(--magi-surface-raised, var(--magi-surface-strong)) !important;
+    }}
+    .badge.ok {{ border-color: var(--magi-ok) !important; }}
+    .badge.waiting {{ border-color: var(--magi-warn) !important; }}
+    .badge.bad {{ border-color: var(--magi-bad) !important; }}
+    .badge.idle {{ border-color: var(--magi-idle) !important; }}
+    .nas-panel {{ margin-top: 14px; }}
+    ul {{ margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }}
+    li {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      border-top: 1px solid var(--magi-line);
+      padding-top: 9px;
+      color: var(--magi-text);
+    }}
+    @media (max-width: 680px) {{
+      main {{ padding-top: 18px; }}
+      .health-header {{ padding: 18px; flex-direction: column; }}
+      .header-actions {{ width: 100%; justify-content: space-between; }}
+      .grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
+  <script src="/static/magi-theme.js?v=20260729-cyber2"></script>
 </head>
 <body>
   <main>
-    <header>
+    <header class="health-header">
       <div>
+        <p class="eyebrow">LIVE SYSTEM TELEMETRY</p>
         <h1>MAGI 系統健康狀態</h1>
         <div class="time">更新時間：{escape(timestamp)}｜運行 {escape(str(checks.get("uptime_seconds", "-")))} 秒</div>
       </div>
-      <a href="/golem">返回 MAGI</a>
+      <div class="header-actions">
+        <a class="home-link" href="/golem">返回 MAGI</a>
+        <button type="button" data-magi-theme-toggle>切換風格</button>
+      </div>
     </header>
     <section class="grid">{service_cards}</section>
-    <section class="panel" style="margin-top:12px">
+    <section class="panel nas-panel">
       <strong>NAS 掛載</strong>
       <ul>{nas_rows}</ul>
     </section>
@@ -136,13 +422,17 @@ def _render_health_html(checks: dict[str, Any]) -> Response:
 
 
 def _safe_epoch(value: Any) -> float:
-    try:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
         return float(value)
-    except Exception:
-        pass
     txt = str(value or "").strip()
     if not txt:
         return 0.0
+    try:
+        return float(txt)
+    except (TypeError, ValueError):
+        txt = txt.strip()
     try:
         if txt.endswith("Z"):
             txt = txt[:-1] + "+00:00"
@@ -185,12 +475,27 @@ def _current_omlx_model_ids() -> list[str]:
 def _expected_omlx_keyword_now() -> str:
     now = datetime.now()
     minutes = now.hour * 60 + now.minute
-    return "e4b" if 415 <= minutes < 1310 else "26b"
+    return "e4b" if 395 <= minutes < 1310 else "26b"
 
 
-def _is_omlx_switch_recovered() -> bool:
-    expected = _expected_omlx_keyword_now()
-    return any(expected in model.lower() for model in _current_omlx_model_ids())
+def _is_omlx_switch_recovered(
+    *,
+    job_id: str = "job_omlx_profile_guard",
+    issue_ts: float = 0.0,
+) -> bool:
+    from magi_v3.model_recovery import assess_omlx_recovery
+
+    evidence = assess_omlx_recovery(
+        _runtime_state_dir(ROOT),
+        job_id=job_id,
+        failed_at=issue_ts,
+    )
+    if not evidence.get("recovered"):
+        return False
+    # The artifact is durable evidence; this live endpoint comparison prevents
+    # an old green artifact from hiding a model that subsequently disappeared.
+    current = {model.lower() for model in _current_omlx_model_ids()}
+    return str(evidence.get("model_id") or "").lower() in current
 
 
 def _is_resource_governor_recovered() -> bool:
@@ -204,7 +509,7 @@ def _is_resource_governor_recovered() -> bool:
 
 
 def _is_tailscale_funnel_recovered(issue_ts: float) -> bool:
-    path = ROOT / ".runtime" / "tailscale_funnel_health_latest.json"
+    path = _runtime_state_dir(ROOT) / "tailscale_funnel_health_latest.json"
     if not path.exists() or path.stat().st_mtime <= issue_ts:
         return False
     try:
@@ -214,12 +519,31 @@ def _is_tailscale_funnel_recovered(issue_ts: float) -> bool:
     return str(data.get("status") or "").lower() in {"ok", "recovered", "skipped"}
 
 
+def _is_operational_hardening_recovered(issue_ts: float, root: Path = ROOT) -> bool:
+    path = _runtime_state_dir(root) / "operational_hardening_audit_latest.json"
+    if not path.exists() or path.stat().st_mtime <= issue_ts:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    cron = data.get("cron") if isinstance(data.get("cron"), dict) else {}
+    locks = data.get("stale_runtime_locks") if isinstance(data.get("stale_runtime_locks"), dict) else {}
+    silent = data.get("silent_exception_handlers") if isinstance(data.get("silent_exception_handlers"), dict) else {}
+    return (
+        int(cron.get("parse_failure_count") or 0) == 0
+        and int(cron.get("collision_count") or 0) == 0
+        and int(locks.get("stale_count") or 0) == 0
+        and int(silent.get("critical_count") or 0) == 0
+    )
+
+
 def _is_pdf_smoke_progress_callback_recovered(row: dict[str, Any], root: Path) -> bool:
     err = str(row.get("error") or "")
     if "progress_callback" not in err or "_summary_pdf_stub" not in err:
         return False
     issue_ts = float(row.get("_ts") or _safe_epoch(row.get("ts") or row.get("iso")))
-    runtime_dir = root / ".runtime"
+    runtime_dir = _runtime_state_dir(root)
     try:
         candidates = sorted(
             runtime_dir.glob("allpdf_smoke*.json"),
@@ -245,15 +569,66 @@ def _is_pdf_smoke_progress_callback_recovered(row: dict[str, Any], root: Path) -
     return False
 
 
+def _python_startup_recovered_after_interrupted_getpath(row: dict[str, Any]) -> bool:
+    err = str(row.get("error") or "")
+    if "Fatal Python error: error evaluating path" not in err:
+        return False
+    if "InterruptedError: [Errno 4] Interrupted system call" not in err:
+        return False
+
+    context = str(row.get("context") or "")
+    match = re.search(r"command=(.+?)(?:\s+[A-Z0-9_]+=|\s+--\s+|$)", context)
+    command = match.group(1).strip() if match else ""
+    try:
+        parts = shlex.split(command)
+    except Exception:
+        parts = []
+
+    python_exe = ""
+    for part in parts[:4]:
+        name = Path(part).name
+        if name.startswith("python"):
+            python_exe = part
+            break
+    if not python_exe:
+        fallback = ROOT / "venv" / "bin" / "python3"
+        if fallback.exists():
+            python_exe = str(fallback)
+    if not python_exe:
+        return False
+
+    now = time.time()
+    cached = _PYTHON_STARTUP_HEALTH_CACHE.get(python_exe)
+    if cached and now - cached[0] < 60:
+        return cached[1]
+
+    try:
+        proc = subprocess.run(
+            [python_exe, "-I", "-c", "print('ok')"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+        ok = proc.returncode == 0 and "ok" in proc.stdout
+    except Exception:
+        ok = False
+    _PYTHON_STARTUP_HEALTH_CACHE[python_exe] = (now, ok)
+    return ok
+
+
 def _classify_cron_issue(
     row: dict[str, Any],
     *,
     active_cutoff: float,
     latest_cron_issue_ts_by_job: dict[str, float],
-    cron_last_run_ts: dict[str, float],
+    cron_success_ts: dict[str, float],
+    root: Path = ROOT,
 ) -> str:
     if _is_false_positive_cron_issue(row):
         return "false_positive"
+    if _python_startup_recovered_after_interrupted_getpath(row):
+        return "recovered"
 
     ts = float(row.get("_ts") or 0.0)
     job_id = _cron_job_from_issue_command(row.get("command"))
@@ -261,17 +636,19 @@ def _classify_cron_issue(
         return "stale" if ts < active_cutoff else "active_unresolved"
 
     latest_issue_ts = latest_cron_issue_ts_by_job.get(job_id, ts)
-    last_run_ts = cron_last_run_ts.get(job_id, 0.0)
+    last_success_ts = cron_success_ts.get(job_id, 0.0)
     if job_id in {"job_omlx_switch_day", "job_omlx_switch_night", "job_omlx_profile_guard"}:
-        if _is_omlx_switch_recovered():
+        if _is_omlx_switch_recovered(job_id=job_id, issue_ts=ts):
             return "recovered"
     if job_id == "job_resource_governor" and _is_resource_governor_recovered():
         return "recovered"
     if job_id == "job_tailscale_funnel_healthcheck" and _is_tailscale_funnel_recovered(ts):
         return "recovered"
+    if job_id == "job_operational_hardening_audit" and _is_operational_hardening_recovered(ts, root):
+        return "recovered"
     if latest_issue_ts > ts:
         return "superseded"
-    if last_run_ts > ts:
+    if last_success_ts > ts:
         return "recovered"
     if ts < active_cutoff:
         return "stale"
@@ -296,8 +673,8 @@ def _load_recent_issue_rows(issue_path: Path, cutoff_ts: float) -> list[dict[str
     return rows
 
 
-def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
-    state_path = root / ".runtime" / "cron_state.json"
+def _load_cron_success_ts(root: Path) -> dict[str, float]:
+    state_path = _runtime_state_dir(root) / "cron_state.json"
     if not state_path.exists():
         return {}
     try:
@@ -310,7 +687,7 @@ def _load_cron_last_run_ts(root: Path) -> dict[str, float]:
     for job_id, data in raw.items():
         if not isinstance(data, dict):
             continue
-        ts = _safe_epoch(data.get("last_run"))
+        ts = _safe_epoch(data.get("last_success_at"))
         if ts > 0:
             out[str(job_id)] = ts
     return out
@@ -355,15 +732,21 @@ def _is_recovered_non_cron_issue(row: dict[str, Any], root: Path) -> bool:
         current_free_gb = shutil.disk_usage(str(root)).free / 1024 / 1024 / 1024
     except Exception:
         return False
-    return current_free_gb >= threshold_gb
+    # The hourly disk alarm uses a 50 GB early-warning threshold so MAGI can
+    # clean before the machine is under real pressure.  For active incident
+    # health, only keep it unresolved while the host is still in core-only risk
+    # (<30 GB) or below the original critical threshold.  Otherwise the same
+    # warning would keep /health yellow for a full day after cleanup succeeded.
+    effective_threshold = min(threshold_gb, 30.0) if threshold_gb > 30 else threshold_gb
+    return current_free_gb >= effective_threshold
 
 
 def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, Any]:
     cutoff_24h = now_ts - 86400
     active_window_sec = int(os.environ.get("MAGI_OPERATIONAL_ACTIVE_ISSUE_WINDOW_SEC", "21600") or "21600")
     active_cutoff = now_ts - active_window_sec
-    rows = _load_recent_issue_rows(root / ".runtime" / "issue_agenda.jsonl", cutoff_24h)
-    cron_last_run_ts = _load_cron_last_run_ts(root)
+    rows = _load_recent_issue_rows(_runtime_state_dir(root) / "issue_agenda.jsonl", cutoff_24h)
+    cron_success_ts = _load_cron_success_ts(root)
 
     latest_cron_issue_ts_by_job: dict[str, float] = {}
     for row in rows:
@@ -411,7 +794,8 @@ def _compute_operational_issue_health(root: Path, now_ts: float) -> dict[str, An
             row,
             active_cutoff=active_cutoff,
             latest_cron_issue_ts_by_job=latest_cron_issue_ts_by_job,
-            cron_last_run_ts=cron_last_run_ts,
+            cron_success_ts=cron_success_ts,
+            root=root,
         )
         if state == "false_positive":
             false_positive_cron_failures += 1
@@ -480,10 +864,29 @@ def create_admin_runtime_blueprint(
     bp = Blueprint("admin_runtime", __name__)
     root = Path(magi_root) if magi_root else Path(__file__).resolve().parents[2]
     static_dir = root / "static"
-    agent_dir = root / ".agent"
-    env_path = root / ".env"
-    status_file = static_dir / "magi_status.json"
+    mutable_static_dir = _mutable_static_dir(root)
+    agent_dir = _agent_state_dir(root)
+    runtime_state_dir = _runtime_state_dir(root)
+    env_path = Path(os.environ.get("MAGI_ENV_FILE", "").strip() or root / ".env").expanduser()
+    status_file = mutable_static_dir / "magi_status.json"
     server_log_path = agent_dir / "server.log"
+    health_cache: dict[str, Any] = {"ts": 0.0, "checks": None}
+    health_cache_ttl_sec = max(5.0, float(os.environ.get("MAGI_HEALTH_CACHE_TTL_SEC", "60") or "60"))
+    try:
+        nerv_health_cache_ttl_sec = min(
+            15.0,
+            max(5.0, float(os.environ.get("MAGI_NERV_HEALTH_CACHE_TTL_SEC", "10") or "10")),
+        )
+    except Exception:
+        nerv_health_cache_ttl_sec = 10.0
+    nerv_health_cache: dict[str, Any] = {"ts": 0.0, "payload": None}
+    nerv_health_refresh_lock = threading.Lock()
+    readiness_cache: dict[str, Any] = {"ts": 0.0, "payload": None}
+    saas_readiness_cache: dict[str, Any] = {"ts": 0.0, "payload": None}
+    readiness_cache_ttl_sec = min(
+        30.0,
+        max(1.0, float(os.environ.get("MAGI_READINESS_CACHE_TTL_SEC", "5") or "5")),
+    )
 
     def _is_current_user_admin() -> bool:
         try:
@@ -493,6 +896,96 @@ def create_admin_runtime_blueprint(
             return str(getattr(current_user, "role", "") or "").lower() == "admin"
         except Exception:
             return False
+
+    def _observability_ledger_path() -> Path | None:
+        # Support data is deliberately confined to the mutable runtime state;
+        # do not accept a request-controlled path.  In a sealed deployment the
+        # HTTP app runs in the gateway role, while the canonical ledger belongs
+        # to the control role.  Resolve it only through the gateway's already
+        # hash-bound ownership manifest; never guess from the gateway state dir.
+        try:
+            from magi_v3.gateway import validate_release_ownership
+
+            ownership = validate_release_ownership(os.environ)
+            control_state = Path(str(ownership.control.get("state_dir") or "")).expanduser()
+            runtime_root = Path(str(ownership.control.get("runtime_root") or "")).expanduser()
+            resolved_state = control_state.resolve(strict=True)
+            resolved_runtime = runtime_root.resolve(strict=True)
+            if not resolved_state.is_dir() or resolved_runtime not in resolved_state.parents:
+                raise ValueError("control ledger state is outside the verified runtime")
+            return resolved_state / "ledger.sqlite3"
+        except Exception:
+            if os.environ.get("MAGI_V3_DEPLOYMENT_MODE", "").strip().lower() == "production":
+                return None
+            # Source/test mode has no sealed ownership manifest.
+            return runtime_state_dir / "ledger.sqlite3"
+
+    def _probe_details_authorized() -> bool:
+        provided = str(request.headers.get("X-MAGI-API-KEY") or "").strip()
+        if expected_magi_api_key and provided:
+            try:
+                if hmac.compare_digest(provided, str(expected_magi_api_key)):
+                    return True
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "API-key comparison failed closed", exc_info=True
+                )
+        try:
+            return bool(current_user and current_user.is_authenticated)
+        except Exception:
+            return False
+
+    def _minimal_probe_payload(payload: dict[str, Any], *, probe: str) -> dict[str, Any]:
+        return {
+            "ok": bool(payload.get("ok")),
+            "status": str(payload.get("status") or ("ready" if payload.get("ok") else "not_ready")),
+            "probe": probe,
+            "timestamp": payload.get("timestamp") or time.time(),
+            "uptime_seconds": payload.get("uptime_seconds", _uptime_seconds()),
+        }
+
+    def _saas_readiness_payload() -> dict[str, Any]:
+        from api.saas_readiness import build_saas_readiness
+
+        authorized = _probe_details_authorized()
+        fresh_requested = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        bypass_cache = bool(authorized and fresh_requested)
+        now = time.time()
+        cached = saas_readiness_cache.get("payload")
+        if (
+            isinstance(cached, dict)
+            and not bypass_cache
+            and now - float(saas_readiness_cache.get("ts") or 0.0) < readiness_cache_ttl_sec
+        ):
+            payload = copy.deepcopy(cached)
+            if authorized:
+                payload["cached"] = True
+                payload["cache_age_seconds"] = round(now - float(saas_readiness_cache.get("ts") or 0.0), 3)
+        else:
+            payload = build_saas_readiness(root=root, db_config=db_config, app_config=current_app.config)
+            saas_readiness_cache["ts"] = now
+            saas_readiness_cache["payload"] = copy.deepcopy(payload)
+        if not authorized:
+            return _minimal_probe_payload(payload, probe="saas_readiness")
+        return payload
+
+    def _confirmation_error(action: str, *aliases: str):
+        data = request.get_json(silent=True) if request.is_json else {}
+        provided = str(
+            (data or {}).get("confirm")
+            or request.headers.get("X-MAGI-Confirm")
+            or ""
+        ).strip()
+        normalized = provided.lower().replace("_", "-")
+        accepted = {action.lower().replace("_", "-")}
+        accepted.update(alias.lower().replace("_", "-") for alias in aliases)
+        if normalized in accepted:
+            return None
+        return jsonify({
+            "ok": False,
+            "error": "confirmation_required",
+            "confirm": action,
+        }), 400
 
     def _parse_env_file(path: Path) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -519,6 +1012,7 @@ def create_admin_runtime_blueprint(
             shutil.copy2(path, backup)
         else:
             backup.write_text("", encoding="utf-8")
+            backup.chmod(0o600)
 
         seen: set[str] = set()
         out: list[str] = []
@@ -536,9 +1030,19 @@ def create_admin_runtime_blueprint(
             out.append("")
         for key in missing:
             out.append(f"{key}={updates[key]}")
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-        tmp.replace(path)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+        tmp = Path(tmp_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(out).rstrip() + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            path.chmod(0o600)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
         return backup
 
     def _mask_secret(value: str) -> str:
@@ -564,7 +1068,7 @@ def create_admin_runtime_blueprint(
             "env_key": "NVIDIA_NIM_API_KEY",
             "enable_key": "NVIDIA_NIM_ENABLE",
             "command_prefixes": ["@heavy", "@重型"],
-            "description": "HEAVY 任務會優先嘗試 NVIDIA NIM API；未啟用或 API 不可用時回到本機 26B。",
+            "description": "HEAVY 任務固定使用 NVIDIA NIM API；未啟用或 API 不可用時明確失敗，不會改由本機模型代跑。",
         }
 
     def _load_status_payload() -> dict[str, Any]:
@@ -582,10 +1086,11 @@ def create_admin_runtime_blueprint(
             return False
 
     def _cloudflare_tunnel_url() -> str:
+        if not cloudflared_alive():
+            return ""
         candidates = [
             agent_dir / "cloudflare_tunnel_url.txt",
-            root / ".agent" / "cloudflare_tunnel_url.txt",
-            root / "logs" / "cloudflared.log",
+            Path(os.environ.get("MAGI_CLOUDFLARED_LOG_PATH", "").strip() or root / "logs" / "cloudflared.log"),
         ]
         import re as _re
         for path in candidates:
@@ -640,6 +1145,415 @@ def create_admin_runtime_blueprint(
             "setup_url": "https://remotedesktop.google.com/headless",
         }
 
+    def _tail_file_lines(path: Path, max_lines: int = 120) -> list[str]:
+        if max_lines <= 0 or not path.exists():
+            return []
+        rows: deque[str] = deque(maxlen=max_lines)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for raw_line in handle:
+                    line = raw_line.rstrip("\n")
+                    if line:
+                        rows.append(line)
+        except Exception:
+            return []
+        return list(rows)
+
+    def _extract_log_timestamp(raw_line: str) -> float:
+        for pattern in (
+            r"\[(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]",
+            r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+            r"(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})",
+        ):
+            match = re.search(pattern, raw_line)
+            if not match:
+                continue
+            return _safe_epoch(match.group(1).replace(",", ""))
+        return 0.0
+
+    def _classify_activity_type(message: str, source: str) -> str:
+        lowered = (message or "").lower()
+        source_lower = (source or "").lower()
+        if "error" in lowered or "exception" in lowered or "fail" in lowered or "無法" in lowered:
+            return "error"
+        if source_lower == "cron" or "cron" in lowered:
+            return "cron"
+        if "switch" in lowered or "切換" in lowered or "model" in lowered or "reload" in lowered:
+            return "model_switch"
+        return "log"
+
+    def _collect_macos_memory_pressure() -> dict[str, Any]:
+        if sys.platform != "darwin":
+            return {"status": "unknown", "free_percent": None}
+        try:
+            result = subprocess.run(
+                ["memory_pressure"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            output = f"{result.stdout or ''}\n{result.stderr or ''}"
+        except Exception:
+            return {"status": "unknown", "free_percent": None}
+
+        match = re.search(r"System-wide memory free percentage:\s*(\d+)%", output)
+        if not match:
+            return {"status": "unknown", "free_percent": None}
+        free_percent = int(match.group(1))
+        if free_percent < 20:
+            status = "critical"
+        elif free_percent < 30:
+            status = "warn"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "free_percent": free_percent,
+        }
+
+    def _collect_system_telemetry(now_ts: float) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(now_ts).isoformat(),
+            "generated_at": datetime.fromtimestamp(now_ts).isoformat(),
+        }
+        try:
+            out["uptime_seconds"] = max(0.0, now_ts - float(server_start_time))
+        except Exception:
+            out["uptime_seconds"] = None
+
+        try:
+            load_1m, load_5m, load_15m = os.getloadavg()
+            out["loadavg"] = {
+                "1m": round(float(load_1m), 2),
+                "5m": round(float(load_5m), 2),
+                "15m": round(float(load_15m), 2),
+            }
+        except Exception:
+            out["loadavg"] = {}
+
+        try:
+            import psutil
+
+            vm = psutil.virtual_memory()
+            total_bytes = float(vm.total) if isinstance(vm.total, (int, float)) else None
+            available_bytes = float(vm.available) if isinstance(vm.available, (int, float)) else None
+            used_percent = float(getattr(vm, "percent", 0.0))
+            used_gb = None
+            free_gb = None
+            if total_bytes is not None and available_bytes is not None:
+                used_gb = max(0.0, total_bytes - available_bytes) / (1024 ** 3)
+                free_gb = available_bytes / (1024 ** 3)
+            out["memory"] = {
+                "used_gb": round(used_gb, 1) if used_gb is not None else None,
+                "free_gb": round(free_gb, 1) if free_gb is not None else None,
+                "percent": round(used_percent, 1),
+                "pressure": "ok" if used_percent < 85 else ("warn" if used_percent < 92 else "critical"),
+            }
+            out["swap"] = {
+                "percent": round(float(getattr(psutil.swap_memory(), "percent", 0.0)), 1),
+            }
+            out["cpu_percent"] = psutil.cpu_percent(interval=0.05)
+        except Exception:
+            out["memory"] = {"used_gb": None, "free_gb": None, "percent": None, "pressure": "unknown"}
+            out["swap"] = {"percent": None}
+            out["cpu_percent"] = None
+
+        try:
+            disk = shutil.disk_usage(str(root))
+            disk_total = float(disk.total) if isinstance(disk.total, (int, float)) else None
+            disk_used = float(disk.used) if isinstance(disk.used, (int, float)) else None
+            disk_free = float(disk.free) if isinstance(disk.free, (int, float)) else None
+            used_percent = float(getattr(disk, "percent", 0.0))
+            if disk_total is not None and disk_used is not None:
+                used_percent = 100.0 * disk_used / disk_total if disk_total else 0.0
+            out["disk"] = {
+                "free_gb": round(disk_free / (1024 ** 3), 1) if disk_free is not None else None,
+                "percent": round(used_percent, 1),
+            }
+        except Exception:
+            out["disk"] = {"free_gb": None, "percent": None}
+
+        out["macos_memory_pressure"] = _collect_macos_memory_pressure()
+        swap = out.get("swap") if isinstance(out.get("swap"), dict) else {}
+        swap_percent = swap.get("percent")
+        mac_pressure = out.get("macos_memory_pressure") if isinstance(out.get("macos_memory_pressure"), dict) else {}
+        mac_status = str(mac_pressure.get("status") or "unknown")
+        if isinstance(swap_percent, (int, float)):
+            if mac_status == "ok" and swap_percent >= 75:
+                swap["status"] = "historical"
+            elif swap_percent >= 90:
+                swap["status"] = "critical"
+            elif swap_percent >= 75:
+                swap["status"] = "warn"
+            else:
+                swap["status"] = "ok"
+            out["swap"] = swap
+        return out
+
+    def _tcp_alive(port: int, timeout_sec: float = 0.4) -> bool:
+        if port <= 0:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout_sec):
+                return True
+        except Exception:
+            return False
+
+    def _collect_inference_telemetry() -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "active_profile": "unknown",
+            "expected_profile": "unknown",
+            "expected_model_keyword": "unknown",
+            "model_8080": {"status": "unknown", "port": 8080, "models": [], "count": 0, "active_model": ""},
+            "available_models": [],
+            "sidecars": {},
+            "summary": {"status": "unknown", "reasons": []},
+        }
+
+        try:
+            active_profile_path = Path.home() / ".omlx" / "active_profile"
+            if active_profile_path.exists():
+                payload["active_profile"] = active_profile_path.read_text(encoding="utf-8").strip() or "unknown"
+        except Exception:
+            logging.getLogger(__name__).debug("active oMLX profile probe failed", exc_info=True)
+
+        try:
+            from scripts.ops.omlx_profile_policy import expected_profile_now
+
+            expected_profile, expected_model = expected_profile_now()
+            payload["expected_profile"] = str(expected_profile or "unknown")
+            payload["expected_model_keyword"] = str(expected_model or "unknown")
+            payload["active_profile_expected"] = payload["expected_model_keyword"]
+            if payload.get("active_profile") in {"", "unknown", None}:
+                payload["active_profile"] = payload["expected_profile"]
+        except Exception:
+            payload["active_profile_expected"] = payload["expected_model_keyword"]
+            pass
+
+        expected_keyword = str(payload.get("expected_model_keyword") or "").lower()
+        if not expected_keyword or expected_keyword == "unknown":
+            expected_keyword = _expected_omlx_keyword_now() if str(payload.get("active_profile") or "").startswith("day") else "26b"
+
+        base_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:8080").rstrip("/")
+        model_payload = payload["model_8080"]
+        try:
+            with urllib.request.urlopen(f"{base_url}/v1/models", timeout=1.5) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+                models = [
+                    str(item.get("id") or "").strip()
+                    for item in (body.get("data") or [])
+                    if str(item.get("id") or "").strip()
+                ]
+                model_payload["models"] = models
+                model_payload["count"] = len(models)
+                model_payload["active_model"] = models[0] if models else ""
+                model_payload["status"] = "online"
+        except Exception:
+            model_payload["status"] = "offline"
+
+        sidecars = {
+            "embed": {"port": 8081, "status": "offline", "managed": None},
+            "phi4": {"port": 8082, "status": "offline", "managed": None},
+            "smol": {"port": 8083, "status": "offline", "managed": None},
+        }
+        for sid, sid_payload in sidecars.items():
+            port = int(sid_payload.get("port") or 0)
+            sid_payload["status"] = "online" if _tcp_alive(port) else "offline"
+            if sid == "embed":
+                sid_payload["managed"] = _launchctl_list_contains("com.magi.omlx-embed")
+            else:
+                sid_payload["managed"] = _launchctl_list_contains(f"com.magi.omlx-{sid}")
+        payload["sidecars"] = sidecars
+
+        summary_reasons: list[str] = []
+        active_model = str(model_payload.get("active_model") or "")
+        active_profile = str(payload.get("active_profile") or "")
+        expected_profile = str(payload.get("expected_profile") or "")
+        sidecar_profile = expected_profile if expected_profile not in {"", "unknown", None} else active_profile
+        if model_payload.get("status") != "online":
+            payload["summary"]["status"] = "critical"
+            summary_reasons.append("8080 api unreachable")
+        elif expected_keyword and active_model and expected_keyword not in active_model.lower():
+            if expected_profile == "night" and active_profile == "night-12b-degraded" and "12b" in active_model.lower():
+                summary_reasons.append("night 26B fallback is using 12B")
+                payload["summary"]["status"] = "warn"
+            else:
+                summary_reasons.append(f"active model does not match expected keyword: {expected_keyword}")
+                payload["summary"]["status"] = "warn"
+        elif summary_reasons:
+            payload["summary"]["status"] = "warn"
+        elif sidecar_profile == "day" and any(
+            sidecars[name].get("status") != "online" for name in ("phi4", "smol")
+        ):
+            payload["summary"]["status"] = "warn"
+            summary_reasons.append("day sidecar not fully online")
+        else:
+            payload["summary"]["status"] = "ok"
+        payload["summary"]["reasons"] = summary_reasons
+        payload["available_models"] = payload["model_8080"]["models"]
+        return payload
+
+    def _collect_activity_events(now_ts: float) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        cron_events: list[dict[str, Any]] = []
+
+        cron_path = runtime_state_dir / "cron_state.json"
+        if cron_path.exists():
+            try:
+                raw = json.loads(cron_path.read_text(encoding="utf-8"))
+            except Exception:
+                raw = None
+            if isinstance(raw, dict):
+                for job_id, value in raw.items():
+                    if isinstance(value, dict):
+                        ts = _safe_epoch(value.get("last_run")) or _safe_epoch(value.get("ts")) or now_ts
+                        status = str(value.get("status") or "")
+                        detail = str(value.get("detail") or "")
+                        message = f"cron {job_id}: {status}" + (f" · {detail}" if detail else "")
+                        cron_events.append({
+                            "ts": ts,
+                            "type": "cron",
+                            "source": "cron_state",
+                            "message": message.strip(),
+                        })
+            elif isinstance(raw, list):
+                for value in raw:
+                    if not isinstance(value, dict):
+                        continue
+                    ts = _safe_epoch(value.get("ts")) or _safe_epoch(value.get("time")) or now_ts
+                    job_id = str(value.get("job") or value.get("job_id") or value.get("source") or "cron")
+                    detail = str(value.get("detail") or value.get("message") or "")
+                    status = str(value.get("status") or value.get("state") or "")
+                    message = f"{job_id}: {status}" + (f" · {detail}" if detail else "")
+                    cron_events.append({"ts": ts, "type": "cron", "source": "cron_state", "message": message.strip()})
+
+        for log_path, source_name in (
+            (Path("/opt/homebrew/var/log/omlx_switch.log"), "omlx_switch"),
+            (agent_dir / "casper.log", "casper_log"),
+        ):
+            for line in _tail_file_lines(log_path, max_lines=80):
+                text = line.strip()
+                if not text:
+                    continue
+                event = {
+                    "ts": _extract_log_timestamp(text),
+                    "type": _classify_activity_type(text, source_name),
+                    "source": source_name,
+                    "message": text,
+                }
+                events.append(event)
+
+        cron_events.sort(key=lambda item: item.get("ts", 0.0), reverse=True)
+        events.sort(key=lambda item: item.get("ts", 0.0), reverse=True)
+        selected = cron_events[:8]
+        selected_messages = {(item.get("source"), item.get("message")) for item in selected}
+        for item in events:
+            key = (item.get("source"), item.get("message"))
+            if key in selected_messages:
+                continue
+            selected.append(item)
+            if len(selected) >= 30:
+                break
+        return selected[:30]
+
+    def _collect_pressure_telemetry(
+        system: dict[str, Any],
+        inference: dict[str, Any],
+        activity: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        level = "ok"
+
+        memory = system.get("memory") if isinstance(system, dict) else {}
+        mac_pressure = system.get("macos_memory_pressure") if isinstance(system, dict) else {}
+        mac_status = str((mac_pressure or {}).get("status") or "unknown")
+        mac_free_percent = (mac_pressure or {}).get("free_percent")
+        if mac_status == "critical":
+            level = "critical"
+            reasons.append(f"macOS memory pressure free {mac_free_percent}% < 20")
+        elif mac_status == "warn" and level == "ok":
+            level = "warn"
+            reasons.append(f"macOS memory pressure free {mac_free_percent}% < 30")
+
+        mem_percent = memory.get("percent") if isinstance(memory, dict) else None
+        if isinstance(mem_percent, (int, float)):
+            if mac_status != "ok" and mem_percent >= 92:
+                level = "critical"
+                reasons.append(f"memory pressure {mem_percent}% >= 92")
+            elif mac_status != "ok" and mem_percent >= 85 and level == "ok":
+                level = "warn"
+                reasons.append(f"memory pressure {mem_percent}% >= 85")
+
+        swap = system.get("swap") if isinstance(system, dict) else {}
+        swap_percent = swap.get("percent") if isinstance(swap, dict) else None
+        if isinstance(swap_percent, (int, float)):
+            if mac_status == "ok" and swap_percent >= 75:
+                reasons.append(f"swap reserved {swap_percent}% but macOS memory pressure is healthy")
+            elif swap_percent >= 90:
+                level = "critical"
+                reasons.append(f"swap pressure {swap_percent}% >= 90")
+            elif swap_percent >= 75 and level == "ok":
+                level = "warn"
+                reasons.append(f"swap pressure {swap_percent}% >= 75")
+
+        cpu_load = system.get("loadavg") if isinstance(system, dict) else {}
+        load_1m = cpu_load.get("1m") if isinstance(cpu_load, dict) else None
+        if isinstance(load_1m, (int, float)):
+            if load_1m >= 6.0:
+                level = "critical" if level != "critical" else level
+                reasons.append(f"loadavg_1m {load_1m} high")
+            elif load_1m >= 3.8 and level == "ok":
+                level = "warn"
+                reasons.append(f"loadavg_1m {load_1m} elevated")
+
+        inference_summary = inference.get("summary") if isinstance(inference, dict) else {}
+        if inference_summary.get("status") == "critical":
+            level = "critical"
+            reasons.append("inference critical (8080/sidecar)")
+        elif inference_summary.get("status") == "warn" and level == "ok":
+            level = "warn"
+            reasons.append("inference degraded")
+            if inference_summary.get("reasons"):
+                reasons.extend([str(x) for x in inference_summary.get("reasons")[:3]])
+
+        recent_errors = 0
+        for item in activity[:8]:
+            if str(item.get("type") or "").lower() in {"error", "model_switch"} and "error" in str(item.get("message") or "").lower():
+                recent_errors += 1
+        if recent_errors >= 3:
+            level = "critical"
+            reasons.append(f"recent error events >=3 in latest 8")
+        elif recent_errors:
+            level = "warn" if level == "ok" else level
+            reasons.append("recent inference/runtime error events")
+
+        if not reasons and level == "ok":
+            reasons.append("no pressure warning")
+        return {"level": level, "reasons": reasons}
+
+    def _collect_nerv_telemetry() -> dict[str, Any]:
+        now_ts = time.time()
+        system = _collect_system_telemetry(now_ts)
+        inference = _collect_inference_telemetry()
+        activity_events = _collect_activity_events(now_ts)
+        pressure = _collect_pressure_telemetry(
+            system=system,
+            inference=inference,
+            activity=activity_events,
+        )
+
+        return {
+            "timestamp": datetime.fromtimestamp(now_ts).isoformat(),
+            "system": system,
+            "inference": inference,
+            "activity": {
+                "events": activity_events,
+                "count": len(activity_events),
+            },
+            "pressure": pressure,
+        }
+
     def _mac_screen_sharing_status(tailscale: dict[str, Any]) -> dict[str, Any]:
         running = _launchctl_list_contains("com.apple.screensharing") or _launchctl_list_contains("RemoteDesktop")
         host = str(tailscale.get("dns_name") or tailscale.get("ip") or socket.gethostname() or "").strip()
@@ -671,9 +1585,7 @@ def create_admin_runtime_blueprint(
             },
         }
 
-    @bp.route("/dashboard/nerv/api/health")
-    @login_required
-    def nerv_api_health():
+    def _compute_nerv_api_health() -> dict[str, Any]:
         import requests as _rq
 
         results: dict[str, Any] = {}
@@ -697,13 +1609,15 @@ def create_admin_runtime_blueprint(
 
         def _glm_ocr():
             # GLM-OCR retired — report macOS Vision OCR status instead
-            try:
-                from skills.apple.apple_intelligence import VISION_AVAILABLE
-                if VISION_AVAILABLE:
-                    return {"status": "online", "engine": "macOS Vision", "models": ["VNRecognizeTextRequest"], "count": 1}
-            except Exception:
-                pass
-            return {"status": "offline", "detail": "macOS Vision OCR unavailable (GLM-OCR retired)"}
+            capability = _apple_vision_capability_metadata()
+            return {
+                "status": capability["status"],
+                "engine": capability["engine"],
+                "models": capability["models"],
+                "count": capability["count"],
+                "probe": capability["probe"],
+                "detail": capability["detail"],
+            }
 
         def _ollama():
             try:
@@ -811,23 +1725,80 @@ def create_admin_runtime_blueprint(
 
         results["magi_server"] = {"status": "online", "pid": os.getpid()}
         results["timestamp"] = datetime.now().isoformat()
-
-        # FAISS vector DB stats
         try:
-            from skills.memory.faiss_index import FAISSMemoryIndex
-            idx = FAISSMemoryIndex.get_instance()
-            results["faiss"] = {"ok": True, "vectors": getattr(idx, "total", 0), "index_type": getattr(idx, "index_type", "unknown")}
-        except Exception:
-            _meta_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "skills", "memory", "index_cache", "meta.json")
-            try:
-                import json as _json
-                with open(_meta_path, "r", encoding="utf-8") as _f:
-                    _meta = _json.load(_f)
-                results["faiss"] = {"ok": True, "vectors": _meta.get("total", 0), "index_type": _meta.get("index_type", "unknown")}
-            except Exception:
-                results["faiss"] = {"ok": False, "vectors": 0}
+            results["telemetry"] = _collect_nerv_telemetry()
+        except Exception as exc:
+            results["telemetry"] = {"status": "error", "detail": str(exc)[:140], "timestamp": datetime.now().isoformat()}
 
-        return jsonify(results)
+        # Never load the full FAISS index from a frequently-polled health page.
+        results["faiss"] = _read_faiss_metadata(root)
+
+        return results
+
+    def _nerv_health_json_response(payload: dict):
+        response = jsonify(payload)
+        # The endpoint has a deliberate short-lived server-side cache.  A
+        # browser/proxy cache on top of it can keep the dashboard frozen well
+        # past that TTL, so every response must be revalidated by the page.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    def _nerv_health_cached_response(*, stale: bool = False):
+        now = time.monotonic()
+        cached = nerv_health_cache.get("payload")
+        if not isinstance(cached, dict):
+            return None
+        payload = copy.deepcopy(cached)
+        payload["cached"] = True
+        payload["cache_age_seconds"] = round(max(0.0, now - float(nerv_health_cache.get("ts") or 0.0)), 3)
+        payload["cache_ttl_seconds"] = nerv_health_cache_ttl_sec
+        if stale:
+            payload["stale_while_revalidate"] = True
+            payload["refresh_in_progress"] = True
+        return _nerv_health_json_response(payload)
+
+    @bp.route("/dashboard/nerv/api/health")
+    @bp.route("/status/api/health")
+    @login_required
+    def nerv_api_health():
+        now = time.monotonic()
+        cached = nerv_health_cache.get("payload")
+        cache_age = now - float(nerv_health_cache.get("ts") or 0.0)
+        if isinstance(cached, dict) and cache_age < nerv_health_cache_ttl_sec:
+            return _nerv_health_cached_response()
+
+        acquired = nerv_health_refresh_lock.acquire(blocking=False)
+        if not acquired and isinstance(cached, dict):
+            return _nerv_health_cached_response(stale=True)
+        if not acquired:
+            acquired = nerv_health_refresh_lock.acquire(timeout=nerv_health_cache_ttl_sec)
+        if not acquired:
+            return _nerv_health_json_response({
+                "status": "refreshing",
+                "probe": "nerv_health",
+                "cached": False,
+                "refresh_in_progress": True,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+        try:
+            # Another request may have completed the refresh while this request
+            # waited for the single-flight lock.
+            now = time.monotonic()
+            cached = nerv_health_cache.get("payload")
+            cache_age = now - float(nerv_health_cache.get("ts") or 0.0)
+            if isinstance(cached, dict) and cache_age < nerv_health_cache_ttl_sec:
+                return _nerv_health_cached_response()
+
+            payload = _compute_nerv_api_health()
+            nerv_health_cache["ts"] = time.monotonic()
+            nerv_health_cache["payload"] = copy.deepcopy(payload)
+            payload["cached"] = False
+            payload["cache_ttl_seconds"] = nerv_health_cache_ttl_sec
+            return _nerv_health_json_response(payload)
+        finally:
+            nerv_health_refresh_lock.release()
 
     @bp.route("/api/nerv/remote-access", methods=["GET"])
     def api_nerv_remote_access():
@@ -839,6 +1810,65 @@ def create_admin_runtime_blueprint(
         except Exception as exc:
             logger.error("NERV remote access status failed: %s", exc, exc_info=True)
             return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @bp.route("/api/admin/observability/support-bundle", methods=["GET"])
+    def api_admin_observability_support_bundle():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        ledger_path = _observability_ledger_path()
+        if ledger_path is None:
+            response = jsonify(
+                {
+                    "ok": False,
+                    "status": "unavailable",
+                    "error": "無法驗證控制核心工作紀錄的版本綁定；請保留證據並檢查 ownership manifest。",
+                }
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response, 503
+        if not ledger_path.is_file() or ledger_path.is_symlink():
+            response = jsonify(
+                {
+                    "ok": True,
+                    "status": "not_attested",
+                    "detail": "尚無可驗證 task ledger；尚未產生支援包。",
+                    "support_bundle": None,
+                }
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        try:
+            from magi_v3.ledger import JobLedger
+            from magi_v3.observability import support_bundle
+
+            limit = min(100, max(1, int(request.args.get("limit", 50))))
+            records = JobLedger(ledger_path).recent_jobs(limit=limit)
+            if not records:
+                response = jsonify(
+                    {
+                        "ok": True,
+                        "status": "not_attested",
+                        "detail": "task ledger 尚無可核對作業；尚未產生支援包。",
+                        "support_bundle": None,
+                    }
+                )
+                response.headers["Cache-Control"] = "no-store"
+                return response
+            bundle = support_bundle(records, max_records=limit)
+            response = jsonify({"ok": True, "status": "verified", "support_bundle": bundle})
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except (OSError, ValueError, TypeError):
+            response = jsonify(
+                {
+                    "ok": False,
+                    "status": "unavailable",
+                    "error": "工作紀錄無法驗證；請保留現有證據並提供給維運人員。",
+                }
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response, 503
 
     @bp.route("/api/nerv/remote-access/action", methods=["POST"])
     def api_nerv_remote_access_action():
@@ -879,6 +1909,12 @@ def create_admin_runtime_blueprint(
     @bp.route("/api/system-test", methods=["POST"])
     @login_required
     def api_system_test():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        confirm_error = _confirmation_error("system-test", "run-system-test")
+        if confirm_error:
+            return confirm_error
         try:
             from skills.ops.system_test import run_all_tests
 
@@ -889,6 +1925,12 @@ def create_admin_runtime_blueprint(
     @bp.route("/api/self-repair", methods=["POST"])
     @login_required
     def api_self_repair():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        confirm_error = _confirmation_error("self-repair", "repair-targets")
+        if confirm_error:
+            return confirm_error
         try:
             data = request.get_json() or {}
             targets = data.get("targets")
@@ -1040,6 +2082,7 @@ def create_admin_runtime_blueprint(
         try:
             from skills.evolution.skill_genesis import rollback_skill_version
             from skills.bridge.embedding_router import get_router
+            from skills.plugin import skill_registry
             import skills.bridge.semantic_router as semantic_router
 
             result = rollback_skill_version(str(skill_name).strip(), version_id=version_id)
@@ -1058,6 +2101,10 @@ def create_admin_runtime_blueprint(
                 semantic_router._SKILLS_CACHE_TS = 0.0
             except Exception:
                 logger.debug("silent-catch in api_skill_rollback semantic cache", exc_info=True)
+            try:
+                skill_registry.discover(force=True)
+            except Exception:
+                logger.debug("silent-catch in api_skill_rollback skill registry", exc_info=True)
             return jsonify({"ok": True, "result": result})
         except Exception as exc:
             logger.error("Skill rollback failed for %s: %s", skill_name, exc, exc_info=True)
@@ -1134,6 +2181,24 @@ def create_admin_runtime_blueprint(
         if not updates:
             return jsonify({"ok": False, "error": "empty_updates"}), 400
         try:
+            if not dotenv_override_allowed():
+                pending_path = write_pending_env_updates(
+                    updates,
+                    active_env_path=env_path,
+                    requested_by="nerv_heavy_runtime",
+                )
+                return jsonify(
+                    {
+                        "ok": True,
+                        "saved": False,
+                        "pending": True,
+                        "status": "pending_controlled_rebind",
+                        "pending_artifact": str(pending_path),
+                        "active_env_file_unchanged": str(env_path),
+                        "requires_controlled_redeploy_or_rebind": True,
+                        "restart_hint": "V3 的 active env 已雜湊綁定；請由受控部署流程核准 pending artifact 後重新綁定。",
+                    }
+                ), 202
             backup = _write_env_values(env_path, updates)
             for key, value in updates.items():
                 os.environ[key] = value
@@ -1191,11 +2256,34 @@ def create_admin_runtime_blueprint(
         if not content.strip():
             return jsonify({"ok": False, "error": "empty_skill_content"}), 400
         try:
-            skill_doc.parent.mkdir(parents=True, exist_ok=True)
-            normalized = content.replace("\r\n", "\n")
-            if not normalized.endswith("\n"):
-                normalized += "\n"
-            skill_doc.write_text(normalized, encoding="utf-8")
+            from skills.evolution.skill_genesis import update_skill_document
+            from skills.bridge.embedding_router import get_router
+            from skills.plugin import skill_registry
+            import skills.bridge.semantic_router as semantic_router
+
+            result = update_skill_document(str(skill_name).strip(), content, reason="nerv_edit")
+            if not result.get("success"):
+                return jsonify({"ok": False, "error": result.get("error") or "save_failed"}), 400
+            normalized = str(result.get("content") or "")
+            skill_doc = Path(str(result.get("path") or skill_doc))
+            action_file = skill_action_path(skill_name)
+            try:
+                router = get_router()
+                if router.is_ready:
+                    router.rebuild_cache()
+                else:
+                    router.initialize()
+            except Exception:
+                logger.debug("silent-catch in NERV skill edit embedding cache", exc_info=True)
+            try:
+                semantic_router._SKILLS_CACHE = None
+                semantic_router._SKILLS_CACHE_TS = 0.0
+            except Exception:
+                logger.debug("silent-catch in NERV skill edit semantic cache", exc_info=True)
+            try:
+                skill_registry.discover(force=True)
+            except Exception:
+                logger.debug("silent-catch in NERV skill edit skill registry", exc_info=True)
         except Exception as exc:
             logger.error("NERV skill save failed for %s: %s", skill_name, exc, exc_info=True)
             return jsonify({"ok": False, "error": f"save_failed: {exc}"}), 500
@@ -1211,6 +2299,7 @@ def create_admin_runtime_blueprint(
                     "has_action": action_file.exists(),
                     "updated_at": datetime.now().isoformat(),
                     "summary": skill_summary(normalized),
+                    "snapshot": result.get("snapshot"),
                 },
             }
         )
@@ -1247,8 +2336,670 @@ def create_admin_runtime_blueprint(
             logger.error("Codex distributed toggle failed: %s", exc, exc_info=True)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+    def _collect_drive_sync_status() -> dict[str, Any]:
+        drive_dir = runtime_state_dir / "drive_sync"
+        auth_required_path = drive_dir / "drive_case_sync_auth_required_latest.json"
+        worker_state_path = drive_dir / "worker_state.json"
+        try:
+            drive_case_sync = importlib.import_module("api.osc.drive_case_sync")
+            DriveCaseSyncAuthRequired = drive_case_sync.DriveCaseSyncAuthRequired
+            build_drive_service = drive_case_sync.build_drive_service
+        except Exception as exc:
+            return {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+
+        def _probe_drive_sync_auth(write_scope: bool) -> tuple[str, str]:
+            try:
+                probe_service = build_drive_service(interactive=False, write=write_scope)
+                probe_service.files().get(fileId="root", fields="id").execute()
+            except DriveCaseSyncAuthRequired as exc:
+                return "auth_required", str(exc)
+            except Exception as exc:
+                return "health_probe_failed", str(exc)
+            return "ok", ""
+
+        def _mark_drive_sync_auth_recovered(
+            source: dict[str, Any],
+            *,
+            write_scope: bool,
+        ) -> dict[str, Any]:
+            recovered_status = {
+                "ok": True,
+                "status": "ok",
+                "action_required": False,
+                "message": "Google Drive 授權已恢復；已清除舊授權警示",
+                "finished_at": datetime.now().isoformat(),
+                "token_path": str(source.get("token_path") or ""),
+                "write_scope": write_scope,
+            }
+            try:
+                auth_required_path.unlink(missing_ok=True)
+                if worker_state_path.exists():
+                    worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+                    if isinstance(worker_state, dict):
+                        last_summary = worker_state.get("last_summary")
+                        if not isinstance(last_summary, dict):
+                            last_summary = {}
+                        worker_state["last_status"] = recovered_status
+                        worker_state["last_summary"] = {
+                            **last_summary,
+                            "auth_required": False,
+                            "auth_recovered": True,
+                        }
+                        tmp = worker_state_path.with_suffix(".tmp")
+                        tmp.write_text(
+                            json.dumps(worker_state, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        tmp.replace(worker_state_path)
+            except Exception:
+                logger.debug("silent-catch updating drive worker auth state", exc_info=True)
+            return {
+                "ok": True,
+                "status": "ok",
+                "detail": "Google Drive 授權已恢復；已清除過期授權警示",
+                "token_path": recovered_status["token_path"],
+                "write_scope": write_scope,
+            }
+
+        def _parse_finished_at(status: dict[str, Any]) -> float:
+            text = str(status.get("finished_at") or status.get("started_at") or "").strip()
+            if not text:
+                return 0.0
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
+
+        def _pid_alive(pid: Any) -> bool:
+            try:
+                pid_int = int(pid or 0)
+            except Exception:
+                return False
+            if pid_int <= 0:
+                return False
+            try:
+                os.kill(pid_int, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            except Exception:
+                return False
+
+        def _iter_drive_status_candidates(worker_state: dict[str, Any]) -> list[dict[str, Any]]:
+            candidates: list[dict[str, Any]] = []
+
+            def _add(value: Any, source: str) -> None:
+                if isinstance(value, dict) and value:
+                    item = dict(value)
+                    item["_status_source"] = source
+                    candidates.append(item)
+
+            _add(worker_state.get("last_status"), "worker_state.last_status")
+            by_kind = worker_state.get("status_by_kind")
+            if isinstance(by_kind, dict):
+                for kind, value in by_kind.items():
+                    _add(value, f"worker_state.status_by_kind.{kind}")
+            for suffix in ("priority", "all_files", "inventory", ""):
+                path = drive_dir / (
+                    f"drive_case_sync_worker_status_{suffix}_latest.json"
+                    if suffix
+                    else "drive_case_sync_worker_status_latest.json"
+                )
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                _add(data, f"kind_file.{suffix or 'latest'}")
+                data_by_kind = data.get("status_by_kind") if isinstance(data, dict) else {}
+                if isinstance(data_by_kind, dict):
+                    for kind, value in data_by_kind.items():
+                        _add(value, f"kind_file.{suffix or 'latest'}.status_by_kind.{kind}")
+            for suffix in ("priority", "all_files", "inventory"):
+                path = drive_dir / f"worker_state_{suffix}.json"
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                _add(data.get("last_status") if isinstance(data, dict) else {}, f"worker_state_file.{suffix}.last_status")
+            return candidates
+
+        def _drive_status_age_seconds(candidate: dict[str, Any]) -> float | None:
+            ts = _parse_finished_at(candidate)
+            if ts > 0:
+                return max(0.0, time.time() - ts)
+            return None
+
+        def _drive_semantic_collision_wait(candidate: dict[str, Any]) -> dict[str, Any]:
+            """Classify a fail-closed path collision separately from I/O failure."""
+            file_sync = (
+                candidate.get("file_sync_summary")
+                if isinstance(candidate.get("file_sync_summary"), dict)
+                else {}
+            )
+            execution = (
+                candidate.get("execution_summary")
+                if isinstance(candidate.get("execution_summary"), dict)
+                else {}
+            )
+            drive_folders = (
+                candidate.get("drive_folder_summary")
+                if isinstance(candidate.get("drive_folder_summary"), dict)
+                else {}
+            )
+            folder_repair = (
+                candidate.get("drive_imported_folder_repair")
+                if isinstance(candidate.get("drive_imported_folder_repair"), dict)
+                else {}
+            )
+            semantic_collisions = int(file_sync.get("semantic_collision_files") or 0)
+            hard_failures = sum(
+                int(value or 0)
+                for value in (
+                    execution.get("download_failed"),
+                    execution.get("upload_failed"),
+                    drive_folders.get("failed"),
+                    folder_repair.get("errors"),
+                    file_sync.get("incomplete_case_scans"),
+                    file_sync.get("conflict_files"),
+                    file_sync.get("content_mismatch_files"),
+                )
+            )
+            waiting = bool(
+                str(candidate.get("status") or "").strip().lower() == "partial_failure"
+                and semantic_collisions > 0
+                and hard_failures == 0
+            )
+            return {
+                "waiting": waiting,
+                "waiting_reason": (
+                    "semantic_path_collision_requires_human_review" if waiting else ""
+                ),
+                "semantic_collision_files": semantic_collisions,
+                "hard_failure_count": hard_failures,
+                "write_failures": int(execution.get("download_failed") or 0)
+                + int(execution.get("upload_failed") or 0)
+                + int(drive_folders.get("failed") or 0),
+            }
+
+        def _public_drive_kind_statuses(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+            by_kind: dict[str, tuple[float, int, dict[str, Any]]] = {}
+            try:
+                max_age_sec = max(1.0, float(os.environ.get("MAGI_DRIVE_SYNC_HEALTH_SLA_HOURS", "24") or "24")) * 3600
+            except Exception:
+                max_age_sec = 24 * 3600
+            for candidate in candidates:
+                kind = str(candidate.get("worker_kind") or "").strip() or "latest"
+                status_text = str(candidate.get("status") or "").strip()
+                ts = _parse_finished_at(candidate)
+                running = "running" in status_text.lower()
+                pid = int(candidate.get("pid") or 0)
+                live_running = running and _pid_alive(pid)
+                rank = time.time() if live_running else ts
+                age_seconds = _drive_status_age_seconds(candidate)
+                detail_score = sum(
+                    int(isinstance(candidate.get(key), dict) and bool(candidate.get(key)))
+                    for key in (
+                        "file_sync_summary",
+                        "execution_summary",
+                        "drive_folder_summary",
+                        "drive_imported_folder_repair",
+                    )
+                )
+                current = by_kind.get(kind)
+                # Exact mirrors share timestamps. Prefer the later, richer kind
+                # status file over the summary-only worker_state mirror.
+                if current and (
+                    current[0] > rank
+                    or (current[0] == rank and current[1] >= detail_score)
+                ):
+                    continue
+                waiting = _drive_semantic_collision_wait(candidate)
+                by_kind[kind] = (
+                    rank,
+                    detail_score,
+                    {
+                        "ok": True if waiting["waiting"] else candidate.get("ok"),
+                        "status": "ok_with_waiting" if waiting["waiting"] else status_text,
+                        "source_status": status_text,
+                        "action_required": (
+                            False if waiting["waiting"] else bool(candidate.get("action_required"))
+                        ),
+                        "pid": pid,
+                        "pid_alive": _pid_alive(pid) if pid else False,
+                        "age_seconds": round(age_seconds, 0)
+                        if age_seconds is not None
+                        else None,
+                        "stale": bool(age_seconds is not None and age_seconds > max_age_sec and not live_running),
+                        "finished_at": str(candidate.get("finished_at") or ""),
+                        "started_at": str(candidate.get("started_at") or ""),
+                        "source": str(candidate.get("_status_source") or ""),
+                        **waiting,
+                    },
+                )
+            return {
+                kind: payload
+                for kind, (_rank, _detail_score, payload) in sorted(by_kind.items())
+            }
+
+        def _active_drive_worker_kinds() -> set[str]:
+            try:
+                from magi_v3.external_inputs import load_bound_cron_jobs
+
+                jobs = list(load_bound_cron_jobs(root).jobs)
+            except Exception:
+                return {"priority", "all_files", "inventory"}
+            if not isinstance(jobs, list):
+                return {"priority", "all_files", "inventory"}
+            kinds: set[str] = set()
+            saw_drive_job = False
+            for job in jobs:
+                if not isinstance(job, dict) or not job.get("enabled", True):
+                    continue
+                command = str(job.get("command") or "")
+                if "scripts/drive_case_sync_inventory.py" in command:
+                    saw_drive_job = True
+                    kinds.add("inventory")
+                if "scripts/drive_case_sync_worker.py" not in command:
+                    continue
+                saw_drive_job = True
+                if "--direct-all-cases" in command:
+                    kinds.add("all_files")
+                elif "--no-direct-priority-sync" in command:
+                    kinds.add("inventory")
+                else:
+                    kinds.add("priority")
+            if not saw_drive_job:
+                return {"priority", "all_files", "inventory"}
+            return kinds
+
+        def _inactive_drive_kinds(kind_statuses: dict[str, Any], active_kinds: set[str]) -> list[str]:
+            return sorted(
+                str(kind)
+                for kind in kind_statuses
+                if str(kind) != "latest" and str(kind) not in active_kinds
+            )
+
+        def _blocking_drive_kinds(kind_statuses: dict[str, Any], active_kinds: set[str] | None = None) -> list[str]:
+            active = active_kinds or {"priority", "all_files", "inventory"}
+            blockers = []
+            blocking_statuses = {"auth_required", "partial_failure", "timeout", "interrupted", "failed", "error"}
+            concrete_kinds = {str(kind) for kind in kind_statuses if str(kind) != "latest"}
+            for kind, payload in kind_statuses.items():
+                if not isinstance(payload, dict):
+                    continue
+                if str(kind) == "latest" and concrete_kinds:
+                    continue
+                if str(kind) != "latest" and str(kind) not in active:
+                    continue
+                status_text = str(payload.get("status") or "").strip().lower()
+                if bool(payload.get("waiting")) and not bool(payload.get("stale")):
+                    continue
+                if (
+                    bool(payload.get("action_required"))
+                    or payload.get("ok") is False
+                    or bool(payload.get("stale"))
+                    or status_text in blocking_statuses
+                ):
+                    blockers.append(str(kind))
+            return sorted(set(blockers))
+
+        def _healthy_live_or_newer_kind_status(worker_state: dict[str, Any], last_status: dict[str, Any]) -> Optional[dict[str, Any]]:
+            candidates = _iter_drive_status_candidates(worker_state)
+            kind_statuses = _public_drive_kind_statuses(candidates)
+            active_kinds = _active_drive_worker_kinds()
+            inactive_kinds = _inactive_drive_kinds(kind_statuses, active_kinds)
+            for candidate in candidates:
+                status_text = str(candidate.get("status") or "").strip().lower()
+                if "running" in status_text and _pid_alive(candidate.get("pid")):
+                    return {
+                        "ok": True,
+                        "status": str(candidate.get("status") or "running"),
+                        "detail": "Drive/NAS 同步 worker 執行中",
+                        "worker_kind": str(candidate.get("worker_kind") or ""),
+                        "pid": int(candidate.get("pid") or 0),
+                        "status_by_kind": kind_statuses,
+                        "blocking_kinds": _blocking_drive_kinds(kind_statuses, active_kinds),
+                        "active_kinds": sorted(active_kinds),
+                        "inactive_kinds": inactive_kinds,
+                        "selected_kind": str(candidate.get("worker_kind") or ""),
+                    }
+            try:
+                max_age_sec = max(1.0, float(os.environ.get("MAGI_DRIVE_SYNC_HEALTH_SLA_HOURS", "24") or "24")) * 3600
+            except Exception:
+                max_age_sec = 24 * 3600
+            now_ts = time.time()
+            healthy_statuses = []
+            for candidate in candidates:
+                waiting = _drive_semantic_collision_wait(candidate)
+                if not waiting["waiting"]:
+                    if bool(candidate.get("action_required")):
+                        continue
+                    if candidate.get("ok") is False:
+                        continue
+                status_text = str(candidate.get("status") or "").strip().lower()
+                if status_text in {"", "interrupted", "timeout", "auth_required"}:
+                    continue
+                if status_text == "partial_failure" and not waiting["waiting"]:
+                    continue
+                ts = _parse_finished_at(candidate)
+                if ts <= 0:
+                    continue
+                if now_ts - ts <= max_age_sec:
+                    healthy_statuses.append((ts, candidate))
+            if healthy_statuses:
+                _, newest = max(healthy_statuses, key=lambda item: item[0])
+                waiting_kinds = sorted(
+                    kind
+                    for kind, payload in kind_statuses.items()
+                    if isinstance(payload, dict)
+                    and bool(payload.get("waiting"))
+                    and not bool(payload.get("stale"))
+                )
+                semantic_collisions = sum(
+                    int(payload.get("semantic_collision_files") or 0)
+                    for payload in kind_statuses.values()
+                    if isinstance(payload, dict)
+                    and bool(payload.get("waiting"))
+                    and not bool(payload.get("stale"))
+                )
+                detail = "Drive/NAS 分類同步在 SLA 內正常"
+                status_value = str(newest.get("status") or "ok")
+                if waiting_kinds:
+                    status_value = "ok_with_waiting"
+                    detail = (
+                        "Drive/NAS 同步服務正常；"
+                        f"{', '.join(waiting_kinds)} 有 {semantic_collisions} 個語意路徑衝突安全等待，"
+                        "0 覆寫失敗、0 上傳失敗、0 下載失敗"
+                    )
+                return {
+                    "ok": True,
+                    "status": status_value,
+                    "detail": detail,
+                    "waiting": bool(waiting_kinds),
+                    "waiting_reason": (
+                        "semantic_path_collision_requires_human_review"
+                        if waiting_kinds
+                        else ""
+                    ),
+                    "waiting_kinds": waiting_kinds,
+                    "semantic_collision_files": semantic_collisions,
+                    "worker_kind": str(newest.get("worker_kind") or ""),
+                    "latest_status": str(last_status.get("status") or ""),
+                    "pid": int(newest.get("pid") or 0),
+                    "status_by_kind": kind_statuses,
+                    "blocking_kinds": _blocking_drive_kinds(kind_statuses, active_kinds),
+                    "active_kinds": sorted(active_kinds),
+                    "inactive_kinds": inactive_kinds,
+                    "selected_kind": str(newest.get("worker_kind") or ""),
+                }
+            return None
+
+        if not auth_required_path.exists() and not worker_state_path.exists():
+            return {"ok": None, "status": "unknown", "detail": "尚未執行同步檢查"}
+
+        try:
+            if auth_required_path.exists():
+                auth_required = json.loads(auth_required_path.read_text(encoding="utf-8"))
+                write_scope = bool(auth_required.get("write_scope"))
+                probe_status, probe_detail = _probe_drive_sync_auth(write_scope)
+                if probe_status == "ok":
+                    return _mark_drive_sync_auth_recovered(auth_required, write_scope=write_scope)
+                if probe_status == "auth_required":
+                    return {
+                        "ok": False,
+                        "status": "auth_required",
+                        "message": str(probe_detail or auth_required.get("message") or "Google Drive 授權需重新建立")[:160],
+                        "token_path": str(auth_required.get("token_path") or ""),
+                        "write_scope": write_scope,
+                    }
+                return {
+                    "ok": False,
+                    "status": "health_probe_failed",
+                    "detail": probe_detail[:160],
+                    "token_path": str(auth_required.get("token_path") or ""),
+                    "write_scope": write_scope,
+                }
+
+            worker_state = json.loads(worker_state_path.read_text(encoding="utf-8"))
+            last_status = worker_state.get("last_status") if isinstance(worker_state.get("last_status"), dict) else {}
+            last_summary = worker_state.get("last_summary") if isinstance(worker_state.get("last_summary"), dict) else {}
+            kind_statuses = _public_drive_kind_statuses(_iter_drive_status_candidates(worker_state))
+            active_kinds = _active_drive_worker_kinds()
+            inactive_kinds = _inactive_drive_kinds(kind_statuses, active_kinds)
+            live_or_newer = _healthy_live_or_newer_kind_status(worker_state, last_status)
+            if live_or_newer:
+                live_or_newer.setdefault("status_by_kind", kind_statuses)
+                blockers = _blocking_drive_kinds(kind_statuses, active_kinds)
+                live_or_newer["blocking_kinds"] = blockers
+                live_or_newer["active_kinds"] = sorted(active_kinds)
+                live_or_newer["inactive_kinds"] = inactive_kinds
+                if blockers:
+                    live_or_newer["ok"] = False
+                    live_or_newer["status"] = "kind_action_required"
+                    live_or_newer["detail"] = "Drive/NAS 有分類同步需要處理：" + ", ".join(blockers)
+                if last_summary:
+                    live_or_newer["matched_case_folders"] = int(last_summary.get("matched_case_folders") or 0)
+                return live_or_newer
+            if last_status.get("action_required"):
+                if str(last_status.get("status") or "") == "auth_required":
+                    write_scope = bool(last_status.get("write_scope"))
+                    probe_status, probe_detail = _probe_drive_sync_auth(write_scope)
+                    if probe_status == "ok":
+                        return _mark_drive_sync_auth_recovered(last_status, write_scope=write_scope)
+                    if probe_status == "auth_required":
+                        return {
+                            "ok": False,
+                            "status": "auth_required",
+                            "message": str(probe_detail or last_status.get("message") or "Google Drive 授權需重新建立")[:160],
+                            "token_path": str(last_status.get("token_path") or ""),
+                            "write_scope": write_scope,
+                            "status_by_kind": kind_statuses,
+                            "blocking_kinds": _blocking_drive_kinds(kind_statuses, active_kinds),
+                            "active_kinds": sorted(active_kinds),
+                            "inactive_kinds": inactive_kinds,
+                        }
+                    return {
+                        "ok": False,
+                        "status": "health_probe_failed",
+                        "detail": probe_detail[:160],
+                        "token_path": str(last_status.get("token_path") or ""),
+                        "write_scope": write_scope,
+                        "status_by_kind": kind_statuses,
+                        "blocking_kinds": _blocking_drive_kinds(kind_statuses, active_kinds),
+                        "active_kinds": sorted(active_kinds),
+                        "inactive_kinds": inactive_kinds,
+                    }
+                return {
+                    "ok": False,
+                    "status": str(last_status.get("status") or "action_required"),
+                    "message": str(last_status.get("message") or "Google Drive 同步需要處理")[:160],
+                    "status_by_kind": kind_statuses,
+                    "blocking_kinds": _blocking_drive_kinds(kind_statuses, active_kinds),
+                    "active_kinds": sorted(active_kinds),
+                    "inactive_kinds": inactive_kinds,
+                }
+            blockers = _blocking_drive_kinds(kind_statuses, active_kinds)
+            return {
+                "ok": not blockers,
+                "status": "kind_action_required" if blockers else str(last_status.get("status") or "ok"),
+                "detail": ("Drive/NAS 有分類同步需要處理：" + ", ".join(blockers)) if blockers else "最近同步檢查正常",
+                "matched_case_folders": int(last_summary.get("matched_case_folders") or 0),
+                "status_by_kind": kind_statuses,
+                "blocking_kinds": blockers,
+                "active_kinds": sorted(active_kinds),
+                "inactive_kinds": inactive_kinds,
+            }
+        except Exception as exc:
+            return {"ok": False, "status": "health_probe_failed", "detail": str(exc)[:120]}
+
+    def _collect_api_token_health_status() -> dict[str, Any]:
+        candidate_paths = _token_health_report_candidates(root)
+        seen_paths: set[str] = set()
+        report_path = candidate_paths[0]
+        for candidate in candidate_paths:
+            key = str(candidate)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            if candidate.exists():
+                report_path = candidate
+                break
+        if not report_path.exists():
+            return {
+                "ok": None,
+                "status": "unknown",
+                "detail": "尚未產生 API/OAuth token 健康檢查報告",
+            }
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            age_sec = max(0.0, time.time() - report_path.stat().st_mtime)
+            summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+            failures = data.get("failures") if isinstance(data.get("failures"), list) else []
+            checks_list = data.get("checks") if isinstance(data.get("checks"), list) else []
+            services: dict[str, Any] = {}
+            for item in checks_list:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                services[name] = {
+                    "ok": item.get("ok"),
+                    "status": item.get("status") or "",
+                    "message": item.get("message") or "",
+                    "next_action": item.get("next_action") or "",
+                    "token_path": item.get("path") or "",
+                    "credentials_path": item.get("credentials_path") or "",
+                    "expires_at": item.get("expires_at") or "",
+                    "expires_in_hours": item.get("expires_in_hours"),
+                    "refresh_token_present": item.get("refresh_token_present"),
+                    "scopes_ok": item.get("scopes_ok"),
+                    "account_check_status": item.get("account_check_status") or "",
+                    "required": item.get("required"),
+                }
+            stale = age_sec > 12 * 3600
+            ok = bool(data.get("ok")) and not stale
+            return {
+                "ok": ok,
+                "status": "stale" if stale else ("ok" if data.get("ok") else "action_required"),
+                "report_path": str(report_path),
+                "generated_at": data.get("generated_at") or "",
+                "age_seconds": round(age_sec, 0),
+                "summary": {
+                    "total": int(summary.get("total") or 0),
+                    "failures": int(summary.get("failures") or 0),
+                    "refreshed": int(summary.get("refreshed") or 0),
+                    "skipped": int(summary.get("skipped") or 0),
+                },
+                "failures": failures[:5],
+                "services": services,
+            }
+        except Exception as exc:
+            return {"ok": False, "status": "invalid_report", "detail": str(exc)[:120]}
+
+    def _collect_process_markers() -> dict[str, Any]:
+        markers = {
+            "daemon_markers": ("daemon.py", "api/discord_bot.py", "rpc-server"),
+            "server_markers": ("api/server.py", "api/server", "api_server.py"),
+        }
+        process_lines: list[str] = []
+        try:
+            completed = subprocess.run(
+                ["ps", "-axo", "command="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            process_lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "unknown",
+                "error": str(exc)[:120],
+                "daemon": {"ok": False, "markers": []},
+                "server": {"ok": False, "markers": []},
+            }
+        daemon_matches = [m for m in markers["daemon_markers"] if any(m in line for line in process_lines)]
+        server_matches = [m for m in markers["server_markers"] if any(m in line for line in process_lines)]
+        return {
+            "ok": bool(daemon_matches and server_matches),
+            "status": "online" if (daemon_matches and server_matches) else "partial",
+            "daemon": {"ok": bool(daemon_matches), "markers": daemon_matches},
+            "server": {"ok": bool(server_matches), "markers": server_matches, "pid": os.getpid()},
+            "raw_count": len(process_lines),
+        }
+
+    def _collect_db_status() -> dict[str, Any]:
+        conn = None
+        try:
+            conn = mysql_connector.connect(**db_config, connection_timeout=3, use_pure=True)
+            return {"ok": conn.is_connected()}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)[:120]}
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    logging.getLogger(__name__).debug("DB status connection close failed", exc_info=True)
+
+    def _collect_model_status() -> dict[str, Any]:
+        try:
+            from urllib.parse import urlparse as _urlparse
+            from skills.bridge.http_pool import get_session as _get_session
+
+            url = os.environ.get("MAGI_OMLX_CHAT_URL", os.environ.get("MAGI_OMLX_BASE", "http://127.0.0.1:8080"))
+            parsed = _urlparse(str(url or ""))
+            port = parsed.port or 8080
+            response = _get_session().get(f"{url.rstrip('/')}/v1/models", timeout=2)
+            ok = response.status_code == 200
+            return {"ok": ok, "status": "ok" if ok else "unreachable", "port": port}
+        except Exception as exc:
+            return {"ok": False, "status": "probe_failed", "detail": str(exc)[:120]}
+
+    def _collect_tools_api_status() -> dict[str, Any]:
+        try:
+            docs = list_skill_docs()
+            if not isinstance(docs, list):
+                raise TypeError("list_skill_docs must return list")
+            return {"ok": True, "status": "ok", "count": len(docs)}
+        except Exception as exc:
+            return {"ok": False, "status": "error", "detail": str(exc)[:120], "count": 0}
+
+    def _collect_nas_mount_status() -> dict[str, Any]:
+        shares: dict[str, Any] = {}
+        try:
+            _nas_guard = importlib.import_module("api.nas_mount_guard")
+
+            for share, vol in _nas_guard.get_configured_shares(refresh=True):
+                try:
+                    status = _nas_guard.get_share_status(share, vol)
+                    shares[share] = bool(status.get("mounted"))
+                except Exception:
+                    shares[share] = False
+            return {"ok": all(shares.values()) if shares else True, "mounts": shares}
+        except Exception as exc:
+            return {"ok": False, "mounts": {}, "detail": str(exc)[:120]}
+
+    def _attach_runtime_diagnostics(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from api.runtime_diagnostics import classify_model_health, classify_runtime_error
+        except Exception:
+            return payload
+        out = dict(payload)
+        if name == "model":
+            out["classification"] = classify_model_health(out)
+        if out.get("ok") is False:
+            out["diagnosis"] = classify_runtime_error(out)
+        return out
+
     @bp.route("/api/status")
     def api_status():
+        auth_error = require_json_auth()
+        if auth_error:
+            return auth_error
         try:
             return _load_status_payload()
         except Exception as exc:
@@ -1271,6 +3022,267 @@ def create_admin_runtime_blueprint(
             lines = [f"[LOG READ ERROR] {exc}"]
         return jsonify({"lines": lines})
 
+    @bp.route("/api/live-validation", methods=["GET"])
+    def api_live_validation():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        process_markers = _collect_process_markers()
+        checks = {
+            "daemon": process_markers.get("daemon", {"ok": False}),
+            "server": process_markers.get("server", {"ok": False}),
+            "tools_api": _collect_tools_api_status(),
+            "nas": _collect_nas_mount_status(),
+            "drive": _collect_drive_sync_status(),
+            "db": _collect_db_status(),
+            "model": _collect_model_status(),
+        }
+        for check_name in ("daemon", "server", "tools_api", "nas", "drive", "db", "model"):
+            checks[check_name] = _attach_runtime_diagnostics(check_name, checks[check_name])
+        checks["timestamp"] = datetime.now().isoformat()
+        issues = []
+        for name, payload in checks.items():
+            if name == "timestamp":
+                continue
+            if not payload.get("ok"):
+                issues.append(name)
+        checks["summary"] = {
+            "ok": not issues,
+            "status": "operational" if not issues else "degraded",
+            "issues": issues,
+        }
+        checks["status"] = checks["summary"]["status"]
+        return jsonify(checks), 200
+
+    def _request_case_exclusion_paths(payload: dict[str, Any]) -> list[str]:
+        raw = payload.get("relative_paths")
+        if raw is None:
+            raw = payload.get("relative_path")
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw]
+        if isinstance(raw, list):
+            return [str(item) for item in raw]
+        return []
+
+    def _case_exclusion_file_for_runtime() -> Path:
+        return runtime_state_dir / "drive_sync" / "case_exclusions.json"
+
+    @bp.route("/api/drive-case-exclusions", methods=["GET"])
+    @login_required
+    def api_drive_case_exclusions_list():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        payload = _dcs.load_case_exclusion_payload(include_env=False, exclusion_path=_case_exclusion_file_for_runtime())
+        return jsonify({"ok": True, "count": len(payload.get("relative_paths") or []), **payload}), 200
+
+    @bp.route("/api/drive-case-exclusions", methods=["POST"])
+    @login_required
+    def api_drive_case_exclusions_add():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        data = request.get_json(silent=True) or {}
+        paths = _request_case_exclusion_paths(data)
+        if not paths:
+            return jsonify({"ok": False, "error": "missing_relative_paths"}), 400
+
+        exclusion_path = _case_exclusion_file_for_runtime()
+        before = set(_dcs.load_case_exclusion_payload(include_env=False, exclusion_path=exclusion_path).get("relative_paths") or [])
+        updated = _dcs.sync_case_exclusions(
+            paths,
+            reason=str(data.get("reason") or ""),
+            exclusion_path=exclusion_path,
+        )
+        after = set(updated.get("relative_paths") or [])
+        return jsonify({"ok": True, "changed": after != before, **updated}), 200
+
+    @bp.route("/api/drive-case-exclusions", methods=["DELETE"])
+    @login_required
+    def api_drive_case_exclusions_remove():
+        auth_error = require_json_auth(admin=True)
+        if auth_error:
+            return auth_error
+        _dcs = importlib.import_module("api.osc.drive_case_sync")
+
+        data = request.get_json(silent=True) or {}
+        paths = _request_case_exclusion_paths(data)
+        if not paths:
+            return jsonify({"ok": False, "error": "missing_relative_paths"}), 400
+        updated, removed = _dcs.unsync_case_exclusions(paths, exclusion_path=_case_exclusion_file_for_runtime())
+        return jsonify({"ok": True, "changed": removed > 0, "removed": removed, **updated}), 200
+
+    def _uptime_seconds() -> float:
+        try:
+            return round(max(0.0, time.time() - float(server_start_time)), 3)
+        except Exception:
+            return 0.0
+
+    @bp.route("/livez", methods=["GET"])
+    def livez():
+        return jsonify({
+            "ok": True,
+            "status": "live",
+            "probe": "liveness",
+            "readiness_checked": False,
+            "timestamp": time.time(),
+            "uptime_seconds": _uptime_seconds(),
+        }), 200
+
+    @bp.route("/readyz", methods=["GET"])
+    def readyz():
+        if str(request.args.get("scope") or "").strip().lower() in {"saas", "formal_saas", "commercial"}:
+            payload = _saas_readiness_payload()
+            return jsonify(payload), 200 if payload.get("ok") else 503
+
+        authorized = _probe_details_authorized()
+        fresh_requested = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        bypass_cache = bool(authorized and fresh_requested)
+        cache_now = time.time()
+        cached_payload = readiness_cache.get("payload")
+        if (
+            isinstance(cached_payload, dict)
+            and not bypass_cache
+            and cache_now - float(readiness_cache.get("ts") or 0.0) < readiness_cache_ttl_sec
+        ):
+            payload = copy.deepcopy(cached_payload)
+            if authorized:
+                payload["cached"] = True
+                payload["cache_age_seconds"] = round(cache_now - float(readiness_cache.get("ts") or 0.0), 3)
+            else:
+                payload = _minimal_probe_payload(payload, probe="readiness")
+            return jsonify(payload), 200 if payload.get("ok") else 503
+
+        runtime_dir = runtime_state_dir
+        root_ok = root.exists() and root.is_dir()
+        runtime_ok = (
+            (runtime_dir.exists() and runtime_dir.is_dir() and os.access(runtime_dir, os.W_OK))
+            or (not runtime_dir.exists() and root_ok and os.access(root, os.W_OK))
+        )
+        db_config_ok = bool(
+            str(db_config.get("host") or "").strip()
+            and str(db_config.get("user") or "").strip()
+            and str(db_config.get("password") or "").strip()
+        )
+        try:
+            dependency_timeout = min(
+                5.0,
+                max(0.25, float(os.environ.get("MAGI_READINESS_DEPENDENCY_TIMEOUT_SEC", "1.5") or "1.5")),
+            )
+        except Exception:
+            dependency_timeout = 1.5
+
+        db_live = False
+        db_detail = "not_configured"
+        conn = None
+        if db_config_ok:
+            try:
+                connect_kwargs = dict(db_config)
+                connect_kwargs.setdefault("connection_timeout", max(1, int(dependency_timeout + 0.999)))
+                connect_kwargs.setdefault("use_pure", True)
+                conn = mysql_connector.connect(**connect_kwargs)
+                checker = getattr(conn, "is_connected", None)
+                db_live = bool(checker()) if callable(checker) else True
+                db_detail = "connected" if db_live else "not_connected"
+            except Exception as exc:
+                db_detail = f"{type(exc).__name__}: {str(exc)[:96]}"
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        logger.debug("readiness DB close failed", exc_info=True)
+
+        def _truthy_env(name: str, default: str = "1") -> bool:
+            return str(os.environ.get(name, default) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+        def _readiness_http_json(url: str) -> tuple[int, dict[str, Any]]:
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json", "User-Agent": "MAGI-readiness/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=dependency_timeout) as resp:
+                status_code = int(getattr(resp, "status", 0) or 0)
+                raw = resp.read(65536).decode("utf-8", errors="replace")
+            parsed = json.loads(raw or "{}")
+            return status_code, parsed if isinstance(parsed, dict) else {}
+
+        checks = {
+            "root": {"ok": bool(root_ok), "path": str(root)},
+            "runtime_dir": {"ok": bool(runtime_ok), "path": str(runtime_dir)},
+            "db_config": {
+                "ok": bool(db_config_ok),
+                "host_configured": bool(str(db_config.get("host") or "").strip()),
+                "user_configured": bool(str(db_config.get("user") or "").strip()),
+                "password_configured": bool(str(db_config.get("password") or "").strip()),
+            },
+            "db": {"ok": bool(db_live), "detail": db_detail},
+        }
+
+        if _truthy_env("MAGI_READINESS_PROBE_MODEL"):
+            model_base = str(
+                os.environ.get("MAGI_OMLX_CHAT_URL")
+                or os.environ.get("MAGI_OMLX_BASE")
+                or "http://127.0.0.1:8080"
+            ).rstrip("/")
+            model_url = f"{model_base}/models" if model_base.endswith("/v1") else f"{model_base}/v1/models"
+            try:
+                status_code, model_payload = _readiness_http_json(model_url)
+                models = model_payload.get("data") if isinstance(model_payload.get("data"), list) else []
+                checks["model"] = {
+                    "ok": 200 <= status_code < 300 and bool(models),
+                    "http_status": status_code,
+                    "model_count": len(models),
+                }
+            except Exception as exc:
+                checks["model"] = {"ok": False, "detail": f"{type(exc).__name__}: {str(exc)[:96]}"}
+
+        if _truthy_env("MAGI_READINESS_PROBE_TOOLS_API"):
+            try:
+                from api.routing.service_registry import get_service_url
+
+                tools_base = str(get_service_url("tools_api") or "http://127.0.0.1:5003").rstrip("/")
+            except Exception:
+                tools_base = str(os.environ.get("MAGI_TOOLS_API_URL") or "http://127.0.0.1:5003").rstrip("/")
+            try:
+                status_code, tools_payload = _readiness_http_json(f"{tools_base}/health")
+                tools_status = str(tools_payload.get("status") or "").strip().lower()
+                tools_ok = tools_payload.get("ok") is True or tools_status in {"ok", "ready", "operational"}
+                checks["tools_api"] = {
+                    "ok": 200 <= status_code < 300 and bool(tools_ok),
+                    "http_status": status_code,
+                    "status": tools_status or "unknown",
+                }
+            except Exception as exc:
+                checks["tools_api"] = {"ok": False, "detail": f"{type(exc).__name__}: {str(exc)[:96]}"}
+
+        ok = all(bool(item.get("ok")) for item in checks.values())
+        payload = {
+            "ok": ok,
+            "status": "ready" if ok else "not_ready",
+            "probe": "readiness",
+            "liveness": {"ok": True, "status": "live"},
+            "timestamp": time.time(),
+            "uptime_seconds": _uptime_seconds(),
+            "checks": checks,
+        }
+        readiness_cache["ts"] = time.time()
+        readiness_cache["payload"] = copy.deepcopy(payload)
+        if not authorized:
+            payload = _minimal_probe_payload(payload, probe="readiness")
+        return jsonify(payload), 200 if ok else 503
+
+    @bp.route("/saas-readyz", methods=["GET"])
+    def saas_readyz():
+        payload = _saas_readiness_payload()
+        return jsonify(payload), 200 if payload.get("ok") else 503
+
     @bp.route("/health", methods=["GET"])
     def health():
         import time as _time
@@ -1278,8 +3290,60 @@ def create_admin_runtime_blueprint(
         from urllib.parse import urlparse as _urlparse
         from skills.bridge.http_pool import get_session as _get_session
 
+        if str(request.args.get("remount") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            return jsonify({
+                "ok": False,
+                "error": "remount_requires_admin_post",
+                "detail": "GET /health never remounts NAS shares",
+            }), 405
+
+        # Public callers only need a process-level signal.  Detailed aggregate
+        # health contains local paths, service topology, credential state, and
+        # operational history, so require an authenticated session or API key.
+        if not _probe_details_authorized():
+            return jsonify({
+                "ok": True,
+                "status": "live",
+                "probe": "liveness",
+                "readiness": "/readyz",
+                "timestamp": _time.time(),
+                "uptime_seconds": _uptime_seconds(),
+            }), 200
+
         sess = _get_session()
-        checks: dict[str, Any] = {"status": "operational", "timestamp": _time.time()}
+        cache_now = _time.time()
+        bypass_cache = str(request.args.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+        cached_checks = health_cache.get("checks")
+        if (
+            isinstance(cached_checks, dict)
+            and not bypass_cache
+            and cache_now - float(health_cache.get("ts") or 0.0) < health_cache_ttl_sec
+        ):
+            checks = copy.deepcopy(cached_checks)
+            checks["cached"] = True
+            checks["cache_age_seconds"] = round(cache_now - float(health_cache.get("ts") or 0.0), 3)
+            if not _wants_json_response():
+                return _render_health_html(checks), 200 if checks.get("status") == "operational" else 503
+            return jsonify(checks), 200 if checks.get("status") == "operational" else 503
+
+        checks: dict[str, Any] = {
+            "status": "operational",
+            "timestamp": _time.time(),
+            "probe": "aggregate_health",
+            "health_contract": {
+                "liveness": "/livez",
+                "readiness": "/readyz",
+                "saas_readiness": "/saas-readyz",
+                "aggregate": "/health",
+            },
+            "readiness": {
+                "checked": False,
+                "status": "not_checked",
+                "url": "/readyz",
+                "reason": "aggregate health reports runtime health without re-running readiness gates",
+            },
+            "liveness": {"ok": True, "status": "live"},
+        }
 
         def _extract_port(base_url: str, fallback: int) -> int:
             try:
@@ -1395,23 +3459,49 @@ def create_admin_runtime_blueprint(
             service_map = {svc["id"]: svc for svc in services}
             primary = service_map.get("text") or {}
             unmanaged_alive = [svc["id"] for svc in services if svc.get("reachable") and svc.get("management_state") == "unmanaged"]
+            active_profile = ""
+            try:
+                active_profile = (Path.home() / ".omlx" / "active_profile").read_text(encoding="utf-8").strip()
+            except Exception:
+                active_profile = ""
+            day_sidecars_required = active_profile == "day"
+            sidecar_failures = []
+            if day_sidecars_required:
+                for sid in ("phi4", "smol"):
+                    svc = service_map.get(sid) or {}
+                    if not svc.get("ok"):
+                        sidecar_failures.append(sid)
+            primary_ok = bool(primary.get("reachable")) and primary.get("management_state") != "unmanaged"
             checks["omlx"] = {
-                "ok": bool(primary.get("reachable")) and not unmanaged_alive,
+                "ok": primary_ok and not unmanaged_alive and not sidecar_failures,
                 "models": primary.get("models", []),
                 "services": service_map,
                 "unmanaged_alive": unmanaged_alive,
+                "active_profile": active_profile,
+                "day_sidecars_required": day_sidecars_required,
             }
-            if unmanaged_alive:
-                checks["omlx"]["degraded_reasons"] = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons = [f"unmanaged_service:{sid}" for sid in unmanaged_alive]
+            degraded_reasons.extend(f"day_sidecar_down:{sid}" for sid in sidecar_failures)
+            if degraded_reasons:
+                checks["omlx"]["degraded_reasons"] = degraded_reasons
         except Exception:
             checks["omlx"] = {"ok": False}
 
-        # GLM-OCR retired — check macOS Vision OCR availability instead
-        try:
-            from skills.apple.apple_intelligence import VISION_AVAILABLE
-            checks["ocr"] = {"ok": VISION_AVAILABLE, "engine": "macOS Vision", "note": "GLM-OCR retired"}
-        except Exception:
-            checks["ocr"] = {"ok": False, "engine": "macOS Vision", "note": "import failed"}
+        # GLM-OCR retired — inspect module metadata without importing the
+        # Quartz/Vision/Speech PyObjC frameworks into the server process.
+        vision_capability = _apple_vision_capability_metadata()
+        checks["ocr"] = {
+            "ok": bool(vision_capability["available"]),
+            "engine": vision_capability["engine"],
+            "probe": vision_capability["probe"],
+            "detail": vision_capability["detail"],
+            "note": "GLM-OCR retired",
+        }
+
+        checks["browser_core"] = _browser_core_health_hard_timeout(
+            timeout_seconds=max(1, int(os.environ.get("MAGI_BROWSER_HEALTH_TIMEOUT_SEC", "3") or "3")),
+            cache_ttl_seconds=max(30, int(os.environ.get("MAGI_BROWSER_HEALTH_CACHE_TTL_SEC", "300") or "300")),
+        )
 
         conn = None
         try:
@@ -1445,13 +3535,7 @@ def create_admin_runtime_blueprint(
         if uptime < 60:
             checks["faiss"] = {"ok": True, "deferred": True, "reason": "startup_grace_period"}
         else:
-            try:
-                from skills.memory.faiss_index import FAISSMemoryIndex
-
-                idx = FAISSMemoryIndex.get_instance()
-                checks["faiss"] = {"ok": True, "vectors": getattr(idx, "total", getattr(idx, "ntotal", 0))}
-            except Exception:
-                checks["faiss"] = {"ok": False}
+            checks["faiss"] = _read_faiss_metadata(root)
 
         try:
             if attachment_job_queue:
@@ -1463,8 +3547,11 @@ def create_admin_runtime_blueprint(
         except Exception:
             logger.debug("silent-catch in health attachment_jobs", exc_info=True)
 
+        checks["drive_sync"] = _collect_drive_sync_status()
+        checks["api_token_health"] = _collect_api_token_health_status()
+
         try:
-            audit_path = root / ".runtime" / "operational_hardening_audit_latest.json"
+            audit_path = runtime_state_dir / "operational_hardening_audit_latest.json"
             if audit_path.exists():
                 audit = json.loads(audit_path.read_text(encoding="utf-8"))
                 age_sec = max(0.0, time.time() - audit_path.stat().st_mtime)
@@ -1498,7 +3585,7 @@ def create_admin_runtime_blueprint(
             # Benchmark freshness (pdf_namer / pdf_bookmarker)
             bench_freshness = {}
             for _bn in ("benchmark_pdf_namer_latest.json", "benchmark_pdf_bookmarker_latest.json"):
-                _bp = root / ".runtime" / _bn
+                _bp = runtime_state_dir / _bn
                 if _bp.exists():
                     _age_h = (_time.time() - _bp.stat().st_mtime) / 3600
                     bench_freshness[_bn.replace("_latest.json", "")] = round(_age_h, 1)
@@ -1506,7 +3593,7 @@ def create_admin_runtime_blueprint(
                     bench_freshness[_bn.replace("_latest.json", "")] = None
 
             # Watchdog decisions
-            wd_path = root / ".runtime" / "metrics" / "memory_watchdog_decisions.jsonl"
+            wd_path = runtime_state_dir / "metrics" / "memory_watchdog_decisions.jsonl"
             wd_decisions_24h = 0
             if wd_path.exists():
                 with open(wd_path, encoding="utf-8") as _fh:
@@ -1560,6 +3647,9 @@ def create_admin_runtime_blueprint(
                 _op_health["degraded_reasons"].append(f"cron_failures_24h={cron_failures_24h}>5")
             if high_severity_24h > 10:
                 _op_health["degraded_reasons"].append(f"issue_agenda_high_severity_24h={high_severity_24h}>10")
+            token_health = checks.get("api_token_health") if isinstance(checks.get("api_token_health"), dict) else {}
+            if token_health.get("ok") is False:
+                _op_health["degraded_reasons"].append(f"api_token_health={token_health.get('status')}")
             for _b, _age in bench_freshness.items():
                 if _age is not None and _age > 48:
                     _op_health["degraded_reasons"].append(f"{_b}_stale_{_age}h")
@@ -1569,9 +3659,25 @@ def create_admin_runtime_blueprint(
             checks["operational_health"] = {"ok": False, "detail": str(exc)[:120]}
 
         try:
-            from api.nas_mount_guard import _SHARES, get_share_status
+            from api import nas_mount_guard as _nas_guard
 
-            nas_detail = {vol.split("/")[-1]: get_share_status(name, vol) for name, vol in _SHARES}
+            shares = _nas_guard.get_configured_shares(refresh=True)
+            nas_detail = {vol.split("/")[-1]: _nas_guard.get_share_status(name, vol) for name, vol in shares}
+            allow_request_remount = False
+            if allow_request_remount and any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+                checks["nas_auto_remount_attempted"] = True
+                try:
+                    _nas_guard.ensure_nas_mounts()
+                    shares = _nas_guard.get_configured_shares(refresh=True)
+                    nas_detail = {
+                        vol.split("/")[-1]: _nas_guard.get_share_status(name, vol)
+                        for name, vol in shares
+                    }
+                except Exception as exc:
+                    checks["nas_auto_remount_error"] = str(exc)[:120]
+            elif any(not bool(detail.get("mounted")) for detail in nas_detail.values()):
+                checks["nas_auto_remount_attempted"] = False
+                checks["nas_auto_remount_skipped"] = "background_guard_handles_remount"
             checks["nas"] = {name: bool(detail.get("mounted")) for name, detail in nas_detail.items()}
             checks["nas_detail"] = nas_detail
         except Exception:
@@ -1583,17 +3689,29 @@ def create_admin_runtime_blueprint(
             logger.debug("silent-catch in health uptime", exc_info=True)
 
         degraded = not checks.get("omlx", {}).get("ok")
+        if checks.get("db", {}).get("ok") is False:
+            degraded = True
+        if checks.get("browser_core", {}).get("ok") is False:
+            degraded = True
         if checks.get("operational_audit", {}).get("ok") is False:
             degraded = True
         # 2026-04-25 P2-7: operational_health degradation also marks degraded
         if checks.get("operational_health", {}).get("ok") is False:
             degraded = True
+        if checks.get("drive_sync", {}).get("ok") is False:
+            degraded = True
+        if checks.get("api_token_health", {}).get("ok") is False:
+            degraded = True
         if any(ok is False for ok in checks.get("nas", {}).values()):
             degraded = True
         checks["status"] = "degraded" if degraded else "operational"
+        checks["cached"] = False
+        checks["cache_ttl_seconds"] = health_cache_ttl_sec
+        health_cache["ts"] = _time.time()
+        health_cache["checks"] = copy.deepcopy(checks)
         if not _wants_json_response():
-            return _render_health_html(checks), 200
-        return jsonify(checks), 200
+            return _render_health_html(checks), 200 if checks.get("status") == "operational" else 503
+        return jsonify(checks), 200 if checks.get("status") == "operational" else 503
 
     @bp.route("/api/transcribe", methods=["POST"])
     def transcribe_audio():
@@ -1608,10 +3726,20 @@ def create_admin_runtime_blueprint(
         file = request.files["file"]
         if file.filename == "":
             return jsonify({"error": "No selected file"}), 400
+        filepath: str | None = None
         try:
             safe_filename = "".join([char for char in file.filename if char.isalnum() or char in "._-"]) or "audio.wav"
-            filename = f"audio_{int(time.time())}_{safe_filename}"
-            filepath = os.path.join("/tmp", filename)
+            temporary_root = Path(
+                os.environ.get("TMPDIR", "").strip() or tempfile.gettempdir()
+            ).expanduser()
+            temporary_root.mkdir(parents=True, exist_ok=True)
+            fd, filepath = tempfile.mkstemp(
+                prefix=f"audio_{int(time.time())}_",
+                suffix=f"_{safe_filename}",
+                dir=str(temporary_root),
+            )
+            os.close(fd)
+            os.chmod(filepath, 0o600)
             file.save(filepath)
             logger.info("🎤 Received audio for transcription: %s", filepath)
 
@@ -1636,11 +3764,12 @@ def create_admin_runtime_blueprint(
                     result = {"success": False, "error": "transcript_quality_gate:" + str(gate.get("issue") or "failed"), "quality_gate": gate}
             except Exception:
                 logger.debug("transcript quality gate skipped", exc_info=True)
-            if os.path.exists(filepath):
-                safe_remove_tmp(filepath)
             return jsonify(result)
         except Exception as exc:
             logger.error("❌ Transcription endpoint error: %s", exc)
             return jsonify({"error": str(exc)}), 500
+        finally:
+            if filepath and os.path.exists(filepath):
+                safe_remove_tmp(filepath)
 
     return bp

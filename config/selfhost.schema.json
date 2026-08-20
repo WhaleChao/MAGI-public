@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/selfhost-v1.json",
+  "title": "MAGI single-tenant self-host configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "instance", "paths", "network", "models", "database", "features", "secrets", "service", "release"],
+  "properties": {
+    "schema": {"const": "magi.selfhost/v1"},
+    "instance": {
+      "type": "object",
+      "required": ["name", "profile", "platform"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "profile": {"const": "single_tenant_selfhost"},
+        "platform": {"enum": ["Darwin", "Windows", "Linux"]}
+      }
+    },
+    "paths": {
+      "type": "object",
+      "required": ["instance_root", "config_path", "data_dir", "runtime_dir", "logs_dir", "releases_dir", "secrets_dir", "backups_dir", "case_root", "archive_root", "exports_dir", "knowledge_dir", "database_path"],
+      "additionalProperties": {"type": "string"}
+    },
+    "network": {
+      "type": "object",
+      "required": ["bind_host", "ports", "remote_access"],
+      "properties": {
+        "bind_host": {"type": "string", "minLength": 1},
+        "public_base_url": {"type": "string"},
+        "remote_access": {"type": "boolean"},
+        "ports": {
+          "type": "object",
+          "required": ["main", "tools"],
+          "additionalProperties": false,
+          "properties": {
+            "main": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "tools": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "file_review": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "admin": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "required": ["local_backend", "heavy_backend", "embedding_backend", "transcription_backend", "translation_backend"],
+      "properties": {
+        "local_backend": {"enum": ["mlx", "disabled", "api"]},
+        "heavy_backend": {"enum": ["nvidia_api", "api", "disabled"]},
+        "embedding_backend": {"enum": ["mlx", "api", "disabled"]},
+        "transcription_backend": {"enum": ["mlx_whisper", "api", "disabled"]},
+        "translation_backend": {"enum": ["apple", "api", "disabled"]}
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["engine", "dsn_env"],
+      "properties": {
+        "engine": {"const": "mysql"},
+        "dsn_env": {"type": "string", "minLength": 1}
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": ["web", "scheduler", "desktop_status", "case_management", "legal_aid", "court_portal", "google_calendar", "google_drive", "messaging", "accounting", "judgment_library", "knowledge", "documents", "market", "research", "local_models", "translation", "development", "remote_access"],
+      "properties": {
+        "web": {"type": "boolean"},
+        "scheduler": {"type": "boolean"},
+        "desktop_status": {"enum": ["menubar", "web", "disabled"]},
+        "case_management": {"type": "boolean"},
+        "legal_aid": {"type": "boolean"},
+        "court_portal": {"type": "boolean"},
+        "google_calendar": {"type": "boolean"},
+        "google_drive": {"type": "boolean"},
+        "messaging": {"type": "boolean"},
+        "accounting": {"type": "boolean"},
+        "judgment_library": {"type": "boolean"},
+        "knowledge": {"type": "boolean"},
+        "documents": {"type": "boolean"},
+        "market": {"type": "boolean"},
+        "research": {"type": "boolean"},
+        "local_models": {"type": "boolean"},
+        "translation": {"type": "boolean"},
+        "development": {"type": "boolean"},
+        "remote_access": {"type": "boolean"}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["env_file", "required_names", "optional_names"],
+      "properties": {
+        "env_file": {"type": "string", "minLength": 1},
+        "required_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "optional_names": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["id", "auto_start", "python", "launcher"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "auto_start": {"type": "boolean"},
+        "python": {"type": "string", "minLength": 1},
+        "launcher": {"type": "string", "minLength": 1}
+      }
+    },
+    "release": {
+      "type": "object",
+      "required": ["active_marker", "releases_dir", "retain"],
+      "properties": {
+        "active_marker": {"type": "string", "minLength": 1},
+        "releases_dir": {"type": "string", "minLength": 1},
+        "retain": {"type": "integer", "minimum": 2, "maximum": 20}
+      }
+    }
+  }
+}

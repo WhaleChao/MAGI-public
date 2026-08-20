@@ -41,6 +41,20 @@ except Exception:
 
 logger = logging.getLogger("MemBridge")
 
+
+def _database_port_from_env() -> int:
+    """Return the explicitly configured Keeper port without import-time failure."""
+
+    try:
+        port = int(os.environ.get("DB_PORT", "3306") or "3306")
+    except (TypeError, ValueError):
+        logger.warning("Invalid DB_PORT; using 3306")
+        return 3306
+    if not 1 <= port <= 65535:
+        logger.warning("Out-of-range DB_PORT; using 3306")
+        return 3306
+    return port
+
 # ── Recall TTL cache ─────────────────────────────────────────────────
 _RECALL_CACHE = {}       # type: dict  # {cache_key: (results, timestamp)}
 _RECALL_CACHE_TTL = 300   # 5 minutes
@@ -74,6 +88,7 @@ DB_CONFIG = {
     "user": os.environ.get("DB_USER", "casper_service"),
     "password": os.environ.get("DB_PASSWORD", ""),
     "host": os.environ.get("DB_HOST", "127.0.0.1"),
+    "port": _database_port_from_env(),
     "database": os.environ.get("DB_NAME", "magi_brain"),
     "charset": "utf8mb4",
     "collation": "utf8mb4_unicode_ci",
@@ -718,11 +733,21 @@ def remember(content, source="manual", metadata: Optional[dict] = None, embeddin
     except ImportError:
         pass  # Graceful degradation if session module unavailable
 
-    embedding_source = str(embedding_input or content or "")
-    embedding = get_embedding(embedding_source)
-
     # Safe truncate for MySQL VARCHAR limits on 'source' column
     _metadata = dict(metadata or {})
+    embedding_source = str(embedding_input or content or "")
+    embedding = get_embedding(embedding_source)
+    if _metadata.get("require_embedding") is True and (
+        not isinstance(embedding, list)
+        or not embedding
+        or not any(abs(_safe_float(value)) > 1e-12 for value in embedding)
+    ):
+        # Knowledge-ingestion jobs must never advance their source cursor after
+        # persisting a synthetic zero vector.  Interactive memory keeps its
+        # existing offline-backup behaviour; strict callers opt in explicitly.
+        logger.warning("Required embedding is unavailable; memory write deferred")
+        return False
+
     _metadata.setdefault("namespace", namespace_for_source_type(_metadata.get("source_type", "")))
     safe_source = build_source_signature(str(source or "manual"), metadata=_metadata)[:250]
 
@@ -1010,7 +1035,7 @@ def _launch_faiss_rebuild_bg():
     _kill_stale_faiss_rebuilds()
 
     import subprocess
-    # Go up 3 levels: skills/memory/mem_bridge.py -> skills/memory -> skills -> MAGI_v2
+    # Go up 3 levels: skills/memory/mem_bridge.py -> current MAGI release root
     _magi_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _venv_py = os.path.join(_magi_root, "venv", "bin", "python3")
     if not os.path.exists(_venv_py):

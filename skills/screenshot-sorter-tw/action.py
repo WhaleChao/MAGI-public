@@ -18,7 +18,12 @@ from typing import Any
 logger = logging.getLogger("ScreenshotSorter")
 
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", str(Path(__file__).resolve().parents[2])))
-OUTPUT_BASE = MAGI_ROOT / "screenshot_sorted_output"
+_EXPORTS_DIR = Path(os.environ.get("MAGI_EXPORTS_DIR", "").strip() or MAGI_ROOT).expanduser()
+OUTPUT_BASE = (
+    _EXPORTS_DIR / "screenshot-sorted"
+    if os.environ.get("MAGI_EXPORTS_DIR", "").strip()
+    else MAGI_ROOT / "screenshot_sorted_output"
+)
 IMAGE_EXTENSIONS = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.PNG", "*.JPG", "*.JPEG")
 
 

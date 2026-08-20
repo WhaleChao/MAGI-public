@@ -65,7 +65,7 @@ python3 action.py --task self_test
 
 - 原文語言為 zh/zh-Hant → 不翻
 - 其他語言（en/ja/ko/de/fr/es/ru/ar/th/vi/it/pt/nl/pl/tr 等）→ Apple Translation sidecar 翻成 zh-Hant
-- Apple Translation 失敗 → NIM 405B fallback（degraded=true，標於摘要末）
+- Apple Translation 失敗 → NIM heavy fallback（degraded=true，標於摘要末）
 
 ## 狀態檔
 

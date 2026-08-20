@@ -10,6 +10,25 @@ from typing import Optional, Union, Any
 
 logger = logging.getLogger("LAFHandler")
 
+_LAF_PORTAL_BASE = "https://lawyer.laf.org.tw/lafcsp"
+_LAF_PORTAL_MANUAL_LINKS = {
+    "finance": {
+        "label": "對帳單／帳務查詢",
+        "url": f"{_LAF_PORTAL_BASE}/toFinance",
+        "note": "另有整合登入；僅提供入口，不代填或送出。",
+    },
+    "leave": {
+        "label": "律師請假",
+        "url": f"{_LAF_PORTAL_BASE}/toLawyerLeave",
+        "note": "會變更官網資料；保留人工操作與確認。",
+    },
+}
+
+
+def laf_portal_manual_links() -> dict:
+    """Return manual-only official links without authentication material."""
+    return {key: dict(value) for key, value in _LAF_PORTAL_MANUAL_LINKS.items()}
+
 
 def laf_report_command_help() -> str:
     """Return help text for LAF report natural language commands."""
@@ -22,6 +41,13 @@ def laf_report_command_help() -> str:
         "4. `[當事人L]二階段回報`\n"
         "5. `蔡旭欽結案回報 原因本案無閱卷必要`\n\n"
         "6. `[當事人F]受扶助人撤回回報 原因申請人撤回`\n\n"
+        "其他官網流程目前提供安全預填與預覽（不自動存檔/送出）：\n"
+        "- 受扶助人抱怨、終止撤銷確定酬金、律師酬金覆議\n"
+        "- 保全程序保證書、停止強制執行保證書\n"
+        "- 訴訟標的金額意見書、事件終結後訴訟費用、陪偵紀錄\n\n"
+        "保留人工操作的官網入口：\n"
+        f"- 對帳單／帳務查詢：{_LAF_PORTAL_MANUAL_LINKS['finance']['url']}\n"
+        f"- 律師請假：{_LAF_PORTAL_MANUAL_LINKS['leave']['url']}（不代填、不送出）\n\n"
         "也可用結構化寫法：\n"
         "- `法扶回報 <開辦|疑義|費用|二階段|結案|撤回> <姓名或案號> [原因/說明 ...]`\n"
         "- `法扶回報 疑義 1140728-K-002 原因 資力不合標準`\n\n"
@@ -58,6 +84,14 @@ def detect_laf_report_action(text: str) -> tuple[str, str]:
     s = (text or "").strip()
     low = s.lower()
     rules = [
+        (("扶助事件確定終結後訴訟費用", "事件終結後訴訟費用"), ("final_litigation_fee", "事件終結後訴訟費用")),
+        (("停止強制執行保證書",), ("enforcement_guarantee", "停止強制執行保證書")),
+        (("保全程序保證書",), ("preservation_guarantee", "保全程序保證書")),
+        (("訴訟標的金額控管法律意見書", "訴訟標的金額意見書"), ("subject_amount_opinion", "訴訟標的金額意見書")),
+        (("終止撤銷確定酬金", "終止撤銷"), ("termination", "終止撤銷確定酬金")),
+        (("律師酬金覆議", "酬金覆議"), ("fee_review", "律師酬金覆議")),
+        (("受扶助人抱怨", "扶助人抱怨"), ("complaint", "受扶助人抱怨")),
+        (("陪偵紀錄", "陪訊紀錄"), ("police_attendance", "陪偵紀錄")),
         (("訴訟中費用支付", "訴訟中費用", "費用支付"), ("fee", "費用支付")),
         (("二階段", "附條件"), ("condition", "二階段")),
         (("遵期開辦", "開辦", "開案"), ("go_live", "開辦")),
@@ -107,6 +141,15 @@ _ACTION_NAME_TOKENS = {
     "結案",
     "報結",
     "撤回",
+    "受扶助人抱怨",
+    "終止撤銷確定酬金",
+    "律師酬金覆議",
+    "保全程序保證書",
+    "停止強制執行保證書",
+    "訴訟標的金額控管法律意見書",
+    "訴訟標的金額意見書",
+    "事件終結後訴訟費用",
+    "陪偵紀錄",
 }
 
 
@@ -121,9 +164,24 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     if not text:
         return None
 
+    # Management/reporting phrases are not single-case portal actions.  Without
+    # this guard, "法扶未開辦掃描" can be tokenized as client_name="未 掃描" and
+    # accidentally launch the go-live workflow.
+    if any(k in text for k in ("掃描", "巡檢", "稽核", "清單", "統計", "批次", "待辦提醒")):
+        if not re.search(r"\d{6,8}-[A-Za-z]-\d{3}|\b\d{4}-\d{4}\b", text):
+            return None
+
     # 含法扶案號格式（XXXXXXX-X-XXX）也視為法扶指令
     _has_laf_no = bool(re.search(r"\d{6,8}-[A-Za-z]-\d{3}", text))
-    looks_like_laf = _has_laf_no or any(k in text for k in ("法扶", "回報", "報結", "開辦", "疑義", "二階段", "費用支付", "訴訟中費用", "撤回", "結案"))
+    looks_like_laf = _has_laf_no or any(
+        k in text
+        for k in (
+            "法扶", "回報", "報結", "開辦", "疑義", "二階段",
+            "費用支付", "訴訟中費用", "撤回", "結案", "抱怨",
+            "終止撤銷", "酬金覆議", "保證書", "訴訟標的金額",
+            "事件終結後訴訟費用", "陪偵紀錄", "陪訊紀錄",
+        )
+    )
     if not looks_like_laf:
         return None
 
@@ -136,6 +194,7 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
     m_reason = re.search(r"(?:原因|說明|備註|理由)\s*(?:是|為|:|：)?\s*(.+)$", text)
     if m_reason:
         reason = (m_reason.group(1) or "").strip()
+    target_text = text[: m_reason.start()].strip() if m_reason else text
 
     # IDs
     laf_case_no = ""
@@ -150,29 +209,44 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
 
     # explicit target by labels
     client_name = ""
-    m_bracketed_prefix = re.match(r"^\s*(\[[^\[\]\n]{1,60}\])", text)
+    m_bracketed_prefix = re.match(r"^\s*(\[[^\[\]\n]{1,60}\])", target_text)
     if m_bracketed_prefix:
         client_name = m_bracketed_prefix.group(1).strip()
 
     m_client = re.search(
-        r"(?:受扶助人|當事人|姓名|名字)\s*(?:是|為|:|：)?\s*([^\n,，。；;]+?)\s*(?=(?:原因|說明|備註|理由|$))",
-        text,
+        r"(?:受扶助人(?!抱怨)|當事人|姓名|名字)\s*(?:是|為|:|：)?\s*([^\n,，。；;]+?)\s*(?=(?:原因|說明|備註|理由|$))",
+        target_text,
     )
     if not client_name and m_client:
         _candidate_name = _clean_client_name(m_client.group(1) or "")
         if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
             client_name = _candidate_name
 
+    # Contextual follow-up such as:
+    # 「20260617 ... 民事裁定（劉亞箖；主文：...）」即為結案文件。
+    # The target is inside the filename parentheses; "即為" is not a person.
+    if not client_name and action == "closing" and any(k in text for k in ("即為結案文件", "就是結案文件", "作為結案文件")):
+        for inner in re.findall(r"[（(]([^（）()\n]{1,160})[）)]", text):
+            name_part = re.split(r"[；;，,：:]", inner, maxsplit=1)[0].strip()
+            _candidate_name = _clean_client_name(name_part)
+            if _candidate_name and not _looks_like_laf_action_name(_candidate_name):
+                client_name = _candidate_name
+                break
+
+    if action == "closing" and not (client_name or laf_case_no or case_number):
+        if "結案文件" in target_text and any(k in target_text for k in ("即為", "就是", "作為")):
+            return None
+
     # natural phrase fallback: 「蕭仁俊開辦回報」
     if not client_name:
         m_inline = re.search(
-            r"(?:幫我(?:做)?|請(?:幫)?|幫)?\s*([一-龥A-Za-z][一-龥A-Za-z0-9_.\- ]{1,60}?)\s*(?:的)?(?:開辦|疑義|訴訟中費用支付|訴訟中費用|費用支付|二階段|結案|報結|撤回)(?:回報)?",
-            text,
+            r"(?:幫我(?:做)?|請(?:幫)?|幫)?\s*([一-龥A-Za-z][一-龥A-Za-z0-9_.\- ]{1,60}?)\s*(?:的)?(?:事件終結後訴訟費用|停止強制執行保證書|保全程序保證書|訴訟標的金額(?:控管)?法律意見書|終止撤銷確定酬金|律師酬金覆議|受扶助人抱怨|陪[偵訊]紀錄|開辦|疑義|訴訟中費用支付|訴訟中費用|費用支付|二階段|結案|報結|撤回)(?:回報)?",
+            target_text,
         )
         if m_inline:
             _candidate_name = _clean_client_name(m_inline.group(1) or "")
             # 排除常見非人名詞彙
-            _NOT_NAMES = {"案件", "案號", "法扶", "準備", "請", "幫", "做", "處理", "確認", "正式", "先", "這個", "那個"}
+            _NOT_NAMES = {"案件", "案號", "法扶", "準備", "請", "幫", "做", "處理", "確認", "正式", "先", "這個", "那個", "即為", "就是", "結案文件"}
             # 排除含案號片段、純數字、或非人名的候選
             _is_noise = (
                 _candidate_name in _NOT_NAMES
@@ -185,8 +259,17 @@ def parse_laf_report_payload(raw_text: str) -> Optional[dict]:
 
     # token fallback for "法扶回報 開辦 蕭仁俊 ..."
     if not client_name and not laf_case_no and not case_number:
-        cleaned = text
-        for token in ("法扶回報", "回報法扶", "法扶", "回報", "幫我", "請", "做", "處理", "先", "暫存", "存檔", "開辦", "疑義", "訴訟中費用支付", "訴訟中費用", "費用支付", "二階段", "結案", "報結", "撤回", "原因", "說明", "備註", "理由"):
+        cleaned = target_text
+        for token in (
+            "法扶回報", "回報法扶", "法扶", "回報", "幫我", "請",
+            "做", "處理", "先", "暫存", "存檔", "事件終結後訴訟費用",
+            "停止強制執行保證書", "保全程序保證書",
+            "訴訟標的金額控管法律意見書", "訴訟標的金額意見書",
+            "終止撤銷確定酬金", "律師酬金覆議", "受扶助人抱怨",
+            "陪偵紀錄", "陪訊紀錄", "開辦", "疑義", "訴訟中費用支付",
+            "訴訟中費用", "費用支付", "二階段", "結案", "報結",
+            "撤回", "原因", "說明", "備註", "理由",
+        ):
             cleaned = cleaned.replace(token, " ")
         cleaned = re.sub(r"(\d{6,8}-[A-Za-z]-\d{3})", " ", cleaned)
         cleaned = re.sub(r"\b(\d{4}-\d{4})\b", " ", cleaned)
@@ -245,10 +328,11 @@ _STATUS_UPDATE_PATTERNS = [
 
 _STATUS_MAP = {
     "開辦": "進行中",
-    "報結": "已報結",
-    "結案": "已報結",
-    "撤回": "已報結",
-    "撤案": "已報結",
+    # 主狀態統一用「已結案」；法扶流程細節另由 legal_aid_status 表示。
+    "報結": "已結案",
+    "結案": "已結案",
+    "撤回": "已結案",
+    "撤案": "已結案",
 }
 
 # 案由簡寫對照：簡寫 → 正式案由中的關鍵字（用於 LIKE 搜尋）

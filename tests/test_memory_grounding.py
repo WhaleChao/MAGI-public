@@ -153,6 +153,57 @@ def test_simple_casual_chat_skips_memory_recall(monkeypatch):
     assert calls["recall"] == 0
 
 
+def test_coherence_fallback_distinguishes_topic_overlap_without_embeddings(monkeypatch):
+    monkeypatch.setattr(grounded_ai, "_embedding_cache", lambda _text: (0.0, 0.0))
+
+    assert grounded_ai._is_incoherent_response(
+        "我覺得綠茶滿好喝的，你呢？",
+        "我沒有味覺，但很多人喜歡綠茶的清爽口感。",
+    ) is False
+    assert grounded_ai._is_incoherent_response(
+        "我覺得綠茶好喝，你覺得呢？",
+        "我覺得咖啡也很好喝，今天適合整理桌面的檔案。",
+    ) is True
+
+
+def test_coherence_fallback_rejects_incidental_two_character_overlap(monkeypatch):
+    monkeypatch.setattr(grounded_ai, "_embedding_cache", lambda _text: (0.0, 0.0))
+
+    assert grounded_ai._is_incoherent_response(
+        "請幫我檢查明天的法院行程",
+        "明天適合去公園散步，記得帶雨傘。",
+    ) is True
+    assert grounded_ai._is_incoherent_response(
+        "請分析這份判決中的證據能力",
+        "這份文件需要先下載，稍後再處理其他工作。",
+    ) is True
+
+
+def test_coherence_fallback_does_not_treat_leading_intent_as_topic(monkeypatch):
+    monkeypatch.setattr(grounded_ai, "_embedding_cache", lambda _text: (0.0, 0.0))
+
+    assert grounded_ai._is_incoherent_response(
+        "請分析判決",
+        "我會分析資料，接著整理桌面的其他文件。",
+    ) is True
+    assert grounded_ai._is_incoherent_response(
+        "請確認庭期",
+        "我會確認檔案，稍後完成桌面的整理工作。",
+    ) is True
+
+
+def test_coherence_check_fails_closed_when_embedding_lookup_raises(monkeypatch):
+    def _raise_embedding_error(_text):
+        raise RuntimeError("embedding unavailable")
+
+    monkeypatch.setattr(grounded_ai, "_embedding_cache", _raise_embedding_error)
+
+    assert grounded_ai._is_incoherent_response(
+        "請幫我檢查法院行程",
+        "這是一段長度足夠但完全無法完成一致性驗證的回覆。",
+    ) is True
+
+
 def test_simple_memory_recall_query_keeps_recall_enabled(monkeypatch):
     calls = {"recall": 0}
 

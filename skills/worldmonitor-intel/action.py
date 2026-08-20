@@ -36,6 +36,14 @@ if str(_MAGI_ROOT) not in sys.path:
 from api.runtime_paths import ensure_orch_on_sys_path, get_magi_root_dir
 
 MAGI_DIR = str(get_magi_root_dir())
+MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or Path(MAGI_DIR) / "static"
+).expanduser()
+
+
+def _mutable_static_dir() -> Path:
+    configured = os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip()
+    return Path(configured).expanduser() if configured else Path(MAGI_DIR) / "static"
 ensure_orch_on_sys_path()
 
 logger = logging.getLogger("worldmonitor-intel")
@@ -61,6 +69,22 @@ RSS_FEEDS = {
     "NPR World":       "https://feeds.npr.org/1004/rss.xml",
 }
 
+_rss_override = os.environ.get("MAGI_WORLDMONITOR_RSS_FEEDS_JSON", "").strip()
+if _rss_override:
+    try:
+        _parsed_feeds = json.loads(_rss_override)
+        if not isinstance(_parsed_feeds, dict) or not _parsed_feeds:
+            raise ValueError("RSS override must be a non-empty object")
+        RSS_FEEDS = {
+            str(name): str(url)
+            for name, url in _parsed_feeds.items()
+            if str(name).strip() and str(url).startswith(("http://", "https://"))
+        }
+        if not RSS_FEEDS:
+            raise ValueError("RSS override has no HTTP(S) feed")
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid MAGI_WORLDMONITOR_RSS_FEEDS_JSON: {exc}") from exc
+
 FINNHUB_MARKET_SYMBOLS = ["AAPL", "TSMC", "NVDA", "SPY", "^GSPC"]
 STOOQ_MARKET_SYMBOLS = {
     "AAPL": "aapl.us",
@@ -69,6 +93,22 @@ STOOQ_MARKET_SYMBOLS = {
     "SPY": "spy.us",
     "SPX": "^spx",
 }
+_stooq_override = os.environ.get("MAGI_WORLDMONITOR_STOOQ_SYMBOLS_JSON", "").strip()
+if _stooq_override:
+    try:
+        _parsed_symbols = json.loads(_stooq_override)
+        if not isinstance(_parsed_symbols, dict) or not _parsed_symbols:
+            raise ValueError("Stooq override must be a non-empty object")
+        STOOQ_MARKET_SYMBOLS = {
+            str(name): str(symbol)
+            for name, symbol in _parsed_symbols.items()
+            if str(name).strip() and str(symbol).strip()
+        }
+        if not STOOQ_MARKET_SYMBOLS:
+            raise ValueError("Stooq override has no symbols")
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid MAGI_WORLDMONITOR_STOOQ_SYMBOLS_JSON: {exc}") from exc
+STOOQ_BASE_URL = os.environ.get("MAGI_WORLDMONITOR_STOOQ_BASE_URL", "https://stooq.com").rstrip("/")
 
 # ---------------------------------------------------------------------------
 # HTTP helpers
@@ -252,7 +292,7 @@ def _collect_stooq_markets(status: Dict) -> tuple[Dict, Dict]:
     quotes_ok = 0
     for display_symbol, stooq_symbol in STOOQ_MARKET_SYMBOLS.items():
         query_symbol = urllib.parse.quote(stooq_symbol, safe="")
-        url = f"https://stooq.com/q/l/?s={query_symbol}&f=sd2t2ohlcv&h&e=csv"
+        url = f"{STOOQ_BASE_URL}/q/l/?s={query_symbol}&f=sd2t2ohlcv&h&e=csv"
         raw = _fetch(url)
         if not raw:
             continue
@@ -348,9 +388,9 @@ def _reason_with_melchior(prompt: str, max_tokens: int = 2048) -> str:
 # ---------------------------------------------------------------------------
 def _store_to_memory(content: str, metadata: Dict = None):
     # Always save to file first so /intel page has fresh content
-    report_dir = os.path.join(MAGI_DIR, "static", "worldmonitor_reports")
-    os.makedirs(report_dir, exist_ok=True)
-    filepath = os.path.join(report_dir, f"intel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+    report_dir = _mutable_static_dir() / "worldmonitor_reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    filepath = str(report_dir / f"intel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)

@@ -1,0 +1,124 @@
+        <section id="documentReuse" class="view">
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>1. 新案件資料</h3>
+                        <div class="section-note">這些欄位會寫進新產生的 Word 檔。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" id="reuseCaseSearchBtn">搜尋新案件</button>
+                        <button class="btn primary" id="reuseCaseLoadBtn">載入新案件</button>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseCaseSearch">搜尋要套用的新案件</label>
+                        <input id="reuseCaseSearch" placeholder="當事人 / 案號 / 法扶案號">
+                    </div>
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseCaseSelect">選擇新案件</label>
+                        <select id="reuseCaseSelect">
+                            <option value="">請先搜尋新案件</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field-grid cols-4" style="margin-top:12px;">
+                    <div class="field">
+                        <label for="reuseDocType">書狀名稱</label>
+                        <input id="reuseDocType" placeholder="民事準備書狀">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCaseNumber">寫入新檔的案號</label>
+                        <input id="reuseCaseNumber" placeholder="法院案號或內部案號">
+                    </div>
+                    <div class="field">
+                        <label for="reuseDivision">寫入新檔的股別</label>
+                        <input id="reuseDivision" placeholder="義股 / 民一庭">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCourtName">寫入新檔的法院 / 地檢署</label>
+                        <input id="reuseCourtName" placeholder="臺灣花蓮地方法院">
+                    </div>
+                    <div class="field">
+                        <label for="reuseReason">寫入新檔的案由</label>
+                        <input id="reuseReason" placeholder="損害賠償 / 更生">
+                    </div>
+                    <div class="field">
+                        <label for="reusePlaintiff">寫入新檔的我方</label>
+                        <input id="reusePlaintiff" placeholder="原告 / 聲請人 / 被告">
+                    </div>
+                    <div class="field">
+                        <label for="reuseDefendant">寫入新檔的對造</label>
+                        <input id="reuseDefendant" placeholder="被告 / 相對人 / 告訴人">
+                    </div>
+                    <div class="field">
+                        <label for="reuseSuggestedName">新檔檔名</label>
+                        <input id="reuseSuggestedName" placeholder="可留空自動產生">
+                    </div>
+                </div>
+                <div id="reuseStatus" class="status-banner">先搜尋並載入新案件。</div>
+            </div>
+
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>2. 舊書狀底稿</h3>
+                        <div class="section-note">只列「我方歷次書狀」資料夾內的 Word 檔。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn" id="reuseSearchBtn">搜尋舊書狀</button>
+                        <button class="btn ghost" id="reuseClearBtn">清除底稿</button>
+                    </div>
+                </div>
+                <div class="field-grid cols-4">
+                    <div class="field" style="grid-column: span 2;">
+                        <label for="reuseQ">搜尋要拿來改的舊書狀</label>
+                        <input id="reuseQ" placeholder="填上方書狀名稱後會自動搜尋；也可手動輸入">
+                    </div>
+                    <div class="field">
+                        <label for="reuseCaseFilter">只看某個舊案號</label>
+                        <input id="reuseCaseFilter" placeholder="可留空搜尋全部">
+                    </div>
+                    <div class="field">
+                        <label for="reuseKind">搜尋範圍</label>
+                        <select id="reuseKind">
+                            <option value="own_pleading_word">我方歷次書狀 Word</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin-top:8px;">
+                    <table>
+                        <thead><tr><th>底稿</th><th>舊案號</th><th>類型</th><th>檔名</th><th>路徑</th></tr></thead>
+                        <tbody id="reuseDocsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-head">
+                    <div>
+                        <h3>3. 檢查後產生</h3>
+                        <div class="section-note">確認新案件資料與舊書狀底稿後，MAGI 會另存新 Word 檔，不覆蓋舊檔。</div>
+                    </div>
+                    <div class="inline-actions">
+                        <button class="btn primary" id="reuseRunBtn">產生新書狀</button>
+                    </div>
+                </div>
+                <div class="grid-2" style="margin-top:10px;">
+                    <div>
+                        <div class="muted" id="reuseSelectedLabel">尚未選取舊書狀底稿</div>
+                        <div id="reuseSelected" class="selection-list" style="margin-top:8px;"></div>
+                    </div>
+                    <div>
+                        <div class="muted">即將寫入新檔的內容</div>
+                        <div id="reusePreview" class="selection-list" style="margin-top:8px;"></div>
+                    </div>
+                </div>
+                <div style="margin-top:10px;">
+                    <div class="muted">產生結果</div>
+                    <div id="reuseResult" class="selection-list" style="margin-top:8px;">
+                        <div class="muted">尚未產生新檔。</div>
+                    </div>
+                </div>
+            </div>
+        </section>

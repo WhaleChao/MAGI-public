@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from skills.catalog import iter_top_level_skill_dirs
+from skills.overlay import runtime_skill_dir, skill_overlay_dir
 
 logger = logging.getLogger("SkillPlugin")
 
@@ -114,7 +115,7 @@ class SkillRegistry:
         self._capability_guides: dict[str, str] = {}
         self._skill_meta: dict[str, SkillMeta] = {}
         self._compiled_patterns: dict[str, re.Pattern] = {}
-        self._skills_dirs = skills_dirs or [f"{_MAGI_ROOT}/skills"]
+        self._skills_dirs = skills_dirs or [str(skill_overlay_dir()), f"{_MAGI_ROOT}/skills"]
         self._discovered = False
 
     # ── Registration ──────────────────────────────────────────────
@@ -260,15 +261,20 @@ class SkillRegistry:
         """
         if self._discovered and not force:
             return len(self._skill_meta)
+        if force:
+            self._skill_meta.clear()
 
         count = 0
+        seen_folders: set[str] = set()
         for skills_dir in self._skills_dirs:
-            if not os.path.isdir(skills_dir):
+            if not os.path.isdir(skills_dir) or os.path.islink(skills_dir):
                 continue
-            source = "openclaw" if "openclaw" in skills_dir else "magi"
+            source = "openclaw" if "openclaw" in skills_dir else ("overlay" if os.path.abspath(skills_dir) == os.path.abspath(str(skill_overlay_dir())) else "magi")
             try:
                 for entry in iter_top_level_skill_dirs(skills_dir):
                     folder = entry.name
+                    if folder in seen_folders:
+                        continue
                     skill_md = os.path.join(str(entry), "SKILL.md")
                     meta = self._parse_skill_md(skill_md, folder, source)
                     if meta:
@@ -278,6 +284,7 @@ class SkillRegistry:
                         elif meta.name in self._direct_handlers:
                             meta.dispatch_mode = "direct"
                         self._skill_meta[meta.name] = meta
+                        seen_folders.add(folder)
                         count += 1
             except Exception as e:
                 logger.warning("Error scanning %s: %s", skills_dir, e)
@@ -562,7 +569,7 @@ class SkillRegistry:
                 folder, message,
                 timeout_sec=60,
                 auto_repair=False,
-                auto_install_deps=True,
+                auto_install_deps=False,
             )
             if result.get("success"):
                 output = (result.get("output") or "").strip()
@@ -621,6 +628,17 @@ class SkillRegistry:
         return None
 
     def _resolve_action_path(self, folder: str) -> str:
+        try:
+            runtime_dir = runtime_skill_dir(folder)
+            if any(
+                os.path.abspath(str(runtime_dir)).startswith(os.path.abspath(root) + os.sep)
+                for root in self._skills_dirs
+            ):
+                action_path = runtime_dir / "action.py"
+                if action_path.exists():
+                    return str(action_path)
+        except ValueError:
+            pass
         for skills_dir in self._skills_dirs:
             action_path = os.path.join(skills_dir, folder, "action.py")
             if os.path.exists(action_path):
@@ -659,7 +677,7 @@ class SkillRegistry:
                     with open(defs_path, "r", encoding="utf-8") as f:
                         data = json.load(f) or {}
                     for tool in data.get("tools") or []:
-                        existing_tools[tool.get("name", "")] = tool
+                        existing_tools.setdefault(tool.get("name", ""), tool)
                 except Exception:
                     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 395, exc_info=True)
 

@@ -69,7 +69,7 @@ PRACTICE_AREA_PROFILES: list[dict[str, Any]] = [
         "key": "civil_profile",
         "title": "民事案件設定檔",
         "scope": "一般民事、強制執行、家事",
-        "rules": ["同名不同程序不得混案", "強制執行可用判決書資料夾內執行命令作為結案依據", "書狀引用需回到來源文件"],
+        "rules": ["同名不同程序不得混案", "強制執行可用判決書或終局裁定及處分資料夾內執行命令作為結案依據，舊判決書資料夾相容讀取", "書狀引用需回到來源文件"],
     },
 ]
 
@@ -161,9 +161,18 @@ def detect_legal_workflow(
     profile = select_practice_profile(combined)
     must_use_tools: list[str] = []
     if agent.get("key") == "legal_research_agent":
-        must_use_tools = ["local_legal_insights", "taiwan_legal_mcp_if_available"]
+        must_use_tools = [
+            "local_legal_insights",
+            "legaltech_taiwan_law_mcp_if_privacy_safe",
+            "taiwan_legal_mcp_if_available",
+        ]
     elif agent.get("key") == "pleading_review_agent":
-        must_use_tools = ["selected_reference_documents", "same_reason_learning", "source_quality_check"]
+        must_use_tools = [
+            "selected_reference_documents",
+            "same_reason_learning",
+            "legaltech_taiwan_law_mcp_if_privacy_safe",
+            "source_quality_check",
+        ]
     elif agent.get("key") == "laf_compliance_agent":
         must_use_tools = ["laf_case_database", "calendar_activity_counter", "folder_status_check"]
     elif agent.get("key") == "matter_lifecycle_agent":

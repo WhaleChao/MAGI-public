@@ -3,8 +3,8 @@
 
 Chandra is layout-aware and useful for hard scanned PDFs, but its model backend
 normally requires a vLLM server/GPU or a large HuggingFace model. MAGI therefore
-keeps it as an explicitly enabled provider and never imports Chandra into the
-main process.
+keeps it as an explicitly enabled private-deployment provider and never imports
+Chandra into the main process.
 """
 
 from __future__ import annotations
@@ -24,6 +24,10 @@ _DEFAULT_CLI_CANDIDATES = (
     "/opt/magi_chandra_venv/bin/chandra",
 )
 
+_MODEL_ID = "datalab-to/chandra-ocr-2"
+_MODEL_FAMILY = "Chandra OCR 2"
+_MODEL_SOURCE_NOTE = "upstream model card is tagged qwen3_5 and credits Qwen 3.5"
+
 
 @dataclass
 class ChandraProbe:
@@ -32,6 +36,11 @@ class ChandraProbe:
     cli_path: str = ""
     method: str = "vllm"
     api_base: str = ""
+    private_only: bool = True
+    model_id: str = _MODEL_ID
+    model_family: str = _MODEL_FAMILY
+    uses_qwen_backend: bool = True
+    model_source_note: str = _MODEL_SOURCE_NOTE
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -40,6 +49,11 @@ class ChandraProbe:
             "cli_path": self.cli_path,
             "method": self.method,
             "api_base": self.api_base,
+            "private_only": self.private_only,
+            "model_id": self.model_id,
+            "model_family": self.model_family,
+            "uses_qwen_backend": self.uses_qwen_backend,
+            "model_source_note": self.model_source_note,
         }
 
 
@@ -62,8 +76,20 @@ def enabled() -> bool:
     return _env_truthy("MAGI_CHANDRA_OCR_ENABLE")
 
 
+def private_deployment_acknowledged() -> bool:
+    deployment_mode = os.environ.get("MAGI_DEPLOYMENT_MODE", "").strip().lower()
+    if deployment_mode in {"private", "priv", "internal", "lawfirm"}:
+        return True
+    return _env_truthy("MAGI_CHANDRA_PRIVATE_DEPLOYMENT") or _env_truthy("MAGI_PRIVATE_DEPLOYMENT")
+
+
 def model_license_accepted() -> bool:
     return _env_truthy("MAGI_CHANDRA_ACCEPT_MODEL_LICENSE")
+
+
+def qwen_backend_accepted() -> bool:
+    """Chandra OCR 2 is upstream-tagged qwen3_5; require an explicit private ack."""
+    return _env_truthy("MAGI_CHANDRA_ACCEPT_QWEN_BACKEND")
 
 
 def method() -> str:
@@ -113,12 +139,28 @@ def probe(check_server: bool = True) -> ChandraProbe:
     base = api_base()
     if not enabled():
         return ChandraProbe(False, "MAGI_CHANDRA_OCR_ENABLE is not enabled", cli, selected_method, base)
+    if not private_deployment_acknowledged():
+        return ChandraProbe(
+            False,
+            "Chandra OCR is private-only; set MAGI_CHANDRA_PRIVATE_DEPLOYMENT=1 or MAGI_DEPLOYMENT_MODE=private",
+            cli,
+            selected_method,
+            base,
+        )
     if not cli:
         return ChandraProbe(False, "chandra CLI not found", "", selected_method, base)
     if not model_license_accepted():
         return ChandraProbe(
             False,
             "MAGI_CHANDRA_ACCEPT_MODEL_LICENSE is required before model inference",
+            cli,
+            selected_method,
+            base,
+        )
+    if not qwen_backend_accepted():
+        return ChandraProbe(
+            False,
+            "Chandra OCR 2 requires explicit Qwen-backend acknowledgement: set MAGI_CHANDRA_ACCEPT_QWEN_BACKEND=1",
             cli,
             selected_method,
             base,
@@ -173,6 +215,7 @@ def run_pdf_page(pdf_path: str, page_num: int = 0, timeout_sec: Optional[float] 
             "--batch-size",
             "1",
             "--no-images",
+            "--no-headers-footers",
             "--no-html",
         ]
         env = os.environ.copy()

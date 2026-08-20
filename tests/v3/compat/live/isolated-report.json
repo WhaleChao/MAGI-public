@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "report_id": "v3-isolated-smoke-report-v1",
+  "plan_id": "v3-isolated-smoke-v1",
+  "plan_sha256": "82acad31b82626ef6beedbfe7a8cdc3867098328affe639d0dd39f32498a0543",
+  "started_at": "2026-07-14T02:11:00Z",
+  "finished_at": "2026-07-14T02:11:01Z",
+  "status": "incomplete",
+  "production_touched": false,
+  "environment_attestation": {
+    "ports": {"main": 5102, "tools": 5103, "admin": 8188},
+    "production_services_started": false,
+    "external_ingress_enabled": false,
+    "writers_enabled": false,
+    "scheduler_enabled": false,
+    "webhook_consumers_enabled": false,
+    "model_switch_enabled": false,
+    "production_db_allowed": false,
+    "nas_allowed": false,
+    "channel_delivery_allowed": false
+  },
+  "summary": {"total": 2, "passed": 0, "failed": 0, "blocked": 1, "skipped": 1},
+  "checks": [
+    {
+      "check_id": "main-livez",
+      "status": "skipped",
+      "duration_ms": 0,
+      "evidence": ["Plan schema validated offline; no service was started by this harness"],
+      "error": null
+    },
+    {
+      "check_id": "external-chat-contract-only",
+      "status": "blocked",
+      "duration_ms": 0,
+      "evidence": ["external_commit is forbidden by the isolated validation gate"],
+      "error": "LIVE side effect intentionally not attempted"
+    }
+  ],
+  "unproven_gaps": [
+    "Actual HTTP health response is not proven until a separately authorized isolated service run",
+    "External channel delivery is intentionally untested"
+  ]
+}

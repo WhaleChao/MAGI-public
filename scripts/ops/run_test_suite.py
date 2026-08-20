@@ -14,6 +14,53 @@ from typing import Any
 
 MAGI_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MATRIX = MAGI_ROOT / "config" / "test_matrix.json"
+_RUNTIME_OVERRIDE = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+RUNTIME_DIR = Path(_RUNTIME_OVERRIDE or MAGI_ROOT / ".runtime").expanduser()
+
+
+def load_bound_test_environment() -> str:
+    """Load the verified V3 dotenv for direct/manual suite execution.
+
+    Services normally inherit these values from the supervisor.  A human or
+    acceptance harness can invoke this runner with only the launchd bindings,
+    though, so the runner must apply the same hash-bound input contract before
+    deciding that a required credential is missing.  Explicit process values
+    continue to win and legacy/V2 invocations without a bound file are left
+    unchanged.
+    """
+
+    raw_path = os.environ.get("MAGI_ENV_FILE", "").strip()
+    expected_sha256 = os.environ.get("MAGI_ENV_FILE_SHA256", "").strip().lower()
+    if not raw_path and not expected_sha256:
+        return ""
+    if not raw_path or not expected_sha256:
+        raise RuntimeError("bound test environment requires both path and SHA-256")
+    if str(MAGI_ROOT) not in sys.path:
+        sys.path.insert(0, str(MAGI_ROOT))
+    from dotenv import dotenv_values
+    from magi_v3.service_runtime import verify_environment_file
+
+    verified = verify_environment_file(Path(raw_path), expected_sha256)
+    loaded = dotenv_values(dotenv_path=verified, encoding="utf-8", interpolate=True)
+    if not isinstance(loaded, dict):
+        raise RuntimeError("bound test environment is invalid")
+    for key, value in loaded.items():
+        if not isinstance(key, str) or not key or "\x00" in key:
+            raise RuntimeError("bound test environment contains an invalid variable name")
+        if value is None:
+            continue
+        if not isinstance(value, str) or "\x00" in value:
+            raise RuntimeError(f"bound test environment variable {key} is invalid")
+        os.environ.setdefault(key, value)
+    return str(verified)
+
+
+def resolve_runtime_output(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute() or not _RUNTIME_OVERRIDE:
+        return path
+    relative = Path(*path.parts[1:]) if path.parts and path.parts[0] == ".runtime" else path
+    return RUNTIME_DIR / relative
 
 
 @dataclass
@@ -64,6 +111,8 @@ def resolve_command(command: list[Any]) -> list[str]:
         text = str(part)
         text = text.replace("{python}", sys.executable)
         text = text.replace("{root}", str(MAGI_ROOT))
+        if _RUNTIME_OVERRIDE and (text == ".runtime" or text.startswith(".runtime/")):
+            text = str(resolve_runtime_output(text))
         resolved.append(text)
     return resolved
 
@@ -85,7 +134,7 @@ def tail(text: str, limit: int = 4000) -> str:
     return text[-limit:]
 
 
-def run_check(check: dict[str, Any], *, dry_run: bool) -> CheckResult:
+def run_check(check: dict[str, Any], *, dry_run: bool, suite: str = "") -> CheckResult:
     cid = str(check.get("id") or check.get("name") or "unnamed")
     name = str(check.get("name") or cid)
     command = resolve_command(check.get("command") or [])
@@ -99,9 +148,13 @@ def run_check(check: dict[str, Any], *, dry_run: bool) -> CheckResult:
         return CheckResult(id=cid, name=name, ok=True, skipped=True, command=command, message="dry-run")
 
     env = os.environ.copy()
+    if "live" in (suite or "").lower():
+        env["MAGI_ENABLE_LIVE_TESTS"] = "1"
     extra_env = check.get("env")
     if isinstance(extra_env, dict):
         env.update({str(k): str(v) for k, v in extra_env.items()})
+    current_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(MAGI_ROOT) + (os.pathsep + current_pythonpath if current_pythonpath else "")
 
     timeout = int(check.get("timeout_sec") or 300)
     start = time.time()
@@ -174,7 +227,7 @@ def run_suite(matrix: dict[str, Any], matrix_path: Path, suite: str, *, dry_run:
     print(f"checks: {len(checks)}")
     print(f"dry_run: {dry_run}")
     for check in checks:
-        result = run_check(check, dry_run=dry_run)
+        result = run_check(check, dry_run=dry_run, suite=suite)
         report.total += 1
         if result.skipped:
             report.skipped += 1
@@ -214,6 +267,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json-out", help="Write suite result JSON.")
     args = parser.parse_args(argv)
 
+    try:
+        load_bound_test_environment()
+    except Exception as exc:
+        raise SystemExit(f"Bound test environment verification failed: {exc}") from exc
+
     matrix_path = Path(args.matrix)
     if not matrix_path.is_absolute():
         matrix_path = MAGI_ROOT / matrix_path
@@ -225,7 +283,7 @@ def main(argv: list[str]) -> int:
 
     report = run_suite(matrix, matrix_path, args.suite, dry_run=args.dry_run)
     if args.json_out:
-        out_path = Path(args.json_out)
+        out_path = resolve_runtime_output(args.json_out)
         if not out_path.is_absolute():
             out_path = MAGI_ROOT / out_path
         out_path.parent.mkdir(parents=True, exist_ok=True)

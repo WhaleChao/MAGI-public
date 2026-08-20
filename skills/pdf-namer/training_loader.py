@@ -20,8 +20,13 @@ logger = logging.getLogger("pdf-namer-loader")
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
+_SKILL_CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SKILL_CODE_DIR not in sys.path:
+    sys.path.insert(0, _SKILL_CODE_DIR)
 
+from state_paths import prepare_write, read_path, state_path
 from api.runtime_paths import get_orch_dir
+from skills.bridge.shared_utils.judgment_folder_names import JUDGMENT_FOLDER_LABEL
 
 # ── DB Config ──
 DB_NAME_DEFAULT = "law_firm_data"
@@ -41,6 +46,7 @@ _RULES_STATUS: Dict[str, object] = {
 TARGET_ARCHIVE_TYPES = [
     "法院通知或程序裁定",
     "對方歷次書狀",
+    JUDGMENT_FOLDER_LABEL,
     "判決書",
     "證據資料",
     "我方歷次書狀",
@@ -78,11 +84,16 @@ def _bootstrap_runtime_credentials() -> None:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 70, exc_info=True)
 
 
-def _get_rules_bundle_path() -> str:
+def _get_rules_bundle_path(*, for_write: bool = False) -> str:
     override = str(os.environ.get("MAGI_PDF_NAMER_RULES_BUNDLE_PATH", "") or "").strip()
-    if override:
+    isolated = bool(
+        str(os.environ.get("MAGI_PDF_NAMER_STATE_DIR", "") or "").strip()
+        or str(os.environ.get("MAGI_V3_STATE_DIR", "") or "").strip()
+    )
+    if override and not (for_write and isolated):
         return override
-    return os.path.join(SKILL_DIR, "db_rules_cache.json")
+    resolver = state_path if for_write else read_path
+    return str(resolver("db_rules_cache.json"))
 
 
 def _rules_bundle_max_age_seconds() -> int:
@@ -359,9 +370,9 @@ def load_doc_rules_from_db(
 
 def _cache_rules(rules: List[Dict]):
     """Persist local bundled rules with schema/version/checksum metadata."""
-    cache_path = _get_rules_bundle_path()
+    cache_path = _get_rules_bundle_path(for_write=True)
     try:
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        prepare_write(cache_path)
         payload = _build_rules_bundle(list(rules or []))
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -474,10 +485,11 @@ def sync_db_to_training() -> Dict:
     db_rules = load_doc_rules_from_db()
     
     # Load existing training data
-    training_path = os.path.join(SKILL_DIR, "training_data.json")
+    training_read_path = read_path("training_data.json")
+    training_path = state_path("training_data.json")
     existing = []
-    if os.path.exists(training_path):
-        with open(training_path, "r", encoding="utf-8") as f:
+    if training_read_path.exists():
+        with open(training_read_path, "r", encoding="utf-8") as f:
             existing = json.load(f)
     
     # Add DB rules as training entries
@@ -500,7 +512,7 @@ def sync_db_to_training() -> Dict:
     merged = existing + db_entries
     
     # Save merged
-    with open(training_path, "w", encoding="utf-8") as f:
+    with open(prepare_write(training_path), "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=2)
     
     return {
@@ -516,6 +528,7 @@ def _map_archive_to_category(archive_type: str) -> str:
     mapping = {
         "法院通知或程序裁定": "法院通知",
         "對方歷次書狀": "書狀_對造",
+        JUDGMENT_FOLDER_LABEL: "判決",
         "判決書": "判決",
         "證據資料": "證據",
         "我方歷次書狀": "書狀_我方",
@@ -612,11 +625,12 @@ def _save_learning_local(
     confidence: float, sample_text: str
 ):
     """Save learning locally when DB is offline."""
-    local_path = os.path.join(SKILL_DIR, "_pending_learns.json")
+    pending_read_path = read_path("_pending_learns.json")
+    local_path = state_path("_pending_learns.json")
     pending = []
-    if os.path.exists(local_path):
+    if pending_read_path.exists():
         try:
-            with open(local_path, "r", encoding="utf-8") as f:
+            with open(pending_read_path, "r", encoding="utf-8") as f:
                 pending = json.load(f)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 386, exc_info=True)
@@ -630,23 +644,24 @@ def _save_learning_local(
         "timestamp": __import__("datetime").datetime.now().isoformat(),
     })
     
-    with open(local_path, "w", encoding="utf-8") as f:
+    with open(prepare_write(local_path), "w", encoding="utf-8") as f:
         json.dump(pending, f, ensure_ascii=False, indent=2)
     logger.info(f"📋 學習紀錄暫存本地: {local_path} ({len(pending)} 筆)")
 
 
 def _append_to_training_data(entry: Dict):
     """Append a single entry to training data."""
-    training_path = os.path.join(SKILL_DIR, "training_data.json")
+    training_read_path = read_path("training_data.json")
+    training_path = state_path("training_data.json")
     data = []
-    if os.path.exists(training_path):
+    if training_read_path.exists():
         try:
-            with open(training_path, "r", encoding="utf-8") as f:
+            with open(training_read_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 411, exc_info=True)
     data.append(entry)
-    with open(training_path, "w", encoding="utf-8") as f:
+    with open(prepare_write(training_path), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -683,12 +698,13 @@ def load_learning_history(limit: int = 50) -> List[Dict]:
 
 def sync_pending_learns() -> int:
     """Sync locally-saved learning records to DB when it comes back online."""
-    local_path = os.path.join(SKILL_DIR, "_pending_learns.json")
-    if not os.path.exists(local_path):
+    pending_read_path = read_path("_pending_learns.json")
+    local_path = state_path("_pending_learns.json")
+    if not pending_read_path.exists():
         return 0
-    
+
     try:
-        with open(local_path, "r", encoding="utf-8") as f:
+        with open(pending_read_path, "r", encoding="utf-8") as f:
             pending = json.load(f)
     except Exception:
         return 0
@@ -720,13 +736,18 @@ def sync_pending_learns() -> int:
         
         if synced == len(pending):
             try:
-                # Respect global no-delete policy (quarantine/keep when enabled)
-                orch_dir = str(get_orch_dir())
-                if orch_dir not in sys.path:
-                    sys.path.insert(0, orch_dir)
-                import safe_fs
-                no_delete = os.environ.get("MAGI_NO_DELETE", "1").strip().lower() in {"1", "true", "yes", "on"}
-                safe_fs.safe_remove(local_path, reason="pdf_namer_pending_learns", allow_delete=(not no_delete))
+                if pending_read_path.resolve(strict=False) != local_path.resolve(strict=False):
+                    # A V3 legacy seed is read-only.  An empty runtime file acts
+                    # as a tombstone so it is not imported repeatedly.
+                    prepare_write(local_path).write_text("[]\n", encoding="utf-8")
+                else:
+                    # Respect global no-delete policy (quarantine/keep when enabled)
+                    orch_dir = str(get_orch_dir())
+                    if orch_dir not in sys.path:
+                        sys.path.insert(0, orch_dir)
+                    import safe_fs
+                    no_delete = os.environ.get("MAGI_NO_DELETE", "1").strip().lower() in {"1", "true", "yes", "on"}
+                    safe_fs.safe_remove(str(local_path), reason="pdf_namer_pending_learns", allow_delete=(not no_delete))
             except Exception:
                 logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 495, exc_info=True)
         

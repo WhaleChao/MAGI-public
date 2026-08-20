@@ -7,10 +7,11 @@ from typing import Dict, List, Tuple
 
 from skills.memory.mem_bridge import remember, remember_batch
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
 
 INDEX_PATH = os.environ.get(
     "MAGI_DOC_VECTOR_INDEX_PATH",
-    f"{_MAGI_ROOT}/.agent/doc_vector_index.json",
+    os.path.join(_AGENT_DIR or os.path.join(_MAGI_ROOT, ".agent"), "doc_vector_index.json"),
 )
 
 

@@ -1,0 +1,2875 @@
+{
+  "counts": {
+    "5002": 280,
+    "5003": 67,
+    "total": 347
+  },
+  "schema_version": 1,
+  "services": {
+    "5002": [
+      {
+        "endpoint": "index",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_admin_observability_support_bundle",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/admin/observability/support-bundle",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_codex_distributed_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/codex-distributed/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_codex_distributed_toggle",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/codex-distributed/toggle",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_drive_case_exclusions_add",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/drive-case-exclusions",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_drive_case_exclusions_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/drive-case-exclusions",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_drive_case_exclusions_remove",
+        "methods": [
+          "DELETE"
+        ],
+        "rule": "/api/drive-case-exclusions",
+        "service": "5002"
+      },
+      {
+        "endpoint": "golem_console.golem_api_keys_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/golem/api-keys",
+        "service": "5002"
+      },
+      {
+        "endpoint": "golem_console.golem_command_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/golem/command",
+        "service": "5002"
+      },
+      {
+        "endpoint": "golem_console.golem_logs_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/golem/logs",
+        "service": "5002"
+      },
+      {
+        "endpoint": "golem_console.golem_skills_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/golem/skills",
+        "service": "5002"
+      },
+      {
+        "endpoint": "golem_console.golem_status_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/golem/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.intel_refresh",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/intel/refresh",
+        "service": "5002"
+      },
+      {
+        "endpoint": "iron_dome_broadcast",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/iron_dome/broadcast",
+        "service": "5002"
+      },
+      {
+        "endpoint": "iron_dome_hash",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/iron_dome/hash",
+        "service": "5002"
+      },
+      {
+        "endpoint": "iron_dome_notify",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/iron_dome/notify",
+        "service": "5002"
+      },
+      {
+        "endpoint": "iron_dome_patterns",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/iron_dome/patterns",
+        "service": "5002"
+      },
+      {
+        "endpoint": "iron_dome_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/iron_dome/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_live_log",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/live-log",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_live_validation",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/live-validation",
+        "service": "5002"
+      },
+      {
+        "endpoint": "lottery.lottery_draw_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/lottery/draw",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.api_memory_obsidian_sync",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/memory/obsidian-sync",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.api_memory_recall",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/memory/recall",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.api_memory_remember",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/memory/remember",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.api_memory_stats",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/memory/stats",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_heavy_runtime",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/nerv/heavy-runtime",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_product_runtime",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/nerv/product-runtime",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_remote_access",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/nerv/remote-access",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_remote_access_action",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/nerv/remote-access/action",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_skill_interview_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/nerv/skill-interview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_skill_interview_reply",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/nerv/skill-interview/reply",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_skill_interview_start",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/nerv/skill-interview/start",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_skills",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/nerv/skills",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_nerv_skill_detail",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/nerv/skills/<skill_name>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.process_guardian_toggle_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/ops/process-guardian/toggle",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.process_monitor_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/ops/process-monitor",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_defaults_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/defaults",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_default_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/accounting/defaults/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_google_sheet_import_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/import/google-sheet",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_monthly_bonus_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/monthly-bonus",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_monthly_bonus_xlsx_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/accounting/monthly-bonus/xlsx",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_recurring_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/recurring",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_recurring_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/accounting/recurring/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_recurring_sync_generated_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/recurring/<int:row_id>/sync-generated",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_summary_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/accounting/summary",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_transactions_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/accounting/transactions",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_transaction_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/accounting/transactions/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_accounting.osc_accounting_transactions_xlsx_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/accounting/transactions/xlsx",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_activity_logs_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/activity-logs",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_activity_log_detail_api",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "rule": "/api/osc/activity-logs/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_archive_job_status_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/archive-jobs/<job_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_archive_wizard_execute_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/archive-wizard/execute",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_archive_wizard_preview_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/archive-wizard/preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_backup_create",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/backups",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_backup_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/backups",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_backup_delete",
+        "methods": [
+          "DELETE"
+        ],
+        "rule": "/api/osc/backups/<filename>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_backup_restore",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/backups/<filename>/restore",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_calendar_events_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/calendar/events",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_calendar_event_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/calendar/events/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_intelligence_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/case-intelligence",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_reason_templates_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/case-reason-templates",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_reason_template_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/case-reason-templates/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_cases_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/cases",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/cases/<row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_address_label",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/address-label",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_close_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/close",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_create_folder_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/create-folder",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_file_search_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/file-search",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_folder_browser_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/folder-browser",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_folder_path_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/folder-path",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_intelligence_for_case_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/intelligence-snapshot",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_laf_number_sync",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/laf-number/sync",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_case_status_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/laf-status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_open_folder_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/open-folder",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_quick_action_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/quick-action",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_rename_folder_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/<row_id>/rename-folder",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_workbench_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/<row_id>/workbench",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_cases_export_csv_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/export-csv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_cases_export_xlsx_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/cases/export-xlsx",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_cases_import_csv_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/cases/import-csv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.osc_chat_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/chat",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.osc_chat_upload_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/chat/upload",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_checklist_get",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/checklists/case",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_checklist_post",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/checklists/case",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_checklist_delete",
+        "methods": [
+          "DELETE"
+        ],
+        "rule": "/api/osc/checklists/case/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_case_checklist_put",
+        "methods": [
+          "PUT"
+        ],
+        "rule": "/api/osc/checklists/case/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_debt_required_get",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/checklists/debt-required",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_debt_required_save",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/checklists/debt-required/save",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_checklist_get",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/checklists/legal-aid",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_checklist_post",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/checklists/legal-aid",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_checklist_delete",
+        "methods": [
+          "DELETE"
+        ],
+        "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_checklist_put",
+        "methods": [
+          "PUT"
+        ],
+        "rule": "/api/osc/checklists/legal-aid/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_checklist_seed",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/checklists/legal-aid/seed",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_clients_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/clients",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_client_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/clients/<row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_client_workbench_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/clients/<row_id>/workbench",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_clients_export_csv_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/clients/export-csv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_clients_import_csv_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/clients/import-csv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_courts_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/courts",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_court_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/courts/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_dashboard_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/dashboard",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_address_data",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/debt/address-data",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_auto_import",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/auto-import",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_batch_generate",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/batch-generate",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_cases_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/cases",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_courts_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/courts",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_expense_reference",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/expense-reference",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_forms_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/forms",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_generate_document",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/generate",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_import_candidates",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/import-candidates",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_merge_pdf",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/merge-pdf",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_scan_evidence",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/scan-evidence/<case_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_form_schema",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/schema/<form_type>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_source_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/debt/source-status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_supplement_checklist",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/supplement-checklist",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt.debt_validate",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/debt/validate",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_discord_test_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/discord/test",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_keywords_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/document-keywords",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_keyword_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/document-keywords/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_replacements_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/document-replacements",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_replacement_detail_api",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "rule": "/api/osc/document-replacements/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_templates_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/document-templates",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_document_template_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/document-templates/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_documents_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/documents",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_documents_finalize_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/documents/finalize",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_documents_open_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/documents/open",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_documents_stamp_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/documents/stamp",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_documents_stamp_preview_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/documents/stamp-preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_export_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/drafts/export",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_feedback_post_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/drafts/feedback",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_feedback_recent_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/drafts/feedback",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_generate_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/drafts/generate",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_meta_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/drafts/meta",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_drafts_reuse_document_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/drafts/reuse-document",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_file_content_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/files/content",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_info_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/files/info",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_preview_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/files/preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_share_create_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/files/share",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_file_text_api",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/files/text",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_file_upload_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/files/upload",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_upload_chunked_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/files/upload-chunked",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_upload_multi_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/files/upload-multi",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folders_browse_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/folders/browse",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folders_mkdir_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/folders/mkdir",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folders_move_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/folders/move",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folders_rename_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/folders/rename",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folder_roots_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/folders/roots",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_folders_tree_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/folders/tree",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_forms_export_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/forms/export",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_forms_preview_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/forms/preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_gcal.gcal_auth_callback",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/gcal/auth/callback",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_gcal.gcal_auth_start",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/gcal/auth/start",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_gcal.gcal_disconnect",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/gcal/disconnect",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_gcal.gcal_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/gcal/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_gcal.gcal_sync",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/gcal/sync",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_hearing_conflicts_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/hearing-conflicts",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_hearing_conflicts_check_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/hearing-conflicts/check",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_hearing_conflicts_download_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/hearing-conflicts/download",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_hearing_conflicts_generate_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/hearing-conflicts/generate",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_insights_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/insights",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_insight_detail_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/insights/<insight_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_insights_fetch_full_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/insights/fetch-full",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_judgments_compat_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/judgments",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.osc_judgments_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/judgments_legacy",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_labor_law_calc",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/labor-law/calc",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_labor_law_parse_files",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/labor-law/parse-files",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/laf",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_backfill_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/laf-backfill",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_wizard_run_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/laf-wizard/run",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_batch_status_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/laf/batch-status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_laf_cases_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/laf/cases",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_legal_aid_branches_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/legal-aid-branches",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_legal_aid_branch_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/legal-aid-branches/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.osc_magi_modules_run_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/magi-modules/run",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_meetings_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/meetings",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_meeting_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/meetings/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_memory_keywords_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/memory-keywords",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_memory_keyword_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/memory-keywords/<path:case_number>/<path:hotkey>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_meta_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/meta",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_opponents_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/opponents",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_opponent_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/opponents/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_pdf_generation_log_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/pdf-generation-log",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_pdf_generation_log_detail_api",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "rule": "/api/osc/pdf-generation-log/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_pdf.osc_pdf_action_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/pdf/action",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_pdf.osc_pdf_calendar_scan_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/pdf/calendar-scan",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_pdf.osc_pdf_info_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/pdf/info",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_pdf.osc_pdf_upload_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/pdf/upload",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.osc_poll_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/poll",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_quotation_templates_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/quotation-templates",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_quotation_template_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/quotation-templates/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_quotations_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/quotations",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_quotation_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/quotations/<row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_quotation_export_pdf",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/quotations/<row_id>/export-pdf",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_delivery_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/raziel/delivery",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_delivery_file_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/raziel/delivery/<path:name>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_file_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/raziel/file/<kind>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_run_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/raziel/run",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_status_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/raziel/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "raziel.raziel_tlr_preview_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/raziel/tlr-preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_ai_governance_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/ai-governance",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_client_packet_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/saas/client-packet",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_conflict_check_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/saas/conflict-check",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_diagnostic_pack_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/diagnostic-pack",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_intake_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/saas/intake",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_notification_prefs_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/saas/notification-prefs",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_onboarding_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/saas/onboarding",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_operations_report_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/operations-report",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_overview_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/overview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_quality_check_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/saas/quality-check",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_task_boards_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/task-boards",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_timeline_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/timeline",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_saas_workflow_templates_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/saas/workflow-templates",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_settings_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/settings",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_settings.osc_setting_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/settings/<path:setting_key>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_template_folder_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/osc/template-folder",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_todos_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/todos",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_todo_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/todos/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_todos_bulk_complete_before_api",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/osc/todos/bulk-complete-before",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_user_settings_api",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/api/osc/user-settings",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_cases.osc_user_setting_detail_api",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PUT"
+        ],
+        "rule": "/api/osc/user-settings/<int:row_id>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_self_repair",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/self-repair",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_skill_rollback",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/skills/<skill_name>/rollback",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_skill_versions",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/skills/<skill_name>/versions",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_skill_interview_history",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/skills/interview-history",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.api_skills_run_compat",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/skills/run",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.api_system_test",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/system-test",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.transcribe_audio",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/transcribe",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_home",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/app",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_admin",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/app-admin",
+        "service": "5002"
+      },
+      {
+        "endpoint": "callback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/callback",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.dashboard",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.dashboard_beginner",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/beginner",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.golem_console",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/golem",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.dashboard_legacy",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/legacy",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.magi_adjust",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/nerv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.nerv_api_health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/nerv/api/health",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.status_center",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.dashboard_website",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/dashboard/website",
+        "service": "5002"
+      },
+      {
+        "endpoint": "serve_exports",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/exports/<path:filename>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "favicon",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/favicon.ico",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.golem_console",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/golem",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/health",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.intel_panel",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/intel",
+        "service": "5002"
+      },
+      {
+        "endpoint": "callback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/line/webhook",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.livez",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/livez",
+        "service": "5002"
+      },
+      {
+        "endpoint": "login",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/login",
+        "service": "5002"
+      },
+      {
+        "endpoint": "logout",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/logout",
+        "service": "5002"
+      },
+      {
+        "endpoint": "lottery.lottery_page",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/lottery",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.magi_adjust",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/magi-adjust",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.research_panel",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/magi-research",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.magi_adjust",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/magi-settings",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_home",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_admin",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile-admin",
+        "service": "5002"
+      },
+      {
+        "endpoint": "mobile_app_entry",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile-app",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_config_json",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile/config.json",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_manifest",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile/manifest.webmanifest",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.mobile_service_worker",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/mobile/sw.js",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.magi_adjust",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/nerv",
+        "service": "5002"
+      },
+      {
+        "endpoint": "web_runtime.process_monitor_page",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/ops/process-monitor",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_interface",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/osc",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_debt_interface",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/osc/debt",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.readyz",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/readyz",
+        "service": "5002"
+      },
+      {
+        "endpoint": "register",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/register",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.research_panel",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/research",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.research_judgment_classifier",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/research/judgment-classifier",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.research_rss_preview",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/research/rss-preview",
+        "service": "5002"
+      },
+      {
+        "endpoint": "osc_files.osc_files_public_share_api",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/s/<token>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.saas_readyz",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/saas-readyz",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.dashboard_beginner",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/start",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.worldmonitor_reports_redirect",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/static/worldmonitor_reports",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.worldmonitor_reports_redirect",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/static/worldmonitor_reports/",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.status_center",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/status",
+        "service": "5002"
+      },
+      {
+        "endpoint": "admin_runtime.nerv_api_health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/status/api/health",
+        "service": "5002"
+      },
+      {
+        "endpoint": "telegram.telegram_webhook",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/telegram/webhook",
+        "service": "5002"
+      },
+      {
+        "endpoint": "toolsapi_compat_proxy",
+        "methods": [
+          "DELETE",
+          "GET",
+          "PATCH",
+          "POST",
+          "PUT"
+        ],
+        "rule": "/toolsapi/<path:subpath>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.website_admin_proxy",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/wa/",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.website_admin_proxy",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "rule": "/wa/<path:path>",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.worldmonitor_entry",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/worldmonitor",
+        "service": "5002"
+      },
+      {
+        "endpoint": "dashboard_pages.worldmonitor_entry",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/worldmonitor/",
+        "service": "5002"
+      }
+    ],
+    "5003": [
+      {
+        "endpoint": "api_alert",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/alert",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_list_audit_log",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/api/audit_log",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_restore_from_audit",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/api/audit_log/restore/<int:log_id>",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_add_client",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/clients",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_query_clients",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/clients",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_code_autofix",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/code/autofix",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_code_skill_cycle",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/code/skill-cycle",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_collab_chat",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/collab/chat",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_collab_music",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/collab/music",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_collab_transcribe",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/collab/transcribe",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_collab_translate",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/collab/translate",
+        "service": "5003"
+      },
+      {
+        "endpoint": "connections_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/connections",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_council_core_approve",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/council/core/approve",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_council_core_pending",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/council/core/pending",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_council_core_reject",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/council/core/reject",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_definitions",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/definitions",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_fetch",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/fetch",
+        "service": "5003"
+      },
+      {
+        "endpoint": "health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/health",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_iron_dome_auto_harden",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/iron-dome/auto-harden",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_iron_dome_patterns_add",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/iron-dome/patterns",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_iron_dome_patterns_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/iron-dome/patterns",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_get_job",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/jobs/<job_id>",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_laf_smoke_login",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/laf/smoke_login",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_legal_skills_list",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/legal",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_legal_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/legal/<skill_name>",
+        "service": "5003"
+      },
+      {
+        "endpoint": "livez",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/livez",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_book_meeting",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/meetings",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_list_meetings",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/meetings",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_melchior_health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/melchior/health",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_melchior_sync_skills",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/melchior/skills/sync",
+        "service": "5003"
+      },
+      {
+        "endpoint": "external_osc_case_status",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/osc/external/case_status",
+        "service": "5003"
+      },
+      {
+        "endpoint": "external_osc_chat",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/osc/external/chat",
+        "service": "5003"
+      },
+      {
+        "endpoint": "external_osc_health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/osc/external/health",
+        "service": "5003"
+      },
+      {
+        "endpoint": "external_osc_ui",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/osc/external/ui",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_recall",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/recall",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_remember",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/remember",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_research",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/research",
+        "service": "5003"
+      },
+      {
+        "endpoint": "sages_status",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/sages",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_search",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/search",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_shortcut_ocr",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/shortcut/ocr",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_shortcut_pdf_text",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/shortcut/pdf_text",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_shortcut_summarize",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/shortcut/summarize",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_shortcut_transcribe",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/shortcut/transcribe",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_create_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_list_skills",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/skills",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_acquire_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/acquire",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_canary_start",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/canary/start",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_canary_stop",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/canary/stop",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_ci",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/ci",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_discover_skills",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/discover",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_events",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/skills/events",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_import_toolsai_auto_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/import/toolsai-auto-skill",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_install_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/install",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_internalize",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/internalize",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_internalize_codebase",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/internalize/codebase",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_knowledge_stats",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/skills/knowledge/stats",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_release_state",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/skills/release",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_rollback",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/rollback",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_run_skill",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/run",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_set_stable",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/stable",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_teach",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/teach",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_teach_file",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/teach/file",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_skill_versions",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/skills/versions",
+        "service": "5003"
+      },
+      {
+        "endpoint": "static_exports",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/static/exports/<path:filename>",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_summarize",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/summarize",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_summarize_health",
+        "methods": [
+          "GET"
+        ],
+        "rule": "/summarize/health",
+        "service": "5003"
+      },
+      {
+        "endpoint": "api_vision",
+        "methods": [
+          "POST"
+        ],
+        "rule": "/vision",
+        "service": "5003"
+      }
+    ]
+  },
+  "source": "flask_app_url_map_with_side_effect_guards"
+}

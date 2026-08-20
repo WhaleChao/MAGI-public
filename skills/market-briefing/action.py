@@ -57,11 +57,14 @@ _DEFAULT_MAGI_ROOT = Path(__file__).resolve().parents[2]
 MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", str(_DEFAULT_MAGI_ROOT)))
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
-AGENT_DIR = MAGI_ROOT / ".agent"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR") or str(MAGI_ROOT / ".agent")).expanduser()
 STATE_PATH = AGENT_DIR / "market_watchlist.json"
 CACHE_PATH = AGENT_DIR / "market_data_cache.json"
 PERF_PATH = AGENT_DIR / "market_perf_history.json"
-NOTIFY_LOG_PATH = MAGI_ROOT / "static" / "market_briefing_notify.log"
+MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR") or str(MAGI_ROOT / "static")
+).expanduser()
+NOTIFY_LOG_PATH = MUTABLE_STATIC_DIR / "market_briefing_notify.log"
 
 _DEFAULT_STATE = {
     "watchlist": [],
@@ -116,7 +119,7 @@ from data.perf_tracker import (
     _sign, _predict_pct_by_params, _solve_linear_4x4,
     _fit_params_from_samples, _mae_for_params,
     _refresh_metrics, _resolve_records_and_tune,
-    _upsert_prediction_records, _format_perf_lines,
+    _upsert_prediction_records, _format_perf_lines, _market_quality_gate,
 )
 from data.watchlist import (
     WatchItem,
@@ -163,10 +166,12 @@ def _format_committee_reasoning(reasoning: Any) -> str:
     return text or "委員會未提供細部理由。"
 
 
-def _predict_one(item: WatchItem, params: Dict[str, float], mode: str = "quick") -> Dict[str, Any]:
+def _predict_one(item: WatchItem, params: Dict[str, Any], mode: str = "quick") -> Dict[str, Any]:
     """Wrapper that injects committee callback for deep mode."""
     def _committee_cb(wi: WatchItem, m: str, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if HedgeFundCommittee is None:
+        if HedgeFundCommittee is None or os.environ.get(
+            "MAGI_MARKET_DISABLE_COMMITTEE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}:
             return None
         try:
             committee = HedgeFundCommittee()
@@ -354,7 +359,16 @@ def _cmd_briefing(state: Dict[str, Any], notify: bool, force: bool = False, mode
 
     perf = _load_perf()
     resolve_info = _resolve_records_and_tune(perf)
-    params = perf.get("model_params") if isinstance(perf.get("model_params"), dict) else dict(_DEFAULT_MODEL_PARAMS)
+    params = dict(
+        perf.get("model_params")
+        if isinstance(perf.get("model_params"), dict)
+        else _DEFAULT_MODEL_PARAMS
+    )
+    params["_quality_gates"] = {
+        "ALL": _market_quality_gate(perf),
+        "TW": _market_quality_gate(perf, "TW"),
+        "US": _market_quality_gate(perf, "US"),
+    }
 
     with ThreadPoolExecutor(max_workers=min(len(items), 6)) as pool:
         futures = {pool.submit(_predict_one, it, params, mode): it for it in items}
@@ -405,6 +419,24 @@ def _cmd_performance() -> str:
             f"bias={float(params.get('bias') or _DEFAULT_MODEL_PARAMS['bias']):+.3f}"
         ),
     ]
+    quality = metrics.get("quality_gate") if isinstance(metrics.get("quality_gate"), dict) else {}
+    if quality:
+        lines.extend(
+            [
+                (
+                    f"- 簡單基準命中率："
+                    f"{float(quality.get('baseline_hit_rate') or 0.0):.1f}%"
+                ),
+                (
+                    f"- 模型相對基準："
+                    f"{float(quality.get('edge_pct_point') or 0.0):+.1f} 個百分點"
+                ),
+                (
+                    "- 對外結論："
+                    + ("方向優勢已驗證" if quality.get("verified_edge") else "觀望；尚未證明優於簡單基準")
+                ),
+            ]
+        )
     if last_tune:
         lines.append(
             f"- 最近校準：{str(last_tune.get('ts') or '')}｜"

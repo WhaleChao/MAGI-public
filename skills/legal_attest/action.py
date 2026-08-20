@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = os.environ.get("MAGI_EXPORT_BASE_URL", "").rstrip("/")
 
-AGENT_DIR = Path(_MAGI_ROOT) / ".agent"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or Path(_MAGI_ROOT) / ".agent").expanduser()
 STATE_PATH = AGENT_DIR / "legal_attest_state.json"
 
 
@@ -90,8 +90,11 @@ def handle_chat(user_id: str, message: str) -> str:
             
             # Generate the PDF
             try:
-                export_dir = os.environ.get("MAGI_EXPORT_DIR",
-                                            os.path.join(_MAGI_ROOT, "exports"))
+                export_dir = (
+                    os.environ.get("MAGI_EXPORT_DIR")
+                    or os.environ.get("MAGI_EXPORTS_DIR")
+                    or os.path.join(_MAGI_ROOT, "exports")
+                )
                 os.makedirs(export_dir, exist_ok=True)
                 pdf_filename = f"legal_attest_{uuid.uuid4().hex[:8]}.pdf"
                 output_path = os.path.join(export_dir, pdf_filename)

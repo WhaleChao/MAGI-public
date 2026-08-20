@@ -8,8 +8,9 @@ from flask_login import LoginManager, UserMixin
 
 
 class _User(UserMixin):
-    id = "u1"
-    role = "admin"
+    def __init__(self, user_id="u1", role="admin"):
+        self.id = user_id
+        self.role = role
 
 
 def _make_app():
@@ -22,7 +23,8 @@ def _make_app():
 
     @login.request_loader
     def _load_user(request):
-        return _User() if request.headers.get("X-User-ID") else None
+        user_id = request.headers.get("X-User-ID")
+        return _User(user_id, request.headers.get("X-User-Role", "admin")) if user_id else None
 
     app.register_blueprint(golem_console_bp)
     return app
@@ -79,6 +81,8 @@ def test_golem_status_api_reports_process_skills_exports_and_memory(tmp_path, mo
     assert data["skills"]["count"] == 2
     assert data["memory"]["doc_count"] == 2
     assert data["market_reports"][0]["name"] == "market_briefing_20260503.txt"
+    assert data["market_reports"][0]["url"] == "/exports/market_briefing_20260503.txt"
+    assert all("/static/exports/" not in row["url"] for row in data["exports"])
     assert data["exports"]
 
 
@@ -96,6 +100,21 @@ def test_golem_command_api_supports_safe_commands(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["ok"] is True
+
+
+def test_golem_operational_apis_do_not_expose_global_data_to_regular_users():
+    client = _make_app().test_client()
+    headers = {"X-User-ID": "ordinary-user", "X-User-Role": "lawyer"}
+
+    for method, path, kwargs in (
+        (client.get, "/api/golem/status", {}),
+        (client.get, "/api/golem/logs", {}),
+        (client.get, "/api/golem/api-keys", {}),
+        (client.post, "/api/golem/command", {"json": {"command": "logs"}}),
+    ):
+        response = method(path, headers=headers, **kwargs)
+        assert response.status_code == 403
+        assert response.get_json() == {"ok": False, "error": "admin_required"}
 
 
 def test_golem_api_key_status_masks_secret(tmp_path, monkeypatch):

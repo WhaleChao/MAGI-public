@@ -273,7 +273,7 @@ INTERNAL_LEAK_PATTERNS: List[str] = [
     r'^\s*\{\s*"message_id"\s*:',
     r'^\s*"sender"\s*:\s*".*openclaw.*"\s*$',
     r"\bMAGI_[A-Z0-9_]+=.+\bpython\b.+\baction\.py\b",
-    r"/Users/ai/Desktop/.+\baction\.py\b",
+    r"/Users/[^/]+/Desktop/.+\baction\.py\b",
     r"^\s*NO_REPLY\s*$",
     r"^\s*assistant\s*$",
     # Internal trust badge leak patterns (2026-04-11)
@@ -973,7 +973,22 @@ def normalize_output_text(text: str, platform: str = "", force_tw_review: bool =
                 if _looks_tw_review_domain_drift(before_review, candidate):
                     logger.warning("[TW review drift] off-topic rewrite detected; keep deterministic output.")
                 else:
-                    out = candidate
+                    from api.handlers.output_quality_handler import run_output_quality_gate
+
+                    review_quality = run_output_quality_gate(
+                        "translation",
+                        candidate,
+                        source_text=before_review,
+                        source_name="tw_legal_review",
+                        instruction="僅校正臺灣法律用語，不得改變事實",
+                    )
+                    if review_quality.get("ok"):
+                        out = candidate
+                    else:
+                        logger.warning(
+                            "[TW review fidelity] %s; keep deterministic output.",
+                            review_quality.get("issue") or "quality_gate_failed",
+                        )
         except Exception:
             # 靜默降級，避免阻塞回覆
             pass

@@ -24,7 +24,16 @@ from api.debt_document_generator import (
 )
 
 
-def test_debt_robot_source_bundle_is_complete():
+def test_debt_robot_source_bundle_is_complete(tmp_path, monkeypatch):
+    address_book = tmp_path / "address-book"
+    address_book.mkdir()
+    (address_book / "all adress - bank.csv").write_text(
+        "name,address\n合成銀行,合成市測試路一號\n", encoding="utf-8"
+    )
+    (address_book / "all adress - company.csv").write_text(
+        "name,address\n合成公司,合成市測試路二號\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MAGI_DEBT_ADDRESS_BOOK_DIR", str(address_book))
     status = get_robot_source_status()
     assert status["ok"], status
     assert status["source_dir"].endswith("integrations/debt_robot")
@@ -38,6 +47,7 @@ def test_six_debt_robot_modules_generate_outputs(tmp_path):
     application = generate_application({
         "name": "測試聲請人",
         "address": "臺北市測試路1號",
+        "lawyer_name": "合成律師",
         "asset_total": 10000,
         "debt_total": 300000,
         "max_creditor_bank": "測試銀行",
@@ -65,6 +75,10 @@ def test_six_debt_robot_modules_generate_outputs(tmp_path):
         "A2": "113年度司消債更字第1號",
         "A3": "公",
         "A4": "測試聲請人",
+        "lawyer_name": "合成律師",
+        "lawyer_address": "合成市測試路2號",
+        "lawyer_phone": "02-0000-0000",
+        "lawyer_mobile": "0900-000-000",
         "B1": "測試借款原因。",
         "B2": "測試調解不成立原因。",
         "B3": "測試更生方案。",
@@ -81,6 +95,10 @@ def test_six_debt_robot_modules_generate_outputs(tmp_path):
         "case_no": "113年度司消債更字第1號",
         "branch": "公",
         "applicant": "測試聲請人",
+        "lawyer_name": "合成律師",
+        "lawyer_address": "合成市測試路2號",
+        "lawyer_phone": "02-0000-0000",
+        "lawyer_mobile": "0900-000-000",
         "procedure": "更生",
         "items": [{"category": "勞保資料", "period": "111年至112年", "attachment": "勞保投保資料"}],
     })

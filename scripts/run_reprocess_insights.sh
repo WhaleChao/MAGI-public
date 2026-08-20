@@ -38,5 +38,5 @@ print('summary feature disabled')
 echo "=== $(date) Overnight reprocess complete ==="
 
 # 移除一次性 LaunchAgent
-launchctl bootout gui/$(id -u) /Users/ai/Library/LaunchAgents/com.magi.reprocess-insights.plist 2>/dev/null || true
-rm -f /Users/ai/Library/LaunchAgents/com.magi.reprocess-insights.plist
+launchctl bootout gui/$(id -u) "$HOME/Library/LaunchAgents/com.magi.reprocess-insights.plist" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.magi.reprocess-insights.plist"

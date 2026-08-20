@@ -10,6 +10,7 @@
 flask>=3.0
 Flask-Login>=0.6
 Werkzeug>=3.0
+waitress>=3.0.2
 python-dotenv>=1.0
 requests>=2.31
 aiohttp>=3.9
@@ -18,3 +19,5 @@ line-bot-sdk>=3.5
 mysql-connector-python>=8.2
 psutil>=5.9
 flask-cors
+# Offline vector boolean/triangulation for watertight cookie-cutter walls.
+shapely>=2.1,<3

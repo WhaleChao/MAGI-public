@@ -100,7 +100,11 @@ def register_apple_commands(registry) -> None:
             return "⚠️ Spotlight 搜尋模組未安裝。"
 
         # 判斷搜尋類型
-        nas_folder = "/Volumes/homes"
+        nas_folder = (
+            os.environ.get("MAGI_NAS_CASE_ROOT")
+            or os.environ.get("MAGI_V3_CASE_ROOT")
+            or "/Volumes/homes"
+        )
         if not os.path.isdir(nas_folder):
             nas_folder = None
 

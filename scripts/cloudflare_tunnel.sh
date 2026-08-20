@@ -4,12 +4,31 @@
 set -euo pipefail
 
 MAGI_ROOT="${MAGI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-LOG="$MAGI_ROOT/logs/cloudflared.log"
+if [ -n "${MAGI_CLOUDFLARED_LOG_PATH:-}" ]; then
+  LOG="$MAGI_CLOUDFLARED_LOG_PATH"
+elif [ -n "${MAGI_RUNTIME_DIR:-}" ]; then
+  LOG="$MAGI_RUNTIME_DIR/logs/cloudflared.log"
+else
+  LOG="$MAGI_ROOT/logs/cloudflared.log"
+fi
+AGENT_DIR="${MAGI_AGENT_DIR:-$MAGI_ROOT/.agent}"
+mkdir -p "$(dirname "$LOG")" "$AGENT_DIR"
+
+if [ "${MAGI_CLOUDFLARE_TUNNEL_DRY_RUN:-0}" = "1" ]; then
+  printf 'LOG=%s\nAGENT_DIR=%s\n' "$LOG" "$AGENT_DIR"
+  exit 0
+fi
+
+if [ -f "$MAGI_ROOT/.env" ]; then
+  set -a
+  source "$MAGI_ROOT/.env" 2>/dev/null || true
+  set +a
+fi
+
 LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
-LOCAL_PORT="${1:-${MAGI_SERVER_PORT:-5002}}"
+LOCAL_PORT="${1:-${MAGI_WEBHOOK_PROXY_PORT:-${MAGI_TAILSCALE_PORT:-18790}}}"
 
 if [ -z "$LINE_TOKEN" ]; then
-  source "$MAGI_ROOT/.env" 2>/dev/null || true
   LINE_TOKEN="${MAGI_LINE_CHANNEL_ACCESS_TOKEN:-}"
 fi
 
@@ -65,8 +84,8 @@ TEST=$(curl -s \
 echo "Webhook test: $TEST"
 
 # Save URL for health monitoring
-echo "$WEBHOOK_URL" > "$MAGI_ROOT/.agent/line_webhook_url.txt"
-echo "$CF_URL" > "$MAGI_ROOT/.agent/cloudflare_tunnel_url.txt"
+echo "$WEBHOOK_URL" > "$AGENT_DIR/line_webhook_url.txt"
+echo "$CF_URL" > "$AGENT_DIR/cloudflare_tunnel_url.txt"
 
 # Wait for tunnel process
 wait $CF_PID

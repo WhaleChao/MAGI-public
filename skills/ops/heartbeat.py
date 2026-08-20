@@ -5,6 +5,7 @@ import time
 import os
 import requests
 from datetime import datetime
+from pathlib import Path
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 
@@ -24,7 +25,7 @@ NODES = {
         "role": "Decision & Governor",
         "type": "omlx",
         "port": 8080,
-        "openclaw_config": "/Users/ai/.openclaw/openclaw.json"
+        "openclaw_config": str(Path.home() / ".openclaw" / "openclaw.json")
     },
     "balthasar": {
         "ip": _node_ip_or("balthasar", ""),
@@ -53,7 +54,15 @@ NODES = {
     },
 }
 
-STATUS_FILE = f"{_MAGI_ROOT}/static/magi_status.json"
+_MUTABLE_STATIC_DIR = os.path.abspath(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR")
+    or os.path.join(_MAGI_ROOT, "static")
+)
+_AGENT_DIR = os.path.abspath(
+    os.environ.get("MAGI_AGENT_DIR")
+    or os.path.join(_MAGI_ROOT, ".agent")
+)
+STATUS_FILE = os.path.join(_MUTABLE_STATIC_DIR, "magi_status.json")
 
 # ── Tailscale Serve Guard ──
 # Ensure external traffic goes through Caddy (18790), never directly to OpenClaw (18789).
@@ -104,7 +113,7 @@ def get_node_model(ip, port=8080):
             data = response.json()
             models = data.get("data") or []
             if models:
-                # 優先回傳主對話模型（Gemma），Qwen 只負責 code
+                # 優先回傳主對話模型（Gemma）；中國模型不列入候選。
                 main_model = os.environ.get("MAGI_MAIN_MODEL", "gemma")
                 for m in models:
                     mid = m.get("id", "")
@@ -153,7 +162,7 @@ def update_status():
                     if r.status_code == 200:
                         omlx_models = [m.get("id", "") for m in r.json().get("data", [])]
                         if omlx_models:
-                            # 顯示主對話模型（Gemma），Qwen 只負責 code
+                            # 顯示主對話模型（Gemma）；中國模型不列入候選。
                             main_kw = os.environ.get("MAGI_MAIN_MODEL", "gemma").lower().split("-")[0]
                             primary = next((m for m in omlx_models if main_kw in m.lower()), omlx_models[0])
                             model = f"oMLX: {primary}"
@@ -234,9 +243,8 @@ def update_status():
 
     # 5. Obsidian Vault Status
     try:
-        _agent_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".agent")
-        _obs_cfg_path = os.path.join(_agent_dir, "obsidian_vault_config.json")
-        _obs_idx_path = os.path.join(_agent_dir, "obsidian_index.json")
+        _obs_cfg_path = os.path.join(_AGENT_DIR, "obsidian_vault_config.json")
+        _obs_idx_path = os.path.join(_AGENT_DIR, "obsidian_index.json")
         obs_info = {"vault_configured": False}
         if os.path.exists(_obs_cfg_path):
             with open(_obs_cfg_path, "r") as f:
@@ -254,6 +262,7 @@ def update_status():
         status_data["obsidian"] = {"vault_configured": False}
         print(f"Obsidian Status Error: {e}")
 
+    os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
     with open(STATUS_FILE, "w") as f:
         json.dump(status_data, f, indent=2)
     

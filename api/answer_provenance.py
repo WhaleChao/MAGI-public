@@ -57,7 +57,9 @@ _SOURCE_LABELS: Dict[str, Optional[str]] = {
 
 # ── Runtime 路徑 ──────────────────────────────────────────────────────────────
 _MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_RUNTIME_DIR = os.path.join(_MAGI_ROOT, ".runtime")
+_RUNTIME_DIR = os.path.abspath(
+    os.environ.get("MAGI_RUNTIME_DIR", "").strip() or os.path.join(_MAGI_ROOT, ".runtime")
+)
 _PROVENANCE_FILE = os.path.join(_RUNTIME_DIR, "last_answer_provenance.json")
 _PROVENANCE_LOCK = threading.Lock()
 

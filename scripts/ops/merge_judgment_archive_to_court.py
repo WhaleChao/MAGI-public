@@ -59,6 +59,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api.db_helper import get_cursor  # noqa: E402
+from api.runtime_paths import get_judgments_json_path  # noqa: E402
 
 logger = logging.getLogger("merge_judgments")
 logging.basicConfig(
@@ -397,7 +398,7 @@ def merge_archive_to_court(
 # scope: judgments.json → court
 # -------------------------------------------------------------------
 
-_JSON_PATH = ROOT / "skills" / "judgment-collector" / "judgments.json"
+_JSON_PATH = get_judgments_json_path()
 
 
 def merge_json_to_court(*, apply: bool, limit: Optional[int] = None) -> Dict[str, int]:

@@ -222,7 +222,7 @@ def main():
     total += migrate_json_file(conn, ce / "閱卷下載" / "processed_emails.json", "email_laf_download")
 
     # 3. .agent 狀態
-    agent = MAGI_ROOT / ".agent"
+    agent = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
     total += migrate_json_file(conn, agent / "transcript_index.json", "transcript")
     total += migrate_json_file(conn, agent / "hearing_remind_state.json", "hearing_remind")
 

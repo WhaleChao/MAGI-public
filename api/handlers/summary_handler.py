@@ -11,6 +11,7 @@ import math
 import os
 import re
 import time
+from typing import Optional
 
 from api.model_config import SUMMARY_MODEL, TEXT_PRIMARY_MODEL
 from skills.bridge.inference_gateway import InferenceGateway
@@ -368,17 +369,33 @@ def summarize_text_resilient(text: str, summary_length: str = "medium", *, progr
             instruction=f"summary_length={summary_length}",
         )
         if gate.get("ok"):
-            return {"success": True, "text": out, "provider": provider, **extra}
+            return {"success": True, "text": out, "provider": provider, "quality_gate": gate, **extra}
         fallback_text = _extractive_fallback_summary(payload)
         if fallback_text:
-            return {
-                "success": True,
-                "text": fallback_text,
-                "provider": "extractive_fallback_quality_gate",
-                "quality_gate_issue": gate.get("issue"),
-                **extra,
-            }
-        return {"success": False, "error": "summary_quality_gate:" + str(gate.get("issue") or "failed"), "provider": provider, **extra}
+            fallback_gate = run_output_quality_gate(
+                "summary",
+                fallback_text,
+                source_chars=len(payload),
+                source_text=payload,
+                instruction=f"summary_length={summary_length};extractive_fallback=1",
+            )
+            if fallback_gate.get("ok"):
+                return {
+                    "success": True,
+                    "text": fallback_text,
+                    "provider": "extractive_fallback_quality_gate",
+                    "quality_gate": fallback_gate,
+                    "replaced_quality_issue": gate.get("issue"),
+                    **extra,
+                }
+        return {
+            "success": False,
+            "error": "summary_quality_gate:" + str(gate.get("issue") or "failed"),
+            "provider": provider,
+            "quality_gate": gate,
+            "requires_verified_heavy_retry": not heavy,
+            **extra,
+        }
 
     def _bridge_summarize_text(summarizer, text_value: str, **kwargs) -> dict:
         try:

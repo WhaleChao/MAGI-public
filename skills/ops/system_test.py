@@ -234,26 +234,17 @@ def test_iron_dome():
 
 def test_autopilot_schedule():
     """Test nightly schedule: cron_jobs.json exists and Discord bot cron scheduler is running."""
-    import subprocess
     try:
-        # 1. 檢查 cron_jobs.json 是否存在且有任務
-        cron_path = os.path.join(os.environ.get("MAGI_ROOT_DIR", ""), "cron_jobs.json")
-        if not os.path.exists(cron_path):
-            cron_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cron_jobs.json")
-        if os.path.exists(cron_path):
-            import json
-            with open(cron_path, encoding="utf-8") as f:
-                jobs = json.load(f)
-            enabled = [j for j in jobs if j.get("enabled", True)]
-            if enabled:
-                # 2. 檢查 discord_bot.py（內建 cron scheduler）是否在跑
-                bot_alive = subprocess.run(
-                    ["pgrep", "-f", "discord_bot.py"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ).returncode == 0
-                if bot_alive:
-                    return {"pass": True, "detail": f"Discord cron scheduler 運行中，{len(enabled)} 個任務啟用"}
-                return {"pass": False, "detail": f"cron_jobs.json 有 {len(enabled)} 個任務，但 discord_bot.py 未運行"}
+        from magi_v3.external_inputs import load_bound_cron_jobs
+
+        jobs = load_bound_cron_jobs(MAGI_DIR).jobs
+        enabled = [j for j in jobs if j.get("enabled", True)]
+        if enabled:
+            # 2. 檢查 discord_bot.py（內建 cron scheduler）是否在跑
+            bot_alive, pid_text = _health_probes.python_script_process_running("api/discord_bot.py")
+            if bot_alive:
+                return {"pass": True, "detail": f"Discord cron scheduler 運行中，{len(enabled)} 個任務啟用 (pid={pid_text})"}
+            return {"pass": False, "detail": f"cron_jobs.json 有 {len(enabled)} 個任務，但 discord_bot.py 未運行"}
         return {"pass": False, "detail": "cron_jobs.json 不存在"}
     except Exception as e:
         return {"pass": False, "detail": str(e)}
@@ -388,10 +379,18 @@ def run_all_tests():
         "tests": results,
     }
 
-    # Save report
-    report_path = os.path.join(MAGI_DIR, "static", "system_test_report.json")
-    os.makedirs(os.path.dirname(report_path), exist_ok=True)
-    with open(report_path, "w", encoding="utf-8") as f:
+    # A sealed V3 release is intentionally read-only.  Runtime reports belong
+    # in the deployment's mutable static directory, while V2 keeps its legacy
+    # in-tree fallback for backward compatibility.
+    mutable_static = os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip()
+    report_dir = (
+        Path(mutable_static).expanduser()
+        if mutable_static
+        else Path(MAGI_DIR) / "static"
+    )
+    report_path = report_dir / "system_test_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with report_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     return report

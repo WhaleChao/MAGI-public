@@ -46,7 +46,7 @@ _UPPER_COURT_PREFIXES = (
 _SUBSTANTIVE_SIGNALS = re.compile(
     r"爭點|本件爭執|本院認為|本院認|法院認為|應解為|法律上原因|構成要件|"
     r"權利義務|比例原則|信賴保護|裁量|法律見解|實務見解|法理|釋字|憲法|"
-    r"不當得利|侵權行為|債務不履行|過失責任|因果關係|舉證責任"
+    r"過失責任|因果關係|舉證責任"
 )
 
 _PURE_PROCEDURAL_SIGNALS = re.compile(
@@ -109,7 +109,10 @@ def classify_judgment_record(
     hay = " ".join([jid, court_name, case_number, case_reason, title, head])
 
     upper = _is_upper_court(jid, court_name)
-    substantive = _has_substantive_signal(hay)
+    # Bare case labels such as「侵權行為」must not turn a fee/correction
+    # order into a substantive judgment.  Only reasoning signals in the
+    # document itself count here.
+    substantive = _has_substantive_signal(head)
 
     # High courts and supreme courts often create useful procedural doctrine.
     # Keep obvious ministerial matches in REVIEW instead of skipping them.

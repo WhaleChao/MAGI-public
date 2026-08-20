@@ -30,27 +30,69 @@ if _MAGI_ROOT not in sys.path:
     sys.path.insert(0, _MAGI_ROOT)
 
 from api.runtime_paths import get_legacy_code_root, get_magi_root_dir, get_skill_python, legacy_code_enabled
+from skills.overlay import (
+    base_skills_dir,
+    effective_definitions_path,
+    effective_skill_dir,
+    ensure_overlay_skill,
+    mutable_definitions_path,
+    mutable_skill_file,
+    rebase_overlay_skill,
+    runtime_skill_dir,
+    skill_events_file,
+    skill_overlay_dir,
+    skill_runtime_site_packages_dir,
+    skill_usage_tracker_file,
+    skill_versions_dir,
+    validate_skill_name,
+)
 
 # =============================================================================
 # Configuration
 # =============================================================================
-SKILLS_DIR = f"{_MAGI_ROOT}/skills"
-DEFINITIONS_PATH = os.path.join(SKILLS_DIR, "definitions.json")
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _skill_runtime_env_opt_in() -> bool:
+    return _env_bool("MAGI_DEV_SKILL_RUNTIME_MUTATIONS", False)
+
+
+def _skill_runtime_default(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _env_bool(env_name, False)
+    return _skill_runtime_env_opt_in()
+
+
+def _skill_auto_pip_enabled() -> bool:
+    if "MAGI_SKILL_AUTO_PIP" in os.environ:
+        return _env_bool("MAGI_SKILL_AUTO_PIP", False)
+    return _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+
+
+BASE_SKILLS_DIR = str(base_skills_dir())
+# Backward-compatible public constant.  It now names the mutable overlay, not
+# the immutable release seed.
+SKILLS_DIR = str(skill_overlay_dir())
+DEFINITIONS_PATH = str(effective_definitions_path())
 MAX_DEBUG_ROUNDS = int(os.environ.get("MAGI_SKILL_DEBUG_ROUNDS", "2"))
 MAX_RUNTIME_REPAIR_ROUNDS = int(os.environ.get("MAGI_RUNTIME_REPAIR_ROUNDS", "2"))
-SKILL_VERSIONS_DIR = os.path.join(SKILLS_DIR, ".versions")
-SKILL_EVENTS_FILE = os.environ.get("MAGI_SKILL_EVENTS_FILE", f"{_MAGI_ROOT}/logs/skill_runtime_events.jsonl")
-SKILL_USAGE_TRACKER_FILE = os.environ.get("MAGI_SKILL_USAGE_TRACKER_FILE", f"{_MAGI_ROOT}/logs/skill_usage_events.jsonl")
+SKILL_VERSIONS_DIR = str(skill_versions_dir())
+SKILL_EVENTS_FILE = str(skill_events_file())
+SKILL_USAGE_TRACKER_FILE = str(skill_usage_tracker_file())
 SKILL_EXEC_TIMEOUT_SEC = int(os.environ.get("MAGI_SKILL_EXEC_TIMEOUT_SEC", "30"))
 SKILL_EXEC_MEM_MB = int(os.environ.get("MAGI_SKILL_EXEC_MEM_MB", "1024"))
 SKILL_EXEC_CPU_SEC = int(os.environ.get("MAGI_SKILL_EXEC_CPU_SEC", "20"))
 SKILL_ENABLE_PREEXEC = os.environ.get("MAGI_SKILL_ENABLE_PREEXEC", "0").strip().lower() in {"1", "true", "yes", "on"}
 SKILL_PYTHON = str(get_skill_python())
-SKILL_RUNTIME_SITE_PACKAGES = os.environ.get("MAGI_SKILL_RUNTIME_SITE_PACKAGES", f"{_MAGI_ROOT}/.runtime_site_packages")
-SKILL_AUTO_PIP_ENABLED = os.environ.get("MAGI_SKILL_AUTO_PIP", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILL_RUNTIME_SITE_PACKAGES = str(skill_runtime_site_packages_dir())
+SKILL_AUTO_PIP_ENABLED = _skill_auto_pip_enabled()
 SKILL_AUTO_PIP_TIMEOUT_SEC = int(os.environ.get("MAGI_SKILL_AUTO_PIP_TIMEOUT_SEC", "120"))
 SKILL_AUTO_PIP_MAX_PACKAGES = int(os.environ.get("MAGI_SKILL_AUTO_PIP_MAX_PACKAGES", "6"))
-SKILL_AUTO_PIP_ALLOW_ANY = os.environ.get("MAGI_SKILL_AUTO_PIP_ALLOW_ANY", "1").strip().lower() not in {"0", "false", "no", "off"}
+SKILL_AUTO_PIP_ALLOW_ANY = os.environ.get("MAGI_SKILL_AUTO_PIP_ALLOW_ANY", "0").strip().lower() in {"1", "true", "yes", "on"}
 SKILL_AUTO_PIP_ALLOWLIST = {
     x.strip().lower()
     for x in os.environ.get(
@@ -191,13 +233,28 @@ def _safe_write_skill_file(skill_folder: str, filename: str, content: str, reaso
     Routes existing skill modifications through Iron Dome Protocol Override.
     Returns: {"success": bool, "error": str, "blocked": bool}
     """
-    skill_dir = os.path.join(SKILLS_DIR, skill_folder)
-    file_path = os.path.join(skill_dir, filename)
+    if os.path.basename(str(filename or "")) != filename or filename in {"", ".", ".."}:
+        return {"success": False, "error": "invalid_skill_file", "blocked": False}
+    try:
+        skill_folder = validate_skill_name(skill_folder)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "blocked": False}
+    existing_dir = _safe_skill_dir(skill_folder)
+    existing_file = os.path.join(existing_dir, filename) if existing_dir else ""
+    try:
+        file_path = str(mutable_skill_file(skill_folder, filename))
+        skill_dir = os.path.dirname(file_path)
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "blocked": False}
     
     # If the skill exists and we are rewriting it, we must trigger Protocol Override
-    if os.path.exists(skill_dir) and os.path.exists(file_path):
+    if existing_file and os.path.exists(existing_file):
         # Exemption: Initial generation or stubs should not trigger override, even if rewriting aborted files
-        if reason not in ("generate_skill", "generate_skill_stub"):
+        # NERV POST is already an authenticated human-admin edit.  It still
+        # receives a version snapshot and safety validation in
+        # update_skill_document(), so a second asynchronous HITL prompt would
+        # make the editor unusable without adding a security boundary.
+        if reason not in ("generate_skill", "generate_skill_stub", "nerv_edit"):
             override_res = dome_override.request_override(
                 skill_name=skill_folder,
                 files={filename: content},
@@ -254,14 +311,57 @@ def _ensure_skill_instructions(skill_content: str) -> str:
 
 
 def _safe_skill_dir(skill_folder: str) -> Optional[str]:
-    name = (skill_folder or "").strip()
-    if not name:
+    try:
+        name = validate_skill_name(skill_folder)
+    except ValueError:
         return None
-    candidate = os.path.abspath(os.path.join(SKILLS_DIR, name))
-    skills_root = os.path.abspath(SKILLS_DIR)
-    if not candidate.startswith(skills_root + os.sep):
-        return None
+    configured = os.path.abspath(os.path.join(SKILLS_DIR, name))
+    configured_root = os.path.abspath(SKILLS_DIR)
+    if (
+        configured.startswith(configured_root + os.sep)
+        and not os.path.islink(configured_root)
+        and not os.path.islink(configured)
+        and os.path.isdir(configured)
+    ):
+        if configured_root == os.path.abspath(str(skill_overlay_dir())):
+            try:
+                rebase_overlay_skill(name)
+            except ValueError:
+                return None
+        return configured
+    base = os.path.abspath(os.path.join(BASE_SKILLS_DIR, name))
+    base_root = os.path.abspath(BASE_SKILLS_DIR)
+    if base.startswith(base_root + os.sep):
+        return base
+    return None
+
+
+def _ensure_mutable_skill_dir(skill_folder: str) -> str:
+    name = validate_skill_name(skill_folder)
+    configured_root = os.path.abspath(SKILLS_DIR)
+    canonical_overlay = os.path.abspath(str(skill_overlay_dir()))
+    if configured_root == canonical_overlay:
+        return str(ensure_overlay_skill(name))
+    # Tests and development callers historically monkeypatch SKILLS_DIR. Keep
+    # that contract while retaining containment checks.
+    candidate = os.path.abspath(os.path.join(configured_root, name))
+    if not candidate.startswith(configured_root + os.sep):
+        raise ValueError("invalid_skill_path")
+    os.makedirs(candidate, exist_ok=True)
     return candidate
+
+
+def _safe_runtime_skill_dir(skill_folder: str) -> Optional[str]:
+    try:
+        name = validate_skill_name(skill_folder)
+    except ValueError:
+        return None
+    if os.path.abspath(SKILLS_DIR) == os.path.abspath(str(skill_overlay_dir())):
+        try:
+            return str(runtime_skill_dir(name))
+        except ValueError:
+            return None
+    return _safe_skill_dir(name)
 
 
 def _record_skill_event(event_type: str, skill: str = "", status: str = "info", detail: str = "", extra: Optional[dict] = None) -> None:
@@ -601,7 +701,7 @@ def _ensure_skill_runtime_dependencies(
     force_scan: bool = False,
     max_packages: int = SKILL_AUTO_PIP_MAX_PACKAGES,
 ) -> dict:
-    if not SKILL_AUTO_PIP_ENABLED:
+    if not _skill_auto_pip_enabled():
         return {"success": True, "installed": [], "skipped": [], "errors": [], "reason": "auto_pip_disabled"}
 
     modules = _extract_missing_modules(stderr_text)
@@ -677,8 +777,9 @@ def _ensure_skill_runtime_dependencies(
 
 def _snapshot_skill_version(skill_dir: str, reason: str = "") -> dict:
     """
-    Save a restore point for SKILL.md/action.py before mutation.
+    Save the complete executable/support tree before mutation.
     """
+    version_dir = ""
     try:
         skill_folder = os.path.basename(skill_dir.rstrip(os.sep))
         version_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -686,11 +787,33 @@ def _snapshot_skill_version(skill_dir: str, reason: str = "") -> dict:
         os.makedirs(version_dir, exist_ok=True)
 
         copied = []
-        for file_name in ("SKILL.md", "action.py"):
-            src = os.path.join(skill_dir, file_name)
-            if os.path.exists(src):
-                shutil.copy2(src, os.path.join(version_dir, file_name))
-                copied.append(file_name)
+        if os.path.islink(skill_dir):
+            raise ValueError("unsafe_skill_snapshot_source")
+        for dirpath, dirnames, filenames in os.walk(skill_dir, followlinks=False):
+            for dirname in list(dirnames):
+                full_dir = os.path.join(dirpath, dirname)
+                relative_dir = os.path.relpath(full_dir, skill_dir)
+                if os.path.islink(full_dir):
+                    raise ValueError(f"unsafe_skill_snapshot_symlink:{relative_dir}")
+                if dirname == "__pycache__":
+                    dirnames.remove(dirname)
+            for file_name in filenames:
+                src = os.path.join(dirpath, file_name)
+                relative = os.path.relpath(src, skill_dir)
+                relative_parts = relative.split(os.sep)
+                if (
+                    file_name in {".overlay-seed.json", ".DS_Store"}
+                    or "__pycache__" in relative_parts
+                    or file_name.endswith((".pyc", ".pyo"))
+                ):
+                    continue
+                if os.path.islink(src):
+                    raise ValueError(f"unsafe_skill_snapshot_symlink:{relative}")
+                destination = os.path.join(version_dir, relative)
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                shutil.copy2(src, destination)
+                copied.append(relative.replace(os.sep, "/"))
+        copied.sort()
 
         meta = {
             "skill": skill_folder,
@@ -699,15 +822,126 @@ def _snapshot_skill_version(skill_dir: str, reason: str = "") -> dict:
             "reason": reason or "snapshot",
             "files": copied,
         }
-        with open(os.path.join(version_dir, "meta.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(version_dir, ".snapshot-meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
         result = {"success": True, "version_id": version_id, "path": version_dir, "files": copied}
         _record_skill_event("snapshot", skill_folder, "ok", reason or "snapshot", {"version_id": version_id, "files": copied})
         return result
     except Exception as e:
+        if version_dir:
+            shutil.rmtree(version_dir, ignore_errors=True)
         _record_skill_event("snapshot", os.path.basename(skill_dir.rstrip(os.sep)), "error", str(e))
         return {"success": False, "error": str(e)}
+
+
+def _load_snapshot_metadata(version_dir: str) -> dict:
+    for metadata_name in (".snapshot-meta.json", "meta.json"):
+        metadata_path = os.path.join(version_dir, metadata_name)
+        if not os.path.isfile(metadata_path) or os.path.islink(metadata_path):
+            continue
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict) and isinstance(payload.get("files"), list):
+                return payload
+        except Exception:
+            continue
+    return {}
+
+
+def _validated_snapshot_files(version_dir: str) -> list[str]:
+    metadata = _load_snapshot_metadata(version_dir)
+    files = metadata.get("files") if isinstance(metadata, dict) else None
+    if not isinstance(files, list):
+        return []
+    normalized: list[str] = []
+    for item in files:
+        relative = str(item or "").replace("\\", "/").strip("/")
+        parts = relative.split("/") if relative else []
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("invalid_snapshot_file_path")
+        source = os.path.abspath(os.path.join(version_dir, *parts))
+        root = os.path.abspath(version_dir)
+        if not source.startswith(root + os.sep) or not os.path.isfile(source) or os.path.islink(source):
+            raise ValueError(f"invalid_snapshot_file:{relative}")
+        normalized.append("/".join(parts))
+    return sorted(set(normalized))
+
+
+def _mutable_skill_tree_files(skill_dir: str) -> list[str]:
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(skill_dir, followlinks=False):
+        for dirname in list(dirnames):
+            full_dir = os.path.join(dirpath, dirname)
+            if os.path.islink(full_dir):
+                raise ValueError(f"unsafe_skill_rollback_symlink:{dirname}")
+            if dirname == "__pycache__":
+                dirnames.remove(dirname)
+        for file_name in filenames:
+            source = os.path.join(dirpath, file_name)
+            relative = os.path.relpath(source, skill_dir)
+            if (
+                file_name in {".overlay-seed.json", ".DS_Store"}
+                or "__pycache__" in relative.split(os.sep)
+                or file_name.endswith((".pyc", ".pyo"))
+            ):
+                continue
+            if os.path.islink(source):
+                raise ValueError(f"unsafe_skill_rollback_symlink:{relative}")
+            files.append(relative.replace(os.sep, "/"))
+    return sorted(files)
+
+
+def _reload_skill_consumers() -> None:
+    try:
+        from skills.plugin import skill_registry
+
+        skill_registry.discover(force=True)
+    except Exception:
+        pass
+    try:
+        import skills.bridge.semantic_router as semantic_router
+
+        semantic_router._SKILLS_CACHE = None
+        semantic_router._SKILLS_CACHE_TS = 0.0
+    except Exception:
+        pass
+
+
+def update_skill_document(skill_folder: str, content: str, reason: str = "nerv_edit") -> dict:
+    """Version and update SKILL.md through the external overlay."""
+    skill_folder = (skill_folder or "").strip()
+    skill_dir = _safe_skill_dir(skill_folder)
+    if not skill_dir:
+        return {"success": False, "error": "Invalid skill folder"}
+    normalized = str(content or "").replace("\r\n", "\n")
+    if not normalized.strip():
+        return {"success": False, "error": "empty_skill_content"}
+    if not normalized.endswith("\n"):
+        normalized += "\n"
+    safe, violations = validate_skill_safety(normalized)
+    if not safe:
+        return {
+            "success": False,
+            "error": f"IRON DOME BLOCKED: {violations}",
+            "blocked": True,
+        }
+    snapshot = None
+    if os.path.exists(os.path.join(skill_dir, "SKILL.md")) or os.path.exists(os.path.join(skill_dir, "action.py")):
+        snapshot = _snapshot_skill_version(skill_dir, reason=f"pre_{reason}")
+        if not snapshot.get("success"):
+            return {"success": False, "error": f"Snapshot failed: {snapshot.get('error')}"}
+    saved = _safe_write_skill_file(skill_folder, "SKILL.md", normalized, reason=reason)
+    if not saved.get("success"):
+        return saved
+    _reload_skill_consumers()
+    return {
+        "success": True,
+        "path": os.path.join(_ensure_mutable_skill_dir(skill_folder), "SKILL.md"),
+        "content": normalized,
+        "snapshot": snapshot,
+    }
 
 
 def list_skill_versions(skill_folder: str) -> dict:
@@ -719,7 +953,9 @@ def list_skill_versions(skill_folder: str) -> dict:
         version_dir = os.path.join(root, item)
         if not os.path.isdir(version_dir):
             continue
-        meta_path = os.path.join(version_dir, "meta.json")
+        meta_path = os.path.join(version_dir, ".snapshot-meta.json")
+        if not os.path.exists(meta_path):
+            meta_path = os.path.join(version_dir, "meta.json")
         meta = {"version_id": item}
         if os.path.exists(meta_path):
             try:
@@ -735,7 +971,7 @@ def list_skill_versions(skill_folder: str) -> dict:
 
 def rollback_skill_version(skill_folder: str, version_id: str = "") -> dict:
     """
-    Restore SKILL.md/action.py from a saved version snapshot.
+    Restore the selected executable/support tree exactly.
     """
     skill_folder = (skill_folder or "").strip()
     if not skill_folder:
@@ -746,8 +982,6 @@ def rollback_skill_version(skill_folder: str, version_id: str = "") -> dict:
     if not skill_dir:
         _record_skill_event("rollback", skill_folder, "error", "invalid skill folder path")
         return {"success": False, "error": "Invalid skill folder path"}
-    os.makedirs(skill_dir, exist_ok=True)
-
     root = os.path.join(SKILL_VERSIONS_DIR, skill_folder)
     if not os.path.isdir(root):
         _record_skill_event("rollback", skill_folder, "error", "no versions found")
@@ -765,17 +999,43 @@ def rollback_skill_version(skill_folder: str, version_id: str = "") -> dict:
         _record_skill_event("rollback", skill_folder, "error", f"version not found: {chosen}")
         return {"success": False, "error": f"Version '{chosen}' not found"}
 
-    pre = _snapshot_skill_version(skill_dir, reason=f"pre_rollback_to_{chosen}")
-    restored = []
-    for file_name in ("SKILL.md", "action.py"):
-        src = os.path.join(version_dir, file_name)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(skill_dir, file_name))
-            restored.append(file_name)
-
-    if not restored:
+    try:
+        selected_files = _validated_snapshot_files(version_dir)
+    except ValueError as exc:
+        _record_skill_event("rollback", skill_folder, "error", str(exc))
+        return {"success": False, "error": str(exc)}
+    if not selected_files:
         _record_skill_event("rollback", skill_folder, "error", f"version has no files: {chosen}")
         return {"success": False, "error": f"Version '{chosen}' has no restorable files"}
+
+    pre = _snapshot_skill_version(skill_dir, reason=f"pre_rollback_to_{chosen}")
+    if not pre.get("success"):
+        return {"success": False, "error": f"Pre-rollback snapshot failed: {pre.get('error')}"}
+    try:
+        skill_dir = _ensure_mutable_skill_dir(skill_folder)
+        current_files = set(_mutable_skill_tree_files(skill_dir))
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    selected_set = set(selected_files)
+    try:
+        for relative in sorted(current_files - selected_set, reverse=True):
+            os.unlink(os.path.join(skill_dir, *relative.split("/")))
+        restored = []
+        for relative in selected_files:
+            src = os.path.join(version_dir, *relative.split("/"))
+            destination = os.path.join(skill_dir, *relative.split("/"))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(src, destination)
+            restored.append(relative)
+        for dirpath, dirnames, filenames in os.walk(skill_dir, topdown=False):
+            if dirpath == skill_dir or dirnames or filenames:
+                continue
+            os.rmdir(dirpath)
+    except Exception as exc:
+        _record_skill_event("rollback", skill_folder, "error", str(exc))
+        return {"success": False, "error": f"Rollback restore failed: {exc}"}
+
+    _reload_skill_consumers()
 
     result = {
         "success": True,
@@ -994,7 +1254,7 @@ def _choose_canary_bucket(route_key: str, canary_percent: int) -> bool:
 
 
 def _resolve_run_target(skill: str, route_key: str = "", force_non_canary: bool = False) -> dict:
-    skill_dir = _safe_skill_dir(skill)
+    skill_dir = _safe_runtime_skill_dir(skill)
     if not skill_dir or not os.path.isdir(skill_dir):
         return {"success": False, "error": "Skill folder not found"}
 
@@ -1307,10 +1567,13 @@ def _auto_runtime_repair_action(skill_dir: str, need_description: str, max_round
     return {"success": False, "repaired": repaired, "smoke": None, "rounds": max_rounds, "logs": logs, "error": "Unknown runtime repair failure"}
 
 
-def _smoke_test_action(skill_dir: str, timeout_sec: int = 15, auto_install_deps: bool = True) -> dict:
+def _smoke_test_action(skill_dir: str, timeout_sec: int = 15, auto_install_deps: Optional[bool] = None) -> dict:
     action_path = os.path.join(skill_dir, "action.py")
     if not os.path.exists(action_path):
         return {"success": False, "command": "", "stdout": "", "stderr": "action.py not found"}
+
+    if auto_install_deps is None:
+        auto_install_deps = _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
 
     dep_bootstrap = {"success": True, "installed": []}
     if auto_install_deps:
@@ -1356,8 +1619,9 @@ def _register_skill_tool_definition(skill_folder: str, description: str) -> dict
     tool_name = f"run_{re.sub(r'[^a-z0-9_]+', '_', skill_folder.lower())}"
     try:
         payload = {"_meta": {"version": "1.0.0", "description": "MAGI Skill Definitions for OpenClaw Integration"}, "tools": []}
-        if os.path.exists(DEFINITIONS_PATH):
-            with open(DEFINITIONS_PATH, "r", encoding="utf-8") as f:
+        definitions_read_path = str(effective_definitions_path())
+        if os.path.exists(definitions_read_path):
+            with open(definitions_read_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     payload.update(data)
@@ -1397,7 +1661,8 @@ def _register_skill_tool_definition(skill_folder: str, description: str) -> dict
             updated = True
 
         payload.setdefault("_meta", {})["updated"] = datetime.now().strftime("%Y-%m-%d")
-        with open(DEFINITIONS_PATH, "w", encoding="utf-8") as f:
+        definitions_write_path = str(mutable_definitions_path())
+        with open(definitions_write_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=4)
         return {"success": True, "name": tool_name, "updated": updated}
     except Exception as e:
@@ -1454,8 +1719,7 @@ def generate_skill(
         }
     
     # Create skill directory
-    skill_dir = os.path.join(SKILLS_DIR, safe_name)
-    os.makedirs(skill_dir, exist_ok=True)
+    skill_dir = _ensure_mutable_skill_dir(safe_name)
     
     skill_path = os.path.join(skill_dir, "SKILL.md")
     
@@ -1592,8 +1856,7 @@ def install_skill_from_url(url: str, custom_name: str = None, require_hitl: bool
     safe_name = re.sub(r'[^a-z0-9_-]', '-', name.lower())
     
     # Create skill directory
-    skill_dir = os.path.join(SKILLS_DIR, safe_name)
-    os.makedirs(skill_dir, exist_ok=True)
+    skill_dir = _ensure_mutable_skill_dir(safe_name)
     
     skill_path = os.path.join(skill_dir, "SKILL.md")
     
@@ -1921,11 +2184,30 @@ def list_skills() -> list[dict]:
     """
     skills = []
     
-    if not os.path.exists(SKILLS_DIR):
+    roots = [SKILLS_DIR]
+    if os.path.abspath(BASE_SKILLS_DIR) != os.path.abspath(SKILLS_DIR):
+        roots.append(BASE_SKILLS_DIR)
+    if not any(os.path.exists(root) for root in roots):
         return skills
-    
-    for item in os.listdir(SKILLS_DIR):
-        skill_path = os.path.join(SKILLS_DIR, item, "SKILL.md")
+
+    entries: dict[str, str] = {}
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            from skills.catalog import iter_top_level_skill_dirs
+
+            names = [entry.name for entry in iter_top_level_skill_dirs(root)]
+        except Exception:
+            names = [
+                item for item in os.listdir(root)
+                if not item.startswith(".") and item != "__pycache__"
+            ]
+        for item in names:
+            entries.setdefault(item, root)
+
+    for item, root in entries.items():
+        skill_path = os.path.join(root, item, "SKILL.md")
         if os.path.exists(skill_path):
             try:
                 with open(skill_path, 'r') as f:
@@ -1956,10 +2238,8 @@ SAFE_MODELS = [
     "mistral-nemo:12b",
     os.environ.get("MAGI_MAIN_MODEL", ""),
     "gemma2:9b",
-    "qwen2.5-coder:7b",
     "phi3.5:3.8b",
     "gemma-3-12b-it-4bit",
-    "deepseek-r1:14b",
     os.environ.get("MAGI_MAIN_MODEL", "")
 ]
 
@@ -2079,7 +2359,7 @@ def request_distributed_skill_generation(prompt: str) -> dict:
         # Distributed model is hosted on Casper (oMLX) which connects to Melchior via RPC
         CASPER_URL = OMLX_HOST + "/v1/chat/completions"
         
-        # We use chat completions for the big model as it might be an instruction-tuned model (e.g., GLM-4, Llama-3-70B-Instruct)
+        # We use chat completions for the big model as it might be an instruction-tuned model.
         response = requests.post(
             CASPER_URL,
             json={
@@ -2129,9 +2409,9 @@ def run_skill_action(
     skill: str,
     task: str,
     timeout_sec: int = 30,
-    auto_repair: bool = True,
-    rollback_on_fail: bool = True,
-    auto_install_deps: bool = True,
+    auto_repair: Optional[bool] = None,
+    rollback_on_fail: Optional[bool] = None,
+    auto_install_deps: Optional[bool] = None,
     route_key: str = "",
 ) -> dict:
     """
@@ -2142,11 +2422,48 @@ def run_skill_action(
     if not skill:
         return {"success": False, "error": "Missing skill folder name"}
 
+    explicit_runtime_flags = {
+        "auto_repair": auto_repair is not None,
+        "rollback_on_fail": rollback_on_fail is not None,
+        "auto_install_deps": auto_install_deps is not None,
+    }
+    if auto_repair is None:
+        auto_repair = _skill_runtime_default("MAGI_SKILL_AUTO_REPAIR_DEFAULT")
+    if rollback_on_fail is None:
+        rollback_on_fail = _skill_runtime_default("MAGI_SKILL_ROLLBACK_ON_FAIL_DEFAULT")
+    if auto_install_deps is None:
+        auto_install_deps = _skill_runtime_default("MAGI_SKILL_AUTO_INSTALL_DEPS_DEFAULT")
+    auto_repair = bool(auto_repair)
+    rollback_on_fail = bool(rollback_on_fail)
+    auto_install_deps = bool(auto_install_deps)
+    runtime_policy = {
+        "auto_repair": auto_repair,
+        "rollback_on_fail": rollback_on_fail,
+        "auto_install_deps": auto_install_deps,
+        "auto_pip_enabled": _skill_auto_pip_enabled(),
+        "effective_auto_pip": bool(auto_install_deps and _skill_auto_pip_enabled()),
+        "explicit_flags": explicit_runtime_flags,
+        "dev_env_opt_in": _skill_runtime_env_opt_in(),
+        "message": (
+            "Runtime mutation requested; audit recorded."
+            if (auto_repair or rollback_on_fail or auto_install_deps)
+            else "Runtime mutation defaults are disabled for product/public mode."
+        ),
+    }
+
+    def _with_runtime_policy(result: dict) -> dict:
+        if isinstance(result, dict):
+            result.setdefault("runtime_policy", runtime_policy)
+        return result
+
+    if auto_repair or rollback_on_fail or auto_install_deps:
+        _record_skill_event("runtime_mutation_policy", skill, "info", runtime_policy["message"], runtime_policy)
+
     timeout_sec = int(timeout_sec or SKILL_EXEC_TIMEOUT_SEC)
     route = _resolve_run_target(skill, route_key=route_key)
     if not route.get("success"):
         _record_skill_event("run", skill, "error", route.get("error", "route resolution failed"))
-        return {"success": False, "error": route.get("error", "route resolution failed")}
+        return _with_runtime_policy({"success": False, "error": route.get("error", "route resolution failed")})
 
     skill_dir = route["skill_dir"]
     channel = route.get("channel", "live")
@@ -2156,7 +2473,7 @@ def run_skill_action(
     action_path = os.path.join(skill_dir, "action.py")
     if not os.path.exists(action_path):
         _record_skill_event("run", skill, "error", f"action.py not found ({channel}:{version_id})")
-        return {"success": False, "error": f"action.py not found in routed target ({channel})"}
+        return _with_runtime_policy({"success": False, "error": f"action.py not found in routed target ({channel})"})
 
     def _attempt():
         task_arg = task or "help"
@@ -2185,6 +2502,16 @@ def run_skill_action(
         traces = []
         if auto_install_deps:
             dep_bootstrap = _ensure_skill_runtime_dependencies(skill_dir, force_scan=True)
+            if dep_bootstrap.get("reason"):
+                traces.append(
+                    {
+                        "cmd": "auto_pip bootstrap",
+                        "rc": 0,
+                        "stdout": "",
+                        "stderr": "",
+                        "skipped": dep_bootstrap.get("reason"),
+                    }
+                )
             if dep_bootstrap.get("installed"):
                 traces.append(
                     {
@@ -2221,6 +2548,16 @@ def run_skill_action(
                     }
                 if auto_install_deps:
                     dep_fix = _ensure_skill_runtime_dependencies(skill_dir, stderr_text=f"{r['stderr']}\n{r['stdout']}")
+                    if dep_fix.get("reason"):
+                        traces.append(
+                            {
+                                "cmd": "auto_pip on_error",
+                                "rc": 0,
+                                "stdout": "",
+                                "stderr": "",
+                                "skipped": dep_fix.get("reason"),
+                            }
+                        )
                     if dep_fix.get("installed"):
                         traces.append(
                             {
@@ -2266,7 +2603,7 @@ def run_skill_action(
         if first.get("success"):
             first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
             _record_skill_event("run", skill, "ok", f"canary success:{version_id}")
-            return first
+            return _with_runtime_policy(first)
         _record_skill_event("run", skill, "error", f"canary failed:{version_id}")
         # fallback immediately to stable/live path to preserve service continuity
         fallback_route = _resolve_run_target(skill, route_key="__stable_fallback__", force_non_canary=True)
@@ -2283,16 +2620,20 @@ def run_skill_action(
                 fallback["canary_result"] = first
                 fallback["usage_tracking"] = _track_skill_usage(skill, fallback, task=task)
                 _record_skill_event("run", skill, "ok" if fallback.get("success") else "error", f"fallback after canary failure -> {fallback_channel}:{fallback_version}")
-                return fallback
+                return _with_runtime_policy(fallback)
         first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
-        return first
+        return _with_runtime_policy(first)
 
     if first.get("success") or not auto_repair:
         first["usage_tracking"] = _track_skill_usage(skill, first, task=task)
         _record_skill_event("run", skill, "ok" if first.get("success") else "error", first.get("error", first.get("command", "")))
-        return first
+        return _with_runtime_policy(first)
 
     snapshot = _snapshot_skill_version(skill_dir, reason="pre_runtime_auto_repair")
+    try:
+        skill_dir = _ensure_mutable_skill_dir(skill)
+    except Exception as exc:
+        return _with_runtime_policy({"success": False, "skill": skill, "error": str(exc), "trace": first.get("trace", [])})
     _record_skill_event("run_auto_repair", skill, "info", "runtime failure detected, trying auto repair")
     repair = _auto_runtime_repair_action(skill_dir, task or skill, max_rounds=MAX_RUNTIME_REPAIR_ROUNDS)
     if repair.get("success"):
@@ -2301,7 +2642,7 @@ def run_skill_action(
         second["repair"] = repair
         second["usage_tracking"] = _track_skill_usage(skill, second, task=task)
         _record_skill_event("run_auto_repair", skill, "ok" if second.get("success") else "error", "auto repair applied")
-        return second
+        return _with_runtime_policy(second)
 
     rollback_result = None
     if rollback_on_fail and snapshot.get("success"):
@@ -2318,7 +2659,7 @@ def run_skill_action(
     }
     result["usage_tracking"] = _track_skill_usage(skill, result, task=task)
     _record_skill_event("run", skill, "error", result["error"], {"auto_repair": repair.get("error") if isinstance(repair, dict) else str(repair)})
-    return result
+    return _with_runtime_policy(result)
 
 
 def run_skill_ci(skill: str, task: str = "self test", attempt_repair: bool = False) -> dict:
@@ -2336,8 +2677,9 @@ def run_skill_ci(skill: str, task: str = "self test", attempt_repair: bool = Fal
     if not os.path.isdir(skill_dir):
         return {"success": False, "error": "Skill folder not found"}
 
+    runtime_dir = _safe_runtime_skill_dir(skill) or skill_dir
     skill_md = os.path.join(skill_dir, "SKILL.md")
-    action_py = os.path.join(skill_dir, "action.py")
+    action_py = os.path.join(runtime_dir, "action.py")
     checks = []
 
     if os.path.exists(skill_md):
@@ -2371,7 +2713,8 @@ def run_skill_ci(skill: str, task: str = "self test", attempt_repair: bool = Fal
     else:
         checks.append({"check": "action_exists", "ok": False, "detail": "action.py missing"})
 
-    smoke = _smoke_test_action(skill_dir, timeout_sec=min(SKILL_EXEC_TIMEOUT_SEC, 20), auto_install_deps=True)
+    runtime_dir = _safe_runtime_skill_dir(skill) or skill_dir
+    smoke = _smoke_test_action(runtime_dir, timeout_sec=min(SKILL_EXEC_TIMEOUT_SEC, 20), auto_install_deps=True)
     checks.append({"check": "smoke", "ok": bool(smoke.get("success")), "detail": smoke.get("stderr", "")[:240]})
 
     ok = all(c.get("ok") for c in checks if c.get("check") not in {"action_exists"})
@@ -2593,8 +2936,7 @@ def acquire_skill(need_description: str, auto_generate: bool = True, auto_activa
 
         if genesis_result["success"] and genesis_result.get("content"):
             safe_name = _build_skill_slug(need_description, prefix="generated")
-            skill_dir = os.path.join(SKILLS_DIR, safe_name)
-            os.makedirs(skill_dir, exist_ok=True)
+            skill_dir = _ensure_mutable_skill_dir(safe_name)
             skill_path = os.path.join(skill_dir, "SKILL.md")
 
             skill_content = _ensure_skill_instructions(genesis_result["content"])

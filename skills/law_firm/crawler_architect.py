@@ -1,6 +1,6 @@
 
 import os
-import fcntl
+from magi_v3 import fcntl_compat as fcntl
 import py_compile
 import shutil
 import re

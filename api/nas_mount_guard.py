@@ -15,12 +15,52 @@ from __future__ import annotations
 import logging
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("magi.nas_mount_guard")
+
+
+def _parse_env_file_values(keys: tuple[str, ...]) -> dict[str, str]:
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    found: dict[str, str] = {}
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key not in keys:
+                    continue
+                found[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        return {}
+    return found
+
+
+def _merge_share_csv(current: str, local: str) -> str:
+    """Merge NAS share CSV values while preserving current order.
+
+    launchd can keep an older process environment after `.env` is edited.  For
+    NAS shares, `.env` should be additive so newly configured shares such as
+    `bakup` are not silently ignored until the next full service reinstall.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in (current or "", local or ""):
+        for part in raw.split(","):
+            name = part.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            merged.append(name)
+    return ",".join(merged)
 
 
 def _load_local_nas_env_if_needed() -> None:
@@ -36,24 +76,21 @@ def _load_local_nas_env_if_needed() -> None:
         "MAGI_NAS_USER",
         "MAGI_NAS_HOME_USER",
         "MAGI_NAS_SHARES",
+        "MAGI_NAS_DISCOVERY_HOSTS",
         "MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC",
     )
-    if all(os.environ.get(k) for k in needed):
+    local_values = _parse_env_file_values(needed)
+    if not local_values:
         return
-    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if key not in needed or key in os.environ:
-                    continue
-                os.environ[key] = value.strip().strip('"').strip("'")
-    except OSError:
-        return
+    for key, value in local_values.items():
+        if key == "MAGI_NAS_SHARES":
+            current = os.environ.get(key, "")
+            merged = _merge_share_csv(current, value)
+            if merged:
+                os.environ[key] = merged
+            continue
+        if key not in os.environ:
+            os.environ[key] = value
 
 
 _load_local_nas_env_if_needed()
@@ -120,7 +157,7 @@ def get_synology_drive_fallback_path() -> str:
 def get_lumi_fallback_path() -> str:
     """Return a local Synology Drive root that can stand in for the lumi share.
 
-    The historical SMB shape is /Volumes/lumi/lumi/01_案件.  On newer installs
+    A historical SMB shape may be <configured-share>/<account>/01_案件.  On newer installs
     the active case tree can be synced directly as ~/SynologyDrive/01_案件 or
     ~/Library/CloudStorage/SynologyDrive-homes/01_案件.  Treat that as a usable
     degraded path when SMB is offline; closed-case archives still require a
@@ -155,13 +192,8 @@ def get_share_mount_path(share_name: str, volume_path: str) -> str:
     """回傳真正 SMB mount path；不包含 Synology Drive fallback。"""
     user_mount = os.path.join(_USER_MOUNT_ROOT, share_name)
     for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2", user_mount):
-        if _is_mounted(candidate):
-            try:
-                if candidate == user_mount or _is_correct_host(candidate):
-                    return candidate
-            except Exception:
-                if candidate == user_mount:
-                    return candidate
+        if _is_mounted(candidate) and _is_correct_host(candidate):
+            return candidate
     return ""
 
 
@@ -205,6 +237,28 @@ def _ping_ok(host: str, timeout: int = 2) -> bool:
         return False
 
 
+def _candidate_discovery_hosts() -> list[str]:
+    """Return mDNS/hostname candidates used when the configured LAN IP drifts."""
+    raw = os.getenv("MAGI_NAS_DISCOVERY_HOSTS", "whale.local,Whale.local,whale").strip()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        host = part.strip()
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        candidates.append(host)
+    return candidates
+
+
+def _resolve_host_ip(host: str) -> str:
+    """Resolve host to an IPv4 address, returning an empty string on failure."""
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return ""
+
+
 def resolve_nas_host() -> str:
     """動態解析 NAS IP：LAN 優先，不通走 Tailscale。結果快取 120 秒。"""
     global _resolved_host, _resolved_expiry, NAS_HOST
@@ -227,8 +281,17 @@ def resolve_nas_host() -> str:
         chosen = _NAS_TS_HOST
         logger.info("NAS LAN %s 不可達，切換 Tailscale %s", _NAS_LAN_HOST, _NAS_TS_HOST)
     else:
-        chosen = _NAS_LAN_HOST  # 兩個都不通，保持預設讓後續報錯
-        logger.warning("NAS LAN %s 和 Tailscale %s 皆不可達", _NAS_LAN_HOST, _NAS_TS_HOST)
+        chosen = ""
+        for candidate in _candidate_discovery_hosts():
+            resolved = _resolve_host_ip(candidate)
+            probe = resolved or candidate
+            if probe and _ping_ok(probe, timeout=2):
+                chosen = probe
+                logger.info("NAS LAN %s 不可達，改由 %s (%s) 連線", _NAS_LAN_HOST, candidate, probe)
+                break
+        if not chosen:
+            chosen = _NAS_LAN_HOST  # 兩個都不通，保持預設讓後續報錯
+            logger.warning("NAS LAN %s 和 Tailscale %s 皆不可達", _NAS_LAN_HOST, _NAS_TS_HOST)
 
     _resolved_host = chosen
     _resolved_expiry = now + _RESOLVE_TTL
@@ -242,42 +305,85 @@ NAS_HOST = _NAS_LAN_HOST  # 先設預設，啟動時由 resolve_nas_host() 覆�
 # (share_name, expected_volume_path)
 # 可透過 MAGI_NAS_SHARES 環境變數覆寫（逗號分隔 share 名，volume path 自動推定為 /Volumes/<share>）
 # 例：MAGI_NAS_SHARES=homes → 只掛 homes（若 NAS 上已無 lumi share）
+_VOLUME_ROOT = Path(os.sep) / "Volumes"
+_ARCHIVE_SHARE_FALLBACK = (
+    os.getenv("MAGI_NAS_CLOSED_SHARE_NAME")
+    or os.getenv("MAGI_NAS_ARCHIVE_SHARE")
+    or "lumi"
+).strip().strip("/\\") or "lumi"
 _SHARES_DEFAULT: list[tuple[str, str]] = [
-    ("homes", "/Volumes/homes"),
-    ("lumi",  "/Volumes/lumi"),
+    ("homes", str(_VOLUME_ROOT / "homes")),
+    (_ARCHIVE_SHARE_FALLBACK, str(_VOLUME_ROOT / _ARCHIVE_SHARE_FALLBACK)),
 ]
-_SHARES_ENV = os.getenv("MAGI_NAS_SHARES", "").strip()
-if _SHARES_ENV:
-    _SHARES: list[tuple[str, str]] = [
+def _shares_from_env() -> list[tuple[str, str]]:
+    _load_local_nas_env_if_needed()
+    shares_env = os.getenv("MAGI_NAS_SHARES", "").strip()
+    if shares_env:
+        return [
         (name.strip(), f"/Volumes/{name.strip()}")
-        for name in _SHARES_ENV.split(",")
+        for name in shares_env.split(",")
         if name.strip()
-    ]
-else:
-    _SHARES = list(_SHARES_DEFAULT)
+        ]
+    return list(_SHARES_DEFAULT)
+
+
+_SHARES: list[tuple[str, str]] = _shares_from_env()
+
+
+def get_configured_shares(*, refresh: bool = False) -> list[tuple[str, str]]:
+    """Return configured NAS shares, optionally refreshing from `.env`."""
+    global _SHARES
+    if refresh:
+        refreshed = _shares_from_env()
+        if refreshed != _SHARES:
+            logger.info("NAS share 設定已刷新: %s", ", ".join(name for name, _ in refreshed))
+            _SHARES = refreshed
+    return list(_SHARES)
 
 # 當 /Volumes/<share> 因 root 權限無法建目錄時的 fallback
 _USER_MOUNT_ROOT = os.path.expanduser("~/.magi_mounts")
 _ENSURE_MOUNT_LOCK = threading.Lock()  # BUG-38: 防止多執行緒同時 mount 同一 share
 
+
+def _managed_share_mount_re() -> re.Pattern[str]:
+    """Return a mount-name matcher for configured NAS shares."""
+    names = sorted({name for name, _ in _SHARES if name}, key=len, reverse=True)
+    if not names:
+        names = ["homes", "lumi"]
+    body = "|".join(re.escape(name) for name in names)
+    return re.compile(rf"^({body})(-\d+)?$")
+
 # ── 掛載邏輯 ─────────────────────────────────────────────────
 
 def _is_mounted(volume_path: str) -> bool:
-    """檢查 volume 是否已掛載且可存取（含 macOS automount 後綴 -1）。
-    使用 os.stat() 取代 os.listdir() 避免在 SMB 延遲時 hang（0s vs 10-30s）。"""
+    """檢查 volume 是否已掛載（含 macOS automount 後綴 -1）。
+
+    Do not call os.stat() here.  On macOS a stale SMB mount can block inside the
+    kernel for minutes, taking the daemon/menu bar down with it.  Mount-table
+    parsing is enough for routing; host validation is handled separately by
+    `_is_correct_host`.
+    """
+    try:
+        result = subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=5)
+        mount_lines = result.stdout.splitlines()
+    except Exception:
+        mount_lines = []
     for path in (volume_path, f"{volume_path}-1"):
-        if os.path.ismount(path):
-            try:
-                os.stat(path)
-                return True
-            except OSError:
-                continue
+        if any(f" on {path} " in line for line in mount_lines):
+            return True
     return False
 
 
 def _known_nas_hosts() -> set:
     """所有已知的 NAS IP（LAN + Tailscale），任一都算合法掛載。"""
-    return {_NAS_LAN_HOST, _NAS_TS_HOST}
+    hosts = {host for host in (_NAS_LAN_HOST, _NAS_TS_HOST, _resolved_host) if host}
+    for candidate in _candidate_discovery_hosts():
+        if candidate:
+            hosts.add(candidate)
+        resolved = _resolve_host_ip(candidate)
+        if resolved:
+            hosts.add(resolved)
+    return hosts
 
 
 def _is_correct_host(volume_path: str) -> bool:
@@ -296,25 +402,13 @@ def _is_correct_host(volume_path: str) -> bool:
 
 
 def _force_unmount_stale(volume_path: str) -> None:
-    """偵測並清理 stale SMB mount（掛載點存在但 SMB session 已斷）。
-    只有 errno.EIO（I/O 錯誤，stale NFS/SMB 特徵）才卸載；
-    PermissionError 等其他 OSError 不卸載，避免誤殺正常掛載。
+    """Avoid probing stale SMB mounts.
+
+    Earlier versions used os.stat() and force-unmount for EIO paths.  When a NAS
+    IP disappears, both calls can enter macOS kernel wait.  Wrong-host mounts
+    are ignored elsewhere and are safely removed by a later reboot.
     """
-    import errno as _errno
-    for candidate in (volume_path, f"{volume_path}-1", f"{volume_path}-2"):
-        if not os.path.exists(candidate):
-            continue
-        try:
-            # 用 os.stat 測試可存取性（stale mount 通常會 hang 或 EIO）
-            os.stat(candidate)
-        except OSError as e:
-            if e.errno == _errno.EIO:
-                # EIO = Input/Output Error → 確實是 stale SMB/NFS mount
-                logger.info("偵測到 stale mount %s (EIO)，強制卸載", candidate)
-                _unmount_path(candidate)
-            else:
-                # EACCES/EPERM 等：只是權限問題，不卸載
-                logger.debug("os.stat(%s) 失敗 (errno=%d)，非 stale mount，跳過", candidate, e.errno)
+    return
 
 
 def _mount_share(share_name: str, volume_path: str) -> bool:
@@ -323,6 +417,13 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
     2. osascript mount volume（走 Finder Keychain，30s timeout）
     3. 若 osascript 失敗，fallback 到 mount_smbfs（CLI 直接掛載）
     """
+    test_mode = str(os.environ.get("MAGI_TEST_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    live_tests = str(os.environ.get("MAGI_ENABLE_LIVE_TESTS") or "").strip().lower() in {"1", "true", "yes", "on"}
+    subprocess_is_native = getattr(subprocess.run, "__module__", "subprocess") == "subprocess"
+    if test_mode and not live_tests and subprocess_is_native:
+        logger.warning("NAS mount blocked in ordinary pytest: %s -> %s", share_name, volume_path)
+        return False
+
     # Step 0: 清理 stale mount
     _force_unmount_stale(volume_path)
 
@@ -345,6 +446,12 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
         logger.warning("osascript mount timeout (%ss): %s", osascript_timeout, smb_url)
     except Exception as e:
         logger.warning("osascript mount failed: %s → %s", smb_url, e)
+
+    # Step 1.5: Use a Keychain password through expect/stdin when Finder's
+    # NetAuth layer times out.  This keeps the secret out of argv and gives MAGI
+    # a reliable user-level mount point after NAS updates or IP drift.
+    if _mount_share_with_keychain_expect(share_name):
+        return True
 
     # Step 2: optional mount_smbfs fallback（不走 Finder，直接 CLI 掛載）。
     #
@@ -384,6 +491,69 @@ def _mount_share(share_name: str, volume_path: str) -> bool:
             logger.debug("mount_smbfs 異常: %s → %s: %s", share_name, mount_target, e)
 
     logger.error("NAS mount 失敗（osascript + mount_smbfs 均未成功）: %s", smb_url)
+    return False
+
+
+def _mount_share_with_keychain_expect(share_name: str) -> bool:
+    """Mount a share to ~/.magi_mounts using a password read from Keychain.
+
+    `mount_smbfs -N` does not consistently read Finder's SMB Keychain entries on
+    macOS.  When osascript is stuck in NetAuth, this path supplies the password
+    to the interactive prompt via stdin/env, not command-line arguments.
+    """
+    if not os.path.exists("/usr/bin/expect"):
+        return False
+
+    password = _get_nas_password_from_keychain()
+    if not password:
+        return False
+
+    nas_user = resolve_nas_user()
+    target = os.path.join(_USER_MOUNT_ROOT, share_name)
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as exc:
+        logger.debug("cannot create user mount target %s: %s", target, exc)
+        return False
+
+    mount_url = f"//{nas_user}@{NAS_HOST}/{share_name}"
+    script = r'''
+set timeout 12
+spawn mount_smbfs $env(MAGI_MOUNT_URL) $env(MAGI_MOUNT_TARGET)
+expect {
+  -re "Password.*:" { send -- "$env(MAGI_SMB_PW)\r"; exp_continue }
+  eof { catch wait result; exit [lindex $result 3] }
+  timeout { exit 124 }
+}
+'''
+    env = os.environ.copy()
+    env["MAGI_MOUNT_URL"] = mount_url
+    env["MAGI_MOUNT_TARGET"] = target
+    env["MAGI_SMB_PW"] = password
+    try:
+        result = subprocess.run(
+            ["/usr/bin/expect", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("keychain expect mount timeout: %s → %s", share_name, target)
+        return False
+    except Exception as exc:
+        logger.debug("keychain expect mount failed: %s → %s", share_name, exc)
+        return False
+    finally:
+        password = ""
+        env["MAGI_SMB_PW"] = ""
+
+    if result.returncode == 0 and _is_mounted(target):
+        logger.info("keychain expect mount 成功: %s → %s", share_name, target)
+        return True
+
+    stderr = (result.stderr or result.stdout or "").strip().replace("\n", " ")
+    logger.debug("keychain expect mount rc=%s: %s", result.returncode, stderr[:160])
     return False
 
 
@@ -440,17 +610,25 @@ def _ensure_volume_mount_point(volume_path: str) -> None:
 def _get_nas_password_from_keychain() -> str:
     """從 macOS keychain 取出 NAS SMB 密碼。"""
     nas_user = resolve_nas_user()
-    try:
-        result = subprocess.run(
-            ["security", "find-internet-password", "-s", NAS_HOST, "-a", nas_user, "-g"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in result.stderr.splitlines():
-            if line.startswith("password: "):
-                pw = line.split("password: ", 1)[1].strip().strip('"')
-                return pw
-    except Exception:
-        pass
+    candidates = []
+    for host in (NAS_HOST, _NAS_LAN_HOST, _NAS_TS_HOST, _resolved_host, *list(_candidate_discovery_hosts())):
+        if host and host not in candidates:
+            candidates.append(host)
+        resolved = _resolve_host_ip(host) if host else ""
+        if resolved and resolved not in candidates:
+            candidates.append(resolved)
+    for host in candidates:
+        try:
+            result = subprocess.run(
+                ["security", "find-internet-password", "-s", host, "-a", nas_user, "-g"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stderr.splitlines():
+                if line.startswith("password: "):
+                    pw = line.split("password: ", 1)[1].strip().strip('"')
+                    return pw
+        except Exception:
+            pass
     return ""
 
 
@@ -464,6 +642,32 @@ def _unmount_path(volume_path: str) -> None:
         logger.info("已卸載: %s", volume_path)
     except Exception as e:
         logger.warning("卸載失敗: %s → %s", volume_path, e)
+
+
+def _netauth_kernel_waiting() -> bool:
+    """Return True when macOS SMB auth is stuck in uninterruptible wait.
+
+    Retrying `mount volume` while NetAuthSysAgent is in U state creates more
+    stuck osascript/mount processes and can make MAGI look unstable.  When this
+    happens the only reliable recovery is to wait for the kernel call to return
+    or reboot at a safe time; the guard should not pile on more mount attempts.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-Ao", "stat,comm,args"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    for line in result.stdout.splitlines():
+        if "NetAuth" not in line and "mount_smbfs" not in line:
+            continue
+        stat = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+        if "U" in stat:
+            return True
+    return False
 
 
 def _cleanup_wrong_host_mounts() -> None:
@@ -485,23 +689,28 @@ def _cleanup_wrong_host_mounts() -> None:
         vol = m.group(1)
         base_name = vol.split("/")[-1]
 
-        # 只處理 homes/lumi 相關的 mount
-        if not re.match(r"^(homes|lumi)(-\d+)?$", base_name):
+        # 只處理 MAGI 管理的 NAS mount，避免誤卸其他使用者磁碟。
+        managed_mount = _managed_share_mount_re()
+        if not managed_mount.match(base_name):
             continue
 
         # 掛載指向已知 IP → 保留（無論是 LAN 或 Tailscale）
         if any(ip in line for ip in known):
             # 但如果是 -N 後綴且正名掛載也存在且可用，清理重複
-            if re.match(r"^(homes|lumi)-\d+$", base_name):
+            if managed_mount.match(base_name) and re.search(r"-\d+$", base_name):
                 canonical = f"/Volumes/{base_name.split('-')[0]}"
                 if _is_mounted(canonical) and _is_correct_host(canonical):
                     logger.info("清理重複 mount（正名已可用）: %s", vol)
                     _unmount_path(vol)
             continue
 
-        # 掛載指向未知 IP → 清理
-        logger.info("清理未知 IP mount: %s", vol)
-        _unmount_path(vol)
+        # 掛載指向未知 IP → 預設只記錄不卸載，避免 macOS SMB stale unmount
+        # 卡入 kernel wait。若維護時確定可承受風險，再開旗標清理。
+        if os.getenv("MAGI_NAS_CLEAN_UNKNOWN_MOUNTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            logger.info("清理未知 IP mount: %s", vol)
+            _unmount_path(vol)
+        else:
+            logger.info("忽略未知 IP stale mount（等待安全重開清除）: %s", vol)
 
 
 # ── 公開 API ─────────────────────────────────────────────────
@@ -517,23 +726,29 @@ def ensure_nas_mounts() -> dict[str, bool]:
 def _ensure_nas_mounts_locked() -> dict[str, bool]:
     """實際掛載邏輯（需在 _ENSURE_MOUNT_LOCK 持有期間呼叫）。"""
     results: dict[str, bool] = {}
+    shares = get_configured_shares(refresh=True)
 
     # 動態解析 NAS IP（LAN → Tailscale fallback）
     host = resolve_nas_host()
     if not _ping_ok(host):
         logger.warning("NAS %s 不可達（ping 失敗），跳過掛載", host)
-        return {name: False for name, _ in _SHARES}
+        return {name: False for name, _ in shares}
 
     # 清理舊 IP 或重複 mount
     _cleanup_wrong_host_mounts()
 
-    for share_name, volume_path in _SHARES:
+    for share_name, volume_path in shares:
         short_name = volume_path.split("/")[-1]
 
         # 已掛載且指向已知 NAS IP → 不動（無論 LAN 或 Tailscale）
         mounted_path = get_share_mount_path(share_name, volume_path)
         if mounted_path:
             results[short_name] = True
+            continue
+
+        if _netauth_kernel_waiting():
+            logger.warning("macOS SMB 認證層目前卡在 kernel wait；跳過 %s 掛載重試，避免堆疊殭屍程序", share_name)
+            results[short_name] = False
             continue
 
         cooldown = float(os.environ.get("MAGI_NAS_MOUNT_RETRY_COOLDOWN_SEC", "600") or 600)

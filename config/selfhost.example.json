@@ -1,0 +1,76 @@
+{
+  "schema": "magi.selfhost/v1",
+  "instance": {
+    "name": "MAGI",
+    "profile": "single_tenant_selfhost",
+    "platform": "Windows"
+  },
+  "paths": {
+    "instance_root": "<native-data-dir>/MAGI/selfhost",
+    "config_dir": "<native-data-dir>/MAGI/selfhost/config",
+    "config_path": "<native-data-dir>/MAGI/selfhost/config/selfhost.json",
+    "data_dir": "<native-data-dir>/MAGI/selfhost/data",
+    "runtime_dir": "<native-data-dir>/MAGI/selfhost/runtime",
+    "logs_dir": "<native-data-dir>/MAGI/selfhost/logs",
+    "releases_dir": "<native-data-dir>/MAGI/selfhost/releases",
+    "secrets_dir": "<native-data-dir>/MAGI/selfhost/secrets",
+    "backups_dir": "<native-data-dir>/MAGI/selfhost/backups",
+    "case_root": "<native-data-dir>/MAGI/selfhost/data/cases/active",
+    "archive_root": "<native-data-dir>/MAGI/selfhost/data/cases/archive",
+    "exports_dir": "<native-data-dir>/MAGI/selfhost/data/exports",
+    "knowledge_dir": "<native-data-dir>/MAGI/selfhost/data/knowledge",
+    "database_path": "<native-data-dir>/MAGI/selfhost/data/magi.sqlite3",
+    "source_root": ""
+  },
+  "network": {
+    "bind_host": "127.0.0.1",
+    "public_base_url": "",
+    "remote_access": false,
+    "ports": {"main": 5002, "tools": 5003}
+  },
+  "models": {
+    "local_backend": "disabled",
+    "heavy_backend": "nvidia_api",
+    "embedding_backend": "api",
+    "transcription_backend": "api",
+    "translation_backend": "api"
+  },
+  "database": {"engine": "mysql", "dsn_env": "MAGI_DATABASE_URL"},
+  "features": {
+    "web": true,
+    "scheduler": true,
+    "desktop_status": "web",
+    "case_management": true,
+    "legal_aid": false,
+    "court_portal": false,
+    "google_calendar": false,
+    "google_drive": false,
+    "messaging": false,
+    "accounting": false,
+    "judgment_library": false,
+    "knowledge": false,
+    "documents": false,
+    "market": false,
+    "research": false,
+    "local_models": false,
+    "translation": false,
+    "development": false,
+    "remote_access": false
+  },
+  "secrets": {
+    "env_file": "<native-data-dir>/MAGI/selfhost/secrets/magi.env",
+    "required_names": ["FLASK_SECRET_KEY", "MAGI_API_KEY", "DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME"],
+    "optional_names": ["NVIDIA_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "MAGI_LAF_USERNAME", "MAGI_LAF_PASSWORD", "MAGI_JUDICIAL_EEFILE_USERNAME", "MAGI_JUDICIAL_EEFILE_PASSWORD", "DISCORD_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "OPENCLAW_TELEGRAM_BOT_TOKEN", "MAGI_LINE_CHANNEL_ACCESS_TOKEN", "MAGI_BRAIN_DB_NAME"]
+  },
+  "service": {
+    "id": "magi-v3-selfhost",
+    "auto_start": true,
+    "python": "<native-data-dir>/MAGI/selfhost/runtime/venv/Scripts/python.exe",
+    "launcher": "<native-data-dir>/MAGI/selfhost/bin/magi-selfhost-launcher.py"
+  },
+  "release": {
+    "active_marker": "<native-data-dir>/MAGI/selfhost/runtime/active-release.json",
+    "releases_dir": "<native-data-dir>/MAGI/selfhost/releases",
+    "retain": 3
+  }
+}

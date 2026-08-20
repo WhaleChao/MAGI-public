@@ -1,0 +1,16 @@
+{
+  "schema": "magi.public_release.v1",
+  "release_id": "v3-20260820-rc627",
+  "source_commit": "030be016a7d20c6948a477de51af727eb8523a83",
+  "published_scope": "public_source_tests_examples_documentation",
+  "privacy_audit": {
+    "required": true,
+    "public_isolation": true,
+    "strict": true
+  },
+  "private_repository": "WhaleChao/MAGI-v3",
+  "private_history_preserved_from": "WhaleChao/MAGI-v2",
+  "runtime_state_included": false,
+  "credentials_included": false,
+  "case_data_included": false
+}

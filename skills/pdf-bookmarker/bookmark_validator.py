@@ -2,10 +2,14 @@
 """Non-blocking format validator for generated PDF bookmarks."""
 
 import re
+from datetime import datetime
 from typing import List, Tuple
 
-_ROC_PREFIX_RE = re.compile(r"^(?:\d{3}\.\d{2}\.\d{2}|\d{8}) ")
+_ROC_PREFIX_RE = re.compile(r"^(?P<date>\d{3}\.\d{2}\.\d{2}|\d{8}) ")
 _GROUP_RE = re.compile(r"（共\s*(\d+)\s*份）")
+_CASE_SUFFIX_RE = re.compile(r"(?:[_\s-]+\d{7}-[A-Z]-\d{3})?(?:[_\s-]+1\d{6})$")
+_HASH_SUFFIX_RE = re.compile(r"[-_][0-9a-f]{7,}$", re.IGNORECASE)
+_MAX_LABEL_LENGTH = 48
 
 _KNOWN_DOC_TYPES = frozenset([
     "卷宗封面",
@@ -69,7 +73,56 @@ _KNOWN_DOC_TYPES = frozenset([
     "收發文",
     "通訊監察",
     "監視器畫面",
+    "准予扶助證明書",
+    "案件概述單",
+    "法律扶助申請書",
+    "酬金領款單",
+    "資力審查詢問表",
+    "審查表",
+    "委任狀",
+    "文件",
 ])
+
+
+def _valid_bookmark_date(raw: str) -> bool:
+    try:
+        if "." in raw:
+            year_s, month_s, day_s = raw.split(".")
+            year = int(year_s) + 1911
+            parsed = datetime(year, int(month_s), int(day_s))
+        else:
+            parsed = datetime.strptime(raw, "%Y%m%d")
+    except (TypeError, ValueError):
+        return False
+    current_year = datetime.now().year
+    return 1991 <= parsed.year <= current_year + 1
+
+
+def normalize_bookmark(label: str) -> str:
+    """Turn filename-like/OCR-like labels into concise navigation titles."""
+    text = str(label or "").strip()
+    text = re.sub(r"(?i)\.pdf$", "", text)
+    text = text.replace("_", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = _HASH_SUFFIX_RE.sub("", text).strip()
+    text = _CASE_SUFFIX_RE.sub("", text).strip()
+
+    date_match = re.match(r"^(?P<date>\d{3}\.\d{1,2}\.\d{1,2}|\d{8})\s+", text)
+    if date_match:
+        raw = date_match.group("date")
+        if "." in raw:
+            y, m, d = raw.split(".")
+            normalized_date = f"{int(y):03d}.{int(m):02d}.{int(d):02d}"
+        else:
+            normalized_date = raw
+        if _valid_bookmark_date(normalized_date):
+            text = normalized_date + " " + text[date_match.end():].strip()
+        else:
+            text = text[date_match.end():].strip()
+
+    if len(text) > _MAX_LABEL_LENGTH:
+        text = text[: _MAX_LABEL_LENGTH - 1].rstrip("；，、： ") + "…"
+    return text or "文件"
 
 
 def validate_bookmark(label: str) -> Tuple[bool, List[str]]:
@@ -79,8 +132,18 @@ def validate_bookmark(label: str) -> Tuple[bool, List[str]]:
     if not text:
         return False, ["bookmark label 不得為空字串"]
 
+    if len(text) > _MAX_LABEL_LENGTH:
+        warnings.append(f"bookmark label 超過 {_MAX_LABEL_LENGTH} 字")
+    if "_" in text or text.lower().endswith(".pdf"):
+        warnings.append("bookmark label 含檔名殘片")
+    if re.search(r"[~�]|\s{3,}", text):
+        warnings.append("bookmark label 含 OCR 雜訊")
+
     body = text
-    if _ROC_PREFIX_RE.match(text):
+    date_match = _ROC_PREFIX_RE.match(text)
+    if date_match:
+        if not _valid_bookmark_date(date_match.group("date")):
+            warnings.append("bookmark 日期不是有效或合理的日期")
         body = text.split(" ", 1)[1].strip()
     elif re.match(r"^\d{3}\.\d{2}\.\d{2}$", text) or re.match(r"^\d{8}$", text):
         warnings.append("日期後必須保留一個空格再接文件類型")

@@ -14,7 +14,7 @@ transcript-indexer/action.py
 環境變數：
   SYNOLOGY_CASE_ROOT  案件根目錄（default: shared MAGI case root）
   TRANSCRIPT_DIRS     筆錄子目錄名（逗號分隔，default: 05_筆錄,06_筆錄,07_筆錄,08_筆錄）
-  TRANSCRIPT_INDEX_DB 索引狀態紀錄路徑（default: MAGI_ROOT/.agent/transcript_index.json）
+  TRANSCRIPT_INDEX_DB 索引狀態紀錄路徑（default: MAGI_AGENT_DIR/transcript_index.json）
   TRANSCRIPT_BATCH    每批向量化筆數（default: 20）
 """
 from __future__ import annotations
@@ -54,9 +54,13 @@ _TRANSCRIPT_SUBDIRS = [
     if s.strip()
 ]
 
+_AGENT_DIR = Path(
+    os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent"
+).expanduser()
 INDEX_DB_PATH = Path(
-    os.environ.get("TRANSCRIPT_INDEX_DB", str(MAGI_ROOT / ".agent" / "transcript_index.json"))
-)
+    os.environ.get("TRANSCRIPT_INDEX_DB", "").strip()
+    or _AGENT_DIR / "transcript_index.json"
+).expanduser()
 BATCH_SIZE = int(os.environ.get("TRANSCRIPT_BATCH", "20") or "20")
 
 # 2026-04-25: 進度節流 + wall-clock budget（NAS over Tailscale 平均 1.5-3s/PDF，
@@ -135,6 +139,32 @@ def _save_index(idx: Dict[str, Any]) -> None:
 
 # ── Case folder traversal ─────────────────────────────────────────────────────
 
+def _safe_child_dirs(parent: Path) -> List[Path]:
+    """List visible child directories while tolerating concurrent NAS moves."""
+    try:
+        entries = list(parent.iterdir())
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return []
+    children: List[Path] = []
+    for entry in entries:
+        try:
+            if entry.is_dir() and not entry.name.startswith("."):
+                children.append(entry)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            continue
+    return children
+
+
+def _has_transcript_dir(case_dir: Path) -> bool:
+    for subdir in _TRANSCRIPT_SUBDIRS:
+        try:
+            if (case_dir / subdir).is_dir():
+                return True
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            continue
+    return False
+
+
 def _iter_case_dirs(root: Path):
     """Yield case directories under any supported root structure."""
     if not root.exists():
@@ -142,27 +172,16 @@ def _iter_case_dirs(root: Path):
     # Walk up to 4 levels deep looking for dirs that contain transcript subdirs
     # Structure A (SynologyDrive): root/案件類型/法律類型/YEAR-NO-NAME/
     # Structure B (lumi 結案):     root/案件類型/法律類型/YEAR-NO-NAME/
-    for lvl1 in root.iterdir():
-        if not lvl1.is_dir() or lvl1.name.startswith("."):
-            continue
-        for lvl2 in lvl1.iterdir():
-            if not lvl2.is_dir() or lvl2.name.startswith("."):
-                continue
-            for lvl3 in lvl2.iterdir():
-                if not lvl3.is_dir() or lvl3.name.startswith("."):
-                    continue
+    for lvl1 in _safe_child_dirs(root):
+        for lvl2 in _safe_child_dirs(lvl1):
+            for lvl3 in _safe_child_dirs(lvl2):
                 # Check if this looks like a case dir (has any transcript subdir)
-                has_transcript = any(
-                    (lvl3 / s).is_dir() for s in _TRANSCRIPT_SUBDIRS
-                )
-                if has_transcript:
+                if _has_transcript_dir(lvl3):
                     yield lvl3
                     continue
                 # One more level for deeply nested structures
-                for lvl4 in lvl3.iterdir():
-                    if not lvl4.is_dir() or lvl4.name.startswith("."):
-                        continue
-                    if any((lvl4 / s).is_dir() for s in _TRANSCRIPT_SUBDIRS):
+                for lvl4 in _safe_child_dirs(lvl3):
+                    if _has_transcript_dir(lvl4):
                         yield lvl4
 
 
@@ -192,6 +211,12 @@ def _iter_transcript_pdfs() -> Generator[Tuple[Path, str, str], None, None]:
                     print(f"[index] ⚠️ skip {subdir.name}: {e}", file=sys.stderr, flush=True)
                     continue
                 for pdf in pdfs:
+                    # SMB/APFS may expose AppleDouble resource forks such as
+                    # ``._20260101 筆錄.pdf``.  They are metadata sidecars, not
+                    # PDFs; trying to open them creates noisy false failures and
+                    # wastes the listing/extraction budget.
+                    if pdf.name.startswith("._"):
+                        continue
                     try:
                         key = str(pdf.resolve())
                     except OSError:

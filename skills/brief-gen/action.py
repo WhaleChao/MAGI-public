@@ -37,7 +37,7 @@ def _resolve_case_base() -> str:
             return roots[0]
     except Exception:
         pass
-    return "/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"
+    return str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件")
 
 CASE_BASE = Path(_resolve_case_base())
 
@@ -367,7 +367,10 @@ def _cmd_export(text: str, mode: str = "docx") -> str:
         if folder:
             output_path = str(folder / f"{tmpl['name']}_{datetime.now().strftime('%Y%m%d')}.docx")
         else:
-            export_dir = _MAGI_ROOT / "static" / "exports"
+            export_dir = Path(
+                os.environ.get("MAGI_EXPORTS_DIR", "").strip()
+                or _MAGI_ROOT / "static" / "exports"
+            ).expanduser()
             export_dir.mkdir(parents=True, exist_ok=True)
             output_path = str(export_dir / f"{tmpl['name']}_{case_no or 'draft'}_{datetime.now().strftime('%Y%m%d')}.docx")
 

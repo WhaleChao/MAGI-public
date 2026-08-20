@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/replay-fixture.schema.json",
+  "title": "MAGI V3 anonymized offline replay fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "recorded_at",
+    "route",
+    "request",
+    "response",
+    "side_effect_class",
+    "expected_legacy_shape",
+    "redaction",
+    "replay"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fixture_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "rule", "methods", "endpoint"],
+      "properties": {
+        "service": {"enum": ["5002", "5003"]},
+        "rule": {"type": "string", "minLength": 1},
+        "methods": {"type": "array", "items": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]}, "minItems": 1, "uniqueItems": true},
+        "endpoint": {"type": "string", "minLength": 1}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path", "query", "headers", "content_type", "body", "files"],
+      "properties": {
+        "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "path": {"type": "string", "pattern": "^/"},
+        "query": {"type": "object"},
+        "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+        "content_type": {"type": "string"},
+        "body": {},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "filename", "content_type", "size_bytes", "sha256", "content_base64", "safe_test_payload"],
+            "properties": {
+              "field": {"type": "string"},
+              "filename": {"type": "string"},
+              "content_type": {"type": "string"},
+              "size_bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+              "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "content_base64": {"type": "string", "minLength": 4, "maxLength": 87384, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+              "safe_test_payload": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "headers", "content_type", "body"],
+      "properties": {
+        "status": {"type": "integer", "minimum": 100, "maximum": 599},
+        "headers": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": {"type": "string"}},
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["header", "value"],
+                "properties": {
+                  "header": {"type": "string", "minLength": 1},
+                  "value": {"type": "string"}
+                }
+              }
+            }
+          ]
+        },
+        "content_type": {"type": "string"},
+        "body": {}
+      }
+    },
+    "side_effect_class": {"enum": ["none", "read_only", "local_draft", "reversible_write", "external_commit", "destructive"]},
+    "expected_legacy_shape": {"enum": ["json_ok", "json_success", "reply_json", "json_bare", "text_plain", "sse"]},
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "safe_for_offline", "raw_payload_retained", "test_payload_only", "applied"],
+      "properties": {
+        "version": {"const": 1},
+        "safe_for_offline": {"const": true},
+        "raw_payload_retained": {"type": "boolean"},
+        "test_payload_only": {"type": "boolean"},
+        "applied": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "network_allowed", "external_writes_allowed"],
+      "properties": {
+        "mode": {"const": "offline"},
+        "network_allowed": {"const": false},
+        "external_writes_allowed": {"const": false}
+      }
+    }
+  }
+}

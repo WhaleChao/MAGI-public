@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "release_mode": "single_active_replacement",
+  "deployment_mode": "production",
+  "services": [
+    {
+      "id": "main_http",
+      "role": "gateway",
+      "kind": "wsgi",
+      "required": true,
+      "port": 5002,
+      "factory": "magi_v3.compat:create_main_app"
+    },
+    {
+      "id": "tools_http",
+      "role": "gateway",
+      "kind": "wsgi",
+      "required": true,
+      "port": 5003,
+      "factory": "magi_v3.compat:create_tools_app"
+    },
+    {
+      "id": "website_admin",
+      "role": "control",
+      "kind": "http_server",
+      "required": true,
+      "port": 8088,
+      "factory": "magi_v3.compat:create_admin_server"
+    },
+    {
+      "id": "discord",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "api/discord_bot.py"]
+    },
+    {
+      "id": "file_review_auto",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "skills/ops/file_review_auto_worker.py"]
+    },
+    {
+      "id": "heartbeat",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "skills/ops/heartbeat.py"]
+    },
+    {
+      "id": "legacy_background",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "magi_v3/legacy_background_service.py", "--legacy-root", "."]
+    },
+    {
+      "id": "osc_shell_nas_helper",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "scripts/ops/osc_shell_nas_helper.py"]
+    },
+    {
+      "id": "menubar",
+      "role": "supervisor",
+      "kind": "process",
+      "required": true,
+      "argv": ["{python}", "gui/magi_menubar.py"]
+    }
+  ],
+  "host_singletons": [
+    "mariadb",
+    "nas_mounts",
+    "rpc",
+    "omlx_text_8080",
+    "omlx_embedding_8081",
+    "input_method_watchdog",
+    "memory_watchdog",
+    "omlx_watchdog"
+  ],
+  "forbidden_release_processes": [
+    "daemon.py"
+  ]
+}

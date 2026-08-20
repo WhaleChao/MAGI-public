@@ -17,7 +17,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 _log = logging.getLogger(__name__)
 
@@ -27,8 +27,10 @@ telegram_bp = Blueprint("telegram", __name__)
 # Paths & directories (mirror server.py conventions)
 # ---------------------------------------------------------------------------
 _MAGI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_agent_dir_for_logs = os.path.join(_MAGI_ROOT, ".agent")
-os.makedirs(_agent_dir_for_logs, exist_ok=True)
+_agent_dir_for_logs = os.path.abspath(
+    os.environ.get("MAGI_AGENT_DIR", "").strip()
+    or os.path.join(_MAGI_ROOT, ".agent")
+)
 
 AGENT_DIR = _agent_dir_for_logs
 
@@ -119,10 +121,52 @@ def _load_telegram_webhook_secret() -> str:
     ).strip()
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_falsey(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"0", "false", "no", "off"}
+
+
+def _telegram_production_mode() -> bool:
+    if _env_truthy("MAGI_TELEGRAM_WEBHOOK_PRODUCTION"):
+        return True
+    if _env_falsey("MAGI_TELEGRAM_WEBHOOK_PRODUCTION"):
+        return False
+    for name in ("MAGI_ENV", "APP_ENV", "FLASK_ENV"):
+        if str(os.environ.get(name, "")).strip().lower() in {"prod", "production"}:
+            return True
+    public_base = str(os.environ.get("MAGI_PUBLIC_BASE_URL") or "").strip().lower()
+    if public_base.startswith("https://"):
+        return True
+    try:
+        host = (request.headers.get("X-Forwarded-Host") or request.host or "").strip().lower()
+        if host and not (
+            host.startswith("localhost")
+            or host.startswith("127.0.0.1")
+            or host.startswith("[::1]")
+        ):
+            return True
+        if request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip"):
+            return True
+    except RuntimeError:
+        return False
+    return False
+
+
+def _telegram_webhook_secret_required() -> bool:
+    if _env_truthy("TELEGRAM_WEBHOOK_SECRET_REQUIRED") or _env_truthy("MAGI_TELEGRAM_WEBHOOK_SECRET_REQUIRED"):
+        return True
+    if _env_falsey("TELEGRAM_WEBHOOK_SECRET_REQUIRED") or _env_falsey("MAGI_TELEGRAM_WEBHOOK_SECRET_REQUIRED"):
+        return False
+    return _telegram_production_mode()
+
+
 def _telegram_verify_webhook_secret() -> bool:
     expected = _load_telegram_webhook_secret()
     if not expected:
-        return True
+        return not _telegram_webhook_secret_required()
     received = (request.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
     return bool(received) and hmac.compare_digest(received, expected)
 
@@ -188,6 +232,11 @@ def _append_channel_delivery_audit(event: dict) -> None:
         payload = {"ts": time.time()}
         payload.update(event or {})
         with _channel_audit_lock:
+            # Importing a sealed release must remain read-only.  Production
+            # launchers bind MAGI_AGENT_DIR to mutable state; direct imports
+            # may omit it, so create the directory only when an audit write is
+            # actually requested instead of mutating the release at import.
+            Path(_agent_dir_for_logs).mkdir(parents=True, exist_ok=True)
             with open(_CHANNEL_DELIVERY_AUDIT_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
             # Auto-prune: keep last 30K lines when file exceeds 5MB
@@ -554,7 +603,9 @@ def _telegram_process_async(
         # Record assistant reply for conversation history (matches Discord/LINE pattern)
         if response_text:
             try:
-                orchestrator.record_assistant_reply(user_id, str(response_text), channel_id=str(chat_id), platform="telegram")
+                # The orchestrator history API is keyed by user id.  Channel
+                # metadata belongs to delivery/audit and is not accepted here.
+                orchestrator.record_assistant_reply(user_id, str(response_text))
             except Exception:
                 _log.debug("silent-catch at %s:%s", __name__, "_telegram_process_async/record_reply", exc_info=True)
         # Message-queue: mark success
@@ -592,7 +643,7 @@ def _telegram_process_async(
 # ---------------------------------------------------------------------------
 
 def _load_telegram_channel_state() -> dict:
-    path = Path(f"{_MAGI_ROOT}/.agent/telegram_channel_state.json")
+    path = Path(AGENT_DIR) / "telegram_channel_state.json"
     try:
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -614,7 +665,7 @@ def _load_telegram_channel_state() -> dict:
 
 def _save_telegram_channel_state(state: dict) -> bool:
     try:
-        path = Path(f"{_MAGI_ROOT}/.agent/telegram_channel_state.json")
+        path = Path(AGENT_DIR) / "telegram_channel_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "notifyTo": [str(x).strip() for x in (state.get("notifyTo") or []) if str(x).strip()],
@@ -689,11 +740,14 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
     allowed_admin_ids = set(_load_admin_telegram_ids() or [])
     allowed_admin_ids |= set(_load_notify_telegram_ids() or [])
     candidate_ids = {x for x in [sender_id, chat_id, user_id_raw, sender_chat_id] if str(x or "").strip()}
+    production_mode = _telegram_production_mode()
 
     def _is_allowed() -> bool:
-        return (not allowed_admin_ids) or any(cid in allowed_admin_ids for cid in candidate_ids)
+        if not allowed_admin_ids:
+            return not production_mode
+        return any(cid in allowed_admin_ids for cid in candidate_ids)
 
-    if not _is_allowed():
+    if not _is_allowed() and not production_mode:
         # Bootstrap path: if this is a MAGI-named group/channel, bind once then re-check.
         try:
             auto_pair = str(os.environ.get("MAGI_TG_AUTO_PAIR_MAGI_GROUP", "1")).strip().lower() in {"1", "true", "yes", "on"}
@@ -717,7 +771,7 @@ def _telegram_handle_update(update: dict, from_poll: bool = False) -> dict:
             list(candidate_ids),
         )
         _telegram_send_text_to(chat_id, "⛔ 此 Telegram 帳號不在允許清單中。")
-        return {"ok": True, "blocked": "allowlist"}
+        return {"ok": False if production_mode else True, "blocked": "allowlist"}
 
     role = "admin" if any(cid in allowed_admin_ids for cid in candidate_ids) else "user"
     user_id = f"telegram_{sender_id}"
@@ -933,7 +987,11 @@ def telegram_webhook():
     from api.startup import _record_last_public_base_url
 
     if _check_rate_limit("webhook"):
-        return jsonify({"ok": False, "error": "rate limited"}), 429
+        response = jsonify({"ok": False, "error": "rate limited"})
+        response.headers["Retry-After"] = str(
+            max(1, int(getattr(g, "magi_rate_limit_retry_after", 1) or 1))
+        )
+        return response, 429
 
     if not _telegram_verify_webhook_secret():
         return jsonify({"ok": False, "error": "invalid webhook secret"}), 401
@@ -973,7 +1031,9 @@ def _load_telegram_poll_offset() -> int:
 
 def _save_telegram_poll_offset(offset: int) -> None:
     try:
-        Path(TELEGRAM_POLL_OFFSET_FILE).write_text(
+        path = Path(TELEGRAM_POLL_OFFSET_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             json.dumps({"offset": int(offset), "updated_at": int(time.time())}, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -1431,7 +1491,7 @@ def _send_telegram_text(text: str) -> bool:
             topic_key="alert",
             queue_on_fail=True,
         ) or {}
-        if bool(st.get("telegram")) or bool(st.get("queued")):
+        if bool(st.get("telegram")):
             return True
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 9430, exc_info=True)

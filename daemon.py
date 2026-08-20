@@ -12,8 +12,10 @@ import urllib.request
 import urllib.error
 import json
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any
+from skills.ops.cron_command_identity import command_definition_sha256
 
 # Cross-platform file locking
 _MAGI_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,8 +35,8 @@ try:
     )
 except ImportError:
     # Fallback if platform_utils not yet available
-    import fcntl
-    IS_WINDOWS = False
+    from magi_v3 import fcntl_compat as fcntl
+    IS_WINDOWS = sys.platform == "win32"
     IS_MACOS = sys.platform == "darwin"
     def file_lock(fh, exclusive=True, blocking=True):
         flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
@@ -63,12 +65,25 @@ os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_APPLY", "0")
 os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_MIN_CONFIDENCE", "high")
 os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_LOOKBACK_DAYS", "730")
 os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_LOOKAHEAD_DAYS", "365")
-os.environ.setdefault("MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR", os.path.join(_MAGI_ROOT, "reports", "gcal_dedup"))
+_exports_dir = os.environ.get("MAGI_EXPORTS_DIR", "").strip()
+os.environ.setdefault(
+    "MAGI_GCAL_DUP_AUDIT_OUTPUT_DIR",
+    os.path.join(_exports_dir, "gcal_dedup")
+    if _exports_dir
+    else os.path.join(_MAGI_ROOT, "reports", "gcal_dedup"),
+)
 os.environ["MAGI_DAEMON"] = "1"  # Signal to child processes (server.py) to skip console StreamHandler
 
 # Configure Logging with RotatingFileHandler
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-_daemon_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent", "daemon.log")
+_daemon_agent_dir = os.environ.get("MAGI_AGENT_DIR", "").strip()
+_daemon_log_path = os.path.abspath(
+    os.path.expanduser(os.environ.get("MAGI_DAEMON_LOG_PATH", "").strip())
+    or os.path.join(
+        _daemon_agent_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent"),
+        "daemon.log",
+    )
+)
 os.makedirs(os.path.dirname(_daemon_log_path), exist_ok=True)
 _log_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 _file_handler = _RotatingFileHandler(_daemon_log_path, maxBytes=5*1024*1024, backupCount=3)
@@ -83,6 +98,16 @@ if sys.stderr.isatty():
     _daemon_handlers.append(_console_handler)
 logging.basicConfig(level=logging.INFO, handlers=_daemon_handlers)
 logger = logging.getLogger("Daemon")
+_SELFHOST_MODE = os.environ.get("MAGI_DEPLOYMENT_MODE", "").strip().lower() == "selfhost"
+
+
+def _feature_enabled(name: str, *, legacy_default: bool = True) -> bool:
+    """Read a feature flag while preserving existing non-self-host behaviour."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return legacy_default if not _SELFHOST_MODE else False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 from api.autopilot_artifacts import write_kill_reason as _store_autopilot_kill_reason
 
@@ -105,10 +130,13 @@ _ORPHAN_GRACE_SEC = int(os.environ.get("MAGI_ORPHAN_GRACE_SEC", "300") or "300")
 # ── 永不殺清單：reaper 絕對不碰這些進程 ──
 REAPER_NEVER_KILL = (
     "daemon.py",
+    "scripts/ops/run_daemon_no_site.py",
+    "scripts/ops/run_daemon_no_site",
     "api/server.py",
     "api/discord_bot.py",
     "api/line_bot.py",
     "api/telegram_bot.py",
+    "scripts/ops/osc_shell_nas_helper.py",
     "skills/ops/cron_scheduler.py",
     "skills/ops/heartbeat.py",
     "rpc-server",
@@ -120,6 +148,11 @@ REAPER_NEVER_KILL = (
     "db_sync_to_remote.py",
     "ingest_raw_judgments.py",
     "resummary_batch.py",
+    "scripts/share_gateway.py",
+    "scripts/share_tunnel_supervisor.py",
+    "scripts/serve_mlx_mtp.py",
+    "scripts/ops/run_menubar_no_site.py",
+    "scripts/ops/run_menubar_no_site",
 )
 
 # ── 每個 worker 的 grace period（秒）──
@@ -136,6 +169,7 @@ REAPER_GRACE_PERIODS = {
     # LAF
     "skills/laf-portal-automation/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_SEC", "2400") or "2400"),
     "skills/laf-orchestrator/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_ORCH_SEC", "2400") or "2400"),
+    "scripts/ops/laf_report_worker.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REPORT_SEC", "3000") or "3000"),
     "skills/laf-withdrawal-report/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_WD_SEC", "1800") or "1800"),
     "skills/laf-refine-case/action.py": int(os.environ.get("MAGI_ORPHAN_GRACE_LAF_REFINE_SEC", "1200") or "1200"),
     # OSC / naming / vdb
@@ -179,6 +213,7 @@ REAPER_SAFE_UTILITIES = (
     "omlx serve", "omlx-magi-start",       # oMLX inference servers (port 8080/8081)
     "magi_menubar.py",                       # Status Bar (macOS menu bar)
     "admin_server.py",                       # Website Admin (port 8088)
+    "osc_shell_nas_helper.py",               # OSC NAS helper (port 5016)
     "benchmark_",                            # benchmark scripts (may run >30min)
     "nas_pdf_ocr_worker",                    # NAS PDF OCR background worker
     "pkuseg_py311",                          # PKUSeg sidecar interpreter
@@ -212,7 +247,7 @@ _DAEMON_LOCK_HANDLE = None
 # ── Training lock: distill training 寫入此檔時，daemon/watchdog 跳過 oMLX 檢查 ──
 TRAINING_LOCK_PATH = Path(os.environ.get(
     "MAGI_TRAINING_LOCK_PATH",
-    str(get_magi_root() / "static" / "training.lock"),
+    str(Path.home() / "Library" / "Application Support" / "MAGI" / "training.lock"),
 ))
 
 
@@ -240,13 +275,16 @@ def _is_night_window() -> bool:
 
 def _expected_omlx_profile_now() -> tuple[str, str]:
     """Return the expected oMLX profile and model keyword for the local time."""
-    import datetime
+    try:
+        from scripts.ops.omlx_profile_policy import expected_profile_now
 
-    now = datetime.datetime.now()
-    minutes = now.hour * 60 + now.minute
-    if 415 <= minutes < 1310:  # 06:55 <= now < 21:50
-        return "day", "e4b"
-    return "night", "26b"
+        return expected_profile_now()
+    except Exception:
+        import datetime
+
+        now = datetime.datetime.now()
+        minutes = now.hour * 60 + now.minute
+        return ("day", "12b") if 395 <= minutes < 1310 else ("night", "26b")
 
 
 def _is_omlx_night_window() -> bool:
@@ -355,6 +393,7 @@ _LAUNCHD_SERVICES = [
         "probe_timeout": 10,    # startup 等待上限：不阻斷主啟動序列（oMLX 會自行上線）
         "kickstart_grace": 180, # kickstart 後 180s 內不再重複 probe-kickstart（防誤殺）
         "startup_probe": False, # 不在 startup 時同步等待 oMLX（E4B 需 ~120s，會卡住整個啟動）
+        "recovery_owner": "watchdog",  # single writer: avoid racing profile switch/watchdog
     },
     {
         "label": "com.magi.omlx-embed",
@@ -555,8 +594,11 @@ def _load_dotenv(dotenv_path: str, *, override: bool = True) -> None:
     except Exception as e:
         logger.warning(f"⚠️ Failed to load .env: {e}")
 
-def _script_target_from_command(command: str) -> str:
-    c = (command or "").strip()
+def _script_target_from_command(command) -> str:
+    if isinstance(command, (list, tuple)):
+        c = " ".join(str(item) for item in command)
+    else:
+        c = (command or "").strip()
     targets = [
         "api/server.py",
         "api/discord_bot.py",
@@ -569,25 +611,99 @@ def _script_target_from_command(command: str) -> str:
     return ""
 
 
-_SERVICE_PORT_MAP = {
-    "Server": 5002,
-    "ToolsAPI": 5003,
+_main_port = int(os.environ.get("MAGI_SERVER_PORT", "5002") or "5002")
+_tools_port = int(os.environ.get("MAGI_TOOLS_PORT", "5003") or "5003")
+_SERVICE_PORT_MAP = {"Server": _main_port, "ToolsAPI": _tools_port}
+_SERVICE_PORT_TARGETS = {
+    _main_port: ("api/server.py",),
+    _tools_port: ("api/tools_api.py",),
 }
+if not _SELFHOST_MODE:
+    _SERVICE_PORT_TARGETS[8088] = ("admin_server.py",)
+
+
+def _pid_command_line(pid: str | int) -> str:
+    try:
+        import psutil
+
+        return " ".join(psutil.Process(int(pid)).cmdline()).strip()
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _port_owner_pids(port: int) -> list[str]:
+    """Return listening owner PIDs without depending on macOS ``lsof``."""
+
+    try:
+        import psutil
+
+        owners = {
+            str(int(connection.pid))
+            for connection in psutil.net_connections(kind="inet")
+            if connection.pid
+            and connection.laddr
+            and int(connection.laddr.port) == int(port)
+            and connection.status == psutil.CONN_LISTEN
+        }
+        return sorted(owners, key=int)
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{int(port)}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return sorted(
+            {item.strip() for item in result.stdout.splitlines() if item.strip().isdigit()},
+            key=int,
+        )
+    except Exception:
+        return []
+
+
+def _pid_matches_magi_service(pid: str | int, expected_targets: tuple[str, ...] = ()) -> bool:
+    cmdline = _pid_command_line(pid)
+    if not cmdline:
+        return False
+    targets = expected_targets or tuple(t for vals in _SERVICE_PORT_TARGETS.values() for t in vals)
+    if not any(target in cmdline for target in targets):
+        return False
+    root = os.path.dirname(os.path.abspath(__file__))
+    return root in cmdline or any(target in cmdline for target in targets)
+
 
 def _kill_port_occupier(port):
-    """Kill any process occupying the given port."""
+    """Kill old MAGI-owned processes occupying the given port."""
     try:
-        result = subprocess.run(["lsof", "-ti", f":{port}"],
-                                capture_output=True, text=True, timeout=5)
-        pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+        pids = _port_owner_pids(int(port))
+        killed = False
+        expected_targets = _SERVICE_PORT_TARGETS.get(int(port), ())
         for pid in pids:
+            if not _pid_matches_magi_service(pid, expected_targets):
+                logger.warning("⚠️ Port %s occupied by non-MAGI PID %s; leaving it untouched", port, pid)
+                continue
             try:
                 os.kill(int(pid), signal.SIGKILL)
+                killed = True
             except (ProcessLookupError, PermissionError):
                 pass
-        if pids:
+        if killed:
             time.sleep(0.5)
-        return bool(pids)
+        return killed
     except Exception:
         return False
 
@@ -606,21 +722,24 @@ def start_process(name, command):
         port = _SERVICE_PORT_MAP.get(name)
         if port:
             try:
-                result = subprocess.run(["lsof", "-ti", f":{port}"],
-                                        capture_output=True, text=True, timeout=3)
-                pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+                pids = _port_owner_pids(int(port))
                 # 只殺不是我們自己子程序的
                 with _processes_lock:
                     our_pids = {str(info["proc"].pid) for info in processes.values() if info.get("proc")}
                 alien_pids = [p for p in pids if p not in our_pids]
-                if alien_pids:
-                    for pid in alien_pids:
+                target = _script_target_from_command(command)
+                killable_pids = [p for p in alien_pids if _pid_matches_magi_service(p, (target,) if target else ())]
+                skipped_pids = [p for p in alien_pids if p not in killable_pids]
+                if skipped_pids:
+                    logger.warning("⚠️ Port %s occupied by non-MAGI PID(s) %s; not killing", port, skipped_pids)
+                if killable_pids:
+                    for pid in killable_pids:
                         try:
                             os.kill(int(pid), signal.SIGKILL)
                         except (ProcessLookupError, PermissionError):
                             pass
                     time.sleep(0.5)
-                    logger.info(f"🧹 Cleared port {port} (alien PIDs: {alien_pids})")
+                    logger.info(f"🧹 Cleared port {port} (old MAGI PIDs: {killable_pids})")
             except Exception:
                 pass
 
@@ -635,7 +754,10 @@ def start_process(name, command):
             logger.debug(f"Process Guardian pre-clean skipped for {name}: {e}")
 
         # Avoid shell wrapper process; track the real child process for stable monitoring.
-        argv = shlex.split(command) if isinstance(command, str) else command
+        if isinstance(command, (list, tuple)):
+            argv = [str(item) for item in command]
+        else:
+            argv = shlex.split(command)
         proc = subprocess.Popen(
             argv,
             shell=False,
@@ -665,20 +787,29 @@ def stop_process(name):
     logger.info(f"🛑 Stopping {name}...")
     try:
         _write_autopilot_kill_reason(proc.pid, f"daemon stop_process({name})：daemon 正在關閉或重啟程序")
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            logger.info(f"ℹ️ {name} process already exited before SIGTERM")
-        else:
+        if IS_WINDOWS:
+            proc.terminate()
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
+                logger.warning(f"⚠️ {name} did not exit after terminate, forcing stop")
+                proc.kill()
+                proc.wait(timeout=5)
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                logger.info(f"ℹ️ {name} process already exited before SIGTERM")
+            else:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    proc.wait(timeout=5)
-                except (ProcessLookupError, Exception):
-                    pass
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"⚠️ {name} did not exit after SIGTERM, sending SIGKILL")
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        proc.wait(timeout=5)
+                    except (ProcessLookupError, Exception):
+                        pass
         with _processes_lock:
             processes.pop(name, None)
     except Exception as e:
@@ -692,8 +823,11 @@ _HEALTHY_THRESHOLD = 60     # if process ran > 60s, reset failure count
 _MAX_CONSECUTIVE_FAILURES = 10  # stop restarting after this many rapid failures
 
 _HTTP_LIVENESS_ENDPOINTS = {
-    "Server": "http://127.0.0.1:5002/health",
-    "ToolsAPI": "http://127.0.0.1:5003/health",
+    # Liveness must remain process-only.  The aggregate /health endpoint probes
+    # dependencies and can legitimately exceed the watchdog timeout while the
+    # Flask process is still perfectly able to serve requests.
+    "Server": f"http://127.0.0.1:{_main_port}/livez",
+    "ToolsAPI": f"http://127.0.0.1:{_tools_port}/livez",
 }
 _HTTP_LIVENESS_INTERVAL_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_INTERVAL_SEC", "30"))
 _HTTP_LIVENESS_TIMEOUT_SEC = float(os.environ.get("MAGI_DAEMON_HTTP_LIVENESS_TIMEOUT_SEC", "4"))
@@ -709,7 +843,9 @@ def _probe_http_liveness(name: str, url: str) -> tuple[bool, str]:
         with urllib.request.urlopen(req, timeout=_HTTP_LIVENESS_TIMEOUT_SEC) as resp:
             status = getattr(resp, "status", 0) or 0
             resp.read(512)
-        if 200 <= int(status) < 500:
+        # Authentication errors, missing routes, and overload responses are not
+        # successful liveness responses.  Only an explicit 2xx is healthy.
+        if 200 <= int(status) < 300:
             return True, f"http_{status}"
         return False, f"http_{status}"
     except Exception as e:
@@ -777,80 +913,235 @@ def _start_cron_fallback() -> None:
         _cron_fallback_running = True
 
     def _cron_loop():
+        global _cron_fallback_running
         logger.info("⏰ CronScheduler fallback starting (Discord Bot unavailable)...")
+        cron_owner_lock = None
         try:
             sys.path.insert(0, os.path.join(_MAGI_ROOT))
+            from scripts.ops.background_task_locks import SCHEDULER_LOCK_NAME, acquire_lock
+            cron_owner_lock = acquire_lock(
+                SCHEDULER_LOCK_NAME,
+                owner="daemon_cron_fallback",
+                kind="scheduler",
+                blocking=False,
+            )
+            if not cron_owner_lock.acquired:
+                logger.info(
+                    "⏸️ CronScheduler fallback skipped; scheduler owner lock is held by %s pid=%s",
+                    (cron_owner_lock.active_owner or {}).get("owner") or "?",
+                    (cron_owner_lock.active_owner or {}).get("pid") or "?",
+                )
+                with _cron_fallback_lock:
+                    _cron_fallback_running = False
+                return
             from skills.ops.cron_scheduler import CronScheduler
             from api.orchestrator import Orchestrator
             scheduler = CronScheduler()
+            reconciled = scheduler.reconcile_incomplete_jobs()
+            if reconciled:
+                logger.warning(
+                    "⚠️ [CronFallback] Reconciled expired dispatches without completion: %s",
+                    ", ".join(reconciled),
+                )
             orchestrator = Orchestrator()
-            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s")
+            logger.info("⏰ CronScheduler fallback ready — executing jobs every 60s (lock=%s)", cron_owner_lock.path)
         except Exception as e:
+            if cron_owner_lock is not None:
+                cron_owner_lock.release()
+            with _cron_fallback_lock:
+                _cron_fallback_running = False
             logger.error("❌ CronScheduler fallback init failed: %s", e)
             return
+
+        fallback_workers = max(1, min(4, int(os.environ.get("MAGI_CRON_FALLBACK_WORKERS", "2") or "2")))
+        executor = ThreadPoolExecutor(max_workers=fallback_workers, thread_name_prefix="magi-cron-fallback")
+        running: dict[str, Any] = {}
+
+        def _run_fallback_job(job: dict[str, Any]) -> None:
+            command = job.get("command", "")
+            job_id = job.get("id", "?")
+            command_sha256 = command_definition_sha256(str(command or ""))
+            started_at = time.time()
+
+            def _record_result(
+                *,
+                success: bool,
+                returncode: int | None = None,
+                timed_out: bool = False,
+                error: str = "",
+                stdout_tail: str = "",
+                stderr_tail: str = "",
+                status: str = "",
+            ) -> None:
+                try:
+                    recorded = scheduler.mark_job_result(
+                        str(job_id),
+                        success=success,
+                        returncode=returncode,
+                        timed_out=timed_out,
+                        error=error,
+                        stdout_tail=stdout_tail,
+                        stderr_tail=stderr_tail,
+                        duration_sec=time.time() - started_at,
+                        status=status,
+                        command_sha256=command_sha256,
+                    )
+                    if recorded is not True:
+                        logger.warning(
+                            "[CronFallback] completion marker rejected for %s "
+                            "(command_sha256=%s, status=%s)",
+                            job_id,
+                            command_sha256,
+                            status or ("success" if success else "failed"),
+                        )
+                except Exception:
+                    logger.warning(
+                        "[CronFallback] result write failed for %s",
+                        job_id,
+                        exc_info=True,
+                    )
+
+            try:
+                start_confirmed = (
+                    scheduler.mark_job_started(
+                        str(job_id), command_sha256=command_sha256
+                    )
+                    is True
+                )
+            except Exception:
+                start_confirmed = False
+                logger.warning(
+                    "[CronFallback] job %s blocked before execution: "
+                    "definition_drift_or_start_validation_failed",
+                    job_id,
+                    exc_info=True,
+                )
+            if not start_confirmed:
+                error = (
+                    "definition_drift: queued command identity was rejected "
+                    "by the current scheduler definition"
+                )
+                logger.error(
+                    "[CronFallback] job %s blocked before execution: %s "
+                    "(queued_command_sha256=%s)",
+                    job_id,
+                    error,
+                    command_sha256,
+                )
+                return
+
+            logger.info("⏰ [CronFallback] Executing job: %s", job_id)
+
+            try:
+                if command.startswith("@MAGI"):
+                    try:
+                        from skills.ops.cron_result_policy import classify_cron_result
+
+                        clean_cmd = command.replace("@MAGI", "").strip()
+                        response = orchestrator.process_message(
+                            "SYSTEM_CRON", clean_cmd,
+                            platform="DAEMON_CRON", role="admin",
+                        )
+                        if response:
+                            try:
+                                orchestrator.record_assistant_reply("SYSTEM_CRON", response)
+                            except Exception:
+                                pass
+                            logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
+                                        job_id, len(response), response)
+                        response_text = json.dumps(response, ensure_ascii=False, default=str) if isinstance(response, dict) else str(response or "")
+                        classification = classify_cron_result(0, response_text, "", macro_response=True)
+                        _record_result(
+                            success=classification.success,
+                            returncode=classification.returncode,
+                            error=classification.error if not classification.success else "",
+                            stdout_tail=response_text[-1200:],
+                            status=classification.status,
+                        )
+                    except Exception as exc:
+                        _record_result(success=False, returncode=1, error=f"{type(exc).__name__}: {exc}")
+                        raise
+                    return
+
+                _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
+                if not any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
+                    logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
+                    _record_result(success=False, returncode=None, error="blocked_suspicious_command")
+                    return
+
+                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "1", "MAGI_NO_DELETE": "1"}
+                result_returncode = -1
+                result_stderr = ""
+                result_stdout = ""
+                result_timed_out = False
+                try:
+                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
+                    from skills.ops.cron_result_policy import classify_cron_result, should_log_cron_issue
+
+                    argv = parse_cron_command(command)
+                    from skills.ops.cron_runtime_policy import cron_job_timeout
+
+                    _timeout_sec = cron_job_timeout(job)
+                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT, env_extra=_shell_env)
+                    result_returncode = _sr.returncode
+                    result_stderr = _sr.stderr
+                    result_stdout = _sr.stdout
+                    result_timed_out = bool(getattr(_sr, "timed_out", False))
+                except Exception as _e:
+                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
+                    result_returncode = 1
+                    result_stderr = str(_e)
+                classification = classify_cron_result(
+                    result_returncode,
+                    result_stdout or "",
+                    result_stderr or "",
+                    timed_out=result_timed_out,
+                )
+                result_success = classification.success
+                if result_returncode != 0:
+                    issue_suppressed = False
+                    try:
+                        if should_log_cron_issue(result_returncode, result_stdout or "", result_stderr or "") is False:
+                            issue_suppressed = True
+                    except Exception:
+                        pass
+                    if issue_suppressed:
+                        logger.info(
+                            "ℹ️ [CronFallback] Shell job %s exited %d but issue logging was suppressed by policy",
+                            job_id,
+                            result_returncode,
+                        )
+                    else:
+                        logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
+                                       job_id, result_returncode, (result_stderr or "")[:300])
+                else:
+                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
+                _record_result(
+                    success=result_success,
+                    returncode=int(result_returncode or 0),
+                    timed_out=result_timed_out,
+                    error=(result_stderr or result_stdout or "")[-1200:] if not result_success else "",
+                    stdout_tail=(result_stdout or "")[-1200:],
+                    stderr_tail=(result_stderr or "")[-1200:],
+                    status=classification.status,
+                )
+            except Exception as je:
+                logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                _record_result(success=False, returncode=1, error=f"{type(je).__name__}: {je}")
 
         while True:
             try:
                 due_jobs = scheduler.check_due_jobs()
                 for job in due_jobs:
-                    command = job.get("command", "")
-                    job_id = job.get("id", "?")
-                    logger.info("⏰ [CronFallback] Executing job: %s", job_id)
-                    try:
-                        if command.startswith("@MAGI"):
-                            clean_cmd = command.replace("@MAGI", "").strip()
-                            response = orchestrator.process_message(
-                                "SYSTEM_CRON", clean_cmd,
-                                platform="DAEMON_CRON", role="admin",
-                            )
-                            if response:
-                                try:
-                                    orchestrator.record_assistant_reply("SYSTEM_CRON", response)
-                                except Exception:
-                                    pass
-                                logger.info("⏰ [CronFallback] Job %s result (%d chars): %.200s",
-                                            job_id, len(response), response)
-                        else:
-                            _SAFE_PREFIXES = ("cd ", "/Users/", "./venv/", "python3 ", "MAGI_", "JUDICIAL_")
-                            if any(command.strip().startswith(p) for p in _SAFE_PREFIXES):
-                                _shell_env = {**os.environ, "MAGI_PREFER_LOCAL_DB": "0", "MAGI_NO_DELETE": "1"}
-                                # ===== R2 Phase 3: SafeProcess 正式路徑（legacy 已清除）=====
-                                result_returncode = -1
-                                result_stdout = ""
-                                result_stderr = ""
-                                try:
-                                    from api.platforms.safe_process import parse_cron_command, run as _safe_run
-                                    argv = parse_cron_command(command)
-                                    _custom_timeout = job.get("timeout_sec")
-                                    if isinstance(_custom_timeout, (int, float)) and _custom_timeout > 0:
-                                        _timeout_sec = float(_custom_timeout)
-                                    elif job.get("long_job") is True:
-                                        _timeout_sec = 7200
-                                    else:
-                                        _legacy_long_jobs = {
-                                            "job_transcript_sync",
-                                            "job_file_review_check",
-                                            "job_1772867062892_6cef0b",  # transcript-indexer nightly index
-                                        }
-                                        _timeout_sec = 7200 if job_id in _legacy_long_jobs else 600
-                                    _sr = _safe_run(argv, timeout_sec=_timeout_sec, cwd=_MAGI_ROOT)
-                                    result_returncode = _sr.returncode
-                                    result_stdout = _sr.stdout
-                                    result_stderr = _sr.stderr
-                                except Exception as _e:
-                                    logger.error("[SafeProcess] cron job %s failed: %s", job_id, _e)
-                                    result_returncode = 1
-                                    result_stderr = str(_e)
-                                # ===== R2 Phase 3 end =====
-                                if result_returncode != 0:
-                                    logger.warning("⚠️ [CronFallback] Shell job %s exited %d: %s",
-                                                   job_id, result_returncode, (result_stderr or "")[:300])
-                                else:
-                                    logger.info("✅ [CronFallback] Shell job %s completed OK", job_id)
-                            else:
-                                logger.warning("⚠️ [CronFallback] Blocked suspicious command: %s", command[:80])
-                    except Exception as je:
-                        logger.error("⚠️ [CronFallback] Job %s failed: %s", job_id, je)
+                    job_id = str(job.get("id") or "")
+                    if not job_id:
+                        continue
+                    current = running.get(job_id)
+                    if current and not current.done():
+                        logger.info("⏭️ [CronFallback] Job %s already running; skip overlapping launch", job_id)
+                        continue
+                    running[job_id] = executor.submit(_run_fallback_job, job)
+                    logger.info("🚀 [CronFallback] Job %s dispatched asynchronously", job_id)
             except Exception as loop_err:
                 logger.error("⚠️ [CronFallback] Loop error: %s", loop_err)
             time.sleep(60)
@@ -1496,6 +1787,16 @@ def _ensure_launchd_services(*, startup: bool = False) -> None:
         state_changed = (prev_running is None) or (prev_running != running)
         _prev_svc_status[label] = running
 
+        if svc.get("recovery_owner") == "watchdog":
+            if state_changed:
+                logger.info(
+                    "%s %s (%s); recovery delegated to com.magi.omlx-watchdog",
+                    "✅" if running else "⏳",
+                    name,
+                    label,
+                )
+            continue
+
         if running and not startup:
             # Periodic check: service is there, quick HTTP probe if configured
             if probe_url:
@@ -1580,7 +1881,9 @@ if __name__ == "__main__":
     # ── First-run detection: launch Setup Wizard if .env is missing/incomplete ──
     _env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     _needs_setup = False
-    if not os.path.exists(_env_file):
+    if _SELFHOST_MODE:
+        logger.info("自架模式：使用 selfhost.json 與私密 env，略過舊版專案 .env 精靈")
+    elif not os.path.exists(_env_file):
         _needs_setup = True
     else:
         # Quick check: are required vars actually filled in?
@@ -1617,7 +1920,8 @@ if __name__ == "__main__":
         logger.info("✅ Setup Wizard completed — continuing startup.")
 
     # Load MAGI .env so admin allowlist + tokens are available to all subprocesses.
-    _load_dotenv(_env_file, override=True)
+    if not _SELFHOST_MODE:
+        _load_dotenv(_env_file, override=True)
 
     # 0-pre. Resolve keychain: prefixed env vars (macOS Keychain integration)
     if IS_MACOS:
@@ -1680,49 +1984,60 @@ if __name__ == "__main__":
 
     # 0.9 Port cleanup: kill any process occupying our ports before starting services.
     #     This prevents "Address already in use" cascading failures.
-    _SERVICE_PORTS = [5002, 5003, 8088]
+    _SERVICE_PORTS = sorted(_SERVICE_PORT_TARGETS)
     for _port in _SERVICE_PORTS:
         try:
-            result = subprocess.run(
-                ["lsof", "-ti", f":{_port}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+            pids = _port_owner_pids(int(_port))
             if pids:
-                logger.warning(f"🧹 Port {_port} occupied by PID(s) {pids} — killing before startup")
-                for pid in pids:
+                expected_targets = _SERVICE_PORT_TARGETS.get(int(_port), ())
+                killable_pids = [p for p in pids if _pid_matches_magi_service(p, expected_targets)]
+                skipped_pids = [p for p in pids if p not in killable_pids]
+                if skipped_pids:
+                    logger.warning(f"⚠️ Port {_port} occupied by non-MAGI PID(s) {skipped_pids} — not killing")
+                if killable_pids:
+                    logger.warning(f"🧹 Port {_port} occupied by old MAGI PID(s) {killable_pids} — killing before startup")
+                for pid in killable_pids:
                     try:
                         os.kill(int(pid), signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         pass
-                time.sleep(0.5)
+                if killable_pids:
+                    time.sleep(0.5)
         except Exception as e:
             logger.debug(f"Port {_port} cleanup skipped: {e}")
 
     # 0.5 DB Failover Monitor（遠端 DB 不通自動切本機）
-    try:
-        from api.db_failover import start_failover_monitor
-        start_failover_monitor()
-        logger.info("✅ DB Failover Monitor started")
-    except Exception as e:
-        logger.warning(f"⚠️ DB Failover Monitor not started: {e}")
+    if not _SELFHOST_MODE or os.environ.get("MAGI_DATABASE_ENGINE", "mysql") == "mysql":
+        try:
+            from api.db_failover import start_failover_monitor
+            start_failover_monitor()
+            logger.info("✅ DB Failover Monitor started")
+        except Exception as e:
+            logger.warning(f"⚠️ DB Failover Monitor not started: {e}")
 
     # 1. Start Server (LINE API)
-    start_process("Server", f"{_PYTHON} api/server.py")
+    start_process("Server", [_PYTHON, "api/server.py"])
 
     # 2. Start Discord Bot
-    start_process("Discord", f"{_PYTHON} api/discord_bot.py")
+    if _feature_enabled("MAGI_FEATURE_MESSAGING"):
+        start_process("Discord", [_PYTHON, "api/discord_bot.py"])
+    else:
+        logger.info("ℹ️ Messaging disabled by self-host profile; Discord process not started")
+        if _feature_enabled("MAGI_FEATURE_SCHEDULER"):
+            _start_cron_fallback()
 
     # 2.5 Start Tools API (external routes / connections checks)
-    start_process("ToolsAPI", f"{_PYTHON} api/tools_api.py")
+    start_process("ToolsAPI", [_PYTHON, "api/tools_api.py"])
 
     # 2.53 oMLX profile self-heal: reboot after the day switch should not leave
     # 8080 serving the previous night's 26B model.
-    _ensure_omlx_time_profile_async()
+    _local_model_enabled = IS_MACOS and os.environ.get("MAGI_LOCAL_MODEL_BACKEND", "") == "mlx"
+    if _local_model_enabled:
+        _ensure_omlx_time_profile_async()
 
     # 2.55 oMLX 三哲人審查員（Phi-4 + SmolLM3）日間自動啟動
     # 夜間模式由 omlx_switch_model.sh night 負責 bootout
-    if not _is_omlx_night_window():
+    if _local_model_enabled and not _is_omlx_night_window():
         try:
             _uid = os.getuid()
             _phi4_plist = os.path.expanduser("~/Library/LaunchAgents/com.magi.omlx-phi4.plist")
@@ -1762,19 +2077,25 @@ if __name__ == "__main__":
             logger.info("✅ 三哲人審查員啟動完成（日間模式）")
         except Exception as e:
             logger.warning("⚠️ oMLX reviewers kickstart failed: %s", e)
-    else:
+    elif _local_model_enabled:
         logger.info("🌙 夜間模式：跳過 Phi-4/SmolLM3 啟動")
 
     # 2.6 OpenClaw cron bridge (排程來源在 OpenClaw；本機執行允許清單命令)
     # OpenClawCron removed (Phase 0)
 
     # 2.7 File review background worker (auto scan -> download -> archive)
-    start_process("FileReviewAuto", f"{_PYTHON} skills/ops/file_review_auto_worker.py")
+    if _feature_enabled("MAGI_FEATURE_COURT_PORTAL"):
+        start_process("FileReviewAuto", [_PYTHON, "skills/ops/file_review_auto_worker.py"])
+    else:
+        logger.info("ℹ️ Court portal disabled by self-host profile; file-review worker not started")
 
     # 2.8 Heartbeat monitor (node health + Tailscale serve guard)
-    start_process("Heartbeat", f"{_PYTHON} skills/ops/heartbeat.py")
+    if not _SELFHOST_MODE:
+        start_process("Heartbeat", [_PYTHON, "skills/ops/heartbeat.py"])
+    else:
+        logger.info("ℹ️ Self-host health is provided by doctor/live probes; private node heartbeat skipped")
 
-    # 2.9 Personal website admin server (port 8088, for Tailscale remote management)
+    # 2.9 Personal website admin server (port 8088, loopback by default)
     _website_admin = os.path.join(_MAGI_ROOT, "whalechao.github.io/admin/admin_server.py")
     _wa_port = int(os.environ.get("WEBSITE_ADMIN_PORT", "8088"))
     if os.path.exists(_website_admin):
@@ -1790,16 +2111,17 @@ if __name__ == "__main__":
         if _wa_busy:
             logger.info(f"ℹ️ WebsiteAdmin port {_wa_port} already in use — skipping (likely surviving child)")
         else:
-            start_process("WebsiteAdmin", f"{_PYTHON} {_website_admin} --port {_wa_port}")
+            start_process("WebsiteAdmin", [_PYTHON, _website_admin, "--port", str(_wa_port)])
             logger.info(f"✅ Website Admin Server started on port {_wa_port}")
 
     # 3. Start Keeper Sync Daemon (as background thread)
-    try:
-        from skills.memory.keeper_sync import start_sync_daemon
-        start_sync_daemon()
-        logger.info("✅ Keeper Sync Daemon thread started")
-    except Exception as e:
-        logger.warning(f"⚠️ Keeper Sync not started: {e}")
+    if os.environ.get("MAGI_DATABASE_ENGINE", "mysql") == "mysql":
+        try:
+            from skills.memory.keeper_sync import start_sync_daemon
+            start_sync_daemon()
+            logger.info("✅ Keeper Sync Daemon thread started")
+        except Exception as e:
+            logger.warning(f"⚠️ Keeper Sync not started: {e}")
     
     # 3.5 FSEvents file watcher (macOS only — auto-process new PDFs in case folders)
     _fs_watcher = None
@@ -1828,7 +2150,11 @@ if __name__ == "__main__":
                 "1", "true", "yes", "on",
             }
             _nas_home_user = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
-            _nas_cases = f"/Volumes/homes/{_nas_home_user}/01_案件"
+            _nas_cases = (
+                os.environ.get("MAGI_NAS_CASE_ROOT")
+                or os.environ.get("MAGI_V3_CASE_ROOT")
+                or f"/Volumes/homes/{_nas_home_user}/01_案件"
+            )
             if _nas_watch_enabled and os.path.isdir(_nas_cases):
                 _watch_folders.append(_nas_cases)
             elif os.path.isdir(_nas_cases):

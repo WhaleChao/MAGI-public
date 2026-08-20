@@ -58,6 +58,15 @@ def build_install_plan(*, include_optional: bool = True, venv_dir: Path = VENV_D
                 description="Install optional local model acceleration dependencies.",
             ),
         )
+        steps.insert(
+            4,
+            InstallStep(
+                "install_playwright_browsers",
+                [pip_python, "-m", "playwright", "install", "chromium"],
+                required=False,
+                description="Install Playwright Chromium for 法扶、閱卷、筆錄 browser automation.",
+            ),
+        )
     return steps
 
 

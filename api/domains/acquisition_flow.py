@@ -22,7 +22,12 @@ def auto_acquire_and_execute(orch, user_id, message, platform: str = "LINE") -> 
     Runs in background thread (non-blocking), retries up to max times.
     """
     uid = str(user_id)
-    lock = orch._forge_locks.setdefault(uid, threading.Lock())
+    guard = getattr(orch, "_forge_locks_guard", None)
+    if guard is None:
+        guard = threading.Lock()
+        orch._forge_locks_guard = guard
+    with guard:
+        lock = orch._forge_locks.setdefault(uid, threading.Lock())
 
     lock_ts_key = f"_forge_lock_ts_{uid}"
     lock_acquired_at = getattr(orch, lock_ts_key, 0)
@@ -121,14 +126,17 @@ def auto_acquire_and_execute(orch, user_id, message, platform: str = "LINE") -> 
         except Exception as e:
             logger.error("Forge background thread crashed: %s", e)
         finally:
-            try:
-                lock.release()
-            except RuntimeError:
-                pass
-            try:
-                setattr(orch, f"_forge_lock_ts_{uid}", 0)
-            except Exception:
-                pass
+            with guard:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+                if orch._forge_locks.get(uid) is lock:
+                    orch._forge_locks.pop(uid, None)
+                try:
+                    delattr(orch, f"_forge_lock_ts_{uid}")
+                except AttributeError:
+                    pass
 
     try:
         threading.Thread(target=_run_forge_with_lock, daemon=True, name="forge-bg").start()

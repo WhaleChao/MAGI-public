@@ -1,23 +1,28 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from scripts.install_omlx_text import build_launch_agent_plist
 
 
-def test_build_launch_agent_plist_sets_text_memory_guardrails(monkeypatch, tmp_path):
-    monkeypatch.setenv("OMLX_TEXT_MAX_MODEL_MEMORY", "10GB")
-    monkeypatch.setenv("OMLX_TEXT_MODEL_DIR", "/tmp/models-text")
+def test_normal_runtime_does_not_bind_release_python(monkeypatch) -> None:
+    monkeypatch.delenv("OMLX_GEMMA4_UNIFIED_RUNTIME", raising=False)
+    monkeypatch.setenv("MAGI_OMLX_GEMMA4_PYTHON", "/old/release/bin/python")
 
-    plist = build_launch_agent_plist(tmp_path / "project", tmp_path / "runtime")
-    env = plist["EnvironmentVariables"]
+    environment = build_launch_agent_plist(
+        Path("/opt/magi/releases/v3-test"), Path("/opt/magi/runtime")
+    )["EnvironmentVariables"]
 
-    assert plist["Label"] == "com.magi.omlx"
-    assert plist["ProgramArguments"] == ["/bin/bash", "/opt/homebrew/bin/omlx-magi-start-text"]
-    assert env["OMLX_TEXT_MAX_MODEL_MEMORY"] == "10GB"
-    assert env["OMLX_TEXT_MODEL_DIR"] == "/tmp/models-text"
-    assert env["OMLX_TEXT_PORT"] == "8080"
-    assert env["OMLX_TEXT_MAX_NUM_SEQS"] == "1"
-    assert env["OMLX_TEXT_HOT_CACHE_MAX_SIZE"] == "512MB"
-    assert env["OMLX_TEXT_MAX_TOKENS"] == "8192"
-    assert env["OMLX_TEXT_MAX_CONTEXT_WINDOW"] == "8192"
+    assert environment["OMLX_GEMMA4_UNIFIED_RUNTIME"] == "0"
+    assert "MAGI_ROOT_DIR" not in environment
+    assert "MAGI_OMLX_GEMMA4_PYTHON" not in environment
+
+
+def test_unified_runtime_binds_explicit_python(monkeypatch) -> None:
+    monkeypatch.setenv("OMLX_GEMMA4_UNIFIED_RUNTIME", "true")
+    monkeypatch.setenv("MAGI_OMLX_GEMMA4_PYTHON", "/opt/magi/runtime/bin/python")
+
+    environment = build_launch_agent_plist(
+        Path("/opt/magi/releases/v3-test"), Path("/opt/magi/runtime")
+    )["EnvironmentVariables"]
+
+    assert environment["MAGI_ROOT_DIR"] == "/opt/magi/releases/v3-test"
+    assert environment["MAGI_OMLX_GEMMA4_PYTHON"] == "/opt/magi/runtime/bin/python"

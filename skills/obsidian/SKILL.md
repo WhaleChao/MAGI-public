@@ -66,9 +66,9 @@ python3 action.py --task ask --query "陳紫箖" --scope "case:2025-0014"
 | Name | Path | Priority |
 |------|------|----------|
 | 案件 | ~/Library/CloudStorage/SynologyDrive-homes/01_案件 | 1 (highest) |
-| fang | /Volumes/lumi/fang | 2 |
-| 結案 | /Volumes/lumi/lumi/03_工作資料/10_結案 | 3 |
-| 舊案 | /Volumes/lumi/lumi/03_工作資料/10_結案/舊案 | 4 |
+| 共用資料 | `${MAGI_OBSIDIAN_SHARED_ROOT}` | 2 |
+| 結案 | `${MAGI_V3_ARCHIVE_ROOT}` | 3 |
+| 舊案 | `${MAGI_V3_ARCHIVE_ROOT}/舊案` | 4 |
 
 ## Files
 

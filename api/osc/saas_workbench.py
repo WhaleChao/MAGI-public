@@ -22,15 +22,38 @@ from api.legal_workflow import (
     detect_legal_workflow,
     workflow_review,
 )
+from api.saas_readiness import build_saas_readiness
+from api.osc.calendar_sources import (
+    calendar_todo_source_sql,
+    is_calendar_todo,
+    osc_todo_source_sql,
+    todo_source_key,
+    todo_source_label,
+)
 from api.osc.draft_learning import draft_learning_summary, recent_draft_feedback
+from api.runtime_paths import get_runtime_dir
 
 ROOT = Path(__file__).resolve().parents[2]
-INTAKE_PATH = ROOT / ".runtime" / "osc_saas_intake_events.jsonl"
-ONBOARDING_PATH = ROOT / ".runtime" / "osc_saas_onboarding.json"
-NOTIFICATION_PREFS_PATH = ROOT / ".runtime" / "osc_saas_notification_prefs.json"
-WORKFLOW_TEMPLATES_PATH = ROOT / ".runtime" / "osc_saas_workflow_templates.json"
+_RUNTIME_DIR = get_runtime_dir()
+INTAKE_PATH = _RUNTIME_DIR / "osc_saas_intake_events.jsonl"
+ONBOARDING_PATH = _RUNTIME_DIR / "osc_saas_onboarding.json"
+NOTIFICATION_PREFS_PATH = _RUNTIME_DIR / "osc_saas_notification_prefs.json"
+WORKFLOW_TEMPLATES_PATH = _RUNTIME_DIR / "osc_saas_workflow_templates.json"
 MAX_TEXT = 60000
 CLOSED_CASE_STATUSES = ("已結案", "已結案，待報結", "已結案待報結", "已結案，待送出")
+INACTIVE_TODO_STATUSES = CLOSED_CASE_STATUSES + (
+    "完成",
+    "completed",
+    "done",
+    "cancelled",
+    "canceled",
+    "deleted",
+    "calendar_deduped",
+    "已完成",
+    "已刪除",
+    "刪除",
+    "取消",
+)
 NOT_NEEDED_FOR_SINGLE_HOST = ("多租戶", "電子簽章", "公開上傳入口")
 TASK_REFRESH_INTERVAL_HOURS = 6
 
@@ -80,13 +103,13 @@ CAPABILITIES = [
     },
     {
         "key": "nerv_status_page",
-        "title": "NERV 上線狀態",
+        "title": "狀態中心上線狀態",
         "status": "enabled",
-        "owner": "NERV",
+        "owner": "狀態中心",
         "tab": "",
-        "primary_action": {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
-        "secondary_actions": [{"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康檢查"}],
-        "source": "NERV health API",
+        "primary_action": {"act": "open-url", "url": "/status", "label": "開啟狀態中心"},
+        "secondary_actions": [{"act": "open-url", "url": "/status/api/health", "label": "健康檢查"}],
+        "source": "狀態中心 health API",
         "role": "作為正式上線狀態頁，顯示推理、OCR、DB、NAS 與背景服務健康度",
     },
     {
@@ -173,7 +196,7 @@ CAPABILITIES = [
         "key": "diagnostics_export",
         "title": "維運診斷匯出",
         "status": "enabled",
-        "owner": "NERV / 管理工具",
+        "owner": "狀態中心 / 管理工具",
         "tab": "",
         "primary_action": {"act": "download-url", "url": "/api/osc/saas/diagnostic-pack", "label": "下載診斷"},
         "source": "readiness, operations, audit",
@@ -187,16 +210,16 @@ READINESS_CHECKS = [
         "title": "部署邊界",
         "status": "ready",
         "detail": "每台主機是一個獨立 MAGI；不做共用多租戶資料庫。",
-        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "NERV 狀態"}],
+        "actions": [{"act": "open-url", "url": "/status", "label": "狀態中心狀態"}],
     },
     {
         "key": "nerv_status",
         "title": "上線狀態頁",
         "status": "ready",
-        "detail": "NERV 已提供健康檢查與服務狀態，作為正式上線狀態頁。",
+        "detail": "狀態中心已提供健康檢查與服務狀態，作為正式上線狀態頁。",
         "actions": [
-            {"act": "open-url", "url": "/dashboard/nerv", "label": "開啟 NERV"},
-            {"act": "open-url", "url": "/dashboard/nerv/api/health", "label": "健康 API"},
+            {"act": "open-url", "url": "/status", "label": "開啟狀態中心"},
+            {"act": "open-url", "url": "/status/api/health", "label": "健康 API"},
         ],
     },
     {
@@ -239,7 +262,7 @@ READINESS_CHECKS = [
         "title": "維運診斷",
         "status": "ready",
         "detail": "public audit、smoke50、production-live 與 commercial-release 作為交付前檢查。",
-        "actions": [{"act": "open-url", "url": "/dashboard/nerv", "label": "查看狀態"}],
+        "actions": [{"act": "open-url", "url": "/status", "label": "查看狀態"}],
     },
     {
         "key": "not_needed_scope",
@@ -265,12 +288,12 @@ INTEGRATION_MATRIX = [
     {"area": "修正學習", "source": "AI 草擬的人工改正紀錄", "target_tab": "drafts", "mode": "彙整顯示"},
     {"area": "對外資料", "source": "案件資料與應備事項", "target_tab": "cases", "mode": "產生可複製文字"},
     {"area": "高風險紀錄", "source": "系統活動紀錄", "target_tab": "admin", "mode": "只開高風險稽核"},
-    {"area": "上線檢查", "source": "NERV、導入檢查、診斷匯出", "target_tab": "saasOnboardingSection", "mode": "狀態確認 / JSON 匯出"},
+    {"area": "上線檢查", "source": "狀態中心、導入檢查、診斷匯出", "target_tab": "saasOnboardingSection", "mode": "狀態確認 / JSON 匯出"},
 ]
 
 DEFAULT_ONBOARDING_ITEMS = [
     {"key": "public_audit", "title": "public audit strict 通過", "category": "交付", "required": True},
-    {"key": "daemon_health", "title": "MAGI daemon、NERV、Tools API 正常", "category": "服務", "required": True},
+    {"key": "daemon_health", "title": "MAGI daemon、狀態中心、Tools API 正常", "category": "服務", "required": True},
     {"key": "db_backup", "title": "本機 DB 備份可讀取且還原需確認", "category": "資料", "required": True},
     {"key": "nas_mounts", "title": "NAS 掛載名稱正確，未掛成 -1", "category": "資料", "required": True},
     {"key": "calendar_scope", "title": "Google Calendar 匯入只抓 OSC 與法扶計數行程", "category": "行事曆", "required": True},
@@ -400,7 +423,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _status_open_sql(alias: str = "") -> str:
     p = f"{alias}." if alias else ""
-    closed = "','".join(CLOSED_CASE_STATUSES + ("完成", "completed", "done", "cancelled", "canceled"))
+    closed = "','".join(INACTIVE_TODO_STATUSES)
     return f"({p}status IS NULL OR {p}status='' OR {p}status NOT IN ('{closed}'))"
 
 
@@ -448,12 +471,11 @@ def _risk_from_todo(row: dict, today: date) -> dict:
             severity, reason = "high", f"{delta} 天內到期"
         else:
             severity, reason = "medium", f"{delta} 天後"
-    source_file = str(row.get("source_file") or "").strip()
-    is_calendar_import = source_file.startswith("gcal_import")
+    is_calendar_import = is_calendar_todo(row)
     return {
         "type": "todo",
         "severity": severity,
-        "owner": "行事曆匯入" if is_calendar_import else "OSC 建立待辦",
+        "owner": todo_source_label(row) if is_calendar_import else "OSC 建立待辦",
         "target_tab": "calendar" if is_calendar_import else "todos",
         "reason": reason,
         "case_number": row.get("case_number") or "",
@@ -579,10 +601,11 @@ def build_risk_dashboard(exec_fn: ExecFn, *, limit: int = 30) -> dict:
 def _todo_board_item(row: dict, *, imported_calendar: bool = False) -> dict:
     date_part = str(row.get("todo_date") or "").strip()
     time_part = str(row.get("todo_time") or "").strip()
+    source_key = todo_source_key(row) if imported_calendar else "case_todos"
     return {
         "id": row.get("id"),
-        "source": "gcal_import" if imported_calendar else "case_todos",
-        "source_label": "行事曆匯入" if imported_calendar else "OSC 建立",
+        "source": source_key,
+        "source_label": todo_source_label(row) if imported_calendar else "OSC 建立",
         "case_number": row.get("case_number") or "",
         "client_name": row.get("client_name") or "",
         "date": date_part,
@@ -637,8 +660,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
         FROM case_todos
         WHERE {_status_open_sql()}
-          AND (source_file IS NULL OR source_file='' OR source_file NOT LIKE 'gcal_import%%')
-          AND COALESCE(todo_type, '') <> '行事曆事件'
+          AND {osc_todo_source_sql()}
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s
@@ -651,7 +673,7 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         SELECT id, case_number, client_name, todo_type, todo_date, todo_time, description, status, source_file, created_date
         FROM case_todos
         WHERE {_status_open_sql()}
-          AND (source_file LIKE 'gcal_import%%' OR todo_type='行事曆事件')
+          AND {calendar_todo_source_sql()}
           {case_clause}
         ORDER BY COALESCE(todo_date, CURDATE()) ASC, COALESCE(todo_time, '23:59') ASC, id DESC
         LIMIT %s
@@ -676,10 +698,13 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
         """,
         tuple([date.today() - timedelta(days=1)] + cal_params + [limit]),
     )
-    calendar_items = [_calendar_board_item(x) for x in calendar_events] + [
-        _todo_board_item(x, imported_calendar=True) for x in imported_calendar_todos
-    ]
+    imported_calendar_items = [_todo_board_item(x, imported_calendar=True) for x in imported_calendar_todos]
+    calendar_items = [_calendar_board_item(x) for x in calendar_events] + imported_calendar_items
     calendar_items.sort(key=lambda x: x.get("sort_key") or "")
+    imported_counts = {}
+    for item in imported_calendar_items:
+        key = item.get("source") or "calendar_todo"
+        imported_counts[key] = imported_counts.get(key, 0) + 1
     return {
         "ok": True,
         "refresh": {
@@ -701,7 +726,8 @@ def build_task_boards(exec_fn: ExecFn, *, case_number: str = "", limit: int = 20
             "count": len(calendar_items),
             "source_counts": {
                 "calendar_events": len(calendar_events),
-                "gcal_import": len(imported_calendar_todos),
+                "gcal_import": imported_counts.get("gcal_import", 0),
+                "calendar_todo": imported_counts.get("calendar_todo", 0),
             },
             "entry_actions": [{"act": "tab-jump", "tab": "calendar", "label": "行事曆"}],
         },
@@ -878,37 +904,177 @@ def conflict_summary(risk: str, matches: list[dict]) -> str:
     return f"找到 {len(matches)} 筆候選，多為既有當事人或相關紀錄，請確認是否可承接。"
 
 
+_DRAFT_STATUTE_RE = re.compile(
+    r"(?:民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|"
+    r"消費者債務清理條例|洗錢防制法|公司法|勞動基準法|強制執行法|"
+    r"非訟事件法|家庭暴力防治法|個人資料保護法|道路交通管理處罰條例)"
+    r"第\s*\d+(?:\s*[-之]\s*\d+)?\s*條(?:之\s*\d+)?(?:第\s*\d+\s*項)?"
+)
+
+
+def _draft_authority_anchors(text: str) -> set[str]:
+    return {
+        re.sub(r"\s+", "", match.group(0)).replace("臺", "台")
+        for match in _DRAFT_STATUTE_RE.finditer(str(text or ""))
+    }
+
+
+_DRAFT_AMOUNT_RE = re.compile(
+    r"(?:新[臺台]幣\s*)?(?:[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+|[0-9０-９]+)\s*(?:萬|億)?\s*元"
+)
+_DRAFT_DATE_RE = re.compile(
+    r"(?:民國\s*)?[0-9０-９]{2,3}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日"
+    r"|20[0-9０-９]{2}\s*[-/.]\s*[0-9０-９]{1,2}\s*[-/.]\s*[0-9０-９]{1,2}"
+)
+_DRAFT_EVIDENCE_RE = re.compile(
+    r"(?:甲|乙|丙|丁|原|被|聲|相)證\s*[0-9０-９]+\s*號?|附件\s*[0-9０-９]+"
+)
+
+
+def _draft_anchor(value: object) -> str:
+    text = str(value or "").translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    return re.sub(r"\s+|[,，]", "", text).replace("臺", "台")
+
+
+def _draft_factual_anchors(text: str, *, omit_signature_date: bool = False) -> dict[str, set[str]]:
+    value = str(text or "")
+    if omit_signature_date:
+        # The date in the final signature block is the document date, not an
+        # asserted case fact.  It remains subject to human approval but must
+        # not be mistaken for a hallucinated event date.
+        value = re.sub(
+            r"中\s*華\s*民\s*國\s*[0-9０-９]{2,3}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日\s*$",
+            "",
+            value,
+        )
+    return {
+        "amounts": {_draft_anchor(match.group(0)) for match in _DRAFT_AMOUNT_RE.finditer(value)},
+        "dates": {_draft_anchor(match.group(0)) for match in _DRAFT_DATE_RE.finditer(value)},
+        "evidence": {_draft_anchor(match.group(0)) for match in _DRAFT_EVIDENCE_RE.finditer(value)},
+    }
+
+
 def quality_check(payload: dict) -> dict:
     text = _text(payload.get("text") or payload.get("draft_text") or "")
     case_number = _text(payload.get("case_number") or "", 120)
     reason = _text(payload.get("reason") or "", 120)
+    doc_type = _text(payload.get("doc_type") or payload.get("document_type") or "", 120)
+    court_name = _text(payload.get("court_name") or "", 160)
+    plaintiff = _text(payload.get("plaintiff") or payload.get("client_name") or "", 160)
+    defendant = _text(payload.get("defendant") or payload.get("opponent_name") or "", 240)
+    case_facts = str(payload.get("case_facts") or payload.get("facts") or "")
+    grounding_text = str(payload.get("grounding_text") or payload.get("source_text") or "")
+    strict_export = bool(payload.get("strict_export"))
     source_paths = payload.get("source_paths") or []
     selected_insights = payload.get("selected_insights") or []
     selected_documents = payload.get("selected_documents") or []
     workflow = detect_legal_workflow(
         text=text,
         reason=reason,
-        doc_type=str(payload.get("doc_type") or payload.get("document_type") or ""),
+        doc_type=doc_type,
         mode=str(payload.get("mode") or "draft"),
     )
     issues = []
     if not text:
         issues.append({"severity": "high", "code": "empty", "message": "沒有可檢查的文字。"})
+    if strict_export and not grounding_text.strip():
+        issues.append({"severity": "high", "code": "source_grounding_missing", "message": "正式匯出缺少可驗證的來源內容，禁止匯出。"})
     if re.search(r"\bOSC[-_ ]?\d{3,}\b|20\d{2}-\d{3,}", text) and not re.search(r"年度.+字", text):
         issues.append({"severity": "high", "code": "internal_case_number", "message": "可能把內部 OSC 案號當法院案號。"})
     if "<|channel>" in text or "Here's a thinking process" in text or "作為MAGI" in text:
         issues.append({"severity": "critical", "code": "prompt_or_reasoning_leak", "message": "疑似模型思考標記或提示詞外洩。"})
     citations = re.findall(r"\d{2,3}年度[^\s，。、；;]{1,16}字第?\d{1,6}號", text)
-    if citations and not source_paths:
-        issues.append({"severity": "medium", "code": "citation_needs_source", "message": f"偵測到 {len(citations)} 個裁判/案號引用，需確認來源文件。"})
+    # The case number in the document header identifies this matter; it is
+    # not an external judgment citation and therefore does not require a
+    # separate source attachment.  Keep every other cited case subject to
+    # the normal source lock.
+    normalized_case_number = re.sub(r"\s+|第", "", case_number)
+    external_citations = [
+        citation
+        for citation in citations
+        if not normalized_case_number
+        or re.sub(r"\s+|第", "", citation) != normalized_case_number
+    ]
+    if external_citations and not source_paths:
+        issues.append({"severity": "high" if strict_export else "medium", "code": "citation_needs_source", "message": f"偵測到 {len(external_citations)} 個裁判/案號引用，需確認來源文件。"})
     if case_number and case_number not in text and re.search(r"案號|年度.+字", text):
-        issues.append({"severity": "medium", "code": "case_number_mismatch", "message": "提供的案號未出現在文本中，需確認狀頭。"})
+        issues.append({"severity": "high" if strict_export else "medium", "code": "case_number_mismatch", "message": "提供的案號未出現在文本中，需確認狀頭。"})
     if reason and reason not in text and len(text) > 500:
         issues.append({"severity": "low", "code": "reason_not_visible", "message": "案由未明顯出現在文本中，可確認是否需要補入。"})
     if re.search(r"（待確認）|待確認|TODO|FIXME", text, re.I):
-        issues.append({"severity": "medium", "code": "placeholder", "message": "仍有待確認欄位。"})
+        issues.append({"severity": "high" if strict_export else "medium", "code": "placeholder", "message": "仍有待確認欄位。"})
+    if str(payload.get("mode") or "draft").strip().lower() == "draft" and text:
+        compact = re.sub(r"\s+", "", text)
+        if doc_type and re.sub(r"\s+", "", doc_type) not in compact:
+            issues.append({"severity": "high", "code": "document_type_missing", "message": "書狀標題未出現指定的文書類型。"})
+        if court_name and re.sub(r"\s+", "", court_name) not in compact:
+            issues.append({"severity": "high" if strict_export else "medium", "code": "court_name_missing", "message": "指定法院／地檢署未出現在書狀。"})
+        for role, raw_name in (("plaintiff", plaintiff), ("defendant", defendant)):
+            names = [part.strip() for part in re.split(r"[、,，/]", raw_name) if part.strip()]
+            missing_names = [
+                name
+                for name in names
+                if name not in {"(待填)", "（待填）", "待填"}
+                and re.sub(r"\s+", "", name) not in compact
+            ]
+            if missing_names:
+                label = "我方當事人" if role == "plaintiff" else "對造當事人"
+                issues.append(
+                    {
+                        "severity": "high",
+                        "code": f"{role}_missing",
+                        "message": f"{label}未完整出現在書狀，禁止匯出。",
+                    }
+                )
+        if len(compact) >= 180 and not re.search(r"此致|謹狀", text):
+            issues.append({"severity": "high" if strict_export else "medium", "code": "addressee_missing", "message": "書狀缺少『此致』或『謹狀』結尾。"})
+        if len(compact) >= 180 and not re.search(r"具狀人|訴訟代理人|辯護人", text):
+            issues.append({"severity": "high" if strict_export else "medium", "code": "signatory_missing", "message": "書狀缺少具狀人、訴訟代理人或辯護人欄位。"})
+        if len(compact) >= 300 and not re.search(r"事實|理由|聲請事項|答辯|上訴理由|抗告理由|請求", text):
+            issues.append({"severity": "high", "code": "reasoning_section_missing", "message": "書狀缺少可辨識的事實、聲請或理由段落。"})
+        output_authorities = _draft_authority_anchors(text)
+        grounded_authorities = _draft_authority_anchors(grounding_text)
+        ungrounded = sorted(output_authorities - grounded_authorities)
+        if grounding_text and ungrounded:
+            issues.append(
+                {
+                    "severity": "high",
+                    "code": "ungrounded_statute_reference",
+                    "message": "草稿出現輸入資料未提供的法條：" + "、".join(ungrounded[:6]),
+                }
+            )
+        grounded_facts = _draft_factual_anchors(grounding_text)
+        output_facts = _draft_factual_anchors(text, omit_signature_date=True)
+        factual_labels = {"amounts": "金額", "dates": "日期", "evidence": "證據編號"}
+        for kind, label in factual_labels.items():
+            invented = sorted(output_facts[kind] - grounded_facts[kind])
+            if grounding_text and invented:
+                issues.append(
+                    {
+                        "severity": "high",
+                        "code": f"ungrounded_{kind}",
+                        "message": f"草稿出現輸入資料未提供的{label}，禁止匯出。",
+                    }
+                )
+        required_facts = _draft_factual_anchors(case_facts)
+        for kind, label in factual_labels.items():
+            missing = sorted(required_facts[kind] - output_facts[kind])
+            if missing:
+                issues.append(
+                    {
+                        "severity": "high" if strict_export else "medium",
+                        "code": f"missing_required_{kind}",
+                        "message": f"案件事實中的重要{label}未出現在草稿，需確認是否遺漏。",
+                    }
+                )
+    citation_validation = payload.get("citation_validation") or {}
+    if isinstance(citation_validation, dict) and citation_validation and not citation_validation.get("ok"):
+        issues.append({"severity": "high", "code": "citation_lock_violation", "message": "草稿含裁判白名單以外的裁判字號。"})
+    review_text = text
+    if case_number:
+        review_text = review_text.replace(case_number, "")
     review = workflow_review(
-        text,
+        review_text,
         workflow,
         source_count=len(source_paths) if isinstance(source_paths, list) else 0,
         selected_insights=len(selected_insights) if isinstance(selected_insights, list) else 0,
@@ -922,7 +1088,7 @@ def quality_check(payload: dict) -> dict:
         "pass": max_sev < 2,
         "score": max(0, 100 - sum({"critical": 35, "high": 25, "medium": 10, "low": 4}.get(x["severity"], 5) for x in issues)),
         "issues": issues,
-        "stats": {"chars": len(text), "citations": len(citations), "sources": len(source_paths) if isinstance(source_paths, list) else 0},
+        "stats": {"chars": len(text), "citations": len(external_citations), "sources": len(source_paths) if isinstance(source_paths, list) else 0},
         "legal_workflow": workflow,
         "workflow_review": review,
     }
@@ -1019,6 +1185,47 @@ def build_operations_report(exec_fn: ExecFn) -> dict:
     closed = _count(exec_fn, f"SELECT COUNT(*) AS c FROM cases WHERE {_case_status_closed_sql()}")
     pending = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()}")
     overdue = _count(exec_fn, f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_date < CURDATE()")
+    pending_review = _count(
+        exec_fn,
+        f"SELECT COUNT(*) AS c FROM case_todos WHERE {_status_open_sql()} AND todo_type='逾期確認'",
+    )
+    closing_pending_items = _rows(
+        exec_fn,
+        f"""
+        SELECT case_number, client_name, status, legal_aid_status,
+               legal_aid_approval_status
+        FROM cases
+        WHERE {_case_status_closing_sql()}
+        ORDER BY case_number
+        LIMIT 50
+        """,
+    )
+    laf_attention_items = [
+        row
+        for row in closing_pending_items
+        if str(row.get("legal_aid_approval_status") or "").strip() in {"待補件", "退件", "補件中暫存"}
+    ]
+    laf_branch_pending_items = _rows(
+        exec_fn,
+        """
+        SELECT case_number, client_name, status, legal_aid_status,
+               legal_aid_approval_status
+        FROM cases
+        WHERE COALESCE(legal_aid_approval_status, '') IN ('待轉入', '已補件待轉入', '已轉入')
+        ORDER BY case_number
+        LIMIT 50
+        """,
+    )
+    pending_review_items = _rows(
+        exec_fn,
+        f"""
+        SELECT id, case_number, client_name, todo_date, description
+        FROM case_todos
+        WHERE {_status_open_sql()} AND todo_type='逾期確認'
+        ORDER BY todo_date, id
+        LIMIT 50
+        """,
+    )
     docs = _count(exec_fn, "SELECT COUNT(*) AS c FROM document_index")
     insights = _count(exec_fn, "SELECT COUNT(*) AS c FROM legal_insights")
     laf = _count(exec_fn, "SELECT COUNT(*) AS c FROM cases WHERE case_category='法律扶助案件' OR case_reason LIKE '%法扶%' OR case_reason LIKE '%法律扶助%'")
@@ -1027,8 +1234,15 @@ def build_operations_report(exec_fn: ExecFn) -> dict:
         "active_cases": active,
         "closed_cases": closed,
         "closing_pending_cases": closing_pending,
+        "closing_pending_items": closing_pending_items,
+        "laf_attention_cases": len(laf_attention_items),
+        "laf_attention_items": laf_attention_items,
+        "laf_branch_pending_cases": len(laf_branch_pending_items),
+        "laf_branch_pending_items": laf_branch_pending_items,
         "pending_todos": pending,
         "overdue_todos": overdue,
+        "pending_review_todos": pending_review,
+        "pending_review_items": pending_review_items,
         "documents": docs,
         "legal_insights": insights,
         "legal_aid_cases": laf,
@@ -1205,11 +1419,13 @@ def render_operations_report_text(exec_fn: ExecFn) -> dict:
 
 
 def build_diagnostic_pack(exec_fn: ExecFn) -> dict:
+    readiness = build_product_readiness(exec_fn)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scope": "single_host_magi",
-        "readiness": build_product_readiness(exec_fn),
+        "scope": "formal_saas" if readiness.get("mode") == "formal_saas" else "single_host_magi",
+        "readiness": readiness,
+        "formal_saas_gate": readiness.get("formal_saas_gate") or {},
         "operations": build_operations_report(exec_fn),
         "task_boards": build_task_boards(exec_fn, limit=8),
         "onboarding": build_onboarding_status(),
@@ -1230,10 +1446,12 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
 
     This is intentionally lightweight: it only checks local files/routes that
     should exist in every checkout and DB-backed counts that are safe to read.
-    The live health of services remains NERV's job.
+    The live health of services remains the status center's job.
     """
 
     checks = [dict(item) for item in READINESS_CHECKS]
+    formal_gate = build_saas_readiness(root=ROOT)
+    formal_enabled = formal_gate.get("mode") == "formal_saas"
     file_checks = {
         "nerv_status": _file_ready("templates/dashboard_nerv.html") and _file_ready("api/blueprints/admin_runtime.py"),
         "workflow_templates": _file_ready("api/osc/saas_workbench.py") and _file_ready("api/osc/laf_activity_stats.py"),
@@ -1247,25 +1465,45 @@ def build_product_readiness(exec_fn: ExecFn) -> dict:
         if key in file_checks and not file_checks[key]:
             item["status"] = "needs_attention"
             item["detail"] = f"{item['detail']}（本機缺少必要檔案，請先檢查安裝。）"
+    checks.append({
+        "key": "formal_saas_gate",
+        "title": "正式 SaaS Gate",
+        "status": "ready" if formal_gate.get("ok") and formal_enabled else ("needs_attention" if formal_enabled else "guarded"),
+        "detail": (
+            "正式 SaaS 模式已通過所有必要檢查。"
+            if formal_gate.get("ok") and formal_enabled
+            else (
+                f"正式 SaaS 模式尚未通過：{', '.join(formal_gate.get('failed_keys') or []) or '請查看檢查明細'}。"
+                if formal_enabled
+                else "目前是單主機模式；正式上線時需設定 MAGI_SAAS_MODE=1 並通過 /saas-readyz。"
+            )
+        ),
+        "actions": [{"act": "open-url", "url": "/saas-readyz", "label": "SaaS readiness JSON"}],
+    })
 
     high_risk_count = len(high_risk_activity(exec_fn, limit=5).get("items") or [])
     operations = build_operations_report(exec_fn)
+    not_needed = list(NOT_NEEDED_FOR_SINGLE_HOST)
+    if formal_enabled:
+        not_needed = [item for item in not_needed if item != "多租戶"]
     return {
-        "mode": "single_host",
-        "mode_label": "單主機 MAGI",
-        "not_needed": list(NOT_NEEDED_FOR_SINGLE_HOST),
-        "status_page": {"label": "NERV 上線狀態", "url": "/dashboard/nerv", "health_api": "/dashboard/nerv/api/health"},
+        "mode": "formal_saas" if formal_enabled else "single_host",
+        "mode_label": "正式 SaaS" if formal_enabled else "單主機 MAGI",
+        "not_needed": not_needed,
+        "status_page": {"label": "狀態中心上線狀態", "url": "/status", "health_api": "/status/api/health"},
         "summary": {
             "ready": sum(1 for x in checks if x.get("status") == "ready"),
             "guarded": sum(1 for x in checks if x.get("status") == "guarded"),
             "not_needed": sum(1 for x in checks if x.get("status") == "not_needed"),
             "needs_attention": sum(1 for x in checks if x.get("status") == "needs_attention"),
+            "saas_failed_required": (formal_gate.get("summary") or {}).get("failed_required", 0),
             "high_risk_recent": high_risk_count,
             "total_cases": operations.get("total_cases", 0),
             "pending_todos": operations.get("pending_todos", 0),
             "task_refresh_interval_hours": TASK_REFRESH_INTERVAL_HOURS,
         },
         "checks": checks,
+        "formal_saas_gate": formal_gate,
         "approval_matrix": APPROVAL_MATRIX,
     }
 

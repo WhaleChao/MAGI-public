@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "project_name": "預測",
+  "ui_title": "趨勢分析",
+  "generated_at": "2026-08-13T15:10:00+08:00",
+  "analysis_policy": {
+    "nvidia_required_for_cross_source_analysis": true,
+    "model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "local_model_fallback": false,
+    "official_source_required_for_verified_status": true,
+    "statutory_mcp_verification_required": true,
+    "radar_is_not_prediction": true,
+    "rubric_generation_allowed": false
+  },
+  "source_registry": [
+    {"source_id":"constitutional_115_1_fulltext","name":"憲法法庭 115 年憲判字第 1 號判決全文","tier":1,"source_type":"official_judgment","detail_level":"full_text","url":"https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=350743"},
+    {"source_id":"constitutional_115_3_fulltext","name":"憲法法庭 115 年憲判字第 3 號判決全文","tier":1,"source_type":"official_judgment","detail_level":"full_text","url":"https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=358150"},
+    {"source_id":"constitutional_115_4_fulltext","name":"憲法法庭 115 年憲判字第 4 號判決全文","tier":1,"source_type":"official_judgment","detail_level":"full_text","url":"https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=351300"},
+    {"source_id":"constitutional_115_5_fulltext","name":"憲法法庭 115 年憲判字第 5 號判決全文","tier":1,"source_type":"official_judgment","detail_level":"full_text","url":"https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=343661"},
+    {"source_id":"criminal_80_legislative_record","name":"立法院 115 年 7 月 7 日刑法第 80 條議事錄","tier":1,"source_type":"official_legislative_record","detail_level":"legislative_record","url":"https://ppg.ly.gov.tw/ppg/sittings/2026070143/details?meetingDate=115%2F07%2F07"},
+    {"source_id":"criminal_80_moj_explanation","name":"法務部刑法第 80 條修正說明","tier":1,"source_type":"official_policy","detail_level":"full_text","url":"https://www.moj.gov.tw/2204/2795/2796/268913/post"},
+    {"source_id":"taiwan_law_mcp_C0000001_80","name":"全國法規資料庫・中華民國刑法第 80 條現行本文","tier":1,"source_type":"official_law_mcp","detail_level":"full_text","url":"https://law.moj.gov.tw/LawClass/LawAll.aspx?pcode=C0000001"},
+    {"source_id":"academic_child_sexual_assault_limitations","name":"洪麗卿、黃聰明、盧映潔：兒少性侵害追訴權時效研究","tier":2,"source_type":"academic_commentary","detail_level":"academic_fulltext","url":"https://www.jrf.org.tw/articles/3085"},
+    {"source_id":"civil_1223_legislative_record","name":"立法院 115 年 7 月 28 日民法第 1223 條議事紀錄","tier":1,"source_type":"official_legislative_record","detail_level":"legislative_record","url":"https://ppg.ly.gov.tw/ppg/publications/official-gazettes-draft/11/05/97/01/details"},
+    {"source_id":"civil_1223_moj_proposal","name":"法務部民法繼承編修正草案說明","tier":1,"source_type":"official_policy","detail_level":"full_text","url":"https://www.moj.gov.tw/2204/2795/2796/278401/post"},
+    {"source_id":"taiwan_law_mcp_B0000001_1223","name":"全國法規資料庫・民法第 1223 條現行本文","tier":1,"source_type":"official_law_mcp","detail_level":"full_text","url":"https://law.moj.gov.tw/LawClass/LawAll.aspx?pcode=B0000001"},
+    {"source_id":"academic_inheritance_law_report","name":"法務部委託繼承法制研究報告","tier":2,"source_type":"academic_commentary","detail_level":"academic_fulltext","url":"https://www.moj.gov.tw/media/6698/71119313367.pdf?mediaDL=true"}
+  ],
+  "items": [
+    {
+      "uid":"trend-115-constitutional-judgment-1","title":"辯護人對羈押處分的救濟權","subject":"刑事訴訟法","status":"verified","attention_level":"high","event_kind":"judgment","law_name":"刑事訴訟法","code_division":"羈押與救濟","provisions":[],"event_date":"2026-01-02",
+      "fact_summary":"憲法法庭 115 年憲判字第 1 號處理辯護人能否為被告利益，對法官所為羈押處分聲請撤銷或變更，以及確定終局裁判是否侵害人身自由與訴訟權。",
+      "issue_points":["辯護人救濟權與被告本人救濟權的關係","羈押處分對憲法第 8 條人身自由的程序保障","裁判憲法審查的成立與發回效果"],
+      "why_exam_relevant":"可同時串連刑事訴訟法羈押救濟、辯護權與裁判憲法審查。","answer_outline":["確認羈押處分、救濟途徑與聲請主體","分別檢驗人身自由與訴訟權的程序保障","說明違憲裁判的救濟效果"],"related_keywords":["羈押","辯護人","人身自由","訴訟權"],"amendment_details":[],"controversies":[],
+      "viewpoints":[{"kind":"practice","attribution":"憲法法庭 115 年憲判字第 1 號","statement":"判決以人身自由與訴訟權的有效保障為中心，檢驗辯護人就羈押處分行使救濟的可能性及終局裁判效果。","source_ids":["constitutional_115_1_fulltext"]}],
+      "source_ids":["constitutional_115_1_fulltext"],"source_url":"https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=350743","analysis_state":"source_audited","risk_note":""
+    },
+    {
+      "uid":"trend-115-constitutional-judgment-3","title":"少年保護事件禁止再行移送的合憲界線","subject":"少年事件處理法","status":"verified","attention_level":"high","event_kind":"judgment","law_name":"少年事件處理法","code_division":"管轄與移送","provisions":[],"event_date":"2026-03-27",
+      "fact_summary":"憲法法庭 115 年憲判字第 3 號指出，若一概禁止受移送法院為少年利益再行移送，於不能使少年獲得更適當保護的範圍內，與少年人格權及國家特別保護義務不符。",
+      "issue_points":["少年最佳利益與法院管轄安定性的衡量","少年人格權及國家特別保護義務","違憲失效與修法前過渡處理"],"why_exam_relevant":"可結合少年事件程序、基本權保護義務與違憲判決效力。","answer_outline":["確認禁止再移送規範的目的與適用範圍","以少年最佳利益檢驗限制是否過度","處理判決後個案與修法前法律效果"],"related_keywords":["少年保護事件","再行移送","少年最佳利益"],"amendment_details":[],"controversies":[],
+      "viewpoints":[{"kind":"practice","attribution":"憲法法庭 115 年憲判字第 3 號","statement":"判決以少年最佳利益、人格權及國家特別保護義務，限制管轄安定性的一概優先。","source_ids":["constitutional_115_3_fulltext"]}],"source_ids":["constitutional_115_3_fulltext"],"source_url":"https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=358150","analysis_state":"source_audited","risk_note":""
+    },
+    {
+      "uid":"trend-115-constitutional-judgment-4","title":"刑事上訴不可分原則與無罪部分","subject":"刑事訴訟法","status":"verified","attention_level":"high","event_kind":"judgment","law_name":"刑事訴訟法","code_division":"上訴審","provisions":[],"event_date":"2026-05-08",
+      "fact_summary":"憲法法庭 115 年憲判字第 4 號處理修法前刑事訴訟法上訴不可分原則，以及有罪部分上訴時，同一事實中的無罪部分是否也視為上訴。",
+      "issue_points":["一部上訴與上訴審審判範圍","無罪部分視為上訴對人身自由與訴訟權的影響","舊法、修法與既有判例的適用關係"],"why_exam_relevant":"可直接轉化為程序法案例，測驗上訴範圍、審判不可分與不利益風險。","answer_outline":["界定上訴聲明與原判決各部分","區分法律上有關係與事實上一體的範圍","依適用時點處理舊法、修法及憲法判決"],"related_keywords":["一部上訴","不可分原則","無罪部分"],"amendment_details":[],"controversies":[],
+      "viewpoints":[{"kind":"practice","attribution":"憲法法庭 115 年憲判字第 4 號","statement":"判決直接處理舊上訴不可分規範與無罪部分視為上訴所生的基本權問題，作答須先固定適用時點與審判範圍。","source_ids":["constitutional_115_4_fulltext"]}],"source_ids":["constitutional_115_4_fulltext"],"source_url":"https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=351300","analysis_state":"source_audited","risk_note":"不得把新舊法結論混用。"
+    },
+    {
+      "uid":"trend-115-constitutional-judgment-5","title":"重罪追訴權時效變更與法安定性","subject":"刑法","status":"verified","attention_level":"high","event_kind":"judgment","law_name":"中華民國刑法","code_division":"總則・追訴權時效","provisions":[],"event_date":"2026-06-05",
+      "fact_summary":"憲法法庭 115 年憲判字第 5 號涉及重罪追訴權時效變更，並處理尚未完成的時效法律關係是否屬真正溯及既往。",
+      "issue_points":["追訴權時效的法律性質與完成時點","真正溯及、非真正溯及與信賴保護","法安定性、有效追訴與人身自由的衡量"],"why_exam_relevant":"可跨刑法總則、憲法法治國原則與法律時的效力設計整合題。","answer_outline":["判斷時效是否完成及新法適用時點","區分真正與非真正溯及既往","檢驗信賴保護、法安定性與追訴公益"],"related_keywords":["追訴權時效","溯及既往","信賴保護"],"amendment_details":[],"controversies":[],
+      "viewpoints":[{"kind":"practice","attribution":"憲法法庭 115 年憲判字第 5 號","statement":"判決認未完成的追訴權時效法律關係適用新制，核心在非真正溯及、信賴保護與追訴公益的衡量。","source_ids":["constitutional_115_5_fulltext"]}],"source_ids":["constitutional_115_5_fulltext"],"source_url":"https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=343661","analysis_state":"source_audited","risk_note":"本判決可供時效新舊法的一般架構參考，但不得直接代替個別修法的施行規定。"
+    },
+    {
+      "uid":"trend-115-criminal-code-80-child-sexual-offence-limitations","title":"刑法第 80 條：兒少性犯罪追訴權時效延後起算","subject":"刑法","status":"verified","attention_level":"high","event_kind":"amendment","law_name":"中華民國刑法","code_division":"總則・追訴權時效","provisions":["中華民國刑法第 80 條"],"event_date":"2026-07-22",
+      "fact_summary":"115 年修法在刑法第 80 條新增第 3 項；特定性犯罪的被害人在犯罪行為終了時未滿 20 歲者，其未滿 20 歲前的時間原則上不計入追訴權時效。這是追訴權時效起算／計算規則的變更，不是犯罪構成要件或刑度調整。",
+      "issue_points":["適用罪名是否落入第 80 條第 3 項列舉範圍","被害人滿 20 歲前不計入與第 1 項較長期間的關係","新法對施行時尚未完成之追訴權時效如何適用","延後追訴與被告防禦權、證據可靠性的平衡"],"why_exam_relevant":"會直接影響時效計算，且可連結法律不溯既往、信賴保護與創傷知情程序。","answer_outline":["先確認罪名與被害人於行為終了時的年齡","依第 80 條第 1 項判斷一般時效期間","套用第 3 項的不計入期間及但書","最後檢查刑法施行法的新舊法規定與程序保障"],"related_keywords":["刑法第80條","兒少性犯罪","追訴權時效","創傷知情"],
+      "amendment_details":[{"provision":"中華民國刑法第 80 條第 3 項","previous_rule":"修正前第 80 條沒有兒少性犯罪被害人未滿 20 歲期間不計入追訴權時效的特別規定。","new_rule":"犯第 221 條至第 227 條、第 228 條、第 229 條、第 332 條第 2 項第 2 款、第 334 條第 2 項第 2 款或第 348 條第 2 項第 1 款之罪者，於被害人滿二十歲前，不計入第 1 項期間。","practical_effect":"先依第 1 項確定一般追訴期間，再把被害人滿 20 歲前的時間排除計算；第 1 項期間較長時仍依其規定。","official_current_text":"追訴權，因下列期間內未起訴而消滅：一、犯最重本刑為死刑、無期徒刑或十年以上有期徒刑之罪者，三十年。但發生死亡結果者，不在此限。二、犯最重本刑為三年以上十年未滿有期徒刑之罪者，二十年。三、犯最重本刑為一年以上三年未滿有期徒刑之罪者，十年。四、犯最重本刑為一年未滿有期徒刑、拘役或罰金之罪者，五年。前項期間自犯罪成立之日起算。但犯罪行為有繼續之狀態者，自行為終了之日起算。犯第二百二十一條至第二百二十七條、第二百二十八條、第二百二十九條、第三百三十二條第二項第二款、第三百三十四條第二項第二款或第三百四十八條第二項第一款之罪者，於被害人滿二十歲前，不計入第一項期間。","source_ids":["criminal_80_legislative_record","criminal_80_moj_explanation","taiwan_law_mcp_C0000001_80"]}],
+      "controversies":[{"question":"延後兒少性犯罪追訴時效，如何兼顧有效追訴與被告程序保障？","positions":[{"label":"修法取向","statement":"兒少性侵害被害人可能因權力不對等、創傷與延遲揭露而難以及時求助，故在滿 20 歲前不計入特定犯罪的追訴期間。","attribution":"法務部修法說明及立法院議事資料","source_ids":["criminal_80_moj_explanation","criminal_80_legislative_record"]},{"label":"程序保障取向","statement":"延長可追訴時間之外，仍須處理久遠證據的可靠性、被告防禦權與創傷知情詢問，不能只靠延後時效完成制度改革。","attribution":"洪麗卿、黃聰明、盧映潔之研究建議","source_ids":["academic_child_sexual_assault_limitations"]}],"exam_tip":"作答不要只寫保護被害人；須另立一段檢驗證據保存、有效防禦、信賴保護及新舊法。"}],
+      "viewpoints":[{"kind":"practice","attribution":"憲法法庭 115 年憲判字第 5 號（類似時效問題）","statement":"對尚未完成的追訴時效適用新制，須以非真正溯及、信賴保護與追訴公益架構檢驗；這是類比分析，不是第 80 條第 3 項的直接判決。","source_ids":["constitutional_115_5_fulltext"]},{"kind":"academic","attribution":"洪麗卿、黃聰明、盧映潔","statement":"研究建議從被害人成年知悉或滿 20 歲起調整時效、對嚴重或持續案件考慮更強保護，並同步改善創傷知情詢問、長期支持、被害人參與與被告程序保障。","source_ids":["academic_child_sexual_assault_limitations"]},{"kind":"institutional","attribution":"法務部","statement":"修法目的在回應兒少性侵害延遲揭露，使特定罪名在被害人滿 20 歲前不計入追訴期間，並以施行法處理未完成時效。","source_ids":["criminal_80_moj_explanation"]}],
+      "source_ids":["criminal_80_legislative_record","criminal_80_moj_explanation","taiwan_law_mcp_C0000001_80","constitutional_115_5_fulltext","academic_child_sexual_assault_limitations"],"source_url":"https://law.moj.gov.tw/LawClass/LawAll.aspx?pcode=C0000001","analysis_state":"source_audited","risk_note":"本次修正的是追訴權時效計算，不是犯罪構成要件或刑度。"
+    },
+    {
+      "uid":"trend-115-civil-code-1223-sibling-forced-share","title":"民法第 1223 條修正案：刪除兄弟姊妹特留分","subject":"民法（繼承）","status":"verified","attention_level":"high","event_kind":"amendment","law_name":"民法","code_division":"繼承編・遺囑・特留分","provisions":["民法第 1223 條","民法繼承編施行法第 12 條"],"event_date":"2026-07-28",
+      "fact_summary":"立法院於 115 年 7 月 28 日三讀通過民法第 1223 條修正案，刪除兄弟姊妹的特留分；這是繼承編的特留分制度，不是物權編。全國法規資料庫現行本文仍列兄弟姊妹特留分，因此三讀文字尚未成為現行法。",
+      "issue_points":["刪除的是兄弟姊妹特留分，不是兄弟姊妹法定繼承順位","遺囑自由與弱勢、實際照顧手足保障如何平衡","三讀通過、總統公布與公布後六個月施行的時點區別","施行前後遺囑及繼承開始事件的新舊法適用"],"why_exam_relevant":"可直接測驗應繼分、特留分、遺囑自由與修法施行時點，並容易以『仍是繼承人但不再有特留分』設計陷阱。","answer_outline":["先確認繼承開始及修法施行時點","依第 1138 條判斷兄弟姊妹是否為當順位繼承人","再依第 1223 條區分應繼分與特留分","檢查遺囑處分、扣減權與施行法第 12 條"],"related_keywords":["民法第1223條","特留分","兄弟姊妹","遺囑自由","繼承編施行法"],
+      "amendment_details":[{"provision":"民法第 1223 條","previous_rule":"現行條文列直系血親卑親屬、父母、配偶、兄弟姊妹及祖父母為特留分權利人；兄弟姊妹的特留分為其應繼分三分之一。","new_rule":"三讀案刪除兄弟姊妹特留分，直系血親卑親屬、父母、配偶及祖父母的特留分比例維持；祖父母順移為第 4 款。","practical_effect":"兄弟姊妹的法定繼承順位沒有因此刪除；但被繼承人以遺囑作不同分配時，兄弟姊妹不再能以特留分取得最低保障。","official_current_text":"繼承人之特留分，依左列各款之規定：一、直系血親卑親屬之特留分，為其應繼分二分之一。二、父母之特留分，為其應繼分二分之一。三、配偶之特留分，為其應繼分二分之一。四、兄弟姊妹之特留分，為其應繼分三分之一。五、祖父母之特留分，為其應繼分三分之一。","source_ids":["civil_1223_legislative_record","civil_1223_moj_proposal","taiwan_law_mcp_B0000001_1223"]}],
+      "controversies":[{"question":"刪除兄弟姊妹特留分後，遺囑自由與實質扶養關係如何平衡？","positions":[{"label":"刪除說","statement":"現代兄弟姊妹多為獨立經濟體，繼續以特留分強制限制遺囑自由，與家庭結構及比較法趨勢不合。","attribution":"法務部修法說明及立法院提案理由","source_ids":["civil_1223_moj_proposal","civil_1223_legislative_record"]},{"label":"配套保障說","statement":"若兄弟姊妹長期扶養被繼承人或因其死亡陷於生活困難，僅刪除特留分可能造成個案不公平，應搭配遺產酌給或貢獻分等制度檢討。","attribution":"法務部民法繼承編修正草案說明","source_ids":["civil_1223_moj_proposal"]}],"exam_tip":"務必分開寫法定繼承權、應繼分、特留分及遺囑自由；不得寫成兄弟姊妹完全失去繼承資格。"}],
+      "viewpoints":[{"kind":"academic","attribution":"吳煜宗教授（法務部委託研究報告所載建議）","statement":"研究報告記載其建議刪除第 1223 條第 4 款及第 5 款；本次三讀只刪除兄弟姊妹特留分，與該較廣建議不可混為一談。","source_ids":["academic_inheritance_law_report"]},{"kind":"institutional","attribution":"法務部","statement":"法務部主張刪除兄弟姊妹特留分以尊重遺囑自由，並提出遺產酌給與貢獻分等配套方向，以回應弱勢手足與實際照顧關係。","source_ids":["civil_1223_moj_proposal"]}],
+      "source_ids":["civil_1223_legislative_record","civil_1223_moj_proposal","taiwan_law_mcp_B0000001_1223","academic_inheritance_law_report"],"source_url":"https://law.moj.gov.tw/LawClass/LawAll.aspx?pcode=B0000001","analysis_state":"source_audited","risk_note":"目前是三讀通過；全國法規資料庫現行本文仍列兄弟姊妹特留分。總統公布及施行前，作答不得把新文字當成現行法。"
+    }
+  ]
+}

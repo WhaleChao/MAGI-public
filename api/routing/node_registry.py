@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from api.runtime_paths import get_json_dir
@@ -62,8 +63,12 @@ _loaded = False
 def _load_registry() -> dict[str, Node]:
     path = get_json_dir() / "nodes.json"
     if not path.exists():
-        _log.warning("nodes.json not found at %s", path)
-        return {}
+        bundled = Path(__file__).resolve().parents[2] / "json" / "nodes.json"
+        if bundled.is_file():
+            path = bundled
+        else:
+            _log.warning("nodes.json not found at %s", path)
+            return {}
 
     try:
         raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))

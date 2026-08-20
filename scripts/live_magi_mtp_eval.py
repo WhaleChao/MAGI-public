@@ -226,12 +226,26 @@ def check_all_react_tools() -> CheckResult:
         ("summarize", "請摘要以下文字：法院命原告於文到七日內補正被告戶籍謄本，逾期駁回。", {}),
         ("translate", "請把這句翻成英文：被告應於十日內提出答辯狀。", {}),
         ("get_schedule", "請查今天有沒有行程、開庭或會議。", {"not_tools": ["web_search"]}),
-        ("read_file", "請讀取本機檔案 /Users/ai/Desktop/MAGI_v2/README.md 的前幾段。", {}),
+        ("read_file", "請讀取目前 MAGI_ROOT 內 README.md 的前幾段。", {}),
         ("calculate", "請用計算工具算 100*3+50。", {}),
         ("current_time", "請用工具確認現在日期時間。", {}),
         ("run_skill", "請用 MAGI 技能 contract-review 審閱這段合約：甲方應於十日內付款。", {}),
-        ("run_skill", "請產出最高法院通譯判決的實證研究分類表。", {"not_tools": ["search_judgments", "web_search"]}),
-        ("run_skill", "請用關鍵字「最高法院 通譯」上網抓取裁判並產出通譯判決實證研究分類表。", {"not_tools": ["search_judgments", "web_search"]}),
+        (
+            "run_skill",
+            "請產出最高法院通譯判決的實證研究分類表。",
+            {
+                "not_tools": ["search_judgments", "web_search"],
+                "expected_skill_name": "interpreter-empirical-classifier",
+            },
+        ),
+        (
+            "run_skill",
+            "請用關鍵字「最高法院 通譯」上網抓取裁判並產出通譯判決實證研究分類表。",
+            {
+                "not_tools": ["search_judgments", "web_search"],
+                "expected_skill_name": "interpreter-empirical-classifier",
+            },
+        ),
     ]
     rows: list[dict[str, Any]] = []
     tools = _instrumented_tools()
@@ -241,17 +255,29 @@ def check_all_react_tools() -> CheckResult:
         used = result.get("tools_used") or []
         wrong_tools = [t for t in opts.get("not_tools", []) if t in used]
         marker_ok = f"TOOL_CALLED:{expected_tool}" in str(result.get("trace") or "") or f"TOOL_CALLED:{expected_tool}" in str(result.get("answer") or "")
-        ok = bool(result.get("success")) and expected_tool in used and not wrong_tools and marker_ok
+        trace = result.get("trace") or []
+        action_params = [
+            dict(t.get("params") or {})
+            for t in trace
+            if isinstance(t, dict) and t.get("type") == "action" and t.get("tool") == expected_tool
+        ]
+        expected_skill_name = opts.get("expected_skill_name")
+        skill_name_ok = True
+        if expected_skill_name:
+            skill_name_ok = any(p.get("skill_name") == expected_skill_name for p in action_params)
+        ok = bool(result.get("success")) and expected_tool in used and not wrong_tools and marker_ok and skill_name_ok
         rows.append(
             {
                 "query": query,
                 "expected_tool": expected_tool,
+                "expected_skill_name": expected_skill_name,
                 "ok": ok,
                 "tools_used": used,
                 "wrong_tools": wrong_tools,
                 "marker_ok": marker_ok,
+                "skill_name_ok": skill_name_ok,
                 "answer": result.get("answer"),
-                "trace": result.get("trace"),
+                "trace": trace,
             }
         )
     passed = sum(1 for r in rows if r["ok"])
@@ -291,6 +317,74 @@ def check_tool_confusion_guards() -> CheckResult:
         )
     passed = sum(1 for r in rows if r["ok"])
     return CheckResult("tool_confusion_guards", passed == len(rows), f"{passed}/{len(rows)} passed", {"rows": rows})
+
+
+def check_discord_channel_command_guards() -> CheckResult:
+    """Ensure business Discord channels cannot fall back to free-form chat."""
+    from api import discord_channel_router as dc_router
+    from api.pipelines import message_router
+
+    class _DummyOrch:
+        _TOPIC_HANDLERS = {}
+
+        def _handle_command(self, user_id, message, role=None, platform=None):
+            return f"COMMAND_CALLED:{message}"
+
+    name_cases = [
+        ("法扶-進度回報", "laf_progress"),
+        ("🔄 進度回報", "laf_progress"),
+        ("magi-閱卷-繳費", "filereview_payment"),
+        ("筆錄-通知", "transcript"),
+        ("翻譯", "translation"),
+        ("研究-通譯", "research_interpretation"),
+    ]
+    guard_cases = [
+        ("laf_progress", "謝依穎", "法扶進度回報"),
+        ("transcript", "這件下載一下", "筆錄同步"),
+        ("filereview_payment", "林建豐這件呢", "閱卷繳費通知"),
+        ("filereview_download", "林建豐這件呢", "閱卷可下載通知"),
+        ("filereview_apply", "林建豐這件呢", "閱卷聲請"),
+        ("translation", "這份怎麼弄", "翻譯"),
+        ("summary", "這份怎麼弄", "摘要"),
+        ("verbatim", "這份怎麼弄", "逐字稿"),
+        ("filing", "這份怎麼弄", "PDF"),
+        ("judgment", "這份怎麼弄", "裁判"),
+        ("research_interpretation", "這份怎麼弄", "研究"),
+    ]
+    explicit_cases = [
+        ("translation", "翻譯 Hello"),
+        ("summary", "摘要 這是一段文字"),
+        ("judgment", "查判決 通譯"),
+        ("research_interpretation", "研究摘要 通譯"),
+        ("filing", "PDF 建立待辦"),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for name, expected in name_cases:
+        got = dc_router.infer_topic_from_channel_metadata(name=name)
+        rows.append({"case": f"name:{name}", "ok": got == expected, "expected": expected, "got": got})
+    got_general = dc_router.infer_topic_from_channel_metadata(name="一般")
+    rows.append({"case": "name:一般", "ok": got_general == "", "expected": "", "got": got_general})
+
+    dummy = _DummyOrch()
+    for topic, message, expected_fragment in guard_cases:
+        out = message_router.topic_fast_path(dummy, topic, "user-1", message, "user", "discord")
+        out_text = str(out or "")
+        ok = bool(out_text) and expected_fragment in out_text and "Gemma" not in out_text and "您好" not in out_text
+        rows.append(
+            {
+                "case": f"guard:{topic}",
+                "ok": ok,
+                "expected_fragment": expected_fragment,
+                "reply": out_text,
+            }
+        )
+    for topic, message in explicit_cases:
+        out = message_router.topic_fast_path(dummy, topic, "user-1", message, "user", "discord")
+        rows.append({"case": f"explicit:{topic}", "ok": out is None, "expected": "fallthrough_to_handler", "got": out})
+
+    passed = sum(1 for r in rows if r["ok"])
+    return CheckResult("discord_channel_command_guards", passed == len(rows), f"{passed}/{len(rows)} passed", {"rows": rows})
 
 
 def _is_abstain(text: str) -> bool:
@@ -362,6 +456,7 @@ def main() -> int:
         check_react_tools(),
         check_all_react_tools(),
         check_tool_confusion_guards(),
+        check_discord_channel_command_guards(),
         check_hallucination_safety(args.base_url, max_unsafe_rate=args.max_unsafe_rate),
     ]
     report = {

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://magi.local/schemas/v3/context-snapshot.schema.json",
+  "title": "MAGI V3 Context Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "context_snapshot_id", "session_id", "revision", "created_at", "current_request", "raw_event_ids", "blocks", "budget"],
+  "properties": {
+    "schema_version": {"const": "3.0"},
+    "context_snapshot_id": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
+    "channel": {"type": ["string", "null"]},
+    "thread_id": {"type": ["string", "null"]},
+    "revision": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "current_request": {"type": "object"},
+    "raw_event_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "pending_state_refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "recent_artifact_refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "authority", "content", "source_ids", "token_count"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["policy", "request", "pending", "verified_fact", "recent_raw", "artifact_excerpt", "derived_summary", "memory"]},
+          "authority": {"enum": ["authoritative", "user_asserted", "tool_verified", "derived_non_authoritative"]},
+          "content": {"type": "string"},
+          "source_ids": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "expires_at": {"type": ["string", "null"], "format": "date-time"},
+          "token_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tokens", "used_tokens"],
+      "properties": {
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "used_tokens": {"type": "integer", "minimum": 0},
+        "truncated_block_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

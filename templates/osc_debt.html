@@ -126,8 +126,11 @@
             .form-group { min-width: 100%; }
         }
     </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260619-mobile-usability-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
+    <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
 </head>
-<body>
+<body class="site-debt">
 
 <!-- ══ Sidebar ══ -->
 <aside class="sidebar">
@@ -165,6 +168,9 @@
                 <div class="form-row">
                     <div class="form-group"><label>姓名</label><input type="text" id="app-name" placeholder="輸入姓名"></div>
                     <div class="form-group"><label>地址</label><input type="text" id="app-address" placeholder="輸入地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>受任律師（可留白採用消債預設）</label><input type="text" id="app-lawyer-name" placeholder="律師姓名"></div>
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>資產總價值</label><input type="number" id="app-asset-total" value="0"></div>
@@ -309,6 +315,15 @@
                     <div class="form-group"><label>股別</label><input type="text" id="rpt-A3" placeholder="股別"></div>
                     <div class="form-group"><label>聲請人姓名</label><input type="text" id="rpt-A4" placeholder="聲請人姓名"></div>
                 </div>
+                <div class="card-desc">律師聯絡資料可留白採用消債預設與事務所資料，也可在本次產文人工覆寫。</div>
+                <div class="form-row">
+                    <div class="form-group"><label>律師姓名</label><input type="text" id="rpt-lawyer-name" placeholder="律師姓名"></div>
+                    <div class="form-group"><label>律師地址</label><input type="text" id="rpt-lawyer-address" placeholder="事務所地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>律師電話</label><input type="text" id="rpt-lawyer-phone" placeholder="事務所電話"></div>
+                    <div class="form-group"><label>律師手機</label><input type="text" id="rpt-lawyer-mobile" placeholder="律師手機"></div>
+                </div>
             </div>
 
             <!-- 步驟三：陳報詳述 -->
@@ -396,6 +411,15 @@
                     <div class="form-group"><label>程序</label><select id="sup-procedure"><option>更生</option><option>清算</option></select></div>
                     <div class="form-group"><label>書狀序號</label><input type="number" id="sup-brief-no" value="1"></div>
                 </div>
+                <div class="card-desc">律師聯絡資料可留白採用消債預設與事務所資料，也可在本次產文人工覆寫。</div>
+                <div class="form-row">
+                    <div class="form-group"><label>律師姓名</label><input type="text" id="sup-lawyer-name" placeholder="律師姓名"></div>
+                    <div class="form-group"><label>律師地址</label><input type="text" id="sup-lawyer-address" placeholder="事務所地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>律師電話</label><input type="text" id="sup-lawyer-phone" placeholder="事務所電話"></div>
+                    <div class="form-group"><label>律師手機</label><input type="text" id="sup-lawyer-mobile" placeholder="律師手機"></div>
+                </div>
                 <table class="dyn-table">
                     <thead><tr><th>補件類別</th><th>期間/內容</th><th>附件</th><th></th></tr></thead>
                     <tbody id="supplementBody"></tbody>
@@ -440,6 +464,16 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>聲請法院</label><select id="batch-court"></select></div>
+                </div>
+
+                <h4 style="font-size:13px;font-weight:600;margin:16px 0 8px">律師聯絡資料（可留白採用預設）</h4>
+                <div class="form-row">
+                    <div class="form-group"><label>律師姓名</label><input type="text" id="batch-lawyer-name" placeholder="律師姓名"></div>
+                    <div class="form-group"><label>律師地址</label><input type="text" id="batch-lawyer-address" placeholder="事務所地址"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>律師電話</label><input type="text" id="batch-lawyer-phone" placeholder="事務所電話"></div>
+                    <div class="form-group"><label>律師手機</label><input type="text" id="batch-lawyer-mobile" placeholder="律師手機"></div>
                 </div>
 
                 <h4 style="font-size:13px;font-weight:600;margin:16px 0 8px">選擇要產生的文書</h4>
@@ -716,6 +750,7 @@ async function generateDoc(formType) {
         data = {
             name: document.getElementById('app-name').value,
             address: document.getElementById('app-address').value,
+            lawyer_name: document.getElementById('app-lawyer-name').value,
             asset_total: parseFloat(document.getElementById('app-asset-total').value) || 0,
             debt_total: parseFloat(document.getElementById('app-debt-total').value) || 0,
             max_creditor_bank: document.getElementById('app-max-bank').value,
@@ -1224,6 +1259,10 @@ async function generateReport() {
         A2: document.getElementById('rpt-A2').value,
         A3: document.getElementById('rpt-A3').value,
         A4: document.getElementById('rpt-A4').value,
+        lawyer_name: document.getElementById('rpt-lawyer-name').value,
+        lawyer_address: document.getElementById('rpt-lawyer-address').value,
+        lawyer_phone: document.getElementById('rpt-lawyer-phone').value,
+        lawyer_mobile: document.getElementById('rpt-lawyer-mobile').value,
         B1: document.getElementById('rpt-B1').value,
         B2: document.getElementById('rpt-B2').value,
         B3: document.getElementById('rpt-B3').value,
@@ -1297,6 +1336,10 @@ async function generateSupplement() {
         applicant: document.getElementById('sup-applicant').value,
         procedure: document.getElementById('sup-procedure').value,
         brief_no: document.getElementById('sup-brief-no').value,
+        lawyer_name: document.getElementById('sup-lawyer-name').value,
+        lawyer_address: document.getElementById('sup-lawyer-address').value,
+        lawyer_phone: document.getElementById('sup-lawyer-phone').value,
+        lawyer_mobile: document.getElementById('sup-lawyer-mobile').value,
         items,
         notes: document.getElementById('sup-notes').value
     };
@@ -1416,7 +1459,15 @@ async function batchGenerate() {
     }
 
     const result = await apiCall('POST', '/api/osc/debt/batch-generate', {
-        data: { name, address, court },
+        data: {
+            name,
+            address,
+            court,
+            lawyer_name: document.getElementById('batch-lawyer-name').value,
+            lawyer_address: document.getElementById('batch-lawyer-address').value,
+            lawyer_phone: document.getElementById('batch-lawyer-phone').value,
+            lawyer_mobile: document.getElementById('batch-lawyer-mobile').value
+        },
         types: types
     });
 

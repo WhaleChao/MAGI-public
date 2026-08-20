@@ -1,0 +1,4 @@
+interface:
+  display_name: "法院影音筆錄自主勘驗"
+  short_description: "本機雙路影音複核、發話者校正與法院 Word 產出"
+  default_prompt: "Use $forensic-transcript-verifier to autonomously watch and listen to this hearing, correct speakers and omissions twice, and generate a court-review DOCX without Codex assistance."

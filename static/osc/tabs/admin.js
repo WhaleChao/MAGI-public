@@ -1,6 +1,8 @@
 /* tabs/admin.js – Admin panel CRUD functions */
 async function loadAdminData() {
     await Promise.all([
+        loadAdminLiveValidation(),
+        loadAdminDriveExclusions(),
         loadAdminSettings(),
         loadAdminCaseReasons(),
         loadAdminCourts(),
@@ -13,6 +15,97 @@ async function loadAdminData() {
         loadOscBackups(),
         loadGcalStatus(),
     ]);
+}
+
+function _adminOkLabel(payload) {
+    if (!payload || payload.ok === undefined || payload.ok === null) return "未確認";
+    return payload.ok ? "正常" : "需處理";
+}
+
+function _adminValidationDetail(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    const tag = payload.diagnosis || payload.classification || "";
+    const detail = payload.detail || payload.message || payload.status || "";
+    if (tag && detail) return `${tag}｜${detail}`;
+    if (tag) return tag;
+    if (detail) return detail;
+    if (payload.mounts) {
+        return Object.entries(payload.mounts).map(([k, v]) => `${k}:${v ? "mounted" : "missing"}`).join(" ");
+    }
+    if (payload.markers) return payload.markers.join(", ");
+    if (payload.count !== undefined) return `count=${payload.count}`;
+    return "";
+}
+
+async function loadAdminLiveValidation() {
+    const body = document.getElementById("adminLiveValidationBody");
+    const summary = document.getElementById("adminLiveValidationSummary");
+    if (!body || !summary) return;
+    try {
+        const data = await api("/api/live-validation");
+        const checks = ["daemon", "server", "tools_api", "nas", "drive", "db", "model"];
+        const issueNames = new Set(data.summary?.issues || []);
+        summary.hidden = false;
+        summary.className = `status-banner ${data.summary?.ok ? "success" : "warn"}`;
+        summary.textContent = data.summary?.ok
+            ? `狀態正常；最後驗證 ${data.timestamp || ""}`
+            : `需處理：${[...issueNames].join(", ") || data.status || "degraded"}；最後驗證 ${data.timestamp || ""}`;
+        body.innerHTML = checks.map(name => {
+            const payload = data[name] || {};
+            const state = _adminOkLabel(payload);
+            const cls = payload.ok ? "ok" : "warn";
+            return `<tr><td>${esc(name)}</td><td><span class="badge ${cls}">${esc(state)}</span></td><td>${esc(_adminValidationDetail(payload))}</td></tr>`;
+        }).join("");
+    } catch (err) {
+        summary.hidden = false;
+        summary.className = "status-banner warn";
+        summary.textContent = `Live 驗證失敗：${err.message}`;
+        body.innerHTML = `<tr><td colspan="3" class="muted">無法取得驗證結果</td></tr>`;
+    }
+}
+
+async function loadAdminDriveExclusions() {
+    const body = document.getElementById("adminDriveExclusionsBody");
+    const status = document.getElementById("adminDriveExclusionsStatus");
+    if (!body) return;
+    try {
+        const data = await api("/api/drive-case-exclusions");
+        const items = data.relative_paths || [];
+        if (status) status.textContent = `目前 ${items.length} 筆；更新 ${data.updated_at || "-"}`;
+        if (!items.length) {
+            body.innerHTML = `<tr><td colspan="2" class="muted">沒有排除項目</td></tr>`;
+            return;
+        }
+        body.innerHTML = items.map(path => `<tr>
+            <td>${esc(path)}</td>
+            <td class="actions"><button class="btn danger" data-act="admin-drive-exclusion-del" data-path="${esc(path)}">移除</button></td>
+        </tr>`).join("");
+    } catch (err) {
+        if (status) status.textContent = `排除清單載入失敗：${err.message}`;
+        body.innerHTML = `<tr><td colspan="2" class="muted">載入失敗</td></tr>`;
+    }
+}
+
+async function addAdminDriveExclusion() {
+    const input = document.getElementById("adminDriveExclusionPath");
+    const status = document.getElementById("adminDriveExclusionsStatus");
+    const path = (input?.value || "").trim();
+    if (!path) return showAlert("MAGI說", "請輸入要排除的相對路徑");
+    await api("/api/drive-case-exclusions", "POST", {
+        relative_path: path,
+        reason: "Paperclip 系統設定頁新增",
+    });
+    if (input) input.value = "";
+    if (status) status.textContent = "排除項目已新增";
+    await loadAdminDriveExclusions();
+}
+
+async function removeAdminDriveExclusion(path) {
+    const clean = String(path || "").trim();
+    if (!clean) return;
+    if (!await showConfirm("MAGI說", `確定移除此排除項目？\n${clean}`)) return;
+    await api("/api/drive-case-exclusions", "DELETE", { relative_path: clean });
+    await loadAdminDriveExclusions();
 }
 
 async function loadAdminSettings() {
@@ -41,7 +134,7 @@ async function saveAdminSetting() {
         value: (document.getElementById("adminSettingValue").value || "").trim(),
         description: (document.getElementById("adminSettingDescription").value || "").trim(),
     };
-    if (!body.key) return alert("請輸入 key");
+    if (!body.key) return showAlert("MAGI說", "請輸入 key");
     await api("/api/osc/settings", "POST", body);
     clearFields(["adminSettingKey", "adminSettingValue", "adminSettingDescription"]);
     await loadAdminSettings();
@@ -49,7 +142,7 @@ async function saveAdminSetting() {
 }
 
 async function delAdminSetting(key) {
-    if (!confirm(`確定刪除設定 ${key}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除設定 ${key}？`)) return;
     await api(`/api/osc/settings/${encodeURIComponent(key)}`, "DELETE");
     await loadAdminSettings();
     await loadMeta();
@@ -84,7 +177,7 @@ async function saveAdminCaseReason() {
         is_common: (document.getElementById("adminReasonCommon").value || "0").trim(),
     };
     const id = (document.getElementById("adminReasonId").value || "").trim();
-    if (!body.case_type || !body.reason) return alert("請輸入案型與案由");
+    if (!body.case_type || !body.reason) return showAlert("MAGI說", "請輸入案型與案由");
     if (id) await api(`/api/osc/case-reason-templates/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/case-reason-templates`, "POST", body);
     clearFields(["adminReasonId", "adminReasonType", "adminReasonText", "adminReasonCommon"]);
@@ -93,7 +186,7 @@ async function saveAdminCaseReason() {
 }
 
 async function delAdminCaseReason(id) {
-    if (!confirm(`確定刪除案由模板 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除案由模板 ${id}？`)) return;
     await api(`/api/osc/case-reason-templates/${Number(id)}`, "DELETE");
     await loadAdminCaseReasons();
     await loadMeta();
@@ -127,7 +220,7 @@ async function saveAdminCourt() {
         address: (document.getElementById("adminCourtAddress").value || "").trim(),
     };
     const id = (document.getElementById("adminCourtId").value || "").trim();
-    if (!body.name || !body.address) return alert("請輸入法院名稱與地址");
+    if (!body.name || !body.address) return showAlert("MAGI說", "請輸入法院名稱與地址");
     if (id) await api(`/api/osc/courts/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/courts`, "POST", body);
     clearFields(["adminCourtId", "adminCourtName", "adminCourtType", "adminCourtAddress"]);
@@ -136,7 +229,7 @@ async function saveAdminCourt() {
 }
 
 async function delAdminCourt(id) {
-    if (!confirm(`確定刪除法院 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除法院 ${id}？`)) return;
     await api(`/api/osc/courts/${Number(id)}`, "DELETE");
     await loadAdminCourts();
     await loadMeta();
@@ -168,7 +261,7 @@ async function saveAdminBranch() {
         address: (document.getElementById("adminBranchAddress").value || "").trim(),
     };
     const id = (document.getElementById("adminBranchId").value || "").trim();
-    if (!body.name || !body.address) return alert("請輸入分會名稱與地址");
+    if (!body.name || !body.address) return showAlert("MAGI說", "請輸入分會名稱與地址");
     if (id) await api(`/api/osc/legal-aid-branches/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/legal-aid-branches`, "POST", body);
     clearFields(["adminBranchId", "adminBranchName", "adminBranchAddress"]);
@@ -177,7 +270,7 @@ async function saveAdminBranch() {
 }
 
 async function delAdminBranch(id) {
-    if (!confirm(`確定刪除分會 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除分會 ${id}？`)) return;
     await api(`/api/osc/legal-aid-branches/${Number(id)}`, "DELETE");
     await loadAdminBranches();
     await loadMeta();
@@ -211,7 +304,7 @@ async function saveAdminUserSetting() {
         setting_value: (document.getElementById("adminUserSettingValue").value || "").trim(),
     };
     const id = (document.getElementById("adminUserSettingId").value || "").trim();
-    if (!body.hostname || !body.setting_key) return alert("請輸入 hostname 與 setting_key");
+    if (!body.hostname || !body.setting_key) return showAlert("MAGI說", "請輸入 hostname 與 setting_key");
     if (id) await api(`/api/osc/user-settings/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/user-settings`, "POST", body);
     clearFields(["adminUserSettingId", "adminUserSettingHost", "adminUserSettingKey", "adminUserSettingValue"]);
@@ -220,7 +313,7 @@ async function saveAdminUserSetting() {
 }
 
 async function delAdminUserSetting(id) {
-    if (!confirm(`確定刪除使用者設定 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除使用者設定 ${id}？`)) return;
     await api(`/api/osc/user-settings/${Number(id)}`, "DELETE");
     await loadAdminUserSettings();
     await loadMeta();
@@ -255,7 +348,7 @@ async function saveAdminMemoryKeyword() {
         name: (document.getElementById("adminMemoryName").value || "").trim(),
         value: (document.getElementById("adminMemoryValue").value || "").trim(),
     };
-    if (!body.case_number || !body.hotkey) return alert("請輸入案件編號與 hotkey");
+    if (!body.case_number || !body.hotkey) return showAlert("MAGI說", "請輸入案件編號與 hotkey");
     await api("/api/osc/memory-keywords", "POST", body);
     clearFields(["adminMemoryCaseNumber", "adminMemoryHotkey", "adminMemoryName", "adminMemoryValue"]);
     await loadAdminMemoryKeywords();
@@ -263,7 +356,7 @@ async function saveAdminMemoryKeyword() {
 }
 
 async function delAdminMemoryKeyword(caseNumber, hotkey) {
-    if (!confirm(`確定刪除熱鍵 ${caseNumber}/${hotkey}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除熱鍵 ${caseNumber}/${hotkey}？`)) return;
     await api(`/api/osc/memory-keywords/${encodeURIComponent(caseNumber)}/${encodeURIComponent(hotkey)}`, "DELETE");
     await loadAdminMemoryKeywords();
     await loadMeta();
@@ -300,7 +393,7 @@ async function saveAdminOpponent() {
         is_active: (document.getElementById("adminOpponentActive").value || "1").trim(),
     };
     const id = (document.getElementById("adminOpponentId").value || "").trim();
-    if (!body.case_number || !body.name) return alert("請輸入案件編號與對造姓名");
+    if (!body.case_number || !body.name) return showAlert("MAGI說", "請輸入案件編號與對造姓名");
     if (id) await api(`/api/osc/opponents/${Number(id)}`, "PUT", body);
     else await api(`/api/osc/opponents`, "POST", body);
     clearFields(["adminOpponentId", "adminOpponentCaseNumber", "adminOpponentName", "adminOpponentAddress", "adminOpponentActive"]);
@@ -309,7 +402,7 @@ async function saveAdminOpponent() {
 }
 
 async function delAdminOpponent(id) {
-    if (!confirm(`確定刪除對造 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除對造 ${id}？`)) return;
     await api(`/api/osc/opponents/${Number(id)}`, "DELETE");
     await loadAdminOpponents();
     await loadMeta();
@@ -329,7 +422,7 @@ async function loadAdminPdfLogs() {
 }
 
 async function delAdminPdfLog(id) {
-    if (!confirm(`確定刪除 PDF log ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除 PDF log ${id}？`)) return;
     await api(`/api/osc/pdf-generation-log/${Number(id)}`, "DELETE");
     await loadAdminPdfLogs();
     await loadMeta();
@@ -349,7 +442,7 @@ async function loadAdminActivityLogs() {
 }
 
 async function delAdminActivityLog(id) {
-    if (!confirm(`確定刪除活動紀錄 ${id}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除活動紀錄 ${id}？`)) return;
     await api(`/api/osc/activity-logs/${Number(id)}`, "DELETE");
     await loadAdminActivityLogs();
     await loadMeta();
@@ -443,7 +536,7 @@ async function loadOscBackups() {
         <td>${esc(_fmtBytes(item.size_bytes))}</td>
         <td class="muted small">${esc(_fmtTableCounts(item.table_counts))}</td>
         <td class="actions">
-            <button class="btn" data-act="osc-backup-dry-run" data-filename="${esc(item.filename)}">Dry-run</button>
+            <button class="btn" data-act="osc-backup-dry-run" data-filename="${esc(item.filename)}">預覽還原</button>
             <button class="btn primary" data-act="osc-backup-restore" data-filename="${esc(item.filename)}">確認還原</button>
             <button class="btn danger" data-act="osc-backup-del" data-filename="${esc(item.filename)}">刪除</button>
         </td>
@@ -458,11 +551,11 @@ async function createOscBackup() {
 
 async function restoreOscBackup(filename, dryRun) {
     if (!dryRun) {
-        if (!confirm(`確定要從 ${filename} 還原資料嗎？\n（已有的紀錄不會被覆蓋，只補缺少的筆數）`)) return;
+        if (!await showConfirm("MAGI說", `確定要從 ${filename} 還原資料嗎？\n（已有的紀錄不會被覆蓋，只補缺少的筆數）`)) return;
     }
     const payload = dryRun ? { dry_run: true } : { confirm: true };
     const res = await api(`/api/osc/backups/${encodeURIComponent(filename)}/restore`, "POST", payload);
-    const mode = dryRun ? "Dry-run 預覽" : "還原完成";
+    const mode = dryRun ? "預覽還原" : "還原完成";
     showToast(`${mode}：插入 ${res.inserted_count ?? 0} 筆，略過 ${res.skipped_count ?? 0} 筆${res.errors && res.errors.length ? `（${res.errors.length} 錯誤）` : ""}`);
     if (res.errors && res.errors.length) {
         console.warn("[backup restore errors]", res.errors);
@@ -470,7 +563,7 @@ async function restoreOscBackup(filename, dryRun) {
 }
 
 async function delOscBackup(filename) {
-    if (!confirm(`確定刪除備份 ${filename}？`)) return;
+    if (!await showConfirm("MAGI說", `確定刪除備份 ${filename}？`)) return;
     await api(`/api/osc/backups/${encodeURIComponent(filename)}`, "DELETE");
     showToast("備份已刪除");
     await loadOscBackups();
@@ -490,7 +583,8 @@ async function loadGcalStatus() {
         if (data && data.connected) {
             statusEl.textContent = `✅ 已連線 Google Calendar（推送：${data.calendar_id || "primary"}｜匯入：${data.import_calendar_ids || "全部可讀日曆"}）${data.expires_at ? " | 到期：" + data.expires_at : ""}`;
         } else {
-            statusEl.textContent = "⚪ 尚未授權 Google Calendar";
+            const reason = data?.reason ? `（${data.reason}${data.next_action ? "｜" + data.next_action : ""}）` : "";
+            statusEl.textContent = `⚪ 尚未授權 Google Calendar${reason}`;
         }
     } catch (err) {
         statusEl.textContent = `⚠️ 無法取得 GCal 狀態：${err.message}`;
@@ -505,7 +599,7 @@ async function saveGcalCreds() {
     const statusEl = document.getElementById("gcalStatus");
 
     if (!clientId || !clientSecret) {
-        if (statusEl) statusEl.textContent = "❌ Client ID 與 Client Secret 均為必填";
+        if (statusEl) statusEl.textContent = "❌ Google 用戶端 ID 與用戶端密鑰均為必填";
         return;
     }
     try {
@@ -542,7 +636,7 @@ async function syncGcal(dryRun) {
     try {
         const res = await api("/api/osc/gcal/sync", "POST", { dry_run: dryRun });
         if (res && res.ok) {
-            const mode = dryRun ? "Dry-run" : "同步";
+        const mode = dryRun ? "預覽同步" : "同步";
             const msg = `${mode} 完成 — 匯入 ${res.imported ?? 0} 筆，推送 ${res.pushed ?? 0} 筆，略過 ${res.skipped ?? 0} 筆${(res.errors && res.errors.length) || (res.import_errors && res.import_errors.length) ? `（${(res.errors || []).length + (res.import_errors || []).length} 錯誤）` : ""}`;
             if (statusEl) statusEl.textContent = (dryRun ? "🔍 " : "✅ ") + msg;
             showToast(msg, "ok");
@@ -555,7 +649,7 @@ async function syncGcal(dryRun) {
 }
 
 async function disconnectGcal() {
-    if (!confirm("確定解除 Google Calendar 授權？將刪除本機 token。")) return;
+    if (!await showConfirm("MAGI說", "確定解除 Google Calendar 授權？將刪除本機 token。")) return;
     const statusEl = document.getElementById("gcalStatus");
     try {
         await api("/api/osc/gcal/disconnect", "POST", {});

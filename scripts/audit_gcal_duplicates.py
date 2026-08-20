@@ -204,7 +204,11 @@ def main() -> int:
 
     osc_action = _load_osc_action_module()
     credentials_path = os.environ.get("MAGI_GOOGLE_CREDENTIALS_PATH", "").strip() or str(MAGI_ROOT / "json" / "credentials.json")
-    token_path = os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH", "").strip() or str(MAGI_ROOT / "json" / "google_calendar_token.json")
+    home_token = Path.home() / ".magi" / "google" / "token.json"
+    token_path = (
+        os.environ.get("MAGI_GOOGLE_CALENDAR_TOKEN_PATH", "").strip()
+        or (str(home_token) if home_token.exists() else str(MAGI_ROOT / "json" / "google_calendar_token.json"))
+    )
     svc = osc_action._build_google_calendar_service(credentials_path, token_path, interactive=False)
     if not svc.get("ok"):
         print(json.dumps({"ok": False, "error": svc.get("error", "gcal_service_failed")}, ensure_ascii=False))

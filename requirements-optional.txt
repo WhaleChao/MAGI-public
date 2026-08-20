@@ -24,6 +24,11 @@ EbookLib>=0.18
 # -- OCR --
 rapidocr-onnxruntime>=1.3
 opendataloader-pdf>=2.4.3  # optional layout-aware PDF OCR/text extraction; requires Java 11+
+# chandra-ocr is intentionally not listed here: it is private-only, model-license gated,
+# and upstream Chandra OCR 2 is tagged qwen3_5 / credits Qwen 3.5.
+# Install it in an isolated venv when explicitly approved:
+#   python3 -m venv /tmp/magi_chandra_venv
+#   /tmp/magi_chandra_venv/bin/python -m pip install chandra-ocr
 
 # -- Web Scraping & Browser Automation --
 beautifulsoup4>=4.12
@@ -41,6 +46,7 @@ truststore>=0.9
 numpy>=1.24
 faiss-cpu>=1.7
 mlx-vlm>=0.5.0; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-whisper==0.4.3; platform_system == "Darwin" and platform_machine == "arm64"
 
 # -- Google APIs (for Calendar integration) --
 google-api-python-client>=2.100
@@ -49,6 +55,8 @@ google-auth-oauthlib>=1.1
 
 # -- Telegram Bot --
 python-telegram-bot>=20.0
+discord.py>=2.3
+line-bot-sdk>=3.5
 
 # -- Utilities --
 python-dateutil>=2.8

@@ -4,7 +4,7 @@ Legal Crawler Wrapper (爬蟲包裝器)
 Iron Dome Audit: ✅ SAFE — Calls existing trusted crawler
 """
 import argparse
-import fcntl
+from magi_v3 import fcntl_compat as fcntl
 import os
 import json
 import random
@@ -43,15 +43,43 @@ except Exception:
     logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 32, exc_info=True)
 # Define path to original crawler
 CRAWLER_PATH = os.path.expanduser("~/.openclaw/skills/law-office/legal_crawler.py")
-VENV_PYTHON = f"{_MAGI_ROOT}/venv/bin/python3"
-STATE_DIR = os.path.expanduser("~/.magi")
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
+_RUNTIME_DIR = (os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+STATE_DIR = os.path.expanduser(_AGENT_DIR or "~/.magi")
 STATE_PATH = os.path.join(STATE_DIR, "crawler_guard_state.json")
 MAX_ATTEMPTS = int(os.environ.get("MAGI_CRAWLER_RETRY_ATTEMPTS", "3"))
 BASE_COOLDOWN_MIN = int(os.environ.get("MAGI_CRAWLER_BASE_COOLDOWN_MIN", "20"))
 MAX_COOLDOWN_MIN = int(os.environ.get("MAGI_CRAWLER_MAX_COOLDOWN_MIN", "360"))
-BG_JOB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bg_jobs")
+BG_JOB_DIR = (
+    os.path.join(os.path.expanduser(_RUNTIME_DIR), "legal-crawler-bg-jobs")
+    if _RUNTIME_DIR
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bg_jobs")
+)
 
 logger = logging.getLogger("LegalCrawlerWrapper")
+
+
+def _child_python() -> str:
+    """Resolve child Python without depending on a venv inside sealed V3."""
+
+    sealed = bool(
+        (os.environ.get("MAGI_V3_RELEASE_ID") or "").strip()
+        or (os.environ.get("MAGI_V3_DEPLOYMENT_MODE") or "").strip()
+    )
+    launcher = (os.environ.get("MAGI_V3_EXECUTABLE_PATH") or "").strip()
+    if sealed and not launcher:
+        raise RuntimeError("sealed V3 legal crawler requires its verified launcher")
+    declared = (launcher or os.environ.get("MAGI_SKILL_PYTHON") or "").strip()
+    if declared:
+        candidate = Path(declared).expanduser()
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        raise RuntimeError("bound legal crawler Python executable is unavailable or unsafe")
+    source_python = _MAGI_ROOT / "venv/bin/python3"
+    if source_python.is_file() and os.access(source_python, os.X_OK):
+        return str(source_python)
+    return sys.executable
+
 
 CLOSED_CASE_KEYWORDS = [
     "已結案",
@@ -228,7 +256,7 @@ def _pid_alive(pid: int) -> bool:
 
 def _run_once(timeout_sec: int = 1200):
     return subprocess.run(
-        [VENV_PYTHON, CRAWLER_PATH],
+        [_child_python(), CRAWLER_PATH],
         capture_output=True,
         text=True,
         timeout=timeout_sec,
@@ -430,9 +458,15 @@ def _spawn_crawler_background() -> str:
             "log_path": log_path,
         },
     )
-    py = VENV_PYTHON if os.path.exists(VENV_PYTHON) else "python3"
-    cmd = [py, os.path.abspath(__file__), "--task", "run_sync", "--job-id", job_id]
     try:
+        cmd = [
+            _child_python(),
+            os.path.abspath(__file__),
+            "--task",
+            "run_sync",
+            "--job-id",
+            job_id,
+        ]
         with open(log_path, "a", encoding="utf-8") as lf:
             proc = subprocess.Popen(
                 cmd,
@@ -581,10 +615,10 @@ def _load_magi_config_profiles() -> list[dict]:
 
 def _get_db_config_local_first() -> dict:
     """
-    Prefer local DB profiles when MAGI_PREFER_LOCAL_DB=1.
+    Prefer local DB profiles by default; remote DB use is explicit opt-in.
     Falls back to 127.0.0.1:3307 (Casper local).
     """
-    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    prefer_local = str(os.environ.get("MAGI_PREFER_LOCAL_DB", "1")).strip().lower() in {"1", "true", "yes", "on"}
     profiles = _load_magi_config_profiles()
     want = ["Home_Local_Test", "Studio_Local"] if prefer_local else ["Studio_Local", "Home_Local_Test"]
     for name in want:
@@ -856,7 +890,10 @@ if __name__ == "__main__":
                 },
             )
         print(out)
+        if not str(out or "").strip().startswith("✅"):
+            raise SystemExit(1)
     elif task == "status":
         print(json.dumps(get_crawler_status(args.job_id or "latest"), ensure_ascii=False, indent=2))
     else:
         print(json.dumps({"success": False, "error": f"unknown task: {task}"}, ensure_ascii=False))
+        raise SystemExit(2)

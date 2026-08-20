@@ -35,9 +35,14 @@ from typing import Optional
 logger = logging.getLogger("discord_channel_router")
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-_AGENT_DIR = os.path.join(_MAGI_ROOT, ".agent")
+_AGENT_DIR = os.path.abspath(
+    os.environ.get("MAGI_AGENT_DIR", "").strip() or os.path.join(_MAGI_ROOT, ".agent")
+)
 _CHANNEL_MAP_FILE = os.path.join(_AGENT_DIR, "discord_channel_map.json")
-_NOTIFICATION_PREFS_FILE = os.path.join(_MAGI_ROOT, ".runtime", "osc_saas_notification_prefs.json")
+_RUNTIME_DIR = os.path.abspath(
+    os.environ.get("MAGI_RUNTIME_DIR", "").strip() or os.path.join(_MAGI_ROOT, ".runtime")
+)
+_NOTIFICATION_PREFS_FILE = os.path.join(_RUNTIME_DIR, "osc_saas_notification_prefs.json")
 _SYSTEM_SILENT_SOURCES = {"business_module_live_check", "nightly_regression", "mock_test"}
 _DEFAULT_NOTIFICATION_PREFS = {
     "business": "enabled",
@@ -63,6 +68,7 @@ except ImportError:
         "閱卷": "filereview", "筆錄": "transcript",
         "翻譯": "translation", "摘要": "summary",
         "判決": "judgment", "逐字稿": "verbatim",
+        "庭期": "case_schedule", "衝庭": "case_schedule",
         "通知": "alert", "巡檢": "nightly", "夜間": "nightly",
         "市場": "market", "系統": "check",
     }
@@ -105,13 +111,39 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
         # 已經有明確 sub_topic 的直接返回
         if canonical in ("filereview_payment", "filereview_download", "filereview_apply"):
             return canonical
+        download_signal = any(
+            k in s
+            for k in [
+                "卷宗下載",
+                "下載完成",
+                "已下載",
+                "download",
+                "可下載判定",
+                "可下載通知",
+                "入口列表可下載",
+                "法院端可下載",
+                "待下載",
+                "歸檔",
+            ]
+        )
+        payment_zero_only = bool(
+            re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[：:\s]*0\s*(?:件|封)", s)
+        )
+        payment_positive_count = bool(
+            re.search(r"(?:待繳費|入口列表待繳費|繳費相關信件)[^0-9]{0,12}[1-9]\d*\s*(?:件|封)", s)
+        )
+        payment_action_text = any(
+            k in s
+            for k in ["繳費單通知", "繳費單 pdf", "逾期未繳", "繳費憑證", "上傳繳費", "待繳費案件"]
+        )
         # 閱卷類：依動作細分
         if any(k in s for k in ["聲請", "apply", "申請閱卷", "填寫完成", "紙本", "預約", "郵寄",
                                  "確認碼", "confirm", "待確認送出", "預覽"]):
             return "filereview_apply"
         if any(k in s for k in ["繳費", "逾期", "到期", "待繳", "payment", "繳費單"]):
-            return "filereview_payment"
-        if any(k in s for k in ["下載完成", "已下載", "download", "歸檔"]):
+            if not (download_signal and payment_zero_only and not payment_positive_count and not payment_action_text):
+                return "filereview_payment"
+        if download_signal:
             return "filereview_download"
         if any(k in s for k in ["信箱檢查完成", "閱卷信箱"]):
             return "filereview_download"
@@ -176,6 +208,9 @@ def _infer_sub_topic(message: str, topic_key: str, source: str = "") -> str:
     if canonical == "filing":
         return "filing"
 
+    if canonical == "case_schedule":
+        return "case_schedule"
+
     # ───────── 研究通訊命名空間路由 ─────────
     if canonical in ("research_daily", "research_interpretation", "research_ethno",
                      "research_humanrights", "research_language", "research_eastasia"):
@@ -212,6 +247,7 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "nightly": ["general"],
     "market": [],  # 股票資訊不發 Discord (2026-04-20)
     "filing": ["general"],
+    "case_schedule": ["general"],
     "research_daily": ["general"],
     "research_interpretation": ["research_daily", "general"],
     "research_ethno": ["research_daily", "general"],
@@ -219,6 +255,58 @@ _FALLBACK_CHAIN: dict[str, list[str]] = {
     "research_language": ["research_daily", "general"],
     "research_eastasia": ["research_daily", "general"],
 }
+
+_BUSINESS_TOPIC_PREFIXES = (
+    "laf_",
+    "filereview_",
+    "file_review_",
+    "research_",
+    "transcript_",
+    "verbatim_",
+    "summary_",
+    "translation_",
+    "judgment_",
+    "filing_",
+    "case_schedule_",
+    "pdf_",
+)
+_NO_GENERAL_DC_FALLBACK_TOPICS = {
+    "filereview",
+    "filereview_payment",
+    "filereview_download",
+    "filereview_apply",
+    "laf",
+    "laf_dispatch",
+    "laf_go_live",
+    "laf_fee",
+    "laf_inquiry",
+    "laf_condition",
+    "laf_progress",
+    "laf_closing",
+    "transcript",
+}
+
+
+def _is_unknown_business_topic(topic: str) -> bool:
+    t = str(topic or "").strip().lower()
+    if not t or t == "general" or t in _FALLBACK_CHAIN:
+        return False
+    return t.startswith(_BUSINESS_TOPIC_PREFIXES)
+
+
+def _is_noop_completion_notification(message: str) -> bool:
+    try:
+        from skills.ops.red_phone import _is_noop_completion_notification as _red_phone_noop
+        return bool(_red_phone_noop(message))
+    except Exception:
+        s = " ".join(str(message or "").strip().split())
+        if not s:
+            return False
+        if any(k in s.lower() for k in ("失敗", "錯誤", "異常", "invalid_grant", "need_interactive_oauth")):
+            return False
+        if re.search(r"[1-9]\d*\s*(?:件|封|份|案|個|筆|部|次)", s):
+            return False
+        return any(k in s for k in ("檢查完成", "掃描完成", "判定完成", "沒有新", "無新", "無需處理"))
 
 
 # ───────── Channel Map 載入/儲存 ─────────
@@ -331,6 +419,92 @@ def _reverse_lookup_channel(channel_id: str) -> str:
     return ""
 
 
+def _normalize_channel_name(value: str) -> str:
+    """Normalize Discord channel names for topic inference."""
+    s = str(value or "").strip().lower()
+    # Discord names may contain emoji/category prefixes, dashes, or full-width
+    # variants.  Keep CJK/ASCII alnum and remove visual separators.
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", s)
+
+
+_CHANNEL_NAME_ALIASES: dict[str, str] = {
+    "進度回報": "laf_progress",
+    "法扶進度": "laf_progress",
+    "法扶進度回報": "laf_progress",
+    "開辦": "laf_go_live",
+    "法扶開辦": "laf_go_live",
+    "報結": "laf_closing",
+    "結案": "laf_closing",
+    "法扶結案": "laf_closing",
+    "法扶派案": "laf_dispatch",
+    "法扶一般": "laf_general",
+    "法扶費用": "laf_fee",
+    "法扶疑義": "laf_inquiry",
+    "法扶二階段": "laf_condition",
+    "閱卷繳費": "filereview_payment",
+    "閱卷下載": "filereview_download",
+    "閱卷聲請": "filereview_apply",
+    "筆錄": "transcript",
+    "筆錄通知": "transcript",
+    "逐字稿": "verbatim",
+    "摘要": "summary",
+    "翻譯": "translation",
+    "歸檔": "filing",
+    "歸檔通知": "filing",
+    "裁判": "judgment",
+    "判決": "judgment",
+    "研究通譯": "research_interpretation",
+    "通譯": "research_interpretation",
+}
+
+
+def infer_topic_from_channel_metadata(
+    *,
+    name: str = "",
+    topic: str = "",
+    include_general: bool = False,
+) -> str:
+    """
+    Infer MAGI topic key from Discord channel name/topic when channel_map is stale.
+
+    This is a safety net for business channels: if the ID map is missing after a
+    server/category rebuild, MAGI must still treat messages in those channels as
+    task commands instead of letting them fall through to free-form chat.
+    """
+    normalized_candidates = [_normalize_channel_name(name), _normalize_channel_name(topic)]
+    lookup: dict[str, str] = {}
+    for ch_def in DEFAULT_CHANNELS:
+        key = str(ch_def.get("key") or "").strip()
+        if not key:
+            continue
+        if key == "general" and not include_general:
+            continue
+        for candidate in _channel_name_candidates(ch_def):
+            norm = _normalize_channel_name(candidate)
+            if norm:
+                lookup[norm] = key
+    for alias, key in _CHANNEL_NAME_ALIASES.items():
+        if key == "general" and not include_general:
+            continue
+        lookup[_normalize_channel_name(alias)] = key
+
+    for candidate in normalized_candidates:
+        if not candidate:
+            continue
+        if candidate in lookup:
+            return lookup[candidate]
+        # Be permissive for names such as "magi-法扶-進度回報" but avoid generic
+        # "一般" unless explicitly requested.
+        for alias_norm, key in sorted(lookup.items(), key=lambda item: len(item[0]), reverse=True):
+            if not alias_norm:
+                continue
+            if len(candidate) <= 2 or len(alias_norm) <= 2:
+                continue
+            if alias_norm in candidate or candidate in alias_norm:
+                return key
+    return ""
+
+
 def save_channel_map(channel_map: dict[str, str]) -> str:
     """儲存頻道映射到 .agent/discord_channel_map.json。"""
     os.makedirs(_AGENT_DIR, exist_ok=True)
@@ -403,6 +577,11 @@ def resolve_discord_channel(
     """
     sub_topic = _infer_sub_topic(message, topic_key, source)
     cmap = _load_channel_map()
+    if _is_noop_completion_notification(message):
+        return sub_topic, "__SILENT__"
+    if _is_unknown_business_topic(sub_topic):
+        logger.warning("Unknown business notification topic '%s'; suppressing general fallback.", sub_topic)
+        return sub_topic, "__SILENT__"
     policy = _notification_policy_for(sub_topic, source)
     if policy == "silent":
         return sub_topic, "__SILENT__"
@@ -424,11 +603,16 @@ def resolve_discord_channel(
         return sub_topic, val
 
     for fb in _FALLBACK_CHAIN.get(sub_topic, []):
+        if fb == "general" and sub_topic in _NO_GENERAL_DC_FALLBACK_TOPICS:
+            continue
         if fb in cmap:
             val = cmap[fb]
             if val == "":
                 return sub_topic, "__SILENT__"
             return sub_topic, val
+
+    if sub_topic in _NO_GENERAL_DC_FALLBACK_TOPICS:
+        return sub_topic, "__SILENT__"
 
     return sub_topic, cmap.get("general", fallback_channel_id)
 
@@ -617,8 +801,6 @@ async def auto_setup_channels(guild, category_name: str = "📋 MAGI 通知") ->
 
     Returns: { sub_topic: channel_id_str, ... }
     """
-    import discord  # noqa
-
     # 建立「全 guild」頻道名稱索引，避免跨 category 重複建立
     all_text_channels = {ch.name: ch for ch in guild.text_channels}
 

@@ -8,9 +8,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from api.runtime_paths import get_runtime_dir
+
 
 _DEFAULT_TTL_DAYS = 7
-_DB_PATH = Path(__file__).resolve().parents[2] / ".runtime" / "conversation_history.sqlite3"
+_DB_PATH = get_runtime_dir() / "conversation_history.sqlite3"
 _SINGLETON = None
 _SINGLETON_LOCK = threading.Lock()
 

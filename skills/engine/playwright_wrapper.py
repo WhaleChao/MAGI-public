@@ -14,10 +14,18 @@ from __future__ import annotations
 import logging
 import os
 import re as _re
+import subprocess
+import sys
 import threading
-from typing import List, Optional, Any
+import time
+from typing import List, Optional, Any, Dict
 
 _logger = logging.getLogger(__name__)
+_PLAYWRIGHT_HEALTH_LOCK = threading.Lock()
+_PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
+_PLAYWRIGHT_HEALTH_CACHE: dict[str, Any] = {"ts": 0.0, "result": None}
+_ACTIVE_PLAYWRIGHT_DRIVERS: set[Any] = set()
+_ACTIVE_PLAYWRIGHT_DRIVERS_LOCK = threading.Lock()
 
 # ==============================================================================
 # Selenium 相容 shim（供三模組在 Playwright 模式下仍能用 By/Keys/Select/EC）
@@ -142,6 +150,169 @@ except Exception:
 # ==============================================================================
 # 內部工具函式
 # ==============================================================================
+
+def _truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_playwright_browser_missing_error(exc: BaseException | str) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "executable doesn't exist" in text
+        or "please run the following command" in text
+        or "playwright install" in text
+        or "browser executable" in text and "doesn't exist" in text
+    )
+
+
+def _tail_text(text: str, limit: int = 800) -> str:
+    value = str(text or "")
+    return value[-limit:] if len(value) > limit else value
+
+
+def clear_playwright_health_cache() -> None:
+    """Clear cached Playwright health status. Tests and installers use this."""
+    with _PLAYWRIGHT_HEALTH_LOCK:
+        _PLAYWRIGHT_HEALTH_CACHE["ts"] = 0.0
+        _PLAYWRIGHT_HEALTH_CACHE["result"] = None
+
+
+def _run_playwright_chromium_install() -> Dict[str, Any]:
+    timeout = int(os.environ.get("MAGI_PLAYWRIGHT_INSTALL_TIMEOUT_SECONDS", "600") or "600")
+    cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        ok = proc.returncode == 0
+        return {
+            "ok": ok,
+            "command": " ".join(cmd),
+            "returncode": proc.returncode,
+            "stdout_tail": _tail_text(proc.stdout),
+            "stderr_tail": _tail_text(proc.stderr),
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "command": " ".join(cmd),
+            "returncode": -1,
+            "stderr_tail": f"playwright install chromium timed out after {timeout}s",
+            "stdout_tail": _tail_text(getattr(exc, "stdout", "") or ""),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "command": " ".join(cmd),
+            "returncode": -1,
+            "stderr_tail": str(exc)[:800],
+            "stdout_tail": "",
+        }
+
+
+def playwright_chromium_health(
+    *,
+    timeout_seconds: float = 5.0,
+    cache_ttl_seconds: float = 300.0,
+) -> Dict[str, Any]:
+    """Return a lightweight Chromium launch probe used by health checks.
+
+    The probe is cached because /health may be called often and launching a
+    browser on every refresh is noisy. Set cache_ttl_seconds=0 for a fresh probe.
+    """
+    now = time.time()
+    with _PLAYWRIGHT_HEALTH_LOCK:
+        cached = _PLAYWRIGHT_HEALTH_CACHE.get("result")
+        cached_ts = float(_PLAYWRIGHT_HEALTH_CACHE.get("ts") or 0.0)
+        if cached and cache_ttl_seconds > 0 and (now - cached_ts) < cache_ttl_seconds:
+            result = dict(cached)
+            result["cached"] = True
+            return result
+
+    pw = None
+    browser = None
+    try:
+        from playwright.sync_api import sync_playwright
+
+        pw = sync_playwright().start()
+        browser = pw.chromium.launch(
+            headless=True,
+            timeout=int(max(1.0, timeout_seconds) * 1000),
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        page = browser.new_page()
+        page.goto("about:blank", timeout=int(max(1.0, timeout_seconds) * 1000))
+        result = {
+            "ok": True,
+            "engine": "playwright-chromium",
+            "detail": "Chromium launch OK",
+            "cached": False,
+        }
+    except ImportError as exc:
+        result = {
+            "ok": False,
+            "engine": "playwright-chromium",
+            "reason": "playwright_import_failed",
+            "detail": str(exc)[:240],
+            "cached": False,
+        }
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "engine": "playwright-chromium",
+            "reason": "chromium_not_installed" if _is_playwright_browser_missing_error(exc) else "chromium_launch_failed",
+            "detail": str(exc)[:240],
+            "cached": False,
+        }
+    finally:
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+        try:
+            if pw is not None:
+                pw.stop()
+        except Exception:
+            pass
+
+    with _PLAYWRIGHT_HEALTH_LOCK:
+        _PLAYWRIGHT_HEALTH_CACHE["ts"] = time.time()
+        _PLAYWRIGHT_HEALTH_CACHE["result"] = dict(result)
+    return result
+
+
+def ensure_playwright_chromium(auto_install: Optional[bool] = None) -> Dict[str, Any]:
+    """Ensure Playwright's Chromium payload exists.
+
+    This is intentionally centralized so 法扶、閱卷、筆錄 do not each invent
+    their own partial fallback when the browser payload is missing.
+    """
+    if auto_install is None:
+        auto_install = _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "1"))
+
+    health = playwright_chromium_health(cache_ttl_seconds=0)
+    if health.get("ok"):
+        return health
+    if not auto_install or health.get("reason") != "chromium_not_installed":
+        health["install_attempted"] = False
+        return health
+
+    with _PLAYWRIGHT_INSTALL_LOCK:
+        # Another worker may have fixed it while we waited.
+        health = playwright_chromium_health(cache_ttl_seconds=0)
+        if health.get("ok"):
+            return health
+        install = _run_playwright_chromium_install()
+        clear_playwright_health_cache()
+        after = playwright_chromium_health(cache_ttl_seconds=0)
+        after["install_attempted"] = True
+        after["install"] = install
+        return after
 
 def _convert_script_for_playwright(script: str, args: list):
     """
@@ -626,6 +797,14 @@ class PlaywrightDriverWrapper(object):
         self._last_dialog = None
         self._download_dir = download_dir
         self.switch_to = _PlaywrightSwitchTo(self)
+        # A caller can fail after creating Playwright but before reaching its
+        # own ``finally: driver.quit()``.  Keep a process-local inventory so
+        # bounded CLI jobs can explicitly close every remaining driver before
+        # Python's Playwright atexit hook runs.  This must be a strong registry:
+        # the registry is the final owner when an exceptional caller drops its
+        # reference before reaching ``finally: driver.quit()``.
+        with _ACTIVE_PLAYWRIGHT_DRIVERS_LOCK:
+            _ACTIVE_PLAYWRIGHT_DRIVERS.add(self)
 
         # ★ 防止 native alert/confirm/prompt 卡死 sync API
         # Playwright sync API 在 dialog 開啟時所有 evaluate/goto 都會 deadlock
@@ -900,12 +1079,32 @@ class PlaywrightDriverWrapper(object):
 
     # ---- multi-window support (tabs) ----
 
+    @staticmethod
+    def _page_is_closed(page) -> bool:
+        try:
+            # Playwright returns a real bool.  Identity also keeps generic test
+            # doubles whose unstubbed method returns a mock from looking closed.
+            return page.is_closed() is True
+        except Exception:
+            return False
+
+    def _prune_closed_popup_pages(self) -> None:
+        """Release closed popup Page graphs instead of retaining one per download."""
+        self._popup_pages = [
+            page
+            for page in getattr(self, "_popup_pages", [])
+            if not self._page_is_closed(page)
+        ]
+
     def _all_pages(self) -> list:
         """All known pages: context.pages union popup_pages."""
+        self._prune_closed_popup_pages()
         seen_ids: set = set()
         pages: list = []
         try:
             for p in self._context.pages:
+                if self._page_is_closed(p):
+                    continue
                 if id(p) not in seen_ids:
                     seen_ids.add(id(p))
                     pages.append(p)
@@ -931,22 +1130,45 @@ class PlaywrightDriverWrapper(object):
     def close(self):
         """Close only the current page/tab — does NOT close the browser context.
         Matches Selenium driver.close() semantics for multi-tab workflows."""
+        closing_page = self._page
         try:
-            self._page.close()
+            closing_page.close()
         except Exception:
             pass
+        finally:
+            self._active_frame = None
+            self._popup_pages = [
+                page
+                for page in getattr(self, "_popup_pages", [])
+                if page is not closing_page and not self._page_is_closed(page)
+            ]
 
     def quit(self):
         """Close the current page, the browser context, and stop Playwright."""
-        self.close()
+        failures = []
+        try:
+            self.close()
+        except Exception as exc:
+            failures.append(exc)
         try:
             self._context.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(exc)
         try:
             self._pw.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(exc)
+        if not failures:
+            with _ACTIVE_PLAYWRIGHT_DRIVERS_LOCK:
+                _ACTIVE_PLAYWRIGHT_DRIVERS.discard(self)
+            return
+        # Keep the strong registry entry so the bounded worker cleanup can
+        # report and retry it.  A swallowed stop failure is exactly what leaves
+        # Playwright's atexit greenlet hanging.
+        raise RuntimeError(
+            "Playwright driver shutdown failed: "
+            + "; ".join(type(exc).__name__ for exc in failures)
+        ) from failures[0]
 
     # ---- Playwright-specific helpers ----
 
@@ -1019,6 +1241,28 @@ class PlaywrightDriverWrapper(object):
             pass
 
 
+def shutdown_all_playwright_drivers() -> Dict[str, int]:
+    """Close every wrapper still owned by this process.
+
+    This is intended for bounded CLI workers immediately before returning to
+    their scheduler.  It prevents Playwright's atexit greenlet from waiting on
+    a driver leaked by an exceptional portal path.
+    """
+
+    with _ACTIVE_PLAYWRIGHT_DRIVERS_LOCK:
+        drivers = list(_ACTIVE_PLAYWRIGHT_DRIVERS)
+    failures = 0
+    for driver in drivers:
+        try:
+            driver.quit()
+        except Exception:
+            failures += 1
+            _logger.debug("Playwright driver shutdown failed", exc_info=True)
+    with _ACTIVE_PLAYWRIGHT_DRIVERS_LOCK:
+        remaining = len(_ACTIVE_PLAYWRIGHT_DRIVERS)
+    return {"attempted": len(drivers), "failures": failures, "remaining": remaining}
+
+
 # ==============================================================================
 # Helper: by → CSS selector
 # ==============================================================================
@@ -1080,6 +1324,12 @@ def create_playwright_driver(
     dl_path = download_dir or "/tmp"
     os.makedirs(dl_path, exist_ok=True)
 
+    def _launch_chromium(pw_instance):
+        return pw_instance.chromium.launch(
+            headless=headless,
+            args=launch_args,
+        )
+
     pw = sync_playwright().start()
     try:
         launch_args = [
@@ -1088,10 +1338,28 @@ def create_playwright_driver(
             "--disable-blink-features=AutomationControlled",
         ]
 
-        browser = pw.chromium.launch(
-            headless=headless,
-            args=launch_args,
-        )
+        try:
+            browser = _launch_chromium(pw)
+        except Exception as launch_exc:
+            if not (
+                _is_playwright_browser_missing_error(launch_exc)
+                and _truthy(os.environ.get("MAGI_PLAYWRIGHT_AUTO_INSTALL", "1"))
+            ):
+                raise
+            _logger.warning("Playwright Chromium missing; running auto-install before retry")
+            try:
+                pw.stop()
+            except Exception:
+                pass
+            install = _run_playwright_chromium_install()
+            clear_playwright_health_cache()
+            if not install.get("ok"):
+                raise RuntimeError(
+                    "Playwright Chromium 自動安裝失敗: %s"
+                    % (install.get("stderr_tail") or install.get("stdout_tail") or install.get("returncode"))
+                ) from launch_exc
+            pw = sync_playwright().start()
+            browser = _launch_chromium(pw)
 
         ctx_kwargs: dict = {
             "accept_downloads": True,

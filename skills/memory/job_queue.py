@@ -20,11 +20,15 @@ from typing import Any, Optional
 
 logger = logging.getLogger("JobQueue")
 
-_DB_DIR = os.path.join(
-    os.environ.get("MAGI_DATA_DIR", "").strip()
-    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".agent"),
-    "jobs",
+_PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 )
+_DATA_ROOT = (
+    os.environ.get("MAGI_DATA_DIR", "").strip()
+    or os.environ.get("MAGI_AGENT_DIR", "").strip()
+    or os.path.join(_PROJECT_ROOT, ".agent")
+)
+_DB_DIR = os.path.join(_DATA_ROOT, "jobs")
 
 _DB_PATH = os.path.join(_DB_DIR, "job_queue.db")
 
@@ -77,7 +81,18 @@ class _ConnectionProxy:
 def _open_conn() -> sqlite3.Connection:
     """Open a fresh SQLite connection (caller MUST close it)."""
     os.makedirs(_DB_DIR, exist_ok=True)
+    # The queue contains user text and can therefore contain privileged case
+    # material.  Keep the local persistence boundary private even when the
+    # parent directory was created under a permissive umask.
+    try:
+        os.chmod(_DB_DIR, 0o700)
+    except OSError:
+        logger.warning("Unable to harden job queue directory permissions", exc_info=True)
     conn = sqlite3.connect(_DB_PATH, timeout=10)
+    try:
+        os.chmod(_DB_PATH, 0o600)
+    except OSError:
+        logger.warning("Unable to harden job queue database permissions", exc_info=True)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row

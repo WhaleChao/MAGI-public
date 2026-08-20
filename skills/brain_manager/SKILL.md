@@ -1,6 +1,6 @@
 ---
 name: brain_manager
-description: Control System for Casper's Distributed Brain Architecture. Manages switching between Local (20B) and Distributed (70B/GLM-4) modes, and delegating engineering tasks to Melchior.
+description: Control System for Casper's Distributed Brain Architecture. Manages switching between local Gemma and approved non-China distributed models, and delegating engineering tasks to Melchior.
 author: CASPER
 created: 2026-02-09
 ---
@@ -13,7 +13,7 @@ System for dynamic intelligence scaling, allowing Casper to switch between a low
 
 | Mode | Model | Hardware | Use Case |
 | :--- | :--- | :--- | :--- |
-| **Distributed** (Default) | **70B / GLM-4** | Mac (Router) + Win (GPU) | Deep thinking, complex reasoning, creative writing. |
+| **Distributed** (Default) | **Approved non-China heavy model** | Mac (Router) + Win/GPU or trusted endpoint | Deep thinking, complex reasoning, creative writing. |
 | **Local** | **GPT-OSS 20B** | Mac M4 (Neural Engine) | Fast responses, simple chat, or when Melchior is busy. |
 
 ## 🛡️ Safety Protocols (Resource Guard)
@@ -81,6 +81,6 @@ print(status)
 ## 📂 Implementation Details
 
 -   **Controller**: `skills/brain_manager/action.py`
--   **RPC Binary**: `~/Desktop/MAGI_v2/bin/rpc-server`
--   **Startup Script**: `~/Desktop/MAGI_v2/start_rpc.sh`
+-   **RPC Binary**: `${MAGI_ROOT}/bin/rpc-server`
+-   **Startup Script**: `${MAGI_ROOT}/start_rpc.sh`
 -   **Remote API**: `http://MAGI_MELCHIOR_IP:8080/v1`

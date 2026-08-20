@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Setup Path
-MAGI_ROOT = Path("/Users/ai/Desktop/MAGI_v2")
+MAGI_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MAGI_ROOT))
 sys.path.insert(0, str(MAGI_ROOT / "skills" / "market-briefing"))
 

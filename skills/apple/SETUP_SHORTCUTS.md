@@ -147,10 +147,10 @@
 
 ```bash
 # 檢查所有捷徑（含 GoodNotes）
-python /Users/ai/Desktop/MAGI_v2/skills/apple/apple_ai.py check
+${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT}/skills/apple/apple_ai.py check
 
 # 測試 GoodNotes 同步 (Self Test)
-python /Users/ai/Desktop/MAGI_v2/skills/goodnotes-sync/action.py --task self_test
+${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT}/skills/goodnotes-sync/action.py --task self_test
 ```
 
 **動作順序**：
@@ -166,7 +166,7 @@ python /Users/ai/Desktop/MAGI_v2/skills/goodnotes-sync/action.py --task self_tes
 
 建立完成後，在終端機執行：
 ```bash
-python /Users/ai/Desktop/MAGI_v2/skills/apple/apple_ai.py check
+${MAGI_PYTHON_EXECUTABLE} ${MAGI_ROOT}/skills/apple/apple_ai.py check
 ```
 
 預期結果：

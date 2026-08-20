@@ -26,6 +26,17 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from api.laf_go_live_rules import (
+    is_go_live_receipt_proof,
+    is_opening_notice_filename,
+    is_stored_pleading_proof,
+)
+from skills.bridge.shared_utils.judgment_folder_names import (
+    judgment_folder_aliases,
+    judgment_folder_name,
+    path_has_judgment_folder,
+)
+
 logger = logging.getLogger("laf_orchestrator.docmixins")
 
 # ── Keywords ──────────────────────────────────────────────
@@ -36,8 +47,47 @@ _CONSUMER_DEBT_KEYWORDS = (
 
 _CLOSING_BASIS_KEYWORDS = (
     "判決", "裁定", "不起訴處分書", "起訴書", "確定證明書",
-    "和解筆錄", "調解筆錄", "調解成立",
+    "調解成立",
     "併辦意旨書", "追加起訴書",
+)
+
+_PROCEDURAL_NONCLOSING_KEYWORDS = (
+    "移送", "管轄", "補正", "命補正", "調解不成立", "開始更生",
+    "開始清算", "裁定開始", "期日", "開庭通知", "庭期通知", "陳報",
+    "函詢", "通知", "閱卷", "繳費", "補繳", "選任", "改期",
+)
+
+_CONSUMER_DEBT_TERMINAL_KEYWORDS = (
+    "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+    "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
+    "駁回更生聲請", "更生聲請駁回", "更生之聲請駁回",
+    "駁回清算聲請", "清算聲請駁回", "清算之聲請駁回",
+    "調解成立", "和解成立", "協商成立",
+    "撤回聲請", "撤回更生", "撤回清算",
+)
+
+_CONSUMER_DEBT_TERMINAL_RULING_OUTCOMES = (
+    "不免責", "免責", "復權",
+)
+
+_CONSUMER_DEBT_INTERMEDIATE_KEYWORDS = (
+    "更生程序終結", "更生程序終止", "終止更生", "終結更生",
+    "清算程序終結", "清算程序終止", "清算終結", "終結清算",
+    "終止清算",
+)
+
+_AUTO_CLOSING_FINAL_KEYWORDS = (
+    "判決", "不起訴處分書", "緩起訴處分書", "確定證明書",
+    "免責裁定", "不免責裁定", "復權裁定", "復權確定",
+    "認可更生方案", "更生方案認可", "更生方案經法院裁定認可",
+    "駁回更生聲請", "更生聲請駁回", "更生之聲請駁回",
+    "駁回清算聲請", "清算聲請駁回", "清算之聲請駁回",
+    "撤回聲請", "撤回更生", "撤回清算",
+)
+
+_AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS = (
+    "調解筆錄", "和解筆錄", "調解書", "和解書",
+    "調解成立筆錄", "和解成立筆錄",
 )
 
 _ENFORCEMENT_CLOSING_KEYWORDS = (
@@ -50,8 +100,24 @@ _OFFICE_RECEIPT_KEYWORDS = (
 )
 
 _CLOSING_FEE_KEYWORDS = (
-    "結案費用", "結案酬金", "酬金收據", "酬金", "律師費收據",
+    "結案費用", "結案酬金", "酬金收據", "結案領款單", "酬金領款單", "律師費收據",
 )
+
+# Opening-stage advance-payment forms also contain the word ``酬金``.  They
+# must never satisfy a closing/result-download gate merely because the broad
+# token appears in their filename.
+_CLOSING_FEE_EXCLUDE_KEYWORDS = (
+    "預付酬金", "預付費用", "開辦酬金",
+)
+
+
+def is_closing_fee_filename(filename: str) -> bool:
+    """Return True only for a closing-fee document, never an advance form."""
+
+    name = str(filename or "").strip()
+    if not name or any(token in name for token in _CLOSING_FEE_EXCLUDE_KEYWORDS):
+        return False
+    return any(token in name for token in _CLOSING_FEE_KEYWORDS)
 
 _CHANGE_REVIEW_KEYWORDS = (
     "變更審查通知", "變更通知", "審查通知",
@@ -242,7 +308,7 @@ class LAFOrchestratorDocumentMixin:
                 try:
                     os.remove(temp_img)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 244, exc_info=True)
 
     def _extract_best_date_from_doc(self, path_value: str, is_poa: bool = True) -> str:
         """Extract best date from document: filename → Office text → Vision OCR."""
@@ -272,9 +338,33 @@ class LAFOrchestratorDocumentMixin:
     def _is_consumer_debt_terminal_doc(filename: str) -> bool:
         """Check if filename is a terminal document for consumer debt case."""
         fn = str(filename or "")
-        terminal_keywords = ("免責裁定", "不免責裁定", "認可更生方案", "清算終結",
-                             "更生方案認可", "終止更生", "終結清算")
-        return any(k in fn for k in terminal_keywords)
+        if LAFOrchestratorDocumentMixin._is_consumer_debt_intermediate_doc(fn):
+            return False
+        terminal_by_phrase = any(k in fn for k in _CONSUMER_DEBT_TERMINAL_KEYWORDS)
+        terminal_by_ruling_outcome = (
+            "裁定" in fn
+            and any(k in fn for k in _CONSUMER_DEBT_TERMINAL_RULING_OUTCOMES)
+        )
+        if (
+            any(k in fn for k in _PROCEDURAL_NONCLOSING_KEYWORDS)
+            and not (terminal_by_phrase or terminal_by_ruling_outcome)
+        ):
+            return False
+        return terminal_by_phrase or terminal_by_ruling_outcome
+
+    @staticmethod
+    def _is_procedural_nonclosing_doc(filename: str) -> bool:
+        """Return True for procedural documents that must not trigger closing."""
+        fn = str(filename or "")
+        if not fn:
+            return False
+        if LAFOrchestratorDocumentMixin._is_consumer_debt_intermediate_doc(fn):
+            return True
+        if any(k in fn for k in _PROCEDURAL_NONCLOSING_KEYWORDS):
+            # A terminal consumer-debt document may still contain words such as
+            # 「終止」 or 「裁定」; terminal signals win over generic procedure words.
+            return not LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_doc(fn)
+        return False
 
     @staticmethod
     def _is_fee_related_receipt_doc(filename: str) -> bool:
@@ -304,11 +394,15 @@ class LAFOrchestratorDocumentMixin:
         return {
             "opening_notice_files": [],
             "poa_files": [],
+            "opening_proof_files": [],
+            "stored_pleading_files": [],
             "mediation_failure_files": [],
             "mediation_success_files": [],
             "pink_receipt_files": [],
             "receipt_files": [],
             "closing_basis_files": [],
+            "misfiled_closing_basis_files": [],
+            "unrecognized_closing_folder_files": [],
             "office_receipt_files": [],
             "closing_fee_files": [],
             "change_review_notice_files": [],
@@ -319,7 +413,57 @@ class LAFOrchestratorDocumentMixin:
     # Enhanced Folder Scanning
     # ==================================================================
 
-    def _scan_case_folder_docs(self, case_folder: str) -> dict:
+    @staticmethod
+    def _scan_subdirs_for_action(action: str = "") -> List[str]:
+        """Return shallow scan targets for the workflow.
+
+        Closing/progress workflows must stay away from massive folders such as
+        閱卷資料 and 證據資料.  Those folders are useful to the lawyer, but not
+        needed for LAF portal basis-document detection and can block NAS I/O on
+        very large cases.
+        """
+        act = (action or "").strip().lower()
+        final_doc_dirs = list(judgment_folder_aliases(10, include_plain=False))
+        if act in {"closing", "progress", "inquiry"}:
+            return [
+                "",
+                "01_法扶資料",
+                "04_我方歷次書狀",
+                "08_筆錄",
+                "08_法院通知或程序裁定",
+                "09_法院通知或程序裁定",
+                "09_酬金及費用",
+                *final_doc_dirs,
+                "11_回執",
+                "12_結案資料",
+            ]
+        if act in {"go_live"}:
+            return ["", "01_法扶資料", "02_開辦資料", "04_我方歷次書狀", "11_回執"]
+        if act in {"fee"}:
+            return ["", "01_法扶資料", "09_酬金及費用", "11_回執"]
+        if act in {"condition"}:
+            return ["", "01_法扶資料", "08_法院通知或程序裁定", "09_法院通知或程序裁定", *final_doc_dirs]
+        if act in {"withdrawal"}:
+            return ["", "04_我方歷次書狀", "08_法院通知或程序裁定", "09_法院通知或程序裁定", *final_doc_dirs, "12_結案資料"]
+        return [
+            "",
+            "01_法扶資料",
+            "02_開辦資料",
+            "03_對造資料",
+            "04_我方歷次書狀",
+            "05_證據資料",
+            "06_法院函文",
+            "06_閱卷資料",
+            "07_對造書狀",
+            "08_筆錄",
+            "08_法院通知或程序裁定",
+            "09_酬金及費用",
+            *final_doc_dirs,
+            "11_回執",
+            "12_結案資料",
+        ]
+
+    def _scan_case_folder_docs(self, case_folder: str, action: str = "") -> dict:
         """
         Enhanced document scanner for LAF case folders.
         Scans known sub-directories (shallow) to avoid NAS I/O hang,
@@ -332,32 +476,18 @@ class LAFOrchestratorDocumentMixin:
             return out
 
         # Only scan known sub-directories (shallow), NOT os.walk the entire tree.
-        # This avoids NAS I/O hang on folders with many files (e.g. 專員來信).
-        _SCAN_SUBDIRS = [
-            "",                  # root level
-            "01_法扶資料",
-            "02_開辦資料",
-            "03_對造資料",
-            "04_我方歷次書狀",
-            "05_證據資料",
-            "06_法院函文",
-            "06_閱卷資料",
-            "07_對造書狀",
-            "08_法院通知或程序裁定",
-            "09_酬金及費用",
-            "10_判決書",
-            "11_回執",
-            "12_結案資料",
-        ]
+        # This avoids NAS I/O hang on folders with many files (e.g. 閱卷資料).
+        _SCAN_SUBDIRS = self._scan_subdirs_for_action(action)
         allowed = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp",
                     ".doc", ".docx"}
+        max_entries = max(1, int(os.environ.get("MAGI_LAF_DOC_SCAN_MAX_ENTRIES", "800") or "800"))
 
         for subdir in _SCAN_SUBDIRS:
             scan_path = os.path.join(root, subdir) if subdir else root
             if not os.path.isdir(scan_path):
                 continue
             try:
-                entries = os.listdir(scan_path)
+                entries = sorted(os.listdir(scan_path))[:max_entries]
             except OSError:
                 continue
             for fn in entries:
@@ -377,7 +507,7 @@ class LAFOrchestratorDocumentMixin:
                                         fn2, os.path.join(sub_sub, fn2), out, subdir
                                     )
                         except OSError:
-                            pass
+                            logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 412, exc_info=True)
                     continue
                 full = os.path.join(scan_path, fn)
                 self._classify_doc_file_enhanced(fn, full, out, subdir)
@@ -393,20 +523,15 @@ class LAFOrchestratorDocumentMixin:
         if fn.startswith(".") or fn.startswith("~"):
             return
         # ── Opening documents ──
-        # 主要關鍵字：開辦通知書 / 接案通知書 / 准予扶助證明書
-        # 補充：在 02_開辦資料 路徑下檔名含「開辦資料」/「開辦」也視為 opening notice
-        # （案件資料夾結構慣例 — 律師可能用較簡短檔名儲存簽署版開辦文件）
-        is_opening_notice = any(k in fn for k in ("開辦通知書", "接案通知書", "准予扶助證明書"))
-        # check 路徑（subdir 或 full_path）是否在 02_開辦資料 下
-        in_open_dir = ("02_開辦資料" in str(subdir or "")) or ("02_開辦資料" in str(full_path or ""))
-        if not is_opening_notice and in_open_dir and any(k in fn for k in ("開辦資料", "開辦")):
-            # 排除「委任狀」「附條件...」等其他類別
-            if not any(k in fn for k in ("委任狀", "附條件", "酬金", "結案", "撤回")):
-                is_opening_notice = True
+        is_opening_notice = is_opening_notice_filename(fn, full_path=full_path, subdir=subdir)
         if is_opening_notice:
             out["opening_notice_files"].append(full_path)
         if "委任狀" in fn:
             out["poa_files"].append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
+        if is_stored_pleading_proof(fn, full_path=full_path, subdir=subdir):
+            out.setdefault("stored_pleading_files", []).append(full_path)
+            out.setdefault("opening_proof_files", []).append(full_path)
 
         # ── Mediation documents ──
         if any(k in fn for k in ("調解不成立證明書", "調解不成立")):
@@ -421,20 +546,55 @@ class LAFOrchestratorDocumentMixin:
             out["pink_receipt_files"].append(full_path)
         if "回執" in fn or "收件回執" in fn:
             out.setdefault("receipt_files", []).append(full_path)
+            if is_go_live_receipt_proof(fn):
+                out.setdefault("opening_proof_files", []).append(full_path)
 
         # ── Closing basis files (判決/裁定/不起訴處分書 etc.) ──
         is_enforcement_basis = LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, full_path, subdir)
-        if any(k in fn for k in _CLOSING_BASIS_KEYWORDS) or is_enforcement_basis:
+        is_closing_keyword = any(k in fn for k in _CLOSING_BASIS_KEYWORDS)
+        is_consumer_debt = LAFOrchestratorDocumentMixin._is_consumer_debt_case_folder(full_path)
+        is_terminal_debt_doc = LAFOrchestratorDocumentMixin._is_consumer_debt_terminal_doc(fn)
+        is_procedural_nonclosing = LAFOrchestratorDocumentMixin._is_procedural_nonclosing_doc(fn)
+        is_official_closing_folder = LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(full_path)
+        is_judicial_download_pdf = (
+            path_has_judgment_folder(full_path)
+            and LAFOrchestratorDocumentMixin._is_judicial_download_pdf_name(fn)
+        )
+        is_template_or_draft = any(k in fn for k in ("範本", "模板", "草稿"))
+        if is_consumer_debt and is_closing_keyword and not is_terminal_debt_doc:
+            is_closing_keyword = False
+        if is_procedural_nonclosing and not is_enforcement_basis:
+            is_closing_keyword = False
+        if (
+            is_closing_keyword
+            and not is_official_closing_folder
+            and not is_template_or_draft
+            and Path(fn).suffix.lower() == ".pdf"
+            and LAFOrchestratorDocumentMixin._is_court_notice_folder(full_path)
+        ):
+            out.setdefault("misfiled_closing_basis_files", []).append(full_path)
+        if is_closing_keyword and not is_official_closing_folder:
+            is_closing_keyword = False
+        if is_closing_keyword or is_enforcement_basis or is_judicial_download_pdf:
             # Exclude templates/drafts
-            if "範本" not in fn and "模板" not in fn and "草稿" not in fn:
+            if not is_template_or_draft:
                 out.setdefault("closing_basis_files", []).append(full_path)
+        elif (
+            path_has_judgment_folder(full_path)
+            and Path(fn).suffix.lower() == ".pdf"
+            and not is_template_or_draft
+        ):
+            # Do not call this a missing file: a human has placed a PDF in the
+            # final-document folder, but the filename is not yet safe enough to
+            # classify automatically.  The caller must report this distinction.
+            out.setdefault("unrecognized_closing_folder_files", []).append(full_path)
 
         # ── Office receipt / court stamps ──
         if any(k in fn for k in _OFFICE_RECEIPT_KEYWORDS):
             out.setdefault("office_receipt_files", []).append(full_path)
 
         # ── Closing fee files ──
-        if any(k in fn for k in _CLOSING_FEE_KEYWORDS):
+        if is_closing_fee_filename(fn):
             out.setdefault("closing_fee_files", []).append(full_path)
 
         # ── Change review notice ──
@@ -497,10 +657,124 @@ class LAFOrchestratorDocumentMixin:
     @staticmethod
     def _is_enforcement_closing_basis(fn: str, full_path: str = "", subdir: str = "") -> bool:
         text = f"{fn} {full_path} {subdir}"
-        in_judgment_folder = "10_判決書" in text or "/判決書/" in text.replace("\\", "/")
+        in_judgment_folder = path_has_judgment_folder(text)
         is_enforcement_case = any(k in text for k in ("強制執行", "司執", "執行"))
         has_enforcement_doc = any(k in fn for k in _ENFORCEMENT_CLOSING_KEYWORDS)
         return bool(in_judgment_folder and is_enforcement_case and has_enforcement_doc)
+
+    @staticmethod
+    def _is_auto_closing_official_folder(path: str) -> bool:
+        """Only official final-doc folders may trigger automatic LAF closing."""
+        normalized = f"/{str(path or '').replace(chr(92), '/').strip('/')}/"
+        blocked = (
+            "/04_我方歷次書狀/",
+            "/05_對方歷次書狀/",
+            "/06_閱卷資料/",
+            "/07_證據資料/",
+            "/08_筆錄/",
+            "/09_法院通知或程序裁定/",
+        )
+        if any(marker in normalized for marker in blocked):
+            return False
+        if path_has_judgment_folder(normalized):
+            return True
+        allowed = (
+            "/12_結案資料/",
+            "/03_結案資料/",
+            "/法院裁判/",
+            "/結案資料/",
+        )
+        return any(marker in normalized for marker in allowed)
+
+    @staticmethod
+    def _is_judicial_download_pdf_name(filename: str) -> bool:
+        """Recognize the judiciary's compact judgment-download filename.
+
+        Examples use ``year,case-code,serial,date,part.pdf`` and frequently do
+        not contain the words 判決 or 裁定.  Accept this format only after the
+        caller has proved that the file is in an official final-document
+        folder; this helper intentionally does not make that folder decision.
+        """
+        fn = os.path.basename(str(filename or "")).strip()
+        return bool(
+            re.fullmatch(
+                r"\d{2,3}\s*[,，]\s*[^,，]{1,24}\s*[,，]\s*\d+\s*[,，]\s*\d{7,8}(?:\s*[,，]\s*\d+)?\.pdf",
+                fn,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _is_court_notice_folder(path: str) -> bool:
+        """Return True for folders that hold notices/procedural rulings, not final basis docs."""
+        normalized = f"/{str(path or '').replace(chr(92), '/').strip('/')}/"
+        return (
+            "/08_法院通知或程序裁定/" in normalized
+            or "/09_法院通知或程序裁定/" in normalized
+        )
+
+    @staticmethod
+    def _is_consumer_debt_intermediate_doc(fn: str) -> bool:
+        """Consumer-debt procedure ending/termination is not a final report basis."""
+        return any(k in str(fn or "") for k in _CONSUMER_DEBT_INTERMEDIATE_KEYWORDS)
+
+    @staticmethod
+    def _has_auto_closing_final_keyword(fn: str) -> bool:
+        """Conservative final-document keyword check for automatic closing."""
+        text = str(fn or "")
+        for keyword in _AUTO_CLOSING_FINAL_KEYWORDS:
+            if keyword == "判決":
+                # 「補充判決之聲請裁定」仍是裁定，不是判決。
+                if "判決" in text and "裁定" not in text:
+                    return True
+                continue
+            if keyword in text:
+                return True
+        if "裁定" in text and any(k in text for k in _CONSUMER_DEBT_TERMINAL_RULING_OUTCOMES):
+            return True
+        return False
+
+    @staticmethod
+    def _is_auto_closing_basis_candidate(
+        path: str,
+        *,
+        case_reason: str = "",
+        folder_path: str = "",
+    ) -> bool:
+        """
+        Return whether a document is safe for *automatic* closing draft discovery.
+
+        Manual closing may still pass a broader explicit file list.  Batch/nightly
+        discovery must stay conservative: mediation transcripts, generic rulings,
+        and procedural documents are review signals, not enough to open the LAF
+        closing form automatically.
+        """
+        fn = os.path.basename(str(path or ""))
+        if not fn:
+            return False
+        if Path(fn).suffix.lower() != ".pdf":
+            return False
+        text = f"{fn} {case_reason} {folder_path}"
+        is_consumer_debt = any(k in f"{text} {path}" for k in _CONSUMER_DEBT_KEYWORDS)
+        if not LAFOrchestratorDocumentMixin._is_auto_closing_official_folder(str(path or "")):
+            return False
+        if any(k in fn for k in ("範本", "模板", "草稿", "暫存")):
+            return False
+        if any(k in fn for k in _AUTO_CLOSING_MANUAL_REVIEW_KEYWORDS):
+            return False
+        if is_consumer_debt and LAFOrchestratorDocumentMixin._is_consumer_debt_intermediate_doc(fn):
+            return False
+        if LAFOrchestratorDocumentMixin._is_procedural_nonclosing_doc(fn):
+            return False
+        if LAFOrchestratorDocumentMixin._is_enforcement_closing_basis(fn, str(path or ""), folder_path):
+            return True
+        if LAFOrchestratorDocumentMixin._is_judicial_download_pdf_name(fn):
+            return True
+        if LAFOrchestratorDocumentMixin._has_auto_closing_final_keyword(fn):
+            return True
+        if "起訴書" in fn and any(k in text for k in ("偵查", "刑事")):
+            return True
+        return False
 
     @staticmethod
     def _closing_basis_sort_key(path: str) -> tuple:
@@ -528,12 +802,21 @@ class LAFOrchestratorDocumentMixin:
             priority = 7
         else:
             priority = 9
-        folder_priority = 0 if "10_判決書" in path_text else 1
+        folder_priority = 0 if path_has_judgment_folder(path_text) else 1
         return (priority, folder_priority, fn)
 
     def _sort_closing_basis_files(self, files: List[str]) -> List[str]:
         """Sort closing basis files by document type priority."""
-        return sorted(files or [], key=self._closing_basis_sort_key)
+        out: List[str] = []
+        seen_names: set[str] = set()
+        for path in sorted(files or [], key=self._closing_basis_sort_key):
+            key = os.path.basename(str(path or "")).casefold()
+            if key and key in seen_names:
+                continue
+            if key:
+                seen_names.add(key)
+            out.append(path)
+        return out
 
     def _infer_closing_metadata_from_docs(
         self,
@@ -556,13 +839,21 @@ class LAFOrchestratorDocumentMixin:
         # Use best (first) basis file
         best = basis_files[0]
         fn = os.path.basename(str(best or ""))
+        # Compact judiciary downloads often carry no document-kind or court
+        # words in the filename.  Read only the first page (cached by the
+        # existing helper) so metadata and portal fields come from the actual
+        # judgment rather than from a brittle filename guess.
+        hint_text = ""
+        if self._is_judicial_download_pdf_name(fn):
+            hint_text = self._extract_document_hint_text(str(best or ""))
+        descriptor = f"{fn}\n{hint_text}".strip()
 
         # Determine doc type
-        if "判決" in fn:
+        if "判決" in descriptor:
             meta["closing_doc_type"] = "判決"
-        elif "裁定" in fn:
+        elif "裁定" in descriptor:
             meta["closing_doc_type"] = "裁定"
-        elif "不起訴處分書" in fn:
+        elif "不起訴處分書" in descriptor:
             meta["closing_doc_type"] = "不起訴處分書"
         elif "追加起訴書" in fn:
             meta["closing_doc_type"] = "追加起訴書"
@@ -581,35 +872,53 @@ class LAFOrchestratorDocumentMixin:
 
         meta["closing_result_doc"] = str(best)
 
-        # Try to extract court info from filename
-        # Pattern: 臺灣花蓮地方法院114年度原訴字第000024號判決
-        court_pattern = re.compile(
-            r"(臺灣.*?(?:地方|高等|最高)(?:法院|行政法院))"
+        # Try to extract court/prosecutor info from filename.
+        # Examples:
+        # - 臺灣花蓮地方法院114年度原訴字第000024號判決
+        # - 臺北地方法院114年度訴字第972號刑事判決
+        # - 臺灣高等法院花蓮分院114年度...
+        # Keep the value close to the original filename; the portal selector
+        # performs 台/臺 and fuzzy matching.
+        court_patterns = (
+            r"((?:臺灣|台灣)?[\u4e00-\u9fff]{1,10}地方法院)",
+            r"((?:臺灣|台灣)?高等法院(?:[\u4e00-\u9fff]{1,8}分院)?)",
+            r"((?:臺北|台北|臺中|台中|高雄|臺南|台南)[\u4e00-\u9fff]{0,4}高等行政法院)",
+            r"(最高行政法院)",
+            r"(最高法院)",
+            r"(智慧財產及商業法院)",
+            r"(憲法法庭)",
+            r"((?:臺灣|台灣)?[\u4e00-\u9fff]{1,10}地方檢察署)",
+            r"((?:臺灣|台灣)?高等檢察署(?:[\u4e00-\u9fff]{1,8}檢察分署)?)",
+            r"(最高檢察署)",
         )
-        m = court_pattern.search(fn)
-        if m:
-            meta["court_name"] = m.group(1)
+        for pattern in court_patterns:
+            m = re.search(pattern, descriptor)
+            if m:
+                meta["court_name"] = m.group(1).replace("台", "臺")
+                break
 
         # Case number pattern: 114年度原訴字第000024號
         case_pattern = re.compile(
             r"(\d{2,3})\s*年度?\s*([^\d\s第]+?)\s*字?\s*第?\s*(\d+)\s*號"
         )
-        m = case_pattern.search(fn)
+        m = case_pattern.search(descriptor)
         if m:
             meta["court_case_year"] = m.group(1)
             meta["court_case_code"] = m.group(2)
             meta["court_case_no"] = m.group(3)
+        elif self._is_judicial_download_pdf_name(fn):
+            raw_parts = [part.strip() for part in re.split(r"[,，]", Path(fn).stem)]
+            if len(raw_parts) >= 3:
+                meta["court_case_year"] = raw_parts[0]
+                meta["court_case_code"] = raw_parts[1]
+                meta["court_case_no"] = raw_parts[2]
 
-        # Infer court kind from folder path
-        fp = str(folder_path or "").replace("\\", "/")
-        if "/刑事/" in fp:
-            meta["court_kind"] = "刑事"
-        elif "/民事/" in fp:
-            meta["court_kind"] = "民事"
-        elif "/家事/" in fp:
-            meta["court_kind"] = "家事"
-        elif "/行政/" in fp:
-            meta["court_kind"] = "行政"
+        # The LAF portal's rel_court1 is institution kind, not case type.
+        court_name = str(meta.get("court_name") or "")
+        if "檢察" in court_name or meta.get("closing_doc_type") in {"不起訴處分書", "起訴書", "追加起訴書", "併辦意旨書"}:
+            meta["court_kind"] = "檢察署"
+        elif court_name or meta.get("closing_doc_type") in {"判決", "裁定", "執行命令", "和解筆錄", "調解筆錄"}:
+            meta["court_kind"] = "法院"
 
         # Infer closing result from doc type
         if meta.get("closing_doc_type") == "判決":

@@ -68,8 +68,20 @@ _MAGI_ROOT = str(get_magi_root_dir())
 
 
 LAW_ZIP_URL = os.environ.get("MAGI_MOJ_LAW_ZIP_URL", "https://law.moj.gov.tw/api/Ch/Law/json")
-CACHE_DIR = os.environ.get("MAGI_LAW_CACHE_DIR", os.path.join(_MAGI_ROOT, "cache", "laws"))
-STATE_PATH = os.environ.get("MAGI_LAW_VDB_STATE_PATH", os.path.join(_MAGI_ROOT, "_statutes_vdb_state.json"))
+_RUNTIME_DIR = os.environ.get("MAGI_RUNTIME_DIR", "").strip()
+_AGENT_DIR = os.environ.get("MAGI_AGENT_DIR", "").strip()
+CACHE_DIR = os.environ.get(
+    "MAGI_LAW_CACHE_DIR",
+    os.path.join(_RUNTIME_DIR, "cache", "laws")
+    if _RUNTIME_DIR
+    else os.path.join(_MAGI_ROOT, "cache", "laws"),
+)
+STATE_PATH = os.environ.get(
+    "MAGI_LAW_VDB_STATE_PATH",
+    os.path.join(_AGENT_DIR, "_statutes_vdb_state.json")
+    if _AGENT_DIR
+    else os.path.join(_MAGI_ROOT, "_statutes_vdb_state.json"),
+)
 
 # Chunking: keep embeddings stable and avoid timeouts / overly-long prompts.
 MAX_CHUNK_CHARS = int(os.environ.get("MAGI_STATUTE_CHUNK_MAX_CHARS", "1200"))
@@ -512,7 +524,7 @@ def task_update_cases(payload: Dict[str, Any]) -> Dict[str, Any]:
         import threading as _threading
         # Overlap guard (P2-0 defense, 2026-04-19): 若已有 background_fill 在跑就不再 spawn
         # 原先每次 update_cases 都無條件 spawn，cron 多次觸發會累積多個 subprocess 吃 RAM
-        _lock_path = Path(_MAGI_ROOT) / ".runtime" / "statutes_vdb_bg_fill.pid"
+        _lock_path = Path(_RUNTIME_DIR or Path(_MAGI_ROOT) / ".runtime") / "statutes_vdb_bg_fill.pid"
         _existing_ok = False
         try:
             if _lock_path.exists():
@@ -656,6 +668,99 @@ _LEGAL_ARTICLE_MAP = {
 }
 
 
+def _extract_exact_article_query(query: str) -> Optional[Tuple[str, str]]:
+    compact = re.sub(r"\s+", "", str(query or ""))
+    m = re.search(
+        r"(民法|刑法|民事訴訟法|刑事訴訟法|行政訴訟法|家事事件法|消費者債務清理條例|強制執行法)"
+        r"第?(\d+(?:-\d+)?)(?:條)?(?:之(\d+))?",
+        compact,
+    )
+    if not m:
+        return None
+    law_name = m.group(1)
+    art_num = f"第 {m.group(2)}"
+    if m.group(3):
+        art_num += f" 之 {m.group(3)}"
+    return law_name, f"{art_num} 條"
+
+
+def _resolve_dataset_law(dataset: LawDataset, law_name: str) -> Optional[dict]:
+    norm = _norm_name(law_name)
+    if not norm:
+        return None
+    if norm in dataset.by_name:
+        return dataset.by_name[norm]
+    preferred = f"中華民國{norm}"
+    if preferred in dataset.by_name:
+        return dataset.by_name[preferred]
+    for key, law in dataset.by_name.items():
+        if key.endswith(norm) or norm in key:
+            return law
+    return None
+
+
+def _find_exact_article_in_dataset(query: str) -> list:
+    parsed = _extract_exact_article_query(query)
+    if not parsed:
+        return []
+    law_name, art_num = parsed
+    try:
+        dataset = _load_dataset_cached()
+    except Exception as e:
+        logger.warning("statute exact dataset lookup failed: %s", e)
+        return []
+    law = _resolve_dataset_law(dataset, law_name)
+    if not law:
+        return []
+    for article in law.get("LawArticles") or []:
+        article_no = str((article or {}).get("ArticleNo") or "").strip()
+        article_text = str((article or {}).get("ArticleContent") or "").strip()
+        if article_no != art_num or not article_text:
+            continue
+        source = f"statute|law={law.get('LawName')}|article={article_no}|update={dataset.update_date} [Local]"
+        content = f"{law.get('LawName')}\n{article_no}\n{article_text}"
+        return [{"id": 0, "content": content, "source": source, "score": 1.0}]
+    return []
+
+
+def _find_exact_article_in_local_db(query: str) -> list:
+    parsed = _extract_exact_article_query(query)
+    if not parsed:
+        return []
+    law_name, art_num = parsed
+    conn = None
+    try:
+        from skills.memory.local_db import _get_connection
+
+        conn = _get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT id, content, source FROM documents "
+            "WHERE source LIKE %s AND source LIKE %s "
+            "ORDER BY id DESC LIMIT 1",
+            (f"%law={law_name}|%", f"%article={art_num}%"),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return []
+        return [{
+            "id": row.get("id"),
+            "content": row.get("content"),
+            "source": f"{row.get('source', '')} [Local]",
+            "score": 1.0,
+        }]
+    except Exception as e:
+        logger.warning("statute exact local-db lookup failed: %s", e)
+        return []
+    finally:
+        try:
+            if conn and conn.is_connected():
+                conn.close()
+        except Exception:
+            pass
+
+
 def _statute_keyword_search(query: str, top_k: int = 10) -> list:
     """Fast keyword-based statute search using SQL LIKE on content.
 
@@ -668,9 +773,30 @@ def _statute_keyword_search(query: str, top_k: int = 10) -> list:
         conn = _get_conn()
         cur = conn.cursor()
 
+        # Exact law/article lookup must outrank generic keyword matches.
+        # Without this, queries like "民法184條" can be overwhelmed by unrelated
+        # high-id civil-code articles because the compact token "民法第184條"
+        # does not literally appear in the stored article body.
+        _article_match = _extract_exact_article_query(query)
+        _exact_articles = []
+        if _article_match:
+            law_name, art_num = _article_match
+            cur.execute(
+                "SELECT id, content, source FROM documents "
+                "WHERE source LIKE %s AND source LIKE %s "
+                "ORDER BY id DESC LIMIT 1",
+                (f"%law={law_name}|%", f"%article={art_num}|%"),
+            )
+            row = cur.fetchone()
+            if row:
+                _exact_articles.append({
+                    "id": row[0], "content": row[1], "source": row[2],
+                    "score": 1.0, "_rel": 99,
+                })
+
         # Direct article lookup for known crime names (handles cases where
         # the article text doesn't contain the crime name, e.g. §339 "詐欺罪")
-        _mapped_articles = []
+        _mapped_articles = list(_exact_articles)
         _compact_q = re.sub(r"\s+", "", query)
         _map_keys = [_compact_q]
         for sfx in ("罪",):
@@ -825,6 +951,12 @@ def task_search(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not q:
         return {"ok": False, "error": "missing query"}
     top_k = int(payload.get("top_k") or 5)
+
+    # Exact "某法第 N 條" queries should not depend on vector ranking or DB
+    # availability. This also keeps unit tests and offline runs deterministic.
+    items = _find_exact_article_in_dataset(q) or _find_exact_article_in_local_db(q)
+    if items:
+        return {"ok": True, "query": q, "top_k": top_k, "items": items[:top_k]}
 
     # Primary: fast keyword search on statute content (SQL LIKE).
     # This is more reliable than vector search for Chinese legal text

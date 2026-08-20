@@ -37,8 +37,10 @@ from skills.obsidian.action import (
 
 # ── Config ────────────────────────────────────────────────────────
 CASE_ROOT = SOURCE_ROOTS.get("案件")
-PROGRESS_PATH = MAGI_ROOT / ".agent" / "obsidian_bulk_progress.json"
-LOG_PATH = MAGI_ROOT / ".agent" / "obsidian_bulk_ingest.log"
+AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR", "").strip() or MAGI_ROOT / ".agent").expanduser()
+PROGRESS_PATH = AGENT_DIR / "obsidian_bulk_progress.json"
+LOG_PATH = AGENT_DIR / "obsidian_bulk_ingest.log"
+AGENT_DIR.mkdir(parents=True, exist_ok=True)
 
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".text", ".log", ".csv", ".pdf", ".docx", ".pptx", ".xlsx"}
 

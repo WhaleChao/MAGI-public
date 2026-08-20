@@ -15,6 +15,8 @@ import unicodedata
 from pathlib import Path
 from typing import Callable, Optional
 
+from magi_v3.external_inputs import bound_shared_directory
+
 # 支援的副檔名（小寫）
 _SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
     {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff"}
@@ -105,7 +107,14 @@ def _ocr_cache_path(pdf_path: str) -> Optional[str]:
     except Exception:
         return None
 
-    cache_dir = os.path.join(_magi_root(), "runtime", "supplement_cache")
+    root = Path(_magi_root())
+    runtime = bound_shared_directory(
+        root,
+        env_name="MAGI_RUNTIME_DIR",
+        shared_leaf="runtime",
+        source_fallback=str(root / "runtime"),
+    )
+    cache_dir = str(runtime / "supplement_cache")
     return os.path.join(cache_dir, f"ocrhead_{key}.json")
 
 

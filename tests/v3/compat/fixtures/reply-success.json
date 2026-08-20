@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "fixture_id": "osc-chat-reply-success",
+  "recorded_at": "2026-07-14T02:00:00Z",
+  "route": {
+    "service": "5002",
+    "rule": "/api/osc/chat",
+    "methods": ["POST"],
+    "endpoint": "web_runtime.osc_chat_api"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/api/osc/chat",
+    "query": {},
+    "headers": {
+      "Authorization": "<redacted:authorization:16ef89c38ee1>",
+      "Content-Type": "application/json"
+    },
+    "content_type": "application/json",
+    "body": {
+      "message": "列出案件下一步",
+      "session_id": "<redacted:session_id:a43d75aff0b8>"
+    },
+    "files": []
+  },
+  "response": {
+    "status": 200,
+    "headers": {"Content-Type": "application/json"},
+    "content_type": "application/json",
+    "body": {"reply": "請先核對期限，再建立草稿。", "degraded": false}
+  },
+  "side_effect_class": "reversible_write",
+  "expected_legacy_shape": "reply_json",
+  "redaction": {
+    "version": 1,
+    "safe_for_offline": true,
+    "raw_payload_retained": false,
+    "test_payload_only": false,
+    "applied": ["key:authorization", "key:session_id"]
+  },
+  "replay": {
+    "mode": "offline",
+    "network_allowed": false,
+    "external_writes_allowed": false
+  }
+}

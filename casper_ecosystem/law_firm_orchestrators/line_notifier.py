@@ -130,6 +130,8 @@ class LAFNotifier:
     def __init__(self, env_path: str = None, config_path: str = None):
         self._env = _load_env(Path(env_path) if env_path else ENV_PATH)
         self._config = _load_config(Path(config_path) if config_path else CONFIG_PATH)
+        self._last_tg_used_red_phone = False
+        self._last_tg_mirrored_to_discord = False
 
         # LINE
         self.line_token = self._env.get("MAGI_LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -196,12 +198,17 @@ class LAFNotifier:
         """
         safe_text = _guard_text(text, platform="TELEGRAM")
         tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
-        # DC 為次要通道：失敗不影響主回傳，但會 log；DC 文案不需 TG-specific guard
+        # red_phone already mirrors successful Telegram text notifications to
+        # Discord. Only use the legacy direct Discord path when that mirror did
+        # not happen, otherwise LAF text notices appear twice in Discord.
         dc_ok = False
-        try:
-            dc_ok = self._push_discord(text, topic_key=topic_key)
-        except Exception as _dce:
-            logger.error("Discord push exception (non-fatal): %s", _dce)
+        if self._last_tg_mirrored_to_discord:
+            dc_ok = True
+        else:
+            try:
+                dc_ok = self._push_discord(text, topic_key=topic_key)
+            except Exception as _dce:
+                logger.error("Discord push exception (non-fatal): %s", _dce)
         if tg_ok or dc_ok:
             if not tg_ok:
                 logger.warning("notify_admin: TG failed but DC sent (topic=%s)", topic_key)
@@ -266,10 +273,13 @@ class LAFNotifier:
             # No files — send text only to both channels
             if safe_text:
                 tg_ok = self._push_telegram(safe_text, topic_key=topic_key, source=source)
-                try:
-                    dc_ok = self._push_discord(safe_text, topic_key=topic_key)
-                except Exception as _dce:
-                    logger.error("Discord push exception (non-fatal): %s", _dce)
+                if self._last_tg_mirrored_to_discord:
+                    dc_ok = True
+                else:
+                    try:
+                        dc_ok = self._push_discord(safe_text, topic_key=topic_key)
+                    except Exception as _dce:
+                        logger.error("Discord push exception (non-fatal): %s", _dce)
 
         if tg_ok or dc_ok:
             if not tg_ok:
@@ -459,7 +469,8 @@ class LAFNotifier:
             finally:
                 for fh in opened:
                     try: fh.close()
-                    except Exception: pass
+                    except Exception:
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 462, exc_info=True)
             if resp.status_code in (200, 201):
                 logger.info("✅ Discord bot %d 個檔案已上傳到 channel %s", len(valid_files), channel_id)
                 return True
@@ -489,7 +500,8 @@ class LAFNotifier:
             finally:
                 for fh in opened:
                     try: fh.close()
-                    except Exception: pass
+                    except Exception:
+                        logging.getLogger(__name__).warning("nonfatal exception was ignored at %s:%s", __name__, 492, exc_info=True)
             if resp.status_code in (200, 204):
                 logger.info("✅ Discord webhook %d 個檔案已上傳", len(valid_files))
                 return True
@@ -561,6 +573,8 @@ class LAFNotifier:
 
     def _push_telegram(self, text: str, *, topic_key: str = "", source: str = "laf_notifier") -> bool:
         """Send message via Telegram Bot API."""
+        self._last_tg_used_red_phone = False
+        self._last_tg_mirrored_to_discord = False
         try:
             from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
 
@@ -571,8 +585,12 @@ class LAFNotifier:
                 topic_key=topic_key,
                 queue_on_fail=True,
             ) or {}
-            if bool(status.get("telegram")) or bool(status.get("queued")):
+            self._last_tg_used_red_phone = True
+            self._last_tg_mirrored_to_discord = bool(status.get("telegram"))
+            if bool(status.get("telegram")):
                 return True
+            if bool(status.get("queued")):
+                logger.warning("Telegram notification queued but not delivered yet (topic=%s outbox=%s)", topic_key, status.get("outbox_id") or "")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 400, exc_info=True)
 
@@ -692,15 +710,31 @@ class LAFNotifier:
     # ------------------------------------------------------------------
 
     def _log_local(self, text: str):
-        """Fallback: log to local file."""
+        """Best-effort fallback log in mutable runtime storage."""
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_line = f"[{timestamp}] [NOTIFICATION-FALLBACK] {text}\n"
         print(log_line)
 
-        log_path = Path(__file__).parent / "laf_notifications.log"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(log_line)
+        runtime_raw = (
+            os.environ.get("MAGI_RUNTIME_DIR")
+            or os.environ.get("MAGI_STATE_DIR")
+            or ""
+        ).strip()
+        runtime_root = (
+            Path(runtime_raw).expanduser()
+            if runtime_raw
+            else Path.home() / "Library" / "Logs" / "MAGI"
+        )
+        log_path = runtime_root / "notifications" / "laf_notifications.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(log_line)
+        except OSError as exc:
+            # A fallback logger must never turn a successful external delivery
+            # into a reported send failure.
+            logger.warning("notification fallback log write failed: %s", exc)
 
 
 # ==============================================================================

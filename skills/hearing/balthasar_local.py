@@ -68,11 +68,21 @@ def _normalize_segments(raw_segments):
             ed = float(seg.get("end", st) or st)
         except Exception:
             ed = st
-        out.append({
+        row = {
             "start": max(0.0, st),
             "end": max(st, ed),
             "text": text,
-        })
+        }
+        # Preserve recognizer quality signals.  They are evidence for human
+        # review and must not be discarded before the delivery quality gate.
+        for key in ("avg_logprob", "no_speech_prob", "compression_ratio", "confidence"):
+            if key not in seg:
+                continue
+            try:
+                row[key] = float(seg.get(key))
+            except (TypeError, ValueError):
+                continue
+        out.append(row)
     return out
 
 
@@ -120,8 +130,18 @@ def transcribe_audio(audio_path, model_path=DEFAULT_MODEL, language=None,
             result = mlx_whisper.transcribe(audio_path, **kwargs)
 
         text = result.get("text", "").strip()
-        logger.info("✅ Transcription complete: %s...", text[:50])
         segments = _normalize_segments(result.get("segments"))
+        if not text:
+            logger.error("❌ Transcription returned no speech text")
+            return {
+                "success": False,
+                "error": "mlx_whisper_empty_text",
+                "language": result.get("language", "unknown"),
+                "segments": segments,
+                "provider": "balthasar_local_mlx",
+                "model": model_path,
+            }
+        logger.info("✅ Transcription complete: %s...", text[:50])
 
         return {
             "success": True,
@@ -129,6 +149,7 @@ def transcribe_audio(audio_path, model_path=DEFAULT_MODEL, language=None,
             "language": result.get("language", "unknown"),
             "segments": segments,
             "provider": "balthasar_local_mlx",
+            "model": model_path,
         }
 
     except Exception as e:

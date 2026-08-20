@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "evaluation_id": "ownscribe-20260714-source-review",
+  "evaluated_on": "2026-07-14",
+  "source": {
+    "checkout": "${MAGI_OWNSCRIBE_EVALUATION_SOURCE}",
+    "commit": "d9dcecde896ab0e5b15f475b6940669a611ccea1",
+    "tree": "49456f5c7b606c991fc03a7378049b76415c958a",
+    "worktree_was_clean": true,
+    "pyproject_sha256": "e449f08a1eb464e987d35d7d2136170121b9fecbd2bb02525143ad994ca91371"
+  },
+  "scope": {
+    "basis": "source_and_tests",
+    "readme_claims_treated_as_evidence": false,
+    "models_downloaded": false,
+    "dependencies_installed": false,
+    "live_services_touched": false,
+    "real_audio_inference_run": false,
+    "quality_metrics_verified": false
+  },
+  "decision": {
+    "status": "blocked_candidate",
+    "recommendation": "do_not_enable",
+    "primary_backend_remains": "mlx_whisper",
+    "allowed_execution": "isolated_offline_only",
+    "promotion_blocker": "legal_zh_tw_audio_benchmark_not_run"
+  },
+  "source_findings": {
+    "dependencies": {
+      "risk": "high",
+      "facts": [
+        {
+          "finding": "Python 3.12 or newer and a heavy mandatory dependency graph are required, including WhisperX, pyannote-audio, llama-cpp-python and huggingface-hub.",
+          "evidence": ["pyproject.toml"]
+        },
+        {
+          "finding": "Alternative backend imports are not fully declared by the package: FunASR uses funasr/tqdm and optional opencc; Breeze uses funasr, torch, transformers and torchaudio; FireRed uses funasr and an external source checkout.",
+          "evidence": [
+            "src/ownscribe/transcription/funasr_transcriber.py",
+            "src/ownscribe/transcription/breeze_transcriber.py",
+            "src/ownscribe/transcription/firered_transcriber.py"
+          ]
+        },
+        {
+          "finding": "An unresolved model name can flow downstream as a path/name, so backend libraries may attempt their own network model resolution unless MAGI preflights and rejects missing local artifacts.",
+          "evidence": ["src/ownscribe/config.py", "src/ownscribe/transcription/funasr_transcriber.py"]
+        }
+      ]
+    },
+    "backend_implementation": {
+      "risk": "high",
+      "facts": [
+        {
+          "backend": "selection",
+          "finding": "Unknown asr_backend values fall through to WhisperX instead of being rejected.",
+          "evidence": ["src/ownscribe/pipeline.py"]
+        },
+        {
+          "backend": "whisperx",
+          "finding": "ASR and alignment are configured for CPU operation; diarization may select MPS. This is not an MLX Whisper implementation.",
+          "evidence": ["src/ownscribe/transcription/whisperx_transcriber.py"]
+        },
+        {
+          "backend": "funasr",
+          "finding": "The default batch_size_s is 300 and model resolution is delegated to FunASR-compatible paths.",
+          "evidence": ["src/ownscribe/config.py", "src/ownscribe/transcription/funasr_transcriber.py"]
+        },
+        {
+          "backend": "firered",
+          "finding": "The backend expects an external ~/Projects/FireRedASR2S checkout and globally monkey-patches torch Tensor.cuda and Module.cuda to MPS, creating process-wide compatibility risk.",
+          "evidence": ["src/ownscribe/transcription/firered_transcriber.py"]
+        },
+        {
+          "backend": "breeze",
+          "finding": "The backend uses MPS plus FunASR VAD/CAM++ and torchaudio resampling, but those direct dependencies are absent from pyproject.toml.",
+          "evidence": ["src/ownscribe/transcription/breeze_transcriber.py", "pyproject.toml"]
+        }
+      ]
+    },
+    "test_coverage": {
+      "risk": "high",
+      "covered": [
+        "generic transcript dataclasses and JSON formatting",
+        "pipeline orchestration with mocks",
+        "WhisperX preparation and compatibility paths",
+        "CLI and configuration behavior"
+      ],
+      "missing": [
+        "direct FunASRTranscriber tests",
+        "direct FireRedTranscriber tests",
+        "direct BreezeTranscriber tests",
+        "backend selection rejection tests",
+        "legal Traditional Chinese audio benchmark",
+        "cross-backend transcript contract parity",
+        "long-duration Apple Silicon memory and thermal tests",
+        "model auto-download prevention tests"
+      ]
+    },
+    "output_contract": {
+      "risk": "high",
+      "facts": [
+        {
+          "finding": "JSON is a direct dataclasses.asdict serialization and has no schema version, backend id, model id or source provenance.",
+          "evidence": ["src/ownscribe/output/json_output.py", "src/ownscribe/transcription/models.py"]
+        },
+        {
+          "finding": "Word timestamps and score availability differ by backend, and no common validation enforces finite monotonic timestamps or duration bounds.",
+          "evidence": ["src/ownscribe/transcription/models.py", "src/ownscribe/transcription"]
+        },
+        {
+          "finding": "Language identifiers and Traditional Chinese conversion behavior are backend-dependent; OpenCC is optional in relevant paths.",
+          "evidence": [
+            "src/ownscribe/transcription/funasr_transcriber.py",
+            "src/ownscribe/transcription/firered_transcriber.py",
+            "src/ownscribe/transcription/breeze_transcriber.py"
+          ]
+        }
+      ]
+    },
+    "apple_silicon_and_memory": {
+      "risk": "high",
+      "facts": [
+        {
+          "finding": "WhisperX uses a batch size of 16 and loads audio for a multi-stage ASR/alignment/diarization pipeline; source alone does not establish its peak unified-memory or accelerator footprint.",
+          "evidence": ["src/ownscribe/transcription/whisperx_transcriber.py"]
+        },
+        {
+          "finding": "FunASR defaults to 300 seconds per batch, explicitly trading more memory for speed.",
+          "evidence": ["src/ownscribe/config.py", "src/ownscribe/transcription/funasr_transcriber.py"]
+        },
+        {
+          "finding": "Breeze and FireRed retain an embedding per VAD segment and perform nested pairwise speaker comparisons, creating O(n^2) comparison work for many segments.",
+          "evidence": [
+            "src/ownscribe/transcription/breeze_transcriber.py",
+            "src/ownscribe/transcription/firered_transcriber.py"
+          ]
+        },
+        {
+          "finding": "MPS compatibility, Metal footprint, thermal behavior, cleanup after cancellation and long legal recordings are unmeasured at this commit.",
+          "evidence": []
+        }
+      ]
+    }
+  },
+  "test_execution": {
+    "command": "PYTHONPATH=src /Users/ai/Desktop/MAGI_v2/venv/bin/pytest -q -p no:cacheprovider",
+    "environment": "existing MAGI_v2 virtualenv; candidate dependencies were intentionally not installed",
+    "result": "partial_not_release_qualifying",
+    "passed": 207,
+    "failed": 5,
+    "errors": 31,
+    "duration_seconds": 4.98,
+    "known_environment_blockers": [
+      "pytest-httpserver fixture unavailable",
+      "llama_cpp unavailable",
+      "ollama unavailable",
+      "candidate sounddevice import/mocking path not usable in this virtualenv"
+    ]
+  },
+  "promotion_requirements": [
+    "Build a separately pinned environment with every selected backend dependency declared and hashed.",
+    "Require preinstalled local model artifacts and prove that missing models fail closed without network access.",
+    "Add a MAGI transcript adapter and validate schema/provenance/timestamp invariants for every enabled variant.",
+    "Run the approved legal zh-TW human-gold benchmark against MLX Whisper on matched hardware and machine state.",
+    "Record quality, realtime factor, peak RSS and Metal or accelerator footprint without copying upstream quality claims.",
+    "Keep Ownscribe disabled unless all evidence is recorded and the promotion gate is explicitly marked passed."
+  ]
+}

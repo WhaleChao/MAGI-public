@@ -19,7 +19,14 @@ import sys
 import zipfile
 from pathlib import Path
 
-import defusedxml.minidom
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+try:
+    import defusedxml.minidom as safe_minidom
+except ModuleNotFoundError:
+    import safe_minidom
 
 from helpers.merge_runs import merge_runs as do_merge_runs
 from helpers.simplify_redlines import simplify_redlines as do_simplify_redlines
@@ -83,7 +90,7 @@ def unpack(
 def _pretty_print_xml(xml_file: Path) -> None:
     try:
         content = xml_file.read_text(encoding="utf-8")
-        dom = defusedxml.minidom.parseString(content)
+        dom = safe_minidom.parseString(content)
         xml_file.write_bytes(dom.toprettyxml(indent="  ", encoding="utf-8"))
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 87, exc_info=True)  

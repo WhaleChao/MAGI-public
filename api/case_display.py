@@ -6,7 +6,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Iterable, Mapping, Sequence
 
-_NAME_FIXES = str.maketrans({"餘": "余"})
+_NAME_FIXES = str.maketrans({"餘": "余", "遊": "游", "臺": "台", "於": "于"})
 _CASE_FOLDER_RE = re.compile(r"^(?P<case>\d{4}-\d{4})-(?P<rest>.+)$")
 
 
@@ -61,14 +61,28 @@ def folder_client_name(
 
 
 def should_trust_folder_client_name(db_name: str, folder_name: str) -> bool:
+    """Return whether a folder label may supply the display name.
+
+    A usable case/client master name is authoritative.  Folder names are
+    mutable filing metadata and may contain historical OCR/variant-character
+    mistakes (for example 於/于, 遊/游 or 臺/台).  Normalisation and
+    fuzzy matching are therefore lookup aids only; they must never rewrite a
+    person's displayed/legal name.
+    """
     if not folder_name:
         return False
     if is_unusable_client_label(db_name):
         return True
     db_key = normalize_person_name(db_name)
     folder_key = normalize_person_name(folder_name)
-    if not db_key or not folder_key or db_key == folder_key:
+    if not db_key or not folder_key:
         return False
+    # Legal variant characters are lookup-equivalent but are not spelling
+    # corrections.  Preserve the authoritative master/email spelling.
+    if db_key == folder_key:
+        return False
+    # Keep the existing narrowly-scoped OCR typo repair for genuinely
+    # different strings (for example 眼/明 or 瑛/英).
     if len(db_key) == len(folder_key) and 2 <= len(db_key) <= 12:
         diff_count = sum(1 for a, b in zip(db_key, folder_key) if a != b)
         return diff_count <= max(1, len(db_key) // 4)

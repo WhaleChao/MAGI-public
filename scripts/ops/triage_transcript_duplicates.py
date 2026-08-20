@@ -31,12 +31,13 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_DIR = ROOT / ".runtime"
+RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser()
 RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
+_NAS_CASE_SHARE = (os.environ.get("MAGI_NAS_CASE_SHARE") or "lumi").strip().strip("/\\")
 DEFAULT_CASE_ROOTS = [
-    Path("/Users/ai/Library/CloudStorage/SynologyDrive-homes/01_案件"),
-    Path("/Volumes/lumi/lumi/01_案件"),
+    Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件",
+    Path("/Volumes") / _NAS_CASE_SHARE / _NAS_CASE_SHARE / "01_案件",
 ]
 
 REVIEW_LOG = RUNTIME_DIR / "transcript_review_required.jsonl"

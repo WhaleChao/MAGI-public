@@ -27,7 +27,12 @@ MAGI_ROOT = Path(os.environ.get("MAGI_ROOT", str(Path(__file__).resolve().parent
 if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
-RESULTS_DIR = MAGI_ROOT / "static" / "benchmark_results"
+_RUNTIME_DIR = (os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+RESULTS_DIR = (
+    Path(_RUNTIME_DIR).expanduser() / "benchmark-results"
+    if _RUNTIME_DIR
+    else MAGI_ROOT / "static" / "benchmark_results"
+)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

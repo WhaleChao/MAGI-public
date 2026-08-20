@@ -9,11 +9,23 @@
 
 set -euo pipefail
 
+# ---------- Guard: skip if oMLX is already running on the target port ----------
+TARGET_PORT="${OMLX_PORT:-8080}"
+EXISTING_PID=$(lsof -ti:"$TARGET_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+if [ -n "$EXISTING_PID" ]; then
+    PROC_NAME=$(ps -p "$EXISTING_PID" -o comm= 2>/dev/null || true)
+    if echo "$PROC_NAME" | grep -qi "omlx\|python"; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') oMLX already running on port $TARGET_PORT (PID $EXISTING_PID), skipping launch." \
+            >> /opt/homebrew/var/log/omlx_patch.log
+        exit 0
+    fi
+fi
+
 SITE="/opt/homebrew/opt/omlx/libexec/lib/python3.11/site-packages"
 LOG="/opt/homebrew/var/log/omlx_patch.log"
-BASE_PATH="${OMLX_BASE_PATH:-/Users/ai/.omlx}"
+BASE_PATH="${OMLX_BASE_PATH:-${HOME}/.omlx}"
 SETTINGS="${BASE_PATH}/settings.json"
-MODEL_DIR="${OMLX_MODEL_DIR:-/Users/ai/.omlx/models-text}"
+MODEL_DIR="${OMLX_MODEL_DIR:-${HOME}/.omlx/models-text}"
 PAGED_CACHE_DIR="${OMLX_PAGED_CACHE_DIR:-${BASE_PATH}/cache}"
 PORT="${OMLX_PORT:-8080}"
 DISABLE_CACHE="${OMLX_DISABLE_CACHE:-0}"
@@ -23,6 +35,8 @@ MAX_NUM_SEQS="${OMLX_MAX_NUM_SEQS:-1}"
 COMPLETION_BATCH_SIZE="${OMLX_COMPLETION_BATCH_SIZE:-1}"
 INITIAL_CACHE_BLOCKS="${OMLX_INITIAL_CACHE_BLOCKS:-32}"
 HOT_CACHE_MAX_SIZE="${OMLX_HOT_CACHE_MAX_SIZE:-0}"
+GEMMA4_UNIFIED_RUNTIME="${OMLX_GEMMA4_UNIFIED_RUNTIME:-0}"
+GEMMA4_UNIFIED_WRAPPER="${OMLX_GEMMA4_UNIFIED_WRAPPER:-${HOME}/.omlx/bin/omlx-gemma4-unified-serve}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
@@ -134,7 +148,7 @@ import json
 import os
 from pathlib import Path
 
-base_path = Path(os.environ.get("OMLX_BASE_PATH", "/Users/ai/.omlx"))
+base_path = Path(os.environ.get("OMLX_BASE_PATH", str(Path.home() / ".omlx")))
 settings = base_path / "settings.json"
 settings.parent.mkdir(parents=True, exist_ok=True)
 
@@ -151,7 +165,9 @@ data.setdefault("cache", {})
 data.setdefault("sampling", {})
 
 data["server"]["port"] = int(os.environ.get("OMLX_PORT", "8080"))
-data["model"]["model_dir"] = os.environ.get("OMLX_MODEL_DIR", "/Users/ai/.omlx/models-text")
+data["model"]["model_dir"] = os.environ.get(
+    "OMLX_MODEL_DIR", str(Path.home() / ".omlx" / "models-text")
+)
 data["model"]["model_dirs"] = [data["model"]["model_dir"]]
 data["model"]["max_model_memory"] = os.environ.get("OMLX_MAX_MODEL_MEMORY", "10GB")
 data["memory"]["max_process_memory"] = os.environ.get("OMLX_MAX_PROCESS_MEMORY", "auto")
@@ -190,6 +206,15 @@ else
     if [ "${HOT_CACHE_MAX_SIZE}" != "0" ]; then
         OMLX_ARGS+=(--hot-cache-max-size "${HOT_CACHE_MAX_SIZE}")
     fi
+fi
+
+if [ "${GEMMA4_UNIFIED_RUNTIME}" = "1" ]; then
+    if [ ! -x "${GEMMA4_UNIFIED_WRAPPER}" ]; then
+        log "ERROR: Gemma4 unified wrapper is not executable: ${GEMMA4_UNIFIED_WRAPPER}"
+        exit 127
+    fi
+    log "Starting oMLX via Gemma4 unified overlay (${GEMMA4_UNIFIED_WRAPPER})"
+    exec "${GEMMA4_UNIFIED_WRAPPER}" "${OMLX_ARGS[@]}"
 fi
 
 exec /opt/homebrew/opt/omlx/bin/omlx "${OMLX_ARGS[@]}"

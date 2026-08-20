@@ -244,8 +244,8 @@ def _translate_text_legacy(
                 return {
                     "success": True,
                     "text": codex_text,
-                    "provider": "openclaw_codex",
-                    "route": "openclaw_codex",
+                    "provider": "codex_direct",
+                    "route": "codex_direct",
                     "model": codex_res.get("model", "gpt-5.4"),
                     "agent": codex_res.get("agent_id", "codex-distributed"),
                 }
@@ -730,10 +730,15 @@ def _render_procedural_music(prompt: str, duration_sec: int, output_path: str) -
     return output_path
 
 
-def generate_music(prompt: str, duration_sec: int = 30, output_dir: str = f"{_MAGI_ROOT}/static/audio") -> dict:
+def generate_music(prompt: str, duration_sec: int = 30, output_dir: str = "") -> dict:
     content = (prompt or "").strip()
     if not content:
         return {"success": False, "error": "missing prompt"}
+    if not output_dir:
+        output_dir = os.path.join(
+            os.environ.get("MAGI_EXPORTS_DIR", "").strip() or f"{_MAGI_ROOT}/static",
+            "audio",
+        )
     _ensure_dir(output_dir)
 
     # 1) Prefer Melchior GPU-side generator when available.

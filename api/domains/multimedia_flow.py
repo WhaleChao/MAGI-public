@@ -6,6 +6,7 @@ All functions accept `orch` (the Orchestrator instance) instead of `self`.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -14,13 +15,119 @@ import subprocess
 import sys
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from pathlib import Path
 from typing import Optional
 
 from api.model_config import TEXT_PRIMARY_MODEL, VISION_MODEL as _VISION_MODEL
+from api.runtime_paths import get_runtime_dir
 from api.thread_pools import io_pool, inference_pool
 from skills.bridge.melchior_bridge import analyze_image
 
 logger = logging.getLogger("Orchestrator")
+
+
+def _magi_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _translation_rebuild_cache_path() -> Path:
+    return get_runtime_dir() / "translation_rebuild_cache.json"
+
+
+def _file_fingerprint(path: str) -> str:
+    p = Path(path)
+    st = p.stat()
+    h = hashlib.sha256()
+    h.update(str(p.resolve()).encode("utf-8", "ignore"))
+    h.update(str(st.st_size).encode())
+    h.update(str(int(st.st_mtime)).encode())
+    with p.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_translation_rebuild_cache() -> dict:
+    p = _translation_rebuild_cache_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_translation_rebuild_cache(cache: dict) -> None:
+    p = _translation_rebuild_cache_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.debug("translation rebuild cache save skipped", exc_info=True)
+
+
+def _try_rebuild_pdf_translation_delivery(
+    *,
+    pdf_path: str,
+    filename: str,
+    source_text: str,
+    user_id: str,
+) -> str:
+    """Fallback/reuse path for long PDF translation delivery.
+
+    Normal translation is still preferred.  This path is used only when DOCX
+    delivery fails quality checks, so users never receive tiny or corrupted
+    "completed" files for long PDFs.
+    """
+    name = filename or os.path.basename(pdf_path)
+    if not str(name or "").lower().endswith(".pdf"):
+        return ""
+    if not os.path.exists(pdf_path):
+        return ""
+
+    try:
+        threshold = int(os.environ.get("MAGI_FILE_TRANSLATE_REBUILD_MIN_CHARS", "30000") or "30000")
+    except Exception:
+        threshold = 30000
+    if len(source_text or "") < threshold:
+        return ""
+
+    try:
+        from api.handlers.document_handler import validate_translation_docx
+
+        key = _file_fingerprint(pdf_path)
+        cache = _load_translation_rebuild_cache()
+        cached = cache.get(key) if isinstance(cache.get(key), dict) else {}
+        cached_path = str(cached.get("path") or "")
+        if cached_path and os.path.exists(cached_path):
+            gate = validate_translation_docx(cached_path, source_text=source_text, source_name=name)
+            if gate.get("ok"):
+                return f"📄 已使用合格快取輸出 HEAVY 完整雙語對照 DOCX。|||FILE_PATH|||{cached_path}"
+
+        from scripts.ops.rebuild_pdf_translation_docx import rebuild
+
+        result = rebuild(Path(pdf_path), prefix="file_translate_heavy_full_rebuilt")
+        out_path = str(result.get("path") or "")
+        if not (result.get("success") and out_path and os.path.exists(out_path)):
+            logger.warning("translation PDF rebuild failed: %s", result)
+            return ""
+        gate = validate_translation_docx(out_path, source_text=source_text, source_name=name)
+        if not gate.get("ok"):
+            logger.warning("translation PDF rebuild quality gate failed: %s", gate)
+            return ""
+        cache[key] = {
+            "path": out_path,
+            "filename": name,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "result": result,
+            "gate": gate,
+        }
+        _save_translation_rebuild_cache(cache)
+        return f"📄 已自動重建 HEAVY 完整雙語對照 DOCX。|||FILE_PATH|||{out_path}"
+    except Exception:
+        logger.warning("translation PDF rebuild delivery failed", exc_info=True)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +190,9 @@ def vision_classify_and_route_image(orch, user_id, image_path: str, prompt: Opti
         if answer.strip().upper() == "A":
             logger.info(f"💰 Payment proof detected via vision classification: {image_path}")
             try:
-                return handle_payment_proof_from_channel(orch, image_path)
+                return handle_payment_proof_from_channel(
+                    orch, image_path, case_hint=prompt or ""
+                )
             except Exception as pay_err:
                 logger.error(f"Payment proof upload (vision-routed) failed: {pay_err}")
                 return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
@@ -99,7 +208,11 @@ def vision_classify_and_route_image(orch, user_id, image_path: str, prompt: Opti
 # Payment proof upload from channel images (LINE/DC/TG)
 # ---------------------------------------------------------------------------
 
-def handle_payment_proof_from_channel(orch, image_path: str) -> str:
+def handle_payment_proof_from_channel(
+    orch,
+    image_path: str,
+    case_hint: str = "",
+) -> str:
     """
     接收從 LINE/Discord/Telegram 傳來的繳費截圖，
     自動解析案號並上傳至 OLA。
@@ -115,7 +228,14 @@ def handle_payment_proof_from_channel(orch, image_path: str) -> str:
     if not py or not os.path.exists(py):
         py = sys.executable or "python3"
 
-    cmd_json = json.dumps({"cmd": "upload_payment_proof_from_image", "image_path": image_path})
+    # The channel pipeline will send the returned message.  Keep the subprocess
+    # silent to avoid duplicate Discord/LINE notifications on parse failures.
+    cmd_json = json.dumps({
+        "cmd": "upload_payment_proof_from_image",
+        "image_path": image_path,
+        "case_hint": str(case_hint or "")[:500],
+        "notify": False,
+    })
     logger.info("💰 Calling action.py for payment proof: %s", image_path)
 
     try:
@@ -190,7 +310,9 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
         if any(kw in prompt_lower for kw in _payment_kw):
             logger.info(f"💰 Payment proof detected via keyword in prompt: {path}")
             try:
-                return handle_payment_proof_from_channel(orch, path)
+                return handle_payment_proof_from_channel(
+                    orch, path, case_hint=prompt or ""
+                )
             except Exception as pay_err:
                 logger.error(f"Payment proof upload from channel failed: {pay_err}")
                 return f"❌ 繳費憑證上傳失敗：{str(pay_err)[:200]}"
@@ -253,6 +375,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                 err = str((tr or {}).get("error") or "transcription_failed").strip()[:300]
                 logger.warning(f"Audio transcription failed: {err}")
                 return "⚠️ 語音已接收，但目前無法完成轉錄。請稍後再試，或在訊息加上「台語」再重試。"
+            raw_transcript = transcript
             force_txt = (
                 "full translation without summary" in prompt_lower
                 or "完整翻譯不摘要" in prompt_lower
@@ -261,6 +384,32 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
 
             segments = tr.get("segments") if isinstance(tr, dict) else []
             timestamp_text = str((tr or {}).get("timestamp_text") or "").strip()
+            low_confidence_segments = (
+                (tr or {}).get("low_confidence_segments")
+                if isinstance((tr or {}).get("low_confidence_segments"), list)
+                else []
+            )
+            uncertainty_note = ""
+            if low_confidence_segments:
+                review_lines = []
+                for row in low_confidence_segments[:12]:
+                    try:
+                        start = float((row or {}).get("start", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        start = 0.0
+                    total = int(max(0.0, start))
+                    hh, rem = divmod(total, 3600)
+                    mm, ss = divmod(rem, 60)
+                    preview = str((row or {}).get("text") or "").strip()[:48]
+                    review_lines.append(f"- [{hh:02d}:{mm:02d}:{ss:02d}] {preview}")
+                extra = len(low_confidence_segments) - len(review_lines)
+                suffix = f"\n- 另有 {extra} 段請於完整檔核對" if extra > 0 else ""
+                uncertainty_note = (
+                    "⚠️ 聽辨待確認：以下片段的音訊辨識信心較低，"
+                    "MAGI 保留原辨識文字而沒有自行猜改。\n"
+                    + "\n".join(review_lines)
+                    + suffix
+                )
             if (not timestamp_text) and isinstance(segments, list) and segments:
                 def _normalize_ts_sec(v: float) -> float:
                     try:
@@ -292,7 +441,6 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
 
             if language_hint == "zh" and len(transcript) > 30:
                 try:
-                    from skills.bridge import melchior_client as _pp_mc
                     _pp_prompt = (
                         "你是中文標點修正工具。請修正以下逐字稿的標點符號與斷句，"
                         "只修標點和段落分隔，不要更改任何用詞或內容。"
@@ -300,9 +448,22 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         f"{transcript}"
                     )
                     _pp_ctx = min(16384, max(4096, len(transcript) * 2))
-                    _pp = _pp_mc.quick_local_chat(
-                        _pp_prompt, timeout=30, model_hint=TEXT_PRIMARY_MODEL,
-                        num_ctx=_pp_ctx, num_predict=min(4096, max(1024, len(transcript) + 200)),
+                    # Use the shared gateway so the active day/night profile and
+                    # advertised model list decide the endpoint/model.  A stale
+                    # vision-sidecar setting (for example disabled port 8082 at
+                    # night) must never receive transcript text traffic.
+                    _pp_gateway = getattr(orch, "_inference_gw", None)
+                    if _pp_gateway is None:
+                        from skills.bridge.inference_gateway import InferenceGateway
+                        _pp_gateway = InferenceGateway()
+                    _pp = _pp_gateway.chat(
+                        _pp_prompt,
+                        task_type="transcribe",
+                        timeout=30,
+                        model=TEXT_PRIMARY_MODEL,
+                        num_ctx=_pp_ctx,
+                        num_predict=min(4096, max(1024, len(transcript) + 200)),
+                        allow_synthetic_fallback=False,
                     )
                     if _pp.get("success") and _pp.get("response"):
                         _pp_out = str(_pp["response"]).strip()
@@ -344,15 +505,55 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                 "transcript",
                 transcript,
                 source_chars=transcript_source_chars,
+                source_text=raw_transcript,
                 source_name=str(path),
                 instruction=prompt or "",
+                metadata={
+                    "timestamp_text": timestamp_text,
+                    "speaker_count_estimate": int((tr or {}).get("speaker_count_estimate") or 0),
+                    "segment_count": len(segments) if isinstance(segments, list) else 0,
+                    "provider": str((tr or {}).get("provider") or ""),
+                    "recognizer_text_present": bool(raw_transcript.strip()),
+                    "low_confidence_count": len(low_confidence_segments),
+                    "uncertainty_marked": bool(uncertainty_note),
+                },
             )
+            if not transcript_gate.get("ok") and str(transcript_gate.get("issue") or "") in {
+                "invented_case_identifier",
+                "transcript_critical_anchor_missing",
+            }:
+                # Punctuation/polish is optional.  If it changes a critical
+                # office identifier, discard the polished version and deliver
+                # the recognizer transcript instead of silently corrupting it.
+                logger.warning(
+                    "Transcript polish changed critical anchors (%s); reverting to recognizer text",
+                    transcript_gate.get("issue"),
+                )
+                transcript = raw_transcript
+                transcript_gate = run_output_quality_gate(
+                    "transcript",
+                    transcript,
+                    source_chars=transcript_source_chars,
+                    source_text=raw_transcript,
+                    source_name=str(path),
+                    instruction=prompt or "",
+                    metadata={
+                        "timestamp_text": timestamp_text,
+                        "speaker_count_estimate": int((tr or {}).get("speaker_count_estimate") or 0),
+                        "segment_count": len(segments) if isinstance(segments, list) else 0,
+                        "provider": str((tr or {}).get("provider") or ""),
+                        "recognizer_text_present": bool(raw_transcript.strip()),
+                        "low_confidence_count": len(low_confidence_segments),
+                        "uncertainty_marked": bool(uncertainty_note),
+                    },
+                )
             if not transcript_gate.get("ok"):
                 logger.warning("Audio transcript quality gate failed: %s", transcript_gate.get("issue"))
                 return str(transcript_gate.get("message") or format_quality_gate_failure("transcript", str(transcript_gate.get("issue") or "")))
 
             final_text = transcript
             title = "🎙️ 語音逐字稿"
+            summary_quality_source = transcript
 
             _audio_can_parallel = wants_translate and wants_summary and summary_pref != "translated"
 
@@ -419,6 +620,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                             summary_source_label = "翻譯結果" if wants_translate else "逐字稿原文"
                         else:
                             summary_source_label = "翻譯結果" if wants_translate else "逐字稿原文"
+                        summary_quality_source = summary_target_text
                         summary_res = orch._summarize_text_resilient(
                             summary_target_text,
                             summary_length=summary_length,
@@ -448,6 +650,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                     "summary",
                     summary_text,
                     source_chars=len(transcript),
+                    source_text=summary_quality_source,
                     source_name=str(path),
                     instruction=prompt or "",
                 )
@@ -458,6 +661,8 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             export_text = final_text
             if wants_timestamps and timestamp_text:
                 export_text = f"【時間戳記】\n{timestamp_text}\n\n【全文】\n{final_text}".strip()
+            if uncertainty_note:
+                export_text = f"{uncertainty_note}\n\n{export_text}".strip()
 
             if force_txt or len(export_text) > 2500:
                 try:
@@ -473,22 +678,27 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                             head = f"{head}\n{url_out}"
                         if summary_text:
                             head = f"📝 語音重點摘要（來源：{summary_source_label}）：\n{summary_text}\n\n{head}"
+                        if uncertainty_note:
+                            head = f"{uncertainty_note}\n\n{head}"
                         if orch._is_file_protocol_user(str(user_id or "")) and path_out:
                             return f"{head}|||FILE_PATH|||{path_out}"
                         return f"{head}\n{path_out}".strip()
                 except Exception as e:
                     logger.error(f"TXT Export error in orchestrator audio: {e}")
             if summary_text:
-                return f"📝 語音重點摘要（來源：{summary_source_label}）：\n{summary_text}\n\n{title}：\n{final_text[:1200]}"
+                prefix = f"{uncertainty_note}\n\n" if uncertainty_note else ""
+                return f"{prefix}📝 語音重點摘要（來源：{summary_source_label}）：\n{summary_text}\n\n{title}：\n{final_text[:1200]}"
 
             if wants_timestamps and timestamp_text:
                 preview_lines = timestamp_text.splitlines()
                 preview = "\n".join(preview_lines[:24]).strip()
                 if len(preview_lines) > 24:
                     preview += "\n…（其餘內容可加上「請給我TXT」取得完整檔案）"
-                return f"{title}（含時間戳記）：\n{preview}"
+                prefix = f"{uncertainty_note}\n\n" if uncertainty_note else ""
+                return f"{prefix}{title}（含時間戳記）：\n{preview}"
 
-            return f"{title}：\n{final_text}"
+            prefix = f"{uncertainty_note}\n\n" if uncertainty_note else ""
+            return f"{prefix}{title}：\n{final_text}"
         except Exception as e:
             logger.error(f"❌ Audio routing error: {e}")
             return "❌ 語音處理失敗：音訊模組執行異常（已記錄）。請稍後再試。"
@@ -496,7 +706,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
             orch.unregister_heavy_task(_transcribe_task_id)
 
     elif msg_type == "file":
-        filename = attachment.get('filename', '')
+        filename = str(attachment.get("filename") or os.path.basename(path) or "").strip()
         logger.info(f"📄 Routing File: {filename}")
         prompt_lower = (prompt or "").lower()
         wants_translate = any(k in prompt_lower for k in ["翻譯", "translate", "翻成"])
@@ -516,13 +726,28 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
         summary_force_txt = (not disable_txt) and (explicit_txt or explicit_file or summary_txt_default)
         from api.handlers.output_quality_handler import format_quality_gate_failure, run_output_quality_gate
 
-        def _file_summary_gate_message(summary_out: str, *, source_chars: int = 0) -> str:
+        def _file_summary_gate_message(summary_out: str, *, source_chars: int = 0, source_text: str = "") -> str:
+            verified_source = str(source_text or "").strip()
+            if not verified_source:
+                try:
+                    extracted_source = orch._extract_text_from_uploaded_file(path, filename=filename)
+                    if isinstance(extracted_source, dict) and extracted_source.get("success"):
+                        verified_source = orch._prepare_document_text_for_llm(
+                            str(extracted_source.get("text") or "")
+                        )
+                except Exception:
+                    logger.warning("File summary source extraction failed; refusing ungrounded delivery", exc_info=True)
             gate = run_output_quality_gate(
                 "summary",
                 summary_out,
-                source_chars=source_chars,
+                source_chars=max(source_chars, len(verified_source)),
+                source_text=verified_source,
                 source_name=filename or os.path.basename(path),
                 instruction=prompt or "",
+                metadata={
+                    "source_required": True,
+                    "source_text_present": bool(verified_source),
+                },
             )
             if gate.get("ok"):
                 return ""
@@ -629,6 +854,7 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                     "summary",
                     summary_text,
                     source_chars=len(src_text),
+                    source_text=src_text if summary_source_label == "原文" else translated_text,
                     source_name=filename or os.path.basename(path),
                     instruction=prompt or "",
                 )
@@ -675,6 +901,13 @@ def handle_multimedia(orch, user_id, prompt, attachment) -> str:
                         term_glossary=term_glossary,
                         title=(filename or os.path.basename(path)),
                         prefix="file_translate",
+                        user_id=str(user_id or ""),
+                    )
+                if not exported_reply:
+                    exported_reply = _try_rebuild_pdf_translation_delivery(
+                        pdf_path=path,
+                        filename=filename or os.path.basename(path),
+                        source_text=src_text,
                         user_id=str(user_id or ""),
                     )
                 if not exported_reply:

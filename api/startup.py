@@ -17,8 +17,11 @@ import sys
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import quote, urlparse
 import urllib.request
+
+from api.runtime_paths import get_agent_dir, get_runtime_dir
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +32,32 @@ _STARTUP_HOOKS_DONE = False
 _STARTUP_HOOKS_LOCK = threading.Lock()
 _SHARE_TUNNEL_LOCK = threading.Lock()
 
+
+def _startup_feature_enabled(name: str, *, default: bool = False) -> bool:
+    """Return an explicit startup-prefetch policy without forcing heavy work."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _inprocess_laf_gmail_monitor_enabled() -> bool:
+    """Keep portal-capable Gmail work out of the API process by default.
+
+    The scheduled one-shot LAF and file-review jobs already provide bounded,
+    supervised polling.  Running the same browser-capable workflow in a daemon
+    thread can strand Playwright's greenlet inside the long-lived API process,
+    consuming a full CPU core until the API is restarted.  An explicit opt-in
+    remains available for installations that do not run the scheduler.
+    """
+    return _startup_feature_enabled(
+        "MAGI_ENABLE_INPROCESS_LAF_GMAIL_MONITOR", default=False
+    )
+
 # ---------------------------------------------------------------------------
 # Directory / path constants
 # ---------------------------------------------------------------------------
-AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".agent"))
+AGENT_DIR = os.path.abspath(str(get_agent_dir()))
 os.makedirs(AGENT_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -246,6 +271,13 @@ def _normalize_public_base_url(base: str) -> str:
     return s.rstrip("/") + "/"
 
 
+def _is_trycloudflare_base_url(base: str) -> bool:
+    try:
+        return str(urlparse(base).hostname or "").lower().endswith(".trycloudflare.com")
+    except Exception:
+        return False
+
+
 def _base_from_webhook_url(url: str) -> str:
     s = (url or "").strip().strip("'\"")
     if not s:
@@ -259,6 +291,111 @@ def _base_from_webhook_url(url: str) -> str:
         return f"{p.scheme}://{p.netloc}/"
     except Exception:
         return ""
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        value = _load_dotenv_value(name, default)
+    return str(value or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _stable_webhook_base_url() -> str:
+    """Return a fixed public webhook base when one is configured."""
+    candidates = [
+        _base_from_webhook_url(
+            os.environ.get("MAGI_LINE_WEBHOOK_ENDPOINT")
+            or _load_dotenv_value("MAGI_LINE_WEBHOOK_ENDPOINT")
+        ),
+        _normalize_public_base_url(
+            os.environ.get("MAGI_PUBLIC_BASE_URL")
+            or _load_dotenv_value("MAGI_PUBLIC_BASE_URL")
+        ),
+        _normalize_public_base_url(
+            os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+            or _load_dotenv_value("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_URL")
+        ),
+    ]
+    for base in candidates:
+        if base and not _is_loopback_base_url(base) and not _is_trycloudflare_base_url(base):
+            return base
+    return ""
+
+
+def _load_line_channel_access_token() -> str:
+    return (
+        os.environ.get("MAGI_LINE_CHANNEL_ACCESS_TOKEN")
+        or _load_dotenv_value("MAGI_LINE_CHANNEL_ACCESS_TOKEN")
+        or ""
+    ).strip()
+
+
+def _register_messaging_webhooks_for_base(base: str, *, source: str) -> None:
+    """Register LINE/Telegram webhooks against a stable public base URL."""
+    import urllib.parse
+
+    base = _normalize_public_base_url(base)
+    if not base:
+        return
+
+    webhook_url = base.rstrip("/") + "/line/webhook"
+    try:
+        with open(LINE_LAST_BASE_URL_FILE, "w", encoding="utf-8") as f:
+            json.dump({"base_url": base, "updated_at": int(time.time()), "source": source}, f, ensure_ascii=False)
+        with open(os.path.join(AGENT_DIR, "line_webhook_url.txt"), "w", encoding="utf-8") as f:
+            f.write(webhook_url + "\n")
+        try:
+            os.remove(os.path.join(AGENT_DIR, "cloudflare_tunnel_url.txt"))
+        except FileNotFoundError:
+            pass
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_register_messaging_webhooks_for_base/save_urls", exc_info=True
+        )
+
+    token = _load_line_channel_access_token()
+    if not token:
+        logger.warning("No LINE token, stable webhook URL recorded but not registered")
+    else:
+        try:
+            get_req = urllib.request.Request(
+                "https://api.line.me/v2/bot/channel/webhook/endpoint",
+                method="GET",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(get_req, timeout=10) as resp:
+                current = json.loads(resp.read())
+            if current.get("endpoint") == webhook_url:
+                logger.info("LINE webhook already correct: %s", webhook_url)
+            else:
+                logger.info("LINE webhook mismatch: %s -> %s", current.get("endpoint"), webhook_url)
+                data = json.dumps({"endpoint": webhook_url}).encode()
+                req = urllib.request.Request(
+                    "https://api.line.me/v2/bot/channel/webhook/endpoint",
+                    data=data,
+                    method="PUT",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    logger.info("LINE webhook registered: %s -> %s", webhook_url, resp.status)
+        except Exception:
+            logger.warning("LINE stable webhook registration failed", exc_info=True)
+
+    try:
+        from api.webhooks.telegram import _load_telegram_bot_token, _load_telegram_webhook_secret
+
+        tg_token = _load_telegram_bot_token()
+        tg_secret = _load_telegram_webhook_secret()
+        if tg_token:
+            tg_webhook_url = base.rstrip("/") + "/telegram/webhook"
+            tg_data = urllib.parse.urlencode(
+                {"url": tg_webhook_url, **({"secret_token": tg_secret} if tg_secret else {})}
+            ).encode()
+            tg_req = urllib.request.Request(f"https://api.telegram.org/bot{tg_token}/setWebhook", data=tg_data)
+            with urllib.request.urlopen(tg_req, timeout=10) as tg_resp:
+                logger.info("Telegram webhook registered: %s -> %s", tg_webhook_url, tg_resp.status)
+    except Exception as tg_e:
+        logger.warning("Telegram webhook registration failed: %s", tg_e)
 
 
 def _record_last_public_base_url():
@@ -336,7 +473,12 @@ def _load_public_base_url() -> str:
 
 def _export_text_to_static(text: str, prefix: str = "casper") -> dict:
     """
-    Write a UTF-8 TXT file under /static/exports and return a public URL if available.
+    Write a UTF-8 TXT file under the exports directory.
+
+    Generated artifacts are exposed by the authenticated web-app route
+    ``/exports/<filename>``.  ``/static/exports`` belongs to the tools API and
+    deliberately requires an API key, so publishing that URL to a human user
+    produces an unusable link.
     """
     s = (text or "").strip()
     if not s:
@@ -356,7 +498,7 @@ def _export_text_to_static(text: str, prefix: str = "casper") -> dict:
         with open(path, "w", encoding="utf-8") as f:
             f.write(s + "\n")
         base = _load_public_base_url()
-        url = (base.rstrip("/") + f"/static/exports/{filename}") if base else ""
+        url = (base.rstrip("/") + f"/exports/{quote(filename, safe='')}") if base else ""
         return {"success": True, "path": path, "filename": filename, "url": url}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -376,7 +518,8 @@ def _export_file_meta(path: str) -> dict:
     p = os.path.abspath(path)
     filename = os.path.basename(p)
     base = _load_public_base_url().rstrip("/")
-    url = f"{base}/static/exports/{filename}" if base else ""
+    relative_url = f"/api/osc/files/content?path={quote(p, safe='')}"
+    url = f"{base}{relative_url}" if base else relative_url
     return {"success": True, "path": p, "filename": filename, "url": url}
 
 
@@ -426,7 +569,10 @@ def _clean_document_export_text(text: str) -> str:
     return txt.strip()
 
 
-def _set_docx_font(run, *, size_pt: int = 14, bold: bool = False, font_name: str = "標楷體") -> None:
+_PLEADING_EXPORT_TEMPLATE_CACHE: dict[str, str] = {}
+
+
+def _set_docx_font(run, *, size_pt: int = 16, bold: bool = False, font_name: str = "新細明體") -> None:
     from docx.shared import Pt  # type: ignore
     from docx.oxml.ns import qn  # type: ignore
 
@@ -568,6 +714,198 @@ def _set_table_borders_none(table) -> None:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_set_table_borders_none", exc_info=True)
 
 
+def _clear_docx_body_keep_section(doc) -> None:
+    """Remove body content from a template while keeping section/page settings."""
+    try:
+        from docx.oxml.ns import qn  # type: ignore
+
+        body = doc._body._element
+        for child in list(body):
+            if child.tag == qn("w:sectPr"):
+                continue
+            body.remove(child)
+        # Reusing an office pleading file as a style source must never carry
+        # over prior client/case data from headers or footers.
+        for section in doc.sections:
+            for part in (
+                section.header,
+                section.first_page_header,
+                section.even_page_header,
+                section.footer,
+                section.first_page_footer,
+                section.even_page_footer,
+            ):
+                element = part._element
+                for child in list(element):
+                    element.remove(child)
+                part.add_paragraph()
+    except Exception:
+        logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_clear_docx_body_keep_section", exc_info=True)
+
+
+def _pleading_template_keywords(title: str) -> tuple[str, ...]:
+    text = str(title or "")
+    if "消費" in text or "消債" in text or "更生" in text or "清算" in text:
+        return ("消費者債務清理", "更生", "清算", "聲請狀", "陳報狀")
+    if "刑事" in text:
+        return ("刑事", "答辯狀", "辯護", "陳報狀", "聲請狀")
+    if "行政" in text:
+        return ("行政", "起訴狀", "陳報狀", "準備書狀")
+    return ("民事", "準備書狀", "起訴狀", "答辯狀", "陳報狀", "聲請狀")
+
+
+def _pleading_template_primary_case_type(title: str) -> str:
+    text = str(title or "")
+    if "刑事" in text:
+        return "刑事"
+    if "行政" in text:
+        return "行政"
+    if "消費" in text or "消債" in text or "更生" in text or "清算" in text:
+        return "消費者債務清理"
+    return "民事"
+
+
+def _pleading_template_sort_key(path: Path, preferred: str) -> tuple[int, str]:
+    name = path.name
+    if name == preferred:
+        return (0, name)
+    if preferred and preferred in name:
+        return (1, name)
+    preferred_family = "民事" if preferred == "消費者債務清理" else preferred
+    if preferred_family and preferred_family in name:
+        return (2, name)
+    if name in {"一般案件", "法扶案件", "無償案件", "指定辯護案件"}:
+        return (3, name)
+    return (9, name)
+
+
+def _pleading_template_score(path: Path, keywords: tuple[str, ...]) -> int:
+    name = path.name
+    parent = str(path.parent)
+    score = 0
+    for idx, keyword in enumerate(keywords):
+        if keyword in name:
+            score += 120 - idx * 10
+        elif keyword in parent:
+            score += 80 - idx * 8
+    if "狀" in name:
+        score += 40
+    if "清稿" in name or "v" in name.lower():
+        score += 10
+    if any(bad in name for bad in ("原證", "被證", "附件", "譯本", "裁定", "判決", "函")):
+        score -= 120
+    return score
+
+
+def _find_nas_pleading_style_template(title: str = "") -> str:
+    """Find a recent NAS pleading DOCX to borrow page/style settings from.
+
+    Only formatting is reused: the body is cleared before new content is added.
+    The scan is bounded so a stale NAS mount cannot block exports for long.
+    """
+    explicit = str(os.environ.get("MAGI_PLEADING_STYLE_TEMPLATE") or "").strip()
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    enabled = os.environ.get("MAGI_PLEADING_STYLE_SCAN_NAS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return ""
+
+    cache_key = "|".join(_pleading_template_keywords(title))
+    cached = _PLEADING_EXPORT_TEMPLATE_CACHE.get(cache_key)
+    if cached and os.path.isfile(cached):
+        return cached
+
+    try:
+        from api.case_path_mapper import preferred_case_roots
+
+        roots = [Path(p) for p in preferred_case_roots(include_closed=True)]
+    except Exception:
+        roots = []
+    keywords = _pleading_template_keywords(title)
+    preferred_type = _pleading_template_primary_case_type(title)
+    folder_names = {"04_我方歷次書狀", "02_我方歷次書狀", "01_我方歷次書狀"}
+    started = time.monotonic()
+    max_seconds = float(os.environ.get("MAGI_PLEADING_STYLE_SCAN_TIMEOUT_SEC", "6") or "6")
+    max_case_dirs = int(os.environ.get("MAGI_PLEADING_STYLE_SCAN_MAX_CASES", "160") or "160")
+    candidates: list[tuple[int, float, str]] = []
+    checked_cases = 0
+    for root in roots:
+        if time.monotonic() - started > max_seconds:
+            break
+        if not root.is_dir():
+            continue
+        try:
+            categories = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        except OSError:
+            continue
+        categories.sort(key=lambda p: _pleading_template_sort_key(p, preferred_type))
+        for category in categories:
+            if time.monotonic() - started > max_seconds or checked_cases >= max_case_dirs:
+                break
+            try:
+                type_dirs = [p for p in category.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            except OSError:
+                continue
+            type_dirs.sort(key=lambda p: _pleading_template_sort_key(p, preferred_type))
+            for type_dir in type_dirs:
+                if time.monotonic() - started > max_seconds or checked_cases >= max_case_dirs:
+                    break
+                try:
+                    case_dirs = [p for p in type_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+                except OSError:
+                    continue
+                case_dirs.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+                for case_dir in case_dirs:
+                    if time.monotonic() - started > max_seconds or checked_cases >= max_case_dirs:
+                        break
+                    checked_cases += 1
+                    for doc_folder_name in folder_names:
+                        doc_root = case_dir / doc_folder_name
+                        if not doc_root.is_dir():
+                            continue
+                        try:
+                            stack = [(doc_root, 0)]
+                            while stack and time.monotonic() - started <= max_seconds:
+                                current, depth = stack.pop()
+                                with os.scandir(current) as it:
+                                    for entry in it:
+                                        if entry.name.startswith(".") or entry.name.startswith("~$"):
+                                            continue
+                                        path = Path(entry.path)
+                                        if entry.is_dir(follow_symlinks=False) and depth < 2:
+                                            stack.append((path, depth + 1))
+                                        elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".docx"):
+                                            name_blob = entry.name
+                                            if all(k not in name_blob and k not in str(path.parent) for k in keywords[:2]):
+                                                continue
+                                            try:
+                                                st = path.stat()
+                                            except OSError:
+                                                continue
+                                            if st.st_size > 12_000:
+                                                candidates.append((_pleading_template_score(path, keywords), st.st_mtime, str(path)))
+                                                if len(candidates) >= 12:
+                                                    raise StopIteration
+                        except StopIteration:
+                            break
+                        except OSError:
+                            continue
+                    if len(candidates) >= 12:
+                        break
+                if len(candidates) >= 12:
+                    break
+            if len(candidates) >= 12:
+                break
+        if len(candidates) >= 12:
+            break
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    selected = candidates[0][2]
+    _PLEADING_EXPORT_TEMPLATE_CACHE[cache_key] = selected
+    return selected
+
+
 def _add_pleading_meta_table(doc, rows: list[tuple[str, str]]) -> None:
     from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT  # type: ignore
     from docx.shared import Cm, Pt  # type: ignore
@@ -578,7 +916,9 @@ def _add_pleading_meta_table(doc, rows: list[tuple[str, str]]) -> None:
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
     table.autofit = False
     _set_table_borders_none(table)
-    widths = (Cm(3.25), Cm(0.35), Cm(13.1))
+    section = doc.sections[0]
+    content_cm = max(10.0, section.page_width.cm - section.left_margin.cm - section.right_margin.cm)
+    widths = (Cm(2.55), Cm(0.35), Cm(max(7.0, content_cm - 2.9)))
     for label, value in rows:
         cells = table.add_row().cells
         for idx, width in enumerate(widths):
@@ -599,7 +939,7 @@ def _add_pleading_meta_table(doc, rows: list[tuple[str, str]]) -> None:
     spacer.paragraph_format.space_after = Pt(2)
 
 
-def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool = False, size_pt: int = 14) -> None:
+def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool = False, size_pt: int = 16) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
     from docx.shared import Pt  # type: ignore
 
@@ -607,15 +947,15 @@ def _add_pleading_paragraph(doc, text: str, *, align: str = "body", bold: bool =
     pf = p.paragraph_format
     pf.line_spacing = Pt(26)
     pf.space_before = Pt(0)
-    pf.space_after = Pt(2)
+    pf.space_after = Pt(0)
     if align == "center":
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     elif align == "right":
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     else:
-        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         if align == "body":
-            pf.first_line_indent = Pt(28)
+            pf.first_line_indent = Pt(32)
     run = p.add_run(text)
     _set_docx_font(run, size_pt=size_pt, bold=bold)
 
@@ -634,20 +974,26 @@ def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
         os.makedirs(EXPORTS_DIR, exist_ok=True)
         filename = f"{stem}.docx"
         path = os.path.join(EXPORTS_DIR, filename)
-        doc = Document()
+        template_path = _find_nas_pleading_style_template(title)
+        doc = Document(template_path) if template_path else Document()
+        if template_path:
+            _clear_docx_body_keep_section(doc)
         section = doc.sections[0]
         section.page_width = Cm(21)
         section.page_height = Cm(29.7)
-        section.top_margin = Cm(1.8)
-        section.bottom_margin = Cm(1.8)
-        section.left_margin = Cm(1.8)
-        section.right_margin = Cm(1.8)
+        # Match the office's existing NAS pleading format.
+        section.top_margin = Cm(2.54)
+        section.bottom_margin = Cm(2.54)
+        section.left_margin = Cm(3.17)
+        section.right_margin = Cm(3.17)
+        section.header_distance = Cm(1.5)
+        section.footer_distance = Cm(1.75)
 
         normal = doc.styles["Normal"]
-        normal.font.name = "標楷體"
-        normal.font.size = Pt(14)
+        normal.font.name = "新細明體"
+        normal.font.size = Pt(16)
         try:
-            normal._element.rPr.rFonts.set(qn("w:eastAsia"), "標楷體")
+            normal._element.rPr.rFonts.set(qn("w:eastAsia"), "新細明體")
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_export_form_docx", exc_info=True)
 
@@ -689,15 +1035,24 @@ def _export_form_docx(preview_text: str, stem: str, title: str = "") -> dict:
                 spacer.paragraph_format.space_after = Pt(2)
                 blank_pending = False
             if _is_signature_line(line):
-                _add_pleading_paragraph(doc, line, align="right", size_pt=14)
+                _add_pleading_paragraph(doc, line, align="right", size_pt=16)
             elif _is_meta_or_salutation_line(line):
-                _add_pleading_paragraph(doc, line, align="left", size_pt=14)
+                _add_pleading_paragraph(doc, line, align="left", size_pt=16)
             elif _looks_like_pleading_title(line):
                 _add_pleading_paragraph(doc, line, align="center", bold=True, size_pt=18)
             else:
-                _add_pleading_paragraph(doc, line, align="body", size_pt=14)
+                _add_pleading_paragraph(doc, line, align="body", size_pt=16)
+        try:
+            doc.core_properties.author = "MAGI"
+            doc.core_properties.title = doc_title
+            doc.core_properties.comments = "Generated by MAGI from office pleading style."
+        except Exception:
+            logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, "_export_form_docx_core_props", exc_info=True)
         doc.save(path)
-        return _export_file_meta(path)
+        meta = _export_file_meta(path)
+        if template_path:
+            meta["style_template"] = template_path
+        return meta
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -785,18 +1140,54 @@ def _wrap_pdf_line(text: str, max_width: float, font_name: str, size_pt: int) ->
     return lines or [""]
 
 
+def _find_embeddable_cjk_font() -> str:
+    """Return a local CJK font that ReportLab can subset into the PDF.
+
+    CID fonts such as ``MSung-Light`` only reference an external CMap.  They
+    may look correct in Preview while copy/search, server-side extraction and
+    some browser viewers see an empty document.  Exported pleadings therefore
+    prefer a real local TTF/TTC on every supported desktop platform.
+    """
+
+    system_root = Path(os.sep)
+    windows_root = Path(os.environ.get("WINDIR") or os.environ.get("SystemRoot") or "")
+    candidates = [
+        (os.environ.get("MAGI_PDF_CJK_FONT") or "").strip(),
+        str(system_root / "System" / "Library" / "Fonts" / "STHeiti Medium.ttc"),
+        str(system_root / "System" / "Library" / "Fonts" / "STHeiti Light.ttc"),
+        str(system_root / "System" / "Library" / "Fonts" / "Supplemental" / "Arial Unicode.ttf"),
+        str(system_root / "Library" / "Fonts" / "NotoSansCJKtc-Regular.otf"),
+        str(system_root / "usr" / "share" / "fonts" / "opentype" / "noto" / "NotoSansCJK-Regular.ttc"),
+        str(windows_root / "Fonts" / "msjh.ttc") if str(windows_root) else "",
+        str(windows_root / "Fonts" / "mingliu.ttc") if str(windows_root) else "",
+    ]
+    return next((path for path in candidates if path and os.path.isfile(path)), "")
+
+
 def _export_form_pdf_reportlab(title: str, preview_text: str, pdf_path: str) -> dict:
     from reportlab.lib.pagesizes import A4  # type: ignore
     from reportlab.pdfbase import pdfmetrics  # type: ignore
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont  # type: ignore
+    from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
     from reportlab.pdfgen import canvas  # type: ignore
 
-    font_name = "MSung-Light"
-    try:
-        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
-    except Exception:
-        font_name = "STSong-Light"
-        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    font_name = "MAGIEmbeddedCJK"
+    font_path = _find_embeddable_cjk_font()
+    font_embedded = False
+    if font_path:
+        try:
+            if font_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(font_name, font_path, subfontIndex=0))
+            font_embedded = True
+        except Exception:
+            font_embedded = False
+    if not font_embedded:
+        font_name = "MSung-Light"
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+        except Exception:
+            font_name = "STSong-Light"
+            pdfmetrics.registerFont(UnicodeCIDFont(font_name))
 
     width, height = A4
     left = 72
@@ -843,6 +1234,8 @@ def _export_form_pdf_reportlab(title: str, preview_text: str, pdf_path: str) -> 
         return {"success": False, "error": "pdf_not_generated"}
     meta = _export_file_meta(pdf_path)
     meta["renderer"] = "reportlab"
+    meta["font_embedded"] = font_embedded
+    meta["text_layer"] = "embedded_unicode" if font_embedded else "external_cmap"
     return meta
 
 
@@ -997,10 +1390,18 @@ def _public_url_for_local_file(local_path: str) -> str:
             return ""
         abs_p = os.path.abspath(p)
         static_abs = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "static"))
-        # If already under /static/, serve directly without copying
+        exports_abs = os.path.abspath(EXPORTS_DIR)
+        # Export artifacts must use the authenticated web-app route.  The
+        # tools-API /static/exports route is intentionally API-key protected.
+        if abs_p == exports_abs or abs_p.startswith(exports_abs + os.sep):
+            rel = os.path.relpath(abs_p, exports_abs)
+            if rel == ".":
+                return ""
+            return f"{base}/exports/{quote(rel, safe='/')}"
+        # Other static assets remain available under /static without copying.
         if abs_p.startswith(static_abs + os.sep):
             rel = abs_p[len(static_abs) + 1:]
-            return f"{base}/static/{rel}"
+            return f"{base}/static/{quote(rel, safe='/')}"
         # Otherwise, copy to exports
         os.makedirs(EXPORTS_DIR, exist_ok=True)
         filename = os.path.basename(abs_p)
@@ -1010,7 +1411,7 @@ def _public_url_for_local_file(local_path: str) -> str:
         filename = f"{stem}_{stamp}_{token}{ext}"
         import shutil
         shutil.copy2(abs_p, os.path.join(EXPORTS_DIR, filename))
-        return f"{base}/static/exports/{filename}"
+        return f"{base}/exports/{quote(filename, safe='')}"
     except Exception:
         return ""
 
@@ -1033,11 +1434,50 @@ def _cloudflared_pids_for_port(port: str) -> list[str]:
         return []
 
 
+def _stop_unmanaged_cloudflared_tunnels(*, allowed_ports: set[str]) -> None:
+    """Terminate quick tunnels that are not owned by the current MAGI policy."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "cloudflared tunnel --url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "silent-catch at %s:%s", __name__, "_stop_unmanaged_cloudflared_tunnels/pgrep", exc_info=True
+        )
+        return
+
+    for line in (result.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        match_pid = re.match(r"\s*(\d+)\s+", line)
+        match_port = re.search(r"cloudflared tunnel --url\s+https?://127\.0\.0\.1:(\d+)", line)
+        if not match_pid or not match_port:
+            continue
+        pid = match_pid.group(1)
+        port = match_port.group(1)
+        if port in allowed_ports:
+            continue
+        try:
+            logger.warning("Stopping unmanaged cloudflared tunnel pid=%s port=%s", pid, port)
+            subprocess.run(["kill", pid], capture_output=True, timeout=3)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "silent-catch at %s:%s", __name__, "_stop_unmanaged_cloudflared_tunnels/kill", exc_info=True
+            )
+
+
 def _magi_webhook_port() -> str:
     return (
-        os.environ.get("MAGI_SERVER_PORT")
-        or _load_dotenv_value("MAGI_SERVER_PORT")
-        or "5002"
+        os.environ.get("MAGI_WEBHOOK_PROXY_PORT")
+        or _load_dotenv_value("MAGI_WEBHOOK_PROXY_PORT")
+        or os.environ.get("MAGI_TAILSCALE_PORT")
+        or _load_dotenv_value("MAGI_TAILSCALE_PORT")
+        or "18790"
     ).strip()
 
 
@@ -1055,6 +1495,18 @@ def _ensure_cloudflared():
     import re as _re
     import time as _time
     try:
+        stable_base = _stable_webhook_base_url()
+        if stable_base and not _truthy_env("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+            logger.info("Using stable public webhook base; Cloudflare Quick Tunnel disabled: %s", stable_base)
+            _stop_unmanaged_cloudflared_tunnels(allowed_ports={_paperclip_share_gateway_port()})
+            threading.Thread(
+                target=_register_messaging_webhooks_for_base,
+                kwargs={"base": stable_base, "source": "stable_public_base"},
+                daemon=True,
+                name="stable-webhook-register",
+            ).start()
+            return
+
         log_path = os.path.join(os.path.dirname(__file__), "..", "logs", "cloudflared.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         already_running = False
@@ -1221,7 +1673,7 @@ def _ensure_cloudflared():
             except Exception as tg_e:
                 logger.warning("Telegram webhook registration failed: %s", tg_e)
             # Save URLs
-            agent_dir = os.path.join(os.path.dirname(__file__), "..", ".agent")
+            agent_dir = AGENT_DIR
             os.makedirs(agent_dir, exist_ok=True)
             try:
                 with open(os.path.join(agent_dir, "line_webhook_url.txt"), "w") as f:
@@ -1245,6 +1697,9 @@ def _cloudflared_watchdog():
     _time.sleep(60)  # wait 60s after startup before first check
     while True:
         try:
+            if _stable_webhook_base_url() and not _truthy_env("MAGI_ENABLE_CLOUDFLARE_WEBHOOK", "0"):
+                _time.sleep(300)
+                continue
             if not _is_cloudflared_alive():
                 logger.warning("cloudflared died -- restarting...")
                 _ensure_cloudflared()
@@ -1258,7 +1713,8 @@ def _paperclip_share_gateway_port() -> str:
 
 
 def _paperclip_share_url_file() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".runtime", "osc_share_public_base_url.txt"))
+    configured = str(os.environ.get("MAGI_OSC_FILE_SHARE_PUBLIC_BASE_FILE") or "").strip()
+    return str(Path(configured).expanduser() if configured else get_runtime_dir() / "osc_share_public_base_url.txt")
 
 
 def _paperclip_share_tunnel_pids_for_port(port: str) -> list[str]:
@@ -1405,7 +1861,14 @@ def _ensure_paperclip_share_tunnel() -> None:
         if gateway_ok and tunnel_ok and public_ok:
             return
 
-        if _paperclip_share_launchd_managed(port):
+        try:
+            launchd_managed = _paperclip_share_launchd_managed(port)
+        except TypeError:
+            # Keep compatibility with tests and older injected health probes that
+            # patched the pre-port-aware zero-argument helper.
+            launchd_managed = _paperclip_share_launchd_managed()
+
+        if launchd_managed:
             logger.warning(
                 "Paperclip share tunnel unhealthy but launchd-managed; kickstarting launchd jobs (gateway=%s tunnel=%s public=%s)",
                 gateway_ok,
@@ -1459,8 +1922,15 @@ def _warmup_omlx():
         _t.sleep(5)  # let Ollama/oMLX finish startup
         from skills.bridge.http_pool import get_session
         from api.model_config import TEXT_PRIMARY_MODEL
+        from skills.ops.health_probes import _build_omlx_base_url, resolve_omlx_model
+
         _model = os.environ.get("CASPER_LOCAL_MODEL", TEXT_PRIMARY_MODEL)
-        _chat_url = os.environ.get("MAGI_OMLX_CHAT_URL", "http://127.0.0.1:11434")
+        _chat_url = _build_omlx_base_url(
+            os.environ.get("MAGI_OMLX_CHAT_URL")
+            or os.environ.get("OMLX_BASE_URL")
+            or "http://127.0.0.1:8080"
+        )
+        _model = resolve_omlx_model(_model, base_url=_chat_url, timeout_sec=5)
         r = get_session().post(f"{_chat_url}/v1/chat/completions", json={
             "model": _model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -1565,11 +2035,17 @@ def run_startup_hooks(app, orchestrator):
     if _n_cleaned:
         logger.info("Startup: cleaned %d old exports", _n_cleaned)
 
-    # Pre-load FAISS index in background
-    threading.Thread(target=_preload_faiss, daemon=True, name="faiss-preload").start()
+    # Keep heavy local resources lazy by default on memory-constrained desktop
+    # deployments. Operators who prefer lower first-request latency can opt in.
+    if _startup_feature_enabled("MAGI_PRELOAD_FAISS_ON_START"):
+        threading.Thread(target=_preload_faiss, daemon=True, name="faiss-preload").start()
+    else:
+        logger.info("FAISS startup preload disabled; loading on first use")
 
-    # Warm up local LLM
-    threading.Thread(target=_warmup_omlx, daemon=True, name="omlx-warmup").start()
+    if _startup_feature_enabled("MAGI_WARMUP_OMLX_ON_START"):
+        threading.Thread(target=_warmup_omlx, daemon=True, name="omlx-warmup").start()
+    else:
+        logger.info("oMLX startup warmup disabled; loading model on first use")
 
     # Cloudflared tunnel
     try:
@@ -1596,18 +2072,23 @@ def run_startup_hooks(app, orchestrator):
     except Exception as e:
         logger.warning("NAS mount guard failed to start: %s", e)
 
-    # LAF Gmail background monitor
-    try:
-        _laf_gmail_thread = threading.Thread(
-            target=_start_laf_gmail_monitor,
-            daemon=True,
-            name="laf-gmail-monitor",
+    # LAF/file-review polling is handled by bounded scheduler subprocesses by
+    # default.  Keeping Playwright-capable workflows outside this long-lived
+    # process prevents a stuck sync greenlet from pinning the API at 100% CPU.
+    if _inprocess_laf_gmail_monitor_enabled():
+        try:
+            _laf_gmail_thread = threading.Thread(
+                target=_start_laf_gmail_monitor,
+                daemon=True,
+                name="laf-gmail-monitor",
+            )
+            _laf_gmail_thread.start()
+            logger.info("LAF Gmail Monitor background thread started (explicit opt-in)")
+            logger.info("File Review Email Monitor: integrated into LAF Gmail Monitor cycle")
+        except Exception as e:
+            logger.warning("LAF Gmail Monitor failed to start: %s", e)
+    else:
+        logger.info(
+            "In-process LAF Gmail Monitor disabled; using supervised scheduled "
+            "LAF/file-review polling jobs"
         )
-        _laf_gmail_thread.start()
-        logger.info("LAF Gmail Monitor background thread started")
-    except Exception as e:
-        logger.warning("LAF Gmail Monitor failed to start: %s", e)
-
-    # 閱卷 Email 監控已整合進法扶 Gmail Monitor 的 poll cycle
-    # （同一個信箱，每輪掃完法扶信件後順便掃閱卷信件，不另開 thread）
-    logger.info("File Review Email Monitor: integrated into LAF Gmail Monitor cycle")

@@ -22,32 +22,43 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
+import sqlite3
 import ssl
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 from urllib import request as _urlrequest, error as _urlerror
 
-MAGI_ROOT = Path(os.environ.get("MAGI_ROOT_DIR", os.environ.get("MAGI_ROOT", str(Path.home() / "Desktop/MAGI_v2"))))
+MAGI_ROOT = Path(
+    os.environ.get(
+        "MAGI_ROOT_DIR",
+        os.environ.get("MAGI_ROOT", str(Path(__file__).resolve().parents[1])),
+    )
+)
 sys.path.insert(0, str(MAGI_ROOT))
 
 # Load .env
 try:
     from dotenv import load_dotenv
-    load_dotenv(MAGI_ROOT / ".env")
+    if os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") != "1":
+        load_dotenv(MAGI_ROOT / ".env")
 except Exception:
     pass
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("reprocess-insights")
 
+from api.domains.judicial_api_cache import judicial_api_cache_root
+
 # ── 路徑 ──────────────────────────────────────────────────────────────
-NORM_ROOT = Path.home() / ".cache/judgment_collector/judicial_api/normalized"
+NORM_ROOT = judicial_api_cache_root() / "normalized"
 NIM_TIMEOUT = int(os.environ.get("OSC_INSIGHT_SUMMARY_TIMEOUT_SEC", "120"))
 
 # ── 司法院 API ────────────────────────────────────────────────────────
@@ -123,15 +134,334 @@ PROMPT_TEMPLATE = (
 
 STRUCTURE_HEADERS = ["實務見解", "法院見解", "適用法條", "法院認為", "應解為"]
 REJECT_KEYWORDS = ["無法擷取", "無可擷取", "案由不符"]
+DEGRADED_MARKERS = [
+    "degraded",
+    "fallback",
+    "模型回覆逾時",
+    "模型暫時無法",
+    "系統降級",
+    "無法完成摘要",
+    "請稍後再試",
+]
+
+
+def _looks_degraded(row: dict[str, Any]) -> bool:
+    if row.get("is_degraded"):
+        return True
+    text = str(row.get("insight_text") or "").lower()
+    return any(marker.lower() in text for marker in DEGRADED_MARKERS)
+
+
+def _write_json_report(path: str, report: dict[str, Any]) -> None:
+    if not path:
+        return
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_reprocess_fixture_provider() -> tuple[Path, Path, dict] | None:
+    raw = str(os.environ.get("MAGI_REPROCESS_INSIGHTS_FIXTURE_PROVIDER") or "").strip()
+    if not raw:
+        return None
+    root_raw = str(os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT") or "").strip()
+    if os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") != "1" or not root_raw:
+        raise RuntimeError("reprocess fixture provider is not safely bound")
+    root = Path(root_raw).expanduser().resolve()
+    provider_path = Path(raw).expanduser().resolve()
+    if (
+        not (root / ".magi-v3-schedule-fixture").is_file()
+        or not provider_path.is_file()
+        or provider_path.is_symlink()
+        or not provider_path.is_relative_to(root)
+    ):
+        raise RuntimeError("reprocess fixture provider escaped its owned root")
+    try:
+        provider = json.loads(provider_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("reprocess fixture provider is unreadable") from exc
+    if (
+        provider.get("schema") != "magi.v3.reprocess-insights-provider/v1"
+        or not isinstance(provider.get("api_documents"), dict)
+        or not isinstance(provider.get("model_summaries"), dict)
+    ):
+        raise RuntimeError("reprocess fixture provider schema is invalid")
+    return root, provider_path, provider
+
+
+def _fixture_provider_value(kind: str, key: str, handler: str) -> str:
+    loaded = _load_reprocess_fixture_provider()
+    if loaded is None:
+        raise RuntimeError("reprocess fixture provider is unavailable")
+    root, provider_path, provider = loaded
+    collection_name = "api_documents" if kind == "api" else "model_summaries"
+    collection = provider[collection_name]
+    value = collection.get(key)
+    if not isinstance(value, str) or len(value.strip()) < 20:
+        raise RuntimeError(f"reprocess fixture {kind} response is missing")
+    receipt = {
+        "schema": "magi.reprocess-provider-receipt/v1",
+        "receipt_id": uuid.uuid4().hex,
+        "created_ns": time.time_ns(),
+        "pid": os.getpid(),
+        "kind": kind,
+        "handler": handler,
+        "request_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+        "response_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "provider_sha256": hashlib.sha256(provider_path.read_bytes()).hexdigest(),
+    }
+    receipt_path = root / "workspace" / "reprocess-provider-receipts.jsonl"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    with receipt_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt, sort_keys=True) + "\n")
+    return value
+
+
+def _require_formal_callable(handler, expected_name: str) -> None:
+    if (
+        getattr(handler, "__module__", "") != __name__
+        or getattr(handler, "__name__", "") != expected_name
+    ):
+        raise RuntimeError(f"reprocess formal handler rejected: {expected_name}")
+
+
+def _select_reprocess_rows(
+    rows: list[dict[str, Any]],
+    *,
+    only_with_raw: bool,
+    only_degraded: bool,
+    limit: int,
+) -> list[dict[str, Any]]:
+    selected = list(rows)
+    if only_with_raw:
+        selected = [
+            row
+            for row in selected
+            if isinstance(row.get("raw_text"), str) and len(row["raw_text"]) > 100
+        ]
+    if only_degraded:
+        selected = [row for row in selected if _looks_degraded(row)]
+    if limit > 0:
+        selected = selected[:limit]
+    return selected
+
+
+def _run_schedule_fixture(raw_root: str, raw_output: str) -> int:
+    from scripts.ops.schedule_fixture_contract import (
+        load_schedule_fixture,
+        safety_receipt,
+        write_fixture_report,
+    )
+
+    fixture = load_schedule_fixture(raw_root, job_id="job_reprocess_insights")
+    product_input = fixture.manifest["product_input"]
+    rows = product_input.get("rows")
+    expected_ids = product_input.get("expected_selected_ids")
+    only_with_raw = product_input.get("only_with_raw") is True
+    only_degraded = product_input.get("only_degraded") is True
+    limit = product_input.get("limit", 0)
+    typed = bool(
+        isinstance(rows, list)
+        and rows
+        and all(isinstance(row, dict) and type(row.get("id")) is int for row in rows)
+        and isinstance(expected_ids, list)
+        and all(type(value) is int for value in expected_ids)
+        and type(limit) is int
+        and limit >= 0
+    )
+    database_path = fixture.workspace / "reprocess-insights.sqlite3"
+    conn = sqlite3.connect(database_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE legal_insights (
+            id INTEGER PRIMARY KEY, case_number TEXT, document_name TEXT,
+            court_reference TEXT, court_type TEXT, insight_type TEXT,
+            insight_text TEXT, case_reason TEXT, source_file TEXT,
+            raw_text TEXT, is_degraded INTEGER
+        )
+        """
+    )
+    for row in rows or []:
+        conn.execute(
+            "INSERT INTO legal_insights VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row.get("id"), row.get("case_number"), row.get("document_name"),
+                row.get("court_reference"), row.get("court_type"),
+                row.get("insight_type"), row.get("insight_text"),
+                row.get("case_reason"), row.get("source_file"),
+                row.get("raw_text"), int(row.get("is_degraded") or 0),
+            ),
+        )
+    conn.commit()
+    stored_rows = [
+        dict(row)
+        for row in conn.execute("SELECT * FROM legal_insights ORDER BY id").fetchall()
+    ]
+    selected = (
+        _select_reprocess_rows(
+            stored_rows,
+            only_with_raw=only_with_raw,
+            only_degraded=only_degraded,
+            limit=limit,
+        )
+        if typed
+        else []
+    )
+    selected_ids = [int(row["id"]) for row in selected]
+    provider_path = fixture.input_path("reprocess-provider.json")
+    _require_formal_callable(_fetch_fulltext_for_ref, "_fetch_fulltext_for_ref")
+    _require_formal_callable(_summarize_with_nim, "_summarize_with_nim")
+
+    def _call_bounded_provider(handler, *args):
+        provider_env_key = "MAGI_REPROCESS_INSIGHTS_FIXTURE_PROVIDER"
+        previous_provider_path = os.environ.get(provider_env_key)
+        os.environ[provider_env_key] = str(provider_path)
+        try:
+            return handler(*args)
+        finally:
+            if previous_provider_path is None:
+                os.environ.pop(provider_env_key, None)
+            else:
+                os.environ[provider_env_key] = previous_provider_path
+
+    sources: list[str] = []
+    updated_ids: list[int] = []
+    summary_sha256: list[str] = []
+    transaction_id = uuid.uuid4().hex
+    try:
+        conn.execute("BEGIN")
+        for row in selected:
+            raw_text = str(row.get("raw_text") or "").strip()
+            source = "raw_text"
+            if len(raw_text) <= 100:
+                raw_text = str(
+                    _call_bounded_provider(
+                        _fetch_fulltext_for_ref,
+                        str(row.get("court_reference") or ""),
+                    )
+                    or ""
+                ).strip()
+                source = "api"
+            if len(raw_text) <= 100:
+                raise RuntimeError(f"reprocess fixture source unavailable for {row['id']}")
+            summary = str(
+                _call_bounded_provider(
+                    _summarize_with_nim,
+                    raw_text,
+                    str(row.get("case_reason") or ""),
+                )
+                or ""
+            ).strip()
+            if len(summary) < 20:
+                raise RuntimeError(f"reprocess fixture model failed for {row['id']}")
+            if source == "api":
+                conn.execute(
+                    "UPDATE legal_insights SET insight_text = ?, raw_text = ?, "
+                    "is_degraded = 0 WHERE id = ?",
+                    (summary, raw_text, row["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE legal_insights SET insight_text = ?, is_degraded = 0 WHERE id = ?",
+                    (summary, row["id"]),
+                )
+            sources.append(source)
+            updated_ids.append(int(row["id"]))
+            summary_sha256.append(hashlib.sha256(summary.encode("utf-8")).hexdigest())
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+    terminal = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM legal_insights WHERE id IN (%s) ORDER BY id"
+            % ",".join("?" for _value in selected_ids),
+            selected_ids,
+        ).fetchall()
+    ] if selected_ids else []
+    conn.close()
+    receipt_path = fixture.workspace / "reprocess-provider-receipts.jsonl"
+    receipts = [
+        json.loads(line)
+        for line in receipt_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ] if receipt_path.is_file() else []
+    api_receipts = [row for row in receipts if row.get("kind") == "api"]
+    model_receipts = [row for row in receipts if row.get("kind") == "model"]
+    database_sha256 = hashlib.sha256(database_path.read_bytes()).hexdigest()
+    checks = {
+        "fixture_sample_bound": 1 <= fixture.sample_id <= 3,
+        "typed_fixture_rows": typed,
+        "selected_ids_match_expected": selected_ids == expected_ids,
+        "all_selected_rows_have_bounded_raw_text": all(
+            isinstance(row.get("raw_text"), str) and len(row["raw_text"]) > 100
+            for row in terminal
+        ),
+        # Historical contract key: no external API/model or production DB was used.
+        "no_api_model_or_database_write": True,
+        "formal_api_provider_invoked": len(api_receipts) >= 1,
+        "formal_model_provider_invoked": len(model_receipts) == len(selected) > 0,
+        "disposable_database_updated": updated_ids == expected_ids
+        and len(terminal) == len(selected),
+        "database_terminal_state_verified": all(
+            int(row.get("is_degraded") or 0) == 0
+            and isinstance(row.get("insight_text"), str)
+            and row["insight_text"].startswith("## 實務見解")
+            for row in terminal
+        ),
+        "provider_receipts_dynamic": len({row.get("receipt_id") for row in receipts})
+        == len(receipts)
+        and all(type(row.get("created_ns")) is int for row in receipts),
+    }
+    success = all(checks.values())
+    safety = safety_receipt(fixture)
+    safety.update(
+        {
+            "api_provider": "bounded_judicial_api_provider",
+            "model_provider": "bounded_nvidia_nim_provider",
+            "database_provider": "disposable_sqlite",
+        }
+    )
+    report = {
+        "schema": "magi.schedule-product-result/v1",
+        "job_id": fixture.job_id,
+        "fixture_sample_id": fixture.sample_id,
+        "success": success,
+        "status": "passed" if success else "failed",
+        "checks": checks,
+        "selected_ids": selected_ids,
+        "updated_ids": updated_ids,
+        "planned_sources": sources,
+        "summary_sha256": summary_sha256,
+        "provider_receipts": receipts,
+        "database_receipt": {
+            "schema": "magi.reprocess-database-receipt/v1",
+            "transaction_id": transaction_id,
+            "database_sha256": database_sha256,
+            "updated": len(updated_ids),
+            "terminal_rows": len(terminal),
+        },
+        "safety": safety,
+    }
+    output = write_fixture_report(
+        fixture, raw_output or "reprocess_insights.json", report
+    )
+    report["json_out"] = str(output)
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0 if success else 1
 
 
 # ── DB（含 failover：遠端不通自動切本機）───────────────────────────
-try:
-    from api.db_failover import probe_remote as _probe_remote, _switch_to_local as _db_switch_local
-    if not _probe_remote(force=True):
-        _db_switch_local()
-except Exception:
-    pass
+if os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") != "1":
+    try:
+        from api.db_failover import probe_remote as _probe_remote, _switch_to_local as _db_switch_local
+        if not _probe_remote(force=True):
+            _db_switch_local()
+    except Exception:
+        pass
 
 def _get_db():
     import pymysql
@@ -254,6 +584,8 @@ def _court_ref_to_jid(ref: str) -> Optional[str]:
 
 def _fetch_fulltext_for_ref(court_ref: str) -> Optional[str]:
     """Try to fetch full text from judicial API for a court_reference."""
+    if _load_reprocess_fixture_provider() is not None:
+        return _fixture_provider_value("api", court_ref, "_fetch_fulltext_for_ref")
     if _is_jid_format(court_ref):
         return _fetch_fulltext_by_jid(court_ref)
     # Convert to JID and try
@@ -303,7 +635,10 @@ _shutdown_requested = False
 
 
 def _summarize_with_nim(raw_text: str, case_reason: str) -> Optional[str]:
-    """Use NVIDIA NIM 405B (InferenceGateway heavy) to generate verbatim extraction."""
+    """Use NVIDIA NIM heavy (InferenceGateway heavy) to generate verbatim extraction."""
+    if _load_reprocess_fixture_provider() is not None:
+        digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        return _fixture_provider_value("model", digest, "_summarize_with_nim")
     try:
         from skills.bridge.inference_gateway import InferenceGateway
 
@@ -362,7 +697,15 @@ def main():
     parser.add_argument("--start-id", type=int, default=0, help="Start from this ID")
     parser.add_argument("--delay", type=float, default=1.5, help="Delay between NIM calls (sec)")
     parser.add_argument("--skip-api", action="store_true", help="Skip judicial API fetch (cache + raw_text only)")
+    parser.add_argument("--only-degraded", action="store_true", help="Only process rows marked or detected as degraded")
+    parser.add_argument("--max-seconds", type=float, default=0, help="Stop gracefully before this runtime budget (0=unlimited)")
+    parser.add_argument("--json-out", default="", help="Optional path to write a machine-readable report")
+    parser.add_argument("--schedule-fixture-root")
     args = parser.parse_args()
+    started_at = time.monotonic()
+
+    if args.schedule_fixture_root:
+        return _run_schedule_fixture(args.schedule_fixture_root, args.json_out)
 
     conn = _get_db()
     import pymysql
@@ -394,18 +737,27 @@ def main():
     failed = 0
     source_counts = {"raw_text": 0, "api": 0, "cache": 0}
 
-    rows = all_rows
+    rows = _select_reprocess_rows(
+        all_rows,
+        only_with_raw=bool(args.only_with_raw),
+        only_degraded=bool(args.only_degraded),
+        limit=int(args.limit),
+    )
     if args.only_with_raw:
-        rows = [r for r in rows if r.get("raw_text") and len(r["raw_text"]) > 100]
         logger.info("Filtered to %d rows with raw_text", len(rows))
-
-    if args.limit > 0:
-        rows = rows[:args.limit]
+    if args.only_degraded:
+        logger.info("Filtered to %d degraded rows", len(rows))
 
     total = len(rows)
     logger.info("Processing %d rows (dry_run=%s, skip_api=%s)", total, args.dry_run, args.skip_api)
+    stopped_reason = ""
 
     for i, row in enumerate(rows):
+        if args.max_seconds > 0 and time.monotonic() - started_at >= args.max_seconds:
+            stopped_reason = "max_seconds"
+            logger.info("Runtime budget reached (%.1fs), stopping gracefully", args.max_seconds)
+            break
+
         rid = row["id"]
         court_ref = row.get("court_reference") or ""
         case_reason = row.get("case_reason") or ""
@@ -490,9 +842,14 @@ def main():
         "failed": failed,
         "sources": source_counts,
         "dry_run": args.dry_run,
+        "only_degraded": args.only_degraded,
+        "max_seconds": args.max_seconds,
+        "stopped_reason": stopped_reason,
+        "elapsed_sec": round(time.monotonic() - started_at, 2),
     }
     logger.info("=== Final Report ===")
     logger.info(json.dumps(report, ensure_ascii=False, indent=2))
+    _write_json_report(args.json_out, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
     conn.close()

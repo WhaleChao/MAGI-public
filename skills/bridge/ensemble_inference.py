@@ -653,7 +653,7 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
             veto_reasons.append(
                 "法條引用未有依據（溯源檢查）：{}".format("、".join(_fg_ungrounded[:5]))
             )
-            _log.getLogger(__name__).warning(
+            logger.warning(
                 "[rule_fact_grounding] VETO — ungrounded refs: %s",
                 _fg_ungrounded,
             )
@@ -661,7 +661,7 @@ def _build_review_consensus(original_prompt, primary_answer, review_results, tas
             "VETO: {}".format(_fg_ungrounded[:5]) if not _fg_grounded else "OK"
         )
     except Exception as _fg_err:
-        _log.getLogger(__name__).debug(
+        logger.debug(
             "[rule_fact_grounding] skipped: %s", _fg_err
         )
         review_verdicts["rule_fact_grounding"] = "(skipped)"
@@ -754,6 +754,7 @@ def ensemble_chat_verified(
     max_tokens=1024,       # type: int
     task_type="chat",      # type: str
     enable_citation=False, # type: bool
+    heavy=False,           # type: bool
 ):
     # type: (...) -> ConsensusResult
     """兩階段審查模式（正式入口）。
@@ -785,10 +786,48 @@ def ensemble_chat_verified(
     else:
         sys_prompt = _effective_system or "你是 MAGI 法律助理，請用繁體中文回答。"
 
-    primary_result = _call_omlx_chat(
-        role["base"], role["name"], sys_prompt, prompt,
-        timeout_sec=timeout_sec, max_tokens=max_tokens
-    )
+    primary_result = {}
+    if heavy and os.environ.get("NVIDIA_NIM_ENABLE", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from skills.bridge.nim_heavy import run_nim_chat
+            nim_result = run_nim_chat(
+                prompt=prompt,
+                timeout_sec=max(60, int(timeout_sec or DEFAULT_ENSEMBLE_TIMEOUT)),
+                task_type=task_type,
+                require_pii_scrub=True,
+                system_prompt=sys_prompt,
+                heavy=True,
+                user_heavy_authorized=True,
+            )
+            if nim_result.get("success") and nim_result.get("response"):
+                primary_result = {
+                    "success": True,
+                    "text": nim_result["response"],
+                    "model": nim_result.get("model") or "nvidia_nim",
+                    "route": "nvidia_nim",
+                    "pii_scrubbed": bool(nim_result.get("pii_scrubbed")),
+                }
+            else:
+                err = str(nim_result.get("error") or "unknown")
+                return ConsensusResult(
+                    unanimous=False,
+                    result=None,
+                    individual_results={"primary_error": "nvidia_nim:{}".format(err), "heavy": True},
+                    task_type=task_type,
+                )
+        except Exception as exc:
+            return ConsensusResult(
+                unanimous=False,
+                result=None,
+                individual_results={"primary_error": "nvidia_nim:{}".format(exc), "heavy": True},
+                task_type=task_type,
+            )
+
+    if not primary_result:
+        primary_result = _call_omlx_chat(
+            role["base"], role["name"], sys_prompt, prompt,
+            timeout_sec=timeout_sec, max_tokens=max_tokens
+        )
     primary_answer = primary_result.get("text", "")
 
     if not primary_answer:
@@ -803,6 +842,9 @@ def ensemble_chat_verified(
     review_results = _ensemble_review(prompt, primary_answer, timeout_sec=review_timeout)
 
     consensus = _build_review_consensus(prompt, primary_answer, review_results, task_type=task_type)
+    if heavy:
+        consensus.individual_results["heavy"] = True
+        consensus.individual_results["primary_route"] = primary_result.get("route") or "omlx"
 
     # Phase 5 citation injection（不影響既有 caller：enable_citation 預設 False）
     if enable_citation:
@@ -837,6 +879,7 @@ def ensemble_chat_with_tools(
     max_tokens=1024, # type: int
     task_type="chat",# type: str
     context="",      # type: str
+    heavy=False,     # type: bool
 ):
     # type: (...) -> ConsensusResult
     """工具增強版 ensemble 入口（Casper ReAct + Melchior/Balthasar 審查）。
@@ -851,7 +894,7 @@ def ensemble_chat_with_tools(
     if not _ENSEMBLE_TOOLS_ENABLED:
         return ensemble_chat_verified(
             prompt=prompt, system=system, timeout_sec=timeout_sec,
-            max_tokens=max_tokens, task_type=task_type,
+            max_tokens=max_tokens, task_type=task_type, heavy=heavy,
         )
 
     # Phase 1: ReAct on E4B
@@ -866,12 +909,18 @@ def ensemble_chat_with_tools(
         full_soul = "{}\n\n---\n{}".format(casper_soul, system).strip() if system and casper_soul else (casper_soul or system or "")
 
         react_timeout = max(30, timeout_sec - 20)  # 留 20s 給 Phase 2
+        if task_type == "agentic":
+            react_timeout = min(
+                react_timeout,
+                int(os.environ.get("MAGI_AGENTIC_REACT_TIMEOUT_SEC", "35") or "35"),
+            )
 
         engine = ReActEngine.for_omlx(
             user_query=prompt,
-            max_steps=5,
+            max_steps=int(os.environ.get("MAGI_AGENTIC_MAX_STEPS", "3") or "3") if task_type == "agentic" else 5,
             total_timeout=react_timeout,
             soul_text=full_soul,
+            heavy=heavy,
         )
         result = engine.run(prompt, context=context)
 
@@ -880,6 +929,8 @@ def ensemble_chat_with_tools(
             "tools_used": result.get("tools_used", []),
             "elapsed_sec": result.get("elapsed_sec", 0),
             "partial": result.get("partial", False),
+            "llm_route": "nvidia_nim" if heavy else "omlx",
+            "trace": (result.get("trace") or [])[-12:],
         }
         tools_used = result.get("tools_used", [])
 
@@ -896,7 +947,7 @@ def ensemble_chat_with_tools(
         logger.info("ReAct 無答案，fallback 到 ensemble_chat_verified")
         return ensemble_chat_verified(
             prompt=prompt, system=system, timeout_sec=timeout_sec,
-            max_tokens=max_tokens, task_type=task_type,
+            max_tokens=max_tokens, task_type=task_type, heavy=heavy,
         )
 
     # Phase 2: Melchior + Balthasar 審查
@@ -909,6 +960,9 @@ def ensemble_chat_with_tools(
     # 追加 ReAct trace 到 individual_results 供 debug
     cr.individual_results["react_trace"] = react_trace
     cr.individual_results["tools_used"] = tools_used
+    if heavy:
+        cr.individual_results["heavy"] = True
+        cr.individual_results["primary_route"] = "nvidia_nim"
 
     return cr
 

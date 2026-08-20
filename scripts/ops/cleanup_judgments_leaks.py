@@ -60,11 +60,13 @@ from api.osc.insight_filters import (  # noqa: E402
     is_non_extractable_legal_insight,
     non_extractable_legal_insight_sql_where,
 )
+from api.runtime_paths import get_judgments_json_path  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("cleanup-judgments")
 
-JSON_PATH = _MAGI_ROOT / "skills" / "judgment-collector" / "judgments.json"
+LEGACY_JSON_PATH = _MAGI_ROOT / "skills" / "judgment-collector" / "judgments.json"
+JSON_PATH = get_judgments_json_path()
 
 # ── 漏風 pattern（與 _sanitize_summary 對齊）──
 _LEAK_SIGNATURES = [
@@ -249,10 +251,11 @@ def _get_db_conn():
 
 # ── JSON cleanup ──
 def cleanup_json(apply: bool, conn, *, enrich_fulltext: bool = False) -> Dict[str, Any]:
-    if not JSON_PATH.exists():
+    read_path = JSON_PATH if JSON_PATH.exists() else LEGACY_JSON_PATH
+    if not read_path.exists():
         return {"error": "judgments.json not found"}
 
-    with open(JSON_PATH, "r", encoding="utf-8") as f:
+    with open(read_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     stats = {
@@ -325,9 +328,10 @@ def cleanup_json(apply: bool, conn, *, enrich_fulltext: bool = False) -> Dict[st
     stats["final_count"] = len(out)
 
     if apply:
+        JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         backup = JSON_PATH.with_suffix(f".json.bak.{ts}")
-        backup.write_text(JSON_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        backup.write_text(read_path.read_text(encoding="utf-8"), encoding="utf-8")
         tmp = JSON_PATH.with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(out, ensure_ascii=False, indent=2),

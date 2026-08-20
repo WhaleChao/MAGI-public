@@ -6,7 +6,9 @@ MAGI legal web adapter
 Shared engine-selection shim for legal interactive web flows.
 
 Current policy:
-- Default stays on Selenium/WebDriver for interactive portal automation.
+- Legacy portal automation defaults to Selenium/WebDriver.
+- MAGI's v2 legal portals (法扶、閱卷、筆錄) default to Playwright Chromium
+  because those modules use the shared Playwright wrapper with Selenium fallback.
 - When Scrapling is requested through feature flags, we record the intent and
   keep a deterministic fallback reason so modules can dual-track safely.
 """
@@ -17,6 +19,14 @@ import os
 from typing import Dict
 
 
+_DEFAULT_ENGINE_BY_COMPONENT = {
+    "file_review_portal": "playwright",
+    "laf_portal_v2": "playwright",
+    "judicial_sso_v2": "playwright",
+    "judicial_transcript_v2": "playwright",
+}
+
+
 def _truthy(value: str) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -25,6 +35,8 @@ def _normalize_engine(value: str) -> str:
     raw = (value or "").strip().lower()
     if raw in {"scrapling", "dynamicfetcher", "stealthyfetcher"}:
         return "scrapling"
+    if raw in {"playwright", "pw", "chromium"}:
+        return "playwright"
     if raw in {"selenium", "webdriver", "chrome", "edge"}:
         return "selenium"
     return ""
@@ -45,7 +57,7 @@ def resolve_legal_web_engine(component: str, *, interactive_required: bool = Tru
     if not requested and _truthy(os.environ.get("MAGI_USE_SCRAPLING", "")):
         requested = "scrapling"
     if not requested:
-        requested = "selenium"
+        requested = _DEFAULT_ENGINE_BY_COMPONENT.get(component, "selenium")
 
     if interactive_required and requested == "scrapling":
         return {

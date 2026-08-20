@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 from datetime import datetime
@@ -13,9 +14,13 @@ from typing import Iterable, Set
 _MAGI_ROOT = Path(__file__).resolve().parent.parent.parent
 MAGI_ROOT = _MAGI_ROOT
 SKILLS_DIR = MAGI_ROOT / "skills"
-OPENCLAW_ROOT = Path("/Users/ai/.openclaw/skills/magi-office-ops")
+OPENCLAW_ROOT = Path.home() / ".openclaw" / "skills" / "magi-office-ops"
 ARCHIVE_ROOT = MAGI_ROOT / "archive" / "skills_quarantine"
 REPORT_ROOT = MAGI_ROOT / "static"
+_V3_RELEASE = bool(os.environ.get("MAGI_V3_RELEASE_ID", "").strip())
+REPORT_ROOT = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or REPORT_ROOT
+).expanduser()
 
 
 MANUAL_KEEP: Set[str] = {
@@ -104,6 +109,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Quarantine non-core MAGI skills (non-destructive).")
     ap.add_argument("--execute", action="store_true", help="Actually move non-allowlisted skill dirs.")
     args = ap.parse_args()
+
+    if args.execute and _V3_RELEASE:
+        print(json.dumps({
+            "ok": False,
+            "error": "immutable_v3_release",
+            "message": "V3 release skills cannot be quarantined in place",
+        }, ensure_ascii=False))
+        return 2
 
     if not SKILLS_DIR.exists():
         print(json.dumps({"ok": False, "error": "skills_dir_missing", "skills_dir": str(SKILLS_DIR)}, ensure_ascii=False))

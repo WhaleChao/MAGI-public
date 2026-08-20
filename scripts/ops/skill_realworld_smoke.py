@@ -21,7 +21,13 @@ if str(ROOT) not in sys.path:
 from skills.catalog import iter_top_level_skill_dirs
 
 
-REPORT_DIR = ROOT / "static" / "reports"
+_MUTABLE_STATIC_DIR = Path(
+    os.environ.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or ROOT / "static"
+).expanduser()
+REPORT_DIR = Path(
+    os.environ.get("MAGI_SKILL_SMOKE_REPORT_DIR", "").strip()
+    or _MUTABLE_STATIC_DIR / "reports"
+).expanduser()
 CJK_FONT_CANDIDATES = (
     Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
     Path("/System/Library/Fonts/PingFang.ttc"),
@@ -274,6 +280,7 @@ def run_matrix() -> dict[str, Any]:
 
 
 def write_reports(summary: dict[str, Any]) -> tuple[Path, Path]:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = REPORT_DIR / f"skill_realworld_smoke_{stamp}.json"
     md_path = REPORT_DIR / f"skill_realworld_smoke_{stamp}.md"

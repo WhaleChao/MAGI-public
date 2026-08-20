@@ -118,12 +118,16 @@ def build_market_chat_summary(report: str, export_info: Optional[Dict[str, Any]]
     pointer = ""
     if export_info:
         pointer = str(export_info.get("url") or export_info.get("path") or "").strip()
-    suffix = f"\n\n完整報告：{pointer}" if pointer else "\n\n完整報告已輸出，請查看 MAGI static/exports。"
+    suffix = (
+        f"\n\n完整報告：{pointer}"
+        if pointer
+        else "\n\n完整報告已輸出，請到 MAGI 網頁的匯出報告區查看。"
+    )
     return result[: max(200, CHAT_INLINE_LIMIT - len(suffix) - 1)].rstrip() + "…" + suffix
 
 
 def export_market_report(report: str) -> Dict[str, Any]:
-    """Export a full market report to static/exports as TXT."""
+    """Export a full market report as TXT with an authenticated web URL."""
     try:
         from skills.ops.export_text import export_txt
 

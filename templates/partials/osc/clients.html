@@ -24,8 +24,8 @@
                 </div>
                 <div class="field-grid cols-4" style="margin-top:10px;">
                     <div class="field">
-                        <label for="client_id">ID</label>
-                        <input id="client_id" placeholder="留空自動產生">
+                        <label for="client_id">當事人編號</label>
+                        <input id="client_id" placeholder="自動產生（C0001 起）" readonly>
                     </div>
                     <div class="field">
                         <label for="client_name">姓名</label>
@@ -53,12 +53,12 @@
                     </div>
                     <div class="field">
                         <label for="client_status">狀態</label>
-                        <input id="client_status" placeholder="預設 Active">
+                        <input id="client_status" placeholder="預設使用中">
                     </div>
                 </div>
                 <div class="field" style="margin-top:10px;">
                     <label for="client_notes">備註</label>
-                    <textarea id="client_notes" placeholder="notes"></textarea>
+                    <textarea id="client_notes" placeholder="備註（選填）"></textarea>
                 </div>
                 <div class="toolbar" style="margin-top:8px;">
                     <button class="btn primary" id="clientSaveBtn">儲存當事人</button>
@@ -96,4 +96,3 @@
                 </div>
             </div>
         </section>
-

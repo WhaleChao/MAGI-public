@@ -128,9 +128,10 @@ def _register_direct_handlers(orch: object, registry) -> None:
         "judgment_trend",
         lambda: orch._run_judgment_trend_command(orch._last_dispatch_message),
         capability_guide=(
-            "✅ **我可以分析判決趨勢！**\n\n"
-            "• 總覽：`判決趨勢`\n"
-            "• 特定案由：`判決趨勢 詐欺`"
+            "✅ **我可以查法官量刑與判決趨勢！**\n\n"
+            "• 特定案由：`判決趨勢 詐欺`\n"
+            "• 法院、法官與期間：`查臺灣花蓮地方法院王小明法官詐欺案件，民國112年至115年的量刑趨勢`\n"
+            "結果與網頁版共用同一套 MCP、官方全文、附表與定執行刑品質閘門。"
         ),
     )
 

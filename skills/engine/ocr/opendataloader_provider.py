@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -22,7 +23,32 @@ from skills.engine.ocr.ocr_schema import OCRProviderResult
 from skills.engine.ocr.quality import compute_quality_score
 
 
-_CACHE: Dict[Tuple[str, int, int, str, str], OCRProviderResult] = {}
+_CACHE: "OrderedDict[Tuple[str, int, int, str, str], OCRProviderResult]" = OrderedDict()
+
+
+def _cache_max_entries() -> int:
+    try:
+        return max(1, int(os.environ.get("MAGI_OPENDATALOADER_CACHE_MAX_ENTRIES", "128") or "128"))
+    except (TypeError, ValueError):
+        return 128
+
+
+def _cache_get(key: Tuple[str, int, int, str, str]) -> Optional[OCRProviderResult]:
+    value = _CACHE.get(key)
+    if value is not None:
+        _CACHE.move_to_end(key)
+    return value
+
+
+def _cache_put(key: Tuple[str, int, int, str, str], result: OCRProviderResult) -> None:
+    # A changed file invalidates older mtime/size variants for the same path.
+    for old_key in list(_CACHE):
+        if old_key != key and old_key[0] == key[0]:
+            _CACHE.pop(old_key, None)
+    _CACHE[key] = result
+    _CACHE.move_to_end(key)
+    while len(_CACHE) > _cache_max_entries():
+        _CACHE.popitem(last=False)
 
 
 def _enabled() -> bool:
@@ -135,7 +161,7 @@ def run_pdf(
     hybrid = _hybrid_mode()
     page_scope = _page_key(page_indexes)
     key = (str(path.resolve()), int(stat.st_mtime), int(stat.st_size), hybrid, page_scope)
-    cached = _CACHE.get(key)
+    cached = _cache_get(key)
     if cached is not None:
         return cached
 
@@ -144,7 +170,7 @@ def run_pdf(
         import opendataloader_pdf  # type: ignore
     except Exception as exc:
         result = OCRProviderResult.failure("opendataloader_pdf", f"import failed: {type(exc).__name__}: {exc}")
-        _CACHE[key] = result
+        _cache_put(key, result)
         return result
 
     try:
@@ -166,13 +192,13 @@ def run_pdf(
             f"convert failed: {type(exc).__name__}: {str(exc)[:220]}",
         )
         result.duration_sec = round(time.monotonic() - started, 3)
-        _CACHE[key] = result
+        _cache_put(key, result)
         return result
 
     if not raw_text.strip():
         result = OCRProviderResult.failure("opendataloader_pdf", "empty output")
         result.duration_sec = round(time.monotonic() - started, 3)
-        _CACHE[key] = result
+        _cache_put(key, result)
         return result
 
     corrected = raw_text if task_type == "captcha" else correct_legal_text(raw_text, task_type=task_type).corrected_text
@@ -187,5 +213,5 @@ def run_pdf(
         entities=entities,
         duration_sec=round(time.monotonic() - started, 3),
     )
-    _CACHE[key] = result
+    _cache_put(key, result)
     return result

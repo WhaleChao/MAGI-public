@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "plan_id": "v3-isolated-smoke-v1",
+  "created_at": "2026-07-14T02:10:00Z",
+  "mode": "isolated_live_validation",
+  "environment": {
+    "ports": {"main": 5102, "tools": 5103, "admin": 8188},
+    "production_services_started": false,
+    "external_ingress_enabled": false,
+    "writers_enabled": false,
+    "scheduler_enabled": false,
+    "webhook_consumers_enabled": false,
+    "model_switch_enabled": false,
+    "production_db_allowed": false,
+    "nas_allowed": false,
+    "channel_delivery_allowed": false
+  },
+  "checks": [
+    {
+      "check_id": "main-livez",
+      "route": {
+        "service": "5002",
+        "rule": "/livez",
+        "method": "GET",
+        "endpoint": "admin_runtime.livez"
+      },
+      "side_effect_class": "read_only",
+      "execution_mode": "live_probe",
+      "timeout_sec": 3,
+      "assertions": ["HTTP response is successful", "response satisfies its legacy shape"]
+    },
+    {
+      "check_id": "external-chat-contract-only",
+      "route": {
+        "service": "5003",
+        "rule": "/osc/external/chat",
+        "method": "POST",
+        "endpoint": "external_osc_chat"
+      },
+      "side_effect_class": "external_commit",
+      "execution_mode": "offline_replay",
+      "timeout_sec": 3,
+      "assertions": ["fixture adapts to the canonical API envelope", "no request is sent"]
+    }
+  ]
+}

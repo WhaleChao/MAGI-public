@@ -27,10 +27,10 @@ function buildSaasFallbackOverview(error) {
         capabilities: [],
         readiness: {
             mode_label: "單主機 MAGI",
-            status_page: {label: "NERV 上線狀態", url: "/dashboard/nerv"},
+            status_page: {label: "狀態中心", url: "/status"},
             summary: {ready: 0, guarded: 0, not_needed: 3, needs_attention: 0},
             checks: [
-                {title: "NERV 上線狀態", status: "ready", detail: "請開啟 NERV 查看即時服務狀態。", actions: [{act: "open-url", url: "/dashboard/nerv", label: "開啟 NERV"}]},
+                {title: "狀態中心", status: "ready", detail: "請開啟狀態中心查看即時服務狀態。", actions: [{act: "open-url", url: "/status", label: "開啟狀態中心"}]},
                 {title: "本版不啟用", status: "not_needed", detail: "多租戶、電子簽章、公開上傳入口暫不納入。", actions: []},
             ],
         },
@@ -111,10 +111,10 @@ function renderSaasReadiness(readiness) {
         <div class="stat-card">
             <div class="stat-label">開放前檢查</div>
             <div class="stat-value" style="font-size:16px;">${esc(readiness.mode_label || "單主機 MAGI")}</div>
-            <div class="muted" style="margin-top:6px;">NERV 作為正式上線狀態頁；多租戶、電子簽章、公開上傳入口不啟用。</div>
+            <div class="muted" style="margin-top:6px;">狀態中心作為正式上線狀態頁；多租戶、電子簽章、公開上傳入口不啟用。</div>
             <div class="inline-actions" style="margin-top:8px;">
-                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.url || "/dashboard/nerv")}">${esc(statusPage.label || "開啟 NERV")}</button>
-                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.health_api || "/dashboard/nerv/api/health")}">健康 API</button>
+                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.url || "/status")}">${esc(statusPage.label || "開啟狀態中心")}</button>
+                <button class="btn slim" data-act="open-url" data-url="${esc(statusPage.health_api || "/status/api/health")}">健康 API</button>
             </div>
         </div>
         <div class="stat-card">
@@ -170,7 +170,7 @@ function renderSaasIntegration(integration) {
         {area: "案件資料", mode: "新增、查詢、開資料夾", source: "案件列表、當事人", target_tabs: [{tab: "cases", label: "案件列表"}, {tab: "clients", label: "當事人"}]},
         {area: "期限與待辦", mode: "待辦、日曆、風險提醒", source: "待辦事項、行事曆", target_tabs: [{tab: "todos", label: "待辦事項"}, {tab: "calendar", label: "行事曆"}]},
         {area: "法扶流程", mode: "派案、開辦、二階段、結案", source: "法扶管理", target_tab: "laf", target_label: "法扶管理"},
-        {area: "文件與書狀", mode: "索引、草擬、人工修正學習", source: "書狀索引、AI 草擬", target_tabs: [{tab: "documents", label: "書狀索引"}, {tab: "drafts", label: "AI 草擬"}]},
+        {area: "文件與書狀", mode: "索引、草擬、人工修正學習", source: "文件總索引、AI 草擬", target_tabs: [{tab: "documents", label: "文件總索引"}, {tab: "drafts", label: "AI 草擬"}]},
     ];
     host.innerHTML = items.length ? items.map(x => `
         <div class="stat-card">
@@ -328,13 +328,13 @@ function renderSaasTaskBoards(boards) {
     const calSummary = document.getElementById("saasCalendarEventSummary");
     const osc = boards.osc_todos || {};
     const cal = boards.calendar_events || {};
-    if (oscSummary) oscSummary.textContent = `${Number(osc.count || 0)} 筆｜來源：${osc.source || "case_todos"}`;
+    if (oscSummary) oscSummary.textContent = `${Number(osc.count || 0)} 筆｜來源：${osc.source || "OSC 手動或 PDF 建立待辦"}`;
     if (calSummary) {
         const counts = cal.source_counts || {};
-        calSummary.textContent = `${Number(cal.count || 0)} 筆｜calendar_events ${Number(counts.calendar_events || 0)}，日曆匯入 ${Number(counts.gcal_import || 0)}`;
+        calSummary.textContent = `${Number(cal.count || 0)} 筆｜MAGI 行事曆 ${Number(counts.calendar_events || 0)}，Google 匯入 ${Number(counts.gcal_import || 0)}，行事曆待辦 ${Number(counts.calendar_todo || 0)}`;
     }
     renderBoard("saasOscTodoBody", osc, "目前沒有 OSC 建立待辦");
-    renderBoard("saasCalendarEventBody", cal, "目前沒有行事曆事件");
+    renderBoard("saasCalendarEventBody", cal, "目前沒有案件行程同步紀錄");
 }
 
 function renderSaasRisk(risk) {

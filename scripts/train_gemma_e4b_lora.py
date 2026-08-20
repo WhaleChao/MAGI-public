@@ -22,8 +22,10 @@ train_gemma_e4b_lora.py — Gemma E4B LoRA 微調 / 合併 / 驗證
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -106,6 +108,149 @@ _ASCII_ALPHA_RE = re.compile(r"[A-Za-z]")
 
 # ── mlx-lm Python（使用 oMLX 內建 Python 3.11）──────────────────────
 OMLX_PYTHON = "/opt/homebrew/opt/omlx/libexec/bin/python3.11"
+
+
+def _atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _bounded_owned_profile(raw: str) -> tuple[Path, dict]:
+    if os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") != "1":
+        raise RuntimeError("bounded training requires the V3 schedule fixture")
+    root_raw = os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT", "").strip()
+    if not root_raw:
+        raise RuntimeError("bounded training fixture root is missing")
+    root = Path(root_raw).expanduser().resolve(strict=True)
+    profile = Path(raw).expanduser()
+    if profile.is_symlink():
+        raise RuntimeError("bounded training profile may not be a symlink")
+    profile = profile.resolve(strict=True)
+    try:
+        profile.relative_to(root)
+        DISTILL_DIR.resolve().relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("bounded training escaped its fixture root") from exc
+    try:
+        payload = json.loads(profile.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("bounded training profile is unreadable") from exc
+    if payload.get("schema") != "magi.gemma-bounded-training/v1":
+        raise RuntimeError("bounded training profile schema is invalid")
+    if payload.get("deploy") != "forbidden":
+        raise RuntimeError("bounded training profile must forbid deploy")
+    steps = payload.get("optimizer_steps")
+    rate = payload.get("learning_rate")
+    if type(steps) is not int or not 2 <= steps <= 12:
+        raise RuntimeError("bounded training optimizer_steps is invalid")
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool) or not 0 < float(rate) <= 0.2:
+        raise RuntimeError("bounded training learning_rate is invalid")
+    return root, payload
+
+
+def _bounded_rows(path: Path, root: Path) -> list[tuple[float, float]]:
+    resolved = path.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("bounded training data escaped its fixture root") from exc
+    rows: list[tuple[float, float]] = []
+    for raw in resolved.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        item = json.loads(raw)
+        messages = item.get("messages") if isinstance(item, dict) else None
+        if not isinstance(messages, list) or len(messages) < 2:
+            raise RuntimeError("bounded training row is malformed")
+        prompt = str(messages[0].get("content") or "")
+        answer = str(messages[-1].get("content") or "")
+        # Deterministic scalar features keep this loop cheap while still
+        # exercising forward loss, gradients, optimizer updates and eval.
+        x = max(0.1, min(len(prompt) / 64.0, 8.0))
+        y = max(0.1, min(len(answer) / 256.0, 8.0))
+        rows.append((x, y))
+    if not rows:
+        raise RuntimeError("bounded training data is empty")
+    return rows
+
+
+def _bounded_loss(rows: list[tuple[float, float]], weight: float, bias: float) -> float:
+    return sum(((weight * x + bias) - y) ** 2 for x, y in rows) / len(rows)
+
+
+def run_bounded_training(raw_profile: str) -> dict:
+    """Run the production train/checkpoint/eval lifecycle on a tiny local model."""
+
+    root, profile = _bounded_owned_profile(raw_profile)
+    train_rows = _bounded_rows(TRAIN_PATH, root)
+    eval_rows = _bounded_rows(EVAL_PATH, root)
+    steps = int(profile["optimizer_steps"])
+    learning_rate = float(profile["learning_rate"])
+    version = f"bounded-sample-{int(profile.get('sample_id') or 0):03d}"
+    checkpoint_dir = ADAPTERS_DIR / f"adapter_{version}" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    weight = float(profile.get("initial_weight", 0.0))
+    bias = float(profile.get("initial_bias", 0.0))
+    initial_loss = _bounded_loss(train_rows, weight, bias)
+    history: list[dict] = []
+    checkpoints: list[str] = []
+    for step in range(1, steps + 1):
+        grad_weight = 0.0
+        grad_bias = 0.0
+        for x, y in train_rows:
+            error = (weight * x + bias) - y
+            grad_weight += 2.0 * error * x / len(train_rows)
+            grad_bias += 2.0 * error / len(train_rows)
+        weight -= learning_rate * grad_weight
+        bias -= learning_rate * grad_bias
+        loss = _bounded_loss(train_rows, weight, bias)
+        row = {
+            "step": step,
+            "loss": round(loss, 10),
+            "weight": round(weight, 10),
+            "bias": round(bias, 10),
+        }
+        checkpoint = checkpoint_dir / f"step-{step:03d}.json"
+        _atomic_json(checkpoint, row)
+        history.append(row)
+        checkpoints.append(str(checkpoint))
+    final_loss = _bounded_loss(train_rows, weight, bias)
+    eval_loss = _bounded_loss(eval_rows, weight, bias)
+    eval_pass = (
+        math.isfinite(final_loss)
+        and math.isfinite(eval_loss)
+        and final_loss < initial_loss
+        and len(checkpoints) == steps
+    )
+    terminal = {
+        "schema": "magi.gemma-bounded-training-terminal/v1",
+        "status": "passed" if eval_pass else "failed",
+        "version": version,
+        "optimizer_steps": steps,
+        "train_pairs": len(train_rows),
+        "eval_pairs": len(eval_rows),
+        "initial_train_loss": round(initial_loss, 10),
+        "final_train_loss": round(final_loss, 10),
+        "eval_loss": round(eval_loss, 10),
+        "validation_pass": eval_pass,
+        "checkpoint_count": len(checkpoints),
+        "checkpoint_sha256": [
+            hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in checkpoints
+        ],
+        "history": history,
+        "deploy_allowed": False,
+        "deployed": False,
+        "active_model_written": False,
+        "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    terminal_path = DISTILL_DIR / "bounded_training_terminal.json"
+    _atomic_json(terminal_path, terminal)
+    return {**terminal, "terminal_path": str(terminal_path)}
 
 
 def _version_tag() -> str:
@@ -425,7 +570,13 @@ def main() -> int:
     parser.add_argument("--validate", action="store_true", help="跑 eval 驗證")
     parser.add_argument("--all", action="store_true", help="依序 train → merge → validate")
     parser.add_argument("--version", default="", help="指定版本號（不指定則自動生成）")
+    parser.add_argument("--bounded-training-profile")
     args = parser.parse_args()
+
+    if args.bounded_training_profile:
+        result = run_bounded_training(args.bounded_training_profile)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result.get("status") == "passed" else 1
 
     if not any([args.train, args.merge, args.validate, args.all]):
         parser.print_help()

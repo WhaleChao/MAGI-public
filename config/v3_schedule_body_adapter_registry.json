@@ -1,0 +1,3973 @@
+{
+  "schema_version": 1,
+  "status": "incomplete",
+  "purpose": "Release-bound, fail-closed registry for three-sample execution of real scheduled job bodies in disposable fixtures.",
+  "release_binding": {
+    "cron_jobs_source_path": "cron_jobs.json",
+    "cron_jobs_source_sha256": "21778907c9efb4ea2b65688c653287b34288d8248bab9f08ac3a05d9652677f5",
+    "logical_definition_sha256": "21da77816a562dfba79ded3928a58b6dcb9cdaca8b0a8fa4f1369807cfe35187",
+    "inherited_baseline_path": "config/v3_schedule_realism_baseline.json",
+    "inherited_baseline_sha256": "b8988c877967258fc7dfdd659749fa8a766aafebab7e4a92491cefe47bc56cf2",
+    "formal_run_requires_release_id": true,
+    "formal_run_requires_manifest_sha256": true
+  },
+  "execution_contract": {
+    "minimum_successful_samples": 3,
+    "real_job_body_required": true,
+    "help_is_forbidden": true,
+    "dispatcher_latency_is_forbidden": true,
+    "sleep_probe_is_forbidden": true,
+    "fake_handler_is_forbidden": true,
+    "network": "deny_except_adapter_bound_localhost_dependencies",
+    "notifications": "deny",
+    "writes": "fixture_root_only",
+    "production_state_reads": "deny_seatbelt"
+  },
+  "inherit_existing_safe_adapters": true,
+  "new_safe_adapters": [
+    {
+      "job_id": "job_local_deep_queue_worker",
+      "production_entrypoint": "scripts/ops/local_deep_queue_worker.py",
+      "safety_class": "private_local_queue_idle_fixture",
+      "fixture_kind": "local_deep_queue_idle",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/local_deep_queue_worker.py"
+      ],
+      "environment": {
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_LOCAL_DEEP_RETRY_SEC": "30"
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "state": "idle"
+        }
+      }
+    },
+    {
+      "job_id": "job_exam_tutor_yearly_sync",
+      "production_entrypoint": "scripts/sync_exam_tutor_yearly.py",
+      "safety_class": "sealed_official_pdf_parser_and_disposable_exam_database",
+      "fixture_kind": "exam_tutor_yearly_offline",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/sync_exam_tutor_yearly.py",
+        "--year",
+        "115",
+        "--database",
+        "<FIXTURE>/agent/exam-tutor/exam_tutor.sqlite3",
+        "--archive-root",
+        "<FIXTURE>/agent/exam-tutor/archive",
+        "--status-path",
+        "<FIXTURE>/agent/exam-tutor/yearly_sync_status.json",
+        "--offline-fixture-root",
+        "<ROOT>/static/exam_tutor/source-pdfs"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_EXAM_TUTOR_ARCHIVE_DIR": "<FIXTURE>/agent/exam-tutor/archive",
+        "MAGI_EXAM_TUTOR_DB_PATH": "<FIXTURE>/agent/exam-tutor/exam_tutor.sqlite3",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "agent/exam-tutor/yearly_sync_status.json",
+        "equals": {
+          "state": "ok",
+          "latest_choice_year": 115,
+          "choice_imported": 300,
+          "choice_subjects_ready": 4,
+          "fixture.network_accessed": false
+        }
+      }
+    },
+    {
+      "job_id": "job_laf_gmail_dispatch_scan",
+      "production_entrypoint": "scripts/ops/laf_gmail_dispatch_scan.py",
+      "safety_class": "disposable_gmail_provider_and_mariadb",
+      "fixture_kind": "laf_gmail_willingness_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/laf_gmail_dispatch_scan.py",
+        "--max-results",
+        "80",
+        "--apply",
+        "--json-out",
+        "<FIXTURE>/static/laf_gmail_monitor_state.json",
+        "--pending-out",
+        "<FIXTURE>/runtime/laf_gmail_dispatch_pending.json"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/magi-root/json/config.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_LAF_GMAIL_PROVIDER_FIXTURE": "<FIXTURE>/gmail-provider.json",
+        "MAGI_LAF_GMAIL_STATE_PATH": "<FIXTURE>/static/laf_gmail_monitor_state.json",
+        "MAGI_LAF_GMAIL_PENDING_PATH": "<FIXTURE>/runtime/laf_gmail_dispatch_pending.json",
+        "MAGI_GMAIL_CREDENTIALS_PATH": "<FIXTURE>/magi-root/json/credentials.json",
+        "MAGI_LAF_GMAIL_TOKEN_PATH": "<FIXTURE>/runtime/laf-token.pickle",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_NAME": "law_firm_data",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "law_firm_data",
+        "MEMORY_ENABLE_FAISS": "0"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE law_firm_data.laf_email_records (id BIGINT PRIMARY KEY AUTO_INCREMENT, gmail_message_id VARCHAR(255) NOT NULL UNIQUE, subject TEXT, sender VARCHAR(320), received_at DATETIME NULL, processed_at DATETIME NULL, status VARCHAR(40), case_number VARCHAR(100), created_case_id VARCHAR(100), error_message TEXT, created_date DATETIME NULL)",
+          "CREATE TABLE law_firm_data.cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(40), client_name VARCHAR(120))"
+        ],
+        "expected_requests": {
+          "INSERT INTO `laf_email_records`": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.laf_email_records WHERE gmail_message_id='willingness-fixture-1' AND status='completed'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 0
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "laf_gmail_willingness_provider"
+      }
+    },
+    {
+      "job_id": "job_laf_portal_new_files_scan",
+      "production_entrypoint": "scripts/ops/laf_portal_new_files_scan.py",
+      "safety_class": "disposable_laf_portal_provider_nas_and_mariadb",
+      "fixture_kind": "laf_portal_download_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/laf_portal_new_files_scan.py",
+        "--apply",
+        "--json-out",
+        "<FIXTURE>/static/laf_portal_new_files_latest.json"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/magi-root/json/config.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_LAF_AUDIT_CASE_ROOT": "<FIXTURE>/case-roots",
+        "MAGI_LAF_PORTAL_PROVIDER_FIXTURE": "<FIXTURE>/portal-provider.json",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_NAME": "law_firm_data"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE law_firm_data.cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(40), client_name VARCHAR(120), case_type VARCHAR(40), case_stage VARCHAR(40), case_category VARCHAR(80), case_reason VARCHAR(160), status VARCHAR(40), folder_path TEXT, legal_aid_number VARCHAR(40), laf_case_no VARCHAR(40), application_no VARCHAR(40), legal_aid_status VARCHAR(40), created_date DATETIME NULL, updated_date DATETIME NULL)",
+          "INSERT INTO law_firm_data.cases (case_number,client_name,case_type,case_stage,case_category,case_reason,status,folder_path,legal_aid_number,legal_aid_status) VALUES ('2026-0060','隔離當事人','民事','一審','法律扶助案件','消費者債務清理','進行中','<FIXTURE>/stale/法扶案件/民事/2026-0060-舊名稱','1150529-W-002','進行中')"
+        ],
+        "expected_requests": {
+          "FROM `cases`": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE legal_aid_number='1150529-W-002'",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "laf_portal_download_provider"
+      }
+    },
+    {
+      "job_id": "job_laf_portal_retry_once",
+      "production_entrypoint": "casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+      "safety_class": "disposable_laf_portal_retry_provider_nas",
+      "fixture_kind": "laf_portal_retry_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+        "--mode",
+        "portal-retry-once",
+        "--max-items",
+        "2",
+        "--timeout-sec",
+        "120",
+        "--no-notify"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/magi-root/json/config.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_LAF_WORKFLOW_PROVIDER_FIXTURE": "<FIXTURE>/workflow-provider.json",
+        "MAGI_LAF_USERNAME": "fixture-user",
+        "MAGI_LAF_PASSWORD": "fixture-password"
+      },
+      "success_contract": {
+        "type": "laf_portal_retry_provider"
+      }
+    },
+    {
+      "job_id": "job_laf_condition_draft",
+      "production_entrypoint": "casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+      "safety_class": "disposable_laf_workflow_provider_nas_and_mariadb",
+      "fixture_kind": "laf_condition_draft_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+        "--mode",
+        "condition-draft",
+        "--max-cases",
+        "3"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/magi-root/json/config.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_LAF_WORKFLOW_PROVIDER_FIXTURE": "<FIXTURE>/workflow-provider.json",
+        "MAGI_LAF_USERNAME": "fixture-user",
+        "MAGI_LAF_PASSWORD": "fixture-password",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_NAME": "law_firm_data"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE law_firm_data.cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(40), client_name VARCHAR(120), legal_aid_number VARCHAR(40), laf_case_no VARCHAR(40), application_no VARCHAR(40), folder_path TEXT, status VARCHAR(40), case_category VARCHAR(80), legal_aid_status VARCHAR(40), created_date DATETIME NULL, updated_at DATETIME NULL, notes TEXT)",
+          "CREATE TABLE law_firm_data.laf_lifecycle_log (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(40), event_type VARCHAR(40), event_data LONGTEXT, status VARCHAR(40), created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+          "INSERT INTO law_firm_data.cases (case_number,client_name,legal_aid_number,folder_path,status,case_category,legal_aid_status) VALUES ('2099-0002','隔離當事人','1150709-T-051','<FIXTURE>/cases/2099-0002-隔離當事人-民事-一審-調解','進行中','法律扶助案件','進行中')"
+        ],
+        "expected_requests": {
+          "INSERT INTO `laf_lifecycle_log`": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.laf_lifecycle_log WHERE case_number='1150709-T-051' AND event_type='condition' AND status='draft'",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "laf_condition_draft_provider"
+      }
+    },
+    {
+      "job_id": "job_laf_nightly_audit",
+      "production_entrypoint": "scripts/laf_nightly_audit.py",
+      "safety_class": "disposable_laf_audit_provider_nas_and_mariadb_proposal_only",
+      "fixture_kind": "laf_nightly_audit_bounded",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/laf_nightly_audit.py",
+        "--no-notify"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/magi-root/json/config.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "MAGI_LAF_NIGHTLY_AUDIT_PROFILE": "<FIXTURE>/nightly-profile.json",
+        "MAGI_LAF_PORTAL_PROVIDER_FIXTURE": "<FIXTURE>/portal-provider.json",
+        "MAGI_LAF_AUDIT_REPORT_DIR": "<FIXTURE>/reports",
+        "MAGI_LAF_AUDIT_CASE_ROOT": "<FIXTURE>/01_案件",
+        "MAGI_LAF_AUTO_CLOSING_DRAFT": "0",
+        "MAGI_LAF_AUTO_GO_LIVE_PREFILL": "0",
+        "MAGI_LAF_AUTO_MARK_GO_LIVE_READY": "0",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_NAME": "law_firm_data",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "law_firm_data"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE law_firm_data.cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(40), client_name VARCHAR(120), case_type VARCHAR(40), case_reason VARCHAR(160), case_category VARCHAR(80), status VARCHAR(40), folder_path TEXT, legal_aid_number VARCHAR(40), laf_case_no VARCHAR(40), application_no VARCHAR(40), legal_aid_status VARCHAR(40), legal_aid_approval_status VARCHAR(40), legal_aid_startup_deadline DATE NULL, start_date DATE NULL, end_date DATE NULL, manual_laf_status_lock TINYINT DEFAULT 0, manual_status_lock TINYINT DEFAULT 0, created_date DATETIME NULL, updated_at DATETIME NULL)",
+          "INSERT INTO law_firm_data.cases (case_number,client_name,case_type,case_reason,case_category,status,folder_path,legal_aid_number,legal_aid_status,updated_at) VALUES ('2099-0001','隔離修復案','民事','法律扶助消費者債務清理','法律扶助案件','進行中','<FIXTURE>/01_案件/法扶案件/民事/2099-0001-隔離修復案','1150709-T-051','待報結',NOW())",
+          "INSERT INTO law_firm_data.cases (case_number,client_name,case_type,case_reason,case_category,status,folder_path,legal_aid_number,legal_aid_status,updated_at) VALUES ('2099-0002','隔離報結案','民事','法律扶助消費者債務清理','法律扶助案件','已結案','<FIXTURE>/01_案件/法扶案件/民事/2099-0002-隔離報結案','1150529-W-002','進行中',NOW())"
+        ],
+        "expected_requests": {
+          "SELECT `id`, `case_number`, `client_name`, `case_type`, `case_reason`": 2,
+          "COALESCE(`manual_laf_status_lock`, 0)": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0001' AND status='進行中' AND legal_aid_status='待報結'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0002' AND status='已結案' AND legal_aid_status='進行中'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 2
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "laf_nightly_audit_bounded"
+      }
+    },
+    {
+      "job_id": "job_1770699415",
+      "production_entrypoint": "scripts/ops/system_diagnostic_report.py",
+      "safety_class": "localhost_read_only_diagnostic",
+      "fixture_kind": "system_diagnostic_reviewed_macro",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/system_diagnostic_report.py"
+      ],
+      "environment": {
+        "MAGI_DIAGNOSTIC_HEALTH_URLS": "http://127.0.0.1:<MOCK_PORT>/health-a,http://127.0.0.1:<MOCK_PORT>/health-b,http://127.0.0.1:<MOCK_PORT>/health-c,http://127.0.0.1:<MOCK_PORT>/health-d",
+        "MAGI_CRON_JOBS_FILE": "<FIXTURE>/cron_jobs.json",
+        "MAGI_CRON_STATE_FILE": "<FIXTURE>/runtime/cron_state.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/health-a": {
+            "status": 200,
+            "json": {
+              "ok": true
+            }
+          },
+          "/health-b": {
+            "status": 200,
+            "json": {
+              "ok": true
+            }
+          },
+          "/health-c": {
+            "status": 200,
+            "json": {
+              "ok": true
+            }
+          },
+          "/health-d": {
+            "status": 200,
+            "json": {
+              "ok": true
+            }
+          }
+        },
+        "expected_requests": {
+          "/health-a": 1,
+          "/health-b": 1,
+          "/health-c": 1,
+          "/health-d": 1
+        }
+      },
+      "success_contract": {
+        "type": "system_diagnostic_terminal",
+        "warning_allowlist": [
+          "disk_free_below_10_gib",
+          "memory_free_below_15_percent"
+        ],
+        "equals": {
+          "success": true,
+          "network_scope": "localhost_only",
+          "production_write_performed": false,
+          "schedule.enabled": 1,
+          "schedule.failed": 0
+        },
+        "minimum": {},
+        "length": {
+          "localhost_health": 4
+        }
+      }
+    },
+    {
+      "job_id": "job_obsidian_ingest",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "disposable_vault_database_and_local_embedding",
+      "fixture_kind": "obsidian_source_ingest",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "ingest_source",
+        "--source",
+        "案件",
+        "--include-folders",
+        "high-value",
+        "--limit",
+        "120"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_OBSIDIAN_SOURCE_CASE_ROOT": "<FIXTURE>/source-cases",
+        "MAGI_USE_MARKITDOWN": "0",
+        "MAGI_OBSIDIAN_CHUNK_CHARS": "4000",
+        "MAGI_OBSIDIAN_CHUNK_OVERLAP": "0",
+        "MEMORY_ENABLE_FAISS": "0",
+        "MAGI_FAISS_DEFER_REBUILD": "1",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "<DB_PORT>",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "magi_brain",
+        "MAGI_OMLX_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "OLLAMA_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings",
+        "OLLAMA_EMBED_BATCH_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings"
+      },
+      "dependency": {
+        "kind": "localhost_http_and_disposable_mariadb",
+        "http": {
+          "kind": "localhost_http",
+          "routes": {
+            "/v1/embeddings": {
+              "status": 200,
+              "json": {
+                "data": [
+                  {
+                    "embedding": [
+                      0.1,
+                      0.2,
+                      0.3,
+                      0.4
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "expected_requests": {
+            "/v1/embeddings": 1
+          }
+        },
+        "database": {
+          "kind": "disposable_mariadb",
+          "seed_sql": [
+            "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+            "CREATE TABLE magi_brain.documents (id BIGINT PRIMARY KEY AUTO_INCREMENT, content LONGTEXT NOT NULL, source VARCHAR(250) NOT NULL, synced TINYINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE magi_brain.vectors (doc_id BIGINT NOT NULL, embedding LONGTEXT NOT NULL)"
+          ],
+          "expected_requests": {
+            "INSERT INTO documents": 1,
+            "INSERT INTO vectors": 1
+          },
+          "postconditions": [
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.documents",
+              "equals": 1
+            },
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.vectors",
+              "equals": 1
+            }
+          ]
+        }
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "processed": 1,
+          "errors": 0
+        },
+        "minimum": {
+          "scanned": 1
+        },
+        "lengths": {
+          "notes_created": 1
+        },
+        "preserve_glob": "vault/20_Notes/案件/**/*.md"
+      }
+    },
+    {
+      "job_id": "job_obsidian_vector_reindex_notes",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "disposable_vault_database_and_local_embedding",
+      "fixture_kind": "obsidian_vector_notes",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "ingest",
+        "--folder",
+        "20_Notes"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_OBSIDIAN_INGEST_ZERO_CHUNKS_FIRST": "1",
+        "MAGI_OBSIDIAN_INGEST_NOTE_LIMIT": "120",
+        "MAGI_OBSIDIAN_CHECKPOINT_EVERY": "5",
+        "MEMORY_ENABLE_FAISS": "0",
+        "MAGI_FAISS_DEFER_REBUILD": "1",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "<DB_PORT>",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "magi_brain",
+        "MAGI_OMLX_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "OLLAMA_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings",
+        "OLLAMA_EMBED_BATCH_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings"
+      },
+      "dependency": {
+        "kind": "localhost_http_and_disposable_mariadb",
+        "http": {
+          "kind": "localhost_http",
+          "routes": {
+            "/v1/embeddings": {
+              "status": 200,
+              "json": {
+                "data": [
+                  {
+                    "embedding": [
+                      0.1,
+                      0.2,
+                      0.3,
+                      0.4
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "expected_requests": {
+            "/v1/embeddings": 1
+          }
+        },
+        "database": {
+          "kind": "disposable_mariadb",
+          "seed_sql": [
+            "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+            "CREATE TABLE magi_brain.documents (id BIGINT PRIMARY KEY AUTO_INCREMENT, content LONGTEXT NOT NULL, source VARCHAR(250) NOT NULL, synced TINYINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE magi_brain.vectors (doc_id BIGINT NOT NULL, embedding LONGTEXT NOT NULL)"
+          ],
+          "expected_requests": {
+            "INSERT INTO documents": 1,
+            "INSERT INTO vectors": 1
+          },
+          "postconditions": [
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.documents",
+              "equals": 1
+            },
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.vectors",
+              "equals": 1
+            }
+          ]
+        }
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "ingested": 1,
+          "errors": 0,
+          "total_chunks": 1
+        },
+        "minimum": {
+          "notes_considered": 1
+        },
+        "preserve_glob": "agent/obsidian_index.json"
+      }
+    },
+    {
+      "job_id": "job_obsidian_vector_reindex_wiki",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "disposable_vault_database_and_local_embedding",
+      "fixture_kind": "obsidian_vector_wiki",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "ingest",
+        "--folder",
+        "30_Wiki"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_OBSIDIAN_INGEST_ZERO_CHUNKS_FIRST": "1",
+        "MAGI_OBSIDIAN_INGEST_NOTE_LIMIT": "120",
+        "MAGI_OBSIDIAN_CHECKPOINT_EVERY": "5",
+        "MEMORY_ENABLE_FAISS": "0",
+        "MAGI_FAISS_DEFER_REBUILD": "1",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "<DB_PORT>",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "magi_brain",
+        "MAGI_OMLX_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "OLLAMA_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings",
+        "OLLAMA_EMBED_BATCH_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings"
+      },
+      "dependency": {
+        "kind": "localhost_http_and_disposable_mariadb",
+        "http": {
+          "kind": "localhost_http",
+          "routes": {
+            "/v1/embeddings": {
+              "status": 200,
+              "json": {
+                "data": [
+                  {
+                    "embedding": [
+                      0.1,
+                      0.2,
+                      0.3,
+                      0.4
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "expected_requests": {
+            "/v1/embeddings": 1
+          }
+        },
+        "database": {
+          "kind": "disposable_mariadb",
+          "seed_sql": [
+            "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+            "CREATE TABLE magi_brain.documents (id BIGINT PRIMARY KEY AUTO_INCREMENT, content LONGTEXT NOT NULL, source VARCHAR(250) NOT NULL, synced TINYINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE magi_brain.vectors (doc_id BIGINT NOT NULL, embedding LONGTEXT NOT NULL)"
+          ],
+          "expected_requests": {
+            "INSERT INTO documents": 1,
+            "INSERT INTO vectors": 1
+          },
+          "postconditions": [
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.documents",
+              "equals": 1
+            },
+            {
+              "sql": "SELECT COUNT(*) FROM magi_brain.vectors",
+              "equals": 1
+            }
+          ]
+        }
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "ingested": 1,
+          "errors": 0,
+          "total_chunks": 1
+        },
+        "minimum": {
+          "notes_considered": 1
+        },
+        "preserve_glob": "agent/obsidian_index.json"
+      }
+    },
+    {
+      "job_id": "job_backup_market_watchlist",
+      "production_entrypoint": "scripts/ops/backup_market_watchlist.py",
+      "safety_class": "local_filesystem_copy",
+      "fixture_kind": "market_watchlist_backup",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/backup_market_watchlist.py"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_WATCHLIST_BACKUP_RETENTION_DAYS": "90"
+      },
+      "success_contract": {
+        "type": "watchlist_backup_copy"
+      }
+    },
+    {
+      "job_id": "job_file_review_staging_cleanup",
+      "production_entrypoint": "skills/file-review-orchestrator/action.py",
+      "safety_class": "local_filesystem_read_only_dry_run",
+      "fixture_kind": "file_review_staging",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/file-review-orchestrator/action.py",
+        "--task",
+        "cleanup_downloads {\"max_days\":7,\"pending_max_days\":14,\"quarantine_max_days\":14,\"dry_run\":true}"
+      ],
+      "environment": {
+        "MAGI_DISABLE_SKILL_VENV_REEXEC": "1",
+        "MAGI_EEFILE_DOWNLOAD_FOLDER": "<FIXTURE>/MAGI-runtime/閱卷下載",
+        "MAGI_FILE_REVIEW_STATE_DIR": "<FIXTURE>/file-review",
+        "MAGI_FILE_REVIEW_SUPPRESS_NOTIFY": "1",
+        "MAGI_ROOT_DIR": "<FIXTURE>/MAGI-runtime"
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "dry_run": true
+        },
+        "minimum": {
+          "summary.would_delete_count": 1
+        },
+        "preserve_glob": "MAGI-runtime/*/20000101"
+      }
+    },
+    {
+      "job_id": "job_obsidian_duplicate_cleanup",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "local_filesystem_read_only_dry_run",
+      "fixture_kind": "obsidian_duplicates",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "cleanup_duplicate_notes",
+        "--vault-path",
+        "<FIXTURE>/vault",
+        "--dry-run"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent"
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "dry_run": true
+        },
+        "minimum": {
+          "duplicate_groups": 1,
+          "planned_moves": 1
+        },
+        "preserve_glob": "vault/20_Notes/summary__*.md"
+      }
+    },
+    {
+      "job_id": "job_obsidian_repair_notes",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "isolated_obsidian_note_and_index_mutation",
+      "fixture_kind": "obsidian_note_repair",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "repair_notes",
+        "--limit",
+        "20",
+        "--reextract"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_OBSIDIAN_PDF_EXTRACTOR_TIMEOUT_SEC": "45",
+        "MAGI_USE_MARKITDOWN": "0"
+      },
+      "success_contract": {
+        "type": "obsidian_note_repair"
+      }
+    },
+    {
+      "job_id": "job_case_index_sync",
+      "production_entrypoint": "skills/obsidian/action.py",
+      "safety_class": "disposable_database_read_and_case_card_mutation",
+      "fixture_kind": "obsidian_case_cards",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/obsidian/action.py",
+        "--task",
+        "sync_case_notes",
+        "--vault-path",
+        "<FIXTURE>/vault"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_NAME": "law_firm_data",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_PREFER_LOCAL_DB": "1",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(32), client_name VARCHAR(128), case_type VARCHAR(64), case_reason VARCHAR(255), court_name VARCHAR(255), status VARCHAR(64), start_date DATE, end_date DATE, court_case_no VARCHAR(128), court_case_number VARCHAR(128))",
+          "INSERT INTO cases (case_number,client_name,case_type,case_reason,court_name,status,start_date,court_case_no,court_case_number) VALUES ('2099-0002','第二測試當事人','民事','損害賠償','臺灣測試地方法院','進行中','2099-01-02','','2099年度訴字第2號'),('2099-0001','第一測試當事人','刑事','測試罪名','臺灣測試地方法院','審理中','2099-01-01','2099年度測字第1號','')"
+        ],
+        "expected_requests": {
+          "FROM cases": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 2
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number IN ('2099-0001','2099-0002') AND client_name IN ('第一測試當事人','第二測試當事人')",
+            "equals": 2
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "obsidian_case_card_sync"
+      }
+    },
+    {
+      "job_id": "job_wiki_synthesizer",
+      "production_entrypoint": "scripts/wiki_synthesizer.py",
+      "safety_class": "local_filesystem_read_only_dry_run",
+      "fixture_kind": "wiki_notes",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/wiki_synthesizer.py",
+        "--dry-run",
+        "--limit",
+        "2"
+      ],
+      "environment": {
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_WIKI_SKIP_LLM": "1"
+      },
+      "success_contract": {
+        "type": "stdout_contains",
+        "values": [
+          "2099-0001",
+          "1 份筆記"
+        ]
+      }
+    },
+    {
+      "job_id": "job_weekend_resummary",
+      "production_entrypoint": "scripts/weekend_resummary.py",
+      "safety_class": "local_filesystem_read_only_dry_run",
+      "fixture_kind": "judgment_resummary",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/weekend_resummary.py",
+        "--dry-run",
+        "--limit",
+        "2",
+        "--delay",
+        "0"
+      ],
+      "environment": {
+        "JUDICIAL_API_CACHE_ROOT": "<FIXTURE>/judicial_api",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_JUDGMENTS_JSON_PATH": "<FIXTURE>/agent/judgment-collector/judgments.json",
+        "MAGI_ROOT_DIR": "<ROOT>"
+      },
+      "success_contract": {
+        "type": "stdout_contains",
+        "stream": "stderr",
+        "values": [
+          "[DRY-RUN]",
+          "provider=nvidia_nim"
+        ]
+      }
+    },
+    {
+      "job_id": "job_weekend_bookmark",
+      "production_entrypoint": "scripts/weekend_bookmark_batch.py",
+      "safety_class": "local_pdf_filesystem_read_only_dry_run",
+      "fixture_kind": "pdf_bookmark_batch",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/weekend_bookmark_batch.py",
+        "--stage",
+        "all",
+        "--dry-run",
+        "--root",
+        "<FIXTURE>/cases",
+        "--state-file",
+        "<FIXTURE>/agent/bookmark-state.json",
+        "--plan-limit",
+        "5"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_BOOKMARK_BACKFILL_PLAN_PATH": "<FIXTURE>/runtime/bookmark-plan.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/bookmark-plan.json",
+        "minimum": {
+          "total_pdfs": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_nightly_bookmark_regex",
+      "production_entrypoint": "scripts/weekend_bookmark_batch.py",
+      "safety_class": "local_pdf_filesystem_read_only_dry_run",
+      "fixture_kind": "pdf_bookmark_batch",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/weekend_bookmark_batch.py",
+        "--stage",
+        "regex",
+        "--dry-run",
+        "--root",
+        "<FIXTURE>/cases",
+        "--state-file",
+        "<FIXTURE>/agent/bookmark-state.json",
+        "--plan-limit",
+        "5"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_BOOKMARK_BACKFILL_PLAN_PATH": "<FIXTURE>/runtime/bookmark-plan.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/bookmark-plan.json",
+        "minimum": {
+          "total_pdfs": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_pdf_bookmark_label_repair",
+      "production_entrypoint": "scripts/ops/repair_pdf_bookmark_labels.py",
+      "safety_class": "local_pdf_filesystem_read_only_audit",
+      "fixture_kind": "pdf_bookmark_repair",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/repair_pdf_bookmark_labels.py",
+        "--root",
+        "<FIXTURE>/cases",
+        "--target-hint",
+        "法院通知",
+        "--max-files",
+        "4",
+        "--max-dirs",
+        "20",
+        "--max-seconds",
+        "30",
+        "--per-file-timeout",
+        "0",
+        "--json-out",
+        "<FIXTURE>/runtime/repair-report.json",
+        "--print-json"
+      ],
+      "environment": {
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/repair-report.json",
+        "equals": {
+          "ok": true,
+          "mode": "dry_run"
+        },
+        "minimum": {
+          "audited_pdf_count": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_pdf_bookmark_large_volume_repair",
+      "production_entrypoint": "scripts/ops/repair_pdf_bookmark_labels.py",
+      "safety_class": "local_pdf_filesystem_read_only_audit",
+      "fixture_kind": "pdf_bookmark_repair",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/repair_pdf_bookmark_labels.py",
+        "--root",
+        "<FIXTURE>/cases",
+        "--target-hint",
+        "法院通知",
+        "--max-files",
+        "4",
+        "--max-dirs",
+        "20",
+        "--max-seconds",
+        "30",
+        "--per-file-timeout",
+        "0",
+        "--json-out",
+        "<FIXTURE>/runtime/repair-report.json",
+        "--print-json"
+      ],
+      "environment": {
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/repair-report.json",
+        "equals": {
+          "ok": true,
+          "mode": "dry_run"
+        },
+        "minimum": {
+          "audited_pdf_count": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_benchmark_pdf_bookmarker",
+      "production_entrypoint": "scripts/ops/benchmark_pdf_bookmarker.py",
+      "safety_class": "local_pdf_read_only_benchmark",
+      "fixture_kind": "pdf_bookmark_benchmark",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/benchmark_pdf_bookmarker.py"
+      ],
+      "environment": {
+        "MAGI_BENCHMARK_ALLOW_NAS_SCAN": "1",
+        "MAGI_BENCHMARK_NAS_CASE_ROOT": "<FIXTURE>/cases",
+        "MAGI_BENCHMARK_MAX_SCAN_DIRS": "20",
+        "MAGI_PDF_BOOKMARKER_BENCHMARK_MAX_PDFS": "2",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/benchmark_pdf_bookmarker_latest.json",
+        "equals": {
+          "success": true
+        },
+        "minimum": {
+          "total_pdfs": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_optimize_report",
+      "production_entrypoint": "scripts/ops/system_diagnostic_report.py",
+      "safety_class": "localhost_provider_and_fixture_state",
+      "fixture_kind": "system_diagnostic",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/system_diagnostic_report.py",
+        "--json-out",
+        "<FIXTURE>/runtime/system_diagnostic_report_latest.json"
+      ],
+      "environment": {
+        "MAGI_CRON_JOBS_FILE": "<FIXTURE>/cron_jobs.json",
+        "MAGI_CRON_STATE_FILE": "<FIXTURE>/runtime/cron_state.json",
+        "MAGI_DIAGNOSTIC_HEALTH_URLS": "http://127.0.0.1:<MOCK_PORT>/health/5002,http://127.0.0.1:<MOCK_PORT>/health/5003,http://127.0.0.1:<MOCK_PORT>/health/8088,http://127.0.0.1:<MOCK_PORT>/health/5014",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/health/5002": {
+            "status": 200,
+            "json": {
+              "status": "ok",
+              "service": "fixture-5002"
+            }
+          },
+          "/health/5003": {
+            "status": 200,
+            "json": {
+              "status": "ok",
+              "service": "fixture-5003"
+            }
+          },
+          "/health/8088": {
+            "status": 200,
+            "json": {
+              "status": "ok",
+              "service": "fixture-8088"
+            }
+          },
+          "/health/5014": {
+            "status": 200,
+            "json": {
+              "status": "ok",
+              "service": "fixture-5014"
+            }
+          }
+        },
+        "expected_requests": {
+          "/health/5002": 1,
+          "/health/5003": 1,
+          "/health/8088": 1,
+          "/health/5014": 1
+        }
+      },
+      "success_contract": {
+        "type": "system_diagnostic_terminal",
+        "warning_allowlist": [
+          "disk_free_below_10_gib",
+          "memory_free_below_15_percent"
+        ],
+        "equals": {
+          "success": true,
+          "network_scope": "localhost_only",
+          "production_write_performed": false,
+          "schedule.enabled": 1,
+          "schedule.failed": 0
+        },
+        "minimum": {},
+        "length": {
+          "localhost_health": 4
+        }
+      }
+    },
+    {
+      "job_id": "job_model_live_gate",
+      "production_entrypoint": "scripts/ops/model_live_gate.py",
+      "safety_class": "deterministic_local_inference_stub",
+      "fixture_kind": "model_live_gate",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/model_live_gate.py",
+        "--expect",
+        "day",
+        "--json",
+        "--json-out",
+        "<FIXTURE>/runtime/model_live_gate_latest.json"
+      ],
+      "environment": {
+        "MAGI_MODEL_GATE_SCHEDULE_ENDPOINTS": "{\"8080\":\"http://127.0.0.1:<MOCK_PORT>/models/8080\",\"8081\":\"http://127.0.0.1:<MOCK_PORT>/models/8081\",\"8082\":\"http://127.0.0.1:<MOCK_PORT>/models/8082\",\"8083\":\"http://127.0.0.1:<MOCK_PORT>/models/8083\"}",
+        "MAGI_MODEL_GATE_SCHEDULE_PROFILE_PATH": "<FIXTURE>/omlx/active_profile",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/models/8080": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "id": "fixture-e4b"
+                }
+              ]
+            }
+          },
+          "/models/8081": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "id": "fixture-embed"
+                }
+              ]
+            }
+          },
+          "/models/8082": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "id": "fixture-phi-4"
+                }
+              ]
+            }
+          },
+          "/models/8083": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "id": "fixture-smollm"
+                }
+              ]
+            }
+          }
+        },
+        "expected_requests": {
+          "/models/8080": 1,
+          "/models/8081": 1,
+          "/models/8082": 1,
+          "/models/8083": 1
+        }
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/model_live_gate_latest.json",
+        "equals": {
+          "ok": true,
+          "expected_profile": "day",
+          "active_profile": "day",
+          "degraded": false
+        },
+        "length": {
+          "endpoints": 4,
+          "failures": 0
+        }
+      }
+    },
+    {
+      "job_id": "job_obsidian_acceptance_gate",
+      "production_entrypoint": "scripts/ops/obsidian_acceptance_gate.py",
+      "safety_class": "local_knowledge_fixture_read_only",
+      "fixture_kind": "obsidian_acceptance",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/obsidian_acceptance_gate.py",
+        "--json-out",
+        "<FIXTURE>/runtime/obsidian_acceptance_latest.json"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "9",
+        "MAGI_KNOWLEDGE_LINT_ZERO_CHUNK_VERIFY_LIMIT": "0",
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/obsidian_acceptance_latest.json",
+        "equals": {
+          "ok": true,
+          "status": "GREEN",
+          "summary.fail": 0,
+          "summary.warn": 0
+        },
+        "minimum": {
+          "summary.pass": 5
+        },
+        "length": {
+          "checks": 5
+        }
+      }
+    },
+    {
+      "job_id": "job_disk_cleanup_healthcheck",
+      "production_entrypoint": "scripts/ops/disk_cleanup_healthcheck.py",
+      "safety_class": "local_filesystem_read_only_dry_run",
+      "fixture_kind": "disk_cleanup_staging",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/disk_cleanup_healthcheck.py",
+        "--dry-run"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AUTOPILOT_RUNS_DIR": "<FIXTURE>/runtime/autopilot-runs",
+        "MAGI_DISK_APP_CACHE_ENABLE": "0",
+        "MAGI_DISK_BUILD_ARTIFACT_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_DISTILL_REJECTED_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_MODULE_STAGING_MAX_AGE_DAYS": "0",
+        "MAGI_DISK_NAS_RECYCLE_ENABLE": "0",
+        "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE": "0",
+        "MAGI_DISK_PAYMENT_DUPLICATE_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_RUNTIME_COMPRESS_ENABLE": "0",
+        "MAGI_DISK_STAGING_CLEANUP_ENABLE": "1",
+        "MAGI_DISK_STAGING_TARGETS": "<FIXTURE>/staging",
+        "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE": "0",
+        "MAGI_METRICS_DIR": "<FIXTURE>/runtime/metrics-source",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "jsonl_last",
+        "path": "runtime/metrics/disk_cleanup_summary.jsonl",
+        "equals": {
+          "dry_run": true
+        },
+        "minimum": {
+          "generated_staging.0.candidate_files": 1
+        },
+        "preserve_glob": "staging/old-report.txt"
+      }
+    },
+    {
+      "job_id": "job_nas_recycle_heavy_cleanup",
+      "production_entrypoint": "scripts/ops/disk_cleanup_healthcheck.py",
+      "safety_class": "temporary_nas_fixture_read_only_dry_run",
+      "fixture_kind": "disk_cleanup_nas_heavy",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/disk_cleanup_healthcheck.py",
+        "--dry-run"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AUTOPILOT_RUNS_DIR": "<FIXTURE>/runtime/autopilot-runs",
+        "MAGI_DISK_APP_CACHE_ENABLE": "0",
+        "MAGI_DISK_BUILD_ARTIFACT_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_DISTILL_REJECTED_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_GIT_TMP_PACK_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_NAS_RECYCLE_ALLOW_NON_VOLUME": "1",
+        "MAGI_DISK_NAS_RECYCLE_ENABLE": "1",
+        "MAGI_DISK_NAS_RECYCLE_HEAVY_ENABLE": "1",
+        "MAGI_DISK_NAS_RECYCLE_MAX_AGE_DAYS": "0",
+        "MAGI_DISK_NAS_RECYCLE_ROOTS": "<FIXTURE>/nas/#recycle",
+        "MAGI_DISK_PAYMENT_DUPLICATE_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_RUNTIME_COMPRESS_ENABLE": "0",
+        "MAGI_DISK_STAGING_CLEANUP_ENABLE": "0",
+        "MAGI_DISK_SYNOLOGY_EMPTY_CASE_SHELL_ENABLE": "0",
+        "MAGI_METRICS_DIR": "<FIXTURE>/runtime/metrics-source",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "jsonl_last",
+        "path": "runtime/metrics/disk_cleanup_summary.jsonl",
+        "equals": {
+          "dry_run": true,
+          "nas_recycle_heavy.0.enabled": true,
+          "nas_recycle_heavy.0.dry_run": true
+        },
+        "minimum": {
+          "nas_recycle_heavy.0.candidate_items": 1,
+          "nas_recycle_heavy.0.processed_items": 1
+        },
+        "preserve_glob": "nas/#recycle/Backup/**/*"
+      }
+    },
+    {
+      "job_id": "job_self_repair_reporter",
+      "production_entrypoint": "skills/ops/self_repair_reporter.py",
+      "safety_class": "local_issue_fixture_notification_capture",
+      "fixture_kind": "self_repair_report",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/ops/self_repair_reporter.py",
+        "--force",
+        "--dry-run",
+        "--lookback-days",
+        "7"
+      ],
+      "environment": {
+        "MAGI_ISSUE_TRACKER_ENABLE": "1",
+        "MAGI_REPAIR_REPORTER_DRY_RUN": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "sent": false,
+          "dry_run": true
+        },
+        "minimum": {
+          "groups_count": 1,
+          "total_failures": 3
+        },
+        "preserve_glob": "runtime/issue_agenda.jsonl"
+      }
+    },
+    {
+      "job_id": "job_business_readiness_snapshot",
+      "production_entrypoint": "scripts/ops/business_readiness_snapshot.py",
+      "safety_class": "local_business_state_snapshot_fixture",
+      "fixture_kind": "business_readiness_snapshot",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/business_readiness_snapshot.py",
+        "--json-out",
+        "<FIXTURE>/static/business_readiness_latest.json"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_FILE_REVIEW_BG_JOB_DIR": "<FIXTURE>/file-review/bg-jobs",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "NVIDIA_NIM_ENABLE": "1",
+        "NVIDIA_NIM_MODEL": "fixture-nim",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "9"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "static/business_readiness_latest.json",
+        "equals": {
+          "ok": true,
+          "summary.attention": 0
+        },
+        "length": {
+          "items": 5
+        }
+      }
+    },
+    {
+      "job_id": "job_health_report",
+      "production_entrypoint": "scripts/nightly_health_report.py",
+      "safety_class": "local_health_fixture_notification_capture",
+      "fixture_kind": "nightly_health_report",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/nightly_health_report.py"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_AUTOPILOT_RUNS_DIR": "<FIXTURE>/autopilot-runs",
+        "MAGI_CRON_STATE_PATH": "<FIXTURE>/runtime/cron_state.json",
+        "MAGI_RED_PHONE_OUTBOX_FILE": "<FIXTURE>/agent/red_phone_outbox.json",
+        "MAGI_RED_PHONE_DELIVERY_LOG": "<FIXTURE>/agent/red_phone_delivery.jsonl",
+        "MAGI_RESOURCE_GUARD_LOG": "<FIXTURE>/runtime/resource_guarded_run.jsonl",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TELEGRAM_CHAT_ID": "",
+        "MAGI_TELEGRAM_TOPIC_MAP_FILE": "<FIXTURE>/agent/telegram_topic_map.json",
+        "TELEGRAM_BOT_TOKEN": ""
+      },
+      "success_contract": {
+        "type": "stdout_contains",
+        "values": [
+          "MAGI 夜間健康報告",
+          "夜間任務全部正常完成",
+          "報告已排入待發佇列"
+        ],
+        "preserve_glob": "agent/red_phone_outbox.json"
+      }
+    },
+    {
+      "job_id": "job_laf_condition_dedup_scan",
+      "production_entrypoint": "casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+      "safety_class": "disposable_database_and_case_marker_mutation",
+      "fixture_kind": "laf_condition_mediation",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/casper_ecosystem/law_firm_orchestrators/laf_orchestrator.py",
+        "--mode",
+        "condition-mark-by-mediation"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_NAME": "magi_brain",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_JSON_DIR": "<FIXTURE>/magi-root/json",
+        "MAGI_LAF_ORCHESTRATOR_STATE_DIR": "<FIXTURE>/agent/laf-orchestrator",
+        "MAGI_ORCH_DIR": "<ROOT>/casper_ecosystem/law_firm_orchestrators",
+        "MAGI_PREFER_LOCAL_DB": "1",
+        "MAGI_REMOTE_DB_HOST": "127.0.0.1",
+        "MAGI_REMOTE_DB_PASSWORD": "",
+        "MAGI_REMOTE_DB_PORT": "<MOCK_PORT>",
+        "MAGI_REMOTE_DB_USER": "root",
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(32), client_name VARCHAR(128), legal_aid_number VARCHAR(64), folder_path TEXT, case_category VARCHAR(64))",
+          "CREATE TABLE laf_lifecycle_log (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(255), event_type VARCHAR(64), event_data JSON, status VARCHAR(64), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+          "CREATE TABLE notification_queue (id BIGINT PRIMARY KEY AUTO_INCREMENT, content TEXT)",
+          "INSERT INTO cases (case_number,client_name,legal_aid_number,folder_path,case_category) VALUES ('2099-0002','測試當事人','LAF-2099-0002','<FIXTURE>/cases/2099-0002-測試當事人-民事-一審-調解','法律扶助案件')"
+        ],
+        "expected_requests": {
+          "FROM `cases`": 1,
+          "INSERT INTO `laf_lifecycle_log`": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0002' AND client_name='測試當事人' AND legal_aid_number='LAF-2099-0002' AND case_category='法律扶助案件'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.laf_lifecycle_log WHERE case_number='2099-0002' AND event_type='condition_manual_done' AND status='manual_done'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.notification_queue",
+            "equals": 0
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "laf_condition_mediation_mark"
+      }
+    },
+    {
+      "job_id": "job_magi_self_repair_guardian",
+      "production_entrypoint": "scripts/ops/magi_self_repair_guardian.py",
+      "safety_class": "owned_fixture_tmp_cleanup",
+      "fixture_kind": "self_repair_owned_tmp",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/magi_self_repair_guardian.py",
+        "--mode",
+        "repair-safe",
+        "--root",
+        "<FIXTURE>/magi-root",
+        "--runtime-dir",
+        "<FIXTURE>/runtime",
+        "--tmp-dir",
+        "<FIXTURE>/tmp",
+        "--tmp-min-age-minutes",
+        "30",
+        "--no-doctor",
+        "--no-function-health",
+        "--no-static-health",
+        "--fail-on-issues",
+        "--json-out",
+        "<FIXTURE>/runtime/magi_self_repair_guardian_latest.json"
+      ],
+      "environment": {
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/magi_self_repair_guardian_latest.json",
+        "equals": {
+          "ok": true,
+          "mode": "repair-safe",
+          "summary.open_issue_count": 0,
+          "summary.applied_action_count": 1,
+          "summary.failed_action_count": 0,
+          "summary.partial_action_count": 0,
+          "summary.verification_failed_count": 0,
+          "actions.0.id": "delete_stale_tmp_magi_artifacts",
+          "actions.0.status": "applied",
+          "verifications.0.id": "tmp_residue_after_repair",
+          "verifications.0.ok": true
+        },
+        "length": {
+          "actions": 1,
+          "verifications": 1,
+          "unresolved_issue_ids": 0
+        },
+        "absent_glob": "tmp/magi_owned_stale_fixture*"
+      }
+    },
+    {
+      "job_id": "job_empty_case_shell_cleanup",
+      "production_entrypoint": "scripts/ops/cleanup_synology_empty_case_shells.py",
+      "safety_class": "disposable_database_and_case_tree_mutation",
+      "fixture_kind": "empty_case_shell_cleanup",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/cleanup_synology_empty_case_shells.py",
+        "--apply",
+        "--limit",
+        "0",
+        "--max-seconds",
+        "30",
+        "--json-out",
+        "<FIXTURE>/runtime/empty_case_shell_cleanup_latest.json"
+      ],
+      "environment": {
+        "MAGI_CLEAN_EMPTY_CASE_SHELL_INCLUDE_LOCAL": "1",
+        "MAGI_CLEAN_EMPTY_CASE_SHELL_ROOTS": "<FIXTURE>/active-cases",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (case_number VARCHAR(32), client_name VARCHAR(128), folder_path TEXT, status VARCHAR(64), legal_aid_status VARCHAR(64), updated_at DATETIME)",
+          "INSERT INTO cases VALUES ('2099-0001','測試當事人','/fixture/archive/2099-0001','已結案','已結案',NOW())"
+        ],
+        "expected_requests": {
+          "SELECT case_number, client_name, folder_path, status, legal_aid_status": 1
+        }
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/empty_case_shell_cleanup_latest.json",
+        "equals": {
+          "ok": true,
+          "apply": true,
+          "timed_out": false,
+          "checked": 1,
+          "removed": 1,
+          "conflicts": 0,
+          "errors": 0
+        },
+        "absent_glob": "active-cases/法扶案件/刑事/2099-0001-*"
+      }
+    },
+    {
+      "job_id": "job_purge_persona",
+      "production_entrypoint": "scripts/purge_persona_memories.py",
+      "safety_class": "disposable_database_mutation",
+      "fixture_kind": "purge_persona_memories",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/purge_persona_memories.py"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE magi_brain",
+          "CREATE TABLE documents (id BIGINT PRIMARY KEY, content TEXT, source VARCHAR(255))",
+          "CREATE TABLE vectors (id BIGINT PRIMARY KEY AUTO_INCREMENT, doc_id BIGINT, embedding BLOB)",
+          "INSERT INTO documents VALUES (1,'你扮演 CASPER 角色，這是法律事務說明與核心工作項目，包含夜間巡邏。','fixture-chatlog'),(2,'這是一筆正常且應保留的案件知識。','fixture-chatlog')",
+          "INSERT INTO vectors (doc_id,embedding) VALUES (1,'x'),(2,'y')"
+        ],
+        "expected_requests": {
+          "SELECT id, content, source FROM documents": 1,
+          "DELETE FROM vectors": 1,
+          "DELETE FROM documents": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.documents WHERE id=1",
+            "equals": 0
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.vectors WHERE doc_id=1",
+            "equals": 0
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.documents WHERE id=2",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.vectors WHERE doc_id=2",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "stdout_contains",
+        "values": [
+          "發現 1 筆疑似角色幻覺記憶",
+          "已刪除 1 筆污染記憶"
+        ]
+      }
+    },
+    {
+      "job_id": "job_osc_overdue_todo_reconcile",
+      "production_entrypoint": "scripts/ops/reconcile_overdue_todos.py",
+      "safety_class": "disposable_database_and_backup_mutation",
+      "fixture_kind": "overdue_todo_reconcile",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/reconcile_overdue_todos.py",
+        "--apply",
+        "--cutoff",
+        "2099-01-10",
+        "--json-out",
+        "<FIXTURE>/runtime/overdue_todo_reconcile_latest.json"
+      ],
+      "environment": {
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (case_number VARCHAR(32), tenant_id VARCHAR(64), status VARCHAR(64), folder_path TEXT, legal_aid_status VARCHAR(64), PRIMARY KEY(case_number,tenant_id))",
+          "CREATE TABLE case_todos (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(32), client_name VARCHAR(128), todo_type VARCHAR(64), todo_date DATE, todo_time TIME NULL, description TEXT, status VARCHAR(64), completed_date DATETIME NULL, google_calendar_event_id VARCHAR(255) NULL, source_file TEXT, google_calendar_id VARCHAR(255) NULL, tenant_id VARCHAR(64))",
+          "INSERT INTO cases VALUES ('2099-0001','magi-primary','進行中','/fixture/one',''),('2099-0002','magi-primary','已結案','/fixture/two',''),('2099-0003','magi-primary','進行中','/fixture/three','')",
+          "INSERT INTO case_todos (id,case_number,client_name,todo_type,todo_date,description,status,source_file,tenant_id) VALUES (1,'2099-0001','測試甲','開庭','2099-01-01','fixture calendar','pending','gcal_import:fixture','magi-primary'),(2,'2099-0002','測試乙','補正','2099-01-02','closed case fixture','pending','fixture.pdf','magi-primary'),(3,'2099-0003','測試丙','補正','2099-01-03','needs review fixture','pending','fixture.pdf','magi-primary')"
+        ],
+        "expected_requests": {
+          "FROM case_todos t": 1,
+          "UPDATE case_todos": 3,
+          "INSERT INTO case_todos": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE id IN (1,2,3) AND status='pending'",
+            "equals": 0
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='calendar_deduped'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='completed'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='pending' AND todo_type='逾期確認'",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/overdue_todo_reconcile_latest.json",
+        "equals": {
+          "ok": true,
+          "applied": true,
+          "matched": 3,
+          "counts.archive": 1,
+          "counts.complete": 1,
+          "counts.escalate": 1
+        },
+        "preserve_glob": "runtime/overdue_todo_reconcile_backup_*.json"
+      }
+    },
+    {
+      "job_id": "job_osc_auto_backup",
+      "production_entrypoint": "scripts/ops/osc_auto_backup.py",
+      "safety_class": "disposable_database_and_backup_file_mutation",
+      "fixture_kind": "osc_auto_backup",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/osc_auto_backup.py"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id BIGINT PRIMARY KEY, case_number VARCHAR(32), client_name VARCHAR(128))",
+          "CREATE TABLE todos (id BIGINT PRIMARY KEY, case_number VARCHAR(32), description TEXT, status VARCHAR(64))",
+          "INSERT INTO cases VALUES (1,'2099-0001','測試當事人')",
+          "INSERT INTO todos VALUES (1,'2099-0001','測試待辦','pending')"
+        ],
+        "expected_requests": {
+          "SELECT * FROM `cases`": 1,
+          "SELECT * FROM `clients`": 1,
+          "SELECT * FROM `todos`": 1,
+          "SELECT * FROM `meetings`": 1,
+          "SELECT * FROM `calendar_events`": 1,
+          "SELECT * FROM `legal_aid_checklists`": 1,
+          "SELECT * FROM `case_checklists`": 1,
+          "SELECT * FROM `quotations`": 1,
+          "SELECT * FROM `transactions`": 1,
+          "SELECT * FROM `legal_aid_branches`": 1,
+          "SELECT * FROM `settings`": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.todos",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "json_glob",
+        "path": "home/.magi/backups/osc/backup_*_auto.json",
+        "equals": {
+          "version": 2,
+          "label": "auto",
+          "table_counts.cases": 1,
+          "table_counts.todos": 1,
+          "integrity.algorithm": "sha256"
+        },
+        "length": {
+          "tables.cases": 1,
+          "tables.todos": 1
+        },
+        "preserve_glob": "home/.magi/backups/osc/backup_*_auto.json"
+      }
+    },
+    {
+      "job_id": "job_knowledge_lint",
+      "production_entrypoint": "scripts/knowledge_lint.py",
+      "safety_class": "disposable_databases_and_knowledge_fixture_write",
+      "fixture_kind": "knowledge_lint",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/knowledge_lint.py",
+        "--quick",
+        "--write-to-vault",
+        "--quiet"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_KNOWLEDGE_LINT_CHECK_SOURCE_EXISTS": "0",
+        "MAGI_KNOWLEDGE_LINT_ZERO_CHUNK_VERIFY_LIMIT": "0",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_OBSIDIAN_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE magi_brain.documents (id BIGINT PRIMARY KEY, content LONGTEXT, source VARCHAR(255), created_at DATETIME NULL, synced TINYINT DEFAULT 0)",
+          "CREATE TABLE magi_brain.vectors (id BIGINT PRIMARY KEY AUTO_INCREMENT, doc_id BIGINT, embedding BLOB)",
+          "INSERT INTO magi_brain.documents VALUES (1,'這是一筆完整且唯一的測試法律知識內容。','fixture',NOW(),1)",
+          "CREATE TABLE law_firm_data.legal_insights (id BIGINT PRIMARY KEY, insight_text LONGTEXT, is_degraded TINYINT DEFAULT 0)",
+          "CREATE TABLE law_firm_data.court_judgments (id BIGINT PRIMARY KEY, jid VARCHAR(64), case_number VARCHAR(128), full_text LONGTEXT, summary LONGTEXT)",
+          "CREATE TABLE law_firm_data.judgment_archive (id BIGINT PRIMARY KEY, source_jid VARCHAR(64), summary_text LONGTEXT, is_degraded TINYINT DEFAULT 0)",
+          "INSERT INTO law_firm_data.legal_insights VALUES (1,CONCAT('實務見解：',REPEAT('本案法律見解內容完整且可供檢索。',10)),0)",
+          "INSERT INTO law_firm_data.court_judgments VALUES (1,'TPS-fixture-court','115年度訴字第1號',CONCAT(REPEAT('本案實體爭點與法律理由完整。',100)),CONCAT('實務見解：',REPEAT('本判決摘要內容完整且沒有降級標記。',10)))",
+          "INSERT INTO law_firm_data.judgment_archive VALUES (1,'fixture-archive',CONCAT('實務見解：',REPEAT('本封存判決摘要內容完整且沒有降級標記。',10)),0)"
+        ],
+        "expected_requests": {
+          "FROM documents": 1,
+          "FROM legal_insights": 1,
+          "FROM court_judgments": 1,
+          "FROM judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.documents",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.legal_insights",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "static/knowledge_lint_latest.json",
+        "equals": {
+          "mode": "quick",
+          "summary.total_checks": 7,
+          "summary.error": 0,
+          "summary.skip": 1
+        },
+        "minimum": {
+          "summary.ok": 6
+        },
+        "length": {
+          "checks": 7
+        },
+        "preserve_glob": "vault/MAGI/品質報告/*.md"
+      }
+    },
+    {
+      "job_id": "job_legacy_judgment_resummary_quality",
+      "production_entrypoint": "scripts/ops/judgment_summary_staged_backfill.py",
+      "safety_class": "disposable_database_read_only_dry_run",
+      "fixture_kind": "legacy_judgment_resummary",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/judgment_summary_staged_backfill.py",
+        "--scan-limit",
+        "1",
+        "--nvidia-limit",
+        "0",
+        "--local-min-score",
+        "80",
+        "--dry-run",
+        "--json-out",
+        "<FIXTURE>/runtime/legacy_judgment_resummary_latest.json"
+      ],
+      "environment": {
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "2",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "law_firm_data",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SKIP_IMPORT_PROBES": "1"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE law_firm_data.court_judgments (id BIGINT PRIMARY KEY AUTO_INCREMENT, jid VARCHAR(64), court_name VARCHAR(128), case_type VARCHAR(128), case_number VARCHAR(128), summary LONGTEXT, full_text LONGTEXT, crawled_at DATETIME NULL)",
+          "INSERT INTO law_firm_data.court_judgments (jid,court_name,case_type,case_number,summary,full_text) VALUES ('TPS-FIXTURE-1','臺灣台北地方法院','傷害','2099年度測字第1號','摘要過短',CONCAT('理由 ',REPEAT('按傷害罪之成立，依刑法第277條規定，行為人必須基於傷害故意而實施侵害他人身體或健康的行為，並應由法院綜合客觀證據與行為時情狀判斷主觀犯意，始能認定成立傷害罪。',20),'本院審酌診斷證明、現場錄影及目擊證人證述，足認被告基於傷害故意以拳擊打告訴人頭部，造成頭部挫傷，其行為與傷勢間具有因果關係，依上開法律標準應認成立刑法第277條傷害罪。'))"
+        ],
+        "expected_requests": {
+          "FROM court_judgments": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT summary FROM law_firm_data.court_judgments WHERE id=1",
+            "equals": "摘要過短"
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/legacy_judgment_resummary_latest.json",
+        "equals": {
+          "ok": true,
+          "success": true,
+          "status": "completed",
+          "dry_run": true,
+          "scan_limit": 1,
+          "nvidia_limit": 0,
+          "local_candidates": 1,
+          "local_would_update": 1,
+          "local_queued": 0,
+          "updated": 0
+        },
+        "length": {
+          "failures": 0
+        },
+        "preserve_glob": "runtime/legacy_judgment_resummary_latest.json"
+      }
+    },
+    {
+      "job_id": "job_transcript_indexer",
+      "production_entrypoint": "skills/transcript-indexer/action.py",
+      "safety_class": "disposable_database_and_local_pdf_index_mutation",
+      "fixture_kind": "transcript_indexer",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/transcript-indexer/action.py",
+        "--task",
+        "index"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_NAME": "magi_brain",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "EMBED_MAX_RETRIES": "0",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_EMBED_TIMEOUT_SEC": "1",
+        "MAGI_OMLX_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "MEMORY_ENABLE_FAISS": "0",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "SYNOLOGY_CASE_ROOTS": "<FIXTURE>/cases",
+        "TRANSCRIPT_BATCH": "20",
+        "TRANSCRIPT_BUDGET_SEC": "30",
+        "TRANSCRIPT_INDEX_DB": "<FIXTURE>/agent/transcript_index.json",
+        "TRANSCRIPT_LISTING_BUDGET_SEC": "10",
+        "TRANSCRIPT_MAX_PDFS_PER_RUN": "2",
+        "TRANSCRIPT_THROTTLE_EVERY": "1000"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE magi_brain CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "CREATE TABLE magi_brain.documents (id BIGINT PRIMARY KEY AUTO_INCREMENT, content LONGTEXT, source VARCHAR(255), created_at DATETIME DEFAULT CURRENT_TIMESTAMP, synced TINYINT DEFAULT 0)",
+          "CREATE TABLE magi_brain.vectors (id BIGINT PRIMARY KEY AUTO_INCREMENT, doc_id BIGINT, embedding LONGTEXT)",
+          "CREATE TABLE law_firm_data.dedup_registry (id BIGINT PRIMARY KEY AUTO_INCREMENT, category VARCHAR(64), item_key VARCHAR(512), status VARCHAR(32), metadata LONGTEXT NULL, notified_at VARCHAR(64) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY uq_dedup (category,item_key))"
+        ],
+        "expected_requests": {
+          "INSERT INTO documents": 1,
+          "INSERT INTO vectors": 1,
+          "INSERT INTO dedup_registry": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.documents",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM magi_brain.vectors",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.dedup_registry WHERE category='transcript'",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "success": true,
+          "status": "ok",
+          "fatal": false,
+          "errors_count": 0,
+          "stats.total_files": 1,
+          "stats.total_chunks": 1
+        },
+        "minimum": {
+          "indexed_files": 1,
+          "indexed_chunks": 1
+        },
+        "preserve_glob": "agent/transcript_index.json"
+      }
+    },
+    {
+      "job_id": "job_osc_index_cases",
+      "production_entrypoint": "skills/osc-orchestrator/action.py",
+      "safety_class": "disposable_case_tree_and_database_index_mutation",
+      "fixture_kind": "osc_case_index",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/osc-orchestrator/action.py",
+        "--task",
+        "index_cases {\"max_cases\":5,\"max_files_per_case\":10}"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_NAME": "law_firm_data",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_PREFER_LOCAL_DB": "1",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "MAGI_SYNOLOGY_CASE_ROOT": "<FIXTURE>/cases",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_ORCH_NO_VENV": "1"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id VARCHAR(32) PRIMARY KEY, case_number VARCHAR(50) NOT NULL, client_name VARCHAR(255) DEFAULT '', case_type VARCHAR(100) DEFAULT '', case_reason TEXT NULL, case_category VARCHAR(50) DEFAULT '', legal_aid_number VARCHAR(100) DEFAULT '', legal_aid_status VARCHAR(50) DEFAULT '', court_case_number VARCHAR(255) DEFAULT '', court_case_no VARCHAR(255) DEFAULT '', status VARCHAR(50) DEFAULT '', notes TEXT NULL, folder_path TEXT NULL, created_date TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP, KEY idx_case_number (case_number))",
+          "CREATE TABLE case_todos (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50) NOT NULL, client_name VARCHAR(255) DEFAULT '', todo_type VARCHAR(100) DEFAULT '', todo_date DATE NULL, todo_time TIME NULL, description TEXT NULL, source_file TEXT NULL, status VARCHAR(50) DEFAULT '', google_calendar_id VARCHAR(255) DEFAULT '', google_calendar_event_id VARCHAR(255) NULL)"
+        ],
+        "expected_requests": {
+          "INSERT INTO `cases`": 2
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 2
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0001' AND client_name='第一測試當事人' AND case_category='法律扶助案件' AND case_type='刑事'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0002' AND client_name='第二測試當事人' AND case_category='自費案件' AND case_type='民事'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE COALESCE(folder_path,'') LIKE '%2099-000%測試當事人%'",
+            "equals": 2
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "ok": true,
+          "dry_run": false,
+          "scanned": 2,
+          "inserted": 2,
+          "updated": 0,
+          "skipped_invalid": 0
+        },
+        "length": {
+          "invalid_examples": 0
+        },
+        "preserve_glob": "cases/法律扶助案件/刑事/2099-0001-第一測試當事人-一審-測試罪名/09_法院通知/臺灣測試地方法院2099年度測字第1號測股開庭通知.txt"
+      }
+    },
+    {
+      "job_id": "job_laf_pending_scan",
+      "production_entrypoint": "skills/osc-orchestrator/action.py",
+      "safety_class": "disposable_database_read_only_pending_laf_scan",
+      "fixture_kind": "laf_pending_scan",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/osc-orchestrator/action.py",
+        "--task",
+        "laf_pending_scan {\"notify\":false,\"limit\":10}"
+      ],
+      "environment": {
+        "DB_HOST": "127.0.0.1",
+        "DB_NAME": "law_firm_data",
+        "DB_PASSWORD": "",
+        "DB_PORT": "<MOCK_PORT>",
+        "DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_PREFER_LOCAL_DB": "1",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_ORCH_NO_VENV": "1"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id BIGINT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50) NOT NULL, client_name VARCHAR(255) DEFAULT '', case_category VARCHAR(50) DEFAULT '', legal_aid_status VARCHAR(64) NULL, legal_aid_startup_deadline DATE NULL)",
+          "INSERT INTO cases (case_number,client_name,case_category,legal_aid_status,legal_aid_startup_deadline) VALUES ('2099-0001','待開辦測試當事人','法律扶助案件','未開辦','2099-01-10'),('2099-0002','待報結測試當事人','法律扶助案件','待報結','2099-01-11'),('2099-0003','自費測試當事人','自費案件','未開辦','2099-01-12')"
+        ],
+        "expected_requests": {
+          "FROM `cases`": 2
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 3
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0001' AND legal_aid_status='未開辦'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases WHERE case_number='2099-0002' AND legal_aid_status='待報結'",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "stdout_json",
+        "equals": {
+          "ok": true,
+          "pending_open": 1,
+          "pending_report": 1,
+          "total": 2,
+          "open_cases.0.case_number": "2099-0001",
+          "report_cases.0.case_number": "2099-0002"
+        },
+        "length": {
+          "open_cases": 1,
+          "report_cases": 1
+        }
+      }
+    },
+    {
+      "job_id": "job_nas_pdf_ocr_worker_offpeak",
+      "production_entrypoint": "skills/documents/nas_pdf_ocr_worker.py",
+      "safety_class": "deterministic_ocr_provider_and_disposable_nas_queue_mutation",
+      "fixture_kind": "nas_pdf_ocr_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/documents/nas_pdf_ocr_worker.py",
+        "work",
+        "--batch",
+        "1"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_NAS_CASE_ROOT": "<FIXTURE>/nas-cases",
+        "MAGI_NAS_OCRMY_PDF_BIN": "<FIXTURE>/bin/ocrmypdf",
+        "MAGI_NAS_OCR_QUEUE_DB_PATH": "<FIXTURE>/agent/nas-ocr-queue.db",
+        "MAGI_NAS_OCR_TEMP_ROOT": "<FIXTURE>/ocr-temp",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "nas_ocr_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_function_health_index",
+      "production_entrypoint": "scripts/ops/function_health_index.py",
+      "safety_class": "release_source_read_only_and_fixture_health_output",
+      "fixture_kind": "function_health_index",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/function_health_index.py",
+        "--root",
+        "<ROOT>",
+        "--matrix",
+        "<FIXTURE>/test_matrix.json",
+        "--runtime-dir",
+        "<FIXTURE>/runtime/health-source",
+        "--compact",
+        "--fail-on-health",
+        "--no-static",
+        "--json-out",
+        "<FIXTURE>/runtime/function_health_index_latest.json"
+      ],
+      "environment": {
+        "MAGI_CRON_JOBS_FILE": "<FIXTURE>/runtime/cron_jobs.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/function_health_index_latest.json",
+        "equals": {
+          "ok": true,
+          "summary.enabled_cron_job_count": 94,
+          "summary.test_suite_count": 1,
+          "summary.failed_health_count": 0,
+          "summary.stale_health_count": 0,
+          "summary.missing_health_count": 0
+        },
+        "minimum": {
+          "summary.api_route_count": 300,
+          "summary.skill_count": 50,
+          "summary.contract_skill_count": 50,
+          "summary.pending_initial_run_count": 90
+        },
+        "length": {
+          "health.failed": 0,
+          "health.stale": 0,
+          "health.missing": 0
+        },
+        "preserve_glob": "runtime/health-source/fixture_health_latest.json"
+      }
+    },
+    {
+      "job_id": "job_api_token_health_check",
+      "production_entrypoint": "scripts/ops/token_health_check.py",
+      "safety_class": "fixture_oauth_metadata_validation_and_report_write",
+      "fixture_kind": "token_health_fixture",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/token_health_check.py",
+        "--refresh",
+        "--threshold-days",
+        "7",
+        "--notify",
+        "--json-out",
+        "<FIXTURE>/runtime/token_health/token_health_latest.json"
+      ],
+      "environment": {
+        "MAGI_DISABLE_DOTENV": "1",
+        "MAGI_ENABLE_DISCORD": "0",
+        "MAGI_ENABLE_LINE": "0",
+        "MAGI_ENABLE_TELEGRAM": "0",
+        "MAGI_GOOGLE_CALENDAR_TOKEN_PATH": "<FIXTURE>/tokens/google_calendar.json",
+        "MAGI_GOOGLE_CREDENTIALS_PATH": "<FIXTURE>/tokens/credentials.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "runtime/token_health/token_health_latest.json",
+        "equals": {
+          "ok": true,
+          "refresh_requested": true,
+          "summary.failures": 0,
+          "summary.refreshed": 0
+        },
+        "minimum": {
+          "summary.google_oauth": 1
+        },
+        "length": {
+          "failures": 0
+        },
+        "preserve_glob": "tokens/google_calendar.json"
+      }
+    },
+    {
+      "job_id": "job_tailscale_funnel_healthcheck",
+      "production_entrypoint": "scripts/ops/tailscale_funnel_healthcheck.py",
+      "safety_class": "deterministic_dns_http_scope_audit_and_bounded_exact_funnel_reassert",
+      "fixture_kind": "tailscale_funnel_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/tailscale_funnel_healthcheck.py",
+        "--apply",
+        "--json-out",
+        "<FIXTURE>/runtime/tailscale-funnel.json"
+      ],
+      "environment": {
+        "MAGI_DISABLE_DOTENV": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TAILSCALE_BIN": "<FIXTURE>/bin/tailscale",
+        "MAGI_PUBLIC_BASE_URL": "https://fixture.tailnet.example",
+        "PATH": "<FIXTURE>/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      },
+      "success_contract": {
+        "type": "tailscale_repair_fixture"
+      }
+    },
+    {
+      "job_id": "job_1770949442096_9e8adf",
+      "production_entrypoint": "scripts/ops/run_auto_skill_import.py",
+      "safety_class": "fixture_repository_to_fixture_knowledge_mutation",
+      "fixture_kind": "toolsai_auto_skill_import",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/run_auto_skill_import.py"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "MAGI_AUTOSKILL_IMPORT_LOCAL_PATH": "<FIXTURE>/toolsai-auto-skill",
+        "MAGI_AUTOSKILL_MIRROR_TO_VECTOR": "0",
+        "MAGI_DISABLE_NOTIFICATIONS": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "toolsai_import_fixture"
+      }
+    },
+    {
+      "job_id": "job_smoke_external_chat",
+      "production_entrypoint": "scripts/ops/smoke_external_chat.py",
+      "safety_class": "deterministic_localhost_external_chat_provider",
+      "fixture_kind": "external_chat_smoke_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/smoke_external_chat.py"
+      ],
+      "environment": {
+        "MAGI_DISABLE_DOTENV": "1",
+        "MAGI_EXTERNAL_API_KEY": "fixture-api-key",
+        "MAGI_HTTP_PORT": "<MOCK_PORT>"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/osc/external/chat": {
+            "status": 200,
+            "json": {
+              "success": true,
+              "degraded": false,
+              "reply": "Fixture external chat handler response is semantically non-empty.",
+              "meta": {
+                "route": "fixture-provider"
+              }
+            }
+          }
+        },
+        "expected_requests": {
+          "/osc/external/chat": 2
+        }
+      },
+      "success_contract": {
+        "type": "external_chat_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_night_pull",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "deterministic_localhost_judicial_api_and_fixture_cache_mutation",
+      "fixture_kind": "judicial_api_night_pull_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_night_pull {\"max_jdocs\":1,\"max_days\":1,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDICIAL_API_BASE": "http://127.0.0.1:<MOCK_PORT>",
+        "JUDICIAL_API_PASSWORD": "fixture-password",
+        "JUDICIAL_API_USER": "fixture-user",
+        "JUDICIAL_API_AUTH_RETRIES": "1",
+        "JUDICIAL_API_JDOC_RETRY_MAX": "0",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/Auth": {
+            "status": 200,
+            "json": {
+              "Token": "fixture-token"
+            }
+          },
+          "/JList": {
+            "status": 200,
+            "json": [
+              {
+                "date": "2099/01/02",
+                "list": [
+                  "TPSV,2099,台上,1,20990102,1"
+                ]
+              }
+            ]
+          },
+          "/JDoc": {
+            "status": 200,
+            "json": {
+              "JID": "TPSV,2099,台上,1,20990102,1",
+              "JYEAR": "2099",
+              "JCASE": "台上",
+              "JNO": "1",
+              "JDATE": "20990102",
+              "JTITLE": "損害賠償",
+              "JFULLX": {
+                "JFULLCONTENT": "最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。最高法院認為本件爭點涉及契約義務及舉證責任。",
+                "JFULLTYPE": "text",
+                "JFULLPDF": ""
+              },
+              "ATTACHMENTS": []
+            }
+          }
+        },
+        "expected_requests": {
+          "/Auth": 1,
+          "/JList": 1,
+          "/JDoc": 1
+        }
+      },
+      "success_contract": {
+        "type": "judicial_api_night_pull_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_morning",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "fixture_judicial_raw_to_normalized_mutation",
+      "fixture_kind": "judicial_api_day_process",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_day_process {\"max_docs\":1,\"summarize_max\":1,\"summary_mode\":\"extractive\",\"skip_assets\":true,\"vector_ingest\":false,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ],
+        "expected_requests": {
+          "INSERT INTO court_judgments": 1,
+          "INSERT INTO judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "judicial_api_day_process_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_noon",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "fixture_judicial_raw_to_normalized_mutation",
+      "fixture_kind": "judicial_api_day_process",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_day_process {\"max_docs\":1,\"summarize_max\":1,\"summary_mode\":\"extractive\",\"skip_assets\":true,\"vector_ingest\":false,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ],
+        "expected_requests": {
+          "INSERT INTO court_judgments": 1,
+          "INSERT INTO judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "judicial_api_day_process_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_afternoon",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "fixture_judicial_raw_to_normalized_mutation",
+      "fixture_kind": "judicial_api_day_process",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_day_process {\"max_docs\":1,\"summarize_max\":1,\"summary_mode\":\"extractive\",\"skip_assets\":true,\"vector_ingest\":false,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ],
+        "expected_requests": {
+          "INSERT INTO court_judgments": 1,
+          "INSERT INTO judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "judicial_api_day_process_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_evening",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "fixture_judicial_raw_to_normalized_mutation",
+      "fixture_kind": "judicial_api_day_process",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_day_process {\"max_docs\":1,\"summarize_max\":1,\"summary_mode\":\"extractive\",\"skip_assets\":true,\"vector_ingest\":false,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ],
+        "expected_requests": {
+          "INSERT INTO court_judgments": 1,
+          "INSERT INTO judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "judicial_api_day_process_fixture"
+      }
+    },
+    {
+      "job_id": "job_judicial_api_backlog_clear",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "fixture_judicial_raw_to_normalized_mutation",
+      "fixture_kind": "judicial_api_day_process",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "official_api_day_process {\"max_docs\":1,\"summarize_max\":1,\"summary_mode\":\"extractive\",\"skip_assets\":true,\"vector_ingest\":false,\"force\":true,\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "<MOCK_PORT>",
+        "JUDGMENT_DB_USER": "root",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE fixture CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        ],
+        "expected_requests": {
+          "INSERT INTO court_judgments": 1,
+          "INSERT INTO judgment_archive": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.court_judgments",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM fixture.judgment_archive",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "judicial_api_day_process_fixture"
+      }
+    },
+    {
+      "job_id": "job_1770705679",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "deterministic_localhost_judgment_search_and_fixture_archive_mutation",
+      "fixture_kind": "judgment_daily_crawl_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "daily_crawl"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DAILY_MAX_CASES": "1",
+        "JUDGMENT_DAILY_MAX_REASONS": "1",
+        "JUDGMENT_DAILY_MAX_RESULTS_PER": "1",
+        "JUDGMENT_DAILY_NOTIFY": "0",
+        "JUDGMENT_DAILY_TIME_BUDGET_SEC": "60",
+        "JUDGMENT_DAILY_USE_DB_CASES": "0",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "9",
+        "JUDGMENT_DB_USER": "fixture",
+        "JUDGMENT_SUMMARY_RETRY_ENABLE": "0",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_JUDGMENTS_JSON_PATH": "<FIXTURE>/agent/judgment-collector/judgments.json",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_PDF_NAMER_CASE_INDEX": "<FIXTURE>/case-index.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TOOLS_API": "http://127.0.0.1:<MOCK_PORT>"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/skills/run": {
+            "status": 200,
+            "json": {
+              "success": true,
+              "output": "{\"success\":true,\"boolean_query\":\"損害賠償\",\"archive_dir\":\"<FIXTURE>/archive\",\"manifest_path\":\"<FIXTURE>/archive/manifest.json\",\"items_preview\":[]}"
+            }
+          }
+        },
+        "expected_requests": {
+          "/skills/run": 1
+        }
+      },
+      "success_contract": {
+        "type": "judgment_daily_crawl_fixture"
+      }
+    },
+    {
+      "job_id": "job_weekly_legal_crawl",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "deterministic_localhost_judgment_search_and_fixture_archive_mutation",
+      "fixture_kind": "judgment_daily_crawl_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "daily_crawl"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DAILY_MAX_CASES": "1",
+        "JUDGMENT_DAILY_MAX_REASONS": "1",
+        "JUDGMENT_DAILY_MAX_RESULTS_PER": "1",
+        "JUDGMENT_DAILY_NOTIFY": "0",
+        "JUDGMENT_DAILY_TIME_BUDGET_SEC": "60",
+        "JUDGMENT_DAILY_USE_DB_CASES": "0",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "9",
+        "JUDGMENT_DB_USER": "fixture",
+        "JUDGMENT_SUMMARY_RETRY_ENABLE": "0",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_JUDGMENTS_JSON_PATH": "<FIXTURE>/agent/judgment-collector/judgments.json",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_PDF_NAMER_CASE_INDEX": "<FIXTURE>/case-index.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TOOLS_API": "http://127.0.0.1:<MOCK_PORT>"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/skills/run": {
+            "status": 200,
+            "json": {
+              "success": true,
+              "output": "{\"success\":true,\"boolean_query\":\"損害賠償\",\"archive_dir\":\"<FIXTURE>/archive\",\"manifest_path\":\"<FIXTURE>/archive/manifest.json\",\"items_preview\":[]}"
+            }
+          }
+        },
+        "expected_requests": {
+          "/skills/run": 1
+        }
+      },
+      "success_contract": {
+        "type": "judgment_daily_crawl_fixture"
+      }
+    },
+    {
+      "job_id": "job_judgment_retry_evening",
+      "production_entrypoint": "skills/judgment-collector/action.py",
+      "safety_class": "deterministic_localhost_summary_provider_and_fixture_queue_mutation",
+      "fixture_kind": "judgment_retry_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/judgment-collector/action.py",
+        "--task",
+        "retry_summary_queue_auto {\"notify\":false}"
+      ],
+      "environment": {
+        "JUDGMENT_CACHE_ROOT": "<FIXTURE>/cache",
+        "JUDGMENT_DB_CONNECT_TIMEOUT_SEC": "1",
+        "JUDGMENT_DB_HOST": "127.0.0.1",
+        "JUDGMENT_DB_NAME": "fixture",
+        "JUDGMENT_DB_PASSWORD": "",
+        "JUDGMENT_DB_PORT": "9",
+        "JUDGMENT_DB_USER": "fixture",
+        "JUDGMENT_SUMMARY_RETRY_OFFPEAK_WINDOWS": "0-23",
+        "JUDGMENT_SUMMARY_RETRY_QUEUE_PATH": "<FIXTURE>/cache/summary-retry.jsonl",
+        "JUDGMENT_SUMMARY_RETRY_UPDATE_DB": "0",
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_OMLX_CHAT_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TOOLS_API": "http://127.0.0.1:<MOCK_PORT>"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/v1/chat/completions": {
+            "status": 200,
+            "json": {
+              "choices": [
+                {
+                  "message": {
+                    "content": "healthy"
+                  }
+                }
+              ]
+            }
+          },
+          "/skills/run": {
+            "status": 200,
+            "json": {
+              "success": true,
+              "output": "{\"success\":true,\"refined_text\":\"## 實務見解\\n本院認為，契約當事人應依誠信原則履行義務，主張有利事實之一方應負舉證責任。\\n\\n## 適用法條\\n民法第148條\"}"
+            }
+          }
+        },
+        "expected_requests": {
+          "/v1/chat/completions": 1,
+          "/skills/run": 1
+        }
+      },
+      "success_contract": {
+        "type": "judgment_retry_fixture"
+      }
+    },
+    {
+      "job_id": "job_worldmonitor_intel",
+      "production_entrypoint": "skills/worldmonitor-intel/action.py",
+      "safety_class": "deterministic_localhost_rss_market_and_fixture_report_mutation",
+      "fixture_kind": "worldmonitor_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/worldmonitor-intel/action.py",
+        "--task",
+        "collect",
+        "--no-reasoning",
+        "--plain-output"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_WORLDMONITOR_RSS_FEEDS_JSON": "{\"Fixture RSS\":\"http://127.0.0.1:<MOCK_PORT>/world.xml\"}",
+        "MAGI_WORLDMONITOR_STOOQ_BASE_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "MAGI_WORLDMONITOR_STOOQ_SYMBOLS_JSON": "{\"FIX\":\"fix.us\"}",
+        "MAGI_WORLDMONITOR_TRANSLATE_SUMMARY": "0"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/world.xml": {
+            "status": 200,
+            "content_type": "application/rss+xml; charset=utf-8",
+            "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel><title>Fixture</title><item><title>台灣供應鏈測試消息</title><description>隔離資料顯示測試供應鏈維持穩定，僅供排程流程驗證。</description><link>https://fixture.invalid/news/1</link><pubDate>Fri, 17 Jul 2026 00:00:00 GMT</pubDate></item></channel></rss>"
+          },
+          "/q/l/?s=fix.us&f=sd2t2ohlcv&h&e=csv": {
+            "status": 200,
+            "content_type": "text/csv; charset=utf-8",
+            "raw": "Symbol,Date,Time,Open,High,Low,Close,Volume\nFIX.US,2026-07-17,00:00:00,120.00,125.00,119.00,123.50,1000\n"
+          }
+        },
+        "expected_requests": {
+          "/world.xml": 1,
+          "/q/l/?s=fix.us&f=sd2t2ohlcv&h&e=csv": 1
+        }
+      },
+      "success_contract": {
+        "type": "worldmonitor_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_file_review_downloadable_probe_dense",
+      "production_entrypoint": "skills/file-review-orchestrator/action.py",
+      "safety_class": "deterministic_file_review_portal_module_and_fixture_flow_state",
+      "fixture_kind": "file_review_portal_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/file-review-orchestrator/action.py",
+        "--task",
+        "downloadable_probe {\"days\":30,\"notify\":false}"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/config.json",
+        "MAGI_DISABLE_SKILL_VENV_REEXEC": "1",
+        "MAGI_EEFILE_DOWNLOAD_FOLDER": "<FIXTURE>/staging",
+        "MAGI_FILE_REVIEW_PORTAL_PROBE_RETRIES": "1",
+        "MAGI_FILE_REVIEW_PROBE_WITH_GMAIL": "0",
+        "MAGI_FILE_REVIEW_PROVIDER_TRACE": "<FIXTURE>/runtime/file-review-provider.jsonl",
+        "MAGI_FILE_REVIEW_SUPPRESS_NOTIFY": "1",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "MAGI_JUDICIAL_EEFILE_USERNAME": "fixture-user",
+        "MAGI_JUDICIAL_EEFILE_PASSWORD": "fixture-password"
+      },
+      "success_contract": {
+        "type": "file_review_portal_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_transcript_sync",
+      "production_entrypoint": "skills/transcript-downloader/action.py",
+      "safety_class": "deterministic_judicial_record_module_and_fixture_archive_mutation",
+      "fixture_kind": "transcript_sync_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/transcript-downloader/action.py",
+        "--task",
+        "sync"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_CONFIG_PATH": "<FIXTURE>/config.json",
+        "MAGI_JUDICIAL_RECORD_USERNAME": "fixture-user",
+        "MAGI_JUDICIAL_RECORD_PASSWORD": "fixture-password",
+        "MAGI_ORCH_DIR": "<FIXTURE>/orch",
+        "MAGI_ROOT": "<FIXTURE>",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TRANSCRIPT_PROVIDER_CASE_ROOT": "<FIXTURE>/cases",
+        "MAGI_TRANSCRIPT_PROVIDER_TRACE": "<FIXTURE>/runtime/transcript-provider.jsonl",
+        "MAGI_TRANSCRIPT_SYNC_BATCH_SIZE": "1",
+        "MAGI_TRANSCRIPT_SYNC_CASE_DELAY_SEC": "0",
+        "MAGI_TRANSCRIPT_SYNC_LOCK_PATH": "<FIXTURE>/agent/transcript_sync.lock",
+        "MAGI_TRANSCRIPT_SYNC_MD5_SCAN_MODE": "inline",
+        "MAGI_TRANSCRIPT_SYNC_RUNTIME_DIR": "<FIXTURE>/runtime/transcript_sync",
+        "MAGI_TRANSCRIPT_SYNC_STATE_PATH": "<FIXTURE>/agent/transcript_sync_state.json",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_PORT": "9",
+        "OSC_DB_USER": "fixture",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_NAME": "fixture"
+      },
+      "success_contract": {
+        "type": "transcript_sync_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_research_brief_daily",
+      "production_entrypoint": "skills/research-brief/action.py",
+      "safety_class": "deterministic_localhost_research_feed_and_fixture_memory_sink",
+      "fixture_kind": "research_brief_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/research-brief/action.py",
+        "--task",
+        "digest_all",
+        "--no-notify"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "RESEARCH_BRIEF_DISABLE_SEED_BOOTSTRAP": "1",
+        "RESEARCH_BRIEF_FIXTURE_SOURCE_URL": "http://127.0.0.1:<MOCK_PORT>/research.xml",
+        "RESEARCH_BRIEF_MEMORY_SINK_PATH": "<FIXTURE>/runtime/research_brief/fixture-memory.jsonl"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/research.xml": {
+            "status": 200,
+            "content_type": "application/rss+xml; charset=utf-8",
+            "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel><title>Fixture Legal</title><item><title>法律科技隔離測試</title><description>法律流程與證據品質的隔離研究摘要。</description><link>https://fixture.invalid/research/1</link><pubDate>Fri, 17 Jul 2026 00:00:00 GMT</pubDate></item></channel></rss>"
+          }
+        },
+        "expected_requests": {
+          "/research.xml": 1
+        }
+      },
+      "success_contract": {
+        "type": "research_brief_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_market_briefing_script",
+      "production_entrypoint": "skills/market-briefing/action.py",
+      "safety_class": "deterministic_market_history_fundamentals_and_fixture_prediction_state",
+      "fixture_kind": "market_briefing_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/market-briefing/action.py",
+        "--task",
+        "briefing",
+        "--notify",
+        "0",
+        "--force",
+        "1",
+        "--mode",
+        "deep"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_MARKET_DATA_FIXTURE_PATH": "<FIXTURE>/market-provider.json",
+        "MAGI_MARKET_DATA_FIXTURE_TRACE": "<FIXTURE>/runtime/market-provider.jsonl",
+        "MAGI_MARKET_DISABLE_COMMITTEE": "1",
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_ROOT": "<FIXTURE>",
+        "MAGI_ROOT_DIR": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "market_briefing_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_omlx_switch_day",
+      "production_entrypoint": "config/bin/omlx_switch_model.sh",
+      "safety_class": "fixture_launchctl_model_api_and_profile_handoff",
+      "fixture_kind": "omlx_switch_provider",
+      "argv": [
+        "/bin/bash",
+        "<ROOT>/config/bin/omlx_switch_model.sh",
+        "day"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "MAGI_DAY_MODEL_MIN_FREE_GB": "1",
+        "MAGI_OMLX_FORCE_SWITCH": "1",
+        "MAGI_OMLX_LAUNCHCTL_TRACE": "<FIXTURE>/runtime/launchctl-actions.log",
+        "MAGI_OMLX_PAGED_CACHE_ROOT": "<FIXTURE>/cache",
+        "MAGI_OMLX_SWITCH_ALERT_FILE": "<FIXTURE>/runtime/omlx-alert.log",
+        "MAGI_OMLX_SWITCH_LOCKDIR": "<FIXTURE>/runtime/omlx-switch.lock",
+        "MAGI_OMLX_SWITCH_LOG": "<FIXTURE>/runtime/omlx-switch.log",
+        "MAGI_OMLX_SWITCH_PROVIDER_TRACE": "<FIXTURE>/runtime/omlx-result.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>/magi-root",
+        "PATH": "<FIXTURE>/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      },
+      "success_contract": {
+        "type": "omlx_switch_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_omlx_switch_night",
+      "production_entrypoint": "config/bin/omlx_switch_model.sh",
+      "safety_class": "fixture_launchctl_model_api_and_profile_handoff",
+      "fixture_kind": "omlx_switch_provider",
+      "argv": [
+        "/bin/bash",
+        "<ROOT>/config/bin/omlx_switch_model.sh",
+        "night"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "MAGI_DAY_MODEL_MIN_FREE_GB": "1",
+        "MAGI_OMLX_FORCE_SWITCH": "1",
+        "MAGI_OMLX_LAUNCHCTL_TRACE": "<FIXTURE>/runtime/launchctl-actions.log",
+        "MAGI_OMLX_PAGED_CACHE_ROOT": "<FIXTURE>/cache",
+        "MAGI_OMLX_SWITCH_ALERT_FILE": "<FIXTURE>/runtime/omlx-alert.log",
+        "MAGI_OMLX_SWITCH_LOCKDIR": "<FIXTURE>/runtime/omlx-switch.lock",
+        "MAGI_OMLX_SWITCH_LOG": "<FIXTURE>/runtime/omlx-switch.log",
+        "MAGI_OMLX_SWITCH_PROVIDER_TRACE": "<FIXTURE>/runtime/omlx-result.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>/magi-root",
+        "PATH": "<FIXTURE>/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      },
+      "success_contract": {
+        "type": "omlx_switch_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_omlx_profile_guard",
+      "production_entrypoint": "config/bin/omlx_switch_model.sh",
+      "safety_class": "fixture_launchctl_model_api_and_profile_handoff",
+      "fixture_kind": "omlx_switch_provider",
+      "argv": [
+        "/bin/bash",
+        "<ROOT>/config/bin/omlx_switch_model.sh",
+        "auto"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "MAGI_DAY_MODEL_MIN_FREE_GB": "1",
+        "MAGI_OMLX_FORCE_SWITCH": "1",
+        "MAGI_OMLX_LAUNCHCTL_TRACE": "<FIXTURE>/runtime/launchctl-actions.log",
+        "MAGI_OMLX_PAGED_CACHE_ROOT": "<FIXTURE>/cache",
+        "MAGI_OMLX_SWITCH_ALERT_FILE": "<FIXTURE>/runtime/omlx-alert.log",
+        "MAGI_OMLX_SWITCH_LOCKDIR": "<FIXTURE>/runtime/omlx-switch.lock",
+        "MAGI_OMLX_SWITCH_LOG": "<FIXTURE>/runtime/omlx-switch.log",
+        "MAGI_OMLX_SWITCH_PROVIDER_TRACE": "<FIXTURE>/runtime/omlx-result.json",
+        "MAGI_ROOT_DIR": "<FIXTURE>/magi-root",
+        "PATH": "<FIXTURE>/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      },
+      "success_contract": {
+        "type": "omlx_switch_provider_fixture"
+      }
+    },
+    {
+      "job_id": "job_osc_events_refresh",
+      "production_entrypoint": "scripts/ops/osc_events_refresh.py",
+      "safety_class": "disposable_database_and_fixture_pdf_calendar_dry_run",
+      "fixture_kind": "osc_events_pdf_scan",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/osc_events_refresh.py",
+        "--dry-run",
+        "--scan-only",
+        "--skip-drive-sync",
+        "--skip-transcript-todos",
+        "--skip-calendar-audit",
+        "--skip-calendar-source-audit",
+        "--skip-share-repair",
+        "--pdf-limit",
+        "1",
+        "--json-out",
+        "<FIXTURE>/runtime/osc-events-latest.json"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "OSC_PDF_CALENDAR_ALLOWED_ROOTS": "<FIXTURE>/cases",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_EVENTS_REFRESH_PDF_CASE_BATCH": "1",
+        "OSC_PDF_CALENDAR_BULK_TEXT_ENABLE": "0",
+        "OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT": "1",
+        "OSC_PDF_CALENDAR_FINAL_DOC_PRIORITY_CASE_LIMIT": "0",
+        "OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP": "0",
+        "OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS": "0"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), client_name VARCHAR(255), folder_path TEXT, status VARCHAR(50), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+          "CREATE TABLE case_todos (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(255) NOT NULL, client_name TEXT, todo_type TEXT NOT NULL, todo_date DATE, todo_time TIME, description TEXT, status VARCHAR(50) DEFAULT 'pending', source_file TEXT, google_calendar_id TEXT, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_date TIMESTAMP NULL)",
+          "CREATE TABLE document_index (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), file_path TEXT, file_name TEXT, party TEXT, subfolder_name TEXT, modified_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+          "INSERT INTO cases (case_number,client_name,folder_path,status) VALUES ('2026-0001','測試當事人','<FIXTURE>/cases/2026-0001-測試當事人-民事-一審-損害賠償','進行中')",
+          "INSERT INTO document_index (case_number,file_path,file_name,party,subfolder_name) VALUES ('2026-0001','<FIXTURE>/cases/2026-0001-測試當事人-民事-一審-損害賠償/09_法院通知或程序裁定','fixture-hearing.pdf','測試當事人','09_法院通知或程序裁定')",
+          "INSERT INTO case_todos (case_number,client_name,todo_type,todo_date,status,source_file) VALUES ('2026-0001','測試當事人','補正','2025-12-31','pending','fixture-old.pdf')"
+        ],
+        "expected_requests": {
+          "FROM cases": 1,
+          "FROM case_todos": 1,
+          "FROM document_index": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='pending'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.document_index",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "osc_events_pdf_scan_fixture"
+      }
+    },
+    {
+      "job_id": "job_osc_todo_governance",
+      "production_entrypoint": "scripts/ops/osc_events_refresh.py",
+      "safety_class": "disposable_database_and_fixture_pdf_calendar_dry_run",
+      "fixture_kind": "osc_events_pdf_scan",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/osc_events_refresh.py",
+        "--dry-run",
+        "--scan-only",
+        "--force-rebuild",
+        "--skip-drive-sync",
+        "--skip-transcript-todos",
+        "--skip-calendar-audit",
+        "--skip-calendar-source-audit",
+        "--skip-share-repair",
+        "--pdf-limit",
+        "1",
+        "--json-out",
+        "<FIXTURE>/runtime/osc-events-latest.json"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SKIP_IMPORT_PROBES": "1",
+        "OSC_PDF_CALENDAR_ALLOWED_ROOTS": "<FIXTURE>/cases",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_EVENTS_REFRESH_PDF_CASE_BATCH": "1",
+        "OSC_PDF_CALENDAR_BULK_TEXT_ENABLE": "0",
+        "OSC_PDF_CALENDAR_FILENAME_SWEEP_LIMIT": "1",
+        "OSC_PDF_CALENDAR_FINAL_DOC_PRIORITY_CASE_LIMIT": "0",
+        "OSC_PDF_CALENDAR_FULL_FILENAME_SWEEP": "0",
+        "OSC_PDF_CALENDAR_RECENT_SWEEP_HOURS": "0"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), client_name VARCHAR(255), folder_path TEXT, status VARCHAR(50), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+          "CREATE TABLE case_todos (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(255) NOT NULL, client_name TEXT, todo_type TEXT NOT NULL, todo_date DATE, todo_time TIME, description TEXT, status VARCHAR(50) DEFAULT 'pending', source_file TEXT, google_calendar_id TEXT, created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_date TIMESTAMP NULL)",
+          "CREATE TABLE document_index (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), file_path TEXT, file_name TEXT, party TEXT, subfolder_name TEXT, modified_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+          "INSERT INTO cases (case_number,client_name,folder_path,status) VALUES ('2026-0001','測試當事人','<FIXTURE>/cases/2026-0001-測試當事人-民事-一審-損害賠償','進行中')",
+          "INSERT INTO document_index (case_number,file_path,file_name,party,subfolder_name) VALUES ('2026-0001','<FIXTURE>/cases/2026-0001-測試當事人-民事-一審-損害賠償/09_法院通知或程序裁定','fixture-hearing.pdf','測試當事人','09_法院通知或程序裁定')",
+          "INSERT INTO case_todos (case_number,client_name,todo_type,todo_date,status,source_file) VALUES ('2026-0001','測試當事人','補正','2025-12-31','pending','fixture-old.pdf')"
+        ],
+        "expected_requests": {
+          "FROM cases": 1,
+          "FROM case_todos": 1,
+          "FROM document_index": 1
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.cases",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_todos WHERE status='pending'",
+            "equals": 1
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.document_index",
+            "equals": 1
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "osc_events_pdf_scan_fixture"
+      }
+    },
+    {
+      "job_id": "job_accounting_sheet_import",
+      "production_entrypoint": "scripts/import_accounting_sheet.py",
+      "safety_class": "fixture_sheet_provider_and_disposable_database_dry_run",
+      "fixture_kind": "accounting_sheet_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/import_accounting_sheet.py",
+        "--month",
+        "2026-06",
+        "--spreadsheet-id",
+        "magi-certification-accounting-sheet",
+        "--gid",
+        "7"
+      ],
+      "environment": {
+        "MAGI_ACCOUNTING_SHEET_FIXTURE_PATH": "<FIXTURE>/accounting-sheet.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_WEB_DB_HOST": "127.0.0.1",
+        "OSC_WEB_DB_NAME": "law_firm_data",
+        "OSC_WEB_DB_PASSWORD": "",
+        "OSC_WEB_DB_PORT": "<MOCK_PORT>",
+        "OSC_WEB_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), legal_aid_number VARCHAR(50), laf_case_no VARCHAR(50), application_no VARCHAR(50), court_case_number VARCHAR(100), court_case_no VARCHAR(100))",
+          "CREATE TABLE case_transactions (id INT PRIMARY KEY AUTO_INCREMENT, case_id INT NULL, date DATE NOT NULL, type VARCHAR(50), sub_type VARCHAR(100), category VARCHAR(100), description TEXT, amount DOUBLE NOT NULL)",
+          "INSERT INTO cases (case_number,legal_aid_number) VALUES ('2026-0001','1150001-E-001')"
+        ],
+        "expected_requests": {
+          "CREATE TABLE IF NOT EXISTS accounting_import_records": 1,
+          "FROM accounting_import_records WHERE fingerprint": 2,
+          "FROM case_transactions": 2
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_transactions",
+            "equals": 0
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.accounting_import_records",
+            "equals": 0
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "accounting_sheet_import_fixture"
+      }
+    },
+    {
+      "job_id": "job_accounting_monthly_bonus",
+      "production_entrypoint": "scripts/accounting_monthly_bonus.py",
+      "safety_class": "disposable_accounting_database_dry_run",
+      "fixture_kind": "accounting_bonus",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/accounting_monthly_bonus.py",
+        "--month",
+        "2026-06",
+        "--no-refresh-import"
+      ],
+      "environment": {
+        "MAGI_ACCOUNTING_BONUS_REQUIRE_LAF_FEE": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OSC_DB_HOST": "127.0.0.1",
+        "OSC_DB_NAME": "law_firm_data",
+        "OSC_DB_PASSWORD": "",
+        "OSC_DB_PORT": "<MOCK_PORT>",
+        "OSC_DB_USER": "root",
+        "OSC_WEB_DB_HOST": "127.0.0.1",
+        "OSC_WEB_DB_NAME": "law_firm_data",
+        "OSC_WEB_DB_PASSWORD": "",
+        "OSC_WEB_DB_PORT": "<MOCK_PORT>",
+        "OSC_WEB_DB_USER": "root"
+      },
+      "dependency": {
+        "kind": "disposable_mariadb",
+        "seed_sql": [
+          "CREATE DATABASE law_firm_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+          "USE law_firm_data",
+          "CREATE TABLE cases (id INT PRIMARY KEY AUTO_INCREMENT, case_number VARCHAR(50), client_name VARCHAR(255), case_type VARCHAR(100), case_category VARCHAR(100), case_subject VARCHAR(255), case_reason VARCHAR(255), folder_path TEXT, folder_name TEXT, legal_aid_number VARCHAR(50), laf_case_no VARCHAR(50), application_no VARCHAR(50))",
+          "CREATE TABLE case_transactions (id INT PRIMARY KEY AUTO_INCREMENT, case_id INT NULL, date DATE NOT NULL, type VARCHAR(50), sub_type VARCHAR(100), category VARCHAR(100), description TEXT, amount DOUBLE NOT NULL)",
+          "CREATE TABLE accounting_import_records (fingerprint CHAR(64) PRIMARY KEY, source VARCHAR(120), source_row INT, source_month VARCHAR(7), transaction_id INT, payload_json TEXT)",
+          "INSERT INTO cases (case_number,client_name,case_type,case_category,case_subject,case_reason,folder_path,folder_name,legal_aid_number,laf_case_no) VALUES ('2026-0001','測試當事人','民事','法律扶助案件','消費者債務清理','更生','/fixture/case','2026-0001-測試當事人','1150001-E-001','1150001-E-001')",
+          "INSERT INTO case_transactions (id,case_id,date,type,sub_type,category,description,amount) VALUES (1,1,'2026-06-10','收入','預付酬金','法律扶助案件','1150001-E-001 測試當事人｜法扶消債酬金',10000),(2,NULL,'2026-06-12','支出','郵資','郵資','掛號郵資',1000)",
+          "INSERT INTO accounting_import_records (fingerprint,source,source_row,source_month,transaction_id,payload_json) VALUES (REPEAT('a',64),'colleague_google_sheet',2,'2026-06',1,'{}'),(REPEAT('b',64),'colleague_google_sheet',3,'2026-06',2,'{}')"
+        ],
+        "expected_requests": {
+          "CREATE TABLE IF NOT EXISTS accounting_monthly_bonus_runs": 1,
+          "FROM case_transactions t": 2,
+          "FROM accounting_monthly_bonus_runs": 2
+        },
+        "postconditions": [
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.case_transactions",
+            "equals": 2
+          },
+          {
+            "sql": "SELECT COUNT(*) FROM law_firm_data.accounting_monthly_bonus_runs",
+            "equals": 0
+          }
+        ]
+      },
+      "success_contract": {
+        "type": "accounting_monthly_bonus_fixture"
+      }
+    },
+    {
+      "job_id": "job_benchmark_pdf_namer",
+      "production_entrypoint": "scripts/ops/benchmark_pdf_namer.py",
+      "safety_class": "fixture_pdf_and_deterministic_proposal_semantic_benchmark",
+      "fixture_kind": "pdf_namer_proposal_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/benchmark_pdf_namer.py"
+      ],
+      "environment": {
+        "HOME": "<FIXTURE>/home",
+        "MAGI_BENCHMARK_ALLOW_NAS_SCAN": "1",
+        "MAGI_BENCHMARK_NAS_CASE_ROOT": "<FIXTURE>/cases",
+        "MAGI_PDF_NAMER_BENCHMARK_FIXTURE_PROPOSALS": "<FIXTURE>/pdf-namer-proposals.json",
+        "MAGI_PDF_NAMER_BENCHMARK_MAX_PDFS": "1",
+        "MAGI_PDF_NAMER_DISABLE_DB_RULES": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "pdf_namer_benchmark_fixture"
+      }
+    },
+    {
+      "job_id": "job_translator_ape_regression",
+      "production_entrypoint": "scripts/ops/benchmark_translator_ape.py",
+      "safety_class": "deterministic_translation_provider_semantic_regression",
+      "fixture_kind": "translator_ape_provider",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/benchmark_translator_ape.py",
+        "--max-cases",
+        "4",
+        "--skip-gtx",
+        "--no-static",
+        "--json-out",
+        "<FIXTURE>/runtime/translator-ape.json"
+      ],
+      "environment": {
+        "MAGI_MUTABLE_STATIC_DIR": "<FIXTURE>/static",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_TRANSLATOR_APE_FIXTURE_PATH": "<FIXTURE>/translator-ape-provider.json"
+      },
+      "success_contract": {
+        "type": "translator_ape_benchmark_fixture"
+      }
+    },
+    {
+      "job_id": "job_nightly_regression",
+      "production_entrypoint": "scripts/ops/nightly_regression.py",
+      "safety_class": "local_core_route_child_process_regression_no_notify",
+      "fixture_kind": "nightly_regression_runtime",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/nightly_regression.py",
+        "--suites",
+        "coreroutes",
+        "--no-notify",
+        "--json-out",
+        "<FIXTURE>/runtime/nightly-regression.json"
+      ],
+      "environment": {
+        "MAGI_AGENT_DIR": "<FIXTURE>/agent",
+        "MAGI_CAPTURE_CHATLOG": "0",
+        "MAGI_OMLX_CHAT_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "MAGI_OMLX_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>",
+        "MAGI_OMLX_HOST": "127.0.0.1",
+        "MAGI_OMLX_PORT": "<MOCK_PORT>",
+        "MAGI_OMLX_WATCHDOG_STATE_PATH": "<FIXTURE>/runtime/omlx-watchdog.json",
+        "MAGI_ROOT_DIR": "<ROOT>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "OLLAMA_EMBED_URL": "http://127.0.0.1:<MOCK_PORT>/v1/embeddings"
+      },
+      "dependency": {
+        "kind": "localhost_http",
+        "routes": {
+          "/v1/models": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "id": "fixture-legal-guide-model"
+                }
+              ]
+            }
+          },
+          "/v1/chat/completions": {
+            "status": 200,
+            "json": {
+              "choices": [
+                {
+                  "message": {
+                    "content": "勞基法試算功能：我可以幫您計算勞基法加班費；請提供月薪、伙食津貼、加班日期與時數。"
+                  }
+                }
+              ]
+            }
+          },
+          "/v1/embeddings": {
+            "status": 200,
+            "json": {
+              "data": [
+                {
+                  "embedding": [
+                    1.0,
+                    0.5,
+                    0.25
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "expected_requests": {
+          "/v1/models": 1,
+          "/v1/chat/completions": 1,
+          "/v1/embeddings": 2
+        }
+      },
+      "success_contract": {
+        "type": "nightly_regression_fixture"
+      }
+    },
+    {
+      "job_id": "job_business_module_live_check",
+      "production_entrypoint": "scripts/ops/business_module_live_check.py",
+      "safety_class": "bounded_business_true_orchestration_with_terminal_providers",
+      "fixture_kind": "product_business_module_live",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/business_module_live_check.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime"
+      },
+      "success_contract": {
+        "type": "business_module_true_probes"
+      }
+    },
+    {
+      "job_id": "job_heavy_translation_quality_live",
+      "production_entrypoint": "scripts/ops/heavy_translation_quality_live.py",
+      "safety_class": "bounded_translation_provider_route_docx_and_terminal_close",
+      "fixture_kind": "product_heavy_translation_quality",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/heavy_translation_quality_live.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime",
+        "MAGI_EXPORTS_DIR": "<FIXTURE>/workspace/exports",
+        "TMPDIR": "<FIXTURE>/workspace"
+      },
+      "success_contract": {
+        "type": "heavy_translation_provider_terminal"
+      }
+    },
+    {
+      "job_id": "job_distill_train_gemma",
+      "production_entrypoint": "scripts/nightly_distill_gemma.py",
+      "safety_class": "bounded_distill_training_optimizer_checkpoint_eval_no_deploy",
+      "fixture_kind": "product_distill_train_gemma",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/nightly_distill_gemma.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "GEMMA_DISTILL_DIR": "<FIXTURE>/workspace/gemma-distill",
+        "MAGI_ROOT_DIR": "<ROOT>"
+      },
+      "success_contract": {
+        "type": "distill_training_terminal"
+      }
+    },
+    {
+      "job_id": "job_insight_sync",
+      "production_entrypoint": "scripts/sync_insights_to_vectors.py",
+      "safety_class": "bounded_formal_embedding_and_disposable_vector_database_terminal",
+      "fixture_kind": "product_insight_sync",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/sync_insights_to_vectors.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_AGENT_DIR": "<FIXTURE>/workspace/agent"
+      },
+      "success_contract": {
+        "type": "insight_sync_embedding_database_terminal"
+      }
+    },
+    {
+      "job_id": "job_reprocess_insights",
+      "production_entrypoint": "scripts/reprocess_insights.py",
+      "safety_class": "bounded_formal_api_model_and_disposable_database_update_terminal",
+      "fixture_kind": "product_reprocess_insights",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/reprocess_insights.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime"
+      },
+      "success_contract": {
+        "type": "reprocess_insights_api_model_database_terminal"
+      }
+    },
+    {
+      "job_id": "job_drive_case_sync_bidirectional",
+      "production_entrypoint": "scripts/drive_case_sync_worker.py",
+      "safety_class": "bounded_drive_nas_native_path_and_missing_file_plan",
+      "fixture_kind": "drive_case_sync_rules",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/drive_case_sync_worker.py",
+        "--matched-case-limit",
+        "1",
+        "--no-downloads",
+        "--no-uploads",
+        "--no-create-drive-folders",
+        "--no-repair-imported-folders",
+        "--priority-upcoming-days",
+        "0",
+        "--no-direct-priority-sync",
+        "--inventory-timeout-sec",
+        "30"
+      ],
+      "environment": {
+        "MAGI_DRIVE_SYNC_FIXTURE_PATH": "<FIXTURE>/drive-sync.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "drive_case_sync_fixture",
+        "worker_kind": "inventory"
+      }
+    },
+    {
+      "job_id": "job_drive_case_sync_all_files",
+      "production_entrypoint": "scripts/drive_case_sync_worker.py",
+      "safety_class": "bounded_drive_nas_all_file_native_path_and_missing_file_plan",
+      "fixture_kind": "drive_case_sync_rules",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/drive_case_sync_worker.py",
+        "--direct-all-cases",
+        "--direct-all-case-limit",
+        "1",
+        "--execute-downloads",
+        "--execute-uploads",
+        "--no-create-drive-folders",
+        "--no-repair-imported-folders",
+        "--priority-upcoming-days",
+        "0",
+        "--inventory-timeout-sec",
+        "30"
+      ],
+      "environment": {
+        "MAGI_DRIVE_SYNC_FIXTURE_PATH": "<FIXTURE>/drive-sync.json",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "drive_case_sync_fixture",
+        "worker_kind": "all_files"
+      }
+    },
+    {
+      "job_id": "job_file_review_check",
+      "production_entrypoint": "skills/file-review-orchestrator/action.py",
+      "safety_class": "bounded_formal_email_payment_background_child_terminal",
+      "fixture_kind": "file_review_scheduled_pipeline",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/file-review-orchestrator/action.py",
+        "--task",
+        "scheduled_check {\"notify\":false}"
+      ],
+      "environment": {
+        "MAGI_DISABLE_SKILL_VENV_REEXEC": "1",
+        "MAGI_FILE_REVIEW_SCHEDULE_FIXTURE_PATH": "<FIXTURE>/file-review-provider.json",
+        "MAGI_FILE_REVIEW_STATE_DIR": "<FIXTURE>/state",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "file_review_formal_child_terminal"
+      }
+    },
+    {
+      "job_id": "job_slow_archive_closed_cases",
+      "production_entrypoint": "scripts/ops/start_slow_archive_closed_cases.py",
+      "safety_class": "bounded_closed_case_archive_hierarchy_terminal_dry_run",
+      "fixture_kind": "slow_archive_rules",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/start_slow_archive_closed_cases.py",
+        "--foreground",
+        "--foreground-timeout-sec",
+        "60",
+        "--print-json",
+        "--limit",
+        "1",
+        "--min-size-mb",
+        "0",
+        "--deep-dry-run",
+        "--json-out",
+        "<FIXTURE>/runtime/slow-archive-result.json"
+      ],
+      "environment": {
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime",
+        "MAGI_SLOW_ARCHIVE_FIXTURE_PATH": "<FIXTURE>/slow-archive.json",
+        "MAGI_SLOW_ARCHIVE_ROOT": "<FIXTURE>/archive/03_工作資料/10_結案"
+      },
+      "success_contract": {
+        "type": "slow_archive_fixture"
+      }
+    },
+    {
+      "job_id": "job_1770948489644_0726cf",
+      "production_entrypoint": "skills/memory/cortex_sync.py",
+      "safety_class": "bounded_cortex_state_and_memory_provider",
+      "fixture_kind": "product_cortex_sync_terminal",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/memory/cortex_sync.py",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/workspace/agent"
+      },
+      "success_contract": {
+        "type": "json_file",
+        "path": "outputs/result.json",
+        "equals": {
+          "schema": "magi.schedule-nonstorage-result/v1",
+          "job_id": "job_1770948489644_0726cf",
+          "success": true,
+          "status": "passed",
+          "safety.external_network_accessed": false,
+          "safety.production_database_accessed": false,
+          "safety.production_state_written": false,
+          "safety.nas_accessed": false,
+          "safety.writes_bounded_to_fixture": true,
+          "safety.subprocess_spawned": false,
+          "safety.dispatcher_invoked": false,
+          "safety.database_provider": "fixture_source",
+          "safety.model_provider": "fixture_memory",
+          "safety.notification_provider": "not_used",
+          "checks.fixture_sample_bound": true,
+          "checks.typed_state_and_rows": true,
+          "checks.sync_reached_terminal_state": true,
+          "checks.added_counts_match_expected": true,
+          "checks.state_checkpoint_matches_expected": true,
+          "checks.memory_writes_use_isolated_provider": true,
+          "checks.no_dispatch_or_subprocess": true
+        },
+        "minimum": {
+          "fixture_sample_id": 1
+        },
+        "lengths": {}
+      }
+    },
+    {
+      "job_id": "job_1770948489644_c5a469",
+      "production_entrypoint": "skills/magi-autopilot/action.py",
+      "safety_class": "bounded_autopilot_tick_state_repair_terminal",
+      "fixture_kind": "product_autopilot_tick_terminal",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/magi-autopilot/action.py",
+        "--task",
+        "tick",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/workspace/agent"
+      },
+      "success_contract": {
+        "type": "autopilot_terminal_fixture",
+        "job_id": "job_1770948489644_c5a469",
+        "task": "tick"
+      }
+    },
+    {
+      "job_id": "job_nightly_autopilot",
+      "production_entrypoint": "skills/magi-autopilot/action.py",
+      "safety_class": "bounded_autopilot_nightly_state_repair_terminal",
+      "fixture_kind": "product_autopilot_nightly_terminal",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/magi-autopilot/action.py",
+        "--task",
+        "nightly",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/workspace/agent"
+      },
+      "success_contract": {
+        "type": "autopilot_terminal_fixture",
+        "job_id": "job_nightly_autopilot",
+        "task": "nightly"
+      }
+    },
+    {
+      "job_id": "job_operational_hardening_audit",
+      "production_entrypoint": "scripts/ops/audit_operational_hardening.py",
+      "safety_class": "bounded_operational_audit_and_repair_terminal",
+      "fixture_kind": "product_operational_hardening_terminal",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/scripts/ops/audit_operational_hardening.py",
+        "--cleanup-stale-locks",
+        "--fail-on-red",
+        "--schedule-fixture-root",
+        "<FIXTURE>",
+        "--json-out",
+        "<FIXTURE>/outputs/result.json"
+      ],
+      "environment": {
+        "MAGI_V3_SCHEDULE_FIXTURE": "1",
+        "MAGI_V3_SCHEDULE_FIXTURE_ROOT": "<FIXTURE>",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/workspace/runtime",
+        "MAGI_AGENT_DIR": "<FIXTURE>/workspace/agent"
+      },
+      "success_contract": {
+        "type": "operational_hardening_formal_fixture"
+      }
+    },
+    {
+      "job_id": "job_pdf_namer_nightly",
+      "production_entrypoint": "skills/pdf-namer/nightly_train.py",
+      "safety_class": "bounded_real_pdf_parse_child_and_naming_manifest",
+      "fixture_kind": "pdf_namer_nightly_training",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/pdf-namer/nightly_train.py",
+        "--max-files",
+        "1",
+        "--dry-run",
+        "--report-only",
+        "--json-out",
+        "<FIXTURE>/state/nightly-result.json"
+      ],
+      "environment": {
+        "MAGI_CASE_ROOT": "<FIXTURE>/cases",
+        "MAGI_PDF_NAMER_ANALYSIS_FIXTURE_PATH": "<FIXTURE>/analysis-provider.json",
+        "MAGI_PDF_NAMER_STATE_DIR": "<FIXTURE>/state",
+        "MAGI_PDF_NAMER_TRAIN_SAMPLE_TIMEOUT_SEC": "30",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "pdf_namer_nightly_fixture"
+      }
+    },
+    {
+      "job_id": "pdfnamer_docling_layout",
+      "production_entrypoint": "skills/pdf-namer/nightly_layout.py",
+      "safety_class": "bounded_real_pdf_layout_sidecar_and_terminal_manifest",
+      "fixture_kind": "pdf_namer_layout_backfill",
+      "argv": [
+        "<PYTHON>",
+        "<ROOT>/skills/pdf-namer/nightly_layout.py"
+      ],
+      "environment": {
+        "MAGI_PDF_NAMER_DOCLING_ENABLED": "1",
+        "MAGI_PDF_NAMER_LAYOUT_FIXTURE_PATH": "<FIXTURE>/layout-provider.json",
+        "MAGI_PDF_NAMER_STATE_DIR": "<FIXTURE>/state",
+        "MAGI_PDF_NAMER_DOCLING_LOOKBACK_SEC": "86400",
+        "MAGI_PDF_NAMER_DOCLING_MAX_SCAN": "1",
+        "MAGI_RUNTIME_DIR": "<FIXTURE>/runtime"
+      },
+      "success_contract": {
+        "type": "pdf_namer_layout_fixture"
+      }
+    }
+  ],
+  "blocker_policy": {
+    "orchestrator_macro": [
+      "command starts with @MAGI"
+    ],
+    "external_provider_or_login": [
+      "gmail",
+      "google",
+      "drive",
+      "portal",
+      "judicial",
+      "worldmonitor",
+      "token",
+      "calendar"
+    ],
+    "nas_or_external_storage": [
+      "nas_",
+      "synology",
+      ".magi_mounts",
+      "slow_archive",
+      "drive_case_sync"
+    ],
+    "live_model_or_service": [
+      "live",
+      "omlx",
+      "model",
+      "translation",
+      "external_chat",
+      "distill"
+    ],
+    "production_database_or_index": [
+      "accounting",
+      "cortex",
+      "vector",
+      "index_cases",
+      "reindex",
+      "purge_persona",
+      "insight"
+    ],
+    "irreversible_or_production_mutation": [
+      "--apply",
+      "--commit",
+      "repair-safe",
+      "cleanup",
+      "purge",
+      "backup",
+      "sync"
+    ],
+    "unreviewed_local_body": [
+      "fallback for every enabled job not in a safe adapter"
+    ]
+  }
+}

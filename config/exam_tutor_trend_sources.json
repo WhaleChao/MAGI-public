@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "project_name": "預測",
+  "ui_title": "趨勢分析",
+  "refresh_policy": {
+    "schedule": "weekly_with_exam_bank_sync",
+    "nvidia_model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "local_model_fallback": false,
+    "max_items": 18,
+    "verified_requires_tier_1": true
+  },
+  "sources": [
+    {
+      "source_id": "constitutional_court_judgments",
+      "name": "憲法法庭判決列表",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "index",
+      "url": "https://cons.judicial.gov.tw/judcurrentNew1.aspx?fid=38&page=1&tab=1",
+      "subjects": ["憲法", "行政法", "刑法", "刑事訴訟法", "民法", "民事訴訟法"]
+    },
+    {
+      "source_id": "legislative_passed_bills",
+      "name": "立法院最新通過議案",
+      "tier": 1,
+      "source_type": "official_legislation",
+      "detail_level": "index",
+      "url": "https://lis.ly.gov.tw/lynewbillc/newbillkm",
+      "subjects": ["全部法律科目"]
+    },
+    {
+      "source_id": "legislative_law_system",
+      "name": "立法院法律系統",
+      "tier": 1,
+      "source_type": "official_legislative_history",
+      "detail_level": "index",
+      "url": "https://lis.ly.gov.tw/lglawc/lglawkm",
+      "subjects": ["全部法律科目"]
+    },
+    {
+      "source_id": "national_law_news",
+      "name": "全國法規最新消息",
+      "tier": 1,
+      "source_type": "official_law",
+      "detail_level": "index",
+      "url": "https://www.moj.gov.tw/2204/2795/2798/",
+      "subjects": ["全部法律科目"]
+    },
+    {
+      "source_id": "fsc_law_news",
+      "name": "金管會主管法規最新訊息",
+      "tier": 1,
+      "source_type": "official_regulation",
+      "detail_level": "index",
+      "url": "https://law.fsc.gov.tw/",
+      "subjects": ["商事法", "金融法", "行政法"]
+    },
+    {
+      "source_id": "judicial_yuan_news",
+      "name": "司法院最新消息",
+      "tier": 1,
+      "source_type": "official_news",
+      "detail_level": "index",
+      "url": "https://www.judicial.gov.tw/tw/lp-1887-1.html",
+      "subjects": ["全部訴訟法", "法院組織法"]
+    },
+    {
+      "source_id": "pdpc_news",
+      "name": "個人資料保護委員會籌備處最新消息",
+      "tier": 1,
+      "source_type": "official_news",
+      "detail_level": "index",
+      "url": "https://www.pdpc.gov.tw/",
+      "subjects": ["個人資料保護法", "行政法", "憲法"]
+    },
+    {
+      "source_id": "professional_radar",
+      "name": "律師、公會、學者與法律媒體公開內容雷達",
+      "tier": 3,
+      "source_type": "professional_and_news_radar",
+      "detail_level": "index",
+      "url": "https://www.twba.org.tw/",
+      "subjects": ["全部法律科目"],
+      "policy": "只作發現線索；未由一級官方來源交叉確認前不得升為已驗證考點。Facebook 貼文須保存發文者、時間、原始網址與頁面快照指紋。"
+    },
+    {
+      "source_id": "constitutional_115_1_fulltext",
+      "name": "憲法法庭 115 年憲判字第 1 號判決全文",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "full_text",
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=350743",
+      "subjects": ["憲法", "刑事訴訟法"]
+    },
+    {
+      "source_id": "constitutional_115_2_fulltext",
+      "name": "憲法法庭 115 年憲判字第 2 號判決全文",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "full_text",
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=38&id=343660",
+      "subjects": ["憲法", "行政法"]
+    },
+    {
+      "source_id": "constitutional_115_3_fulltext",
+      "name": "憲法法庭 115 年憲判字第 3 號判決全文",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "full_text",
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=5304&id=358150",
+      "subjects": ["憲法", "少年事件處理法"]
+    },
+    {
+      "source_id": "constitutional_115_4_fulltext",
+      "name": "憲法法庭 115 年憲判字第 4 號判決全文",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "full_text",
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=351300",
+      "subjects": ["憲法", "刑事訴訟法"]
+    },
+    {
+      "source_id": "constitutional_115_5_fulltext",
+      "name": "憲法法庭 115 年憲判字第 5 號判決全文",
+      "tier": 1,
+      "source_type": "official_judgment",
+      "detail_level": "full_text",
+      "url": "https://cons.judicial.gov.tw/docdata.aspx?fid=52&id=343661",
+      "subjects": ["憲法", "刑法"]
+    },
+    {
+      "source_id": "criminal_80_legislative_record",
+      "name": "立法院 115 年 7 月 7 日刑法第 80 條議事錄",
+      "tier": 1,
+      "source_type": "official_legislative_record",
+      "detail_level": "legislative_record",
+      "url": "https://ppg.ly.gov.tw/ppg/sittings/2026070143/details?meetingDate=115%2F07%2F07",
+      "subjects": ["刑法"]
+    },
+    {
+      "source_id": "criminal_80_moj_explanation",
+      "name": "法務部刑法第 80 條修正說明",
+      "tier": 1,
+      "source_type": "official_policy",
+      "detail_level": "full_text",
+      "url": "https://www.moj.gov.tw/2204/2795/2796/268913/post",
+      "subjects": ["刑法"]
+    },
+    {
+      "source_id": "civil_1223_legislative_record",
+      "name": "立法院 115 年 7 月 28 日民法第 1223 條議事紀錄",
+      "tier": 1,
+      "source_type": "official_legislative_record",
+      "detail_level": "legislative_record",
+      "url": "https://ppg.ly.gov.tw/ppg/publications/official-gazettes-draft/11/05/97/01/details",
+      "subjects": ["民法（繼承）"]
+    },
+    {
+      "source_id": "civil_1223_moj_proposal",
+      "name": "法務部民法繼承編修正草案說明",
+      "tier": 1,
+      "source_type": "official_policy",
+      "detail_level": "full_text",
+      "url": "https://www.moj.gov.tw/2204/2795/2796/278401/post",
+      "subjects": ["民法（繼承）"],
+      "policy": "這是法務部較廣的修正草案，不等於立法院 115 年 7 月 28 日三讀結果。遺產酌給、貢獻分等內容只可列為政策配套主張，不得寫成已三讀通過。"
+    },
+    {
+      "source_id": "academic_child_sexual_assault_limitations",
+      "name": "洪麗卿、黃聰明、盧映潔：兒少性侵害追訴權時效研究",
+      "tier": 2,
+      "source_type": "academic_commentary",
+      "detail_level": "academic_fulltext",
+      "url": "https://www.jrf.org.tw/articles/3085",
+      "fetch_url": "https://drive.google.com/uc?export=download&id=18OfHClIkikEfvJPfGcJ9y_Pagx4KVljf",
+      "subjects": ["刑法", "刑事訴訟法"]
+    },
+    {
+      "source_id": "academic_inheritance_law_report",
+      "name": "法務部委託繼承法制研究報告",
+      "tier": 2,
+      "source_type": "academic_commentary",
+      "detail_level": "academic_fulltext",
+      "url": "https://www.moj.gov.tw/media/6698/71119313367.pdf?mediaDL=true",
+      "subjects": ["民法（繼承）"]
+    }
+  ]
+}

@@ -13,8 +13,12 @@ MAGI_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MAGI_ROOT / "skills" / "pdf-namer"))
 
 ACTION_PATH = MAGI_ROOT / "skills" / "pdf-namer" / "action.py"
-FILING_LOG = MAGI_ROOT / "skills" / "pdf-namer" / "_filing_log.json"
-OUTPUT_PATH = MAGI_ROOT / ".runtime" / "benchmark_pdf_namer_archived_golden_latest.json"
+_PDF_NAMER_STATE_DIR = Path(
+    os.environ.get("MAGI_PDF_NAMER_STATE_DIR", "").strip() or MAGI_ROOT / "skills" / "pdf-namer"
+).expanduser()
+_RUNTIME_DIR = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or MAGI_ROOT / ".runtime").expanduser()
+FILING_LOG = _PDF_NAMER_STATE_DIR / "_filing_log.json"
+OUTPUT_PATH = _RUNTIME_DIR / "benchmark_pdf_namer_archived_golden_latest.json"
 MAX_CASES = int(os.environ.get("MAGI_PDF_NAMER_ARCHIVED_GOLDEN_MAX", "5") or "5")
 
 

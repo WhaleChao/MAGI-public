@@ -31,14 +31,22 @@ from dotenv import load_dotenv
 # Ensure MAGI root is in sys.path (needed before importing skills.*)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from api.model_config import TEXT_PRIMARY_MODEL
-from api.runtime_paths import ensure_path_on_sys_path, get_config_path, get_orch_dir
+from api.runtime_paths import dotenv_override_allowed, ensure_path_on_sys_path, get_config_path, get_env_file, get_orch_dir
 from api.product_runtime import PRODUCT_RUNTIME_PATH, product_profile_report, update_product_runtime
+from api.server_auth import (
+    DEFAULT_POST_LOGIN_TARGET,
+    default_tenant_id,
+    env_truthy,
+    sanitize_login_next,
+    tenant_id_from_user_data,
+)
 from api.case_path_mapper import (
     local_synology_path_candidates,
     preferred_case_roots,
     preferred_synology_share_roots,
     translate_local_path_to_canonical,
 )
+from skills.overlay import effective_skill_file, skill_roots, validate_skill_name
 
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
@@ -59,8 +67,11 @@ def _sigchld_handler(_signum, _frame):
 if os.environ.get("MAGI_DISABLE_SERVER_STARTUP_HOOKS", "").strip().lower() not in {"1", "true", "yes", "on"}:
     _signal.signal(_signal.SIGCHLD, _sigchld_handler)
 
-# Load Env — always use explicit path to guarantee .env is found regardless of cwd
-load_dotenv(os.path.join(_MAGI_ROOT, ".env"))
+# Load Env — always use explicit path to guarantee .env is found regardless of cwd.
+# V2 keeps its historical edited-.env-wins behavior.  A V3 launch is already
+# bound to a verified release/runtime by launchd; the secret file may fill
+# missing credentials but must not replace those immutable path bindings.
+load_dotenv(str(get_env_file()), override=dotenv_override_allowed())
 
 # Validate required config before anything else
 from skills.ops.config import validate_config
@@ -70,7 +81,7 @@ validate_config()
 from logging.handlers import RotatingFileHandler
 from flask import (
     request, abort, render_template, redirect, url_for, flash,
-    jsonify, Response, send_file, send_from_directory,
+    jsonify, Response, send_file, send_from_directory, session, g,
 )
 from api.line_compat import (
     AudioMessage, FileMessage, ImageMessage, ImageSendMessage,
@@ -85,11 +96,15 @@ from api.app_factory import (
 from api.blueprints.web_runtime import create_web_runtime_blueprint
 from api.blueprints.admin_runtime import create_admin_runtime_blueprint
 from api.request_guards import install_request_guards
+from api.durable_rate_limit import DurableRateLimiter, check_rate_limit
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-_agent_dir_for_logs = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".agent"))
+_agent_dir_for_logs = os.path.abspath(
+    os.environ.get("MAGI_AGENT_DIR")
+    or os.path.join(os.path.dirname(__file__), "..", ".agent")
+)
 os.makedirs(_agent_dir_for_logs, exist_ok=True)
 _server_log_path = os.path.join(_agent_dir_for_logs, "server.log")
 
@@ -146,8 +161,11 @@ except Exception:
     _normalize_output_text = None
 
 # Auth Modules
+from api.mysql_connector_guard import install_mysql_cext_blocker, patch_mysql_connector_for_stability
+
+install_mysql_cext_blocker()
+patch_mysql_connector_for_stability()
 import mysql.connector
-from api.mysql_connector_guard import patch_mysql_connector_for_stability
 from flask_login import UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -172,38 +190,35 @@ register_core_blueprints(app)
 login_manager = init_login_manager(app)
 
 # ---------------------------------------------------------------------------
-# Rate Limiter
+# Durable Rate Limiter
 # ---------------------------------------------------------------------------
-_rate_limit_store: dict = {}
-_rate_limit_lock = threading.Lock()
-_RATE_LIMIT_WINDOW = 60
-_RATE_LIMIT_MAX = {"webhook": 120, "api": 60}
+_DURABLE_RATE_LIMITER = DurableRateLimiter()
+
+
+def _rate_limit_client_identity() -> str:
+    """Return the ProxyFix-normalized identity; store only its SHA-256."""
+    # create_base_app() applies exactly one trusted proxy hop when explicitly
+    # configured.  Reading forwarding headers again here would let a client
+    # inject a second, untrusted identity and bypass the shared quota.
+    client = str(request.remote_addr or "unknown").strip() or "unknown"
+    tenant = str(os.environ.get("MAGI_TENANT_ID") or "single-host").strip()
+    return f"{tenant}\0{client}"
 
 
 def _check_rate_limit(category: str = "webhook") -> bool:
-    """Return True if request should be rejected (rate exceeded)."""
-    ip = request.remote_addr or "unknown"
-    key = f"{category}:{ip}"
-    now = time.time()
-    limit = _RATE_LIMIT_MAX.get(category, 60)
-    with _rate_limit_lock:
-        entry = _rate_limit_store.get(key)
-        if entry:
-            count, window_start = entry
-            if now - window_start < _RATE_LIMIT_WINDOW:
-                if count >= limit:
-                    return True
-                _rate_limit_store[key] = (count + 1, window_start)
-            else:
-                _rate_limit_store[key] = (1, now)
-        else:
-            _rate_limit_store[key] = (1, now)
-        if len(_rate_limit_store) > 500:
-            cutoff = now - _RATE_LIMIT_WINDOW * 2
-            stale = [k for k, (_, ws) in _rate_limit_store.items() if ws < cutoff]
-            for k in stale:
-                _rate_limit_store.pop(k, None)
-    return False
+    """Return True when the shared, restart-safe limit has been exceeded."""
+    decision = check_rate_limit(
+        str(category or "webhook"),
+        _rate_limit_client_identity(),
+        limiter=_DURABLE_RATE_LIMITER,
+    )
+    g.magi_rate_limit_retry_after = int(decision.retry_after or 0)
+    g.magi_rate_limit_backend = str(decision.backend or "")
+    return bool(decision.rejected)
+
+
+def _rate_limit_retry_after() -> str:
+    return str(max(1, int(getattr(g, "magi_rate_limit_retry_after", 1) or 1)))
 
 
 # ---------------------------------------------------------------------------
@@ -211,16 +226,17 @@ def _check_rate_limit(category: str = "webhook") -> bool:
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
     "host": os.environ.get("DB_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("DB_PORT", "3306") or "3306"),
     "user": os.environ.get("DB_USER", "casper_service"),
     "password": os.environ.get("DB_PASSWORD", ""),
-    "database": "magi_brain",
+    "database": os.environ.get("MAGI_BRAIN_DB_NAME", "magi_brain"),
 }
 if not DB_CONFIG["password"]:
     logger.error("Missing required env var: DB_PASSWORD. Set it in .env")
 
 
 def _load_runtime_config():
-    cfg = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config.json"))
+    cfg = str(get_config_path("config.json"))
     try:
         if os.path.exists(cfg):
             with open(cfg, "r", encoding="utf-8") as f:
@@ -236,11 +252,16 @@ RUNTIME_CONFIG = _load_runtime_config()
 SKILLS_ROOT = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills")))
 SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 NERV_PRODUCT_NAMES = ("file_review", "transcript", "laf")
-AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".agent"))
+AGENT_DIR = _agent_dir_for_logs
 os.makedirs(AGENT_DIR, exist_ok=True)
 
 # Export/static dirs
-EXPORTS_DIR = os.path.join(_MAGI_ROOT, "exports")
+# Keep the authenticated download route on the same storage root used by
+# skills.ops.export_text and the Golem stock-report index.
+EXPORTS_DIR = os.path.abspath(
+    os.environ.get("MAGI_EXPORTS_DIR")
+    or os.path.join(_MAGI_ROOT, "static", "exports")
+)
 os.makedirs(EXPORTS_DIR, exist_ok=True)
 EXPORT_LONG_TEXT = os.environ.get("MAGI_EXPORT_LONG_TEXT", "1").strip().lower() in {"1", "true", "yes", "on"}
 EXPORT_TEXT_THRESHOLD = int(os.environ.get("MAGI_EXPORT_TEXT_THRESHOLD", "1800") or "1800")
@@ -254,20 +275,16 @@ def _skill_doc_path(skill_name: str) -> Path:
     name = str(skill_name or "").strip()
     if not SKILL_NAME_RE.fullmatch(name):
         raise ValueError("invalid_skill_name")
-    path = (SKILLS_ROOT / name / "SKILL.md").resolve()
-    if SKILLS_ROOT.resolve() not in path.parents:
-        raise ValueError("invalid_skill_path")
-    return path
+    validate_skill_name(name)
+    return effective_skill_file(name, "SKILL.md")
 
 
 def _skill_action_path(skill_name: str) -> Path:
     name = str(skill_name or "").strip()
     if not SKILL_NAME_RE.fullmatch(name):
         raise ValueError("invalid_skill_name")
-    path = (SKILLS_ROOT / name / "action.py").resolve()
-    if SKILLS_ROOT.resolve() not in path.parents:
-        raise ValueError("invalid_skill_path")
-    return path
+    validate_skill_name(name)
+    return effective_skill_file(name, "action.py")
 
 
 def _skill_summary(content: str) -> str:
@@ -290,14 +307,17 @@ def _nerv_product_runtime_payload() -> dict:
 
 def _list_skill_docs() -> list[dict]:
     items: list[dict] = []
-    root = SKILLS_ROOT.resolve()
-    if not root.exists():
-        return items
-    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if not child.is_dir() or child.name.startswith("."):
+    visible: dict[str, Path] = {}
+    for root in skill_roots():
+        if not root.is_dir() or root.is_symlink():
             continue
-        skill_doc = child / "SKILL.md"
-        action_file = child / "action.py"
+        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not child.is_dir() or child.is_symlink() or child.name.startswith("."):
+                continue
+            visible.setdefault(child.name, child)
+    for name, child in sorted(visible.items(), key=lambda pair: pair[0].lower()):
+        skill_doc = effective_skill_file(name, "SKILL.md")
+        action_file = effective_skill_file(name, "action.py")
         if not skill_doc.exists() and not action_file.exists():
             continue
         content = ""
@@ -313,7 +333,7 @@ def _list_skill_docs() -> list[dict]:
         except Exception:
             pass
         items.append({
-            "name": child.name,
+            "name": name,
             "path": str(child),
             "skill_doc_path": str(skill_doc),
             "has_skill_doc": skill_doc.exists(),
@@ -350,14 +370,39 @@ def _require_json_auth(admin: bool = False):
     return None
 
 
-# ---------------------------------------------------------------------------
-# User Model
+def _is_mobile_app_launch_request() -> bool:
+    """Detect native/PWA mobile launch requests that should start from login."""
+
+    requested_with = (request.headers.get("X-Requested-With") or "").strip().lower()
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if requested_with == "tw.local.magi.mobile":
+        return True
+    if "capacitor" in user_agent:
+        return True
+    if "; wv" in user_agent or " version/4.0 chrome/" in user_agent:
+        return True
+    return "mobile" in user_agent and ("safari" in user_agent or "chrome" in user_agent)
+
+
+def _mobile_app_login_redirect():
+    """Start MAGI Mobile from a clean login state instead of a stale dashboard."""
+
+    try:
+        logout_user()
+    except Exception:
+        logger.debug("mobile app logout cleanup failed", exc_info=True)
+    session.clear()
+    return redirect(url_for("login", next="/mobile", mobile_app="1"))
+
+
 # ---------------------------------------------------------------------------
 class User(UserMixin):
-    def __init__(self, id, username, role):
+    def __init__(self, id, username, role, tenant_id=None, tenant_role=None):
         self.id = id
         self.username = username
         self.role = role
+        self.tenant_id = str(tenant_id or default_tenant_id())
+        self.tenant_role = str(tenant_role or role or "viewer")
 
     def is_admin(self):
         return self.role == "admin"
@@ -371,7 +416,13 @@ def load_user(user_id):
             cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
             user_data = cursor.fetchone()
             if user_data:
-                return User(user_data["id"], user_data["username"], user_data["role"])
+                return User(
+                    user_data["id"],
+                    user_data["username"],
+                    user_data["role"],
+                    tenant_id=tenant_id_from_user_data(user_data),
+                    tenant_role=user_data.get("tenant_role") or user_data.get("role"),
+                )
         return None
     except Exception as e:
         logger.error("DB Error: %s", e)
@@ -395,7 +446,7 @@ line_bot_api, handler, LINE_BOT_ENABLED, _line_bot_reason = build_line_clients(
     LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET,
 )
 if not LINE_BOT_ENABLED:
-    if not line_feature_enabled():
+    if not line_feature_enabled(LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET):
         logger.info("LINE webhook disabled by MAGI_ENABLE_LINE.")
     else:
         logger.warning("LINE webhook disabled: %s", _line_bot_reason)
@@ -450,6 +501,10 @@ app.register_blueprint(osc_files_bp)
 # OSC Google Calendar Blueprint (P4)
 from api.blueprints.osc_gcal import osc_gcal_bp
 app.register_blueprint(osc_gcal_bp)
+
+# Source-bound sentencing judgment trend search
+from api.blueprints.sentencing_trends import sentencing_trends_bp
+app.register_blueprint(sentencing_trends_bp)
 
 # Telegram Blueprint
 from api.webhooks.telegram import telegram_bp
@@ -571,8 +626,7 @@ def osc_debt_interface():
 @login_required
 def serve_exports(filename):
     """Serve generated documents from the exports directory."""
-    export_dir = os.path.join(_MAGI_ROOT, "exports")
-    return send_from_directory(export_dir, filename)
+    return send_from_directory(EXPORTS_DIR, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -640,11 +694,11 @@ def toolsapi_compat_proxy(subpath):
 # 404 Fallback → Tools API
 # ---------------------------------------------------------------------------
 _TOOLS_API_FALLBACK_PATHS = {
-    "health", "summarize", "search", "research", "fetch", "vision",
+    "health", "livez", "summarize", "search", "research", "fetch", "vision",
     "melchior", "skills", "collab", "council", "remember", "recall",
     "clients", "meetings", "legal", "alert", "definitions", "laf",
     "iron-dome", "code", "connections", "sages", "shortcut", "jobs",
-    "osc/external", "static/exports", "api/audit_log",
+    "osc/external", "api/audit_log", "static/exports",
 }
 
 
@@ -767,7 +821,9 @@ def _fallback_to_tools_api(error):
 def index():
     if request.method == "POST":
         return callback()
-    return redirect(url_for("dashboard_pages.dashboard"))
+    if _is_mobile_app_launch_request():
+        return _mobile_app_login_redirect()
+    return redirect(DEFAULT_POST_LOGIN_TARGET)
 
 
 @app.route("/favicon.ico")
@@ -777,42 +833,62 @@ def favicon():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    next_target = sanitize_login_next(request.values.get("next", ""))
+    mobile_app_login = request.values.get("mobile_app") == "1" or next_target.startswith("/mobile")
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("login.html")
+            return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG, dictionary=True) as (_conn, cursor):
                 cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
                 user_data = cursor.fetchone()
                 if user_data and check_password_hash(user_data["password_hash"], password):
-                    user = User(user_data["id"], user_data["username"], user_data["role"])
+                    user = User(
+                        user_data["id"],
+                        user_data["username"],
+                        user_data["role"],
+                        tenant_id=tenant_id_from_user_data(user_data),
+                        tenant_role=user_data.get("tenant_role") or user_data.get("role"),
+                    )
                     login_user(user)
-                    return redirect(url_for("dashboard_pages.dashboard"))
+                    session["tenant_id"] = user.tenant_id
+                    if mobile_app_login:
+                        session["magi_mobile_app_auth_at"] = int(time.time())
+                    return redirect(next_target)
                 else:
                     flash("Invalid username or password")
         except Exception as e:
             flash(f"Login Error: {str(e)}")
-    return render_template("login.html")
+    return render_template("login.html", next_target=next_target, mobile_app_login=mobile_app_login)
+
+
+@app.route("/mobile-app")
+def mobile_app_entry():
+    return _mobile_app_login_redirect()
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    next_target = sanitize_login_next(request.values.get("next", ""))
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         if not username or not password:
             flash("Please enter username and password")
-            return render_template("register.html")
+            return render_template("register.html", next_target=next_target)
         hashed_pw = generate_password_hash(password)
         try:
             from api.db_helper import get_cursor
             with get_cursor(config=DB_CONFIG) as (conn, cursor):
                 cursor.execute("SELECT COUNT(*) FROM users")
                 count = cursor.fetchone()[0]
+                if count > 0 and not env_truthy("MAGI_ALLOW_PUBLIC_REGISTRATION"):
+                    flash("Registration is disabled. Ask an administrator to create the account.")
+                    return render_template("register.html", next_target=next_target), 403
                 role = "admin" if count == 0 else "user"
                 cursor.execute(
                     "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)",
@@ -820,10 +896,10 @@ def register():
                 )
                 conn.commit()
             flash(f"Registration successful! You are now an {role}. Please login.")
-            return redirect(url_for("login"))
+            return redirect(url_for("login", next=next_target))
         except mysql.connector.Error as err:
             flash(f"Error: {err}")
-    return render_template("register.html")
+    return render_template("register.html", next_target=next_target)
 
 
 @app.route("/logout")
@@ -845,7 +921,9 @@ def callback():
         return "OK", 200
     if _check_rate_limit("webhook"):
         logger.warning("Rate limit exceeded for LINE webhook from %s", request.remote_addr)
-        return "Too Many Requests", 429
+        response = Response("Too Many Requests", status=429)
+        response.headers["Retry-After"] = _rate_limit_retry_after()
+        return response
     if not LINE_BOT_ENABLED:
         return "LINE webhook disabled: missing credentials", 503
 
@@ -918,4 +996,8 @@ _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=False, threaded=True)
+    host = os.environ.get("MAGI_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("MAGI_PORT", "5002") or "5002")
+    from api.wsgi_server import serve
+
+    serve(app, host=host, port=port, service_name="server")

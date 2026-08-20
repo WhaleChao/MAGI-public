@@ -19,11 +19,15 @@ import uuid
 
 logger = logging.getLogger("MessageQueue")
 
-_DB_DIR = os.path.join(
-    os.environ.get("MAGI_DATA_DIR", "").strip()
-    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".agent"),
-    "mq",
+_PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 )
+_DATA_ROOT = (
+    os.environ.get("MAGI_DATA_DIR", "").strip()
+    or os.environ.get("MAGI_AGENT_DIR", "").strip()
+    or os.path.join(_PROJECT_ROOT, ".agent")
+)
+_DB_DIR = os.path.join(_DATA_ROOT, "mq")
 
 _DB_PATH = os.path.join(_DB_DIR, "message_queue.db")
 

@@ -7,7 +7,7 @@
   - 不傳任何真實個資（全用合成測試資料）
 
 執行：
-  cd /Users/ai/Desktop/MAGI_v2
+  cd "$MAGI_ROOT"
   NVIDIA_NIM_ENABLE=1 ./venv/bin/python3 scripts/ops/smoke_nvidia_nim.py
 
 若要跳過真實 API 呼叫（只測設定）：
@@ -61,7 +61,7 @@ def test_env_config() -> bool:
     if not api_key.startswith("nvapi-"):
         _fail("NVIDIA_NIM_API_KEY", "格式不符（應以 nvapi- 開頭）")
         return False
-    _ok("NVIDIA_NIM_API_KEY", f"{api_key[:12]}...（長度 {len(api_key)}）")
+    _ok("NVIDIA_NIM_API_KEY", f"已設定（長度 {len(api_key)}；不顯示片段）")
 
     enable = os.environ.get("NVIDIA_NIM_ENABLE", "0")
     if enable not in ("1", "true", "yes", "on"):
@@ -76,9 +76,9 @@ def test_env_config() -> bool:
 def test_model_allowlist() -> bool:
     print("\n[2] 模型白名單 / 黑名單")
     try:
-        from providers.nvidia_nim import NvidiaNimProvider
+        from skills.bridge.nim_heavy import _model_allowed
     except ImportError as e:
-        _fail("import NvidiaNimProvider", str(e))
+        _fail("import nim_heavy model policy", str(e))
         return False
 
     allowed_cases = [
@@ -99,14 +99,14 @@ def test_model_allowlist() -> bool:
 
     ok = True
     for m in allowed_cases:
-        if NvidiaNimProvider.is_model_allowed(m):
+        if _model_allowed(m):
             _ok(f"允許: {m}")
         else:
             _fail(f"應允許但被擋: {m}")
             ok = False
 
     for m in blocked_cases:
-        if not NvidiaNimProvider.is_model_allowed(m):
+        if not _model_allowed(m):
             _ok(f"封鎖: {m}")
         else:
             _fail(f"應封鎖但被允許: {m}")
@@ -172,7 +172,7 @@ def test_nim_config_layer() -> bool:
 
     can_call, reason = _cb_can_call()
     if can_call:
-        _ok("circuit breaker: open")
+        _ok("circuit breaker: closed/ready")
     else:
         _skip("circuit breaker: cooldown active", reason)
 
@@ -200,7 +200,8 @@ def test_live_api_call() -> bool:
         prompt="請用繁體中文回答：1 + 1 = ?（只需回答數字即可）",
         timeout_sec=60,
         task_type="general",
-        require_pii_scrub=False,
+        require_pii_scrub=True,
+        data_classification="synthetic",
         heavy=False,
     )
     elapsed = time.monotonic() - t0

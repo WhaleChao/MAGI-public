@@ -1,0 +1,619 @@
+/*
+ * MAGI shared visual system
+ * Two user-selectable styles with the same information hierarchy:
+ *   cyber  — high-contrast operations cockpit
+ *   forest — calm, daylight-friendly legal workspace
+ */
+:root {
+  --magi-radius: 12px;
+  --magi-radius-lg: 18px;
+  --magi-space: clamp(14px, 1.7vw, 24px);
+  --magi-ease: 160ms ease;
+  --magi-ok: #22c55e;
+  --magi-warn: #f59e0b;
+  --magi-bad: #ef4444;
+  --magi-idle: #94a3b8;
+}
+
+:root[data-magi-theme="cyber"] {
+  color-scheme: dark;
+  --magi-bg: #02060d;
+  --magi-bg-alt: #06111f;
+  --magi-surface: rgba(5, 20, 34, 0.92);
+  --magi-surface-strong: #081d2b;
+  --magi-surface-raised: #0b2636;
+  --magi-text: #edfeff;
+  --magi-muted: #9bcbd0;
+  --magi-line: rgba(0, 238, 255, 0.42);
+  --magi-accent: #00efff;
+  --magi-accent-2: #ff3bd4;
+  --magi-accent-3: #ffe36e;
+  --magi-accent-soft: rgba(0, 239, 255, 0.13);
+  --magi-shadow:
+    0 22px 60px rgba(0, 0, 0, 0.56),
+    0 0 34px rgba(0, 239, 255, 0.08),
+    inset 0 0 30px rgba(0, 239, 255, 0.025);
+  --magi-grid:
+    radial-gradient(circle at 14% 16%, rgba(255, 59, 212, 0.14), transparent 28%),
+    radial-gradient(circle at 84% 72%, rgba(0, 239, 255, 0.12), transparent 34%),
+    linear-gradient(rgba(0, 239, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 239, 255, 0.045) 1px, transparent 1px);
+}
+
+:root[data-magi-theme="forest"] {
+  color-scheme: light;
+  --magi-bg: #f3f5ed;
+  --magi-bg-alt: #e9eee2;
+  --magi-surface: rgba(255, 255, 250, 0.94);
+  --magi-surface-strong: #fffefa;
+  --magi-text: #1f3028;
+  --magi-muted: #66766d;
+  --magi-line: rgba(58, 91, 71, 0.22);
+  --magi-accent: #236844;
+  --magi-accent-2: #a6652a;
+  --magi-accent-soft: rgba(35, 104, 68, 0.10);
+  --magi-shadow: 0 16px 40px rgba(45, 66, 51, 0.11);
+  --magi-grid: radial-gradient(circle at 8% 8%, rgba(86, 126, 91, 0.10), transparent 34%);
+  --magi-ok: #277846;
+  --magi-warn: #aa681d;
+  --magi-bad: #b6403a;
+  --magi-idle: #7b8b81;
+}
+
+html {
+  background: var(--magi-bg);
+  accent-color: var(--magi-accent);
+}
+
+body {
+  background-color: var(--magi-bg) !important;
+  background-image: var(--magi-grid) !important;
+  background-size: 28px 28px !important;
+  color: var(--magi-text) !important;
+  transition: background-color var(--magi-ease), color var(--magi-ease);
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+:root[data-magi-theme="cyber"] body::before {
+  background:
+    linear-gradient(115deg, transparent 0 46%, rgba(255, 59, 212, 0.06) 46.2% 46.45%, transparent 46.7%),
+    linear-gradient(65deg, transparent 0 72%, rgba(0, 239, 255, 0.055) 72.2% 72.45%, transparent 72.7%);
+}
+
+:root[data-magi-theme="cyber"] body::after {
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0 3px,
+    rgba(171, 250, 255, 0.018) 3px 4px
+  );
+  mix-blend-mode: screen;
+}
+
+:root[data-magi-theme="forest"] body {
+  background-size: auto !important;
+}
+
+/* Bridge older pages that still consume their own palette variables. */
+:root[data-magi-theme="cyber"] body {
+  --bg: #02060d;
+  --panel: #061522;
+  --panel-2: #0a2231;
+  --line: rgba(0, 239, 255, 0.34);
+  --text: #edfeff;
+  --muted: #9bcbd0;
+  --accent: #00efff;
+  --accent-2: #ff3bd4;
+  --danger: #ff5a72;
+  --ok: #45f59b;
+  --sidebar-bg: #030b14;
+  --sidebar-text: #dffcff;
+  --sidebar-accent: #00efff;
+  --magi-panel: #061522;
+  --magi-panel-2: #0a2231;
+  --magi-ink: #edfeff;
+  --magi-sidebar: #030b14;
+  --magi-sidebar-2: #071927;
+}
+
+:root[data-magi-theme="forest"] body {
+  --bg: #f3f5ed;
+  --panel: #fffefa;
+  --panel-2: #edf2e9;
+  --line: #cbd6cb;
+  --text: #1f3028;
+  --muted: #66766d;
+  --accent: #2f7250;
+  --accent-2: #a6652a;
+  --danger: #b6403a;
+  --ok: #277846;
+  --sidebar-bg: #e4ebe1;
+  --sidebar-text: #30483a;
+  --sidebar-accent: #236844;
+  --magi-panel: #fffefa;
+  --magi-panel-2: #edf2e9;
+  --magi-ink: #1f3028;
+  --magi-sidebar: #e4ebe1;
+  --magi-sidebar-2: #dce7dc;
+}
+
+:root[data-magi-theme="forest"] :where(.layout-sidebar, .sidebar, aside) {
+  background: linear-gradient(180deg, #e7eee4 0%, #dce7dc 100%) !important;
+  color: var(--magi-text) !important;
+  border-color: rgba(58, 91, 71, 0.24) !important;
+}
+
+:root[data-magi-theme="forest"] :where(
+  .sidebar-nav .group-single,
+  .sidebar-nav .group-btn,
+  .sidebar-nav .sub-tab,
+  .sidebar-home-link
+) {
+  color: #30483a !important;
+}
+
+:root[data-magi-theme="forest"] :where(
+  .sidebar-nav .group-single:hover,
+  .sidebar-nav .group-btn:hover,
+  .sidebar-nav .sub-tab:hover
+) {
+  background: rgba(35, 104, 68, 0.09) !important;
+  color: #173b29 !important;
+}
+
+:root[data-magi-theme="forest"] :where(
+  .sidebar-nav .group-single.active,
+  .sidebar-nav .sub-tab.active
+) {
+  background: #d1e1d2 !important;
+  border-color: #5d896b !important;
+  color: #173b29 !important;
+}
+
+:root[data-magi-theme="forest"] .sidebar-status {
+  border-color: rgba(58, 91, 71, 0.20) !important;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font-family: "PingFang TC", "Noto Sans TC", Inter, system-ui, sans-serif;
+}
+
+a {
+  color: var(--magi-accent);
+}
+
+:where(.topbar, .top-bar, .header, header, .sidebar, aside, nav) {
+  border-color: var(--magi-line) !important;
+}
+
+:where(
+  .card,
+  .panel,
+  .widget,
+  .section,
+  .content-card,
+  .stat-card,
+  .module-card,
+  .menu-card,
+  .modal-content,
+  .magi-modal-surface,
+  .dialog,
+  .table-wrap,
+  .list-item,
+  .rss-item,
+  .report-card,
+  .empty-state
+) {
+  background-color: var(--magi-surface) !important;
+  border-color: var(--magi-line) !important;
+  color: var(--magi-text) !important;
+  box-shadow: var(--magi-shadow);
+}
+
+:where(input, select, textarea) {
+  background: var(--magi-surface-strong) !important;
+  border-color: var(--magi-line) !important;
+  color: var(--magi-text) !important;
+  caret-color: var(--magi-accent);
+}
+
+:where(button, .btn, [role="button"]) {
+  border-color: var(--magi-line);
+  color: var(--magi-text);
+}
+
+:where(input, select, textarea)::placeholder {
+  color: color-mix(in srgb, var(--magi-muted) 82%, transparent) !important;
+  opacity: 1;
+}
+
+:where(option) {
+  background: var(--magi-surface-strong);
+  color: var(--magi-text);
+}
+
+:where(button, .btn, [role="button"]):focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--magi-accent) 42%, transparent);
+  outline-offset: 2px;
+}
+
+:where(th, td) {
+  border-color: var(--magi-line) !important;
+}
+
+:where(th) {
+  background: var(--magi-accent-soft) !important;
+  color: var(--magi-text) !important;
+}
+
+:where(.muted, .secondary, .subtitle, small, .hint, .meta) {
+  color: var(--magi-muted) !important;
+}
+
+:where(code, pre, kbd, samp) {
+  background: var(--magi-surface-strong);
+  color: var(--magi-text);
+}
+
+.magi-modal-layer {
+  color: var(--magi-text) !important;
+}
+
+.magi-modal-surface {
+  background: var(--magi-surface-strong) !important;
+  color: var(--magi-text) !important;
+  border: 1px solid var(--magi-line) !important;
+}
+
+:where(.report-header, .report-body, .fm-preview-section) {
+  background: var(--magi-surface-strong) !important;
+  color: var(--magi-text) !important;
+  border-color: var(--magi-line) !important;
+}
+
+:where(.report-card, .empty-state) :where(
+  h1, h2, h3, p, .legacy-note, .report-title, .report-summary
+) {
+  color: var(--magi-text) !important;
+}
+
+:where(.fm-preview-table) {
+  background: var(--magi-surface-strong) !important;
+  color: var(--magi-text) !important;
+}
+
+:where(.fm-preview-table td) {
+  background: var(--magi-surface-strong) !important;
+  color: var(--magi-text) !important;
+}
+
+:root[data-magi-theme="cyber"] :where(.msg.user, .msg.casper, .msg.sys) {
+  background: color-mix(in srgb, var(--magi-surface-raised) 88%, transparent) !important;
+  color: var(--magi-text) !important;
+}
+
+:root[data-magi-theme="cyber"] :where(
+  h1, h2, h3, .page-title, .panel-title, .card-title, .auth-brand
+) {
+  color: var(--magi-text) !important;
+  letter-spacing: 0.045em;
+  text-shadow:
+    0 0 16px rgba(0, 239, 255, 0.24),
+    1px 0 0 rgba(255, 59, 212, 0.22);
+}
+
+:root[data-magi-theme="cyber"] :where(
+  .card,
+  .panel,
+  .widget,
+  .section,
+  .content-card,
+  .stat-card,
+  .module-card,
+  .menu-card,
+  .modal-content,
+  .dialog,
+  .table-wrap
+) {
+  position: relative;
+  background:
+    linear-gradient(145deg, rgba(8, 35, 51, 0.96), rgba(4, 16, 29, 0.94)) !important;
+  border-color: rgba(0, 239, 255, 0.38) !important;
+  border-radius: 2px !important;
+  clip-path: polygon(
+    0 12px,
+    12px 0,
+    calc(100% - 18px) 0,
+    100% 18px,
+    100% 100%,
+    14px 100%,
+    0 calc(100% - 14px)
+  );
+  box-shadow:
+    var(--magi-shadow),
+    inset 3px 0 0 rgba(255, 59, 212, 0.48),
+    inset -1px 0 0 rgba(0, 239, 255, 0.26);
+}
+
+:root[data-magi-theme="cyber"] :where(.topbar, .top-bar, header, nav) {
+  background:
+    linear-gradient(90deg, rgba(3, 13, 24, 0.98), rgba(7, 28, 40, 0.96)) !important;
+  color: var(--magi-text) !important;
+  border-bottom-color: rgba(0, 239, 255, 0.42) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-magi-theme="cyber"] :where(.sidebar, aside, .layout-sidebar) {
+  background:
+    linear-gradient(180deg, rgba(2, 10, 19, 0.99), rgba(5, 22, 33, 0.98)) !important;
+  color: var(--magi-text) !important;
+}
+
+:root[data-magi-theme="cyber"] :where(a, .link, .auth-link) {
+  color: var(--magi-accent) !important;
+  text-decoration-color: rgba(0, 239, 255, 0.42);
+}
+
+:root[data-magi-theme="cyber"] :where(a, .link, .auth-link):hover {
+  color: #ffffff !important;
+  text-shadow: 0 0 12px rgba(0, 239, 255, 0.72);
+}
+
+:root[data-magi-theme="cyber"] :where(
+  button.primary,
+  .btn-primary,
+  .auth-submit
+) {
+  background:
+    linear-gradient(105deg, var(--magi-accent), #52ffe0 72%, var(--magi-accent-3)) !important;
+  color: #00131c !important;
+  border: 1px solid rgba(177, 255, 255, 0.72) !important;
+  border-radius: 2px !important;
+  box-shadow:
+    0 0 22px rgba(0, 239, 255, 0.24),
+    inset 0 -2px 0 rgba(0, 58, 70, 0.26);
+  text-shadow: none !important;
+}
+
+:root[data-magi-theme="cyber"] :where(
+  button.primary,
+  .btn-primary,
+  .auth-submit
+):hover {
+  filter: brightness(1.08) saturate(1.1);
+  transform: translateY(-1px);
+}
+
+:root[data-magi-theme="cyber"] :where(.badge, .tag, .chip) {
+  background: var(--magi-surface-raised) !important;
+  color: var(--magi-text) !important;
+  border: 1px solid var(--magi-line);
+}
+
+/* Status is semantic across both styles: red=fault, amber=action, gray=idle. */
+:where(.status-ok, .badge-ok, .ok, [data-state="ok"]) {
+  --status-color: var(--magi-ok);
+}
+:where(.status-warn, .badge-warn, .warning, [data-state="waiting"], [data-state="deferred"]) {
+  --status-color: var(--magi-warn);
+}
+:where(.status-error, .badge-error, .danger, [data-state="attention"], [data-state="failed"]) {
+  --status-color: var(--magi-bad);
+}
+:where(.status-idle, [data-state="idle"]) {
+  --status-color: var(--magi-idle);
+}
+
+.magi-theme-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--magi-line) !important;
+  border-radius: 999px;
+  background: var(--magi-surface-strong) !important;
+  color: var(--magi-text) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform var(--magi-ease), border-color var(--magi-ease), background var(--magi-ease);
+  z-index: 5000;
+}
+
+.magi-theme-switch:hover {
+  transform: translateY(-1px);
+  border-color: var(--magi-accent) !important;
+}
+
+.magi-theme-switch--floating {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+}
+
+:root[data-magi-theme="cyber"] .magi-theme-switch {
+  border-radius: 2px;
+  background:
+    linear-gradient(135deg, rgba(7, 29, 43, 0.98), rgba(13, 21, 42, 0.98)) !important;
+  color: #edfeff !important;
+  box-shadow:
+    0 0 0 1px rgba(255, 59, 212, 0.2),
+    0 0 20px rgba(0, 239, 255, 0.14);
+  text-shadow: 0 0 10px rgba(34, 231, 220, 0.45);
+}
+
+:root[data-magi-theme="cyber"] :where(.card, .panel, .widget, .content-card, .modal-content) {
+  backdrop-filter: blur(16px);
+}
+
+:root[data-magi-theme="forest"] :where(.card, .panel, .widget, .content-card, .modal-content) {
+  border-radius: var(--magi-radius-lg) !important;
+}
+
+/* Login is the first visual checkpoint, so it receives the complete theme. */
+:root[data-magi-theme="cyber"] .site-auth {
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 59, 212, 0.16), transparent 30%),
+    radial-gradient(circle at 80% 74%, rgba(0, 239, 255, 0.14), transparent 34%),
+    var(--magi-bg) !important;
+  color: var(--magi-text) !important;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-shell {
+  position: relative;
+  width: min(470px, calc(100vw - 28px));
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-shell::before,
+:root[data-magi-theme="cyber"] .site-auth .auth-shell::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  width: 72px;
+  height: 28px;
+  pointer-events: none;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-shell::before {
+  top: -8px;
+  left: -8px;
+  border-top: 2px solid var(--magi-accent);
+  border-left: 2px solid var(--magi-accent);
+  box-shadow: -5px -5px 20px rgba(0, 239, 255, 0.16);
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-shell::after {
+  right: -8px;
+  bottom: -8px;
+  border-right: 2px solid var(--magi-accent-2);
+  border-bottom: 2px solid var(--magi-accent-2);
+  box-shadow: 5px 5px 20px rgba(255, 59, 212, 0.14);
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-card {
+  width: 100% !important;
+  max-width: none;
+  padding: 38px 36px 34px;
+  background:
+    linear-gradient(155deg, rgba(8, 35, 51, 0.97), rgba(3, 13, 25, 0.97)) !important;
+  border: 1px solid rgba(0, 239, 255, 0.56) !important;
+  border-radius: 2px !important;
+  color: var(--magi-text) !important;
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.64),
+    0 0 46px rgba(0, 239, 255, 0.10),
+    inset 4px 0 0 rgba(255, 59, 212, 0.54) !important;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-kicker {
+  margin: 0 0 10px;
+  color: var(--magi-accent-2) !important;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-align: center;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-brand {
+  font-size: clamp(1.75rem, 6vw, 2.45rem);
+  letter-spacing: 0.14em;
+  color: #f4ffff !important;
+  text-transform: uppercase;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-subtitle {
+  color: #a9d8db !important;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-label {
+  color: #bce8eb !important;
+  font-weight: 700;
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-input {
+  background: #061724 !important;
+  color: #f2feff !important;
+  border: 1px solid rgba(0, 239, 255, 0.38) !important;
+  border-radius: 2px !important;
+  box-shadow: inset 3px 0 0 rgba(0, 239, 255, 0.23);
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-input:focus {
+  border-color: var(--magi-accent) !important;
+  box-shadow:
+    0 0 0 3px rgba(0, 239, 255, 0.12),
+    0 0 20px rgba(0, 239, 255, 0.10),
+    inset 3px 0 0 var(--magi-accent-2);
+}
+
+:root[data-magi-theme="cyber"] .site-auth .auth-clock {
+  background: #061724 !important;
+  color: #dffeff !important;
+  border-color: rgba(0, 239, 255, 0.46) !important;
+  border-radius: 2px;
+  box-shadow: 0 0 18px rgba(0, 239, 255, 0.1);
+}
+
+:root[data-magi-theme="forest"] .site-auth .auth-card {
+  width: min(360px, calc(100vw - 28px)) !important;
+  background: rgba(255, 255, 250, 0.96) !important;
+  color: #1f3028 !important;
+  border-color: rgba(58, 91, 71, 0.22) !important;
+  border-radius: 22px !important;
+  box-shadow: 0 24px 64px rgba(42, 69, 50, 0.14) !important;
+}
+
+:root[data-magi-theme="forest"] .site-auth .auth-shell {
+  flex: 0 0 auto;
+  width: min(420px, calc(100vw - 28px)) !important;
+}
+
+:root[data-magi-theme="forest"] .site-auth .auth-kicker {
+  color: #a6652a !important;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+@media (max-width: 720px) {
+  .magi-theme-switch {
+    min-height: 44px;
+  }
+  .magi-theme-switch--floating {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+  }
+  .magi-theme-switch__label {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

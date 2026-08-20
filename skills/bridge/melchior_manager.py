@@ -12,16 +12,17 @@ from typing import Dict, List, Tuple
 
 import requests
 
-from api.model_config import TEXT_PRIMARY_MODEL
+from api.model_config import TEXT_PRIMARY_MODEL, is_disallowed_model
 from skills.bridge.http_pool import get_session as _get_session
 from skills.bridge import melchior_bridge, melchior_client
 _MAGI_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+_AGENT_DIR = (os.environ.get("MAGI_AGENT_DIR") or "").strip()
 
 logger = logging.getLogger("MelchiorManager")
 
 STATE_PATH = os.environ.get(
     "MAGI_MELCHIOR_SYNC_STATE_PATH",
-    f"{_MAGI_ROOT}/.agent/melchior_sync_state.json",
+    os.path.join(_AGENT_DIR or os.path.join(_MAGI_ROOT, ".agent"), "melchior_sync_state.json"),
 )
 SYNC_MIN_INTERVAL_SEC = int(os.environ.get("MELCHIOR_SYNC_MIN_INTERVAL_SEC", "900"))
 SYNC_MAX_DELTA_FILES = int(os.environ.get("MELCHIOR_SYNC_MAX_DELTA_FILES", "800"))
@@ -40,7 +41,8 @@ MELCHIOR_OLLAMA_PORT = int(os.environ.get("MELCHIOR_OLLAMA_PORT", "11434"))
 MELCHIOR_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_PORT}"
 MELCHIOR_OLLAMA_BASE = f"http://{MELCHIOR_HOST}:{MELCHIOR_OLLAMA_PORT}"
 
-QWEN_MAIN_MODEL = os.environ.get("MAGI_MAIN_MODEL", TEXT_PRIMARY_MODEL).strip() or TEXT_PRIMARY_MODEL
+MELCHIOR_MAIN_MODEL = TEXT_PRIMARY_MODEL
+QWEN_MAIN_MODEL = MELCHIOR_MAIN_MODEL  # backward-compatible symbol; value is policy-filtered.
 
 
 def _now_iso() -> str:
@@ -204,7 +206,7 @@ def melchior_health() -> dict:
         return {"online": False, "error": str(e)}
 
 
-def _smoke_test_melchior(require_qwen: bool = True) -> dict:
+def _smoke_test_melchior(require_main_model: bool = True) -> dict:
     """
     Remote smoke tests (no internet). Validates:
     - agent health
@@ -234,13 +236,14 @@ def _smoke_test_melchior(require_qwen: bool = True) -> dict:
             return False, f"HTTP {r.status_code}"
         data = r.json()
         models = [m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)]
-        has_qwen = any(QWEN_MAIN_MODEL.lower() == (x or "").lower() for x in models)
-        if require_qwen and (not has_qwen):
-            return False, f"missing {QWEN_MAIN_MODEL}; available={models[:12]}"
-        return True, f"has_qwen={has_qwen}; models={models[:8]}"
+        allowed_models = [m for m in models if not is_disallowed_model(m)]
+        has_main = any(MELCHIOR_MAIN_MODEL.lower() == (x or "").lower() for x in allowed_models)
+        if require_main_model and (not has_main):
+            return False, f"missing {MELCHIOR_MAIN_MODEL}; available={allowed_models[:12]}"
+        return True, f"has_main_model={has_main}; models={allowed_models[:8]}"
 
     def _chat_ping():
-        payload = {"prompt": "Reply with exactly: pong", "model": QWEN_MAIN_MODEL, "timeout": 30}
+        payload = {"prompt": "Reply with exactly: pong", "model": MELCHIOR_MAIN_MODEL, "timeout": 30}
         r = _get_session().post(f"{MELCHIOR_BASE}/api/chat", json=payload, timeout=35)
         if r.status_code != 200:
             return False, f"HTTP {r.status_code}: {r.text[:200]}"
@@ -278,7 +281,7 @@ def _smoke_test_melchior(require_qwen: bool = True) -> dict:
     _check("melchior_agent_health", _agent_health)
     _check("melchior_endpoints", _endpoint_matrix)
     _check("melchior_ollama_tags", _ollama_tags)
-    _check("melchior_chat_ping_qwen", _chat_ping)
+    _check("melchior_chat_ping_main_model", _chat_ping)
     _check("melchior_vision_ping", _vision_ping)
 
     return report
@@ -355,7 +358,7 @@ def sync_skills_to_melchior(
 
     smoke = {}
     if ok and smoke_test:
-        smoke = _smoke_test_melchior(require_qwen=True)
+        smoke = _smoke_test_melchior(require_main_model=True)
         result["smoke"] = smoke
 
     # Persist state only if push succeeded.

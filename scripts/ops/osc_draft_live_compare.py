@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
 import os
 import re
 import subprocess
@@ -21,11 +22,43 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-_SAMPLE_NAS_USER = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
-_SAMPLE_ACTIVE_CIVIL_ROOT = os.environ.get(
-    "MAGI_OSC_DRAFT_SAMPLE_ROOT",
-    f"/Volumes/homes/{_SAMPLE_NAS_USER}/01_案件/一般案件/民事",
-).rstrip("/")
+def _default_sample_active_civil_root() -> str:
+    explicit = str(os.environ.get("MAGI_OSC_DRAFT_SAMPLE_ROOT") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    # V3 deployments bind the canonical case root directly.  Do not fall back
+    # to a guessed SMB home name when that release-bound path is available;
+    # doing so makes the LIVE quality gate report every golden sample missing.
+    case_root = str(
+        os.environ.get("MAGI_V3_CASE_ROOT")
+        or os.environ.get("MAGI_NAS_CASE_ROOT")
+        or ""
+    ).strip()
+    if case_root:
+        return f"{case_root.rstrip('/')}/一般案件/民事"
+
+    sample_nas_user = (
+        os.environ.get("MAGI_NAS_HOME_USER")
+        or os.environ.get("MAGI_NAS_USER")
+        or "home"
+    ).strip().strip("/\\") or "home"
+    return f"/Volumes/homes/{sample_nas_user}/01_案件/一般案件/民事"
+
+
+_SAMPLE_ACTIVE_CIVIL_ROOT = _default_sample_active_civil_root()
+_sample_archive_root = str(os.environ.get("MAGI_V3_ARCHIVE_ROOT") or "").strip()
+if not _sample_archive_root:
+    _sample_archive_share = (
+        os.environ.get("MAGI_NAS_ARCHIVE_SHARE") or "archive"
+    ).strip().strip("/\\") or "archive"
+    _sample_archive_root = (
+        f"/Volumes/{_sample_archive_share}/{_sample_archive_share}/"
+        "03_工作資料/10_結案"
+    )
+_SAMPLE_ARCHIVE_CIVIL_ROOT = (
+    f"{_sample_archive_root.rstrip('/')}/一般案件/民事"
+)
 
 DEFAULT_FINAL_PDF = (
     _SAMPLE_ACTIVE_CIVIL_ROOT + "/"
@@ -138,7 +171,7 @@ def _ocr_pdf_text(path: str, *, max_pages: int | None = None) -> str:
 
     pdf_path = Path(path)
     stat = pdf_path.stat()
-    cache_dir = ROOT / ".runtime" / "osc_draft_ocr_cache"
+    cache_dir = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser() / "osc_draft_ocr_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha1(f"{pdf_path}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")).hexdigest()[:16]
     cache_path = cache_dir / f"{key}.txt"
@@ -288,6 +321,35 @@ def _page_count_from_text(text: str) -> int:
     return max(1, (text or "").count("\f") + 1)
 
 
+def _resolve_lifecycle_sample_path(path: Path) -> Path:
+    """Resolve a golden file after its case moves between active/archive roots."""
+
+    raw = str(path)
+    candidates = [path]
+    if raw.startswith(_SAMPLE_ACTIVE_CIVIL_ROOT + "/"):
+        candidates.append(
+            Path(_SAMPLE_ARCHIVE_CIVIL_ROOT + raw[len(_SAMPLE_ACTIVE_CIVIL_ROOT) :])
+        )
+    elif raw.startswith(_SAMPLE_ARCHIVE_CIVIL_ROOT + "/"):
+        candidates.append(
+            Path(_SAMPLE_ACTIVE_CIVIL_ROOT + raw[len(_SAMPLE_ARCHIVE_CIVIL_ROOT) :])
+        )
+    return next((candidate for candidate in candidates if candidate.is_file()), path)
+
+
+def _page_delta_limit(sample: dict, final_pages: int, source_kind: str) -> int:
+    configured = sample.get("page_delta_limit")
+    if configured is not None:
+        return max(0, int(configured))
+    baseline = 2 if final_pages >= 10 else 1
+    if source_kind == "ocr" and final_pages >= 10:
+        # A text-only re-export intentionally omits scan whitespace, covers and
+        # receipts.  Content similarity and key-fact retention remain strict;
+        # allow proportional pagination compaction instead of false failures.
+        return max(baseline, int(math.ceil(final_pages * 0.25)))
+    return baseline
+
+
 def _key_hits(text: str, terms: list[str] | None = None) -> dict[str, bool]:
     normalized = _normalize(text)
     return {term: (_normalize(term) in normalized) for term in (terms or KEY_TERMS)}
@@ -312,17 +374,63 @@ def _build_ai_prompt(final_text: str, sample: dict) -> str:
     )
 
 
-def _run_ai(prompt: str, model: str, url: str, key_terms: list[str]) -> dict:
-    from api.osc.drafts import _osc_clean_draft_output, _osc_generate_draft_with_ollama
+def _run_ai(
+    prompt: str,
+    model: str,
+    url: str,
+    key_terms: list[str],
+    *,
+    sample: dict,
+    provider: str,
+) -> dict:
+    from api.osc.drafts import (
+        _osc_clean_draft_output,
+        _osc_generate_draft_with_nvidia,
+        _osc_generate_draft_with_ollama,
+    )
+    from api.osc.saas_workbench import quality_check
 
     try:
-        text = _osc_clean_draft_output(_osc_generate_draft_with_ollama(prompt, model, url))
+        if provider == "nvidia":
+            raw, actual_model = _osc_generate_draft_with_nvidia(prompt)
+        else:
+            raw = _osc_generate_draft_with_ollama(prompt, model, url)
+            actual_model = model
+        text = _osc_clean_draft_output(raw)
         hits = _key_hits(text, key_terms)
         min_hits = max(1, min(5, int(len(key_terms) * 0.6)))
+        facts = str(sample.get("ai_facts") or "")
+        court = ""
+        court_match = re.search(r"(臺灣[^\s；，。]{1,20}(?:法院|地檢署|檢察署))", facts)
+        if court_match:
+            court = court_match.group(1)
+        case_number = ""
+        case_match = re.search(r"1\d{2,3}年度[^\s；，。]{1,24}字第?\s*\d+\s*號", facts)
+        if case_match:
+            case_number = case_match.group(0)
+        quality = quality_check(
+            {
+                "mode": "draft",
+                "strict_export": True,
+                "draft_text": text,
+                "doc_type": str(sample.get("title") or "書狀"),
+                "court_name": court,
+                "case_number": case_number,
+                "grounding_text": prompt,
+            }
+        )
         return {
-            "ok": bool(text and len(text) >= 300 and sum(hits.values()) >= min_hits),
+            "ok": bool(
+                text
+                and len(text) >= 300
+                and sum(hits.values()) >= min_hits
+                and quality.get("pass")
+            ),
+            "provider": provider,
+            "model": actual_model,
             "chars": len(text),
             "key_hits": hits,
+            "quality_check": quality,
             "text": text,
             "text_preview": text[:1200],
         }
@@ -353,11 +461,15 @@ def _sample_from_args(args: argparse.Namespace) -> list[dict]:
 
 
 def _compare_sample(sample: dict, startup, out_dir: Path, args: argparse.Namespace, index: int) -> dict:
-    final_pdf = Path(str(sample.get("final_pdf") or ""))
+    final_pdf = _resolve_lifecycle_sample_path(
+        Path(str(sample.get("final_pdf") or ""))
+    )
     if not final_pdf.exists():
         return {"ok": False, "sample": sample.get("sample") or sample.get("id"), "error": f"missing final pdf: {final_pdf}"}
     final_docx_raw = str(sample.get("final_docx") or "").strip()
-    final_docx = Path(final_docx_raw) if final_docx_raw else None
+    final_docx = (
+        _resolve_lifecycle_sample_path(Path(final_docx_raw)) if final_docx_raw else None
+    )
     key_terms = list(sample.get("key_terms") or KEY_TERMS)
     title = str(sample.get("title") or sample.get("sample") or "書狀草稿")
     sample_name = str(sample.get("sample") or sample.get("id") or final_pdf.stem)
@@ -390,9 +502,10 @@ def _compare_sample(sample: dict, startup, out_dir: Path, args: argparse.Namespa
     hits = _key_hits(generated_text, key_terms)
     sim = _similarity(source_text, generated_text)
     min_hits = max(1, int(len(key_terms) * 0.7 + 0.999))
-    page_delta_limit = int(sample.get("page_delta_limit") or (2 if final_pages >= 10 else 1))
+    page_delta_limit = _page_delta_limit(sample, final_pages, source_kind)
+    page_delta_ok = abs(final_pages - generated_pages) <= page_delta_limit
     report = {
-        "ok": bool(export.get("success") and sim >= float(sample.get("min_similarity") or 0.72) and abs(final_pages - generated_pages) <= page_delta_limit and sum(hits.values()) >= min_hits),
+        "ok": bool(export.get("success") and sim >= float(sample.get("min_similarity") or 0.72) and page_delta_ok and sum(hits.values()) >= min_hits),
         "sample": sample_name,
         "id": sample.get("id") or "",
         "source_kind": source_kind,
@@ -404,6 +517,8 @@ def _compare_sample(sample: dict, startup, out_dir: Path, args: argparse.Namespa
         "final_pages": final_pages,
         "generated_pages": generated_pages,
         "page_delta": generated_pages - final_pages,
+        "page_delta_limit": page_delta_limit,
+        "page_delta_ok": page_delta_ok,
         "similarity": round(sim, 4),
         "key_hits": hits,
         "key_hit_count": sum(hits.values()),
@@ -412,7 +527,14 @@ def _compare_sample(sample: dict, startup, out_dir: Path, args: argparse.Namespa
     }
     should_ai = bool(args.ai and (sample.get("ai") or args.ai_all or index == 1))
     if should_ai:
-        report["ai"] = _run_ai(_build_ai_prompt(source_text, sample), args.model, args.url, key_terms)
+        report["ai"] = _run_ai(
+            _build_ai_prompt(source_text, sample),
+            args.model,
+            args.url,
+            key_terms,
+            sample=sample,
+            provider=args.provider,
+        )
         ai_text = str(report["ai"].get("text") or "")
         if ai_text:
             ai_export = startup._export_osc_form_files(title, ai_text, f"live_ai_{index:02d}_{safe_name}")
@@ -437,15 +559,22 @@ def main() -> int:
     parser.add_argument("--key-terms", default="", help="Comma-separated key terms for a custom sample.")
     parser.add_argument("--sample", default="", help="Comma-separated built-in sample ids/names to run.")
     parser.add_argument("--long-only", action="store_true", help="Run only built-in samples with >=10-page source PDFs.")
-    parser.add_argument("--ai", action="store_true", help="also call the local OpenAI-compatible model for selected sample(s)")
-    parser.add_argument("--ai-all", action="store_true", help="with --ai, call the local model for every sample")
+    parser.add_argument("--ai", action="store_true", help="also generate and quality-check a draft for selected sample(s)")
+    parser.add_argument("--ai-all", action="store_true", help="with --ai, generate a draft for every sample")
+    parser.add_argument(
+        "--provider",
+        choices=("nvidia", "local"),
+        default="nvidia",
+        help="draft provider; heavy legal quality certification defaults to NVIDIA",
+    )
     parser.add_argument("--model", default=os.environ.get("MAGI_TEXT_PRIMARY_MODEL") or "gemma-4-e4b-it-4bit")
     parser.add_argument("--url", default=os.environ.get("MAGI_OMLX_CHAT_URL") or "http://127.0.0.1:8090")
     args = parser.parse_args()
 
     from api import startup
 
-    out_dir = ROOT / ".runtime" / "osc_draft_live_exports"
+    runtime_dir = Path(os.environ.get("MAGI_RUNTIME_DIR", "").strip() or ROOT / ".runtime").expanduser()
+    out_dir = runtime_dir / "osc_draft_live_exports"
     out_dir.mkdir(parents=True, exist_ok=True)
     startup.EXPORTS_DIR = str(out_dir)
 
@@ -459,8 +588,8 @@ def main() -> int:
         "results": results,
     }
 
-    json_path = ROOT / ".runtime" / "osc_draft_live_compare_latest.json"
-    md_path = ROOT / ".runtime" / "osc_draft_live_compare_latest.md"
+    json_path = runtime_dir / "osc_draft_live_compare_latest.json"
+    md_path = runtime_dir / "osc_draft_live_compare_latest.md"
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(
         "\n".join(

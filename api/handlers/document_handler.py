@@ -19,8 +19,84 @@ logger = logging.getLogger("DocumentHandler")
 # Text normalization
 # ---------------------------------------------------------------------------
 
+_PDF_RUNNING_DOI_RE = re.compile(
+    r"(?i)\s*\bdoi\s*[:：]\s*10\.\d{4,9}/[-._;()/:A-Z0-9]+(?:\s+(?:[ivxlcdm]+|\d{1,4}))?"
+)
+
+
+_TW_LEGAL_TRANSLATION_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("公民法官法", "國民法官法"),
+    ("公民法官制度", "國民法官制度"),
+    ("公民法官系統", "國民法官制度"),
+    ("公民法官", "國民法官"),
+    ("台灣", "臺灣"),
+    ("法庭翻譯員", "司法通譯"),
+    ("法庭翻譯", "司法通譯"),
+    ("法庭通譯", "司法通譯"),
+    ("法庭口譯員", "司法通譯"),
+    ("法院口譯員", "司法通譯"),
+    ("法院翻譯", "司法通譯"),
+    ("演講風格", "語言風格"),
+    ("言語風格", "語言風格"),
+    ("語音風格", "語言風格"),
+    ("說話風格", "語言風格"),
+    ("匹配偽裝技術", "假冒配對測試法"),
+    ("配對偽裝技術", "假冒配對測試法"),
+    ("配對偽裝法", "假冒配對測試法"),
+    ("無能為力組", "無力風格組"),
+    ("無權組", "無力風格組"),
+    ("無權力組", "無力風格組"),
+    ("無力組", "無力風格組"),
+    ("強大組", "有力風格組"),
+    ("有權組", "有力風格組"),
+    ("有權力組", "有力風格組"),
+    ("強力組", "有力風格組"),
+    ("無能為力風格", "無力風格"),
+    ("無權風格", "無力風格"),
+    ("弱勢風格", "無力風格"),
+    ("強大風格", "有力風格"),
+    ("強力風格", "有力風格"),
+)
+
+
+def strip_pdf_running_identifiers(text: str) -> str:
+    """Remove repeated PDF running identifiers from extracted text.
+
+    Academic PDFs often place DOI/handle strings in page headers or footers.
+    OCR/text extraction then injects them into every page and pollutes
+    translation/summary output.  Keep bibliographic identifiers out of body
+    text; callers can preserve source metadata separately.
+    """
+    s = str(text or "")
+    if not s:
+        return ""
+    s = _PDF_RUNNING_DOI_RE.sub(" ", s)
+    s = re.sub(r"(?im)^\s*(?:[ivxlcdm]+|\d{1,4})\s*$", "", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def normalize_tw_legal_translation_terms(text: str) -> str:
+    """Normalize high-risk translation drift to Taiwan legal/academic terms."""
+    s = str(text or "")
+    if not s:
+        return ""
+    for old, new in _TW_LEGAL_TRANSLATION_REPLACEMENTS:
+        s = s.replace(old, new)
+    s = re.sub(r"被告的智力、可信度、說服力", "被告的智力程度、可信賴度、證詞可信度", s)
+    s = re.sub(r"被告的智力、可信賴度、說服力", "被告的智力程度、可信賴度、證詞可信度", s)
+    s = re.sub(r"外籍罪犯", "外籍犯罪人", s)
+    s = re.sub(r"外國被告", "外籍犯罪被告", s)
+    s = re.sub(r"在我擔任([^，。；、\n]{1,24})的前半生中", r"我之前擔任\1時", s)
+    s = re.sub(r"我擔任([^，。；、\n]{1,24})的前半生", r"我之前擔任\1時", s)
+    s = re.sub(r"在我前半生擔任([^，。；、\n]{1,24})時", r"我之前擔任\1時", s)
+    s = re.sub(r"臺灣's", "臺灣的", s, flags=re.IGNORECASE)
+    return s
+
+
 def normalize_txt_body(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     lines = [ln.rstrip() for ln in s.split("\n")]
     out = []
     prev_blank = False
@@ -36,7 +112,7 @@ def normalize_txt_body(text: str) -> str:
 
 
 def prepare_document_text_for_llm(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
     if not s:
         return ""
 
@@ -85,6 +161,7 @@ def prepare_document_text_for_llm(text: str) -> str:
         for raw in page_lines:
             line = str(raw or "").replace("\u00ad", "").replace("\u2011", "-").replace("\u2010", "-")
             line = line.replace("\u0008", " ").strip()
+            line = strip_pdf_running_identifiers(line)
             if not line:
                 if cleaned and cleaned[-1]:
                     cleaned.append("")
@@ -218,7 +295,9 @@ def prepare_document_text_for_llm(text: str) -> str:
 
 
 def polish_translated_document_text(text: str) -> str:
-    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = normalize_tw_legal_translation_terms(
+        strip_pdf_running_identifiers((text or "").replace("\r\n", "\n").replace("\r", "\n"))
+    )
     if not s:
         return ""
     try:
@@ -284,8 +363,19 @@ def translation_idiom_issues(source_text: str, translated_text: str) -> list[str
         r"(?:prosecutor|lawyer|judge|defen[cs]e\s+lawyer|practitioner|police\s+officer|researcher|academic)\b",
         re.IGNORECASE,
     )
-    if previous_life_role_re.search(src) and re.search(r"(?:前世|上輩子|前一世)", tgt):
-        issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世或上輩子")
+    if previous_life_role_re.search(src) and re.search(r"(?:前世|前生|前半生|上輩子|前一世)", tgt):
+        issues.append("「previous life as + 職業」是以前任職/先前職涯，不可譯為前世、前生或前半生")
+    if re.search(r"\bCitizen Judges? Act\b|\bcitizen judges?\b", src, flags=re.IGNORECASE) and "公民法官" in tgt:
+        issues.append("Citizen Judges Act / citizen judges 於本文件應譯為「國民法官法／國民法官」")
+    if re.search(r"\bcourt interpreters?\b", src, flags=re.IGNORECASE) and re.search(
+        r"(?:法庭|法院)(?:翻譯員|翻譯人員|翻譯|口譯員)",
+        tgt,
+    ):
+        issues.append("court interpreter 於本文件應譯為「司法通譯」，不可譯為法庭翻譯")
+    if re.search(r"\bspeech styles?\b", src, flags=re.IGNORECASE) and re.search(r"(演講|言語|語音)風格", tgt):
+        issues.append("speech style 於本文件應譯為「語言風格」")
+    if re.search(r"\bPowerless Group\b|\bPowerful Group\b", src, flags=re.IGNORECASE) and re.search(r"(無權組|無能為力組|強大組|有權組)", tgt):
+        issues.append("Powerless/Powerful Group 於本文件應譯為「無力風格組／有力風格組」")
     return issues
 
 
@@ -296,6 +386,21 @@ def extract_translation_terms_for_review(text: str, *, target_lang: str = "繁�
         return []
 
     known_terms = {
+        "Citizen Judges Act": "國民法官法",
+        "citizen judge": "國民法官",
+        "citizen judges": "國民法官",
+        "court interpreter": "司法通譯",
+        "court interpreters": "司法通譯",
+        "court interpreter system": "司法通譯制度",
+        "defendant": "被告",
+        "defendants": "被告",
+        "speech style": "語言風格",
+        "speech styles": "語言風格",
+        "powerless style": "無力風格",
+        "Powerless Group": "無力風格組",
+        "Powerful Group": "有力風格組",
+        "matched guise technique": "假冒配對測試法",
+        "Taiwan": "臺灣",
         "addiction": "成癮",
         "addictions": "成癮",
         "addicts": "成癮者",
@@ -498,6 +603,21 @@ def _source_term_translation_candidates(source_term: str) -> list[str]:
         ],
         "mental health": ["心理健康", "精神健康"],
         "traditional chinese": ["繁體中文"],
+        "citizen judges act": ["國民法官法"],
+        "citizen judge": ["國民法官"],
+        "citizen judges": ["國民法官"],
+        "court interpreter": ["司法通譯"],
+        "court interpreters": ["司法通譯"],
+        "court interpreter system": ["司法通譯制度"],
+        "defendant": ["被告"],
+        "defendants": ["被告"],
+        "speech style": ["語言風格"],
+        "speech styles": ["語言風格"],
+        "powerless style": ["無力風格"],
+        "powerless group": ["無力風格組"],
+        "powerful group": ["有力風格組"],
+        "matched guise technique": ["假冒配對測試法"],
+        "taiwan": ["臺灣"],
         "la trobe university": ["拉籌伯大學", "拉籌伯大學"],
         "australian research centre in sex, health and society": ["澳大利亞性、健康與社會研究中心", "澳洲性、健康與社會研究中心"],
         "psychiatry, psychology and law": ["精神病學、心理學和法律", "精神醫學、心理學與法律"],
@@ -525,10 +645,20 @@ def _translation_contains_source_term(translated_text: str, source_term: str) ->
         return True
     escaped = re.escape(term)
     if re.fullmatch(r"[A-Za-z][A-Za-z'’ -]*", term):
-        direct_pattern = rf"(?<![A-Za-z]){escaped}(?![A-Za-z])"
+        plural_suffix = "s?" if not term.lower().endswith("s") else ""
+        direct_pattern = rf"(?<![A-Za-z]){escaped}{plural_suffix}(?![A-Za-z])"
     else:
         direct_pattern = escaped
     if re.search(direct_pattern, tgt, flags=re.IGNORECASE):
+        return True
+    # A translated term is preserved when an approved Traditional-Chinese
+    # rendering is present; requiring the English spelling as well would
+    # falsely reject correct translations.
+    compact_target = re.sub(r"\s+", "", tgt)
+    if any(
+        re.sub(r"\s+", "", candidate) in compact_target
+        for candidate in _source_term_translation_candidates(term)
+    ):
         return True
     if term.lower() in {"addiction", "addictions"} and re.search(r"(?<![A-Za-z])addictions?(?![A-Za-z])", tgt, flags=re.IGNORECASE):
         return True
@@ -598,7 +728,7 @@ def ensure_translation_terms_visible(
     if "中文" not in str(target_lang or "") and not target_lower.startswith("zh"):
         return translated_text or ""
     src = str(source_text or "")
-    out = str(translated_text or "")
+    out = normalize_tw_legal_translation_terms(translated_text or "")
     if not src.strip() or not out.strip():
         return out
 
@@ -668,8 +798,23 @@ def ensure_translation_terms_visible(
     if os.environ.get("MAGI_TRANSLATE_APPEND_MISSING_TERMS", "1").strip().lower() in {"1", "true", "yes", "on"}:
         missing = missing_translation_source_terms(src, out, term_glossary=term_glossary, max_terms=12)
         if missing and "【原文專有名詞保留】" not in out:
-            out = out.rstrip() + "\n\n【原文專有名詞保留】" + "；".join(missing)
-    return out
+            # Do not append an unexplained English-only tail.  When the
+            # document glossary has an explicit Taiwan-Chinese rendering,
+            # expose the bilingual pair so the final document remains useful
+            # even if the provider chose an unexpected synonym in the body.
+            targets_by_source = {
+                str(row.get("source") or "").strip().casefold():
+                _translation_target_candidates(str(row.get("target") or ""))
+                for row in pairs
+                if str(row.get("source") or "").strip()
+            }
+            visible_missing: list[str] = []
+            for term in missing:
+                targets = targets_by_source.get(str(term).casefold()) or _source_term_translation_candidates(term)
+                target = next((item for item in targets if item), "")
+                visible_missing.append(f"{target}（{term}）" if target else term)
+            out = out.rstrip() + "\n\n【原文專有名詞保留】" + "；".join(visible_missing)
+    return normalize_tw_legal_translation_terms(out)
 
 
 def _split_bilingual_blocks(text: str, max_chars: int = 700) -> list[str]:
@@ -789,6 +934,149 @@ def is_file_protocol_user(user_id: str) -> bool:
     )
 
 
+_TRANSLATION_DOCX_BLOCK_TERMS: tuple[str, ...] = (
+    "doi:",
+    "doi：",
+    "公民法官",
+    "法庭翻譯",
+    "法庭口譯員",
+    "法院翻譯",
+    "法院口譯員",
+    "演講風格",
+    "言語風格",
+    "無權組",
+    "無權力組",
+    "強大組",
+    "有權力組",
+    "辯護人的印象",
+    "前世",
+    "前生",
+    "前半生",
+    "翻譯逾時",
+    "翻譯失敗",
+    "先保留原文",
+    "處理發生系統錯誤",
+    "⚠️ 第",
+)
+
+
+def _read_translation_docx_metrics(path: str) -> dict:
+    """Read a generated bilingual DOCX back for delivery-quality checks."""
+    try:
+        from docx import Document
+    except Exception as exc:
+        return {"ok": False, "error": f"python_docx_unavailable:{exc}"}
+
+    p = str(path or "").strip()
+    if not p or not os.path.exists(p):
+        return {"ok": False, "error": "docx_missing"}
+    try:
+        doc = Document(p)
+    except Exception as exc:
+        return {"ok": False, "error": f"docx_read_failed:{exc}"}
+
+    parts: list[str] = []
+    table_rows = 0
+    sparse_rows = 0
+    for paragraph in doc.paragraphs:
+        if paragraph.text:
+            parts.append(paragraph.text)
+    for table in doc.tables:
+        for row_index, row in enumerate(table.rows):
+            cells = [str(cell.text or "").strip() for cell in row.cells]
+            if not any(cells):
+                continue
+            parts.extend(cells)
+            if row_index == 0:
+                continue
+            table_rows += 1
+            if len(cells) >= 2:
+                source_cell = cells[-2].strip()
+                target_cell = cells[-1].strip()
+                if not source_cell or not target_cell:
+                    sparse_rows += 1
+
+    text = "\n".join(p for p in parts if p)
+    try:
+        size = os.path.getsize(p)
+    except OSError:
+        size = 0
+    return {
+        "ok": True,
+        "path": p,
+        "size": size,
+        "chars": len(text),
+        "text": text,
+        "table_rows": table_rows,
+        "sparse_rows": sparse_rows,
+    }
+
+
+def validate_translation_docx(
+    path: str,
+    *,
+    source_text: str = "",
+    translated_text: str = "",
+    source_name: str = "",
+) -> dict:
+    """Validate that a translation DOCX is complete enough to deliver.
+
+    This is intentionally stricter than a generic "file exists" check.  Long
+    legal/academic translations must be read back from the DOCX and checked for
+    truncation, empty table cells, high-risk terminology drift, and idiom
+    mistranslation before MAGI sends them to a user.
+    """
+    metrics = _read_translation_docx_metrics(path)
+    issues: list[str] = []
+    if not metrics.get("ok"):
+        return {"ok": False, "issues": [str(metrics.get("error") or "docx_read_failed")], "metrics": metrics}
+
+    src = normalize_txt_body(source_text or "")
+    tgt = polish_translated_document_text(translated_text or "") if translated_text else ""
+    docx_text = str(metrics.get("text") or "")
+    source_len = len(src)
+    size = int(metrics.get("size") or 0)
+    read_chars = int(metrics.get("chars") or 0)
+    table_rows = int(metrics.get("table_rows") or 0)
+    sparse_rows = int(metrics.get("sparse_rows") or 0)
+
+    if source_len >= 50_000 and size < max(50_000, min(220_000, source_len // 3)):
+        issues.append(f"docx_too_small_for_long_source:{size}/{source_len}")
+    elif source_len >= 15_000 and size < max(24_000, source_len // 4):
+        issues.append(f"docx_too_small_for_source:{size}/{source_len}")
+
+    if source_len >= 8_000 and read_chars < int(source_len * 0.45):
+        issues.append(f"docx_readback_too_short:{read_chars}/{source_len}")
+    if source_len >= 3_000 and table_rows < 4:
+        issues.append(f"docx_table_rows_too_few:{table_rows}")
+    if table_rows >= 8 and sparse_rows / max(1, table_rows) > 0.12:
+        issues.append(f"docx_sparse_rows:{sparse_rows}/{table_rows}")
+
+    combined = "\n".join([docx_text, tgt])
+    lower = combined.lower()
+    bad_terms = [term for term in _TRANSLATION_DOCX_BLOCK_TERMS if term.lower() in lower]
+    if bad_terms:
+        issues.append("blocked_terms:" + ",".join(bad_terms[:8]))
+
+    if src and (tgt or docx_text):
+        idiom_issues = translation_idiom_issues(src, tgt or docx_text)
+        if idiom_issues:
+            issues.append("idiom:" + "；".join(idiom_issues[:2]))
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "source_name": source_name,
+        "metrics": {
+            "size": size,
+            "chars": read_chars,
+            "table_rows": table_rows,
+            "sparse_rows": sparse_rows,
+            "source_chars": source_len,
+        },
+    }
+
+
 def export_translation_txt(
     *,
     translated_text: str,
@@ -853,6 +1141,8 @@ def export_translation_docx(
 
     import re as _re
 
+    glossary_text = normalize_txt_body(term_glossary or build_translation_term_glossary(source_text))
+
     # Prefer chunk-level pairs from translation handler (already aligned)
     _src_chunks = source_chunks or []
     _tgt_chunks = translated_chunks or []
@@ -877,13 +1167,24 @@ def export_translation_docx(
             {"page": i + 1, "source": s, "target": t}
             for i, (s, t) in enumerate(zip(src_paras, tgt_paras))
         ]
+    for page in pages:
+        try:
+            page["target"] = ensure_translation_terms_visible(
+                str(page.get("source") or ""),
+                str(page.get("target") or ""),
+                term_glossary=glossary_text,
+                target_lang="繁體中文",
+            )
+            page["target"] = polish_translated_document_text(str(page.get("target") or "")) or str(page.get("target") or "")
+        except Exception:
+            logger.debug("translation term visibility pass skipped for one row", exc_info=True)
+
     include_glossary_row = os.environ.get("MAGI_FILE_TRANSLATE_INCLUDE_GLOSSARY_ROW", "0").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    glossary_text = normalize_txt_body(term_glossary or build_translation_term_glossary(source_text))
     if glossary_text and include_glossary_row:
         readable_glossary = []
         for row in parse_translation_term_glossary(glossary_text):
@@ -919,6 +1220,16 @@ def export_translation_docx(
 
     path = str(ex.get("path") or "").strip()
     url = str(ex.get("url") or "").strip()
+    validation = validate_translation_docx(
+        path,
+        source_text=source_text,
+        translated_text=translated_text,
+        source_name=title or subtitle or "",
+    )
+    if not validation.get("ok"):
+        logger.warning("translation DOCX quality gate failed: %s", validation)
+        return None
+
     head = "📄 已輸出雙語對照 DOCX 表格檔案。"
     if url:
         head = f"{head}\n{url}"

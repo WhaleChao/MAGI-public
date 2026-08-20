@@ -19,8 +19,43 @@ from pathlib import Path
 
 _SKILL_DIR = Path(__file__).resolve().parent.parent  # market-briefing/
 _MAGI_ROOT = _SKILL_DIR.parents[1]
-_AGENT_DIR = _MAGI_ROOT / ".agent"
+_LEGACY_AGENT_DIR = _MAGI_ROOT / ".agent"
+_AGENT_DIR = Path(os.environ.get("MAGI_AGENT_DIR") or str(_LEGACY_AGENT_DIR)).expanduser()
 _CACHE_PATH = _AGENT_DIR / "market_data_cache.json"
+_LEGACY_CACHE_PATH = _LEGACY_AGENT_DIR / "market_data_cache.json"
+
+
+def _fixture_market_data(section: str, key: str) -> Optional[Dict[str, Any]]:
+    """Load a release-test provider only inside the owned schedule fixture."""
+    raw_path = os.environ.get("MAGI_MARKET_DATA_FIXTURE_PATH", "").strip()
+    if not raw_path:
+        return None
+    fixture_root = Path(
+        os.environ.get("MAGI_V3_SCHEDULE_FIXTURE_ROOT", "")
+    ).expanduser()
+    path = Path(raw_path).expanduser()
+    if (
+        os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") != "real_entrypoint_fixture_v1"
+        or os.environ.get("MAGI_V3_SCHEDULE_DRY_RUN") != "1"
+        or not fixture_root.is_dir()
+        or not (fixture_root / ".magi-v3-schedule-fixture").is_file()
+        or fixture_root.resolve() not in path.resolve().parents
+    ):
+        raise RuntimeError("market fixture provider failed closed")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    rows = data.get(section) if isinstance(data, dict) else None
+    row = rows.get(key) if isinstance(rows, dict) else None
+    if not isinstance(row, dict):
+        raise RuntimeError(f"market fixture provider missing {section}:{key}")
+    trace_raw = os.environ.get("MAGI_MARKET_DATA_FIXTURE_TRACE", "").strip()
+    if trace_raw:
+        trace = Path(trace_raw).expanduser()
+        if fixture_root.resolve() not in trace.resolve().parents:
+            raise RuntimeError("market fixture trace escaped fixture root")
+        trace.parent.mkdir(parents=True, exist_ok=True)
+        with trace.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"section": section, "key": key}) + "\n")
+    return row
 
 # Import only indicators from sibling module
 from data.indicators import _pct  # noqa: E402
@@ -43,6 +78,16 @@ def _http_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int 
 
 
 def _yahoo_history(symbol: str, period: str = "3mo", with_volume: bool = False):
+    fixture = _fixture_market_data("history", symbol)
+    if fixture is not None:
+        closes = [float(value) for value in fixture.get("closes") or []]
+        timestamps = [int(value) for value in fixture.get("timestamps") or range(len(closes))]
+        if with_volume:
+            highs = [float(value) for value in fixture.get("highs") or closes]
+            lows = [float(value) for value in fixture.get("lows") or closes]
+            volumes = [int(value) for value in fixture.get("volumes") or [0] * len(closes)]
+            return closes, timestamps, highs, lows, volumes
+        return closes, timestamps
     q = parse.quote(symbol)
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{q}?range={period}&interval=1d"
     data = _http_json(url, timeout=18)
@@ -79,8 +124,12 @@ def _yahoo_history(symbol: str, period: str = "3mo", with_volume: bool = False):
 def _load_cache_fetcher() -> Dict[str, Any]:
     """Load cache directly (no circular import)."""
     try:
-        if _CACHE_PATH.exists():
-            return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        candidates = [_CACHE_PATH]
+        if _CACHE_PATH.resolve(strict=False) != _LEGACY_CACHE_PATH.resolve(strict=False):
+            candidates.append(_LEGACY_CACHE_PATH)
+        for candidate in candidates:
+            if candidate.exists():
+                return json.loads(candidate.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {"twse_lookup": {}, "sec_tickers": {}, "updated_at": ""}
@@ -197,6 +246,9 @@ def _get_sec_tickers(force: bool = False) -> Dict[str, str]:
 
 
 def _latest_tw_financials(code4: str) -> Dict[str, str]:
+    fixture = _fixture_market_data("tw_financials", code4)
+    if fixture is not None:
+        return {"rev": str(fixture.get("rev") or ""), "eps": str(fixture.get("eps") or "")}
     res = {"rev": "", "eps": ""}
     # monthly revenue
     try:
@@ -251,6 +303,9 @@ def _latest_tw_financials(code4: str) -> Dict[str, str]:
 
 def _latest_us_filing(symbol: str) -> str:
     symbol = symbol.upper().strip()
+    fixture = _fixture_market_data("us_filings", symbol)
+    if fixture is not None:
+        return str(fixture.get("filing") or "")
     sec = _get_sec_tickers()
     cik = str(sec.get(symbol) or "").strip()
     if not cik:
