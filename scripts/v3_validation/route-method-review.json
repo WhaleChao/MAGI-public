@@ -1518,7 +1518,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:513",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:539",
       "rationale": "GET is a pure redirect projection to the intelligence page."
     },
     {
@@ -1529,7 +1529,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:513",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:539",
       "rationale": "Trailing-slash GET is the same pure redirect projection to the intelligence page."
     },
     {
@@ -1540,7 +1540,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:519",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:545",
       "rationale": "GET is a pure compatibility redirect to the intelligence page."
     },
     {
@@ -1551,7 +1551,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:519",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:545",
       "rationale": "Trailing-slash GET is the same pure compatibility redirect to the intelligence page."
     },
     {
@@ -1562,7 +1562,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1113",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1139",
       "rationale": "GET is a pure route projection redirecting to the Golem console."
     },
     {
@@ -1573,7 +1573,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1119",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1145",
       "rationale": "GET is a pure legacy route projection redirecting to the Golem console."
     },
     {
@@ -1584,7 +1584,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1073",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1099",
       "rationale": "GET renders a static dashboard projection; replay binds template rendering in memory."
     },
     {
@@ -1595,7 +1595,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1142",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1606,7 +1606,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1142",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1617,7 +1617,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1142",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1628,7 +1628,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1142",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1168",
       "rationale": "GET renders the NERV dashboard projection with in-memory template binding."
     },
     {
@@ -1639,7 +1639,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1149",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1175",
       "rationale": "GET renders the Golem console projection with in-memory template binding."
     },
     {
@@ -1650,7 +1650,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1149",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1175",
       "rationale": "GET renders the Golem console projection with in-memory template binding."
     },
     {
@@ -1661,7 +1661,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1194",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1244",
       "rationale": "GET projects a web manifest from an in-memory mobile configuration fixture."
     },
     {
@@ -1672,7 +1672,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-sixth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1180",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1230",
       "rationale": "GET reads and returns the repository service-worker asset without mutation."
     },
     {
@@ -1760,7 +1760,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1156",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1206",
       "rationale": "GET renders the mobile-home projection with in-memory configuration and template bindings."
     },
     {
@@ -1771,7 +1771,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1156",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1206",
       "rationale": "GET renders the mobile-home projection with in-memory configuration and template bindings."
     },
     {
@@ -1782,7 +1782,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1166",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1216",
       "rationale": "GET renders the mobile-admin projection with in-memory configuration and template bindings."
     },
     {
@@ -1793,7 +1793,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1166",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1216",
       "rationale": "GET renders the mobile-admin projection with in-memory configuration and template bindings."
     },
     {
@@ -1804,7 +1804,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1126",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1152",
       "rationale": "GET renders a dashboard projection with its model and template bound in memory."
     },
     {
@@ -1815,7 +1815,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1126",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1152",
       "rationale": "GET renders a dashboard projection with its model and template bound in memory."
     },
     {
@@ -1826,7 +1826,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1133",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1159",
       "rationale": "GET renders a status projection with its model and template bound in memory."
     },
     {
@@ -1837,7 +1837,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1133",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1159",
       "rationale": "GET renders a status projection with its model and template bound in memory."
     },
     {
@@ -1848,7 +1848,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1226",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1276",
       "rationale": "GET renders the website-admin shell with template rendering bound in memory."
     },
     {
@@ -1859,7 +1859,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1067",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1093",
       "rationale": "GET renders the research projection with its dashboard model and template bound in memory."
     },
     {
@@ -1870,7 +1870,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1067",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1093",
       "rationale": "GET renders the research projection with its dashboard model and template bound in memory."
     },
     {
@@ -1881,7 +1881,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:525",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:551",
       "rationale": "GET renders the intelligence projection with an empty in-memory report list."
     },
     {
@@ -1892,7 +1892,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-read-only-seventh-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1175",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1225",
       "rationale": "GET projects the mobile configuration from an in-memory fixture."
     },
     {
@@ -1925,7 +1925,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1079",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1105",
       "rationale": "GET renders a recognized feed using in-memory research, fetch, and template bindings."
     },
     {
@@ -2728,7 +2728,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1239",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
       "rationale": "GET dispatches the real website-admin root proxy with its requests upstream bound to a deterministic in-memory response."
     },
     {
@@ -2739,7 +2739,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1239",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
       "rationale": "GET dispatches the real website-admin path proxy with its requests upstream bound to a deterministic in-memory response."
     },
     {
@@ -2750,7 +2750,7 @@
       "side_effect_class": "external_commit",
       "reviewed": true,
       "reviewed_by": "isolated-eighteenth-batch",
-      "v2_handler_source": "api/blueprints/dashboard_pages.py:1239",
+      "v2_handler_source": "api/blueprints/dashboard_pages.py:1289",
       "rationale": "POST dispatches through the real website-admin path proxy to an in-memory upstream, proving body forwarding without a live service commit."
     },
     {
