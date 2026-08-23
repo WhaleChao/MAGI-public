@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from casper_ecosystem.law_firm_orchestrators.laf_orchestrator import LAFOrchestrator
@@ -81,4 +82,39 @@ def test_expired_portal_attachment_retry_is_not_pending():
             "status": "pending_retry",
             "expires_at": "2999-01-01T00:00:00",
         }
+    ) is True
+
+
+def test_timezone_aware_portal_retry_expiry_is_comparable():
+    taipei = timezone(timedelta(hours=8))
+    now = datetime.now(taipei).replace(microsecond=0)
+    future = (now + timedelta(hours=1)).isoformat()
+    past = (now - timedelta(hours=1)).isoformat()
+
+    assert LAFOrchestrator._portal_retry_item_is_pending(
+        {"status": "pending_retry", "expires_at": future}
+    ) is True
+    assert LAFOrchestrator._portal_retry_item_is_pending(
+        {"status": "pending_retry", "expires_at": past}
+    ) is False
+    assert LAFOrchestrator._portal_retry_expired(
+        {"expires_at": future}, now=now
+    ) is False
+    assert LAFOrchestrator._portal_retry_expired(
+        {"expires_at": past}, now=now
+    ) is True
+
+
+def test_portal_retry_expiry_accepts_mixed_legacy_and_aware_clock_shapes():
+    taipei = timezone(timedelta(hours=8))
+    local_noon = datetime(2026, 8, 23, 12, 0)
+    aware_noon = datetime(2026, 8, 23, 12, 0, tzinfo=taipei)
+
+    assert LAFOrchestrator._portal_retry_expired(
+        {"expires_at": "2026-08-23T11:59:59+08:00"},
+        now=local_noon,
+    ) is True
+    assert LAFOrchestrator._portal_retry_expired(
+        {"expires_at": "2026-08-23T11:59:59"},
+        now=aware_noon,
     ) is True

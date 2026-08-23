@@ -1006,7 +1006,10 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             expires_at = str(item.get("expires_at") or "").strip()
             if expires_at:
                 try:
-                    return datetime.now() < datetime.fromisoformat(expires_at)
+                    current, expiry = LAFOrchestrator._portal_retry_expiry_pair(
+                        expires_at
+                    )
+                    return current < expiry
                 except (TypeError, ValueError):
                     logger.warning(
                         "invalid LAF portal retry expiry timestamp: %r", expires_at,
@@ -1016,12 +1019,46 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         return status == "manual_review" and str(item.get("last_error") or "") == "missing_local_case_folder"
 
     @staticmethod
+    def _portal_retry_expiry_pair(
+        expires_at: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Tuple[datetime, datetime]:
+        """Return comparable local instants for legacy and timezone-aware rows.
+
+        Historical retry rows store local naive timestamps, while newer Gmail
+        receipts can carry an explicit offset.  Python intentionally refuses
+        to compare those shapes directly.  Preserve the legacy local-time
+        meaning for naive rows and compare aware rows in their declared zone.
+        """
+
+        expiry = datetime.fromisoformat(str(expires_at or "").strip())
+        expiry_is_aware = expiry.tzinfo is not None and expiry.utcoffset() is not None
+        current = now
+        if current is None:
+            current = datetime.now(expiry.tzinfo) if expiry_is_aware else datetime.now()
+        current_is_aware = (
+            current.tzinfo is not None and current.utcoffset() is not None
+        )
+        if expiry_is_aware:
+            if not current_is_aware:
+                current = current.astimezone()
+            current = current.astimezone(expiry.tzinfo)
+        elif current_is_aware:
+            current = current.astimezone().replace(tzinfo=None)
+        return current, expiry
+
+    @staticmethod
     def _portal_retry_expired(item: dict, *, now: Optional[datetime] = None) -> bool:
         expires_at = str(item.get("expires_at") or "").strip()
         if not expires_at:
             return False
         try:
-            return (now or datetime.now()) >= datetime.fromisoformat(expires_at)
+            current, expiry = LAFOrchestrator._portal_retry_expiry_pair(
+                expires_at,
+                now=now,
+            )
+            return current >= expiry
         except (TypeError, ValueError):
             return False
 
