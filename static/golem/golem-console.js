@@ -145,7 +145,9 @@
             lines.push(`- 核心程序：${summary.core_count || 0}`);
             lines.push(`- 背景工作：${summary.worker_count || 0}`);
             lines.push(`- 孤兒程序：${summary.orphan_count || 0}`);
+            lines.push(`- 殭屍程序：${summary.zombie_count || 0}`);
             lines.push(`- 重複程序群組：${summary.duplicate_groups || 0}`);
+            lines.push(`- 程序異常合計：${summary.anomaly_count || 0}`);
         }
         if (payload.memory) {
             lines.push("", "向量記憶：");
@@ -214,6 +216,7 @@
             { name: "核心程序", value: `${host.core_count || 0} 個運作中`, down: !host.core_count },
             { name: "背景工作", value: `${host.worker_count || 0} 個執行中`, down: false },
             { name: "孤兒程序", value: `${host.orphan_count || 0} 個需留意`, down: Number(host.orphan_count || 0) > 0 },
+            { name: "殭屍程序", value: `${host.zombie_count || 0} 個需留意`, down: Number(host.zombie_count || 0) > 0 },
             { name: "重複程序", value: `${host.duplicate_groups || 0} 組`, down: Number(host.duplicate_groups || 0) > 0 },
         ];
         const coreRows = core.slice(0, 5).map((item) => ({

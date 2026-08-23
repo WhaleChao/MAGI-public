@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MAGI</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260815-ia-v1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='golem/golem-console.css') }}?v=20260823-tools-v2">
     <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260815-ia-v1">
     <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260730-rc173">
     <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260730-rc173"></script>
@@ -107,25 +107,43 @@
                 </section>
 
                 <details class="legal-links-panel collapsible-panel" id="legal-links">
-                    <summary><span>外部網站與其他工具</span></summary>
-                    <div class="external-grid">
+                    <summary><span>工具與外部資源</span></summary>
+                    <section class="external-group" aria-labelledby="public-tools-title" data-tool-category="public-tools">
+                        <h3 id="public-tools-title">公開創作與學習工具</h3>
+                        <p>免登入；產品仍受本機資源、格式、容量與頻率限制。</p>
+                        <div class="external-grid">
+                            <a href="/tools">全部公開工具</a>
+                            <a href="/video-studio">影片工作室</a>
+                            <a href="/cookie-cutter">線稿轉餅乾切模</a>
+                            <a href="/lottery">抽獎工具</a>
+                            <a href="/exam-tutor">國考練習</a>
+                        </div>
+                    </section>
+                    <section class="external-group" aria-labelledby="legal-work-title" data-tool-category="legal-work">
+                        <h3 id="legal-work-title">法律與工作網站</h3>
+                        <p>外部網站可能要求各自的登入與權限。</p>
+                        <div class="external-grid">
                         <a href="https://portal.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">律師單一登入</a>
                         <a href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
                         <a href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
                         <a href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
-                        <a href="/lottery">抽獎工具</a>
-                        <a href="/exam-tutor">國考練習</a>
-                        <a href="/cookie-cutter">線稿轉餅乾切模</a>
                         <a href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
                         <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
                         <a href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
                         <a href="https://drive.google.com/" target="_blank" rel="noopener noreferrer">Google 雲端硬碟</a>
+                        </div>
+                    </section>
+                    <section class="external-group" aria-labelledby="research-admin-title" data-tool-category="research-admin">
+                        <h3 id="research-admin-title">研究與管理</h3>
+                        <p>MAGI 內部功能，維持原有登入保護。</p>
+                        <div class="external-grid">
                         <a href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">個人 GitHub 頁面</a>
                         <a href="/dashboard/website">個人網站管理</a>
                         <a href="/intel">全球新聞網</a>
                         <a href="/research">研究</a>
                         <a href="/research/judgment-classifier">判決捕捉與分類</a>
-                    </div>
+                        </div>
+                    </section>
                 </details>
             </div>
 

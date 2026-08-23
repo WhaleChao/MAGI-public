@@ -1652,6 +1652,43 @@ def _write_notification_delivery_health(
         logger.debug("notification delivery health write failed", exc_info=True)
 
 
+def _normalize_delivery_event_id(event_id: str = "") -> str:
+    value = str(event_id or "").strip()
+    if value and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("notification event_id must be lowercase SHA-256")
+    return value
+
+
+def _delivery_channel_done(event_id: str, channel: str) -> bool:
+    if not event_id:
+        return False
+    try:
+        from skills.ops.dedup_db import is_done
+
+        return bool(is_done("notification_event_channel", f"{event_id}:{channel}"))
+    except Exception as exc:
+        raise RuntimeError("notification_channel_receipt_unavailable") from exc
+
+
+def _mark_delivery_channel_done(event_id: str, channel: str) -> None:
+    if not event_id:
+        return
+    try:
+        from skills.ops.dedup_db import mark_done
+
+        persisted = mark_done(
+            "notification_event_channel",
+            f"{event_id}:{channel}",
+            metadata={"event_id": event_id, "channel": channel},
+        )
+        if persisted is not True:
+            raise RuntimeError("notification_channel_receipt_not_persisted")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("notification_channel_receipt_unavailable") from exc
+
+
 def _enqueue_outbox(
     message: str,
     severity: str,
@@ -1659,7 +1696,9 @@ def _enqueue_outbox(
     last_error: str = "",
     topic_key: str = "",
     mirror_to_discord: bool = True,
+    event_id: str = "",
 ) -> str:
+    event_id = _normalize_delivery_event_id(event_id)
     entry_id = f"rp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     now_ts = time.time()
     event = classify_notification_event(message, source=source, severity=severity, topic_key=topic_key)
@@ -1676,7 +1715,10 @@ def _enqueue_outbox(
                 source=str(existing.get("source") or ""),
             )
             existing["fingerprint"] = existing_fp
-        if existing_fp == fingerprint:
+        existing_event = str(existing.get("event_id") or "")
+        same_event = bool(event_id) and existing_event == event_id
+        same_legacy_fingerprint = not event_id and not existing_event and existing_fp == fingerprint
+        if same_event or same_legacy_fingerprint:
             existing["updated_at"] = datetime.now().isoformat()
             existing["last_error"] = str(last_error or existing.get("last_error") or "")[:600]
             existing["mirror_to_discord"] = bool(existing.get("mirror_to_discord", True)) and bool(mirror_to_discord)
@@ -1701,6 +1743,7 @@ def _enqueue_outbox(
         "topic_key": str(effective_topic or ""),
         "message": str(message or ""),
         "fingerprint": fingerprint,
+        "event_id": event_id,
         "mirror_to_discord": bool(mirror_to_discord),
         "delivery_policy": "auto_retry",
         "attempts": 0,
@@ -1789,7 +1832,9 @@ def _flush_outbox(max_items: int = 8) -> dict:
                 source=str(entry.get("source") or ""),
             )
             entry["fingerprint"] = fingerprint
-        if fingerprint in seen_fingerprints:
+        event_id = str(entry.get("event_id") or "")
+        pending_identity = f"event:{event_id}" if event_id else f"fingerprint:{fingerprint}"
+        if pending_identity in seen_fingerprints:
             _append_delivery_log(
                 {
                     "event": "outbox_drop",
@@ -1799,7 +1844,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
                 }
             )
             continue
-        seen_fingerprints.add(fingerprint)
+        seen_fingerprints.add(pending_identity)
         # Queues produced before the autonomous replay contract may contain
         # sensitive historical business notices. Preserve them for explicit
         # human disposition; never silently send or age-drop them.
@@ -1842,6 +1887,7 @@ def _flush_outbox(max_items: int = 8) -> dict:
             topic_key=str(entry.get("topic_key") or ""),
             queue_on_fail=False,
             mirror_to_discord=bool(entry.get("mirror_to_discord", True)),
+            event_id=str(entry.get("event_id") or ""),
         )
         if result.get("telegram"):
             recovered += 1
@@ -1897,12 +1943,16 @@ def _mirror_to_discord(
     topic_key: str = "",
     source: str = "",
     severity: str = "info",
+    event_id: str = "",
 ) -> bool:
     """
     Best-effort: 將 TG 通知同步鏡像到 Discord 的對應子頻道。
     僅在 DC_MIRROR_ENABLED=1 且有 bot token 時啟用。
     失敗不影響主流程。
     """
+    event_id = _normalize_delivery_event_id(event_id)
+    if _delivery_channel_done(event_id, "discord"):
+        return True
     if not (os.environ.get("MAGI_DC_MIRROR_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}):
         return False
     _src = str(source or "").strip().lower()
@@ -1930,9 +1980,14 @@ def _mirror_to_discord(
     if _is_noop_completion_notification(message):
         return False
     try:
-        return _send_discord_bot_message(
+        sent = _send_discord_bot_message(
             message, severity, topic_key=_resolved_topic, source=source
         )
+        if sent:
+            _mark_delivery_channel_done(event_id, "discord")
+        return sent
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.debug("[RED PHONE] DC mirror failed (non-fatal): %s", e)
         return False
@@ -1946,7 +2001,9 @@ def send_telegram_push_with_status(
     topic_key: str = "",
     queue_on_fail: bool = True,
     mirror_to_discord: bool = True,
+    event_id: str = "",
 ) -> dict:
+    event_id = _normalize_delivery_event_id(event_id)
     quiet_status = _quiet_suppression_status(
         message,
         severity=severity,
@@ -1958,6 +2015,28 @@ def send_telegram_push_with_status(
 
     token, admin_ids = _get_telegram_config()
     resolved_topic, thread_id = _resolve_thread_id(message, source, severity, topic_key=topic_key)
+    if _delivery_channel_done(event_id, "telegram"):
+        if mirror_to_discord:
+            _mirror_to_discord(
+                message,
+                topic_key=topic_key or resolved_topic,
+                source=source,
+                severity=severity,
+                event_id=event_id,
+            )
+        return {
+            "telegram": True,
+            "delivered": True,
+            "acked": 0,
+            "total": len(admin_ids),
+            "queued": False,
+            "outbox_id": "",
+            "error": "",
+            "topic_key": resolved_topic,
+            "thread_id": int(thread_id) if thread_id else 0,
+            "event_id": event_id,
+            "deduped": True,
+        }
     if not token or not admin_ids:
         err = "telegram token/admin ids missing"
         queued_id = ""
@@ -1969,6 +2048,7 @@ def send_telegram_push_with_status(
                 last_error=err,
                 topic_key=topic_key or resolved_topic,
                 mirror_to_discord=mirror_to_discord,
+                event_id=event_id,
             )
         return {
             "telegram": False,
@@ -1995,6 +2075,7 @@ def send_telegram_push_with_status(
             thread_id=thread_id,
         )
         if last_status.get("ok_any"):
+            _mark_delivery_channel_done(event_id, "telegram")
             _append_delivery_log(
                 {
                     "event": "sent",
@@ -2009,7 +2090,13 @@ def send_telegram_push_with_status(
                 }
             )
             if mirror_to_discord:
-                _mirror_to_discord(message, topic_key=topic_key or resolved_topic, source=source, severity=severity)
+                _mirror_to_discord(
+                    message,
+                    topic_key=topic_key or resolved_topic,
+                    source=source,
+                    severity=severity,
+                    event_id=event_id,
+                )
             return {
                 "telegram": True,
                 "delivered": True,
@@ -2020,6 +2107,8 @@ def send_telegram_push_with_status(
                 "error": "",
                 "topic_key": resolved_topic,
                 "thread_id": int(thread_id) if thread_id else 0,
+                "event_id": event_id,
+                "deduped": False,
             }
         last_error = str(last_status.get("error") or "telegram_send_failed")
         if attempt < retries:
@@ -2034,6 +2123,7 @@ def send_telegram_push_with_status(
             last_error=last_error,
             topic_key=topic_key or resolved_topic,
             mirror_to_discord=mirror_to_discord,
+            event_id=event_id,
         )
     _append_delivery_log(
         {

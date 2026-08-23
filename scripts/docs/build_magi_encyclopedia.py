@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the rc627 MAGI maintenance encyclopedia and machine-readable source index."""
+"""Build the rc641 MAGI maintenance encyclopedia and machine-readable source index."""
 
 from __future__ import annotations
 
@@ -20,19 +20,23 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-RELEASE_ID = "v3-20260820-rc627"
-SOURCE_COMMIT = "030be016a7d20c6948a477de51af727eb8523a83"
-RELEASE_MANIFEST_SHA = "6a0fa692ecffa0fb55c4062cce989e24ea710fb3445caafa43dfd3b4e1fb04cc"
-FORMAL_CHAIN_SHA = "86bce361e5a0692a81b2a4a37aa970cb95bbf307f952f80eda024072a47c37c9"
-BRANCH = "release/rc627-technical-manual-20260821"
-BUILD_DATE = "2026-08-21"
+MANUAL_VERSION = "rc641"
+RELEASE_ID = "v3-20260823-rc641"
+SOURCE_COMMIT = "92b6ba472c471ccaa2a555dd6aed1298dc2c4bcb"
+# These two values deliberately remain null until a fresh formal promotion
+# exists.  The source manual must never copy an older release's evidence into rc641.
+RELEASE_MANIFEST_SHA = None
+FORMAL_CHAIN_SHA = None
+BUILD_DATE = "2026-08-23"
 
-GENERATED_NAMES = {
-    "docs/MAGI_V3_維修百科全書_rc627.html",
-    "docs/MAGI_V3_維修百科全書_rc627.md",
-    "docs/MAGI_V3_維修百科全書_rc627.pdf",
-    "docs/MAGI_V3_原始碼索引_rc627.json",
-}
+MANUAL_BASENAME = f"MAGI_V3_維修百科全書_{MANUAL_VERSION}"
+INDEX_BASENAME = f"MAGI_V3_原始碼索引_{MANUAL_VERSION}.json"
+_GENERATED_MANUAL_RE = re.compile(
+    r"^(?:docs|magi_v3/manual_assets)/MAGI_V3_(?:維修百科全書|原始碼索引)_rc\d+\.(?:html|md|pdf|json)$"
+)
+_WORKSTATION_PATH_TEXT_RE = re.compile(
+    r"(?i)(?:\b[a-z]:[\\/]|/(?:Users|Volumes)/)[^\s'\"`\]\[(){},;]*"
+)
 
 
 @dataclass(frozen=True)
@@ -66,12 +70,18 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def redact_workstation_paths(value: str) -> str:
+    """Keep documentation useful without copying private absolute paths."""
+
+    return _WORKSTATION_PATH_TEXT_RE.sub("<workstation-path>", value)
+
+
 def first_sentence(value: str | None, limit: int = 180) -> str:
     text = re.sub(r"\s+", " ", value or "").strip()
     if not text:
         return ""
     text = re.split(r"(?<=[。.!?])\s+", text, maxsplit=1)[0]
-    return text[:limit]
+    return redact_workstation_paths(text)[:limit]
 
 
 def signature_for(node: ast.AST) -> str:
@@ -82,7 +92,7 @@ def signature_for(node: ast.AST) -> str:
     except Exception:
         args = "…"
     prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
-    return f"{prefix}{node.name}({args})"[:300]
+    return redact_workstation_paths(f"{prefix}{node.name}({args})")[:300]
 
 
 def python_details(path: Path) -> tuple[tuple[Symbol, ...], tuple[str, ...], str]:
@@ -168,7 +178,7 @@ def tracked_files(root: Path) -> list[str]:
     generator = "scripts/docs/build_magi_encyclopedia.py"
     if (root / generator).is_file():
         paths.add(generator)
-    return sorted(path for path in paths if path not in GENERATED_NAMES)
+    return sorted(path for path in paths if not _GENERATED_MANUAL_RE.fullmatch(path))
 
 
 def build_inventory(root: Path) -> list[FileRecord]:
@@ -247,7 +257,7 @@ def route_map(root: Path, records: Iterable[FileRecord]) -> list[dict[str, Any]]
 
 
 def source_url(repo: str, path: str, line: int | None = None) -> str:
-    url = f"https://github.com/WhaleChao/{repo}/blob/{BRANCH}/{path}"
+    url = f"https://github.com/WhaleChao/{repo}/blob/{SOURCE_COMMIT}/{path}"
     return f"{url}#L{line}" if line else url
 
 
@@ -290,7 +300,7 @@ CHAPTERS = [
     ("ch09", "9. 案件、NAS、Google Drive 與雙邊映射"),
     ("ch10", "10. OSC、日曆、待辦、帳務與債務文件"),
     ("ch11", "11. PDF、OCR、筆錄、翻譯與知識庫"),
-    ("ch12", "12. Cookie Cutter 圖片到可列印 STL"),
+    ("ch12", "12. 公開創作工具：Cookie Cutter 與影片工作室"),
     ("ch13", "13. 本機模型、資源閘門與降級策略"),
     ("ch14", "14. 通知、外網入口、TG/Discord 與安全邊界"),
     ("ch15", "15. Menubar、NERV、Doctor、Guardian 與紅燈語意"),
@@ -319,6 +329,9 @@ LINKAGES = [
     ("案件與 OSC", "api/blueprints/osc_*.py", "api/osc/*", "NAS／MariaDB／calendar", "read-back result＋business snapshot"),
     ("PDF／OCR／筆錄", "skills/pdf-*、skills/documents/*", "OCR queue／namer／bookmarker", "NAS 文件與知識索引", "品質收據＋自測"),
     ("Cookie Cutter", "api/blueprints/cookie_cutter.py", "skills/cookie_stl/*", "隔離子程序", "ZIP/STL attestation，零持久化"),
+    ("影片工作室", "api/blueprints/video_studio.py", "magi_v3/video_autopilot_adapter.py", "固定上游 portrait normalizer＋本機 ffmpeg＋使用者素材", "指令理解回顯、素材／plan hash、MP4 畫質 attestation，零外送與零持久化"),
+    ("判決趨勢", "api/blueprints/sentencing_trends.py", "api/sentencing_trends.py", "本機裁判庫＋臺灣法律 MCP", "逐筆納入／排除理由、官方全文核對、量刑統計與穩定裁判頁連結"),
+    ("實務見解", "api/blueprints/legal_research.py", "api/domains/judgment_flow.py", "本機裁判庫＋官方全文 MCP 補量", "來源綁定摘要、官方 JID／網址／全文驗證與排除理由"),
     ("健康與自修", "business_module_live_check.py", "function_health_index.py／magi_doctor.py", "magi_self_repair_guardian.py", "固定語意紅燈＋安全修復"),
 ]
 
@@ -339,7 +352,7 @@ FAULTS = [
     ("F-013", "法扶『已轉入／審查結果』被誤認已有附件", "只看主旨，未區分審查結果通知與入口實際可下載清單。", "審查結果主旨本身 needs_download=False；須由內文明確指示或官網 listing 證明。", "空 listing 與 listing timeout 分離；無附件不得盲重試/建案。", "laf_automation_v2.py；laf_portal_new_files_scan.py"),
     ("F-014", "法扶附件重試超上限仍盲跑／紅燈無解", "業務狀態把 portal 尚未上架、登入失效、資料錯誤混為同一 retry。", "期限內 bounded retry；達上限轉人工確認；登入/入口/案件資料分開呈現。", "每案 next action 明確；人工確認案不繼續盲試。", "scripts/ops/laf_portal_new_files_scan.py；business_module_live_check.py"),
     ("F-015", "繳費憑證顯示已上傳過但其實是不同閱卷", "去重鍵曾過度依賴案件或舊 receipt，未綁精確 payment event。", "只接受 exact v2 payment event＋檔案 SHA 的 canonical 私密 registry；輸出只留 opaque digest。", "不同事件不得互相跳過；同一事件重送才 idempotent。", "file-review payment registry / evidence payment gate"),
-    ("F-016", "Cookie Cutter 圖片可出 STL 但表面粗糙", "輸入線條鋸齒、輪廓取樣/平滑不足或 STL 幾何未做 manifold/printability attestation。", "先正規化、平滑與輪廓閉合，再 bounded 子程序生成；驗 ZIP parent、STL manifold、幾何尺寸。", "多個 synthetic 圖皆 printable/manifold，無持久化與外送。", "api/blueprints/cookie_cutter.py；skills/cookie_stl/*"),
+    ("F-016", "Cookie Cutter 表面粗糙、外壁斷點，或只有封閉外框時被拒絕", "舊契約只驗每條邊恰有兩個面；數個各自封閉的碎片仍可能假扮 watertight。float64 建模通過後轉成 STL float32 也可能讓近鄰頂點合併而產生切片裂縫；0.35 mm 輪廓門檻亦可能肉眼可見稜角。", "封閉外框建立單一 annular cutter；外壁必須是單一連通實體，最高層恰一個連續面與兩條封閉邊界。STL float32 座標再驗一次 manifold／方向／連通性；輪廓誤差收緊至 0.15 mm。只有與外框分離的內部圖案才建立鏡像 stamp，且同樣驗封閉頂面。", "附圖凹形框實測 0.112995 mm、1 個頂面／2 條邊界；12 組隨機外框與內圖案、斷裂雙殼反例、薄線與空框全部通過。正式 runtime 的切模／端點／資源／路由聚焦回歸 73/73。", "api/blueprints/cookie_cutter.py；skills/cookie_stl/*；tests/test_cookie_stl.py"),
     ("F-017", "Cookie 子程序資源限制失敗仍繼續生成", "setrlimit ImportError/OSError/ValueError 曾 silent pass。", "child 回固定 resource_error，engine 不執行；parent 精確 IPC schema；finally reap。", "engine_calls=0、無產品 bytes、child_reaped、leaks=0。", "api/blueprints/cookie_cutter.py"),
     ("F-018", "文字推理顯示 E4B（預期 26B）", "不是單一故障；可能是磁碟、free+inactive、swap、resource level 或 26B 未 live 的安全降級。", "依 model registry gate 逐項檢查；清理經核准工程垃圾後重新 probe，不強迫載入導致 OOM。", "decision_summary 明列 gate reason；26B 僅在全條件安全時啟用。", "api/model_router.py；config/model_registry.json"),
     ("F-019", "健康紅燈只因 legacy lock dir 不存在而漏查 owner", "owner validator early return，未繼續掃 legacy PID。", "lock glob 可為空，但 legacy paths 必查；persistent owner/calendar owner 使用 exact schema/argv allowlist。", "missing dir＋live foreign PID 必紅；合法 persistent owner 綠。", "refresh_live_health evidence；scripts/ops/audit_operational_hardening.py"),
@@ -349,6 +362,16 @@ FAULTS = [
     ("F-023", "post-cutover JPG 驗證無法執行", "wrapper 只綁 SHA，原始輸入 bytes 已不存在；視覺相似或重編碼不能替代。", "恢復 byte-exact 原檔後先驗 SHA，再僅送 localhost；缺 bytes 時維持 fail closed。", "input SHA 精確、regular non-symlink、no persistence/no external。", "post_cutover evidence；cookie endpoint"),
     ("F-024", "GitHub 發布混入案件／手機格式資料", "即使私有 repo，也不應保存可逆個資或 runtime dataset。", "公私版都跑 strict audit；個資資料集排除；只保存不可逆 release hash 與文件。", "public/private 0 errors、0 warnings；branch SHA 遠端核對。", "scripts/public_release_audit.py；PUBLIC_RELEASE.json；PRIVATE_RELEASE.json"),
     ("F-025", "Menubar 顯示紅燈但底層功能其實正常", "presentation 把 stale receipt、waiting、degraded、failed 混為同一文字。", "健康 state 與 next_action 分開；unknown reason 固定文案；attention 先於 ready。", "同一 payload 在 CLI/JSON/Menubar 語意一致。", "magi_v3/health_presentation.py；gui/magi_menubar.py"),
+    ("F-026", "Golem 顯示孤兒 1／背景工作 2，但 Menubar 顯示殭屍 0", "兩端各自掃 ps 且定義不同；Golem 用 command substring＋PPID=1，把含 worker 路徑的 zsh -lc launcher 誤算成 worker，Menubar 只看持續 Z state。", "新增單一 magi_v3.process_monitor：只認 actual Python worker，沿 ancestry 判斷有無 canonical MAGI owner，孤兒／殭屍／重複採同一 schema；兩端只作呈現。", "rc600 zsh＋Python 父子形狀只算 worker1/orphan1；managed ancestor 為 orphan0；五秒殭屍、duplicate、read failure 與兩端 summary equality 均有回歸。", "magi_v3/process_monitor.py；api/blueprints/web_runtime.py；gui/magi_menubar.py；tests/test_process_monitor_unification.py"),
+    ("F-027", "判決趨勢 MCP 候選未納入，但畫面沒有說明理由", "舊流程在結構或篩選條件不符時直接 continue；本機缺本文又會把外部候選一律擋掉，使用者無法分辨是法官、法院、案由、日期、簽署區、主文、附表或來源驗證哪一關失敗。", "每個 MCP 候選都保留公開安全的 exclusion_codes／exclusion_reasons；法官不符會列 requested 與簽署區實際法官。MCP 只有在官方 JID、judgment.judicial.gov.tw 網址、網址內 JID 與完整全文全部交叉驗證後，才可補足本機本文並參與統計。有效 JID 一律連穩定裁判頁；日期可用民國年／月／日選單並由後端正規化重驗。", "指定 PCDM,114,侵訴,59,20260812,1 與隨機法官名冊＋案由 LIVE 抽查：納入者須有官方全文 proof；未納入者須逐筆列出原因；錯 JID／網址、短本文、未簽署法官、缺主文或日期不符均 fail closed。", "api/domains/judgment_official_source.py；api/sentencing_trends.py；api/osc/taiwan_legal_mcp.py；templates/sentencing_trends.html；tests/test_sentencing_trends.py"),
+    ("F-028", "HTML 維修手冊的表格在手機上像是把右側文字吃掉", "表格以 display:block 加每欄最小 120px 呈現，實際內容寬度最高 601px，但 390px 視窗只有 317px 可視寬度。", "改為 fixed-layout 整表；儲存格、連結與 code 允許 anywhere/break-word 安全換行，取消欄位最小寬度，窄螢幕再縮小字體與 padding。", "以實際瀏覽器分別量測 1440px 與 390px：24 張表格的 body overflow、table overflow、clipped cell 均為 0；PDF 268 頁目錄與代表性表格頁可讀。", "scripts/docs/build_magi_encyclopedia.py；tests/test_web_information_architecture.py"),
+    ("F-029", "Drive owner 實際從 evidence/release-staging 執行，LIVE preflight 拒絕", "production deploy 的 plist 已綁 canonical installed root，但 cron snapshot renderer 仍使用呼叫端 staging root，導致排程啟動驗證暫存版本。", "production 模式的 cron snapshot 一律以 canonical binding_root 渲染；候選 release-staging 只供封裝與驗證，不得成為正式 process command。owner validator 維持 fail closed，禁止為了切版放寬。", "部署測試逐一解析 cron command，要求所有程式路徑位於 canonical installed release、不得包含 candidate/evidence 路徑；LIVE 前以 KERN_PROCARGS2／process argv 回讀 worker root。", "scripts/v3_deploy_prepare.py；tests/v3/test_deploy_prepare.py"),
+    ("F-030", "PDF 命名 benchmark 把摘要內的「第4條」誤當當事人", "舊驗證器使用無嵌套括號 regex。檔名外層是「當事人；摘要」，摘要內又有「（第4條）」時，regex 只取到內層法條。", "改用 balanced outer-bracket parser，保留最外層內容與 group span；嵌套摘要不再取代當事人。", "真實 47 份 benchmark 的唯一失敗樣本重驗為有效；PDF-namer 相關 35 測試通過；99% 門檻未降低。", "skills/pdf-namer/naming_validator.py；tests/test_content_quality_hardening_rc390.py"),
+    ("F-031", "實務見解每天蒐集量不足，MCP 候選又因本機無本文被排除", "舊流程把本機 mirror 當成唯一全文信任根，外部候選即使帶官方 JID、司法法院網址與全文，也只能當提示；每天排程只處理本機既有欠量，不能補官方全文來源。", "MCP 候選必須通過官方 JID／網址／全文交叉驗證，丟棄 provider 摘要，從全文重新產生 extractive source-bound summary，再沿既有實務可用性 gate 決定是否納入。既有每日裁判蒐集排程加入 bounded MCP gap fill，固定時間與每案由上限，輸出只留 aggregate。", "錯 JID／URL、短本文、provider summary 污染、非官方來源、PII query 全拒；合法官方全文即使本機沒有 mirror 仍可形成 verified_external_official_fulltext。", "api/domains/judgment_flow.py；api/legal_research_quality.py；skills/judgment-collector/action.py；tests/v3/test_legal_research_quality.py"),
+    ("F-032", "夜間顯示 backlog=0，實際官方來源仍有大量未下載", "舊健康只算已落本機的 pending wrapper，且把 NVIDIA 96 輪 scheduler selection 誤當成每日 provider 額度，造成『本機沒有待做』與『來源已完整』兩種不同狀態被混為綠燈。失敗 wrapper 也曾被視為永久完成。", "夜間 pull 分別記 source_listed/completed/remaining；失敗 wrapper 可重試；若本機 backlog 為零但 source_remaining>0，健康顯示 SOURCE_PULL_CATCHING_UP。摘要回填分開呈現 scheduler selection capacity、provider daily limit/used/remaining，估算以真實每日額度。夜間 TLR-smart 只在固定窗口提高至 1200 筆、5 天、4800 秒，仍受權威時段與資源 gate 約束。", "來源尚欠量不得假綠；重跑失敗 wrapper 必須成功寫入後才增加完成數；provider 24/day 不得顯示 3072/day；外部 API 非服務時間保留 durable debt，不偽造成功。", "skills/judgment-collector/action.py；scripts/ops/check_judicial_api_pipeline.py；scripts/ops/judgment_summary_staged_backfill.py；api/domains/judicial_api_policy.py"),
+    ("F-033", "指定判決取得官方全文後仍因『主文無法辨識』未納入", "司法院將『事 實』展平後可直接連全形匿名代碼，例如『事 實Ａ０７…』；舊主文邊界只允許少數漢字編號，把合法官方全文誤判為 main_section_unrecognized。同時本機 MCP 可選 runtime 實際未安裝，遠端搜尋又遭 WAF 阻擋。", "主文 parser 改以結構性段落標題分界，接受全形匿名代碼但不放寬句內的一般『事實／理由』文字。本機 MCP 部署上游 immutable commit，保留法院篩選，並以 Playwright Chromium 只取司法院 WAF cookie；cookie 0600，瀏覽器不常駐。", "PCDM,114,侵訴,59,20260812,1 實際全文驗證後，梁世樺為末位列名法官，主文刑度可統計且排除碼為空。官方 MCP 79/79；閱卷／筆錄／法扶安裝後 LIVE 20/20；Playwright cleanup 無殘留程序。", "api/sentencing_trends.py；api/osc/taiwan_legal_mcp.py；tests/test_sentencing_trends.py；lawchat-oss/mcp-taiwan-legal-db"),
+    ("F-034", "NVIDIA 背景額度耗盡被誤報為排程失敗與健康紅燈", "新的 provider 授權層會回傳 background_heavy_authorization_budget_exhausted；舊週末彙整與 cron 結果政策只辨識 nim_daily_budget_exceeded／nim_background_budget_reserved，因此把可預期的每日額度耗盡重試到上限。", "將三種額度標記統一分類為 terminal schedule deferral；scheduler 啟動時以官方 reconcile 將既有同類失敗改列 deferred，不刪除證據、不假造成功，也不繞過每日額度。只有公開裁判全文可依使用者授權原文送 NVIDIA；案件、當事人檔案及閱卷／筆錄／法扶資料仍禁止外送。", "三種 marker 都產生 deferred、零 false failure；真正 provider error 仍失敗。額度恢復後由正式排程續跑，健康層顯示等待額度而非功能故障。", "scripts/weekend_resummary.py；skills/ops/cron_result_policy.py；tests/test_weekend_resummary_budget_semantics.py"),
+    ("F-035", "影片範例單調，且顯示理解命令卻沒有真正套用", "第一版只用 synthetic 測試畫面；後續雖能產文字分鏡，但純文字路徑曾忽略已確認的倒序、轉場、運鏡與音訊設定。上游字幕範例又依賴本機 ffmpeg 未提供的 libass filter。", "改用 Pillow 產生繁中 overlay，允許 1～5 份 JPG／PNG／WebP／MP4／MOV 本機素材；中文指令先解析成 exact edit plan 並回顯，成片端點重算並比對 plan SHA。素材與純文字路徑都套用相同順序、淡化或直接切換、平滑或固定畫面、配樂或靜音。停用 updater、remote fetch、CapCut 與 publish；保留 CSRF、大小／速率／並行／deadline／RSS／process-group cleanup。", "真實圖片、圖片＋MP4、純文字四控制與公開 endpoint 全數重編碼為 1080×1920 H.264/AAC；重新 ffprobe、逐幕畫質抽樣、素材集合／storyboard／plan／output SHA、暫存清除與 child absence 均通。", "api/blueprints/video_studio.py；magi_v3/video_autopilot_adapter.py；templates/video_studio.html；tests/test_video_studio_blueprint.py"),
 ]
 
 
@@ -378,10 +401,10 @@ def build_markdown(root: Path, repo: str, records: list[FileRecord], routes: lis
     parts: list[str] = []
     parts += [
         "# MAGI V3 維修百科全書\n",
-        f"**基準版本：** `{RELEASE_ID}`<br>\n**來源 commit：** `{SOURCE_COMMIT}`<br>\n**文件日期：** {BUILD_DATE}<br>\n**GitHub：** `WhaleChao/{repo}` / `{BRANCH}`\n",
+        f"**基準版本：** `{RELEASE_ID}`<br>\n**來源 commit：** `{SOURCE_COMMIT}`<br>\n**文件狀態：** source candidate；release manifest／formal chain 必須由 fresh {MANUAL_VERSION} promotion 產生，禁止沿用舊版證據<br>\n**文件日期：** {BUILD_DATE}<br>\n**GitHub：** `WhaleChao/{repo}` / immutable commit `{SOURCE_COMMIT}`\n",
         "> 本書的目標不是讓你背程式，而是讓你能從「現象」追到「入口 → owner → state → 外部邊界 → receipt → health」，並知道什麼可以安全修、什麼必須停手。全文不含密碼、Cookie、token、案件內容或可逆個資。\n",
         "## 文件使用方式\n",
-        "1. 先查第 20 章的總決策樹，確認是功能故障、等待、降級、資料不一致或驗證器問題。\n2. 到對應功能章找連動表與權威狀態。\n3. 只讀蒐證後，再依第 21 章修復；不要先 kill、刪 lock、改 cron JSON 或清 checkpoint。\n4. 任何原始碼修改都建立新 commit、新 release、新證據鏈；installed release 不就地修改。\n5. 附錄的來源索引列出 SHA、行數與符號；完整內容以 Git branch 為準。\n",
+        "1. 先查第 20 章的總決策樹，確認是功能故障、等待、降級、資料不一致或驗證器問題。\n2. 到對應功能章找連動表與權威狀態。\n3. 只讀蒐證後，再依第 21 章修復；不要先 kill、刪 lock、改 cron JSON 或清 checkpoint。\n4. 任何原始碼修改都建立新 commit、新 release、新證據鏈；installed release 不就地修改。\n5. 附錄的來源索引列出 SHA、行數與符號；完整內容以不可變 source commit 為準。\n",
         "## 目錄\n",
     ]
     parts.append(table(["章節", "頁"], [(f"[{title}](#{anchor})", page_map.get(anchor, "—")) for anchor, title in CHAPTERS]))
@@ -445,7 +468,7 @@ read-back receipt → business/function health → 使用者通知"""))
         }.get(name, "其他版本化內容")) for name, count in sorted(category_counts.items())
     ]))
     parts.append("讀碼順序：先找觸發入口，再找 domain/orchestrator，再找真正外部 I/O，最後找 receipt 與 health evaluator。不要只修畫面文案；若底層 receipt/schema 不完整，Menubar 綠燈反而是危險的假綠。\n")
-    parts.append(f"完整 machine-readable 索引：[`docs/MAGI_V3_原始碼索引_rc627.json`]({source_url(repo, 'docs/MAGI_V3_原始碼索引_rc627.json')})。\n")
+    parts.append(f"完整 machine-readable 索引：[`docs/{INDEX_BASENAME}`]({source_url(repo, f'docs/{INDEX_BASENAME}')})。\n")
 
     add_heading(parts, 1, CHAPTERS[4][1], "ch05")
     parts.append("HTTP 請求依序經過 server/app factory、auth/CSRF/request guards、route/domain、tool registry、專用 worker。會改變外部狀態的動作必須具備明確授權、idempotency key、bounded timeout、read-back proof。\n")
@@ -468,6 +491,7 @@ read-back receipt → business/function health → 使用者通知"""))
         ("terminal", "chunk_completed 或 cycle_completed", "fresh、cursor 正確、risk counters 全零"),
     ]))
     parts.append("自然終局不是『整輪 221 案全部完成』才算：all-files 採公平單案 chunk；`before→after=before+1` 即可成為 fresh terminal，最後一案才 `total-1→0`。但必須同時 `case_complete=true`、checkpoint seq/hash cache>0、pending/partial/storage/collision/errors 全零。\n")
+    parts.append("**rc641 大型上傳修復：** NAS→Drive 的單檔與單輪上傳安全上限提高為 3 GB，仍使用 8 MiB resumable chunks、30 GB 磁碟門檻與 no-overwrite/no-delete 契約。執行器會先判斷單檔上限，再套用本輪 byte budget；因此超限第一檔會留下 `deferred_large_file` 的精確原因，不會再形成 `0 attempted + stopped_by_bytes` 的無效重試。排查時比較 `large_upload_deferred`、`stopped_by_bytes`、attempted/bytes 與 checkpoint cursor；不要手動清除 pending/retry。\n")
 
     add_heading(parts, 1, CHAPTERS[6][1], "ch07")
     parts.append("法扶流程分為 Gmail 事件分類、案件生命週期、portal 可下載清單、附件下載／歸檔、開辦、進度、報結。『審查結果／已轉入』只證明業務狀態，不證明附件已上架。\n")
@@ -537,6 +561,18 @@ read-back receipt → business/function health → 使用者通知"""))
         ("隱私", "no persistence、no external、固定安全錯誤"),
     ]))
     parts.append("粗糙成品先判斷是輸入鋸齒、輪廓 simplify 過強、平滑不足、列印切片參數或 STL 非 manifold。應用多個自製圖做一致性測試，而非只對單一圖片調參。\n")
+    parts.append("影片工作室位於同一個免登入的公開創作分類，但公開只表示不要求 MAGI 帳號，不代表解除安全邊界。它可接受 1～5 份本機圖片或短影片，也可只用文字分鏡。使用者的中文剪輯命令必須先被解析、回顯並確認；生成端會重新計算 edit-plan SHA，避免畫面說已理解、實際卻套用別的設定。不接受外部 URL，也不啟用上游更新器、CapCut 或發布平台。\n")
+    parts.append(table(["影片階段", "契約"], [
+        ("來源", "video-autopilot-kit v0.21.1、固定 commit、MIT；只封存 portrait normalizer"),
+        ("素材", "JPG／PNG／WebP／MP4／MOV；1～5 份、單檔 24 MiB、multipart 合計 64 MiB；magic bytes 後再以 Pillow／ffprobe 解碼驗證"),
+        ("命令", "先回顯順序、轉場、運鏡、音訊四欄；未知、衝突、plan SHA 漂移一律拒絕，素材與文字模式使用同一計畫"),
+        ("字幕", "Pillow 產生繁中透明 PNG，避開本機 ffmpeg 缺少 libass 的能力差異"),
+        ("資源", "JSON 16 KiB、multipart 64 MiB、2/min、單一並行、70 秒、每程序 1.5 GiB、CPU/NOFILE 限制"),
+        ("程序", "spawn child＋獨立 process group；逾時 SIGTERM→SIGKILL→wait→absence proof"),
+        ("輸出", "唯一 H.264 1080×1920 video＋AAC audio、6/9/12 秒、30 fps、逐幕畫質取樣與 bytes/SHA/ffprobe read-back"),
+        ("隱私", "0600、O_EXCL/O_NOFOLLOW 暫存；工作目錄只活在單次 request，回傳或失敗後刪除，不外送、不自動發布"),
+    ]))
+    parts.append("若影片端點失敗，先讀固定 error code：輸入錯誤回 400/413；節流或忙碌回 429；engine、timeout、資源或 cleanup 失敗回 503。不可把公開端點的 engine 失敗誤當成外網／Gateway 全線故障。\n")
 
     add_heading(parts, 1, CHAPTERS[12][1], "ch13")
     parts.append(table(["模型", "角色", "啟用條件"], [
@@ -564,9 +600,20 @@ read-back receipt → business/function health → 使用者通知"""))
         ("Doctor", "程序、埠、依賴、磁碟、模型、launchd 是否正常？", "scripts/magi_doctor.py"),
         ("Guardian", "能否做安全的自動修復？", "magi_self_repair_guardian.py"),
         ("NERV/Menubar", "如何向人類呈現 ok/waiting/degraded/attention/failed？", "health_presentation.py、magi_menubar.py"),
+        ("Process monitor", "核心、真實 worker、孤兒 ancestry、持續殭屍與重複群組是否一致？", "magi_v3/process_monitor.py → web_runtime.py／magi_menubar.py"),
         ("Funnel", "外部入口是否到達正確 release？", "tailscale_funnel_healthcheck.py"),
     ]))
     parts.append("紅燈不是『請重啟』；先讀 reason_code/next_action/evidence age。waiting 表示系統有安全續作路徑；attention 表示需人類資料或入口處理；failed 才是本輪終局失敗。不得為消紅燈而刪 state。\n")
+    parts.append("### Golem／MENUBAR 共用的程序語意\n")
+    parts.append(table(["欄位", "唯一正式定義", "常見誤解"], [
+        ("core_count", "非 shell -c 包裝、命中 daemon REAPER_NEVER_KILL 的實際程序", "命令文字提到 server.py 不代表真核心"),
+        ("worker_count", "argv0 是 Python/PyPy 且命中專用 worker script 的非 Z 程序", "zsh -lc 內文含 action.py 不算 worker"),
+        ("orphan_count", "真 worker 的 ancestry 在遇到 canonical supervisor/cron/core 前先抵達 PID 1 或斷鏈", "只看 worker 直接 PPID 會漏掉 orphan shell 下的 child"),
+        ("zombie_count", "MAGI 程序樹內同一 PID/PPID 的 Z state 持續至少五秒", "瞬間 exit→wait 不亮紅燈"),
+        ("duplicate_groups", "真 worker 的完整 command 完全相同且同時超過一個", "launcher 與 child 命令不同，不是假重複"),
+        ("anomaly_count", "孤兒 PID 與殭屍 PID 的聯集，再加 duplicate group 數", "這是異常項目，不是所有程序總數"),
+    ]))
+    parts.append("兩個 UI 都必須呼叫 `magi_v3.process_monitor.collect_process_monitor()`；任何一端自行重新解讀 `ps` 都視為回歸。讀取失敗必須顯示 attention，不能以零項假綠。\n")
 
     add_heading(parts, 1, CHAPTERS[15][1], "ch16")
     parts.append("MAGI 的狀態檔分三類：mutable runtime state、owner/lock metadata、immutable evidence。前兩者會變，最後一類只能新增。任何 validator 都要防 symlink、非 regular file、未知欄位、bool 冒充 int、舊 receipt、錯 transaction、copied JSON。\n")
@@ -579,7 +626,7 @@ read-back receipt → business/function health → 使用者通知"""))
     ]))
 
     add_heading(parts, 1, CHAPTERS[16][1], "ch17")
-    parts.append("正式發布鏈：clean source → focused → sealed bundle/privacy → host-outer full quality → backup/actual restore/independent restore → static stage/restore → install inactive → render/audit → private prepare/formal-chain → wrapper review → cutover → post → health → Drive outcome。任何 gate fail 都停止，下一次 fresh chain 不沿用失敗 artifacts。\n")
+    parts.append("正式發布鏈：clean source → changed-module source gate → sealed bundle/privacy → host-outer full quality（同一 immutable inputs 僅一次）→ backup/actual restore/independent restore → static stage/restore → install inactive → render/audit → private prepare/formal-chain → wrapper review → cutover → core post。business/function/Doctor/guardian/Funnel/Drive/portal/MCP/benchmark 改為獨立背景 receipt，不得串成單一全域同步 gate。\n")
     parts.append("切換必須在 rollback envelope 內：驗 old release 與 durable work eligibility；停 supervisor 並 quiesce；保存 old bytes；安裝/啟動新；active marker atomic commit；post/health 失敗就 cleanup candidate、restore old、start old。不得再次執行已成功的 live_upgrade。\n")
     parts.append(table(["工件", "保證"], [
         ("release-manifest / COMPLETE", "sealed source 的逐檔身份"),
@@ -597,7 +644,7 @@ read-back receipt → business/function health → 使用者通知"""))
     parts.append("災難復原順序：停止寫入 → 封存現況 evidence → 驗備份 SHA → isolated restore → schema/integrity check → 啟動單一 release → health → 恢復排程；不得直接把舊 DB 複製到正在寫入的 runtime。\n")
 
     add_heading(parts, 1, CHAPTERS[18][1], "ch19")
-    parts.append("測試分層：unit → contract → adversarial/fail-closed → offline integration → isolated LIVE → maintenance cutover → post-cutover。驗證慢的原因通常是把所有層每次都重跑，或在 Codex sandbox 內錯跑 nested Seatbelt。\n")
+    parts.append("測試分層：unit → contract → adversarial/fail-closed → offline integration → isolated LIVE → maintenance cutover → post-cutover。執行邊界再分成「同步核心 gate」、「變更模組 gate」與「獨立背景健康」。驗證慢的主因是同一 nodes 在 focused/formal 重跑，或把外部網路、portal lock、Drive 長任務與 daily benchmark 錯串成整版 gate。\n")
     parts.append(table(["變更風險", "最低驗證"], [
         ("純文件", "render/links/privacy/audit"),
         ("純 presentation", "formatter tests＋payload adversarial＋business snapshot"),
@@ -606,7 +653,7 @@ read-back receipt → business/function health → 使用者通知"""))
         ("scheduler/Drive", "owner/occurrence/retry/checkpoint/cursor/terminal adversarial"),
         ("deploy/cutover", "fresh full chain＋independent review＋LIVE post/health"),
     ]))
-    parts.append("加速原則：測試選擇 manifest 化、nodeid 精確；focused 可重用於同一 clean commit 的證據，但 formal full、backup、install、prepare 不跨 release 轉用。Seatbelt child rc71 改由 host-outer runner，不能跳過 sandbox。\n")
+    parts.append("加速原則：測試選擇 manifest 化、nodeid 精確；promotion precheck 不得重跑 formal manifest 已覆蓋的 node。formal PASS 只有在 source commit、release/suite manifests、runtime、nodeids、test-source hashes、resource policy 與 runner SHA 全部 byte-identical 時才能沿用；任一變動即重驗。Seatbelt child rc71 改由 host-outer runner，不能跳過 sandbox。\n")
 
     add_heading(parts, 1, CHAPTERS[19][1], "ch20")
     parts.append(fenced("""看到紅燈／失敗
@@ -627,10 +674,14 @@ read-back receipt → business/function health → 使用者通知"""))
         ("Drive 長時間 running", ["核四 owner metadata", "確認 canonical worker argv/root", "讀 seq/last_progress/hash cache/staging bytes", "有進度就等待", "無進度查 storage/token/deadline", "owner 退場後才跑 outcome gate"]),
         ("法扶附件紅燈", ["確認郵件類型不是單純已轉入", "查 portal session/listing status", "table/empty/timeout 分流", "核 retry 上限與 deadline", "下載後驗 archive receipt", "人工確認案修資料或登入，不清 queue"]),
         ("閱卷 7/0", ["讀 expected receipt", "讀 handled receipt", "比較 signature set hash/fingerprint", "找 result/result_text/row revision", "重跑 canonical probe", "雙側 exact 才標綠"]),
-        ("Cookie STL 粗糙", ["核原圖解析度/鋸齒", "跑 synthetic circles/text/complex shape", "比較 smooth/simplify/wall/base", "驗 manifold/尺寸", "實際 slicer 預覽", "不以單張特例降低安全 gate"]),
+        ("Cookie STL 粗糙或斷壁", ["核原圖解析度/鋸齒", "跑 seeded synthetic 外框與內圖案", "驗 float32 serialized mesh", "驗單一連通殼與頂層2條封閉環", "確認輪廓誤差<=0.15 mm及最小特徵", "實際 slicer 預覽", "不以單張特例降低安全 gate"]),
+        ("判決趨勢候選未納入／官方連結不可用", ["確認第一階段 query 以案由發現候選", "逐筆讀 exclusion_codes／exclusion_reasons，不可用靜默 continue", "核官方 JID、FJUD URL 與 URL 內 JID 是否一致", "核全文長度、主文、簽署區、附表與判決日期", "以簽署區比對 requested/actual 法官並明列差異", "用民國年月日選單重現日期篩選；通過者才納入統計"]),
+        ("實務見解夜間數量不足", ["先區分 source_remaining 與 local backlog", "若 source remaining>0 且本機 pending=0，應為 SOURCE_PULL_CATCHING_UP 而非全綠", "核既有 daily crawl 的 bounded MCP gap fill 是否啟用", "逐筆只接受官方 JID／URL／全文交叉驗證", "丟棄 provider summary，從官方全文重建 source-bound summary", "核 provider daily remaining 與預估完成天數，不把 scheduler selection 當 provider 額度"]),
         ("E4B 降級", ["查 active models", "查 disk/free+inactive/swap/resource level", "確認 12B/26B gates", "只清可刪 cache/evidence", "重新 model probe", "仍不足就保留降級，勿硬啟動"]),
         ("TG/外網故障", ["localhost 功能先驗", "token health", "outbox pending", "provider DNS/TLS/response", "Funnel upstream/no-store", "恢復後 official retry，不直接重送未知副作用"]),
         ("磁碟不足", ["先列分類與最後使用時間", "保留 active/rollback/latest evidence", "刪已核准 A/B/C cache、舊 worktree、render temp", "重算 free space", "跑 model/resource/health", "留下清理 receipt"]),
+        ("Golem／MENUBAR 程序數不一致", ["確認兩端 active release/transaction 相同", "讀 shared summary 的 orphan/zombie/duplicate/anomaly", "以 ps 核 PID、PPID、PGID、stat、actual worker argv", "沿 parent chain 找 canonical supervisor/cron/core", "shell -lc launcher不可當 worker，Z 必須持續五秒", "修 shared classifier 並跑兩端 summary equality，禁止只改 UI 文案"]),
+        ("HTML 手冊表格文字被遮住", ["用實際瀏覽器在 1440px 與 390px 重現", "量測 document/table/cell 的 clientWidth 與 scrollWidth", "確認 table-layout、min-width、overflow-wrap、word-break", "修 generator 而非直改 generated HTML", "重建 HTML/PDF/manual_assets", "要求所有表格 overflow=0 且 clipped cell=0"]),
     ]
     for title, steps in runbooks:
         parts.append(f"### {title}\n")
@@ -652,7 +703,7 @@ read-back receipt → business/function health → 使用者通知"""))
     parts.append("自主演進只能提出可審查 proposal 或在既定 allowlist 內修復，例如清除自己建立且過期的 tmp；不能自行改法律業務判斷、合併案件、上傳文件、刪除遠端檔案或放寬驗證器。\n")
 
     add_heading(parts, 1, CHAPTERS[23][1], "appA")
-    parts.append("以下節錄是維修最常需要閱讀的核心邏輯；行號以 rc627 branch 為準。完整檔案請沿連結開啟。\n")
+    parts.append(f"以下節錄是維修最常需要閱讀的核心邏輯；行號以 source commit `{SOURCE_COMMIT}` 為準。完整檔案請沿不可變連結開啟。\n")
     refs = [
         ("magi_v3/gateway.py", 205, 273, "release ownership 驗證：把 gateway 綁到 exact installed release/manifest。"),
         ("magi_v3/cron_service.py", 80, 126, "occurrence 與 timeout 的 deterministic 身分。"),
@@ -660,9 +711,14 @@ read-back receipt → business/function health → 使用者通知"""))
         ("magi_v3/file_review_receipts.py", 16, 145, "閱卷 canonical signature 與 snapshot receipt。"),
         ("api/model_router.py", 273, 360, "模型 gate 與 request routing 的安全判斷。"),
         ("api/blueprints/cookie_cutter.py", 45, 140, "cookie 子程序資源錯誤、bounded upload 與 parent cleanup。"),
+        ("api/sentencing_trends.py", 220, 360, "穩定官方裁判頁、簽署區法官核對與量刑解析。"),
+        ("api/domains/judgment_official_source.py", 1, 190, "MCP 判決的官方 JID、司法法院網址、完整全文與日期正規化信任邊界。"),
+        ("api/domains/judgment_flow.py", 305, 470, "實務見解的本機 mirror 與 verified external official fulltext 雙路來源綁定。"),
+        ("skills/judgment-collector/action.py", 650, 850, "夜間官方來源欠量、失敗 wrapper 重試與 bounded MCP gap fill。"),
         ("scripts/v3_release_bundle.py", 1158, 1251, "不可變 release bundle 建立與封存。"),
         ("scripts/v3_cutover/activation.py", 187, 275, "active marker 與 activation transaction。"),
         ("gui/magi_menubar.py", 925, 1058, "business/health payload 到人類狀態的轉換。"),
+        ("magi_v3/process_monitor.py", 118, 197, "Golem 與 Menubar 共用的實際 worker、owner ancestry 與持續殭屍分類契約。"),
     ]
     for rel, start, end, explanation in refs:
         parts.append(f"### {rel}\n")
@@ -733,7 +789,7 @@ python3 -m pytest -q TEST_PATH""", "bash"))
         ("staging", "尚未 atomic commit 的暫存資料；必須可清理且不得被當完成"),
         ("terminal", "worker 已合法完成 chunk/cycle 或結構化失敗並釋放 owner"),
     ]))
-    parts.append("\n---\n**文件完整性：** 本 PDF/Markdown 是維修導航；完整原始碼仍以 Git branch 中的檔案與 `MAGI_V3_原始碼索引_rc627.json` SHA 為準。任何後續版本都應重建索引與本書，不可只改頁面文字。\n")
+    parts.append(f"\n---\n**文件完整性：** 本 PDF/Markdown 是維修導航；完整原始碼仍以 Git branch 中的檔案與 `{INDEX_BASENAME}` SHA 為準。任何後續版本都應重建索引與本書，不可只改頁面文字。\n")
     return "\n".join(parts)
 
 
@@ -743,6 +799,8 @@ def write_index(path: Path, root: Path, records: list[FileRecord], routes: list[
         "release_id": RELEASE_ID,
         "source_commit": SOURCE_COMMIT,
         "release_manifest_sha256": RELEASE_MANIFEST_SHA,
+        "formal_chain_sha256": FORMAL_CHAIN_SHA,
+        "release_status": "source_candidate",
         "generated_at": BUILD_DATE,
         "root_is_repository_relative": True,
         "summary": {
@@ -768,15 +826,32 @@ def heading_pages(pdf_path: Path) -> dict[str, int]:
     from pypdf import PdfReader
 
     reader = PdfReader(str(pdf_path))
-    found: dict[str, int] = {}
+    page_lines: list[set[str]] = []
     for page_no, page in enumerate(reader.pages, 1):
-        if page_no <= 2:
-            continue
-        text = re.sub(r"\s+", "", page.extract_text() or "")
+        lines = {
+            re.sub(r"\s+", " ", line).strip()
+            for line in (page.extract_text() or "").splitlines()
+            if line.strip()
+        }
+        page_lines.append(lines)
+
+    # Prefer the renderer-owned marker exclusively. Falling back chapter by
+    # chapter can accidentally bind a missing chapter to its title in the TOC.
+    found: dict[str, int] = {}
+    for page_no, lines in enumerate(page_lines, 1):
         for anchor, title in CHAPTERS:
-            needle = re.sub(r"\s+", "", title)
-            short_needle = needle[: min(12, len(needle))]
-            if anchor not in found and (needle in text or short_needle in text):
+            marker = f"MAGI_CHAPTER_MARKER_{anchor}"
+            if anchor not in found and marker in lines:
+                found[anchor] = page_no
+    if found:
+        return found
+
+    # Backward-compatible fallback for PDFs produced before the marker was
+    # introduced. This branch is all-or-nothing so TOC rows cannot fill gaps.
+    for page_no, lines in enumerate(page_lines, 1):
+        for anchor, title in CHAPTERS:
+            needle = re.sub(r"\s+", " ", title).strip()
+            if anchor not in found and needle in lines:
                 found[anchor] = page_no
     return found
 
@@ -786,66 +861,226 @@ def add_pdf_outlines(source: Path, target: Path, page_map: dict[str, int]) -> No
 
     reader = PdfReader(str(source))
     writer = PdfWriter()
-    writer.clone_document_from_reader(reader)
+    # Copy pages only, then add exactly one machine-derived chapter map.
+    writer.append_pages_from_reader(reader)
     for anchor, title in CHAPTERS:
         page = page_map.get(anchor)
         if page:
             writer.add_outline_item(title, page - 1)
     writer.add_metadata(
         {
-            "/Title": "MAGI V3 維修百科全書 rc627",
+            "/Title": f"MAGI V3 維修百科全書 {MANUAL_VERSION}",
             "/Author": "MAGI Engineering",
             "/Subject": "MAGI V3 architecture, source map, troubleshooting and recovery",
-            "/Keywords": "MAGI,V3,rc627,maintenance,troubleshooting,source code",
+            "/Keywords": f"MAGI,V3,{MANUAL_VERSION},maintenance,troubleshooting,source code",
         }
     )
     with target.open("wb") as fh:
         writer.write(fh)
 
 
-def render_pdf(markdown: Path, output: Path, reference_doc: Path) -> dict[str, Any]:
+def render_pdf(markdown: Path, output: Path, reference_doc: Path | None) -> dict[str, Any]:
+    # LibreOffice has repeatedly aborted under nested macOS sandboxing before
+    # conversion begins, while browser printing is inefficient for the huge
+    # generated source index. Use a pure-Python ReportLab document instead.
+    # Pandoc only parses local Markdown to an HTML fragment; no office process,
+    # browser, remote page, or mutable profile is involved. ``reference_doc``
+    # remains accepted for CLI compatibility but is intentionally unused.
+    del reference_doc
     pandoc = shutil.which("pandoc") or "/opt/homebrew/bin/pandoc"
-    soffice = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
-    if not Path(pandoc).is_file() or not soffice.is_file():
-        raise RuntimeError("pandoc or LibreOffice is unavailable")
+    if not Path(pandoc).is_file():
+        raise RuntimeError("pandoc is unavailable")
     with tempfile.TemporaryDirectory(prefix="magi-encyclopedia-") as tmp_text:
         tmp = Path(tmp_text)
-        docx = tmp / "encyclopedia.docx"
-        profile = tmp / "lo-profile"
-        profile.mkdir()
-        subprocess.run(
-            [
-                pandoc,
-                str(markdown),
-                "--from=gfm",
-                "--reference-doc=" + str(reference_doc),
-                "--resource-path=" + str(markdown.parent),
-                "-o",
-                str(docx),
-            ],
+        raw_pdf = tmp / "encyclopedia.pdf"
+        fragment = subprocess.run(
+            [pandoc, "--from=gfm+raw_html", "--to=html5", str(markdown)],
             check=True,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        ).stdout
+
+        from bs4 import BeautifulSoup, NavigableString, Tag
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import (
+            HRFlowable,
+            PageBreak,
+            Paragraph,
+            Preformatted,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
         )
-        subprocess.run(
-            [
-                str(soffice),
-                "-env:UserInstallation=file://" + str(profile),
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(tmp),
-                str(docx),
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+
+        medium_font = Path("/System/Library/Fonts/STHeiti Medium.ttc")
+        light_font = Path("/System/Library/Fonts/STHeiti Light.ttc")
+        if not medium_font.is_file() or not light_font.is_file():
+            raise RuntimeError("fixed Traditional Chinese PDF fonts are unavailable")
+        if "MAGIHeitiMedium" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("MAGIHeitiMedium", str(medium_font), subfontIndex=0))
+        if "MAGIHeitiLight" not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont("MAGIHeitiLight", str(light_font), subfontIndex=0))
+
+        base = getSampleStyleSheet()
+        body = ParagraphStyle(
+            "MAGIBody", parent=base["BodyText"], fontName="MAGIHeitiLight",
+            fontSize=8.7, leading=13.2, textColor=colors.HexColor("#17212b"),
+            spaceAfter=6, splitLongWords=True, wordWrap="CJK",
         )
-        produced = tmp / "encyclopedia.pdf"
-        if not produced.is_file():
-            raise RuntimeError("LibreOffice did not produce PDF")
-        pages = heading_pages(produced)
-        add_pdf_outlines(produced, output, pages)
-        return {"heading_pages": pages, "intermediate_docx_bytes": docx.stat().st_size}
+        styles = {
+            "h1": ParagraphStyle("MAGIH1", parent=body, fontName="MAGIHeitiMedium", fontSize=18, leading=23, textColor=colors.HexColor("#0f526f"), spaceBefore=8, spaceAfter=12),
+            "h2": ParagraphStyle("MAGIH2", parent=body, fontName="MAGIHeitiMedium", fontSize=14, leading=18, textColor=colors.HexColor("#176b86"), spaceBefore=10, spaceAfter=8),
+            "h3": ParagraphStyle("MAGIH3", parent=body, fontName="MAGIHeitiMedium", fontSize=11.5, leading=15, textColor=colors.HexColor("#7d4b22"), spaceBefore=8, spaceAfter=6),
+            "quote": ParagraphStyle("MAGIQuote", parent=body, leftIndent=14, rightIndent=8, borderColor=colors.HexColor("#5ca6b8"), borderWidth=1, borderPadding=7, backColor=colors.HexColor("#eef8fa")),
+            "code": ParagraphStyle("MAGICode", parent=body, fontName="MAGIHeitiLight", fontSize=6.6, leading=8.3, leftIndent=7, rightIndent=7, borderColor=colors.HexColor("#ccd9df"), borderWidth=.5, borderPadding=6, backColor=colors.HexColor("#f5f8fa"), splitLongWords=True),
+            "cell": ParagraphStyle("MAGICell", parent=body, fontSize=7.1, leading=10, spaceAfter=0),
+            "cell_head": ParagraphStyle("MAGICellHead", parent=body, fontName="MAGIHeitiMedium", fontSize=7.2, leading=10, textColor=colors.HexColor("#0f526f"), spaceAfter=0),
+            "marker": ParagraphStyle("MAGIMarker", parent=body, fontSize=.1, leading=.1, textColor=colors.white, spaceBefore=0, spaceAfter=0),
+        }
+
+        def inline_markup(node: Any) -> str:
+            if isinstance(node, NavigableString):
+                return html.escape(str(node), quote=False)
+            if not isinstance(node, Tag):
+                return ""
+            inner = "".join(inline_markup(child) for child in node.children)
+            if node.name in {"strong", "b"}:
+                return f"<b>{inner}</b>"
+            if node.name in {"em", "i"}:
+                return f"<i>{inner}</i>"
+            if node.name == "code":
+                return f'<font name="MAGIHeitiMedium" color="#355b6a">{inner}</font>'
+            if node.name == "br":
+                return "<br/>"
+            if node.name == "a":
+                href = str(node.get("href") or "").strip()
+                if href.startswith(("https://", "http://")):
+                    return f'<link href="{html.escape(href, quote=True)}" color="#176b86">{inner}</link>'
+            return inner
+
+        def paragraph_for(node: Tag, style: str = "body") -> Paragraph:
+            value = "".join(inline_markup(child) for child in node.children).strip()
+            return Paragraph(value or "&#160;", styles.get(style, body))
+
+        soup = BeautifulSoup(fragment, "html.parser")
+        story: list[Any] = []
+        chapter_titles = {title: anchor for anchor, title in CHAPTERS}
+        first_h1 = True
+
+        def emit(node: Any) -> None:
+            nonlocal first_h1
+            if isinstance(node, NavigableString):
+                if str(node).strip():
+                    story.append(Paragraph(html.escape(str(node).strip()), body))
+                return
+            if not isinstance(node, Tag):
+                return
+            if node.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                text_value = re.sub(r"\s+", " ", node.get_text(" ", strip=True))
+                if node.name == "h1":
+                    if not first_h1:
+                        story.append(PageBreak())
+                    first_h1 = False
+                    anchor = chapter_titles.get(text_value)
+                    if anchor:
+                        story.append(Paragraph(f"MAGI_CHAPTER_MARKER_{anchor}", styles["marker"]))
+                style = "h1" if node.name == "h1" else "h2" if node.name == "h2" else "h3"
+                story.append(paragraph_for(node, style))
+            elif node.name == "p":
+                if node.get_text(" ", strip=True):
+                    story.append(paragraph_for(node))
+            elif node.name == "blockquote":
+                story.append(paragraph_for(node, "quote"))
+            elif node.name == "pre":
+                story.append(Preformatted(node.get_text(), styles["code"], maxLineLength=96))
+                story.append(Spacer(1, 5))
+            elif node.name in {"ul", "ol"}:
+                ordered = node.name == "ol"
+                for index, item in enumerate(node.find_all("li", recursive=False), 1):
+                    prefix = f"{index}." if ordered else "•"
+                    list_style = ParagraphStyle(
+                        f"MAGIList{len(story)}", parent=body, leftIndent=16,
+                        firstLineIndent=-11, bulletIndent=4,
+                    )
+                    value = "".join(inline_markup(child) for child in item.children).strip()
+                    story.append(Paragraph(value or "&#160;", list_style, bulletText=prefix))
+            elif node.name == "table":
+                rows: list[list[Any]] = []
+                for tr in node.find_all("tr"):
+                    cells = tr.find_all(["th", "td"], recursive=False)
+                    if cells:
+                        rows.append([
+                            Paragraph(
+                                "".join(inline_markup(child) for child in cell.children) or "&#160;",
+                                styles["cell_head" if cell.name == "th" else "cell"],
+                            )
+                            for cell in cells
+                        ])
+                if rows:
+                    width = 7.5 * inch
+                    columns = max(len(row) for row in rows)
+                    for row in rows:
+                        row.extend(Paragraph("&#160;", styles["cell"]) for _ in range(columns - len(row)))
+                    table = Table(rows, colWidths=[width / columns] * columns, repeatRows=1, hAlign="LEFT")
+                    table.setStyle(TableStyle([
+                        ("GRID", (0, 0), (-1, -1), .35, colors.HexColor("#9fb4bd")),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e9f2f5")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]))
+                    story.extend([table, Spacer(1, 7)])
+            elif node.name == "hr":
+                story.append(HRFlowable(width="100%", thickness=.5, color=colors.HexColor("#9fb4bd"), spaceBefore=7, spaceAfter=7))
+            else:
+                # Pandoc's HTML5 writer groups headings and content in nested
+                # section/div containers. Walk those containers recursively;
+                # table/list/pre descendants remain owned by their handlers.
+                for child in node.children:
+                    emit(child)
+
+        for node in soup.children:
+            emit(node)
+
+        class ManualDocument(SimpleDocTemplate):
+            def afterInit(self) -> None:
+                self.title = f"MAGI V3 維修百科全書 {MANUAL_VERSION}"
+
+        def draw_page(canvas: Any, document: Any) -> None:
+            canvas.saveState()
+            canvas.setTitle(f"MAGI V3 維修百科全書 {MANUAL_VERSION}")
+            canvas.setAuthor("MAGI Engineering")
+            canvas.setFont("MAGIHeitiLight", 7)
+            canvas.setFillColor(colors.HexColor("#607782"))
+            canvas.drawCentredString(letter[0] / 2, .28 * inch, f"MAGI V3 {MANUAL_VERSION}  ·  {document.page}")
+            canvas.restoreState()
+
+        document = ManualDocument(
+            str(raw_pdf), pagesize=letter,
+            leftMargin=.5 * inch, rightMargin=.5 * inch,
+            topMargin=.48 * inch, bottomMargin=.52 * inch,
+            title=f"MAGI V3 維修百科全書 {MANUAL_VERSION}",
+            author="MAGI Engineering",
+        )
+        document.build(story, onFirstPage=draw_page, onLaterPages=draw_page)
+        if not raw_pdf.is_file() or raw_pdf.is_symlink():
+            raise RuntimeError("ReportLab did not produce the maintenance PDF")
+        pages = heading_pages(raw_pdf)
+        add_pdf_outlines(raw_pdf, output, pages)
+        return {
+            "heading_pages": pages,
+            "pandoc_fragment_bytes": len(fragment.encode("utf-8")),
+            "renderer": "reportlab",
+        }
 
 
 def render_html(markdown: Path, output: Path) -> None:
@@ -942,8 +1177,9 @@ def render_html(markdown: Path, output: Path) -> None:
     code { padding: .12em .35em; color: color-mix(in srgb,var(--accent) 82%,var(--text)); background: var(--accent-soft); border-radius: 5px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: .88em; }
     pre { max-width: 100%; overflow: auto; padding: 16px; color: var(--text); background: var(--code); border: 1px solid var(--line); border-radius: 12px; line-height: 1.5; box-shadow: inset 0 0 24px color-mix(in srgb,var(--accent) 4%,transparent); }
     pre code { padding: 0; color: inherit; background: transparent; }
-    table { display: block; width: 100%; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1.2rem 0; font-size: .88rem; }
-    th, td { min-width: 120px; padding: 9px 11px; vertical-align: top; text-align: left; border: 1px solid var(--line); }
+    table { display: table; width: 100%; max-width: 100%; table-layout: fixed; overflow: visible; border-collapse: collapse; margin: 1.2rem 0; font-size: .88rem; }
+    th, td { min-width: 0; max-width: 100%; padding: 9px 11px; vertical-align: top; text-align: left; border: 1px solid var(--line); overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+    th code, td code, th a, td a { overflow-wrap: anywhere; word-break: break-word; }
     th { position: sticky; top: var(--header-h); z-index: 2; color: var(--accent); background: var(--surface-strong); }
     tr:nth-child(even) td { background: color-mix(in srgb,var(--surface-raised) 55%,transparent); }
     mark { padding: 0 .08em; color: #111827; background: #ffe36e; border-radius: 3px; }
@@ -962,24 +1198,30 @@ def render_html(markdown: Path, output: Path) -> None:
       .brand span { display: none; }
       .toc { grid-template-columns: 1fr; }
       .topnav a, .topnav button { min-height: 36px; padding: 6px 9px; font-size: .8rem; }
+      table { font-size: .76rem; }
+      th, td { padding: 6px 5px; }
     }
     @media print {
+      @page { size: Letter; margin: .55in .55in .65in; }
       .topbar, .sidebar, .back-top { display: none !important; }
       .layout { display: block; padding: 0; }
       .main { padding: 0; }
       .manual-shell { max-width: none; padding: 0; border: 0; box-shadow: none; }
+      .manual-content > h1 { break-before: page; }
+      .manual-content > h1:first-of-type { break-before: auto; }
+      tr, pre, blockquote { break-inside: avoid; }
     }
   </style>
 </head>
 <body>
   <a class="skip-link" href="#manual-content">跳至百科內容</a>
   <header class="topbar">
-    <div class="brand"><strong>MAGI</strong><span>V3 維修百科全書 · rc627</span></div>
+    <div class="brand"><strong>MAGI</strong><span>V3 維修百科全書 · __MANUAL_VERSION__</span></div>
     <nav class="topnav" aria-label="百科操作">
       <a href="/golem" data-local-href="#manual-content">MAGI 首頁</a>
-      <a href="/manual/pdf" data-local-href="./MAGI_V3_維修百科全書_rc627.pdf" target="_blank" rel="noopener">PDF</a>
-      <a href="/manual/markdown" data-local-href="./MAGI_V3_維修百科全書_rc627.md">Markdown</a>
-      <a href="/manual/source-index.json" data-local-href="./MAGI_V3_原始碼索引_rc627.json" target="_blank" rel="noopener">原始碼索引</a>
+      <a href="/manual/pdf" data-local-href="./__MANUAL_BASENAME__.pdf" target="_blank" rel="noopener">PDF</a>
+      <a href="/manual/markdown" data-local-href="./__MANUAL_BASENAME__.md">Markdown</a>
+      <a href="/manual/source-index.json" data-local-href="./__INDEX_BASENAME__" target="_blank" rel="noopener">原始碼索引</a>
       <button type="button" id="themeToggleBtn" aria-label="切換日夜模式">☾ 夜</button>
     </nav>
   </header>
@@ -1071,25 +1313,36 @@ def render_html(markdown: Path, output: Path) -> None:
 </body>
 </html>
 '''
-    output.write_text(template.replace("__MANUAL_BODY__", fragment), encoding="utf-8")
+    output.write_text(
+        template.replace("__MANUAL_BODY__", fragment)
+        .replace("__MANUAL_VERSION__", MANUAL_VERSION)
+        .replace("__MANUAL_BASENAME__", MANUAL_BASENAME)
+        .replace("__INDEX_BASENAME__", INDEX_BASENAME),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
+    global SOURCE_COMMIT
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--repo", default="MAGI-v3")
-    parser.add_argument("--reference-doc", type=Path, required=True)
+    parser.add_argument("--source-commit", default=SOURCE_COMMIT)
+    parser.add_argument("--reference-doc", type=Path)
     parser.add_argument("--page-map", type=Path)
     parser.add_argument("--html", action="store_true")
     parser.add_argument("--render", action="store_true")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
+        parser.error("--source-commit must be an exact lowercase 40-character Git SHA")
+    SOURCE_COMMIT = args.source_commit
     root = args.root.resolve()
     docs = root / "docs"
     docs.mkdir(exist_ok=True)
-    index_path = docs / "MAGI_V3_原始碼索引_rc627.json"
-    html_path = docs / "MAGI_V3_維修百科全書_rc627.html"
-    md_path = docs / "MAGI_V3_維修百科全書_rc627.md"
-    pdf_path = docs / "MAGI_V3_維修百科全書_rc627.pdf"
+    index_path = docs / INDEX_BASENAME
+    html_path = docs / f"{MANUAL_BASENAME}.html"
+    md_path = docs / f"{MANUAL_BASENAME}.md"
+    pdf_path = docs / f"{MANUAL_BASENAME}.pdf"
 
     records = build_inventory(root)
     routes = route_map(root, records)
@@ -1103,17 +1356,27 @@ def main() -> int:
     md_path.write_text(build_markdown(root, args.repo, records, routes, page_map), encoding="utf-8")
     render_info: dict[str, Any] = {}
     if args.render:
-        for _ in range(3):
+        expected_headings = {anchor for anchor, _title in CHAPTERS}
+        for _ in range(12):
             md_path.write_text(build_markdown(root, args.repo, records, routes, page_map), encoding="utf-8")
             render_info = render_pdf(md_path, pdf_path, args.reference_doc)
             fresh = render_info["heading_pages"]
+            if set(fresh) != expected_headings:
+                missing = sorted(expected_headings - set(fresh))
+                raise RuntimeError(f"PDF heading page map incomplete: {missing}")
             if fresh == page_map:
                 break
             page_map = fresh
-        md_path.write_text(build_markdown(root, args.repo, records, routes, page_map), encoding="utf-8")
-        render_info = render_pdf(md_path, pdf_path, args.reference_doc)
+        else:
+            raise RuntimeError("PDF table-of-contents page map did not converge")
     if args.html or args.render:
         render_html(md_path, html_path)
+
+    manual_assets = root / "magi_v3" / "manual_assets"
+    manual_assets.mkdir(parents=True, exist_ok=True)
+    for generated in (index_path, md_path, html_path, pdf_path):
+        if generated.is_file():
+            shutil.copy2(generated, manual_assets / generated.name)
 
     result = {
         "ok": True,

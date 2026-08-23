@@ -116,7 +116,7 @@ def tune_jobs(path: Path, *, apply: bool = False) -> dict[str, Any]:
         "job_judicial_api_night_pull": {
             "cron": "5 0 * * *",
             "command": _job_command(path.parent, "job_judicial_api_night_pull", "official_api_night_pull", night_payload, window_env=True),
-            "desc": "司法院API NAS 增量夜拉（TLR 智慧模式；補近 3 日快取）",
+            "desc": "司法院API NAS 增量夜拉（TLR 智慧模式；補近 5 日並揭露來源積欠）",
             "enabled": enable_night_pull,
             "timeout_sec": int(policy["night_timeout_sec"]),
             "no_catchup": True,

@@ -7458,12 +7458,8 @@ def execute_nas_to_drive_uploads(
                 summary["stopped_by_limit"] = True
                 break
             size_hint = int(action.get("size") or 0)
-            if max_upload_bytes and size_hint and summary["bytes"] + size_hint > max_upload_bytes:
-                summary["stopped_by_bytes"] = True
-                break
             local_path = Path(str(action.get("path") or ""))
             relative_path = str(action.get("target_relative_path") or action.get("relative_path") or "")
-            summary["attempted"] += 1
             record = {
                 "case_number": case.get("case_number"),
                 "drive_path": case.get("drive_path"),
@@ -7476,12 +7472,21 @@ def execute_nas_to_drive_uploads(
                 "error": "",
                 "created_folders": [],
             }
+            # Classify a file which is larger than the single-file safety
+            # envelope before applying the per-run byte budget.  Checking the
+            # batch budget first made an oversized first item report
+            # ``stopped_by_bytes`` with zero attempts forever, so every retry
+            # revisited the same cursor without producing a durable reason.
             if max_single_upload_bytes and size_hint and size_hint > max_single_upload_bytes:
                 record["status"] = "deferred_large_file"
                 record["reason"] = f"large_upload_deferred:{size_hint}>{max_single_upload_bytes}"
                 summary["large_upload_deferred"] += 1
                 manifest.append(record)
                 continue
+            if max_upload_bytes and size_hint and summary["bytes"] + size_hint > max_upload_bytes:
+                summary["stopped_by_bytes"] = True
+                break
+            summary["attempted"] += 1
             try:
                 # smbfs can transiently answer ENOENT/False immediately after
                 # a successful directory walk.  Recheck before opening; if

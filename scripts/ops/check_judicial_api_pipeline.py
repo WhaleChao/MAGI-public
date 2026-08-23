@@ -216,6 +216,7 @@ def latest_pull_summary(pull_state_path: Path) -> dict:
     pull_state = load_json(pull_state_path)
     runs = pull_state.get("runs") if isinstance(pull_state.get("runs"), list) else []
     latest = runs[0] if runs and isinstance(runs[0], dict) else {}
+    previous = runs[1] if len(runs) > 1 and isinstance(runs[1], dict) else {}
     ts = parse_iso(str(latest.get("ts") or ""))
     return {
         "exists": pull_state_path.exists(),
@@ -226,6 +227,10 @@ def latest_pull_summary(pull_state_path: Path) -> dict:
         "latest_age_hours": rounded(age_hours(ts)),
         "credentials_source": str(latest.get("credentials_source") or ""),
         "consecutive_failures": int(latest.get("consecutive_failures") or 0),
+        "source_listed_count": int(latest.get("source_listed_count") or 0),
+        "source_completed_count": int(latest.get("source_completed_count") or 0),
+        "source_remaining_count": int(latest.get("source_remaining_count") or 0),
+        "previous_source_remaining_count": int(previous.get("source_remaining_count") or 0),
     }
 
 
@@ -468,6 +473,15 @@ def build_report() -> dict:
         status = "PULL_FAILING"
         exit_code = RISK_EXIT
         reasons.append("夜間拉取連續失敗次數過高。")
+
+    source_remaining = int(pull.get("source_remaining_count") or 0)
+    if source_remaining > 0 and status == "PIPELINE_HEALTHY":
+        status = "SOURCE_PULL_CATCHING_UP"
+        exit_code = WARNING_EXIT
+        reasons.append(
+            f"司法院本次 JList 尚有 {source_remaining} 筆官方全文未鏡像；"
+            "本機 raw backlog 為零不再被解讀成來源已完整，夜間增量會續抓。"
+        )
 
     backlog_count = int(backlog.get("backlog_count") or 0)
     oldest_backlog_age_hours = float(backlog.get("oldest_backlog_age_hours") or 0.0)

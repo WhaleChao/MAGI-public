@@ -30,7 +30,9 @@ except Exception:  # pragma: no cover - the deployment preflight checks this.
 MAX_BYTES = 8 * 1024 * 1024
 MAX_PIXELS = 4096 * 4096
 MAX_GRID_SIDE = 512
-MAX_CONTOUR_ERROR_MM = 0.35
+# Keep geometric deviation below a typical 0.4 mm nozzle's half-width.  The
+# prior 0.35 mm gate could be visibly faceted even though the mesh was closed.
+MAX_CONTOUR_ERROR_MM = 0.15
 GEOMETRY_PRECISION_MM = 1e-5
 SURFACE_CANONICAL_TOLERANCE_MM = 0.01
 MIN_RELIEF_FEATURE_MM = 0.4
@@ -253,12 +255,21 @@ def load_line_art_bytes(content: bytes) -> np.ndarray:
     border = np.concatenate((pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]))
     dark_background = float(np.median(border)) < threshold
     lines = pixels > threshold if dark_background else pixels <= threshold
-    if float(lines.mean()) > 0.55:
-        lines = ~lines
     lines = _close(lines)
     lines = _remove_specks(lines, max(4, int(lines.size * 0.0002)))
     if int(lines.sum()) < 12:
         raise CookieSTLError("no_usable_line_art")
+    # A safely separable outer contour needs background on every source edge.
+    # Besides catching clipped drawings, this rejects pathological very-thick
+    # empty frames whose foreground/background polarity can otherwise invert
+    # and turn the whole canvas into a false printable silhouette.
+    if (
+        lines[:2].any()
+        or lines[-2:].any()
+        or lines[:, :2].any()
+        or lines[:, -2:].any()
+    ):
+        raise CookieSTLError("outer_contour_touches_image_edge")
     return np.pad(lines, 4, constant_values=False)
 
 
@@ -280,9 +291,43 @@ def _external_background(lines: np.ndarray) -> np.ndarray:
     return seen
 
 
+def _separated_internal_linework(
+    lines: np.ndarray,
+    external_background: np.ndarray,
+    silhouette: np.ndarray,
+) -> np.ndarray:
+    """Keep only line components separated from the exterior-facing frame.
+
+    Counting every dark pixel inside an eroded silhouette is unsafe: a thick
+    outer frame still has dark pixels on its inner edge and was therefore
+    mistaken for stamp detail.  Any connected ink component touching the
+    exterior background is part of the cutter outline, in its entirety; only
+    components separated from it by white space may become optional relief.
+    """
+    exterior_neighbors = _dilate(external_background, 1)
+    internal = np.zeros_like(lines, dtype=bool)
+    outer_component_count = 0
+    for component in _components(lines):
+        if any(exterior_neighbors[y, x] for y, x in component):
+            outer_component_count += 1
+            continue
+        for y, x in component:
+            internal[y, x] = True
+    if outer_component_count == 0:
+        raise CookieSTLError("open_or_missing_outer_contour")
+
+    internal &= _erode(silhouette, 2)
+    internal = _remove_specks(
+        internal,
+        max(3, int(lines.size * 0.00002)),
+    )
+    return internal
+
+
 def segment_line_art(content: bytes) -> tuple[np.ndarray, np.ndarray]:
     lines = load_line_art_bytes(content)
-    enclosed = (~lines) & (~_external_background(lines))
+    external_background = _external_background(lines)
+    enclosed = (~lines) & (~external_background)
     minimum_area = max(36, int(lines.size * 0.02))
     interior = _largest_component(enclosed, minimum=minimum_area)
     if not interior.any():
@@ -294,12 +339,24 @@ def segment_line_art(content: bytes) -> tuple[np.ndarray, np.ndarray]:
     ys, xs = np.where(silhouette)
     if int(xs.max() - xs.min() + 1) < 8 or int(ys.max() - ys.min() + 1) < 8:
         raise CookieSTLError("outer_contour_too_small")
-    inner_safe = _erode(silhouette, 2)
-    internal_lines = lines & inner_safe
-    internal_lines = _remove_specks(internal_lines, 3)
-    if int(internal_lines.sum()) < 3:
-        raise CookieSTLError("no_internal_linework")
+    internal_lines = _separated_internal_linework(
+        lines,
+        external_background,
+        silhouette,
+    )
     return _largest_component(silhouette, minimum=minimum_area), internal_lines
+
+
+def inspect_line_art_bytes(content: bytes) -> dict[str, object]:
+    """Run the production segmentation contract without retaining the image."""
+    _silhouette, internal_lines = segment_line_art(content)
+    return {
+        "line_art_validated": True,
+        "internal_feature_components": len(_components(internal_lines)),
+        "generation_mode": (
+            "cutter_and_stamp" if internal_lines.any() else "cutter_only"
+        ),
+    }
 
 
 def _crop_masks(*masks: np.ndarray, margin: int = 2) -> tuple[np.ndarray, ...]:
@@ -689,14 +746,23 @@ def _vector_cutter_mesh(silhouette: np.ndarray, scale_mm: float, params: CookieP
     grip = grip_outer.difference(inner)
     blade = set_precision(blade, GEOMETRY_PRECISION_MM)
     grip = set_precision(grip, GEOMETRY_PRECISION_MM)
+    blade_polygons = _iter_polygons(blade)
     if (
         blade.is_empty
         or grip.is_empty
         or not blade.is_valid
         or not grip.is_valid
         or not grip.buffer(GEOMETRY_PRECISION_MM).covers(blade)
+        # A printable cutter edge is one annular wall: one connected outer
+        # shell and one connected inner shell.  A merely watertight union can
+        # still contain several individually closed wall fragments, which a
+        # slicer will correctly show as breaks in the intended cutting edge.
+        or len(blade_polygons) != 1
+        or len(blade_polygons[0].interiors) != 1
+        or not blade_polygons[0].exterior.is_ring
+        or not blade_polygons[0].interiors[0].is_ring
     ):
-        raise CookieSTLError("line_art_geometry_incomplete")
+        raise CookieSTLError("cutter_wall_not_continuous")
     grip_height = min(3.2, max(2.0, params.blade_height_mm * 0.24))
     triangles = _layered_mesh(grip, blade, grip_height, params.blade_height_mm)
     bounds = grip.bounds
@@ -765,25 +831,123 @@ def validate_watertight(triangles) -> None:
         tuple[tuple[float, float, float], tuple[float, float, float]], int
     ] = {}
     signed_volume = 0.0
-    for triangle in triangles:
+    triangle_edges: list[
+        tuple[
+            tuple[tuple[float, float, float], tuple[float, float, float]],
+            ...,
+        ]
+    ] = []
+    edge_triangles: dict[
+        tuple[tuple[float, float, float], tuple[float, float, float]],
+        list[int],
+    ] = {}
+    for triangle_index, triangle in enumerate(triangles):
         a, b, c = (np.asarray(vertex, dtype=np.float64) for vertex in triangle)
         if float(np.linalg.norm(np.cross(b - a, c - a))) <= 1e-10:
             raise CookieSTLError("degenerate_mesh")
         signed_volume += float(np.dot(a, np.cross(b, c))) / 6.0
         vertices = tuple(_canonical_vertex(vertex) for vertex in triangle)
+        current_edges = []
         for start, end in ((vertices[0], vertices[1]), (vertices[1], vertices[2]), (vertices[2], vertices[0])):
             edge = tuple(sorted((start, end)))
+            current_edges.append(edge)
             edges[edge] = edges.get(edge, 0) + 1
             direction = 1 if start == edge[0] else -1
             edge_orientation[edge] = edge_orientation.get(edge, 0) + direction
+            edge_triangles.setdefault(edge, []).append(triangle_index)
+        triangle_edges.append(tuple(current_edges))
     if (
         not edges
         or any(count != 2 for count in edges.values())
         or any(direction != 0 for direction in edge_orientation.values())
     ):
         raise CookieSTLError("non_watertight_mesh")
+    # Two independently closed shells also satisfy the classic two-faces-per-
+    # edge test.  Cookie cutters and their stamp plates must instead be one
+    # connected printable solid, so prove triangle connectivity explicitly.
+    pending = [0] if triangle_edges else []
+    visited: set[int] = set()
+    while pending:
+        triangle_index = pending.pop()
+        if triangle_index in visited:
+            continue
+        visited.add(triangle_index)
+        for edge in triangle_edges[triangle_index]:
+            pending.extend(edge_triangles[edge])
+    if len(visited) != len(triangle_edges):
+        raise CookieSTLError("disconnected_mesh")
     if signed_volume <= 1e-8:
         raise CookieSTLError("inverted_or_empty_mesh")
+
+
+def _top_surface_continuity(triangles, *, cutter_ring: bool) -> dict[str, int]:
+    """Prove that every maximum-height feature has closed boundary loops."""
+    if not triangles:
+        raise CookieSTLError("empty_mesh")
+    maximum_z = max(float(vertex[2]) for triangle in triangles for vertex in triangle)
+    top_triangles = []
+    for triangle in triangles:
+        if all(abs(float(vertex[2]) - maximum_z) <= GEOMETRY_PRECISION_MM for vertex in triangle):
+            top_triangles.append(
+                tuple(
+                    (round(float(vertex[0]), 7), round(float(vertex[1]), 7))
+                    for vertex in triangle
+                )
+            )
+    if not top_triangles:
+        raise CookieSTLError("top_surface_missing")
+    edge_faces: dict[
+        tuple[tuple[float, float], tuple[float, float]], list[int]
+    ] = {}
+    for index, triangle in enumerate(top_triangles):
+        for start, end in (
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ):
+            if start == end:
+                raise CookieSTLError("degenerate_mesh")
+            edge_faces.setdefault(tuple(sorted((start, end))), []).append(index)
+    if any(len(faces) not in {1, 2} for faces in edge_faces.values()):
+        raise CookieSTLError("top_surface_non_manifold")
+
+    face_neighbors: dict[int, set[int]] = {
+        index: set() for index in range(len(top_triangles))
+    }
+    boundary_neighbors: dict[tuple[float, float], set[tuple[float, float]]] = {}
+    for edge, faces in edge_faces.items():
+        if len(faces) == 2:
+            face_neighbors[faces[0]].add(faces[1])
+            face_neighbors[faces[1]].add(faces[0])
+        else:
+            start, end = edge
+            boundary_neighbors.setdefault(start, set()).add(end)
+            boundary_neighbors.setdefault(end, set()).add(start)
+    if not boundary_neighbors or any(len(items) != 2 for items in boundary_neighbors.values()):
+        raise CookieSTLError("top_surface_boundary_open")
+
+    def component_count(neighbors) -> int:
+        unseen = set(neighbors)
+        count = 0
+        while unseen:
+            count += 1
+            stack = [unseen.pop()]
+            while stack:
+                current = stack.pop()
+                for neighbor in neighbors[current]:
+                    if neighbor in unseen:
+                        unseen.remove(neighbor)
+                        stack.append(neighbor)
+        return count
+
+    surface_components = component_count(face_neighbors)
+    boundary_loops = component_count(boundary_neighbors)
+    if cutter_ring and (surface_components != 1 or boundary_loops != 2):
+        raise CookieSTLError("cutter_wall_not_continuous")
+    return {
+        "top_surface_components": surface_components,
+        "top_boundary_loops": boundary_loops,
+    }
 
 
 def mesh_signed_volume(triangles) -> float:
@@ -806,11 +970,22 @@ def mesh_signed_volume(triangles) -> float:
 
 def _binary_stl(triangles, label: str) -> bytes:
     validate_watertight(triangles)
+    # STL vertices are float32.  Revalidate those exact serialized positions;
+    # otherwise two close float64 vertices can collapse during encoding and
+    # create a real slicer-visible crack after the pre-serialization check.
+    serialized_triangles = [
+        tuple(
+            tuple(float(np.float32(value)) for value in vertex)
+            for vertex in triangle
+        )
+        for triangle in triangles
+    ]
+    validate_watertight(serialized_triangles)
     header = (f"MAGI {label} watertight STL").encode("ascii")[:80].ljust(80, b"\0")
     output = io.BytesIO()
     output.write(header)
     output.write(struct.pack("<I", len(triangles)))
-    for triangle in triangles:
+    for triangle in serialized_triangles:
         # STL stores float32 vertices.  Compute the normal from those exact
         # serialized coordinates, not the higher-precision construction
         # points, so small valid constrained-Delaunay faces cannot carry a
@@ -857,13 +1032,20 @@ def generate_zip_bytes(content: bytes, parameters: CookieParameters | None = Non
     ring = silhouette & (~_erode(silhouette, wall_pixels))
     ring = _regularize_diagonal_contacts(_largest_component(ring, minimum=12))
     grip = _regularize_diagonal_contacts(_dilate(ring, rim_pixels))
-    plate = _regularize_diagonal_contacts(
-        _largest_component(_erode(silhouette, clearance_pixels), minimum=24)
-    )
-    relief = _regularize_diagonal_contacts(_dilate(internal_lines, relief_pixels) & plate)
-    # A one-cell contour repair must remain supported by the stamp body.
-    plate |= relief
-    if not ring.any() or not grip.any() or not plate.any() or not relief.any():
+    stamp_generated = bool(internal_lines.any())
+    if stamp_generated:
+        plate = _regularize_diagonal_contacts(
+            _largest_component(_erode(silhouette, clearance_pixels), minimum=24)
+        )
+        relief = _regularize_diagonal_contacts(
+            _dilate(internal_lines, relief_pixels) & plate
+        )
+        # A one-cell contour repair must remain supported by the stamp body.
+        plate |= relief
+    else:
+        plate = np.zeros_like(silhouette, dtype=bool)
+        relief = np.zeros_like(silhouette, dtype=bool)
+    if not ring.any() or not grip.any() or (stamp_generated and (not plate.any() or not relief.any())):
         raise CookieSTLError("line_art_geometry_incomplete")
 
     grip, ring, plate, relief, silhouette = _crop_masks(
@@ -881,67 +1063,82 @@ def generate_zip_bytes(content: bytes, parameters: CookieParameters | None = Non
     cutter_triangles, outline, cutter_vector = _vector_cutter_mesh(
         silhouette, cutter_scale, params
     )
+    cutter_surface = _top_surface_continuity(cutter_triangles, cutter_ring=True)
     _check_deadline(deadline)
 
-    # The stamp is a two-level boundary arrangement, not a grid of voxels.
-    # Plate and relief share the exact GEOS boundary at z=stamp_base_mm; the
-    # interface is emitted once so no coincident caps or non-manifold seams
-    # are hidden inside the STL.
-    plate_geometry = outline.buffer(-params.clearance_mm, quad_segs=8, join_style=1)
-    relief_geometry, relief_vector = _physical_mask_geometry(
-        relief, cutter_scale, max_error_mm=MAX_CONTOUR_ERROR_MM
-    )
-    _check_deadline(deadline)
-    relief_area_before_clip = float(relief_geometry.area)
-    relief_geometry = set_precision(
-        relief_geometry.intersection(plate_geometry), GEOMETRY_PRECISION_MM
-    )
-    if (
-        plate_geometry.is_empty
-        or relief_geometry.is_empty
-        or not plate_geometry.is_valid
-        or not relief_geometry.is_valid
-        or relief_area_before_clip <= 0
-        or relief_geometry.area / relief_area_before_clip < 0.95
-    ):
-        raise CookieSTLError("line_art_geometry_incomplete")
-    relief_feature_mm = _minimum_polygon_feature(relief_geometry)
-    if relief_feature_mm + 1e-6 < MIN_RELIEF_FEATURE_MM:
-        raise CookieSTLError("feature_too_small")
-    mirror_origin_x = silhouette.shape[1] * cutter_scale / 2.0
-    plate_geometry = set_precision(
-        affinity.scale(
+    stamp_triangles = []
+    relief_feature_mm = 0.0
+    relief_vector = {"hausdorff_mm": 0.0, "vector_vertices": 0}
+    if stamp_generated:
+        # The stamp is a two-level boundary arrangement, not a grid of voxels.
+        # Plate and relief share the exact GEOS boundary at z=stamp_base_mm;
+        # the interface is emitted once so no coincident caps are hidden.
+        plate_geometry = outline.buffer(-params.clearance_mm, quad_segs=8, join_style=1)
+        relief_geometry, relief_vector = _physical_mask_geometry(
+            relief, cutter_scale, max_error_mm=MAX_CONTOUR_ERROR_MM
+        )
+        _check_deadline(deadline)
+        relief_area_before_clip = float(relief_geometry.area)
+        relief_geometry = set_precision(
+            relief_geometry.intersection(plate_geometry), GEOMETRY_PRECISION_MM
+        )
+        if (
+            plate_geometry.is_empty
+            or relief_geometry.is_empty
+            or not plate_geometry.is_valid
+            or not relief_geometry.is_valid
+            or relief_area_before_clip <= 0
+            or relief_geometry.area / relief_area_before_clip < 0.95
+        ):
+            raise CookieSTLError("line_art_geometry_incomplete")
+        relief_feature_mm = _minimum_polygon_feature(relief_geometry)
+        if relief_feature_mm + 1e-6 < MIN_RELIEF_FEATURE_MM:
+            raise CookieSTLError("feature_too_small")
+        mirror_origin_x = silhouette.shape[1] * cutter_scale / 2.0
+        plate_geometry = set_precision(
+            affinity.scale(
+                plate_geometry,
+                xfact=-1.0,
+                yfact=1.0,
+                origin=(mirror_origin_x, 0.0),
+            ),
+            GEOMETRY_PRECISION_MM,
+        )
+        relief_geometry = set_precision(
+            affinity.scale(
+                relief_geometry,
+                xfact=-1.0,
+                yfact=1.0,
+                origin=(mirror_origin_x, 0.0),
+            ),
+            GEOMETRY_PRECISION_MM,
+        )
+        stamp_triangles = _layered_mesh(
             plate_geometry,
-            xfact=-1.0,
-            yfact=1.0,
-            origin=(mirror_origin_x, 0.0),
-        ),
-        GEOMETRY_PRECISION_MM,
-    )
-    relief_geometry = set_precision(
-        affinity.scale(
             relief_geometry,
-            xfact=-1.0,
-            yfact=1.0,
-            origin=(mirror_origin_x, 0.0),
-        ),
-        GEOMETRY_PRECISION_MM,
-    )
-    stamp_triangles = _layered_mesh(
-        plate_geometry,
-        relief_geometry,
-        params.stamp_base_mm,
-        params.stamp_base_mm + params.relief_mm,
-    )
-    _check_deadline(deadline)
+            params.stamp_base_mm,
+            params.stamp_base_mm + params.relief_mm,
+        )
+        stamp_surface = _top_surface_continuity(
+            stamp_triangles, cutter_ring=False
+        )
+        _check_deadline(deadline)
+    else:
+        stamp_surface = {"top_surface_components": 0, "top_boundary_loops": 0}
     cutter_stl = _binary_stl(cutter_triangles, "cutter")
-    stamp_stl = _binary_stl(stamp_triangles, "mirrored stamp")
+    stamp_stl = (
+        _binary_stl(stamp_triangles, "mirrored stamp")
+        if stamp_generated
+        else None
+    )
     preview = _preview_png(grip, ring, plate, relief)
     summary: dict[str, object] = {
         "schema": "magi.cookie-cutter-stl/v1",
+        "mode": "cutter_and_stamp" if stamp_generated else "cutter_only",
         "offline": True,
         "upload_persisted": False,
-        "mirrored_stamp": True,
+        "stamp_generated": stamp_generated,
+        "mirrored_stamp": stamp_generated,
         "watertight": True,
         "input_sha256": hashlib.sha256(content).hexdigest(),
         "grid": {"width": int(grip.shape[1]), "height": int(grip.shape[0])},
@@ -949,7 +1146,7 @@ def generate_zip_bytes(content: bytes, parameters: CookieParameters | None = Non
         "geometry": {
             "cutter_ring_cells": int(ring.sum()),
             "grip_cells": int(grip.sum()),
-            "stamp_plate_cells": int(plate.sum()),
+            "stamp_plate_cells": int(plate.sum()) if stamp_generated else 0,
             "relief_cells": int(relief.sum()),
             "cutter_triangles": len(cutter_triangles),
             "stamp_triangles": len(stamp_triangles),
@@ -962,23 +1159,38 @@ def generate_zip_bytes(content: bytes, parameters: CookieParameters | None = Non
             "cutter_contour_hausdorff_mm": round(
                 float(cutter_vector["contour_hausdorff_mm"]), 6
             ),
+            "cutter_top_surface_components": int(
+                cutter_surface["top_surface_components"]
+            ),
+            "cutter_top_boundary_loops": int(
+                cutter_surface["top_boundary_loops"]
+            ),
             "stamp_contour_hausdorff_mm": round(
                 float(relief_vector["hausdorff_mm"]), 6
             ),
-            "stamp_relief_min_feature_mm": round(float(relief_feature_mm), 6),
+            "stamp_relief_min_feature_mm": (
+                round(float(relief_feature_mm), 6) if stamp_generated else None
+            ),
             "stamp_vector_vertices": int(relief_vector["vector_vertices"]),
+            "stamp_top_surface_components": int(
+                stamp_surface["top_surface_components"]
+            ),
+            "stamp_top_boundary_loops": int(
+                stamp_surface["top_boundary_loops"]
+            ),
         },
     }
-    readme = (
-        "MAGI 餅乾切模與壓模\n"
-        "cutter.stl：外框切模，含握邊。\n"
-        "stamp_mirrored.stl：壓模底板與內部凸紋，已鏡像。\n"
-        "列印前請在切片軟體確認尺寸、封閉網格與器材安全。\n"
-    )
+    readme = "MAGI 餅乾切模\ncutter.stl：光滑封閉外框切模，含握邊。\n"
+    if stamp_generated:
+        readme += "stamp_mirrored.stl：壓模底板與內部凸紋，已鏡像。\n"
+    else:
+        readme += "原圖沒有獨立內部圖案，因此本次只產生切模。\n"
+    readme += "列印前請在切片軟體確認尺寸、封閉網格與器材安全。\n"
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("cutter.stl", cutter_stl)
-        archive.writestr("stamp_mirrored.stl", stamp_stl)
+        if stamp_stl is not None:
+            archive.writestr("stamp_mirrored.stl", stamp_stl)
         archive.writestr("segmentation_preview.png", preview)
         archive.writestr("parameters.json", json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         archive.writestr("README.txt", readme)

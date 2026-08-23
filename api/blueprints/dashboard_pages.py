@@ -45,10 +45,10 @@ dashboard_pages_bp = Blueprint("dashboard_pages", __name__)
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
 _WORLDMONITOR_REPORT_DIR = _MAGI_ROOT / "static" / "worldmonitor_reports"
 _MAINTENANCE_MANUAL_ASSETS = {
-    "html": ("MAGI_V3_維修百科全書_rc627.html", "text/html; charset=utf-8"),
-    "pdf": ("MAGI_V3_維修百科全書_rc627.pdf", "application/pdf"),
-    "markdown": ("MAGI_V3_維修百科全書_rc627.md", "text/markdown; charset=utf-8"),
-    "source-index.json": ("MAGI_V3_原始碼索引_rc627.json", "application/json"),
+    "html": ("MAGI_V3_維修百科全書_rc641.html", "text/html; charset=utf-8"),
+    "pdf": ("MAGI_V3_維修百科全書_rc641.pdf", "application/pdf"),
+    "markdown": ("MAGI_V3_維修百科全書_rc641.md", "text/markdown; charset=utf-8"),
+    "source-index.json": ("MAGI_V3_原始碼索引_rc641.json", "application/json"),
 }
 
 

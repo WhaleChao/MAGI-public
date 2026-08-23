@@ -8,6 +8,7 @@ import io
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -658,6 +659,7 @@ def _release(
         "scripts/ops/osc_shell_nas_helper.py",
         "gui/magi_menubar.py",
         "magi_v3/live_validation_probe_service.py",
+        "scripts/drive_case_sync_worker.py",
     )
     for relative in service_scripts:
         _write(release / relative, "def main():\n    return 0\n")
@@ -1242,6 +1244,53 @@ def test_prepare_atomically_publishes_with_final_absolute_bindings(
         deploy_manifest.read_bytes()
     ).hexdigest()
     assert persisted_marker.is_file()
+
+
+def test_production_cron_process_commands_bind_canonical_installed_release(
+    tmp_path: Path,
+    canonical_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cron_source = tmp_path / "runtime-inputs" / "installed-root-cron.json"
+    source_worker = tmp_path / "release" / "scripts" / "drive_case_sync_worker.py"
+    _write(
+        cron_source,
+        json.dumps(
+            [
+                {
+                    "id": "job_drive_case_sync_all_files",
+                    "cron": "*/20 * * * *",
+                    "command": shlex.join(
+                        [
+                            str(source_worker),
+                            "--direct-all-cases",
+                            "--all-case-chunk-size",
+                            "1",
+                        ]
+                    ),
+                }
+            ]
+        )
+        + "\n",
+    )
+    monkeypatch.setenv("MAGI_CRON_JOBS_FILE", str(cron_source))
+    release, executable = _release(tmp_path)
+    staging = tmp_path / "production-installed-cron"
+
+    deploy.prepare_deployment(
+        release,
+        staging,
+        canonical_runtime_root,
+        executable,
+    )
+
+    snapshot = json.loads(
+        (staging / "runtime-inputs" / "cron_jobs.v3.json").read_text(encoding="utf-8")
+    )
+    command = shlex.split(snapshot[0]["command"])
+    installed = deploy._canonical_installed_release_root("v3-test-release")
+    assert command[0] == str(installed / "scripts" / "drive_case_sync_worker.py")
+    assert str(release) not in snapshot[0]["command"]
 
 
 def test_production_requires_matching_canonical_installed_release_before_staging(

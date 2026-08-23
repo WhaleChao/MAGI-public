@@ -14,7 +14,7 @@ from flask import Flask
 from PIL import Image, ImageDraw
 
 
-def _spawn_cookie_child_with_failed_setrlimit(connection, content, values):
+def _spawn_cookie_child_with_failed_setrlimit(connection, monitor_ready, content, values):
     """Run the production child target with a real spawned setup failure."""
     import resource
 
@@ -33,7 +33,7 @@ def _spawn_cookie_child_with_failed_setrlimit(connection, content, values):
     resource.setrlimit = reject_limit
     engine.generate_zip_bytes = reject_generation
     try:
-        blueprint._cookie_generation_child(connection, content, values)
+        blueprint._cookie_generation_child(connection, monitor_ready, content, values)
     finally:
         engine.generate_zip_bytes = original_generate
         resource.setrlimit = original_setrlimit
@@ -58,15 +58,45 @@ def _face_png() -> bytes:
     return output.getvalue()
 
 
+def _empty_frame_png(*, line_width: int = 3) -> bytes:
+    image = Image.new("L", (96, 80), 255)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((8, 8, 87, 71), radius=18, outline=0, width=line_width)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def _synthetic_bundle(summary: dict[str, object]) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("cutter.stl", b"cutter")
-        archive.writestr("stamp_mirrored.stl", b"stamp")
+        if summary.get("stamp_generated") is True:
+            archive.writestr("stamp_mirrored.stl", b"stamp")
         archive.writestr("segmentation_preview.png", b"preview")
         archive.writestr("parameters.json", json.dumps(summary, sort_keys=True))
         archive.writestr("README.txt", "readme")
     return output.getvalue()
+
+
+def _summary_fixture() -> dict[str, object]:
+    return {
+        "mode": "cutter_and_stamp",
+        "stamp_generated": True,
+        "watertight": True,
+    }
+
+
+class _MonitorReady:
+    def __init__(self):
+        self.set_calls = 0
+
+    def set(self):
+        self.set_calls += 1
+
+    def wait(self, *, timeout):
+        assert timeout > 0
+        return self.set_calls > 0
 
 
 def _app(*, csrf: bool = False) -> Flask:
@@ -90,6 +120,8 @@ def test_public_cookie_cutter_page_is_responsive_and_no_store():
     assert 'name="viewport"' in page
     assert "/api/cookie-cutter/generate" in page
     assert "/lottery" in page and "/exam-tutor" in page
+    assert "只有封閉外框時會產生光滑切模" in page
+    assert "只有外框也可生成" in page
 
 
 def test_spawned_child_setrlimit_failure_is_safe_terminal_and_reaped():
@@ -97,10 +129,12 @@ def test_spawned_child_setrlimit_failure_is_safe_terminal_and_reaped():
 
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
+    monitor_ready = context.Event()
     worker = context.Process(
         target=_spawn_cookie_child_with_failed_setrlimit,
         args=(
             child,
+            monitor_ready,
             b"must-not-be-processed",
             {
                 name: float(getattr(blueprint.CookieParameters(), name))
@@ -135,6 +169,48 @@ def test_spawned_child_setrlimit_failure_is_safe_terminal_and_reaped():
         if worker.is_alive():
             worker.terminate()
             worker.join(2)
+
+
+def test_child_waits_for_parent_resource_monitor_before_generation(monkeypatch):
+    import resource
+
+    import api.blueprints.cookie_cutter as blueprint
+    import skills.cookie_stl as engine
+
+    sent = []
+
+    class Connection:
+        def send(self, payload):
+            sent.append(payload)
+
+        def close(self):
+            return None
+
+    class NeverReady:
+        def wait(self, *, timeout):
+            assert timeout == blueprint.MAX_GENERATION_SECONDS
+            return False
+
+    monkeypatch.setattr(resource, "setrlimit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        engine,
+        "generate_zip_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("engine must wait for the parent RSS monitor")
+        ),
+    )
+
+    blueprint._cookie_generation_child(
+        Connection(),
+        NeverReady(),
+        b"synthetic",
+        {
+            name: float(getattr(blueprint.CookieParameters(), name))
+            for name in blueprint.CookieParameters.__dataclass_fields__
+        },
+    )
+
+    assert sent == [("cookie_error", "resource_attestation_unavailable")]
 
 
 def test_parent_maps_exact_resource_setup_terminal_and_reaps_worker(monkeypatch):
@@ -184,6 +260,9 @@ def test_parent_maps_exact_resource_setup_terminal_and_reaps_worker(monkeypatch)
             assert duplex is False
             return Parent(), Child()
 
+        def Event(self):
+            return _MonitorReady()
+
         def Process(self, **_kwargs):
             return worker
 
@@ -216,7 +295,7 @@ def test_cookie_cutter_page_uses_magi_theme_and_responsive_workspace():
 def test_prepare_accepts_memory_only_safe_png():
     response = _app().test_client().post(
         "/api/cookie-cutter/prepare",
-        data={"image": (io.BytesIO(_png()), "../../line.png")},
+        data={"image": (io.BytesIO(_face_png()), "../../line.png")},
         content_type="multipart/form-data",
     )
     body = response.get_json()
@@ -224,7 +303,32 @@ def test_prepare_accepts_memory_only_safe_png():
     assert body["ok"] is True
     assert body["engine_contract"] == "magi.cookie-cutter-stl/v1"
     assert body["upload_persisted"] is False
-    assert body["width"] == 64 and body["height"] == 64
+    assert body["width"] == 96 and body["height"] == 80
+    assert body["line_art_validated"] is True
+    assert body["internal_feature_components"] == 3
+    assert body["generation_mode"] == "cutter_and_stamp"
+    assert "切模與鏡像壓模" in body["next_step"]
+
+
+@pytest.mark.parametrize("line_width", [2, 8, 24])
+def test_prepare_accepts_closed_empty_frame_as_cutter_only(line_width):
+    response = _app().test_client().post(
+        "/api/cookie-cutter/prepare",
+        data={
+            "image": (
+                io.BytesIO(_empty_frame_png(line_width=line_width)),
+                "empty-frame.png",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["generation_mode"] == "cutter_only"
+    assert body["internal_feature_components"] == 0
+    assert "只產生光滑切模" in body["next_step"]
 
 
 def test_prepare_rejects_non_image_and_oversized_pixels():
@@ -279,7 +383,7 @@ def test_allowed_multipart_body_reaches_bounded_reader(monkeypatch):
     monkeypatch.setattr(blueprint, "_read_upload_bounded", wrapped)
     response = _app().test_client().post(
         "/api/cookie-cutter/prepare",
-        data={"image": (io.BytesIO(_png()), "line.png")},
+        data={"image": (io.BytesIO(_face_png()), "line.png")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 200
@@ -331,6 +435,37 @@ def test_public_generate_returns_real_stl_bundle_without_login(monkeypatch):
     assert not ({"path", "image", "filename"} & set(attestation))
 
 
+def test_public_generate_turns_closed_empty_frame_into_cutter_only_bundle(monkeypatch):
+    import api.blueprints.cookie_cutter as blueprint
+
+    monkeypatch.setattr(blueprint, "_within_rate_limit", lambda: True)
+    response = _app().test_client().post(
+        "/api/cookie-cutter/generate",
+        data={
+            "image": (io.BytesIO(_empty_frame_png(line_width=8)), "empty-frame.png"),
+            "width_mm": "72",
+            "blade_height_mm": "15",
+            "blade_wall_mm": "1.2",
+            "rim_mm": "3",
+            "stamp_base_mm": "3",
+            "relief_mm": "2",
+            "clearance_mm": ".3",
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-MAGI-Mesh-Status"] == "watertight"
+    with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+        assert set(archive.namelist()) == blueprint._COOKIE_ARCHIVE_COMMON_MEMBERS
+        receipt = json.loads(archive.read("parameters.json"))
+        assert receipt["mode"] == "cutter_only"
+        assert receipt["stamp_generated"] is False
+        assert receipt["watertight"] is True
+        assert receipt["geometry"]["cutter_triangles"] > 0
+        assert receipt["geometry"]["stamp_triangles"] == 0
+
+
 @pytest.mark.parametrize("malicious_peak", [-1, 10**12])
 def test_archive_attestation_overwrites_untrusted_claims_and_rejects_bad_schema(
     malicious_peak,
@@ -338,6 +473,8 @@ def test_archive_attestation_overwrites_untrusted_claims_and_rejects_bad_schema(
     import api.blueprints.cookie_cutter as blueprint
 
     child_summary = {
+        "mode": "cutter_and_stamp",
+        "stamp_generated": True,
         "watertight": True,
         "generation_seconds": -999,
         "peak_rss_bytes": malicious_peak,
@@ -372,7 +509,7 @@ def test_archive_attestation_overwrites_untrusted_claims_and_rejects_bad_schema(
 
     assert {key: receipt[key] for key in trusted} == trusted
     with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
-        assert set(archive.namelist()) == blueprint._COOKIE_ARCHIVE_MEMBERS
+        assert set(archive.namelist()) == blueprint._COOKIE_ARCHIVE_STAMP_MEMBERS
         assert json.loads(archive.read("parameters.json")) == receipt
         after = {name: archive.read(name) for name in preserved_members}
         assert after == before
@@ -392,6 +529,42 @@ def test_archive_attestation_overwrites_untrusted_claims_and_rejects_bad_schema(
             malformed.getvalue(),
             child_summary,
             trusted,
+        )
+
+
+def test_archive_attestation_accepts_exact_cutter_only_members_and_rejects_stamp_drift():
+    import api.blueprints.cookie_cutter as blueprint
+
+    summary = {
+        "mode": "cutter_only",
+        "stamp_generated": False,
+        "watertight": True,
+    }
+    attestation = {
+        "generation_seconds": 0.25,
+        "peak_rss_bytes": 4096,
+        "child_reaped": True,
+        "child_leaks": 0,
+    }
+    bundle, receipt = blueprint._attest_generated_bundle(
+        _synthetic_bundle(summary), summary, attestation
+    )
+    assert receipt["mode"] == "cutter_only"
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        assert set(archive.namelist()) == blueprint._COOKIE_ARCHIVE_COMMON_MEMBERS
+
+    drifted = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(_synthetic_bundle(summary))) as source:
+        with zipfile.ZipFile(drifted, "w", zipfile.ZIP_DEFLATED) as target:
+            for info in source.infolist():
+                target.writestr(info, source.read(info.filename))
+            target.writestr("stamp_mirrored.stl", b"unexpected")
+    with pytest.raises(
+        blueprint.CookieSTLError,
+        match="generation_archive_schema_failed",
+    ):
+        blueprint._attest_generated_bundle(
+            drifted.getvalue(), summary, attestation
         )
 
 
@@ -434,11 +607,13 @@ def test_generate_uses_double_submit_csrf_and_rate_limit(monkeypatch):
 @pytest.mark.parametrize(
     ("code", "message_fragment"),
     [
-        ("contour_quality_failed", "0.35 mm"),
+        ("contour_quality_failed", "0.15 mm"),
+        ("cutter_wall_not_continuous", "單一連續封閉環"),
         ("feature_too_small", "最小寬度"),
         ("resource_limit_exceeded", "處理逾時"),
         ("finished_envelope_exceeded", "成品尺寸"),
         ("generation_resource_limit_setup_failed", "資源限制無法安全啟用"),
+        ("outer_contour_touches_image_edge", "四周保留白邊"),
     ],
 )
 def test_geometry_quality_failures_have_fixed_actionable_messages(
@@ -517,6 +692,9 @@ def test_generation_rss_overage_terminates_spawned_worker(monkeypatch):
             assert duplex is False
             return parent, child
 
+        def Event(self):
+            return _MonitorReady()
+
         def Process(self, **_kwargs):
             return worker
 
@@ -580,7 +758,7 @@ def test_generation_fast_exit_without_parent_rss_sample_fails_closed(monkeypatch
         def kill(self):
             return None
 
-    summary_fixture = {"watertight": True}
+    summary_fixture = _summary_fixture()
     bundle_fixture = _synthetic_bundle(summary_fixture)
     parent, child, worker = Parent(), Child(), Worker()
     parent.recv = lambda: ("ok", bundle_fixture, summary_fixture)
@@ -589,6 +767,9 @@ def test_generation_fast_exit_without_parent_rss_sample_fails_closed(monkeypatch
         def Pipe(self, *, duplex):
             assert duplex is False
             return parent, child
+
+        def Event(self):
+            return _MonitorReady()
 
         def Process(self, **_kwargs):
             return worker
@@ -647,6 +828,9 @@ def test_generation_without_parent_rss_monitor_fails_closed(monkeypatch):
             assert duplex is False
             return parent, child
 
+        def Event(self):
+            return _MonitorReady()
+
         def Process(self, **_kwargs):
             return worker
 
@@ -672,7 +856,7 @@ def test_generation_without_parent_rss_monitor_fails_closed(monkeypatch):
 def test_generation_uses_only_parent_sampled_rss(monkeypatch):
     import api.blueprints.cookie_cutter as blueprint
 
-    summary_fixture = {"watertight": True}
+    summary_fixture = _summary_fixture()
     bundle_fixture = _synthetic_bundle(summary_fixture)
 
     class Parent:
@@ -717,11 +901,15 @@ def test_generation_uses_only_parent_sampled_rss(monkeypatch):
             raise AssertionError("clean child must not be killed")
 
     parent, child, worker = Parent(), Child(), Worker()
+    monitor_ready = _MonitorReady()
 
     class Context:
         def Pipe(self, *, duplex):
             assert duplex is False
             return parent, child
+
+        def Event(self):
+            return monitor_ready
 
         def Process(self, **_kwargs):
             return worker
@@ -738,6 +926,7 @@ def test_generation_uses_only_parent_sampled_rss(monkeypatch):
     )
 
     assert summary["peak_rss_bytes"] == 4096
+    assert monitor_ready.set_calls == 1
     with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
         assert json.loads(archive.read("parameters.json")) == summary
 
@@ -746,7 +935,7 @@ def test_generation_uses_only_parent_sampled_rss(monkeypatch):
 def test_generation_rejects_child_supplied_rss_attestation(monkeypatch, malicious_peak):
     import api.blueprints.cookie_cutter as blueprint
 
-    summary_fixture = {"watertight": True}
+    summary_fixture = _summary_fixture()
     bundle_fixture = _synthetic_bundle(summary_fixture)
 
     class Parent:
@@ -801,6 +990,9 @@ def test_generation_rejects_child_supplied_rss_attestation(monkeypatch, maliciou
         def Pipe(self, *, duplex):
             assert duplex is False
             return parent, child
+
+        def Event(self):
+            return _MonitorReady()
 
         def Process(self, **_kwargs):
             return worker
@@ -861,6 +1053,9 @@ def test_generation_timeout_reaps_child_and_returns_no_unattested_bundle(monkeyp
             assert duplex is False
             return parent, child
 
+        def Event(self):
+            return _MonitorReady()
+
         def Process(self, **_kwargs):
             return worker
 
@@ -883,7 +1078,7 @@ def test_generation_timeout_reaps_child_and_returns_no_unattested_bundle(monkeyp
 def test_generation_fails_closed_when_child_cannot_be_reaped(monkeypatch):
     import api.blueprints.cookie_cutter as blueprint
 
-    summary_fixture = {"watertight": True}
+    summary_fixture = _summary_fixture()
     bundle_fixture = _synthetic_bundle(summary_fixture)
 
     class Parent:
@@ -931,6 +1126,9 @@ def test_generation_fails_closed_when_child_cannot_be_reaped(monkeypatch):
         def Pipe(self, *, duplex):
             assert duplex is False
             return parent, child
+
+        def Event(self):
+            return _MonitorReady()
 
         def Process(self, **_kwargs):
             return worker

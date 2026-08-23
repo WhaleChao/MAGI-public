@@ -44,7 +44,7 @@
       "side_effect_class": "reversible_write",
       "reviewed": true,
       "reviewed_by": "phase1-security-review",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1121",
+      "v2_handler_source": "api/blueprints/web_runtime.py:1004",
       "rationale": "Chat requests can update local conversation and memory state."
     },
     {
@@ -2464,7 +2464,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:958",
+      "v2_handler_source": "api/blueprints/web_runtime.py:841",
       "rationale": "GET runs with isolated_runtime enabled and resolves all optional index paths beneath the empty worker sandbox."
     },
     {
@@ -2508,7 +2508,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1411",
+      "v2_handler_source": "api/blueprints/web_runtime.py:1294",
       "rationale": "GET resolves the optional judgment fixture only beneath an empty worker sandbox root."
     },
     {
@@ -2519,7 +2519,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-eleventh-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1393",
+      "v2_handler_source": "api/blueprints/web_runtime.py:1276",
       "rationale": "GET drains only a worker-local in-memory notification list for a synthetic user."
     },
     {
@@ -2552,7 +2552,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-twelfth-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:1092",
+      "v2_handler_source": "api/blueprints/web_runtime.py:975",
       "rationale": "GET dispatches the real projection over an in-memory process snapshot and sandbox-only guardian paths, with subprocess and live-state access guarded."
     },
     {
@@ -2563,7 +2563,7 @@
       "side_effect_class": "read_only",
       "reviewed": true,
       "reviewed_by": "isolated-twelfth-batch",
-      "v2_handler_source": "api/blueprints/web_runtime.py:953",
+      "v2_handler_source": "api/blueprints/web_runtime.py:836",
       "rationale": "GET dispatches the real authenticated page handler with template rendering replaced by a deterministic in-memory renderer."
     },
     {

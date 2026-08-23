@@ -28,6 +28,7 @@ import textwrap
 import hashlib
 import shutil
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from magi_v3 import fcntl_compat as fcntl
@@ -208,6 +209,11 @@ def _initialize_menubar_application():
 MAGI_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if MAGI_ROOT not in sys.path:
     sys.path.insert(0, MAGI_ROOT)
+
+from magi_v3.process_monitor import (  # noqa: E402 - root must be installed first
+    ZombiePersistence,
+    collect_process_monitor as _collect_shared_process_monitor,
+)
 
 
 def _configured_path(env_name: str, fallback: str) -> str:
@@ -1646,8 +1652,15 @@ def _overall_state(c: dict) -> str:
     if isinstance(db, dict) and db.get("local") is False:
         return "attention"
 
-    zombies, _detail = c.get("zombies", (0, ""))
-    if int(zombies or 0) > 0:
+    process_health = c.get("process_health", {}) if isinstance(c, dict) else {}
+    process_summary = process_health.get("summary", {}) if isinstance(process_health, dict) else {}
+    if process_health and process_health.get("ok") is not True:
+        return "attention"
+    anomaly_count = int(process_summary.get("anomaly_count", 0) or 0)
+    if not process_health:
+        zombies, _detail = c.get("zombies", (0, ""))
+        anomaly_count = int(zombies or 0)
+    if anomaly_count > 0:
         return "attention"
 
     business_live = c.get("business_live", {})
@@ -3171,7 +3184,11 @@ if _HAS_APPKIT:
             )
             # Six information pods radiate into the central circular display.
             db_state = "ok" if (cache.get("db", {}) or {}).get("local") else "attention"
-            zombies, zombie_detail = cache.get("zombies", (0, "")) if isinstance(cache, dict) else (0, "")
+            process_health = cache.get("process_health", {}) if isinstance(cache, dict) else {}
+            process_summary = process_health.get("summary", {}) if isinstance(process_health, dict) else {}
+            anomaly_count = int(process_summary.get("anomaly_count", 0) or 0)
+            anomaly_detail = _process_anomaly_detail(process_health)
+            process_state = "ok" if process_health.get("ok") is True and anomaly_count == 0 else "attention"
             core_rows = [
                 (
                     label,
@@ -3184,7 +3201,7 @@ if _HAS_APPKIT:
             core_rows.extend(
                 [
                     ("本機資料庫", OPERATIONAL_TEXT if db_state == "ok" else "離線", db_state, "本機 MariaDB 連線狀態。"),
-                    ("殭屍程序", "無" if not int(zombies or 0) else f"{zombies}個", "ok" if not int(zombies or 0) else "attention", str(zombie_detail or "未偵測到殭屍程序。")),
+                    ("程序異常", "無" if process_state == "ok" else f"{anomaly_count}項", process_state, anomaly_detail if process_health.get("ok") is True else "程序監控讀取失敗。"),
                 ]
             )
             resource_rows = self._memory_rows(cache) + self._engine_rows(cache)
@@ -3644,15 +3661,17 @@ if _HAS_APPKIT:
             core_h = 260
             self._section(left_x, top_y, left_w, core_h, "核心服務", cyan, edge="left")
             db_state = "ok" if (cache.get("db", {}) or {}).get("local") else "attention"
-            zombies, _z_detail = cache.get("zombies", (0, "")) if isinstance(cache, dict) else (0, "")
-            zombie_state = "ok" if int(zombies or 0) == 0 else "attention"
+            process_health = cache.get("process_health", {}) if isinstance(cache, dict) else {}
+            process_summary = process_health.get("summary", {}) if isinstance(process_health, dict) else {}
+            anomaly_count = int(process_summary.get("anomaly_count", 0) or 0)
+            process_state = "ok" if process_health.get("ok") is True and anomaly_count == 0 else "attention"
             service_rows = [
                 ("守護程式", _label_for_state(_service_state(cache, "守護程式", "守護程序"), OPERATIONAL_TEXT), _service_state(cache, "守護程式", "守護程序"), str((cache.get("service_details") or {}).get("守護程式") or "程序狀態正常。")),
                 ("主伺服器", _label_for_state(_service_state(cache, "主伺服器"), OPERATIONAL_TEXT), _service_state(cache, "主伺服器"), str((cache.get("service_details") or {}).get("主伺服器") or "主伺服器狀態正常。")),
                 ("通訊機器人", _label_for_state(_service_state(cache, "通訊機器人", "通訊機器"), OPERATIONAL_TEXT), _service_state(cache, "通訊機器人", "通訊機器"), str((cache.get("service_details") or {}).get("通訊機器人") or "通訊機器人狀態正常。")),
                 ("工具介面", _label_for_state(_service_state(cache, "工具介面", "工具接口"), OPERATIONAL_TEXT), _service_state(cache, "工具介面", "工具接口"), str((cache.get("service_details") or {}).get("工具介面") or "工具介面狀態正常。")),
                 ("本機資料庫", OPERATIONAL_TEXT if db_state == "ok" else "離線", db_state, "本機 MariaDB 連線正常。" if db_state == "ok" else "無法連線至本機 MariaDB 的 3306 連接埠。"),
-                ("殭屍程序", "無" if zombie_state == "ok" else f"{zombies}個", zombie_state, "未偵測到殭屍程序。" if zombie_state == "ok" else str(_z_detail or f"偵測到 {zombies} 個殭屍程序。")),
+                ("程序異常", "無" if process_state == "ok" else f"{anomaly_count}項", process_state, _process_anomaly_detail(process_health) if process_health.get("ok") is True else "程序監控讀取失敗。"),
             ]
             for i, row in enumerate(service_rows):
                 self._draw_status_row(left_x + 14, top_y + 47 + i * 34, left_w - 28, row[0], row[1], row[2], 82, 28, row[3])
@@ -4154,69 +4173,32 @@ def _omlx_text_status(
     }
 
 
-_MAGI_ZOMBIE_PARENTS = {
-    "daemon.py", "server.py", "discord_bot.py", "tools_api.py",
-    "action.py", "heartbeat.py", "Python", "python3", "python3.14",
-    "omlx", "chromedriver", "caddy", "socat", "bash",
-}
-
-# A child can legitimately remain in ``Z`` for a fraction of a second between
-# exit() and its parent's wait().  A one-shot ps sample used to turn that normal
-# transition into a red Menubar light that survived until the next 5/30-second
-# refresh.  Require the same PID/PPID pair in two collections for at least five
-# seconds.  Real zombies remain visible; transient reaping is not reported as a
-# fault.
-_ZOMBIE_PERSISTENCE_SEC = 5.0
-_ZOMBIE_FIRST_SEEN: dict[tuple[int, int], float] = {}
+_MENUBAR_PROCESS_ZOMBIE_TRACKER = ZombiePersistence()
 
 
-def _persistent_zombie_parent_names(
-    observed: dict[tuple[int, int], str], *, now: float | None = None
-) -> list[str]:
-    global _ZOMBIE_FIRST_SEEN
-    reference = time.monotonic() if now is None else float(now)
-    next_seen: dict[tuple[int, int], float] = {}
-    names: list[str] = []
-    for identity, parent_name in observed.items():
-        first_seen = _ZOMBIE_FIRST_SEEN.get(identity, reference)
-        next_seen[identity] = first_seen
-        if reference - first_seen < _ZOMBIE_PERSISTENCE_SEC:
-            continue
-        if parent_name and parent_name not in names:
-            names.append(parent_name)
-    _ZOMBIE_FIRST_SEEN = next_seen
-    return names
+def _collect_process_health() -> dict:
+    """Use the same process snapshot and taxonomy as Web/Golem."""
+    return _collect_shared_process_monitor(
+        magi_root=Path(MAGI_ROOT),
+        run_ps=subprocess.run,
+        zombie_tracker=_MENUBAR_PROCESS_ZOMBIE_TRACKER,
+    )
+
+
+def _process_anomaly_detail(process_health: dict) -> str:
+    summary = process_health.get("summary", {}) if isinstance(process_health, dict) else {}
+    return (
+        f"孤兒 {int(summary.get('orphan_count', 0) or 0)}／"
+        f"殭屍 {int(summary.get('zombie_count', 0) or 0)}／"
+        f"重複 {int(summary.get('duplicate_groups', 0) or 0)}"
+    )
 
 
 def _count_zombies() -> tuple:
-    try:
-        r = subprocess.run(["ps", "-eo", "pid=,ppid=,stat=,command="], capture_output=True, text=True, timeout=3)
-        observed: dict[tuple[int, int], str] = {}
-        for line in r.stdout.splitlines():
-            parts = line.split(None, 3)
-            if len(parts) < 3 or not parts[2].startswith("Z"):
-                continue
-            pid = int(parts[0])
-            ppid = int(parts[1])
-            try:
-                r2 = subprocess.run(["ps", "-p", str(ppid), "-o", "command="], capture_output=True, text=True, timeout=2)
-                pcmd = r2.stdout.strip()
-            except Exception:
-                pcmd = ""
-            if "MAGI" in pcmd or "magi" in pcmd or "Desktop/MAGI" in pcmd or any(kw in pcmd for kw in _MAGI_ZOMBIE_PARENTS):
-                name = pcmd.split("/")[-1].split()[0][:20] if pcmd else "?"
-                observed[(pid, ppid)] = name
-        parent_names = _persistent_zombie_parent_names(observed)
-        magi_zombies = sum(
-            1
-            for identity in observed
-            if identity in _ZOMBIE_FIRST_SEEN
-            and time.monotonic() - _ZOMBIE_FIRST_SEEN[identity] >= _ZOMBIE_PERSISTENCE_SEC
-        )
-        detail = f"({', '.join(parent_names[:3])})" if parent_names else ""
-        return magi_zombies, detail
-    except Exception:
-        return 0, ""
+    """Backward-compatible view backed by the unified process collector."""
+    result = _collect_process_health()
+    count = int((result.get("summary") or {}).get("zombie_count", 0) or 0)
+    return count, _process_anomaly_detail(result)
 
 
 _MEM_MODULES = [
@@ -5503,7 +5485,7 @@ class MAGIMenuBar(rumps.App):
         self.mem_system_item.set_callback(None)
         self.mem_total_item = rumps.MenuItem("  ◻ MAGI 記憶（RSS｜模型）")
         self.mem_total_item.set_callback(None)
-        self.zombie_item = rumps.MenuItem("  ◻ 殭屍程序")
+        self.zombie_item = rumps.MenuItem("  ◻ 程序異常")
         self.zombie_item.set_callback(None)
 
         # ── 操作 ──
@@ -6113,7 +6095,10 @@ class MAGIMenuBar(rumps.App):
         cache["core_rss_mb"] = core_rss_mb
         cache["workload_rss_mb"] = workload_rss_mb
         cache["engine_rss_mb"] = engine_rss_mb
-        cache["zombies"] = _count_zombies()
+        process_health = _collect_process_health()
+        cache["process_health"] = process_health
+        zombie_count = int((process_health.get("summary") or {}).get("zombie_count", 0) or 0)
+        cache["zombies"] = (zombie_count, _process_anomaly_detail(process_health))
 
         with self._cache_lock:
             self._status_cache = cache
@@ -6393,11 +6378,14 @@ class MAGIMenuBar(rumps.App):
         )
         _set_colored_title(self.mem_total_item, f"  {icon} MAGI 記憶  {memory_label}", None)
 
-        zombies, z_detail = c.get("zombies", (0, ""))
-        if zombies == 0:
-            _set_colored_title(self.zombie_item, "  🟢 殭屍程序  無", None)
+        process_health = c.get("process_health", {}) if isinstance(c, dict) else {}
+        process_summary = process_health.get("summary", {}) if isinstance(process_health, dict) else {}
+        anomaly_count = int(process_summary.get("anomaly_count", 0) or 0)
+        if process_health.get("ok") is True and anomaly_count == 0:
+            _set_colored_title(self.zombie_item, "  🟢 程序異常  無（孤兒0／殭屍0／重複0）", None)
         else:
-            _set_colored_title(self.zombie_item, f"  🔴 殭屍程序  {zombies}個 {z_detail}", None)
+            detail = _process_anomaly_detail(process_health) if process_health.get("ok") is True else "監控讀取失敗"
+            _set_colored_title(self.zombie_item, f"  🔴 程序異常  {anomaly_count}項（{detail}）", None)
 
         # ── 選單列圖示 ──
         _profile = active_profile or expected_profile or "day"
@@ -6410,7 +6398,7 @@ class MAGIMenuBar(rumps.App):
         else:
             expected = len(SERVICES) + len(OMLX_ENGINES)
         nodes_ok = nodes_up >= 1 if REMOTE_NODES else True
-        if total >= expected and zombies == 0 and nodes_ok and not text_status.get("degraded") and not text_status.get("mismatch"):
+        if total >= expected and process_health.get("ok") is True and anomaly_count == 0 and nodes_ok and not text_status.get("degraded") and not text_status.get("mismatch"):
             self.title = " MAGI " if not _night_mode else " MAGI \U0001f319"
         elif core_up >= 2:
             self.title = " MAGI \u26a0"

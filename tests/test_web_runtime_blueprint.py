@@ -60,7 +60,7 @@ def test_process_monitor_routes_render_and_toggle(tmp_path, monkeypatch):
     from api.blueprints import web_runtime as mod
 
     class _Done:
-        stdout = "123 1 00:03:10 python api/server.py\n"
+        stdout = "123 1 00:03:10 S python api/server.py\n"
 
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: _Done())
 

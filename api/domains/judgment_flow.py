@@ -16,10 +16,16 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from api.legal_workflow import append_workflow_footer, detect_legal_workflow
-from api.domains.judgment_summary_quality import screen_stored_summary
+from api.domains.judgment_official_source import validate_official_judgment_candidate
+from api.domains.judgment_summary_quality import (
+    build_extractive_practice_summary,
+    evaluate_practice_ready_summary,
+    screen_stored_summary,
+)
 from api.legal_research_quality import (
     EXTERNAL_CANDIDATE,
     LOCAL_REVIEWED,
+    VERIFIED_EXTERNAL_OFFICIAL,
     VERIFIED_LOCAL,
     build_practice_view_card,
     canonical_case_key,
@@ -495,7 +501,7 @@ def _verify_external_candidates_against_local(
     query: str,
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Promote only exact local official matches and attach evidence ranking."""
+    """Promote exact local matches or independently verified official MCP text."""
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     if not items:
         return payload
@@ -505,7 +511,6 @@ def _verify_external_candidates_against_local(
     except Exception:
         logger.debug("local verification DB unavailable", exc_info=True)
 
-    verified = 0
     normalized: List[Dict[str, Any]] = []
     for raw in items:
         if not isinstance(raw, dict):
@@ -573,7 +578,38 @@ def _verify_external_candidates_against_local(
                         "url": str(local.get("source_url") or item.get("url") or ""),
                     }
                 )
-                verified += 1
+            else:
+                official = validate_official_judgment_candidate(item)
+                item["exclusion_codes"] = list(official.get("exclusion_codes") or [])
+                if official.get("ok"):
+                    full_text = str(official.get("full_text") or "")
+                    case_reason = str(item.get("case_reason") or item.get("reason") or query).strip()
+                    court_name = str(item.get("court") or item.get("court_name") or "").strip()
+                    summary = build_extractive_practice_summary(full_text, case_reason)
+                    quality = evaluate_practice_ready_summary(
+                        summary,
+                        full_text,
+                        case_reason,
+                        court_name,
+                    ) if summary else None
+                    item.update(
+                        {
+                            "verification_state": VERIFIED_EXTERNAL_OFFICIAL,
+                            "draft_eligible": bool(quality and quality.ok),
+                            "official_local_match": False,
+                            "official_external_fulltext_verified": True,
+                            "jid": official.get("jid") or item.get("jid") or item.get("doc_id") or "",
+                            "full_text": full_text,
+                            "summary_full": summary,
+                            "judgment_date": official.get("judgment_date") or item.get("judgment_date") or "",
+                            "url": official.get("source_url") or item.get("url") or "",
+                            "source_url": official.get("source_url") or item.get("source_url") or "",
+                            "official_fulltext_sha256": official.get("full_text_sha256") or "",
+                            "exclusion_codes": [] if quality and quality.ok else [
+                                "practice_summary_not_ready"
+                            ],
+                        }
+                    )
         else:
             state = str(item.get("verification_state") or "").strip()
             if source in {"court_judgments_local", "judicial_api_official"}:
@@ -594,8 +630,12 @@ def _verify_external_candidates_against_local(
         **payload,
         "items": ranked,
         "practice_view_cards": cards,
-        "verified_local_count": verified
-        + sum(1 for item in ranked if item.get("verification_state") == VERIFIED_LOCAL and "tlr" not in str(item.get("source") or "").lower()),
+        "verified_local_count": sum(
+            1 for item in ranked if item.get("verification_state") == VERIFIED_LOCAL
+        ),
+        "verified_external_official_count": sum(
+            1 for item in ranked if item.get("verification_state") == VERIFIED_EXTERNAL_OFFICIAL
+        ),
         "external_candidate_count": sum(
             1 for item in ranked if item.get("verification_state") == EXTERNAL_CANDIDATE
         ),
@@ -1208,26 +1248,30 @@ def format_practical_insight_result(query: str, judgments: Dict[str, Any], statu
                 row
                 for row in raw_items
                 if isinstance(row, dict)
-                and row.get("verification_state") == EXTERNAL_CANDIDATE
+                and row.get("verification_state") in {EXTERNAL_CANDIDATE, VERIFIED_EXTERNAL_OFFICIAL}
                 and str(row.get("jid") or "").strip()
                 and str(row.get("url") or row.get("source_url") or "").strip()
             ]
             if official_candidates:
                 lines.append("\n【待全文核對的官方裁判候選】")
-                lines.append("- 以下僅供定位司法院全文；尚未通過本機全文與爭點核對，不得直接放入書狀。")
+                lines.append("- 以下逐筆標示未納入正式見解的原因；未通過爭點摘要品質閘門者不得直接放入書狀。")
                 for row in official_candidates[:3]:
                     title = str(row.get("citation_text") or row.get("title") or row.get("jid") or "司法院裁判").strip()
                     jid = str(row.get("jid") or "").strip()
                     url = str(row.get("url") or row.get("source_url") or "").strip()
                     lines.append(f"- {title}｜JID {jid}")
+                    reasons = list(row.get("exclusion_codes") or [])
+                    if reasons:
+                        lines.append("  未納入原因：" + "、".join(str(value) for value in reasons))
                     lines.append(f"  {url}")
-                lines.append("- MAGI 會在官方全文進入本機裁判庫並精確綁定後，才產生可引用見解。")
+                lines.append("- MAGI 只會在官方全文與爭點摘要均精確綁定後，才產生可引用見解。")
             else:
                 lines.append("- 請改用全文精查，或稍後讓重摘要管線補齊後再引用。")
             return "\n".join(lines)
         ranked = enrich_and_rank_items(query, relevant_items)
         verified_items = [
-            row for row in ranked if row.get("verification_state") == VERIFIED_LOCAL
+            row for row in ranked
+            if row.get("verification_state") in {VERIFIED_LOCAL, VERIFIED_EXTERNAL_OFFICIAL}
         ]
         candidate_items = [
             row for row in ranked if row.get("verification_state") == EXTERNAL_CANDIDATE
@@ -1242,6 +1286,8 @@ def format_practical_insight_result(query: str, judgments: Dict[str, Any], statu
                     f"- {title}｜權威性 {card.get('authority_score', 0)}/100"
                     f"｜爭點相似度 {card.get('similarity_score', 0)}/100"
                 )
+                if row.get("verification_state") == VERIFIED_EXTERNAL_OFFICIAL:
+                    lines.append("  驗證來源：MCP 取得之司法院官方 JID、官方網址與完整全文；摘要由 MAGI 重新逐字擷取。")
                 rule = str(card.get("rule") or "").strip()
                 application = str(card.get("application") or "").strip()
                 if rule:

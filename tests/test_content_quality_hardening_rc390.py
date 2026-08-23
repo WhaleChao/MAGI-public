@@ -356,3 +356,28 @@ def test_pdf_namer_recovers_party_from_case_folder_when_extractor_returns_placeh
         doc_subtype="扶助律師接案通知書",
     )
     assert result["filename"].endswith("通知（凡江）.pdf")
+
+
+def test_pdf_namer_nested_article_citation_does_not_replace_outer_party() -> None:
+    validator = _load_module(
+        "pdf_namer_validator_nested_summary",
+        ROOT / "skills" / "pdf-namer" / "naming_validator.py",
+    )
+    filename = (
+        "20260612 臺北地方法院115年度訴字第1號通知"
+        "（王小明；應依契約（第4條）於期限內提出資料）.pdf"
+    )
+
+    party, span = validator._extract_party_segment_with_span(
+        validator._strip_ext(filename)
+    )
+    assert party == "王小明"
+    assert filename[span[0] : span[1]] == "王小明"
+
+    ok, issues, details = validator.validate_filename_quality(
+        filename,
+        source_hint="fixtures/2026-0001-王小明/通知.pdf",
+    )
+    assert ok is True
+    assert "當事人欄不是可辨識的人名或機構名稱" not in issues
+    assert "implausible_party" not in details

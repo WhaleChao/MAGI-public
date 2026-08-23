@@ -216,6 +216,10 @@
         <div id="orphanCount" class="v">-</div>
       </div>
       <div class="card">
+        <div class="k">殭屍程序</div>
+        <div id="zombieCount" class="v">-</div>
+      </div>
+      <div class="card">
         <div class="k">重複群組</div>
         <div id="dupCount" class="v">-</div>
       </div>
@@ -229,6 +233,11 @@
     <div class="panel">
       <h2>孤兒重任務（應為 0）</h2>
       <div id="orphanWrap"></div>
+    </div>
+
+    <div class="panel">
+      <h2>持續殭屍程序（應為 0）</h2>
+      <div id="zombieWrap"></div>
     </div>
 
     <div class="panel">
@@ -276,11 +285,14 @@
       }
       const s = d.summary || {};
       const orphan = Number(s.orphan_count || 0);
+      const zombie = Number(s.zombie_count || 0);
       const dup = Number(s.duplicate_groups || 0);
       document.getElementById('coreCount').textContent = s.core_count ?? 0;
       document.getElementById('workerCount').textContent = s.worker_count ?? 0;
       const orphanEl = document.getElementById('orphanCount');
       orphanEl.textContent = orphan; orphanEl.className = 'v ' + (orphan ? 'bad' : 'ok');
+      const zombieEl = document.getElementById('zombieCount');
+      zombieEl.textContent = zombie; zombieEl.className = 'v ' + (zombie ? 'bad' : 'ok');
       const dupEl = document.getElementById('dupCount');
       dupEl.textContent = dup; dupEl.className = 'v ' + (dup ? 'warn' : 'ok');
       document.getElementById('meta').textContent = `更新時間：${d.ts || '-'} ｜ 使用者：{{ user.username }}`;
@@ -301,6 +313,12 @@
       document.getElementById('orphanWrap').innerHTML = table(d.orphans || [], [
         { t: 'PID', f: r => r.pid },
         { t: '執行秒數', f: r => r.age_sec || 0 },
+        { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
+      ]);
+      document.getElementById('zombieWrap').innerHTML = table(d.zombies || [], [
+        { t: 'PID', f: r => r.pid },
+        { t: 'PPID', f: r => r.ppid },
+        { t: '執行時間', f: r => r.age || '-' },
         { t: '命令', f: r => r.cmd || '-', cls: 'cmd' },
       ]);
 

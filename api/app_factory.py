@@ -15,6 +15,7 @@ from api.blueprints.exam_tutor import exam_tutor_bp
 from api.blueprints.golem_console import golem_console_bp
 from api.blueprints.lottery import lottery_bp
 from api.blueprints.cookie_cutter import cookie_cutter_bp
+from api.blueprints.video_studio import video_studio_bp
 from api.blueprints.osc_accounting import osc_accounting_bp
 from api.blueprints.osc_debt import osc_debt_bp
 from api.blueprints.osc_pdf import osc_pdf_bp
@@ -226,5 +227,6 @@ def register_core_blueprints(app: Flask) -> Flask:
     app.register_blueprint(lottery_bp)
     app.register_blueprint(cookie_cutter_bp)
     app.register_blueprint(exam_tutor_bp)
+    app.register_blueprint(video_studio_bp)
     app.register_blueprint(dashboard_pages_bp)
     return app

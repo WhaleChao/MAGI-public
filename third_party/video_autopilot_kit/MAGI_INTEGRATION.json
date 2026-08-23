@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "component": "video-autopilot-kit",
+  "upstream": "https://github.com/Hao0321/video-autopilot-kit",
+  "commit": "6dc9ad8b3dc9b2ef158e4eac835f5f721e5b3bed",
+  "version": "0.21.1",
+  "license": "MIT",
+  "upstream_source_file": "src/silent_vlog_maker/shorts_vertical.py",
+  "upstream_source_sha256": "67a84cf455aadd14924978b9147ec406bfdad73e0f83b4ce2d691c034d627942",
+  "derived_runtime": "runtime/portrait_normalizer.py",
+  "magi_adapter": "magi_v3/video_autopilot_adapter.py",
+  "enabled_path": "programmatic_ffmpeg_portrait_normalizer",
+  "disabled_capabilities": [
+    "automatic_update",
+    "remote_asset_fetch",
+    "external_publish",
+    "capcut_windows_path"
+  ],
+  "runtime_network_allowed": false,
+  "user_media_persisted": false
+}

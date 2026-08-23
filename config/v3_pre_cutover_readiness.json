@@ -57,7 +57,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 400,
+          "line": 424,
           "anchor": "def create_tools_app",
           "kind": "source",
           "finding": "The fixed V3 tools factory delegates to the exact V2-compatible 5003 application."
@@ -132,7 +132,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 394,
+          "line": 418,
           "anchor": "def create_main_app",
           "kind": "source",
           "finding": "The main compatibility application preserves the original WSGI request/session implementation."
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 394,
+          "line": 418,
           "anchor": "def create_main_app",
           "kind": "source",
           "finding": "The lazy WSGI compatibility factory forwards iterable streaming responses unchanged."
@@ -207,7 +207,7 @@
       "evidence": [
         {
           "file": "magi_v3/compat/gateway.py",
-          "line": 400,
+          "line": 424,
           "anchor": "def create_tools_app",
           "kind": "source",
           "finding": "The tools compatibility app preserves the original multipart WSGI request parser."

@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from api.domains.judgment_official_source import validate_official_judgment_candidate
 from api.runtime_paths import get_runtime_dir
 
 _MAGI_ROOT = Path(__file__).resolve().parents[2]
@@ -178,6 +179,7 @@ def _dedupe_key(item: Dict[str, Any]) -> str:
 async def search_practical_judgments_via_mcp_async(
     query: str,
     *,
+    court: str = "",
     case_type: str = "",
     limit: int = 3,
     fulltext_limit: int = 1,
@@ -187,6 +189,8 @@ async def search_practical_judgments_via_mcp_async(
         return {"success": False, "error": "missing_query", "source": "taiwan_legal_mcp"}
 
     params: Dict[str, Any] = {"case_type": case_type, "max_results": max(1, min(10, int(limit)))}
+    if str(court or "").strip():
+        params["court"] = str(court).strip()[:30]
     case_params = parse_taiwan_case_number(query)
     if case_params:
         params.update(case_params)
@@ -218,12 +222,33 @@ async def search_practical_judgments_via_mcp_async(
             raw.get("snippet"),
             limit=1200,
         )
+        full_text = str(detail.get("full_text") or detail.get("content") or "").strip()
+        source_url = str(detail.get("source_url") or detail.get("official_url") or raw.get("url") or "").strip()
+        official_check = validate_official_judgment_candidate(
+            {
+                "jid": jid,
+                "source_url": source_url,
+                "full_text": full_text,
+                "judgment_date": detail.get("judgment_date") or detail.get("date") or raw.get("date"),
+                # This adapter is itself bound to the Judicial Yuan MCP.  The
+                # shared validator still independently checks JID, URL and
+                # full-text shape before this flag can leave the adapter.
+                "official_origin": True,
+            }
+        )
         item = {
             "title": title,
             "summary_preview": summary or "已由司法院公開資料命中，請開啟來源全文核對。",
             "summary_full": summary,
-            "url": detail.get("source_url") or raw.get("url") or "",
+            "url": source_url,
+            "source_url": source_url,
             "jid": jid,
+            "court": court,
+            "case_reason": str(detail.get("case_reason") or detail.get("cause") or raw.get("cause") or "").strip(),
+            "judgment_date": official_check.get("judgment_date") or "",
+            "full_text": full_text,
+            "official_origin": bool(official_check.get("ok")),
+            "official_validation_codes": list(official_check.get("exclusion_codes") or []),
             "source": "taiwan_legal_mcp",
             "source_label": "台灣法律資料庫 MCP（司法院公開資料）",
             "is_degraded": False,
@@ -247,10 +272,11 @@ async def search_practical_judgments_via_mcp_async(
     }
 
 
-def search_practical_judgments_via_mcp(query: str, *, case_type: str = "", limit: int = 3, fulltext_limit: int = 1) -> Dict[str, Any]:
+def search_practical_judgments_via_mcp(query: str, *, court: str = "", case_type: str = "", limit: int = 3, fulltext_limit: int = 1) -> Dict[str, Any]:
     return asyncio.run(
         search_practical_judgments_via_mcp_async(
             query,
+            court=court,
             case_type=case_type,
             limit=limit,
             fulltext_limit=fulltext_limit,

@@ -9,6 +9,7 @@ from api.domains.judgment_summary_quality import (
     rank_practice_candidates,
 )
 from scripts.ops.judgment_summary_staged_backfill import _due_queue_ids
+from scripts.ops import judgment_summary_staged_backfill as staged
 
 
 def test_caption_issue_canonicalization_does_not_store_party_names() -> None:
@@ -65,3 +66,17 @@ def test_nvidia_queue_backoff_is_durable_and_bounded() -> None:
         "3": {"id": 3, "queued_at": "2026-08-01T00:02:00+00:00"},
     }
     assert _due_queue_ids(rows, limit=2, now=now) == [1, 3]
+
+
+def test_provider_capacity_reports_durable_daily_budget_not_scheduler_theory(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
+    budget_path = tmp_path / "budget.json"
+    budget_path.write_text('{"day":"2026-08-22","used":9}', encoding="utf-8")
+    monkeypatch.setattr(staged, "NVIDIA_BUDGET_PATH", budget_path)
+    monkeypatch.setenv("MAGI_NVIDIA_RESUMMARY_DAILY_BUDGET", "24")
+    assert staged._nvidia_budget_snapshot(now=now) == {
+        "ceiling": 24,
+        "used": 9,
+        "remaining": 15,
+    }
+    assert staged._nvidia_budget_remaining(requested=32, now=now) == 15

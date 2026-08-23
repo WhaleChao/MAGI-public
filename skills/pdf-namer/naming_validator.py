@@ -6,6 +6,7 @@ Format guard for generated PDF filenames.
 Called by generate_name_proposal() before returning; adds warnings but does NOT block.
 """
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +19,6 @@ _TYPES_REQUIRING_BRACKETS = frozenset([
 
 _DATE_RE = re.compile(r"^\d{8}")
 _BRACKET_RE = re.compile(r"[（(].+[）)]")
-_PARTY_RE = re.compile(r"[（(]([^（）()]+)[）)]")
 
 _UNKNOWN_TOKENS = (
     "找不到",
@@ -120,6 +120,36 @@ _PLACEHOLDER_TOKENS = ("待補摘要", "Unknown", "UNKNOWN", "無法辨識", "�
 _OCR_JUNK_RE = re.compile(r"[~�]|\s{3,}|[。；，、]{3,}")
 
 
+@dataclass(frozen=True)
+class _BalancedBracketMatch:
+    """Match-compatible value for one balanced outer bracket.
+
+    A legal-document summary may itself contain a citation such as
+    ``（第4條）``.  A flat regular expression sees only that inner pair and can
+    therefore misclassify the citation as the party.  Keep the outer content
+    bounds so the existing sanitiser can still replace only group 1.
+    """
+
+    content: str
+    content_start: int
+    content_end: int
+
+    def group(self, index: int = 0) -> str:
+        if index != 1:
+            raise IndexError("balanced bracket match exposes only group 1")
+        return self.content
+
+    def start(self, index: int = 0) -> int:
+        if index != 1:
+            raise IndexError("balanced bracket match exposes only group 1")
+        return self.content_start
+
+    def end(self, index: int = 0) -> int:
+        if index != 1:
+            raise IndexError("balanced bracket match exposes only group 1")
+        return self.content_end
+
+
 @lru_cache(maxsize=1)
 def _opencc_s2t():
     try:
@@ -171,8 +201,35 @@ def _extract_party_segment_with_span(stem: str) -> Tuple[str, Optional[Tuple[int
     return party, (m.start(1) + rel, m.start(1) + rel + len(party))
 
 
+def _balanced_outer_brackets(stem: str):
+    """Yield complete top-level bracket contents, preserving nested pairs."""
+
+    expected_closers: List[str] = []
+    content_start = -1
+    for index, character in enumerate(stem or ""):
+        if character in "（(":
+            if not expected_closers:
+                content_start = index + 1
+            expected_closers.append("）" if character == "（" else ")")
+            continue
+        if character not in "）)":
+            continue
+        if not expected_closers or character != expected_closers[-1]:
+            expected_closers.clear()
+            content_start = -1
+            continue
+        expected_closers.pop()
+        if not expected_closers and content_start >= 0:
+            yield _BalancedBracketMatch(
+                (stem or "")[content_start:index],
+                content_start,
+                index,
+            )
+            content_start = -1
+
+
 def _select_party_match(stem: str):
-    for match in _PARTY_RE.finditer(stem or ""):
+    for match in _balanced_outer_brackets(stem):
         raw = match.group(1).strip()
         party = raw.split("；", 1)[0].split(";", 1)[0].strip()
         if not party:

@@ -60,6 +60,8 @@ from api.domains.judgment_summary_quality import (
     infer_case_issue,
     screen_stored_summary,
 )
+from api.domains.judgment_official_source import validate_official_judgment_candidate
+from api.legal_research_quality import prepare_external_legal_query
 from api.domains.judgment_value_filter import SKIP_SUMMARY, classify_judgment_record
 from api.osc.insight_filters import is_extractive_fast_judgment_digest, is_non_extractable_legal_insight
 try:
@@ -4244,6 +4246,22 @@ def _iter_jdg_raw_files() -> list[str]:
     return out
 
 
+def _jdg_raw_wrapper_state(raw_text: str) -> str:
+    """Classify a cached JDoc wrapper without treating failures as complete."""
+    try:
+        wrapper = json.loads(str(raw_text or ""))
+    except (TypeError, ValueError):
+        return "invalid"
+    if not isinstance(wrapper, dict) or not isinstance(wrapper.get("payload"), dict):
+        return "invalid"
+    error = str(wrapper["payload"].get("error") or "").strip()
+    if not error:
+        return "success"
+    if "查無資料" in error:
+        return "removed"
+    return "failed"
+
+
 def official_api_night_pull(
     *,
     max_jdocs: int = JDG_API_NIGHT_MAX_JDOCS,
@@ -4354,6 +4372,21 @@ def official_api_night_pull(
 
     # max_days=0 表示不限制，拉完 JList 回傳的所有日期
     entries = jlist if (max_days <= 0) else jlist[: max(1, int(max_days))]
+    listed_jids: set[str] = set()
+    completed_jids: set[str] = set()
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        d = str(ent.get("date") or "").strip() or "unknown_date"
+        for jid in ent.get("list") or []:
+            jid_s = str(jid or "").strip()
+            if not jid_s:
+                continue
+            listed_jids.add(jid_s)
+            raw_path = os.path.join(JDG_API_RAW_ROOT, d.replace("/", "-"), _jid_slug(jid_s) + ".json")
+            if _jdg_raw_wrapper_state(_read_text_file(raw_path, default="")) in {"success", "removed"}:
+                completed_jids.add(jid_s)
+    source_completed_before = len(completed_jids)
     logger.info(
         "night_pull: JList 回傳 %d 個日期，本次處理 %d 個（max_days=%d, max_jdocs=%d）",
         len(jlist), len(entries), max_days, max_jdocs,
@@ -4385,7 +4418,9 @@ def official_api_night_pull(
             raw_path = os.path.join(date_dir, slug + ".json")
             existed_before = os.path.exists(raw_path)
             existing_raw = _read_text_file(raw_path, default="") if existed_before else ""
-            if existed_before and (not refresh_existing) and (not force):
+            existing_state = _jdg_raw_wrapper_state(existing_raw)
+            if existed_before and existing_state in {"success", "removed"} and (not refresh_existing) and (not force):
+                completed_jids.add(jid_s)
                 skipped += 1
                 continue
             time.sleep(0.15)  # 150ms 間隔（6hr 窗口可拉 ~25k 筆）
@@ -4418,26 +4453,29 @@ def official_api_night_pull(
                 "payload": resp,
             }
             wrapper_text = json.dumps(wrapper, ensure_ascii=False, sort_keys=True, indent=2)
+            response_state = _jdg_raw_wrapper_state(wrapper_text)
             if existed_before and existing_raw:
                 existing_hash = hashlib.sha1(existing_raw.encode("utf-8", errors="ignore")).hexdigest()
                 wrapper_hash = hashlib.sha1(wrapper_text.encode("utf-8", errors="ignore")).hexdigest()
-                if existing_hash == wrapper_hash:
+                if existing_hash == wrapper_hash and response_state in {"success", "removed"}:
                     skipped += 1
                     continue
-            if isinstance(resp, dict) and str(resp.get("error") or "").find("查無資料") >= 0:
+            if response_state == "removed":
                 removed += 1
-            if isinstance(resp, dict) and resp.get("error") and str(resp.get("error")).strip() != "":
+            elif response_state != "success":
                 failed += 1
                 date_failed += 1
-            else:
-                if existed_before:
-                    updated_existing += 1
-                else:
-                    fetched += 1
             try:
                 with open(raw_path, "w", encoding="utf-8") as f:
                     f.write(wrapper_text)
                 new_files.append(raw_path)
+                if response_state in {"success", "removed"}:
+                    completed_jids.add(jid_s)
+                if response_state == "success":
+                    if existed_before:
+                        updated_existing += 1
+                    else:
+                        fetched += 1
             except Exception:
                 failed += 1
         # 日期層級日誌
@@ -4476,6 +4514,10 @@ def official_api_night_pull(
             "credentials_source": cred_src,
             "token_refreshes": token_refreshes,
             "consecutive_failures": consecutive_failures,
+            "source_listed_count": len(listed_jids),
+            "source_completed_before": source_completed_before,
+            "source_completed_count": len(completed_jids),
+            "source_remaining_count": max(0, len(listed_jids) - len(completed_jids)),
         },
     )
     pull_state = {"runs": pull_state_runs[:30]}
@@ -4500,6 +4542,9 @@ def official_api_night_pull(
             "failed": failed,
             "removed": removed,
             "dates": sorted(set(dates_used), reverse=True),
+            "source_listed_count": len(listed_jids),
+            "source_completed_count": len(completed_jids),
+            "source_remaining_count": max(0, len(listed_jids) - len(completed_jids)),
         },
     )
     if notify:
@@ -4515,6 +4560,10 @@ def official_api_night_pull(
         "failed": failed,
         "removed": removed,
         "dates": sorted(set(dates_used), reverse=True),
+        "source_listed_count": len(listed_jids),
+        "source_completed_before": source_completed_before,
+        "source_completed_count": len(completed_jids),
+        "source_remaining_count": max(0, len(listed_jids) - len(completed_jids)),
         "raw_root": JDG_API_RAW_ROOT,
         "new_files_preview": new_files[:20],
     }
@@ -5448,6 +5497,14 @@ def daily_crawl(
     upstream_deferred = bool(
         all_failed and _all_daily_failures_are_retryable_upstream(failure_samples)
     )
+    gap_fill_result: dict[str, Any] = {"status": "not_enabled", "pii_included": False}
+    if _env("JUDGMENT_MCP_GAP_FILL_ENABLE", "0") in ("1", "true", "True", "yes", "YES"):
+        gap_fill_result = mcp_official_gap_fill(
+            max_cases=max_cases,
+            max_reasons=max_reasons,
+            max_results_per=int(_env("JUDGMENT_MCP_GAP_MAX_RESULTS_PER", "5") or "5"),
+            time_budget_sec=int(_env("JUDGMENT_MCP_GAP_TIME_BUDGET_SEC", "480") or "480"),
+        )
     return {
         "success": not all_failed,
         "status": "deferred" if upstream_deferred else ("failed" if all_failed else "success"),
@@ -5468,6 +5525,149 @@ def daily_crawl(
         "failure_samples": failure_samples[:10],
         "results": all_results,
         "summary_retry": retry_result,
+        "mcp_official_gap_fill": gap_fill_result,
+    }
+
+
+def mcp_official_gap_fill(
+    *,
+    max_cases: int = 0,
+    max_reasons: int = 20,
+    max_results_per: int = 5,
+    time_budget_sec: int = 1200,
+    search_fn=None,
+    connection=None,
+) -> dict:
+    """Fill official-JID/full-text gaps from MCP without trusting its summary.
+
+    Only the privacy-screened case reason leaves MAGI.  Every returned record
+    is independently bound to an official JID, matching Judicial Yuan URL and
+    full text before storage; the provider summary is discarded and rebuilt
+    deterministically from the official source.
+    """
+    max_cases = max(0, int(max_cases or 0))
+    max_reasons = max(1, min(100, int(max_reasons or 20)))
+    max_results_per = max(1, min(10, int(max_results_per or 5)))
+    time_budget_sec = max(30, min(7200, int(time_budget_sec or 1200)))
+    if search_fn is None:
+        from api.osc.legaltech_taiwan_law_mcp import search_practical_judgments_via_legaltech
+
+        search_fn = search_practical_judgments_via_legaltech
+
+    cases = _scan_active_cases(max_cases=max_cases)
+    seen_reasons: set[str] = set()
+    reasons: list[dict[str, str]] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        reason = str(case.get("db_case_reason") or "").strip() or _parse_reason(case.get("name", ""))
+        if not _is_plausible_case_reason(reason) or reason.lower() in seen_reasons:
+            continue
+        if any(token in reason for token in ("顧問", "常年顧問")):
+            continue
+        seen_reasons.add(reason.lower())
+        raw_type = str(case.get("db_case_type") or "").strip()
+        case_type = "行政" if "行政" in raw_type else ("刑事" if "刑" in raw_type else "")
+        reasons.append({"reason": reason, "case_type": case_type})
+    reasons = _rotating_reason_window(reasons, max_reasons)
+    if not reasons:
+        return {
+            "success": True,
+            "status": "skipped",
+            "reason": "no_active_case_reasons",
+            "pii_included": False,
+            "reason_count": 0,
+        }
+
+    owns_connection = connection is None
+    conn = connection or _get_db()
+    if not conn:
+        return {"success": False, "status": "failed", "reason": "db_unavailable", "pii_included": False}
+    _ensure_court_judgments_table(conn)
+    started = time.monotonic()
+    seen_jids: set[str] = set()
+    counters = {
+        "reason_count": 0,
+        "candidate_count": 0,
+        "verified_fulltext_count": 0,
+        "stored_count": 0,
+        "practice_summary_count": 0,
+        "duplicate_jid_count": 0,
+        "provider_failure_count": 0,
+    }
+    rejected: dict[str, int] = {}
+    try:
+        for row in reasons:
+            if time.monotonic() - started >= time_budget_sec:
+                break
+            privacy = prepare_external_legal_query(str(row["reason"]))
+            if not privacy.external_allowed or not privacy.safe_query:
+                rejected["privacy_gate_rejected"] = rejected.get("privacy_gate_rejected", 0) + 1
+                continue
+            counters["reason_count"] += 1
+            try:
+                payload = search_fn(
+                    privacy.safe_query,
+                    case_type=str(row.get("case_type") or ""),
+                    limit=max_results_per,
+                    fulltext_limit=max_results_per,
+                )
+            except Exception:
+                counters["provider_failure_count"] += 1
+                continue
+            if not payload.get("success"):
+                counters["provider_failure_count"] += 1
+                continue
+            for candidate in list(payload.get("items") or [])[:max_results_per]:
+                if not isinstance(candidate, dict):
+                    rejected["invalid_candidate_schema"] = rejected.get("invalid_candidate_schema", 0) + 1
+                    continue
+                counters["candidate_count"] += 1
+                verified = validate_official_judgment_candidate(candidate)
+                if not verified.get("ok"):
+                    for code in verified.get("exclusion_codes") or ["official_validation_failed"]:
+                        rejected[str(code)] = rejected.get(str(code), 0) + 1
+                    continue
+                jid = str(verified.get("jid") or "")
+                if jid in seen_jids:
+                    counters["duplicate_jid_count"] += 1
+                    continue
+                seen_jids.add(jid)
+                counters["verified_fulltext_count"] += 1
+                full_text = str(verified.get("full_text") or "")
+                reason = str(candidate.get("case_reason") or row["reason"]).strip()
+                summary = build_extractive_practice_summary(full_text, reason)
+                quality = evaluate_practice_summary(summary, full_text, reason) if summary else None
+                safe_summary = summary if quality and quality.ok else ""
+                if safe_summary:
+                    counters["practice_summary_count"] += 1
+                stored = _upsert_court_judgment_by_jid(
+                    conn,
+                    jid=jid,
+                    court_name=str(candidate.get("court") or "").strip(),
+                    case_number=str(candidate.get("citation_text") or candidate.get("title") or "").strip(),
+                    case_type=reason,
+                    judgment_date=str(verified.get("judgment_date") or "") or None,
+                    summary=safe_summary,
+                    full_text=full_text,
+                    source_url=str(verified.get("source_url") or ""),
+                )
+                if stored:
+                    counters["stored_count"] += 1
+    finally:
+        if owns_connection:
+            try:
+                conn.close()
+            except Exception:
+                logger.debug("mcp gap-fill DB close failed", exc_info=True)
+    timed_out = time.monotonic() - started >= time_budget_sec
+    return {
+        "success": counters["provider_failure_count"] < max(1, counters["reason_count"]),
+        "status": "partial" if timed_out else "success",
+        **counters,
+        "rejected_by_code": dict(sorted(rejected.items())),
+        "time_budget_exhausted": timed_out,
+        "pii_included": False,
     }
 
 
@@ -5529,6 +5729,7 @@ def main() -> int:
                 'scan_active_cases {"max_cases":0}',
                 'scan_active_reasons {"max_cases":0,"max_reasons":0}',
                 "daily_crawl",
+                'mcp_official_gap_fill {"max_cases":0,"max_reasons":20,"max_results_per":5,"time_budget_sec":1200}',
                 'official_api_night_pull {"max_jdocs":25000,"max_days":0,"force":false}',
                 'official_api_day_process {"max_docs":200,"summarize_max":80,"force":false}',
                 'official_api_auto {"force":false}',
@@ -5718,6 +5919,19 @@ def main() -> int:
 
     if task in ("daily_crawl", "每日爬取"):
         r = daily_crawl()
+        return _ok(r)
+
+    if task.startswith("mcp_official_gap_fill") or task.startswith("MCP官方全文補齊"):
+        payload = _load_jsonish(
+            task.replace("mcp_official_gap_fill", "", 1)
+                .replace("MCP官方全文補齊", "", 1).strip()
+        )
+        r = mcp_official_gap_fill(
+            max_cases=int(payload.get("max_cases", 0)),
+            max_reasons=int(payload.get("max_reasons", 20)),
+            max_results_per=int(payload.get("max_results_per", 5)),
+            time_budget_sec=int(payload.get("time_budget_sec", 1200)),
+        )
         return _ok(r)
 
     if task.startswith("official_api_night_pull") or task.startswith("夜間拉取裁判資料"):

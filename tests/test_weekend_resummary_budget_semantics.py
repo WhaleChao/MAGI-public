@@ -61,6 +61,9 @@ def test_nim_daily_budget_stops_immediately_as_checkpointed_deferral() -> None:
     assert weekend_resummary._nim_daily_budget_exhausted(
         "provider:nim_background_budget_reserved:475/475;daily=500"
     )
+    assert weekend_resummary._nim_daily_budget_exhausted(
+        "provider:background_heavy_authorization_budget_exhausted"
+    )
     assert not weekend_resummary._nim_daily_budget_exhausted("provider timeout")
 
     payload = weekend_resummary._budget_deferred_result(processed=117, total=300)
@@ -109,6 +112,20 @@ def test_legacy_zero_exit_budget_marker_is_reconcilable_without_deleting_evidenc
     assert terminal_schedule_deferral_reason("", legacy_error) == (
         "nim_daily_budget_exhausted"
     )
+
+
+def test_background_authorization_budget_marker_is_a_terminal_deferral() -> None:
+    exhausted = "provider:background_heavy_authorization_budget_exhausted"
+
+    assert terminal_schedule_deferral_reason("", exhausted) == (
+        "nim_daily_budget_exhausted"
+    )
+
+    payload = weekend_resummary._budget_deferred_result(processed=0, total=64)
+    classified = classify_cron_result(0, json.dumps(payload), exhausted)
+    assert classified.success is False
+    assert classified.status == "deferred"
+    assert classified.error == "nim_daily_budget_exhausted"
 
 
 def test_utf8_byte_large_but_character_short_sources_are_terminal(monkeypatch, tmp_path) -> None:

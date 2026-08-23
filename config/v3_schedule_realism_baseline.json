@@ -4,8 +4,8 @@
   "captured_at": "2026-08-11T04:32:52.869749+00:00",
   "source_evidence": {
     "job_definitions_path": "cron_jobs.json",
-    "job_definitions_sha256": "21778907c9efb4ea2b65688c653287b34288d8248bab9f08ac3a05d9652677f5",
-    "logical_definition_sha256": "21da77816a562dfba79ded3928a58b6dcb9cdaca8b0a8fa4f1369807cfe35187",
+    "job_definitions_sha256": "8c584cb38cf21a4df5d15b3da47dccbcc43b4d57b1ec20e4bbd7362eaacf539b",
+    "logical_definition_sha256": "dc2a462a21889c352a719797b0d323918311f80ef408c7d4f01cfb578709dca2",
     "runtime_state_source": "cron_state.json",
     "runtime_state_sha256": "c3fda4c39b255f96e528fcfb5e48e944e6daf518668a69ad5ce689256d25ece2",
     "runtime_state_read_only_snapshot": true,
@@ -13,13 +13,13 @@
     "legacy_naive_timestamp_timezone": "Asia/Taipei",
     "observation_timestamps_normalized_to_utc": true,
     "observation_command_binding": "canonical_argv_sha256_v1",
-    "runtime_source_evidence_receipt_sha256": "9ad9c181d20a798272642bd14fa11df0b0407ba09723c42f30db0480d5e50ef4"
+    "runtime_source_evidence_receipt_sha256": "9a1774286439cb1e9ace81c62749ad58d0a1f38664147219d02a711688fa3b6d"
   },
   "coverage": {
     "job_definitions": 105,
     "enabled_job_definitions": 95,
-    "enabled_jobs_with_successful_duration": 89,
-    "enabled_jobs_without_successful_duration": 6,
+    "enabled_jobs_with_successful_duration": 88,
+    "enabled_jobs_without_successful_duration": 7,
     "minimum_samples_per_job_for_percentile": 3,
     "jobs_meeting_minimum_samples": 84,
     "global_duration_percentile_available": false
@@ -64,25 +64,6 @@
         }
       ],
       "duration_p95_seconds": 4.984
-    },
-    {
-      "job_id": "job_1770705679",
-      "command_sha256": "e15b6f3db236bcd3cf287eea6552e2f12067ef8ea9f2fbea00a319226093a2f3",
-      "duration_seconds": 43.82,
-      "sample_count": 2,
-      "successful": true,
-      "observed_at": "2026-08-11T02:01:04.192344+00:00",
-      "baseline_kind": "rolling_successful_production_observations",
-      "samples": [
-        {
-          "duration_seconds": 341.756,
-          "observed_at": "2026-08-09T08:06:47.123421+00:00"
-        },
-        {
-          "duration_seconds": 43.82,
-          "observed_at": "2026-08-11T02:01:04.192344+00:00"
-        }
-      ]
     },
     {
       "job_id": "job_1770948489644_0726cf",
@@ -4443,10 +4424,18 @@
   ],
   "invalidated_observations": [
     {
+      "job_id": "job_1770705679",
+      "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
+      "observed_command_sha256": "e15b6f3db236bcd3cf287eea6552e2f12067ef8ea9f2fbea00a319226093a2f3",
+      "current_command_sha256": "09fe61d783151bd2bbb46192f790adcd4e5a8680093543ea7d424eac3d762d00",
+      "invalidated_sample_count": 2,
+      "last_observed_at": "2026-08-11T02:01:04.192344+00:00"
+    },
+    {
       "job_id": "job_drive_case_sync_all_files",
       "reason": "COMMAND_DEFINITION_CHANGED_AFTER_OBSERVATION",
       "observed_command_sha256": "7a9b858c877ba1fc657c3a33a5b0e707df338b368289891e9e1817439947f7ba",
-      "current_command_sha256": "1ba9ae0521a041d68f525b776daf8b25cc34fdc8402b74598900fa085710c497",
+      "current_command_sha256": "f645710576b728af5cd4557bc9a329622895e8115413f8a2c8a24c10b8e6e32b",
       "invalidated_sample_count": 2,
       "last_observed_at": "2026-08-06T00:53:08.664717+00:00"
     },
@@ -4677,7 +4666,7 @@
   "known_gaps": [
     {
       "code": "DURATION_COVERAGE_INCOMPLETE",
-      "affected_enabled_jobs": 5,
+      "affected_enabled_jobs": 7,
       "detail": "No successful last_duration_sec observation exists in the captured scheduler state."
     },
     {

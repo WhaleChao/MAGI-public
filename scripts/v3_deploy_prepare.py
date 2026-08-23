@@ -2464,7 +2464,11 @@ def prepare_deployment(
     try:
         cron_snapshot_bytes, cron_snapshot_evidence = render_snapshot(
             source=external_inputs.cron_jobs_source_file,
-            release_root=root,
+            # Production launch agents execute from the canonical immutable
+            # installed release.  Cron commands must use that same binding;
+            # otherwise a running worker remains coupled to the caller-owned
+            # evidence/staging tree even after the release is installed.
+            release_root=binding_root if deployment_mode == "production" else root,
             runtime_root=runtime,
             python_runtime=external_inputs.python_runtime,
         )

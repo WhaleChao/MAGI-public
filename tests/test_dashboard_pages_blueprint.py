@@ -171,10 +171,10 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
     assets = root / "magi_v3" / "manual_assets"
     assets.mkdir(parents=True)
     payloads = {
-        "MAGI_V3_維修百科全書_rc627.html": b"<!doctype html><title>MAGI manual</title>",
-        "MAGI_V3_維修百科全書_rc627.pdf": b"%PDF-1.4\n%%EOF\n",
-        "MAGI_V3_維修百科全書_rc627.md": "# 維修百科\n".encode(),
-        "MAGI_V3_原始碼索引_rc627.json": b'{"schema":"magi.source-index/v1"}',
+        "MAGI_V3_維修百科全書_rc641.html": b"<!doctype html><title>MAGI manual</title>",
+        "MAGI_V3_維修百科全書_rc641.pdf": b"%PDF-1.4\n%%EOF\n",
+        "MAGI_V3_維修百科全書_rc641.md": "# 維修百科\n".encode(),
+        "MAGI_V3_原始碼索引_rc641.json": b'{"schema":"magi.source-index/v1"}',
     }
     for name, data in payloads.items():
         (assets / name).write_bytes(data)
@@ -193,10 +193,10 @@ def test_maintenance_manual_assets_require_login_and_are_exact(tmp_path, monkeyp
         assert client.get(url).status_code in {302, 401}
 
     expected = {
-        "/manual": payloads["MAGI_V3_維修百科全書_rc627.html"],
-        "/manual/pdf": payloads["MAGI_V3_維修百科全書_rc627.pdf"],
-        "/manual/markdown": payloads["MAGI_V3_維修百科全書_rc627.md"],
-        "/manual/source-index.json": payloads["MAGI_V3_原始碼索引_rc627.json"],
+        "/manual": payloads["MAGI_V3_維修百科全書_rc641.html"],
+        "/manual/pdf": payloads["MAGI_V3_維修百科全書_rc641.pdf"],
+        "/manual/markdown": payloads["MAGI_V3_維修百科全書_rc641.md"],
+        "/manual/source-index.json": payloads["MAGI_V3_原始碼索引_rc641.json"],
     }
     for url, body in expected.items():
         response = client.get(url, headers={"X-User-ID": "u1"})

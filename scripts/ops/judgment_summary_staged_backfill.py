@@ -18,6 +18,7 @@ import argparse
 from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -251,12 +252,15 @@ def _due_queue_ids(
     return [rid for _attempts, _selected, _queued, rid in due[: max(0, int(limit))]]
 
 
-def _nvidia_budget_remaining(*, requested: int, now: datetime) -> int:
-    """Persist a daily provider-call ceiling; no provider is contacted here."""
+def _nvidia_daily_budget_ceiling() -> int:
     try:
-        ceiling = max(0, int(os.environ.get("MAGI_NVIDIA_RESUMMARY_DAILY_BUDGET", "24")))
+        return max(0, int(os.environ.get("MAGI_NVIDIA_RESUMMARY_DAILY_BUDGET", "24")))
     except (TypeError, ValueError):
-        ceiling = 24
+        return 24
+
+
+def _nvidia_budget_snapshot(*, now: datetime) -> dict[str, int]:
+    ceiling = _nvidia_daily_budget_ceiling()
     day = now.date().isoformat()
     payload: dict[str, Any] = {}
     try:
@@ -264,7 +268,13 @@ def _nvidia_budget_remaining(*, requested: int, now: datetime) -> int:
     except Exception:
         pass
     used = int(payload.get("used") or 0) if payload.get("day") == day else 0
-    return max(0, min(int(requested), ceiling - used))
+    return {"ceiling": ceiling, "used": max(0, used), "remaining": max(0, ceiling - used)}
+
+
+def _nvidia_budget_remaining(*, requested: int, now: datetime) -> int:
+    """Persist a daily provider-call ceiling; no provider is contacted here."""
+    snapshot = _nvidia_budget_snapshot(now=now)
+    return max(0, min(int(requested), snapshot["remaining"]))
 
 
 def _record_nvidia_budget(*, calls: int, now: datetime) -> None:
@@ -681,7 +691,20 @@ def main() -> int:
         report["pending_nvidia_review"] = len(queue)
         report["reviewed_no_usable_insight"] = len(reviewed)
         # NVIDIA review, not local discovery, is the usable-summary bottleneck.
-        report["first_pass_daily_capacity"] = report["nvidia_limit"] * 96
+        # Keep scheduler selection capacity separate: multiplying 96 runs by
+        # --nvidia-limit used to advertise 3,072/day even though the durable
+        # provider ceiling was 24/day.
+        budget = _nvidia_budget_snapshot(now=datetime.now().astimezone())
+        report["scheduler_selection_capacity"] = report["nvidia_limit"] * 96
+        report["provider_daily_capacity"] = budget["ceiling"]
+        report["provider_daily_used"] = budget["used"]
+        report["provider_daily_remaining"] = budget["remaining"]
+        report["first_pass_daily_capacity"] = budget["ceiling"]
+        report["estimated_provider_days_at_current_budget"] = (
+            math.ceil(len(queue) / budget["ceiling"])
+            if len(queue) and budget["ceiling"] > 0
+            else 0 if not len(queue) else None
+        )
         _write_report(report, started, status="completed")
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0

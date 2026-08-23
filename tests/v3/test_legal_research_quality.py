@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from api.legal_research_quality import (
     EXTERNAL_CANDIDATE,
+    VERIFIED_EXTERNAL_OFFICIAL,
     VERIFIED_LOCAL,
     build_practice_view_card,
     citation_lock_for_items,
@@ -336,3 +337,63 @@ def test_legacy_tlr_cache_cannot_self_verify_as_official(monkeypatch) -> None:
     assert item["verification_state"] == EXTERNAL_CANDIDATE
     assert item["draft_eligible"] is False
     assert not item.get("official_local_match")
+
+
+def test_mcp_official_fulltext_can_be_verified_without_waiting_for_local_mirror(monkeypatch) -> None:
+    from api.domains import judgment_flow
+
+    class EmptyDB:
+        def execute(self, *_args, **_kwargs):
+            return None
+
+    jid = "TPD,115,訴,12,20260101,1"
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: EmptyDB())
+    result = judgment_flow._verify_external_candidates_against_local(
+        "民法184條 因果關係",
+        {
+            "success": True,
+            "items": [{
+                "source": "legaltech_taiwan_law_mcp",
+                "jid": jid,
+                "doc_id": jid,
+                "citation_text": "臺灣臺北地方法院115年度訴字第12號",
+                "court": "臺灣臺北地方法院",
+                "case_reason": "侵權行為",
+                "judgment_date": "民國115年1月1日",
+                "full_text": REASONING,
+                "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id=TPD%2C115%2C%E8%A8%B4%2C12%2C20260101%2C1&ot=in",
+                "official_origin": True,
+            }],
+        },
+    )
+    item = result["items"][0]
+    assert item["verification_state"] == VERIFIED_EXTERNAL_OFFICIAL
+    assert item["official_external_fulltext_verified"] is True
+    assert item["official_fulltext_sha256"]
+    assert item["judgment_date"] == "2026-01-01"
+    assert item["draft_eligible"] is True
+    assert item["exclusion_codes"] == []
+    assert result["verified_external_official_count"] == 1
+
+
+def test_mcp_jid_url_mismatch_remains_candidate_with_exact_reason(monkeypatch) -> None:
+    from api.domains import judgment_flow
+
+    monkeypatch.setattr(judgment_flow, "_get_local_db_manager", lambda: None)
+    result = judgment_flow._verify_external_candidates_against_local(
+        "侵權行為",
+        {
+            "success": True,
+            "items": [{
+                "source": "legaltech_taiwan_law_mcp",
+                "jid": "TPD,115,訴,12,20260101,1",
+                "full_text": REASONING,
+                "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id=TPD%2C115%2C%E8%A8%B4%2C13%2C20260101%2C1&ot=in",
+                "official_origin": True,
+            }],
+        },
+    )
+    item = result["items"][0]
+    assert item["verification_state"] == EXTERNAL_CANDIDATE
+    assert item["draft_eligible"] is False
+    assert item["exclusion_codes"] == ["official_url_jid_mismatch"]

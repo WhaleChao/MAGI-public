@@ -81,6 +81,42 @@ NATIVE_EXTENSION_ROUTES = frozenset(
     {
         RouteSpec(
             "5002",
+            "/tools",
+            ("GET",),
+            "video_studio.public_tools_page",
+        ),
+        RouteSpec(
+            "5002",
+            "/video-studio",
+            ("GET",),
+            "video_studio.video_studio_page",
+        ),
+        RouteSpec(
+            "5002",
+            "/api/video-studio/health",
+            ("GET",),
+            "video_studio.video_studio_health",
+        ),
+        RouteSpec(
+            "5002",
+            "/api/video-studio/render",
+            ("POST",),
+            "video_studio.video_studio_render",
+        ),
+        RouteSpec(
+            "5002",
+            "/api/video-studio/interpret",
+            ("POST",),
+            "video_studio.video_studio_interpret",
+        ),
+        RouteSpec(
+            "5002",
+            "/api/video-studio/render-assets",
+            ("POST",),
+            "video_studio.video_studio_render_assets",
+        ),
+        RouteSpec(
+            "5002",
             "/cookie-cutter",
             ("GET",),
             "cookie_cutter.cookie_cutter_page",
@@ -156,6 +192,30 @@ NATIVE_EXTENSION_ROUTES = frozenset(
             "/api/sentencing-trends/search",
             ("GET",),
             "sentencing_trends.search_api",
+        ),
+        RouteSpec(
+            "5002",
+            "/manual",
+            ("GET",),
+            "dashboard_pages.maintenance_manual",
+        ),
+        RouteSpec(
+            "5002",
+            "/manual/pdf",
+            ("GET",),
+            "dashboard_pages.maintenance_manual_pdf",
+        ),
+        RouteSpec(
+            "5002",
+            "/manual/markdown",
+            ("GET",),
+            "dashboard_pages.maintenance_manual_markdown",
+        ),
+        RouteSpec(
+            "5002",
+            "/manual/source-index.json",
+            ("GET",),
+            "dashboard_pages.maintenance_manual_source_index",
         ),
     }
 )

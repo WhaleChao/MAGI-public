@@ -4,10 +4,10 @@
   "purpose": "Release-bound, fail-closed registry for three-sample execution of real scheduled job bodies in disposable fixtures.",
   "release_binding": {
     "cron_jobs_source_path": "cron_jobs.json",
-    "cron_jobs_source_sha256": "21778907c9efb4ea2b65688c653287b34288d8248bab9f08ac3a05d9652677f5",
-    "logical_definition_sha256": "21da77816a562dfba79ded3928a58b6dcb9cdaca8b0a8fa4f1369807cfe35187",
+    "cron_jobs_source_sha256": "8c584cb38cf21a4df5d15b3da47dccbcc43b4d57b1ec20e4bbd7362eaacf539b",
+    "logical_definition_sha256": "dc2a462a21889c352a719797b0d323918311f80ef408c7d4f01cfb578709dca2",
     "inherited_baseline_path": "config/v3_schedule_realism_baseline.json",
-    "inherited_baseline_sha256": "b8988c877967258fc7dfdd659749fa8a766aafebab7e4a92491cefe47bc56cf2",
+    "inherited_baseline_sha256": "5c5b21d0a571a73bed1ce5d019fd0a6ee4b79f8c37ed1405bf8bfbdd368a2c00",
     "formal_run_requires_release_id": true,
     "formal_run_requires_manifest_sha256": true
   },

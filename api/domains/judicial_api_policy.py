@@ -19,9 +19,12 @@ _MODE_DEFAULTS: dict[str, dict[str, str]] = {
         "enable_day_process": "1",
         "enable_night_pull": "1",
         "enable_nightly_process": "1",
-        "night_max_jdocs": "600",
-        "night_max_days": "3",
-        "night_timeout_sec": "2400",
+        # One 600-document pass left most 4k+ JList days permanently outside
+        # the local mirror.  1,200 remains below the measured service-window
+        # and day-processing capacity while doubling deterministic coverage.
+        "night_max_jdocs": "1200",
+        "night_max_days": "5",
+        "night_timeout_sec": "4800",
         "day_max_docs": "240",
         "day_summary_max": "48",
         "day_summary_mode": "extractive",

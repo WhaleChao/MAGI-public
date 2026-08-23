@@ -177,6 +177,9 @@ def deterministic_legacy_replacements(repo_root: Path = REPO_ROOT, python_path: 
                 "JUDGMENT_DAILY_TIME_BUDGET_SEC=1200",
                 "JUDGMENT_DAILY_COLLECT_TIMEOUT_SEC=180",
                 "JUDGMENT_DAILY_MAX_REASONS=5",
+                "JUDGMENT_MCP_GAP_FILL_ENABLE=1",
+                "JUDGMENT_MCP_GAP_MAX_RESULTS_PER=5",
+                "JUDGMENT_MCP_GAP_TIME_BUDGET_SEC=480",
                 # Summary retry has its own bounded 22:30 job.  Keeping it out
                 # of this 04:00 crawl preserves >5 minutes for cleanup before
                 # the scheduler's 1800-second outer deadline.
@@ -935,10 +938,13 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                         # 5 MB ceiling did not protect memory; it only left
                         # ordinary PDFs/media permanently "unverified" and
                         # retried the same DB slice forever.  Match the
-                        # worker's bounded 1.5 GB transfer envelope instead.
-                        "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=1500000000",
+                        # worker's bounded transfer envelope instead.  Keep
+                        # hashing streamed while allowing one ordinary large
+                        # archive/PDF to complete through the resumable 8 MiB
+                        # uploader rather than retrying the same cursor.
+                        "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=3000000000",
                         "MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=1500000000",
-                        "MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=1500000000",
+                        "MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=3000000000",
                         # SMB reads must stay bounded too.  Eight MiB
                         # resumable chunks prevent one 100+ MB PDF from
                         # wedging the whole worker in an uninterruptible read.
@@ -965,7 +971,7 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
                         "--max-download-bytes",
                         "1500000000",
                         "--max-upload-bytes",
-                        "1500000000",
+                        "3000000000",
                         "--max-case-depth",
                         "24",
                         "--max-case-items",

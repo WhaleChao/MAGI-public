@@ -20,7 +20,6 @@ import subprocess
 import threading
 import urllib.parse
 import uuid
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,12 @@ from flask_login import current_user, login_required
 from werkzeug.utils import secure_filename
 
 from api.runtime_paths import get_faiss_index_dir, get_judgments_json_path
+from magi_v3.process_monitor import (
+    ZombiePersistence,
+    collect_process_monitor as _collect_shared_process_monitor,
+    parse_etime_seconds,
+    process_monitor_markers,
+)
 
 
 _PUBLIC_INTENT_LABELS = {
@@ -78,53 +83,14 @@ def public_intent_summary(message: str) -> dict[str, Any]:
 
 
 def _parse_etime_to_sec(raw: str) -> int:
-    text = (raw or "").strip()
-    if not text:
-        return 0
-    match = re.match(r"^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$", text)
-    if not match:
-        return 0
-    dd = int(match.group(1) or 0)
-    hh = int(match.group(2) or 0)
-    mm = int(match.group(3) or 0)
-    ss = int(match.group(4) or 0)
-    return (dd * 86400) + (hh * 3600) + (mm * 60) + ss
+    return parse_etime_seconds(raw)
 
 
 def _process_monitor_markers(magi_root: Path) -> tuple[list[str], list[str], dict[str, str]]:
-    worker_markers = [
-        "skills/judgment-collector/action.py",
-        "skills/file-review-orchestrator/action.py",
-        "skills/transcript-downloader/action.py",
-        "skills/laf-portal-automation/action.py",
-        "skills/laf-orchestrator/action.py",
-        "skills/laf-withdrawal-report/action.py",
-        "skills/laf-refine-case/action.py",
-        "skills/osc-orchestrator/action.py",
-        "skills/osc-scan-folder/action.py",
-        "skills/pdf-namer/action.py",
-        "skills/crawler-targets/action.py",
-        "skills/statutes-vdb/action.py",
-        "skills/magi-autopilot/action.py",
-    ]
-    try:
-        from daemon import REAPER_NEVER_KILL as daemon_never_kill
+    return process_monitor_markers(magi_root)
 
-        core_markers = list(daemon_never_kill)
-    except Exception:
-        core_markers = [
-            f"{magi_root}/daemon.py",
-            "api/server.py",
-            "api/discord_bot.py",
-            "rpc-server",
-        ]
-    core_labels = {
-        f"{magi_root}/daemon.py": "Daemon",
-        "api/server.py": "API/LINE Webhook",
-        "api/discord_bot.py": "Discord Bot",
-        "rpc-server": "RPC Worker",
-    }
-    return worker_markers, core_markers, core_labels
+
+_WEB_PROCESS_ZOMBIE_TRACKER = ZombiePersistence()
 
 
 def _agent_state_dir(magi_root: Path) -> Path:
@@ -791,82 +757,11 @@ def _collect_process_monitor(
     process_monitor_state_path: Path,
     magi_root: Path,
 ) -> dict[str, Any]:
-    rows: list[dict[str, Any]] = []
-    try:
-        out = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,etime=,command="],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=8,
-        ).stdout or ""
-        for raw in out.splitlines():
-            line = (raw or "").strip()
-            if not line:
-                continue
-            parts = line.split(None, 3)
-            if len(parts) < 4:
-                continue
-            try:
-                pid = int(parts[0])
-                ppid = int(parts[1])
-            except Exception:
-                continue
-            rows.append(
-                {
-                    "pid": pid,
-                    "ppid": ppid,
-                    "age_sec": _parse_etime_to_sec(parts[2]),
-                    "age": parts[2],
-                    "cmd": parts[3],
-                }
-            )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "summary": {},
-            "core": [],
-            "workers": [],
-            "orphans": [],
-            "duplicates": [],
-        }
-
-    worker_markers, core_markers, core_labels = _process_monitor_markers(magi_root)
-    core = []
-    workers = []
-    orphans = []
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-
-    for row in rows:
-        cmd = str(row.get("cmd") or "")
-        label = None
-        for marker in core_markers:
-            if marker in cmd:
-                label = core_labels.get(marker, marker)
-                break
-        if label:
-            entry = dict(row)
-            entry["label"] = label
-            core.append(entry)
-        is_worker = any(marker in cmd for marker in worker_markers)
-        if is_worker:
-            workers.append(row)
-            grouped[cmd].append(row)
-            if int(row.get("ppid") or 0) == 1:
-                orphans.append(row)
-
-    duplicates = []
-    for cmd, items in grouped.items():
-        if len(items) <= 1:
-            continue
-        duplicates.append(
-            {
-                "count": len(items),
-                "pids": [int(item["pid"]) for item in items],
-                "cmd": cmd[:320],
-            }
-        )
+    result = _collect_shared_process_monitor(
+        magi_root=magi_root,
+        run_ps=subprocess.run,
+        zombie_tracker=_WEB_PROCESS_ZOMBIE_TRACKER,
+    )
 
     guardian_state: dict[str, Any] = {}
     try:
@@ -875,21 +770,9 @@ def _collect_process_monitor(
     except Exception:
         guardian_state = {}
 
-    return {
-        "ok": True,
-        "ts": datetime.now().isoformat(timespec="seconds"),
-        "summary": {
-            "core_count": len(core),
-            "worker_count": len(workers),
-            "orphan_count": len(orphans),
-            "duplicate_groups": len(duplicates),
-        },
-        "core": sorted(core, key=lambda x: (x.get("label", ""), x.get("pid", 0))),
-        "workers": sorted(workers, key=lambda x: (x.get("age_sec", 0), x.get("pid", 0)), reverse=True),
-        "orphans": sorted(orphans, key=lambda x: (x.get("age_sec", 0), x.get("pid", 0)), reverse=True),
-        "duplicates": sorted(duplicates, key=lambda x: x.get("count", 0), reverse=True),
-        "guardian_state": guardian_state,
-    }
+    result["ts"] = datetime.now().isoformat(timespec="seconds")
+    result["guardian_state"] = guardian_state
+    return result
 
 
 _MAGI_MODULE_COMMANDS = {

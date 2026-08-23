@@ -44,6 +44,9 @@ CLOUDFLARE_PUBLIC_PREFIXES = (
     "/api/cookie-cutter",
     "/exam-tutor",
     "/api/exam-tutor",
+    "/tools",
+    "/video-studio",
+    "/api/video-studio",
 )
 
 CLOUDFLARE_AUTHENTICATED_UI_PREFIXES = (

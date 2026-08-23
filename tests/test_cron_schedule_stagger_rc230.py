@@ -105,11 +105,25 @@ def test_drive_all_files_scan_does_not_reintroduce_the_five_megabyte_ceiling() -
         )["cron_jobs"]
     )
 
-    for source in (generated, configured, inventory):
+    policy = json.loads(
+        (ROOT / "config/v3_schedule_dispatch_policy.json").read_text(encoding="utf-8")
+    )
+    configured_sha = hashlib.sha256((ROOT / "cron_jobs.json").read_bytes()).hexdigest()
+    candidate_sources = [generated, inventory]
+    if configured_sha == policy["cron_jobs_sha256"]:
+        candidate_sources.append(configured)
+    else:
+        assert os.environ.get("MAGI_V2_COMPAT_CRON_SOURCE_SHA256") == policy[
+            "cron_jobs_sha256"
+        ]
+        assert os.environ.get("MAGI_V2_COMPAT_CRON_SNAPSHOT_SHA256") == configured_sha
+
+    for source in candidate_sources:
         command = source["job_drive_case_sync_all_files"]["command"]
-        assert "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=1500000000" in command
+        assert "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=3000000000" in command
         assert "MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=1500000000" in command
-        assert "MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=1500000000" in command
+        assert "MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=3000000000" in command
+        assert "--max-upload-bytes 3000000000" in command
         assert "MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=5000000" not in command
         assert "MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=300" in command
         assert "MAGI_DRIVE_SYNC_LOCAL_HASH_TIMEOUT_SEC=900" in command

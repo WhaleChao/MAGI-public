@@ -591,7 +591,7 @@
         /* === BOTTOM FULL-WIDTH PANELS === */
         .bottom-full {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 16px;
             margin-top: 10px;
             padding: 0;
@@ -1075,23 +1075,26 @@
             </div>
         </div>
 
-        <!-- 外部連結 -->
+        <!-- 公開工具 -->
         <div class="bottom-panel">
-            <h3>外部連結 EXTERNAL LINKS</h3>
+            <h3>公開工具 PUBLIC TOOLS</h3>
+            <a class="bp-link" href="/tools">公開工具分類首頁</a>
+            <a class="bp-link" href="/video-studio">影片工作室</a>
+            <a class="bp-link" href="/cookie-cutter">線稿轉餅乾切模</a>
+            <a class="bp-link" href="/lottery">抽獎工具</a>
+            <a class="bp-link" href="/exam-tutor">國考練習</a>
+        </div>
+
+        <!-- 法律與外部資源 -->
+        <div class="bottom-panel">
+            <h3>法律與外部資源 LEGAL LINKS</h3>
             <a class="bp-link" href="https://portal.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">律師單一登入</a>
             <a class="bp-link" href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
             <a class="bp-link" href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
             <a class="bp-link" href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
-            <a class="bp-link" href="/lottery">抽獎工具</a>
-            <a class="bp-link" href="/exam-tutor">國考練習</a>
-            <a class="bp-link" href="/cookie-cutter">線稿轉餅乾切模</a>
             <a class="bp-link" href="https://judgment.judicial.gov.tw/FJUD/default.aspx" target="_blank" rel="noopener noreferrer">司法院裁判書查詢</a>
-            <a class="bp-link" href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>
-            <a class="bp-link" href="https://mail.google.com/" target="_blank" rel="noopener noreferrer">Gmail</a>
-            <a class="bp-link" href="https://drive.google.com/" target="_blank" rel="noopener noreferrer">Google 雲端硬碟</a>
             <a class="bp-link" href="/research/judgment-classifier" style="color:#0984e3; font-weight:600;">判決捕捉與分類</a>
             <a class="bp-link" href="/dashboard/website" style="color:#0984e3; font-weight:600;">個人網站管理</a>
-            <a class="bp-link" href="https://whalechao.github.io" target="_blank" rel="noopener noreferrer">whalechao.github.io</a>
         </div>
     </div>
 
@@ -1149,6 +1152,8 @@
                 <a class="sb-link" href="https://record.ezlawyer.com.tw/" target="_blank" rel="noopener noreferrer">筆錄調閱系統</a>
                 <a class="sb-link" href="https://www.laf.org.tw/" target="_blank" rel="noopener noreferrer">法扶基金會</a>
                 <a class="sb-link" href="https://law.moj.gov.tw/" target="_blank" rel="noopener noreferrer">全國法規資料庫</a>
+                <a class="sb-link" href="/tools">公開工具分類首頁</a>
+                <a class="sb-link" href="/video-studio">影片工作室</a>
                 <a class="sb-link" href="/lottery">抽獎工具</a>
                 <a class="sb-link" href="/exam-tutor">國考練習</a>
                 <a class="sb-link" href="/cookie-cutter">線稿轉餅乾切模</a>

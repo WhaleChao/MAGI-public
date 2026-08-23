@@ -414,6 +414,26 @@ def test_exam_tutor_official_bank_and_source_pdfs_are_immutable_release_assets()
     assert bundle._excluded(Path("static/unrelated-data.json")) is True
 
 
+def test_video_autopilot_minimal_runtime_is_a_sealed_release_surface() -> None:
+    assert "tests/test_video_studio_blueprint.py" in bundle.REQUIRED_TEST_TARGETS
+    assert "third_party/video_autopilot_kit/LICENSE" in bundle.REQUIRED_PACKAGE_FILES
+    assert (
+        "third_party/video_autopilot_kit/MAGI_INTEGRATION.json"
+        in bundle.REQUIRED_PACKAGE_FILES
+    )
+    assert (
+        "third_party/video_autopilot_kit/runtime/portrait_normalizer.py"
+        in bundle.REQUIRED_PACKAGE_FILES
+    )
+    assert bundle._excluded(Path("third_party/video_autopilot_kit/LICENSE")) is False
+    assert bundle._excluded(
+        Path("third_party/video_autopilot_kit/MAGI_INTEGRATION.json")
+    ) is False
+    assert bundle._excluded(
+        Path("third_party/video_autopilot_kit/runtime/portrait_normalizer.py")
+    ) is False
+
+
 @pytest.mark.parametrize(
     "literal",
     [

@@ -20,8 +20,18 @@ def test_desktop_home_prioritises_workflows_over_engineering_controls():
     assert 'class="nav-more"' in page
     assert 'href="/osc?tab=todos"' in page
     assert 'href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noopener noreferrer"' in page
-    assert "外部網站與其他工具" in page
+    assert "工具與外部資源" in page
     assert '<details class="legal-links-panel' in page
+    assert 'data-tool-category="public-tools"' in page
+    assert 'data-tool-category="legal-work"' in page
+    assert 'data-tool-category="research-admin"' in page
+    assert 'href="/tools">全部公開工具</a>' in page
+    assert 'href="/video-studio">影片工作室</a>' in page
+    assert page.index('href="/video-studio"') < page.index('href="https://portal.ezlawyer.com.tw/"')
+    public = page.split('data-tool-category="public-tools"', 1)[1].split("</section>", 1)[0]
+    for href in ("/tools", "/video-studio", "/cookie-cutter", "/lottery", "/exam-tutor"):
+        assert f'href="{href}"' in public
+    assert "portal.ezlawyer.com.tw" not in public
 
 
 def test_research_and_sentencing_share_the_same_primary_navigation():
@@ -45,7 +55,7 @@ def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
     # Verify the immutable asset that is actually bundled and served by
     # /manual.  The authoring copy under docs/ is useful to repository readers
     # but is intentionally outside the production release allowlist.
-    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc627.html")
+    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc641.html")
 
     assert '<html lang="zh-Hant" data-magi-theme="cyber">' in page
     assert 'localStorage.getItem("magi.ui.theme.v1")' in page
@@ -56,6 +66,17 @@ def test_maintenance_manual_is_self_contained_and_uses_shared_theme_contract():
     assert 'href="/manual/pdf"' in page
     assert 'href="/manual/source-index.json"' in page
     assert "__MANUAL_BODY__" not in page
+
+
+def test_maintenance_manual_tables_wrap_without_hiding_cells_on_narrow_screens():
+    page = _read("magi_v3/manual_assets/MAGI_V3_維修百科全書_rc641.html")
+
+    assert "table-layout: fixed" in page
+    assert "overflow-wrap: anywhere" in page
+    assert "word-break: break-word" in page
+    assert "white-space: normal" in page
+    assert "th, td { min-width: 120px" not in page
+    assert "table { display: block" not in page
 
 
 def test_mobile_home_exposes_direct_work_routes_without_desktop_detour():

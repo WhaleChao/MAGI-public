@@ -551,6 +551,31 @@ h1 {
     padding: 12px;
 }
 
+.external-group {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+}
+
+.external-group:first-of-type {
+    margin-top: 8px;
+    padding-top: 0;
+    border-top: 0;
+}
+
+.external-group h3 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.96rem;
+}
+
+.external-group p {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}
+
 .external-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(150px, 1fr));

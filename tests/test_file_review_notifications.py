@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -3462,6 +3463,446 @@ def test_clicked_row_registry_is_signature_bound_and_expires(tmp_path, monkeypat
         datetime.now() - timedelta(days=2)
     ).isoformat()
     assert mgr._is_rowid_clicked("1117279", row_json=row) is False
+
+
+def test_clicked_row_registry_default_does_not_reclick_on_next_evening(
+    tmp_path, monkeypatch
+):
+    from casper_ecosystem.law_firm_orchestrators.file_review_automation import (
+        FileReviewManager,
+    )
+
+    monkeypatch.delenv("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", raising=False)
+    mgr = FileReviewManager(download_folder=str(tmp_path), headless=True)
+    row = {
+        "rowid": "stable-row",
+        "yyidno": "synthetic-case",
+        "isdown": "Y",
+        "upddt": "2026/08/12 19:54",
+    }
+    mgr._register_rowid_clicked(
+        "stable-row",
+        {"case_number": row["yyidno"], "_portal_row_json": row},
+    )
+    mgr._clicked_rowids["stable-row"]["last_clicked"] = (
+        datetime.now() - timedelta(days=2)
+    ).isoformat()
+    assert mgr._is_rowid_clicked("stable-row", row_json=row) is True
+
+    # The bounded audit remains: even a portal that never changes its stable
+    # signature is revalidated after thirty days.
+    mgr._clicked_rowids["stable-row"]["last_clicked"] = (
+        datetime.now() - timedelta(days=31)
+    ).isoformat()
+    assert mgr._is_rowid_clicked("stable-row", row_json=row) is False
+
+
+def test_download_notice_receipt_suppresses_same_content_and_keeps_versions(
+    tmp_path,
+):
+    module = _load_action_module()
+    archived = tmp_path / "卷1.pdf"
+    archived.write_bytes(b"%PDF-1.7\nfirst-version\n%%EOF\n")
+    item = {
+        "court_case_no": "synthetic-private-case",
+        "file": "卷1.pdf",
+        "dst": str(archived),
+        "action": "moved",
+    }
+
+    first = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert first["should_notify"] is True
+    assert first["new_count"] == 1
+    assert first["updated_count"] == 0
+    module._complete_download_notice(str(tmp_path), first["event_digest"])
+
+    repeated = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert repeated["should_notify"] is False
+    assert repeated["duplicate_count"] == 1
+
+    ledger_path = tmp_path / module.DOWNLOAD_NOTICE_LEDGER_FILE
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    assert "synthetic-private-case" not in ledger_text
+    assert "卷1.pdf" not in ledger_text
+    assert str(tmp_path) not in ledger_text
+    ledger = json.loads(ledger_text)
+    history = next(iter(ledger["artifacts"].values()))["versions"]
+    assert len(history) == 1
+    assert ledger["pii_included"] is False
+    assert ledger_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_download_notice_receipt_labels_changed_bytes_as_update(tmp_path):
+    module = _load_action_module()
+    archived = tmp_path / "卷1.pdf"
+    archived.write_bytes(b"%PDF-1.7\nfirst-version\n%%EOF\n")
+    first_item = {
+        "court_case_no": "synthetic-case",
+        "file": "卷1.pdf",
+        "dst": str(archived),
+        "action": "moved",
+    }
+    first = module._prepare_download_notice(
+        str(tmp_path), [first_item], [str(archived)], notify_requested=True
+    )
+    module._complete_download_notice(str(tmp_path), first["event_digest"])
+
+    archived.write_bytes(b"%PDF-1.7\nmaterially-updated-version\n%%EOF\n")
+    update_item = {**first_item, "file": "卷1 (1).pdf"}
+    updated = module._prepare_download_notice(
+        str(tmp_path), [update_item], [str(archived)], notify_requested=True
+    )
+    assert updated["should_notify"] is True
+    assert updated["new_count"] == 0
+    assert updated["updated_count"] == 1
+    assert updated["event_digest"] != first["event_digest"]
+
+    ledger = json.loads(
+        (tmp_path / module.DOWNLOAD_NOTICE_LEDGER_FILE).read_text(encoding="utf-8")
+    )
+    history = next(iter(ledger["artifacts"].values()))["versions"]
+    assert len(history) == 2
+    assert history[0]["content_sha256"] != history[1]["content_sha256"]
+
+
+def test_download_notice_pending_delivery_is_retried_without_new_version(tmp_path):
+    module = _load_action_module()
+    archived = tmp_path / "卷2.pdf"
+    archived.write_bytes(b"%PDF-1.7\nretry-me\n%%EOF\n")
+    item = {
+        "court_case_no": "synthetic-case",
+        "file": "卷2.pdf",
+        "dst": str(archived),
+        "action": "moved",
+    }
+    first = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert first["should_notify"] is True
+
+    retry = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert retry["should_notify"] is True
+    assert retry["event_digest"] == first["event_digest"]
+    assert retry["new_count"] == 1
+
+    module._complete_download_notice(str(tmp_path), retry["event_digest"])
+    final = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert final["should_notify"] is False
+
+
+def test_download_notice_disabled_run_does_not_consume_future_notice(tmp_path):
+    module = _load_action_module()
+    archived = tmp_path / "卷3.pdf"
+    archived.write_bytes(b"%PDF-1.7\nnotify-later\n%%EOF\n")
+    item = {
+        "court_case_no": "synthetic-case",
+        "file": "卷3.pdf",
+        "dst": str(archived),
+        "action": "moved",
+    }
+    silent = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=False
+    )
+    assert silent["should_notify"] is False
+
+    later = module._prepare_download_notice(
+        str(tmp_path), [item], [str(archived)], notify_requested=True
+    )
+    assert later["should_notify"] is True
+    assert later["new_count"] == 1
+
+
+def test_download_notification_forwards_same_event_id_to_red_phone(monkeypatch):
+    module = _load_action_module()
+    captured = {}
+
+    def send_status(_message, **kwargs):
+        captured.update(kwargs)
+        return {"telegram": True, "queued": False}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "skills.ops.red_phone",
+        types.SimpleNamespace(send_telegram_push_with_status=send_status),
+    )
+    event_id = "a" * 64
+    assert module._notify("📥 卷宗下載完成", event_id=event_id) is True
+    assert captured["event_id"] == event_id
+    assert captured["topic_key"] == "filereview"
+    assert captured["source"] == "file_review_orchestrator"
+
+
+def test_red_phone_event_id_dedup_is_shared_with_mirror(monkeypatch):
+    from skills.ops import red_phone
+
+    completed = set()
+    send_calls = []
+    mirror_events = []
+    monkeypatch.setattr(
+        red_phone,
+        "_delivery_channel_done",
+        lambda event_id, channel: (event_id, channel) in completed,
+    )
+    monkeypatch.setattr(
+        red_phone,
+        "_mark_delivery_channel_done",
+        lambda event_id, channel: completed.add((event_id, channel)),
+    )
+    monkeypatch.setattr(red_phone, "_get_telegram_config", lambda: ("token", ["1"]))
+    monkeypatch.setattr(
+        red_phone, "_resolve_thread_id", lambda *_a, **_k: ("filereview", 0)
+    )
+    monkeypatch.setattr(red_phone, "_append_delivery_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(red_phone, "RED_PHONE_RETRY_COUNT", 0)
+
+    def send_once(*_args, **_kwargs):
+        send_calls.append(True)
+        return {"ok_any": True, "acked": ["1"], "total": 1, "error": ""}
+
+    def mirror(_message, **kwargs):
+        mirror_events.append(kwargs["event_id"])
+        return True
+
+    monkeypatch.setattr(red_phone, "_send_telegram_once", send_once)
+    monkeypatch.setattr(red_phone, "_mirror_to_discord", mirror)
+    event_id = "b" * 64
+    first = red_phone.send_telegram_push_with_status(
+        "📥 卷宗下載完成", topic_key="filereview", event_id=event_id
+    )
+    second = red_phone.send_telegram_push_with_status(
+        "📥 卷宗下載完成", topic_key="filereview", event_id=event_id
+    )
+
+    assert first["telegram"] is True and first["deduped"] is False
+    assert second["telegram"] is True and second["deduped"] is True
+    assert len(send_calls) == 1
+    assert mirror_events == [event_id, event_id]
+    assert (event_id, "telegram") in completed
+    with pytest.raises(ValueError, match="event_id"):
+        red_phone.send_telegram_push_with_status(
+            "bad", event_id="0" * 63 + "G"
+        )
+
+
+def test_red_phone_outbox_dedups_by_event_not_same_message(monkeypatch):
+    from skills.ops import red_phone
+
+    outbox = []
+    monkeypatch.setattr(red_phone, "_load_outbox", lambda: outbox)
+    monkeypatch.setattr(
+        red_phone,
+        "_save_outbox",
+        lambda rows: outbox.__setitem__(slice(None), [dict(row) for row in rows]),
+    )
+    monkeypatch.setattr(red_phone, "_append_delivery_log", lambda *_a, **_k: None)
+    first_id = red_phone._enqueue_outbox(
+        "same visible message", "info", "file_review_orchestrator", event_id="c" * 64
+    )
+    repeat_id = red_phone._enqueue_outbox(
+        "same visible message", "info", "file_review_orchestrator", event_id="c" * 64
+    )
+    second_id = red_phone._enqueue_outbox(
+        "same visible message", "info", "file_review_orchestrator", event_id="d" * 64
+    )
+    assert repeat_id == first_id
+    assert second_id != first_id
+    assert [row["event_id"] for row in outbox] == ["c" * 64, "d" * 64]
+
+
+def test_download_notice_rejects_symlink_artifact_and_ledger(tmp_path):
+    module = _load_action_module()
+    actual = tmp_path / "actual.pdf"
+    actual.write_bytes(b"%PDF-1.7\nactual\n%%EOF\n")
+    linked = tmp_path / "linked.pdf"
+    linked.symlink_to(actual)
+    item = {
+        "court_case_no": "synthetic-case",
+        "file": "linked.pdf",
+        "dst": str(linked),
+        "action": "moved",
+    }
+    with pytest.raises(RuntimeError, match="final_artifact_invalid"):
+        module._collect_download_notice_artifacts(
+            [item], [str(linked)], download_folder=str(tmp_path)
+        )
+
+    hostile = tmp_path / "hostile-ledger.json"
+    hostile.write_text("{}", encoding="utf-8")
+    ledger_path = tmp_path / module.DOWNLOAD_NOTICE_LEDGER_FILE
+    ledger_path.symlink_to(hostile)
+    direct_item = {**item, "file": "actual.pdf", "dst": str(actual)}
+    with pytest.raises(RuntimeError, match="ledger_not_regular"):
+        module._prepare_download_notice(
+            str(tmp_path), [direct_item], [str(actual)], notify_requested=True
+        )
+
+
+def test_download_notice_rejects_symlink_root_and_outside_regular_file(tmp_path):
+    module = _load_action_module()
+    real_root = tmp_path / "downloads"
+    real_root.mkdir()
+    alias_root = tmp_path / "downloads-alias"
+    alias_root.symlink_to(real_root, target_is_directory=True)
+    inside = real_root / "inside.pdf"
+    inside.write_bytes(b"%PDF-1.7\ninside\n%%EOF\n")
+    item = {
+        "court_case_no": "synthetic-case",
+        "file": "inside.pdf",
+        "dst": str(inside),
+        "action": "moved",
+    }
+    with pytest.raises(RuntimeError, match="root_not_canonical"):
+        module._prepare_download_notice(
+            str(alias_root), [item], [str(inside)], notify_requested=True
+        )
+
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.7\noutside\n%%EOF\n")
+    outside_item = {**item, "file": "outside.pdf", "dst": str(outside)}
+    with pytest.raises(RuntimeError, match="final_artifact_invalid"):
+        module._collect_download_notice_artifacts(
+            [outside_item], [str(outside)], download_folder=str(real_root)
+        )
+
+
+def test_download_notice_rejects_source_and_final_artifact_mismatch(tmp_path):
+    module = _load_action_module()
+    download_root = tmp_path / "downloads"
+    download_root.mkdir()
+    source = download_root / "卷4.pdf"
+    source.write_bytes(b"%PDF-1.7\nsource-version\n%%EOF\n")
+    source_receipt = {
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "size": source.stat().st_size,
+    }
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    final = case_root / "卷4.pdf"
+    final.write_bytes(b"%PDF-1.7\nwrong-final-version\n%%EOF\n")
+    item = {
+        "court_case_no": "synthetic-case",
+        "folder": str(case_root),
+        "file": "卷4.pdf",
+        "dst": str(final),
+        "action": "moved",
+    }
+    with pytest.raises(RuntimeError, match="final_artifact_mismatch"):
+        module._prepare_download_notice(
+            str(download_root),
+            [item],
+            [str(source)],
+            notify_requested=True,
+            content_receipts={str(source): source_receipt, "卷4.pdf": source_receipt},
+        )
+
+
+def test_download_notice_accepts_matching_final_archive_receipt(tmp_path):
+    module = _load_action_module()
+    download_root = tmp_path / "downloads"
+    download_root.mkdir()
+    source = download_root / "卷5.pdf"
+    source.write_bytes(b"%PDF-1.7\nimmutable-version\n%%EOF\n")
+    source_receipt = {
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "size": source.stat().st_size,
+    }
+    case_root = tmp_path / "case"
+    case_root.mkdir()
+    final = case_root / "卷5.pdf"
+    final.write_bytes(source.read_bytes())
+    item = {
+        "court_case_no": "synthetic-case",
+        "folder": str(case_root),
+        "file": "卷5.pdf",
+        "dst": str(final),
+        "action": "moved",
+    }
+    notice = module._prepare_download_notice(
+        str(download_root),
+        [item],
+        [str(source)],
+        notify_requested=True,
+        content_receipts={str(source): source_receipt, "卷5.pdf": source_receipt},
+    )
+    assert notice["valid"] is True
+    assert notice["should_notify"] is True
+    assert notice["new_count"] == 1
+
+
+def test_red_phone_receipt_database_failure_is_not_accepted(monkeypatch):
+    from skills.ops import red_phone
+
+    send_calls = []
+    mirror_calls = []
+    monkeypatch.setattr(red_phone, "_get_telegram_config", lambda: ("token", ["1"]))
+    monkeypatch.setattr(
+        red_phone, "_resolve_thread_id", lambda *_a, **_k: ("filereview", 0)
+    )
+    monkeypatch.setattr(red_phone, "_append_delivery_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(red_phone, "RED_PHONE_RETRY_COUNT", 0)
+    monkeypatch.setattr(
+        red_phone,
+        "_send_telegram_once",
+        lambda *_a, **_k: send_calls.append(True)
+        or {"ok_any": True, "acked": ["1"], "total": 1, "error": ""},
+    )
+    monkeypatch.setattr(
+        red_phone,
+        "_mirror_to_discord",
+        lambda *_a, **_k: mirror_calls.append(True) or True,
+    )
+    event_id = "e" * 64
+
+    fake_dedup_db = types.SimpleNamespace(
+        is_done=lambda *_a, **_k: (_ for _ in ()).throw(
+            ConnectionError("offline")
+        ),
+        mark_done=lambda *_a, **_k: False,
+    )
+    monkeypatch.setitem(sys.modules, "skills.ops.dedup_db", fake_dedup_db)
+    with pytest.raises(RuntimeError, match="receipt_unavailable"):
+        red_phone.send_telegram_push_with_status(
+            "receipt preflight", event_id=event_id
+        )
+    assert send_calls == []
+
+    fake_dedup_db.is_done = lambda *_a, **_k: False
+    with pytest.raises(RuntimeError, match="receipt_not_persisted"):
+        red_phone.send_telegram_push_with_status(
+            "receipt commit", event_id=event_id
+        )
+    assert send_calls == [True]
+    assert mirror_calls == []
+
+
+def test_red_phone_discord_receipt_failure_is_not_accepted(monkeypatch):
+    from skills.ops import red_phone
+
+    monkeypatch.setenv("MAGI_DC_MIRROR_ENABLED", "1")
+    monkeypatch.setattr(red_phone, "_delivery_channel_done", lambda *_a: False)
+    monkeypatch.setattr(red_phone, "_send_discord_bot_message", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        red_phone,
+        "_mark_delivery_channel_done",
+        lambda *_a: (_ for _ in ()).throw(
+            RuntimeError("notification_channel_receipt_not_persisted")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="receipt_not_persisted"):
+        red_phone._mirror_to_discord(
+            "📥 卷宗下載完成",
+            topic_key="filereview",
+            source="file_review_orchestrator",
+            event_id="f" * 64,
+        )
 
 
 def test_single_case_identity_mismatch_is_quarantined_and_auto_retried(

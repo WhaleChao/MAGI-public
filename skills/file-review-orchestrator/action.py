@@ -39,6 +39,7 @@ import json
 import logging
 import re
 import shutil
+import stat
 import threading
 import traceback
 from datetime import datetime
@@ -162,6 +163,8 @@ BG_JOB_DIR = os.path.abspath(
     )
 )
 RECENT_ACTIVITY_STATE_FILE = ".recent_activity_notified.json"
+DOWNLOAD_NOTICE_LEDGER_SCHEMA = "magi.v3.file-review-download-notice-ledger/v1"
+DOWNLOAD_NOTICE_LEDGER_FILE = ".download_notification_receipts.json"
 
 # Resolve the mutable queue only when a queue operation is requested.  A sealed
 # release must still fail closed at that point, but importing read-only portal
@@ -182,6 +185,12 @@ os.environ.setdefault("MAGI_ENABLE_CASE_LEVEL_DOWNLOAD_SKIP", "0")
 # after the bounded TTL instead of being hidden forever.
 os.environ.setdefault("MAGI_ENABLE_BUTTON_LEVEL_DOWNLOAD_SKIP", "1")
 os.environ.setdefault("MAGI_ENABLE_PRECLICK_SMART_SKIP", "1")
+# Court rows that retain the same stable portal signature are overwhelmingly
+# immutable.  A daily blind re-click caused the same court bundle to be
+# regenerated and announced on consecutive evenings.  Keep a bounded monthly
+# audit for portals that fail to update their row signature; any real signature
+# change still invalidates the receipt immediately.
+os.environ.setdefault("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "43200")
 
 logger = logging.getLogger("file-review-orchestrator")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s", stream=sys.stderr)
@@ -1285,6 +1294,401 @@ def _json_path(name: str) -> str:
 # ---------------------------------------------------------------------------
 # Notification
 # ---------------------------------------------------------------------------
+def _download_notice_ledger_path(download_folder: str) -> str:
+    return os.path.join(os.path.abspath(download_folder), DOWNLOAD_NOTICE_LEDGER_FILE)
+
+
+def _download_notice_lock_path(download_folder: str) -> str:
+    return _download_notice_ledger_path(download_folder) + ".lock"
+
+
+def _canonical_download_notice_root(download_folder: str) -> Path:
+    raw = Path(str(download_folder or "")).expanduser()
+    if not raw.is_absolute():
+        raise RuntimeError("file_review_notice_root_not_absolute")
+    try:
+        resolved = raw.resolve(strict=True)
+        info = raw.lstat()
+    except OSError as exc:
+        raise RuntimeError("file_review_notice_root_unavailable") from exc
+    if resolved != raw or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("file_review_notice_root_not_canonical")
+    return resolved
+
+
+def _new_download_notice_ledger() -> dict:
+    return {
+        "schema": DOWNLOAD_NOTICE_LEDGER_SCHEMA,
+        "artifacts": {},
+        "events": {},
+        "updated_at": "",
+        "pii_included": False,
+    }
+
+
+def _read_download_notice_ledger(path: str) -> dict:
+    if not os.path.exists(path):
+        return _new_download_notice_ledger()
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("file_review_notice_ledger_not_regular")
+    with open(path, "r", encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict) or set(value) != {
+        "schema", "artifacts", "events", "updated_at", "pii_included"
+    }:
+        raise RuntimeError("file_review_notice_ledger_schema_invalid")
+    if value.get("schema") != DOWNLOAD_NOTICE_LEDGER_SCHEMA:
+        raise RuntimeError("file_review_notice_ledger_version_invalid")
+    if not isinstance(value.get("artifacts"), dict) or not isinstance(value.get("events"), dict):
+        raise RuntimeError("file_review_notice_ledger_collections_invalid")
+    if value.get("pii_included") is not False:
+        raise RuntimeError("file_review_notice_ledger_privacy_invalid")
+    return value
+
+
+def _write_download_notice_ledger(path: str, value: dict) -> None:
+    payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    tmp_path = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(fd)
+    try:
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _with_download_notice_ledger(download_folder: str, operation: Callable[[dict], Any]) -> Any:
+    folder = str(_canonical_download_notice_root(download_folder))
+    lock_path = _download_notice_lock_path(folder)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    lock_fd = os.open(lock_path, flags, 0o600)
+    try:
+        lock_info = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink != 1:
+            raise RuntimeError("file_review_notice_lock_not_regular")
+        with os.fdopen(lock_fd, "r+", encoding="utf-8", closefd=False) as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            path = _download_notice_ledger_path(folder)
+            ledger = _read_download_notice_ledger(path)
+            result = operation(ledger)
+            ledger["updated_at"] = datetime.now().astimezone().isoformat()
+            _write_download_notice_ledger(path, ledger)
+            return result
+    finally:
+        os.close(lock_fd)
+
+
+def _regular_download_artifact(path: str, *, allowed_root: Path) -> Optional[dict]:
+    candidate = Path(str(path or "")).expanduser()
+    if not candidate.is_absolute():
+        return None
+    try:
+        raw = candidate.resolve(strict=True)
+        info = candidate.lstat()
+    except OSError:
+        return None
+    if (
+        raw != candidate
+        or not raw.is_relative_to(allowed_root)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_size <= 0
+    ):
+        return None
+    digest = hashlib.sha256()
+    with open(candidate, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"sha256": digest.hexdigest(), "size": int(info.st_size)}
+
+
+def _archive_item_root(item: dict, *, download_root: Path) -> Path:
+    """Return the canonical root that is allowed to contain an archived item."""
+    folder_value = str(item.get("folder") or "").strip()
+    if not folder_value:
+        return download_root
+    folder = Path(folder_value).expanduser()
+    if not folder.is_absolute():
+        raise RuntimeError("file_review_notice_archive_root_not_absolute")
+    try:
+        resolved = folder.resolve(strict=True)
+        info = folder.lstat()
+    except OSError as exc:
+        raise RuntimeError("file_review_notice_archive_root_unavailable") from exc
+    if resolved != folder or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("file_review_notice_archive_root_not_canonical")
+    return resolved
+
+
+def _validated_source_content_receipt(value: Any) -> Optional[dict]:
+    if not isinstance(value, dict) or set(value) != {"sha256", "size"}:
+        return None
+    sha = value.get("sha256")
+    size = value.get("size")
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{64}", sha) is None:
+        return None
+    if type(size) is not int or size <= 0:
+        return None
+    return {"sha256": sha, "size": size}
+
+
+def _canonical_review_artifact_filename(filename: str) -> str:
+    # Chrome appends `` (1)`` before an extension when the portal emits the
+    # same logical filename again.  It is not a new court-document identity.
+    name = os.path.basename(str(filename or "")).strip().lower()
+    name = re.sub(r"\s*\(\d+\)(?=\.[^.]+$)", "", name)
+    return re.sub(r"\s+", " ", name)
+
+
+def _logical_review_artifact_digest(case_number: str, filename: str) -> str:
+    name = _canonical_review_artifact_filename(filename)
+    case_token = re.sub(r"\s+", "", str(case_number or "").strip().lower())
+    material = f"file-review-artifact/v1\0{case_token}\0{name}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _collect_download_notice_artifacts(
+    items: list,
+    review_downloaded: list,
+    *,
+    download_folder: str,
+    content_receipts: Optional[dict] = None,
+) -> list:
+    allowed_root = _canonical_download_notice_root(download_folder)
+    strict_source_receipts = content_receipts is not None
+    trusted_receipts = content_receipts if isinstance(content_receipts, dict) else {}
+    records: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    fallback_paths = {
+        os.path.basename(str(path)): str(path)
+        for path in (review_downloaded or [])
+        if str(path or "").strip()
+    }
+    fallback_paths.update(
+        {
+            _canonical_review_artifact_filename(name): path
+            for name, path in list(fallback_paths.items())
+        }
+    )
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if _activity_artifact_kind(item) == "payment_slip":
+            continue
+        if str(item.get("action") or "") in {
+            "exists_skip", "target_exists_keep_src", "target_exists_isolate_src",
+            "blocked_case_identity_mismatch", "ignored_invalid_artifact",
+        }:
+            continue
+        filename = os.path.basename(str(item.get("file") or "").strip())
+        source_path = fallback_paths.get(filename, "") or fallback_paths.get(
+            _canonical_review_artifact_filename(filename), ""
+        )
+        source_receipt = _validated_source_content_receipt(
+            trusted_receipts.get(source_path)
+            or trusted_receipts.get(filename)
+            or trusted_receipts.get(_canonical_review_artifact_filename(filename))
+        )
+        if strict_source_receipts and source_receipt is None:
+            raise RuntimeError("file_review_notice_source_receipt_missing")
+
+        destination = str(item.get("dst") or "").strip()
+        destination_root = _archive_item_root(item, download_root=allowed_root)
+        artifact = _regular_download_artifact(destination, allowed_root=destination_root)
+        if artifact is None:
+            raise RuntimeError("file_review_notice_final_artifact_invalid")
+        if source_receipt is not None and artifact != source_receipt:
+            raise RuntimeError("file_review_notice_final_artifact_mismatch")
+        logical_identity = str(
+            item.get("court_case_no")
+            or item.get("folder")
+            or item.get("party")
+            or ""
+        )
+        logical = _logical_review_artifact_digest(logical_identity, filename)
+        key = (logical, artifact["sha256"])
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "logical_digest": logical,
+                "content_sha256": artifact["sha256"],
+                "size": artifact["size"],
+            }
+        )
+    if records:
+        return sorted(records, key=lambda row: (row["logical_digest"], row["content_sha256"]))
+
+    if strict_source_receipts and review_downloaded:
+        raise RuntimeError("file_review_notice_final_artifact_mapping_missing")
+
+    # A failed/disabled archive can still leave verified files in the download
+    # directory.  Preserve duplicate protection without storing the raw path or
+    # filename in the ledger.
+    for raw in review_downloaded or []:
+        artifact = _regular_download_artifact(str(raw), allowed_root=allowed_root)
+        if artifact is None:
+            continue
+        filename = os.path.basename(str(raw))
+        logical = _logical_review_artifact_digest("", filename)
+        key = (logical, artifact["sha256"])
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "logical_digest": logical,
+                "content_sha256": artifact["sha256"],
+                "size": artifact["size"],
+            }
+        )
+    return sorted(records, key=lambda row: (row["logical_digest"], row["content_sha256"]))
+
+
+def _prepare_download_notice(
+    download_folder: str,
+    items: list,
+    review_downloaded: list,
+    *,
+    notify_requested: bool,
+    content_receipts: Optional[dict] = None,
+) -> dict:
+    artifacts = _collect_download_notice_artifacts(
+        items,
+        review_downloaded,
+        download_folder=download_folder,
+        content_receipts=content_receipts,
+    )
+    if not artifacts:
+        return {
+            "valid": True,
+            "should_notify": False,
+            "event_digest": "",
+            "new_count": 0,
+            "updated_count": 0,
+            "duplicate_count": 0,
+        }
+
+    event_material = "\n".join(
+        f"{row['logical_digest']}:{row['content_sha256']}:{row['size']}"
+        for row in artifacts
+    )
+    event_digest = hashlib.sha256(
+        ("file-review-download-notice/v1\0" + event_material).encode("utf-8")
+    ).hexdigest()
+
+    def operation(ledger: dict) -> dict:
+        now = datetime.now().astimezone().isoformat()
+        new_count = 0
+        updated_count = 0
+        duplicate_count = 0
+        # A deliberate no-notify execution is observation-only.  It must not
+        # consume the later notification right for this content.
+        if not notify_requested:
+            return {
+                "valid": True,
+                "should_notify": False,
+                "event_digest": event_digest,
+                "new_count": 0,
+                "updated_count": 0,
+                "duplicate_count": 0,
+            }
+        for row in artifacts:
+            logical = row["logical_digest"]
+            entry = ledger["artifacts"].get(logical)
+            if entry is None:
+                entry = {"versions": []}
+                ledger["artifacts"][logical] = entry
+            if not isinstance(entry, dict) or set(entry) != {"versions"} or not isinstance(entry["versions"], list):
+                raise RuntimeError("file_review_notice_artifact_history_invalid")
+            versions = entry["versions"]
+            matched = any(
+                isinstance(version, dict)
+                and version.get("content_sha256") == row["content_sha256"]
+                and version.get("size") == row["size"]
+                for version in versions
+            )
+            if matched:
+                duplicate_count += 1
+                continue
+            if versions:
+                updated_count += 1
+            else:
+                new_count += 1
+            versions.append(
+                {
+                    "content_sha256": row["content_sha256"],
+                    "size": row["size"],
+                    "observed_at": now,
+                }
+            )
+
+        previous_event = ledger["events"].get(event_digest)
+        delivered = isinstance(previous_event, dict) and previous_event.get("status") == "accepted"
+        pending = isinstance(previous_event, dict) and previous_event.get("status") == "pending"
+        if pending:
+            new_count = int(previous_event.get("new_count") or 0)
+            updated_count = int(previous_event.get("updated_count") or 0)
+            duplicate_count = 0
+        changed_count = new_count + updated_count
+        should_notify = bool(
+            notify_requested and not delivered and (changed_count > 0 or pending)
+        )
+        if should_notify:
+            ledger["events"][event_digest] = {
+                "status": "pending",
+                "prepared_at": now,
+                "completed_at": "",
+                "artifact_count": len(artifacts),
+                "new_count": new_count,
+                "updated_count": updated_count,
+                "pii_included": False,
+            }
+        return {
+            "valid": True,
+            "should_notify": should_notify,
+            "event_digest": event_digest,
+            "new_count": new_count,
+            "updated_count": updated_count,
+            "duplicate_count": duplicate_count,
+        }
+
+    return _with_download_notice_ledger(download_folder, operation)
+
+
+def _complete_download_notice(download_folder: str, event_digest: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", str(event_digest or "")):
+        raise RuntimeError("file_review_notice_event_digest_invalid")
+
+    def operation(ledger: dict) -> None:
+        event = ledger["events"].get(event_digest)
+        if not isinstance(event, dict) or event.get("status") != "pending":
+            raise RuntimeError("file_review_notice_event_not_pending")
+        # ``send_telegram_push_with_status`` mirrors the same event to Discord
+        # and may acknowledge either an immediate Telegram send or its durable
+        # outbox.  Both mean this exact logical event must not be emitted again.
+        event["status"] = "accepted"
+        event["completed_at"] = datetime.now().astimezone().isoformat()
+
+    _with_download_notice_ledger(download_folder, operation)
+
+
 def _load_telegram_targets() -> Tuple[str, List[str]]:
     token = (os.environ.get("OPENCLAW_TELEGRAM_BOT_TOKEN") or "").strip()
     notify_ids = [
@@ -1351,12 +1755,18 @@ def _notify_tg(text: str) -> bool:
     return ok_any
 
 
-def _notify(text: str, flag: bool = True, topic_key: str = "filereview"):
+def _notify(
+    text: str,
+    flag: bool = True,
+    topic_key: str = "filereview",
+    *,
+    event_id: str = "",
+):
     if not flag:
-        return
+        return False
     if _notifications_suppressed():
         logger.info("Notification suppressed by MAGI_FILE_REVIEW_SUPPRESS_NOTIFY: %s", str(text or "")[:160])
-        return
+        return False
     msg = str(text or "")
     try:
         from skills.ops.red_phone import send_telegram_push_with_status  # type: ignore
@@ -1367,12 +1777,16 @@ def _notify(text: str, flag: bool = True, topic_key: str = "filereview"):
             source="file_review_orchestrator",
             topic_key=topic_key,
             queue_on_fail=True,
+            event_id=event_id,
         ) or {}
         if bool(st.get("telegram")) or bool(st.get("queued")):
-            return
+            return True
     except Exception:
         logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 670, exc_info=True)
-    _notify_tg(msg)
+    # The legacy direct fallback has no channel-scoped event receipt.  Keep it
+    # only for callers without an immutable event id; otherwise leave the
+    # ledger pending so the exact event can be retried safely.
+    return _notify_tg(msg) if not event_id else False
 
 
 def _notify_file(file_path: str, caption: str = "", flag: bool = True,
@@ -4784,6 +5198,31 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
             unresolved_review_items = [it for it in unresolved_items if _activity_artifact_kind(it) != "payment_slip"]
             resolved_review_items = [it for it in resolved_items if _activity_artifact_kind(it) != "payment_slip"]
 
+            try:
+                download_notice = _prepare_download_notice(
+                    creds["download_folder"],
+                    review_items,
+                    review_downloaded,
+                    notify_requested=bool(notify),
+                    content_receipts=getattr(
+                        mgr, "_last_download_content_receipts", {}
+                    ),
+                )
+            except Exception as notice_error:
+                # Fail closed for notification dedup.  The court files are
+                # already safely archived, so do not turn a receipt-store
+                # problem into another portal download or a duplicate push.
+                logger.error("file-review download notice ledger rejected: %s", notice_error)
+                download_notice = {
+                    "valid": False,
+                    "should_notify": False,
+                    "event_digest": "",
+                    "new_count": 0,
+                    "updated_count": 0,
+                    "duplicate_count": review_count,
+                    "error": "download_notice_ledger_invalid",
+                }
+
             def _norm(s: str) -> str:
                 return (s or "").strip()
 
@@ -4791,9 +5230,20 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                 """
                 Returns (message, exported) where exported is export_txt() result or {}.
                 """
-                header = f"📥 卷宗下載完成（{review_count} 個檔案）"
+                notice_count = int(download_notice.get("new_count") or 0) + int(
+                    download_notice.get("updated_count") or 0
+                )
+                if int(download_notice.get("updated_count") or 0) > 0 and int(
+                    download_notice.get("new_count") or 0
+                ) == 0:
+                    header = f"📥 卷宗更新版下載完成（{notice_count} 個檔案）"
+                elif int(download_notice.get("updated_count") or 0) > 0:
+                    header = f"📥 卷宗下載／更新完成（{notice_count} 個檔案）"
+                else:
+                    header = f"📥 卷宗下載完成（{notice_count or review_count} 個檔案）"
                 if case_number:
-                    header = f"📥 卷宗下載完成 — {case_number}（{review_count} 個檔案）"
+                    label = header.split("（", 1)[0].strip()
+                    header = f"{label} — {case_number}（{notice_count or review_count} 個檔案）"
 
                 if review_count <= 0:
                     if smart_skipped:
@@ -4893,6 +5343,8 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                 review_count > 0
                 or (bool(smart_skipped) and notify_smart_skips)
                 or notify_empty_download
+            ) and (
+                review_count <= 0 or bool(download_notice.get("should_notify"))
             )
             _safe_flow_step_status(
                 flow_id,
@@ -4904,10 +5356,29 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                 metadata={"review_download_count": review_count, "payment_download_count": payment_count},
             )
             if should_notify:
-                _notify(msg, True)
+                notification_accepted = bool(
+                    _notify(
+                        msg,
+                        True,
+                        event_id=str(download_notice.get("event_digest") or "")
+                        if review_count > 0
+                        else "",
+                    )
+                )
+                if notification_accepted and review_count > 0:
+                    try:
+                        _complete_download_notice(
+                            creds["download_folder"],
+                            str(download_notice.get("event_digest") or ""),
+                        )
+                    except Exception as notice_error:
+                        logger.error(
+                            "file-review download notice completion rejected: %s",
+                            notice_error,
+                        )
                 # If long detail was exported to TXT, also send the file
                 txt_path = exported.get("path", "") if exported else ""
-                if txt_path and os.path.isfile(txt_path):
+                if notification_accepted and txt_path and os.path.isfile(txt_path):
                     _notify_file(txt_path, caption="卷宗下載明細", flag=True)
             _mark_notify_step(flow_id, notify=should_notify, detail=msg or "no notification sent")
             archive_summary = {
@@ -4968,6 +5439,12 @@ def cmd_download(case_number: str = "", notify: bool = True, flow_id: str = "") 
                    "handled_portal_signature_set_hash": signature_set_hash(handled_portal_signatures),
                    "mismatch_deferred_portal_signature_hashes": mismatch_deferred_portal_signatures,
                    "mismatch_deferred_portal_signature_set_hash": signature_set_hash(mismatch_deferred_portal_signatures),
+                   "download_notification_event_digest": str(download_notice.get("event_digest") or ""),
+                   "download_notification_new_count": int(download_notice.get("new_count") or 0),
+                   "download_notification_updated_count": int(download_notice.get("updated_count") or 0),
+                   "download_notification_duplicate_count": int(download_notice.get("duplicate_count") or 0),
+                   "download_notification_receipt_valid": bool(download_notice.get("valid")),
+                   "download_notification_pii_included": False,
                    "message": msg}
             if download_deferred:
                 out.update(
@@ -6127,10 +6604,10 @@ def _filter_not_yet_downloaded(
             try:
                 ttl_minutes = max(
                     1,
-                    int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "1440") or "1440"),
+                    int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "43200") or "43200"),
                 )
             except Exception:
-                ttl_minutes = 1440
+                ttl_minutes = 43200
             signature_unchanged = not stored_signature or current_signature == stored_signature
             skip_recent_unchanged_row = signature_unchanged and age_minutes < ttl_minutes
         if skip_recent_unchanged_row:

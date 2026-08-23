@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 
+import pytest
 from flask import Flask
 from flask_login import LoginManager, UserMixin
 
-from api.sentencing_trends import parse_sentencing_judgment, search_sentencing_trends
+from api.sentencing_trends import (
+    official_judgment_page_url,
+    parse_sentencing_judgment,
+    search_sentencing_trends,
+)
 
 
 def _row(full_text: str, *, jid: str = "CYDM,115,嘉交簡,613,20260731,1"):
@@ -42,6 +48,38 @@ def test_parser_uses_signature_judge_and_separates_execution_sentence():
     assert item["judgment_date_display"] == "民國115年7月31日"
     assert [sentence["months"] for sentence in item["sentences"]] == [3.0, 6.0]
     assert item["execution_sentence"]["months"] == 7.0
+
+
+def test_parser_replaces_time_windowed_download_api_with_stable_official_page():
+    text = """
+臺灣嘉義地方法院刑事判決
+主文
+甲犯公共危險罪，處有期徒刑參月。
+理由
+略。
+中華民國115年7月31日
+法官 蘇珈漪
+"""
+    item = parse_sentencing_judgment(_row(text))
+
+    assert item["source_bound"] is True
+    assert item["source_url"].startswith(
+        "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id="
+    )
+    assert "CYDM%2C115%2C" in item["source_url"]
+    assert "JDocFile" not in item["source_url"]
+    assert item["source_url"].endswith("&ot=in")
+
+
+def test_official_page_url_rejects_untrusted_or_time_windowed_fallback_without_jid():
+    assert official_judgment_page_url(
+        "",
+        "https://data.judicial.gov.tw/opendl/JDocFile/private.pdf",
+    ) == ""
+    assert official_judgment_page_url(
+        "not,a,valid,jid",
+        "https://example.invalid/fake",
+    ) == ""
 
 
 def test_panel_judges_keep_participants_and_highlight_last_listed_judge():
@@ -83,6 +121,39 @@ def test_judge_filter_defaults_to_last_listed_but_can_search_any_participant():
     assert search_sentencing_trends(judge="王大明", **common)["eligible_count"] == 0
     assert search_sentencing_trends(judge="陳志平", **common)["eligible_count"] == 1
     assert search_sentencing_trends(judge="王大明", judge_scope="participating", **common)["eligible_count"] == 1
+
+
+def test_date_filters_accept_picker_iso_and_reject_partial_or_reversed_values():
+    text = """
+臺灣嘉義地方法院刑事判決
+主文
+甲犯公共危險罪，處有期徒刑參月。
+理由
+略。
+中華民國115年7月31日
+法官 蘇珈漪
+"""
+    common = {
+        "judge": "蘇珈漪",
+        "connector": lambda: (_Connection([_row(text)]), {}),
+        "include_mcp": False,
+    }
+    result = search_sentencing_trends(
+        date_from="2026-01-01",
+        date_to="2026-12-31",
+        **common,
+    )
+    assert result["eligible_count"] == 1
+    with pytest.raises(ValueError, match="判決日起不正確"):
+        search_sentencing_trends(date_from="2026-02", **common)
+    with pytest.raises(ValueError, match="判決日迄不正確"):
+        search_sentencing_trends(date_to="2026-02-30", **common)
+    with pytest.raises(ValueError, match="起不得晚於"):
+        search_sentencing_trends(
+            date_from="2026-12-31",
+            date_to="2026-01-01",
+            **common,
+        )
 
 
 def test_parser_includes_appendix_sentences_but_excludes_missing_appendix():
@@ -138,6 +209,52 @@ def test_parser_accepts_official_mcp_flattened_section_format():
     assert [sentence["months"] for sentence in item["sentences"]] == [4.0]
 
 
+def test_parser_accepts_anonymous_id_immediately_after_spaced_facts_heading():
+    text = (
+        "臺灣新北地方法院刑事判決114年度侵訴字第59號"
+        "上列被告因妨害性自主案件，本院判決如下： "
+        "主 文Ａ０７犯強制性交罪，處有期徒刑肆年陸月。 "
+        "事 實Ａ０７於某處犯上開罪行。 "
+        "中華民國115年8月12日 法 官 梁 世 樺 "
+        "以上正本證明與原本無異"
+    )
+    row = _row(text, jid="PCDM,114,侵訴,59,20260812,1")
+    row["judgment_date"] = "2026-08-12"
+    item = parse_sentencing_judgment(row)
+    assert item["main_text"].startswith("Ａ０７犯強制性交罪")
+    assert item["last_listed_judge"] == "梁世樺"
+    assert item["statistics_eligible"] is True
+
+
+def test_local_mcp_search_preserves_the_requested_court(monkeypatch):
+    from api.osc import taiwan_legal_mcp
+
+    captured = {}
+
+    async def fake_call(tool_name, **kwargs):
+        captured.update({"tool_name": tool_name, **kwargs})
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(taiwan_legal_mcp, "call_taiwan_legal_tool_async", fake_call)
+    result = asyncio.run(
+        taiwan_legal_mcp.search_practical_judgments_via_mcp_async(
+            "妨害性自主 量刑",
+            court="臺灣新北地方法院",
+            case_type="刑事",
+            limit=10,
+            fulltext_limit=10,
+        )
+    )
+    assert result["error"] == "no_mcp_judgment_matches"
+    assert captured == {
+        "tool_name": "search_judgments",
+        "case_type": "刑事",
+        "max_results": 10,
+        "court": "臺灣新北地方法院",
+        "keyword": "妨害性自主 量刑",
+    }
+
+
 class _Cursor:
     def __init__(self, rows):
         self.rows = rows
@@ -185,6 +302,53 @@ def test_search_keeps_mcp_candidates_out_of_statistics():
     assert result["statistics"]["declared_terms"]["count"] == 1
     assert result["mcp"]["included_in_statistics"] is False
     assert len(result["mcp"]["items"]) == 1
+    assert set(result["mcp"]["items"][0]) == {
+        "title",
+        "court",
+        "case_reason",
+        "judgment_date",
+        "judgment_date_display",
+        "source_url",
+        "full_text_available",
+        "included_in_statistics",
+        "verification_state",
+        "verification_note",
+        "exclusion_codes",
+        "exclusion_reasons",
+    }
+    assert "full_text" not in result["mcp"]["items"][0]
+
+
+def test_search_uses_public_mcp_chain_by_default(monkeypatch):
+    import api.sentencing_trends as module
+
+    captured = {}
+
+    def fake_mcp(query, **kwargs):
+        captured.update({"query": query, **kwargs})
+        return {
+            "success": True,
+            "source": "legaltech_taiwan_law_mcp",
+            "items": [{"title": "公開候選"}],
+        }
+
+    monkeypatch.setattr(module, "search_public_judgment_candidates", fake_mcp)
+    result = module.search_sentencing_trends(
+        court="臺灣嘉義地方法院",
+        judge="蘇珈漪",
+        offense="公共危險",
+        connector=lambda: (_Connection([]), {}),
+    )
+
+    assert captured == {
+        "query": "公共危險 量刑",
+        "court": "臺灣嘉義地方法院",
+        "case_type": "刑事",
+        "limit": 10,
+        "fulltext_limit": 10,
+    }
+    assert result["mcp"]["status"] == "ok"
+    assert result["mcp"]["candidate_count"] == 1
 
 
 def test_search_uses_mcp_fulltext_after_independent_official_verification():
@@ -221,7 +385,7 @@ def test_search_uses_mcp_fulltext_after_independent_official_verification():
                     "case_reason": "公共危險",
                     "judgment_date": "2026-06-30",
                     "full_text": remote_text,
-                    "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?id=CYDM115500",
+                    "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id=CYDM%2C115%2C%E5%98%89%E4%BA%A4%E7%B0%A1%2C500%2C20260630%2C1&ot=in",
                     "official_origin": True,
                 }
             ],
@@ -250,6 +414,85 @@ def test_search_uses_mcp_fulltext_after_independent_official_verification():
     }
     assert result["mcp"]["included_in_statistics"] is True
     assert result["items"][-1]["external_verified"] is True
+
+
+def test_mcp_candidate_reports_exact_judge_mismatch_instead_of_silent_drop():
+    remote_text = """
+臺灣新北地方法院刑事判決
+主文
+甲犯妨害性自主罪，處有期徒刑貳年。
+犯罪事實及理由
+本院依卷內證據認定犯罪事實，依法量處如主文所示。
+中華民國115年8月12日
+法官 林小華
+以上正本證明與原本無異
+"""
+    jid = "PCDM,114,侵訴,59,20260812,1"
+    result = search_sentencing_trends(
+        court="臺灣新北地方法院",
+        judge="梁世樺",
+        offense="妨害性自主",
+        date_from="2026-01-01",
+        date_to="2026-12-31",
+        connector=lambda: (_Connection([]), {}),
+        mcp_search=lambda *_args, **_kwargs: {
+            "success": True,
+            "items": [{
+                "jid": jid,
+                "title": "臺灣新北地方法院114年度侵訴字第59號刑事判決",
+                "court": "臺灣新北地方法院",
+                "case_reason": "妨害性自主",
+                "judgment_date": "民國115年8月12日",
+                "full_text": remote_text,
+                "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id=PCDM%2C114%2C%E4%BE%B5%E8%A8%B4%2C59%2C20260812%2C1&ot=in",
+                "official_origin": True,
+            }],
+        },
+    )
+    candidate = result["mcp"]["items"][0]
+    assert candidate["included_in_statistics"] is False
+    assert candidate["exclusion_codes"] == ["judge_mismatch"]
+    assert "梁世樺" in candidate["exclusion_reasons"][0]
+    assert "林小華" in candidate["exclusion_reasons"][0]
+    assert candidate["judgment_date"] == "民國115年8月12日"
+    assert candidate["judgment_date_display"] == "民國115年8月12日"
+
+
+def test_mcp_target_shape_with_crime_facts_heading_and_roc_date_can_be_included():
+    remote_text = """
+臺灣新北地方法院刑事判決
+主文
+甲犯妨害性自主罪，處有期徒刑貳年。
+犯罪事實
+本院依卷內證據認定被告犯罪事實，審酌全部量刑因子後，依法量處如主文所示。
+中華民國115年8月12日
+法官 梁世樺
+以上正本證明與原本無異
+"""
+    jid = "PCDM,114,侵訴,59,20260812,1"
+    result = search_sentencing_trends(
+        court="臺灣新北地方法院",
+        judge="梁世樺",
+        offense="妨害性自主",
+        date_from="2026-01-01",
+        date_to="2026-12-31",
+        connector=lambda: (_Connection([]), {}),
+        mcp_search=lambda *_args, **_kwargs: {
+            "success": True,
+            "items": [{
+                "jid": jid,
+                "court": "臺灣新北地方法院",
+                "case_reason": "妨害性自主",
+                "judgment_date": "115-08-12",
+                "full_text": remote_text,
+                "source_url": "https://judgment.judicial.gov.tw/FJUD/data.aspx?ty=JD&id=PCDM%2C114%2C%E4%BE%B5%E8%A8%B4%2C59%2C20260812%2C1&ot=in",
+                "official_origin": True,
+            }],
+        },
+    )
+    assert result["mcp_verified_count"] == 1
+    assert result["items"][0]["judgment_date"] == "2026-08-12"
+    assert result["mcp"]["items"][0]["exclusion_codes"] == []
 
 
 def test_mcp_fulltext_from_non_official_url_never_enters_statistics():
@@ -401,13 +644,19 @@ def test_sentencing_page_prefers_server_roc_display_and_has_iso_fallback_for_mob
     assert "item.judgment_date_display||rocDate(item.judgment_date)||'未載日期'" in page
 
 
-def test_sentencing_page_uses_roc_date_inputs_without_browser_english_placeholders():
+def test_sentencing_page_uses_clickable_roc_year_month_day_pickers():
     page = open("templates/sentencing_trends.html", encoding="utf-8").read()
     assert 'type="date"' not in page
     assert "判決日起（民國）" in page
     assert "判決日迄（民國）" in page
-    assert page.count("例如：民國115年8月17日") == 2
-    assert "function rocInputToIso(value)" in page
+    for prefix in ("from", "to"):
+        assert f'id="trend-date-{prefix}-year"' in page
+        assert f'id="trend-date-{prefix}-month"' in page
+        assert f'id="trend-date-{prefix}-day"' in page
+    assert "function setupRocPicker(prefix)" in page
+    assert "function rocPickerToIso(picker)" in page
+    assert "replaceChildren(new Option('日',''))" in page
+    assert "請完整選擇判決日起的民國年、月、日" in page
     assert 'type="hidden" name="date_from"' in page
     assert 'type="hidden" name="date_to"' in page
 

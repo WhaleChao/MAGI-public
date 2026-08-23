@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>公開工具｜MAGI</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-site.css') }}?v=20260822-public-tools">
+  <link rel="stylesheet" href="{{ url_for('static', filename='magi-theme.css') }}?v=20260822-public-tools">
+  <script src="{{ url_for('static', filename='magi-theme.js') }}?v=20260822-public-tools"></script>
+  <style>
+    :root{--pt-bg:#eef5f7;--pt-panel:#fff;--pt-ink:#132a32;--pt-muted:#587079;--pt-line:#b8d0d6;--pt-accent:#0b8f9b;--pt-soft:#e9f8fa}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 80% -10%,rgba(11,143,155,.16),transparent 34%),var(--pt-bg);color:var(--pt-ink);font-family:var(--magi-font,-apple-system,BlinkMacSystemFont,"Noto Sans TC",sans-serif)}
+    main{width:min(1120px,calc(100vw - 28px));margin:28px auto 70px}.top{display:flex;justify-content:space-between;align-items:center;gap:18px}.brand{font-weight:950;letter-spacing:.1em;color:var(--pt-ink);text-decoration:none}.theme{min-height:38px;padding:7px 11px;border:1px solid var(--pt-line);border-radius:9px;background:var(--pt-panel);color:var(--pt-ink);cursor:pointer}
+    .hero{padding:54px 0 34px}.kicker{color:var(--pt-accent);font-size:12px;font-weight:900;letter-spacing:.13em}.hero h1{margin:8px 0 12px;font-size:clamp(34px,6vw,58px)}.hero p{max-width:750px;margin:0;color:var(--pt-muted);font-size:17px;line-height:1.8}
+    .category{margin-top:24px}.category h2{margin:0 0 10px;font-size:20px}.category>p{margin:0 0 14px;color:var(--pt-muted);line-height:1.7}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:15px;padding:19px;border:1px solid var(--pt-line);border-radius:15px;background:var(--pt-panel);color:var(--pt-ink);text-decoration:none;box-shadow:0 12px 30px rgba(12,42,50,.07);transition:.18s ease}.card:hover{transform:translateY(-2px);border-color:var(--pt-accent);box-shadow:0 16px 34px rgba(12,42,50,.12)}.icon{display:grid;width:46px;height:46px;place-items:center;border-radius:13px;background:var(--pt-soft);color:var(--pt-accent);font-size:24px}.card h3{margin:0 0 5px;font-size:17px}.card p{margin:0;color:var(--pt-muted);font-size:13px;line-height:1.55}.arrow{color:var(--pt-accent);font-size:22px}.badge{display:inline-block;margin-left:7px;padding:2px 7px;border-radius:999px;background:#e8fff5;color:#087a55;font-size:11px;vertical-align:2px}
+    .private{opacity:.9}.foot{margin-top:32px;padding:15px 18px;border:1px solid var(--pt-line);border-radius:12px;background:var(--pt-soft);color:var(--pt-muted);font-size:13px;line-height:1.7}
+    :root[data-magi-theme="cyber"]{--pt-bg:#061218;--pt-panel:#0a1b23;--pt-ink:#d8fbff;--pt-muted:#91b9c0;--pt-line:#285665;--pt-accent:#52e0e6;--pt-soft:#102832}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}.hero{padding-top:38px}.card{grid-template-columns:auto 1fr}.arrow{display:none}}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="top"><a class="brand" href="/tools">✦ MAGI TOOLS</a><button class="theme" type="button" data-magi-theme-toggle aria-label="切換日夜主題"></button></header>
+    <section class="hero"><div class="kicker">PUBLIC TOOL DIRECTORY</div><h1>工具已分門別類</h1><p>公開工具不需要 MAGI 帳號；上傳與生成仍受格式、容量、頻率、並行、逾時與本機清理限制。內部法務與系統管理功能維持登入保護。</p></section>
+    <section class="category" aria-labelledby="creative-title"><h2 id="creative-title">創作與製造</h2><p>本機生成媒體與可列印模型，不自動外送或發布。</p><div class="grid">
+      <a class="card" href="/video-studio"><span class="icon">▶</span><span><h3>影片工作室<span class="badge">新功能</span></h3><p>上傳圖片或短影片、確認 MAGI 對中文剪輯指令的理解，再於本機組合成 9:16 短影音。</p></span><span class="arrow">›</span></a>
+      <a class="card" href="/cookie-cutter"><span class="icon">⌁</span><span><h3>線稿轉餅乾切模</h3><p>空框可做光滑切模；框內圖案可另做連續鏡像壓模。</p></span><span class="arrow">›</span></a>
+    </div></section>
+    <section class="category" aria-labelledby="learning-title"><h2 id="learning-title">學習與活動</h2><p>名單抽選與國家考試練習工具。</p><div class="grid">
+      <a class="card" href="/lottery"><span class="icon">◎</span><span><h3>抽獎工具</h3><p>從 CSV 或 XLSX 名單安全抽選，結果遮罩敏感欄位。</p></span><span class="arrow">›</span></a>
+      <a class="card" href="/exam-tutor"><span class="icon">本</span><span><h3>國考練習</h3><p>選擇題、申論題與趨勢題庫練習。</p></span><span class="arrow">›</span></a>
+    </div></section>
+    <section class="category private" aria-labelledby="private-title"><h2 id="private-title">法律實務與系統維護</h2><p>案件、閱卷、筆錄、法扶、自我修復與健康狀態含業務資料，仍須登入。</p><div class="grid">
+      <a class="card" href="/login?next=/dashboard"><span class="icon">法</span><span><h3>法律實務工作台</h3><p>案件管理、裁判趨勢、實務見解、閱卷、筆錄與法扶。</p></span><span class="arrow">›</span></a>
+      <a class="card" href="/login?next=/status"><span class="icon">⚙</span><span><h3>系統維護中心</h3><p>健康檢查、程序監控、功能索引與自我修復。</p></span><span class="arrow">›</span></a>
+    </div></section>
+    <aside class="foot">公開不等於無限制：生成端點使用雙重提交 CSRF、防濫用頻率限制與單一並行工作程序；影片只在請求期間存在，回傳後立即清除暫存，不提供外部網址抓取、自動發布或上游自動更新。</aside>
+  </main>
+</body>
+</html>

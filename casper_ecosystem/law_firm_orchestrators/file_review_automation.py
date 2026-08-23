@@ -1446,6 +1446,7 @@ class FileReviewManager:
         # MD5 記錄
         self.md5_records_file = os.path.join(self.download_folder, "md5_records.json")
         self.md5_records = self._load_md5_records()
+        self._last_download_content_receipts: Dict[str, Dict[str, Any]] = {}
 
         # ★ 已下載檔案 registry（防止跨 run 重複下載）
         self.download_registry_file = os.path.join(self.download_folder, "downloaded_registry.json")
@@ -2378,10 +2379,10 @@ class FileReviewManager:
         try:
             minutes = max(
                 1,
-                int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "1440") or "1440"),
+                int(os.environ.get("MAGI_FILE_REVIEW_ROW_RECHECK_MINUTES", "43200") or "43200"),
             )
         except Exception:
-            minutes = 1440
+            minutes = 43200
         if clicked_at is None or clicked_at + timedelta(minutes=minutes) <= datetime.now():
             self._clicked_rowids.pop(rid, None)
             self._save_clicked_rowids()
@@ -7216,6 +7217,7 @@ class FileReviewManager:
         downloaded_files = []
         # 每輪重置，避免跨 run 汙染
         self._last_download_meta_by_file = {}
+        self._last_download_content_receipts = {}
         self._last_smart_skipped_files = []
         self.last_download_error_code = ""
         self.last_download_error_detail = ""
@@ -8541,6 +8543,15 @@ class FileReviewManager:
                             
                     # ★ 檔案已經在 today_folder，不需要移動，直接記錄
                     downloaded_files.append(src)
+                    try:
+                        content_receipt = {
+                            "sha256": self._calculate_sha256(src),
+                            "size": int(os.path.getsize(src)),
+                        }
+                        self._last_download_content_receipts[src] = content_receipt
+                        self._last_download_content_receipts[filename] = content_receipt
+                    except Exception as receipt_error:
+                        self.log(f"  ⚠️ 下載內容收據建立失敗 {filename}: {receipt_error}")
                     # 保存「檔案 -> 案件」對照，供歸檔/通知使用（即使最後進 _待歸檔 也能回報當事人與法院案號）。
                     try:
                         if not hasattr(self, "_last_download_meta_by_file"):
@@ -14482,6 +14493,14 @@ class FileReviewManager:
             for chunk in iter(lambda: f.read(4096), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
+
+    def _calculate_sha256(self, filepath: str) -> str:
+        """計算下載內容的不可變通知／歸檔收據。"""
+        digest = hashlib.sha256()
+        with open(filepath, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
     
     def _load_md5_records(self) -> dict:
         """載入 MD5 記錄"""

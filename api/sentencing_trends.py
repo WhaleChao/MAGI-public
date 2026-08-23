@@ -12,8 +12,13 @@ import re
 import statistics
 from datetime import date
 from typing import Any, Callable
-from urllib.parse import urlparse
-
+from api.domains.judgment_official_source import (
+    OFFICIAL_JID_RE as _OFFICIAL_JID_RE,
+    is_official_judgment_url,
+    normalize_judgment_date,
+    official_judgment_page_url,
+    validate_official_judgment_candidate,
+)
 from api.osc.utils import _osc_web_connect
 
 
@@ -34,7 +39,6 @@ _EXECUTION_RE = re.compile(
     r"(?P<term>[^\n。；;]{0,42})"
 )
 _CN_DIGITS = {"零": 0, "○": 0, "〇": 0, "一": 1, "壹": 1, "貳": 2, "二": 2, "兩": 2, "參": 3, "三": 3, "肆": 4, "四": 4, "伍": 5, "五": 5, "陸": 6, "六": 6, "柒": 7, "七": 7, "捌": 8, "八": 8, "玖": 9, "九": 9}
-_OFFICIAL_JUDGMENT_HOSTS = {"judgment.judicial.gov.tw", "data.judicial.gov.tw"}
 _CHAT_COMMAND_RE = re.compile(
     r"(?:法官量刑(?:與判決)?趨勢|量刑(?:與判決)?趨勢|判決趨勢|趨勢分析|"
     r"案由分析|判決分析|案由統計|判決統計|見解趨勢|裁判趨勢|查詢|搜尋|分析|幫我|請|麻煩)"
@@ -48,6 +52,37 @@ _CHAT_FULL_COURT_RE = re.compile(
 _CHAT_COURT_ALIAS_RE = re.compile(r"([一-鿿]{1,6})(地院|高分院)")
 _CHAT_JUDGE_GENERIC = {"某", "某某", "這位", "該名", "承辦", "審理"}
 
+_PUBLIC_EXCLUSION_REASONS = {
+    "missing_official_jid": "缺少可核對的官方 JID",
+    "missing_or_invalid_official_jid": "缺少或無法核對官方 JID",
+    "missing_official_fulltext": "尚未取得可獨立核對的官方全文",
+    "official_origin_not_verified": "來源尚未證明為司法院官方裁判",
+    "unofficial_source_url": "來源網址不是司法院官方裁判網址",
+    "official_url_jid_mismatch": "官方網址與裁判 JID 不一致",
+    "signature_block_unrecognized": "全文簽署區未辨識出法官",
+    "main_section_unrecognized": "全文主文區段無法辨識",
+    "sentence_not_found": "主文未辨識出可統計刑度",
+    "appendix_incomplete": "主文引用附表，但附表刑度尚未完整取得",
+    "judgment_date_invalid": "判決日期格式無法核對",
+    "judgment_date_missing": "裁判未提供可核對的判決日期",
+    "judge_mismatch": "裁判簽署區未列出查詢的法官",
+    "court_mismatch": "裁判法院與查詢法院不符",
+    "offense_mismatch": "裁判案由或主文與查詢案由不符",
+    "date_before_range": "判決日期早於查詢期間",
+    "date_after_range": "判決日期晚於查詢期間",
+    "duplicate_local_jid": "本機已有同一官方 JID，未重複計入 MCP",
+}
+
+
+def _public_exclusion_reason(code: str, *, requested_judge: str = "", item: dict[str, Any] | None = None) -> str:
+    if code == "judge_mismatch" and requested_judge:
+        parsed = item or {}
+        listed = "、".join(str(value) for value in parsed.get("participating_judges") or [] if value)
+        last = str(parsed.get("last_listed_judge") or "").strip()
+        observed = f"；簽署區：{listed or '未辨識'}；末位列名：{last or '未辨識'}"
+        return f"查詢法官「{requested_judge}」與裁判簽署區不符{observed}"
+    return _PUBLIC_EXCLUSION_REASONS.get(str(code), "未通過裁判品質核對")
+
 
 def _compact(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).replace("台", "臺")
@@ -55,6 +90,19 @@ def _compact(value: Any) -> str:
 
 def _clean_text(value: Any) -> str:
     return "\n".join(_SPACE_RE.sub(" ", line).strip() for line in str(value or "").splitlines()).strip()
+
+
+def _normalized_iso_date_filter(value: Any, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        raise ValueError(f"{label}不正確，請重新選擇民國年、月、日。")
+    try:
+        date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{label}不正確，請重新選擇民國年、月、日。") from exc
+    return text
 
 
 def format_roc_date(value: Any) -> str:
@@ -139,7 +187,14 @@ def _main_text(full_text: str) -> str:
     # legal section heading instead so flattened official text remains
     # parseable without broadening the boundary into the reasons.
     match = re.search(
-        r"主\s*文\s*(.+?)(?=\s*(?:事實及理由|事\s*實|理\s*由)(?:[一二三四五六七八九十、：:\s]|$))",
+        # Official pages can flatten ``事 實`` directly into an anonymised
+        # full-width identifier (for example ``事 實Ａ０７…``).  The old
+        # look-ahead restricted the first content character to a tiny heading
+        # alphabet and therefore rejected a perfectly valid main section.
+        # Keep the boundary structural instead: unspaced multi-character
+        # headings are exact, while the otherwise ambiguous short headings
+        # must retain the official visual spacing between their characters.
+        r"主\s*文\s*(.+?)(?=\s+(?:犯罪事實(?:及理由)?|事實及理由|事實及證據|事\s+實|理\s+由|理由(?=\s|$)))",
         full_text,
         re.S,
     )
@@ -216,11 +271,28 @@ def parse_sentencing_judgment(row: dict[str, Any]) -> dict[str, Any]:
     execution = _execution_item(main)
     if execution:
         main_sentences = [item for item in main_sentences if item["text"] != execution["text"]]
-    source_url = str(row.get("source_url") or "").strip()
+    raw_source_url = str(row.get("source_url") or "").strip()
     jid = str(row.get("jid") or "").strip()
+    source_url = official_judgment_page_url(jid, raw_source_url)
     court_match = _COURT_RE.search(full_text[:500])
     court = court_match.group(1) if court_match else str(row.get("court_name") or "").strip()
-    complete = bool(jid and full_text and judges and main and (main_sentences or execution) and appendix_complete)
+    judgment_date = normalize_judgment_date(row.get("judgment_date"))
+    exclusion_codes: list[str] = []
+    if not jid or not _OFFICIAL_JID_RE.fullmatch(jid):
+        exclusion_codes.append("missing_official_jid")
+    if not full_text:
+        exclusion_codes.append("missing_official_fulltext")
+    if not judges:
+        exclusion_codes.append("signature_block_unrecognized")
+    if not main:
+        exclusion_codes.append("main_section_unrecognized")
+    if main and not (main_sentences or execution):
+        exclusion_codes.append("sentence_not_found")
+    if appendix_referenced and not appendix_complete:
+        exclusion_codes.append("appendix_incomplete")
+    if row.get("judgment_date") and not judgment_date:
+        exclusion_codes.append("judgment_date_invalid")
+    complete = not exclusion_codes
     return {
         "id": row.get("id"),
         "jid": jid,
@@ -230,8 +302,8 @@ def parse_sentencing_judgment(row: dict[str, Any]) -> dict[str, Any]:
         "issue": _official_issue(full_text, str(row.get("case_type") or "")),
         # Keep the ISO canonical value for database/filter/sort semantics and
         # provide an explicit display-only value for every presentation path.
-        "judgment_date": str(row.get("judgment_date") or ""),
-        "judgment_date_display": format_roc_date(row.get("judgment_date")),
+        "judgment_date": judgment_date,
+        "judgment_date_display": format_roc_date(judgment_date),
         "judges": judges,
         "participating_judges": participating_judges,
         "last_listed_judge": last_listed_judge,
@@ -242,23 +314,17 @@ def parse_sentencing_judgment(row: dict[str, Any]) -> dict[str, Any]:
         "appendix_complete": appendix_complete,
         "appendix_sentences": appendix_sentences[:60],
         "statistics_eligible": complete,
-        "exclusion_reason": "" if complete else (
-            "附表尚未取得或無法核對" if appendix_referenced and not appendix_complete
-            else "裁判缺少可核對的簽署區、主文刑度或官方識別碼"
-        ),
+        "exclusion_codes": exclusion_codes,
+        "exclusion_reason": "；".join(_public_exclusion_reason(code) for code in exclusion_codes),
         "source_url": source_url,
-        "source_bound": bool(jid and (source_url.startswith("https://data.judicial.gov.tw/") or full_text)),
+        "source_bound": bool(jid and (_official_judgment_url(raw_source_url) or full_text)),
         "source": str(row.get("source") or "local_official_archive"),
         "external_verified": bool(row.get("external_verified")),
     }
 
 
 def _official_judgment_url(value: Any) -> bool:
-    try:
-        parsed = urlparse(str(value or "").strip())
-    except (TypeError, ValueError):
-        return False
-    return parsed.scheme == "https" and str(parsed.hostname or "").lower() in _OFFICIAL_JUDGMENT_HOSTS
+    return is_official_judgment_url(value)
 
 
 def search_public_judgment_candidates(query: str, **kwargs: Any) -> dict[str, Any]:
@@ -293,6 +359,7 @@ def search_public_judgment_candidates(query: str, **kwargs: Any) -> dict[str, An
 
         return search_practical_judgments_via_mcp(
             privacy.safe_query if privacy.external_allowed else "",
+            **({"court": court} if court else {}),
             **kwargs,
         )
     except (ImportError, ModuleNotFoundError):
@@ -543,6 +610,28 @@ def _matches_filters(
     date_to: str,
     judge_scope: str = "last_listed",
 ) -> bool:
+    return not _filter_exclusion_codes(
+        item,
+        court=court,
+        judge=judge,
+        offense=offense,
+        date_from=date_from,
+        date_to=date_to,
+        judge_scope=judge_scope,
+    )
+
+
+def _filter_exclusion_codes(
+    item: dict[str, Any],
+    *,
+    court: str,
+    judge: str,
+    offense: str,
+    date_from: str,
+    date_to: str,
+    judge_scope: str = "last_listed",
+) -> list[str]:
+    codes: list[str] = []
     if judge:
         if judge_scope == "participating":
             matched_judge = any(
@@ -552,20 +641,22 @@ def _matches_filters(
         else:
             matched_judge = _compact(item.get("last_listed_judge")) == _compact(judge)
         if not matched_judge:
-            return False
+            codes.append("judge_mismatch")
     if court and _compact(court) not in _compact(item.get("court")):
-        return False
+        codes.append("court_mismatch")
     if offense and _compact(offense) not in _compact(str(item.get("issue") or "") + str(item.get("main_text") or "")):
-        return False
+        codes.append("offense_mismatch")
     judgment_date = str(item.get("judgment_date") or "")
-    if date_from and (not judgment_date or judgment_date < date_from):
-        return False
-    if date_to and (not judgment_date or judgment_date > date_to):
-        return False
-    return True
+    if (date_from or date_to) and not judgment_date:
+        codes.append("judgment_date_missing")
+    elif date_from and judgment_date < date_from:
+        codes.append("date_before_range")
+    elif date_to and judgment_date > date_to:
+        codes.append("date_after_range")
+    return codes
 
 
-def _verified_mcp_items(
+def _evaluate_mcp_candidates(
     candidates: list[dict[str, Any]],
     *,
     existing_jids: set[str],
@@ -576,48 +667,103 @@ def _verified_mcp_items(
     date_to: str,
     judge_scope: str,
 ) -> list[dict[str, Any]]:
-    verified: list[dict[str, Any]] = []
+    evaluations: list[dict[str, Any]] = []
+    seen = set(existing_jids)
     for raw in candidates:
         if not isinstance(raw, dict):
             continue
-        jid = str(raw.get("jid") or "").strip()
-        full_text = str(raw.get("full_text") or "").strip()
-        source_url = str(raw.get("source_url") or raw.get("url") or "").strip()
-        if (
-            not jid
-            or jid in existing_jids
-            or not full_text
-            or raw.get("official_origin") is not True
-            or not _official_judgment_url(source_url)
-        ):
-            continue
-        parsed = parse_sentencing_judgment(
+        verified = validate_official_judgment_candidate(raw)
+        codes = list(verified["exclusion_codes"])
+        jid = str(verified.get("jid") or "")
+        parsed: dict[str, Any] | None = None
+        if jid and jid in seen:
+            codes.append("duplicate_local_jid")
+        if verified["ok"] and "duplicate_local_jid" not in codes:
+            parsed = parse_sentencing_judgment(
+                {
+                    "id": None,
+                    "jid": jid,
+                    "court_name": raw.get("court"),
+                    "case_number": raw.get("title") or raw.get("citation_text"),
+                    "case_type": raw.get("case_reason"),
+                    "judgment_date": verified.get("judgment_date"),
+                    "full_text": verified.get("full_text"),
+                    "source_url": verified.get("source_url"),
+                    "source": "legaltech_taiwan_law_mcp_verified_official",
+                    "external_verified": True,
+                }
+            )
+            codes.extend(code for code in parsed.get("exclusion_codes") or [] if code not in codes)
+            codes.extend(
+                code for code in _filter_exclusion_codes(
+                    parsed,
+                    court=court,
+                    judge=judge,
+                    offense=offense,
+                    date_from=date_from,
+                    date_to=date_to,
+                    judge_scope=judge_scope,
+                ) if code not in codes
+            )
+        included = parsed is not None and not codes
+        if included:
+            seen.add(jid)
+        evaluations.append({
+            "raw": raw,
+            "parsed": parsed,
+            "included": included,
+            "exclusion_codes": codes,
+        })
+    return evaluations
+
+
+def _public_mcp_candidates(
+    evaluations: list[dict[str, Any]],
+    *,
+    requested_judge: str,
+) -> list[dict[str, Any]]:
+    """Project MCP results to a bounded, useful, no-full-text UI contract."""
+    public: list[dict[str, Any]] = []
+    for evaluation in evaluations:
+        raw = evaluation["raw"]
+        parsed = evaluation.get("parsed") or {}
+        jid = str(raw.get("jid") or raw.get("doc_id") or "").strip()
+        full_text_available = bool(str(raw.get("full_text") or "").strip())
+        included = evaluation.get("included") is True
+        exclusion_codes = list(evaluation.get("exclusion_codes") or [])
+        exclusion_reasons = [
+            _public_exclusion_reason(code, requested_judge=requested_judge, item=parsed)
+            for code in exclusion_codes
+        ]
+        if included:
+            state = "verified_official_fulltext"
+            note = "官方全文、簽署區、主文刑度與查詢條件均已核對，已納入統計。"
+        elif full_text_available:
+            state = "official_fulltext_not_eligible"
+            note = "已取得官方全文，但簽署區、主文刑度、附表或查詢條件未完整通過，未納入統計。"
+        else:
+            state = "discovery_candidate"
+            note = "MCP 已找到公開候選；尚未取得可獨立核對的官方全文，未納入統計。"
+        public.append(
             {
-                "id": None,
-                "jid": jid,
-                "court_name": raw.get("court"),
-                "case_number": raw.get("title") or raw.get("citation_text"),
-                "case_type": raw.get("case_reason"),
-                "judgment_date": raw.get("judgment_date"),
-                "full_text": full_text,
-                "source_url": source_url,
-                "source": "legaltech_taiwan_law_mcp_verified_official",
-                "external_verified": True,
+                "title": str(raw.get("title") or raw.get("citation_text") or "待核對裁判").strip()[:240],
+                "court": str(raw.get("court") or "").strip()[:80],
+                "case_reason": str(raw.get("case_reason") or "").strip()[:100],
+                "judgment_date": str(raw.get("judgment_date") or "").strip()[:20],
+                "judgment_date_display": format_roc_date(raw.get("judgment_date")),
+                "source_url": official_judgment_page_url(
+                    jid,
+                    raw.get("source_url") or raw.get("url"),
+                ),
+                "full_text_available": full_text_available,
+                "included_in_statistics": included,
+                "verification_state": state,
+                "verification_note": note,
+                "exclusion_codes": exclusion_codes,
+                "exclusion_reasons": exclusion_reasons,
             }
         )
-        if not parsed["statistics_eligible"] or not _matches_filters(
-            parsed,
-            court=court,
-            judge=judge,
-            offense=offense,
-            date_from=date_from,
-            date_to=date_to,
-            judge_scope=judge_scope,
-        ):
-            continue
-        existing_jids.add(jid)
-        verified.append(parsed)
-    return verified
+    return public
 
 
 def _percentile(values: list[float], ratio: float) -> float | None:
@@ -660,6 +806,10 @@ def search_sentencing_trends(
     mcp_search: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     court, judge, offense = (str(x or "").strip() for x in (court, judge, offense))
+    date_from = _normalized_iso_date_filter(date_from, "判決日起")
+    date_to = _normalized_iso_date_filter(date_to, "判決日迄")
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("判決日起不得晚於判決日迄。")
     judge_scope = str(judge_scope or "last_listed").strip().lower()
     if judge_scope not in {"last_listed", "participating"}:
         raise ValueError("法官條件不正確，請選擇末位列名法官或任一參與判決法官。")
@@ -703,13 +853,25 @@ def search_sentencing_trends(
     local_eligible = [item for item in parsed if item["statistics_eligible"]]
     external: list[dict[str, Any]] = []
     verified_external: list[dict[str, Any]] = []
+    mcp_evaluations: list[dict[str, Any]] = []
     result: dict[str, Any] = {}
     mcp_status = "not_requested"
+    if include_mcp and mcp_search is None:
+        mcp_search = search_public_judgment_candidates
     if include_mcp and mcp_search:
-        # The provider has a dedicated court parameter.  Keeping the court out
-        # of full-text query prevents a common term from overwhelming the
-        # scarcer judge/offense terms.
-        query = " ".join(x for x in (judge, offense, "量刑") if x) or court
+        # The provider has a dedicated court parameter.  Its discovery index
+        # reliably exposes the case reason, but judge names usually appear
+        # only after the official full text is fetched.  Including a judge in
+        # the first-stage query therefore produced an empty MCP panel.  Search
+        # by offense first, then enforce the requested judge against the
+        # independently parsed signature block in ``_verified_mcp_items``.
+        # A judge-only query retains the name because no broader legal subject
+        # was supplied by the user.
+        query = (
+            " ".join(x for x in (offense, "量刑") if x)
+            if offense
+            else (" ".join(x for x in (judge, "法官", "量刑") if x) or court)
+        )
         try:
             result = mcp_search(query, court=court, case_type="刑事", limit=10, fulltext_limit=10)
             mcp_status = "ok" if result.get("success") else "unavailable"
@@ -717,7 +879,7 @@ def search_sentencing_trends(
             # smaller second slice silently discarded official candidates and
             # made sparse local datasets look even thinner than necessary.
             external = list(result.get("items") or [])[:10] if result.get("success") else []
-            verified_external = _verified_mcp_items(
+            mcp_evaluations = _evaluate_mcp_candidates(
                 external,
                 existing_jids={str(item.get("jid") or "") for item in parsed},
                 court=court,
@@ -727,10 +889,19 @@ def search_sentencing_trends(
                 date_to=date_to,
                 judge_scope=judge_scope,
             )
+            verified_external = [
+                evaluation["parsed"]
+                for evaluation in mcp_evaluations
+                if evaluation.get("included") is True
+            ]
         except Exception:
             mcp_status = "unavailable"
     eligible = local_eligible + verified_external
     displayed_items = parsed + verified_external
+    public_mcp_items = _public_mcp_candidates(
+        mcp_evaluations,
+        requested_judge=judge,
+    )
     return {
         "ok": True,
         "filters": {
@@ -753,7 +924,9 @@ def search_sentencing_trends(
         "items": displayed_items,
         "mcp": {
             "status": mcp_status,
-            "items": external,
+            "items": public_mcp_items,
+            "candidate_count": len(public_mcp_items),
+            "fulltext_count": sum(1 for item in public_mcp_items if item["full_text_available"]),
             "verified_count": len(verified_external),
             "included_in_statistics": bool(verified_external),
             "source": str(result.get("source") or "") if include_mcp and mcp_search else "",

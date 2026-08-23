@@ -245,6 +245,7 @@ def _nim_daily_budget_exhausted(error: object) -> bool:
     return (
         "nim_daily_budget_exceeded:" in normalized
         or "nim_background_budget_reserved:" in normalized
+        or "background_heavy_authorization_budget_exhausted" in normalized
     )
 
 

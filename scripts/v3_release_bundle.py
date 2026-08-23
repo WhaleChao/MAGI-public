@@ -68,6 +68,13 @@ REQUIRED_PACKAGE_FILES = (
     "resources/osc/photo/lawyer_stamp.png",
     "resources/osc/photo/logo.png",
     "resources/osc/photo/namecard.png",
+    # Reviewed, minimal MIT snapshot used by the public local-only video
+    # renderer.  Pin individual files so an unrelated upstream tool can never
+    # enter the immutable release by merely appearing under third_party.
+    "third_party/video_autopilot_kit/LICENSE",
+    "third_party/video_autopilot_kit/MAGI_INTEGRATION.json",
+    "third_party/video_autopilot_kit/runtime/__init__.py",
+    "third_party/video_autopilot_kit/runtime/portrait_normalizer.py",
     "data/templates/D_supplement.docx",
     "integrations/debt_robot/document/A.docx",
     "integrations/debt_robot/document/B.docx",
@@ -215,6 +222,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_transcribe_runtime.py",
     "tests/test_tailscale_funnel_healthcheck.py",
     "tests/test_translation_strict_nim_provenance.py",
+    "tests/test_video_studio_blueprint.py",
     "tests/test_durable_deep_delivery_rc568.py",
     "tests/test_generation_quality_failclosed_rc568.py",
     "tests/test_transcript_filename_repair.py",

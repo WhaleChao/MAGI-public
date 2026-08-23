@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 
 VERIFIED_LOCAL = "verified_local_official"
+VERIFIED_EXTERNAL_OFFICIAL = "verified_external_official_fulltext"
 LOCAL_REVIEWED = "reviewed_local_insight"
 EXTERNAL_CANDIDATE = "external_candidate"
 UNVERIFIED = "unverified"
@@ -227,7 +228,7 @@ def is_draft_eligible(item: dict[str, Any]) -> bool:
     state = verification_state(item)
     if state == LOCAL_REVIEWED:
         return True
-    if state != VERIFIED_LOCAL:
+    if state not in {VERIFIED_LOCAL, VERIFIED_EXTERNAL_OFFICIAL}:
         return False
 
     # An official local copy proves provenance, not usefulness.  Court
@@ -417,7 +418,7 @@ def enrich_and_rank_items(query: str, items: Iterable[dict[str, Any]]) -> list[d
         )
         # Discovery ordering favours fit, but verified sources and higher courts
         # get deterministic tie-breaking credit.
-        verified_bonus = 15 if state == VERIFIED_LOCAL else (8 if state == LOCAL_REVIEWED else 0)
+        verified_bonus = 15 if state in {VERIFIED_LOCAL, VERIFIED_EXTERNAL_OFFICIAL} else (8 if state == LOCAL_REVIEWED else 0)
         item["combined_rank_score"] = round(0.55 * similarity + 0.45 * authority + verified_bonus, 2)
         enriched.append(item)
     enriched.sort(

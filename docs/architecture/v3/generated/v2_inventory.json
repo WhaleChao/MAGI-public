@@ -5,10 +5,10 @@
     "cron_jobs": 105,
     "daemon_child_declarations": 6,
     "enabled_cron_jobs": 95,
-    "http_routes": 353,
+    "http_routes": 363,
     "installed_launchagents": 0,
     "skill_entrypoints": 52,
-    "test_modules": 125,
+    "test_modules": 127,
     "versioned_skill_artifacts": 0
   },
   "cron_jobs": [
@@ -22,7 +22,7 @@
       "timeout_sec": 600
     },
     {
-      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 JUDGMENT_DAILY_TIME_BUDGET_SEC=1200 JUDGMENT_DAILY_COLLECT_TIMEOUT_SEC=180 JUDGMENT_DAILY_MAX_REASONS=5 JUDGMENT_SUMMARY_RETRY_ENABLE=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py' --task daily_crawl",
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_NO_DELETE=1 JUDGMENT_DAILY_TIME_BUDGET_SEC=1200 JUDGMENT_DAILY_COLLECT_TIMEOUT_SEC=180 JUDGMENT_DAILY_MAX_REASONS=5 JUDGMENT_MCP_GAP_FILL_ENABLE=1 JUDGMENT_MCP_GAP_MAX_RESULTS_PER=5 JUDGMENT_MCP_GAP_TIME_BUDGET_SEC=480 JUDGMENT_SUMMARY_RETRY_ENABLE=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/skills/judgment-collector/action.py' --task daily_crawl",
       "cron": "0 4,10,16,22 * * *",
       "enabled": true,
       "id": "job_1770705679",
@@ -211,7 +211,7 @@
       "timeout_sec": 5400
     },
     {
-      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_drive_case_sync_all_files --block-at core_only --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 6000 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_drive_sync_readonly --require google_drive_sync_write -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=300 MAGI_DRIVE_SYNC_LOCAL_HASH_TIMEOUT_SEC=900 MAGI_DRIVE_SYNC_HTTP_TIMEOUT=90 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=90 MAGI_DRIVE_SYNC_API_RETRIES=3 MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=1500000000 MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=1500000000 MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=1500000000 MAGI_DRIVE_SYNC_RESUMABLE_UPLOAD_MIN_BYTES=8388608 MAGI_DRIVE_SYNC_UPLOAD_CHUNK_BYTES=8388608 MAGI_DRIVE_SYNC_DEFERRED_DOWNLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_DEFERRED_UPLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_UNVERIFIED_EXISTING_ARE_OK=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/drive_case_sync_worker.py' --direct-all-cases --direct-all-case-limit 1 --all-case-chunk-size 1 --execute-downloads --execute-uploads --no-create-drive-folders --download-limit 24 --upload-limit 24 --max-download-bytes 1500000000 --max-upload-bytes 1500000000 --max-case-depth 24 --max-case-items 20000 --create-drive-folder-limit 24 --create-drive-folder-max-age-hours 168 --priority-upcoming-days 0 --inventory-timeout-sec 5400 --terminal-headroom-sec 300",
+      "command": "'${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/resource_guarded_run.py' --job-id job_drive_case_sync_all_files --block-at core_only --require-disk-free-gb 30 --require-free-inactive-gb 3 --timeout-sec 6000 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_after_token_refresh.py' --require google_drive_sync_readonly --require google_drive_sync_write -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/ops/run_with_env.py' MAGI_DRIVE_SYNC_LOCAL_SCAN_TIMEOUT_SEC=300 MAGI_DRIVE_SYNC_LOCAL_HASH_TIMEOUT_SEC=900 MAGI_DRIVE_SYNC_HTTP_TIMEOUT=90 MAGI_DRIVE_SYNC_DRIVE_LIST_TIMEOUT_SEC=90 MAGI_DRIVE_SYNC_API_RETRIES=3 MAGI_DRIVE_SYNC_LOCAL_HASH_MAX_BYTES=3000000000 MAGI_DRIVE_SYNC_MAX_SINGLE_DOWNLOAD_BYTES=1500000000 MAGI_DRIVE_SYNC_MAX_SINGLE_UPLOAD_BYTES=3000000000 MAGI_DRIVE_SYNC_RESUMABLE_UPLOAD_MIN_BYTES=8388608 MAGI_DRIVE_SYNC_UPLOAD_CHUNK_BYTES=8388608 MAGI_DRIVE_SYNC_DEFERRED_DOWNLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_DEFERRED_UPLOADS_ARE_OK=1 MAGI_DRIVE_SYNC_UNVERIFIED_EXISTING_ARE_OK=0 -- '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/venv/bin/python3' '${HOME}/Desktop/MAGI/V3_工程資料/候選版本與驗證證據/source-v3-current/scripts/drive_case_sync_worker.py' --direct-all-cases --direct-all-case-limit 1 --all-case-chunk-size 1 --execute-downloads --execute-uploads --no-create-drive-folders --download-limit 24 --upload-limit 24 --max-download-bytes 1500000000 --max-upload-bytes 3000000000 --max-case-depth 24 --max-case-items 20000 --create-drive-folder-limit 24 --create-drive-folder-max-age-hours 168 --priority-upcoming-days 0 --inventory-timeout-sec 5400 --terminal-headroom-sec 300",
       "cron": "12,32,52 * * * *",
       "enabled": true,
       "id": "job_drive_case_sync_all_files",
@@ -1272,7 +1272,7 @@
     },
     {
       "handler": "cookie_cutter_page",
-      "line": 77,
+      "line": 427,
       "methods": [
         "GET"
       ],
@@ -1281,7 +1281,7 @@
     },
     {
       "handler": "cookie_cutter_prepare_api",
-      "line": 84,
+      "line": 434,
       "methods": [
         "POST"
       ],
@@ -1290,7 +1290,7 @@
     },
     {
       "handler": "cookie_cutter_generate_api",
-      "line": 125,
+      "line": 477,
       "methods": [
         "POST"
       ],
@@ -1299,7 +1299,7 @@
     },
     {
       "handler": "worldmonitor_reports_redirect",
-      "line": 513,
+      "line": 539,
       "methods": [
         "ANY"
       ],
@@ -1308,7 +1308,7 @@
     },
     {
       "handler": "worldmonitor_reports_redirect",
-      "line": 513,
+      "line": 539,
       "methods": [
         "ANY"
       ],
@@ -1317,7 +1317,7 @@
     },
     {
       "handler": "worldmonitor_entry",
-      "line": 519,
+      "line": 545,
       "methods": [
         "ANY"
       ],
@@ -1326,7 +1326,7 @@
     },
     {
       "handler": "worldmonitor_entry",
-      "line": 519,
+      "line": 545,
       "methods": [
         "ANY"
       ],
@@ -1335,7 +1335,7 @@
     },
     {
       "handler": "intel_panel",
-      "line": 525,
+      "line": 551,
       "methods": [
         "ANY"
       ],
@@ -1344,7 +1344,7 @@
     },
     {
       "handler": "intel_refresh",
-      "line": 543,
+      "line": 569,
       "methods": [
         "POST"
       ],
@@ -1353,7 +1353,7 @@
     },
     {
       "handler": "api_skills_run_compat",
-      "line": 550,
+      "line": 576,
       "methods": [
         "POST"
       ],
@@ -1362,7 +1362,7 @@
     },
     {
       "handler": "research_panel",
-      "line": 1067,
+      "line": 1093,
       "methods": [
         "ANY"
       ],
@@ -1371,7 +1371,7 @@
     },
     {
       "handler": "research_panel",
-      "line": 1067,
+      "line": 1093,
       "methods": [
         "ANY"
       ],
@@ -1380,7 +1380,7 @@
     },
     {
       "handler": "research_judgment_classifier",
-      "line": 1073,
+      "line": 1099,
       "methods": [
         "ANY"
       ],
@@ -1389,7 +1389,7 @@
     },
     {
       "handler": "research_rss_preview",
-      "line": 1079,
+      "line": 1105,
       "methods": [
         "ANY"
       ],
@@ -1398,7 +1398,7 @@
     },
     {
       "handler": "dashboard",
-      "line": 1113,
+      "line": 1139,
       "methods": [
         "ANY"
       ],
@@ -1407,7 +1407,7 @@
     },
     {
       "handler": "dashboard_legacy",
-      "line": 1119,
+      "line": 1145,
       "methods": [
         "ANY"
       ],
@@ -1416,7 +1416,7 @@
     },
     {
       "handler": "dashboard_beginner",
-      "line": 1126,
+      "line": 1152,
       "methods": [
         "ANY"
       ],
@@ -1425,7 +1425,7 @@
     },
     {
       "handler": "dashboard_beginner",
-      "line": 1126,
+      "line": 1152,
       "methods": [
         "ANY"
       ],
@@ -1434,7 +1434,7 @@
     },
     {
       "handler": "status_center",
-      "line": 1133,
+      "line": 1159,
       "methods": [
         "ANY"
       ],
@@ -1443,7 +1443,7 @@
     },
     {
       "handler": "status_center",
-      "line": 1133,
+      "line": 1159,
       "methods": [
         "ANY"
       ],
@@ -1452,7 +1452,7 @@
     },
     {
       "handler": "magi_adjust",
-      "line": 1142,
+      "line": 1168,
       "methods": [
         "ANY"
       ],
@@ -1461,7 +1461,7 @@
     },
     {
       "handler": "magi_adjust",
-      "line": 1142,
+      "line": 1168,
       "methods": [
         "ANY"
       ],
@@ -1470,7 +1470,7 @@
     },
     {
       "handler": "magi_adjust",
-      "line": 1142,
+      "line": 1168,
       "methods": [
         "ANY"
       ],
@@ -1479,7 +1479,7 @@
     },
     {
       "handler": "magi_adjust",
-      "line": 1142,
+      "line": 1168,
       "methods": [
         "ANY"
       ],
@@ -1488,7 +1488,7 @@
     },
     {
       "handler": "golem_console",
-      "line": 1149,
+      "line": 1175,
       "methods": [
         "ANY"
       ],
@@ -1497,7 +1497,7 @@
     },
     {
       "handler": "golem_console",
-      "line": 1149,
+      "line": 1175,
       "methods": [
         "ANY"
       ],
@@ -1505,8 +1505,44 @@
       "source": "api/blueprints/dashboard_pages.py"
     },
     {
+      "handler": "maintenance_manual",
+      "line": 1181,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/manual",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "maintenance_manual_pdf",
+      "line": 1187,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/manual/pdf",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "maintenance_manual_markdown",
+      "line": 1193,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/manual/markdown",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
+      "handler": "maintenance_manual_source_index",
+      "line": 1199,
+      "methods": [
+        "ANY"
+      ],
+      "path": "/manual/source-index.json",
+      "source": "api/blueprints/dashboard_pages.py"
+    },
+    {
       "handler": "mobile_home",
-      "line": 1156,
+      "line": 1206,
       "methods": [
         "ANY"
       ],
@@ -1515,7 +1551,7 @@
     },
     {
       "handler": "mobile_home",
-      "line": 1156,
+      "line": 1206,
       "methods": [
         "ANY"
       ],
@@ -1524,7 +1560,7 @@
     },
     {
       "handler": "mobile_admin",
-      "line": 1166,
+      "line": 1216,
       "methods": [
         "ANY"
       ],
@@ -1533,7 +1569,7 @@
     },
     {
       "handler": "mobile_admin",
-      "line": 1166,
+      "line": 1216,
       "methods": [
         "ANY"
       ],
@@ -1542,7 +1578,7 @@
     },
     {
       "handler": "mobile_config_json",
-      "line": 1175,
+      "line": 1225,
       "methods": [
         "ANY"
       ],
@@ -1551,7 +1587,7 @@
     },
     {
       "handler": "mobile_service_worker",
-      "line": 1180,
+      "line": 1230,
       "methods": [
         "ANY"
       ],
@@ -1560,7 +1596,7 @@
     },
     {
       "handler": "mobile_manifest",
-      "line": 1194,
+      "line": 1244,
       "methods": [
         "ANY"
       ],
@@ -1569,7 +1605,7 @@
     },
     {
       "handler": "dashboard_website",
-      "line": 1226,
+      "line": 1276,
       "methods": [
         "ANY"
       ],
@@ -3420,8 +3456,62 @@
       "source": "api/blueprints/sentencing_trends.py"
     },
     {
+      "handler": "public_tools_page",
+      "line": 397,
+      "methods": [
+        "GET"
+      ],
+      "path": "/tools",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
+      "handler": "video_studio_page",
+      "line": 404,
+      "methods": [
+        "GET"
+      ],
+      "path": "/video-studio",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
+      "handler": "video_studio_health",
+      "line": 411,
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/video-studio/health",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
+      "handler": "video_studio_interpret",
+      "line": 430,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/video-studio/interpret",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
+      "handler": "video_studio_render",
+      "line": 447,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/video-studio/render",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
+      "handler": "video_studio_render_assets",
+      "line": 497,
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/video-studio/render-assets",
+      "source": "api/blueprints/video_studio.py"
+    },
+    {
       "handler": "process_monitor_page",
-      "line": 953,
+      "line": 836,
       "methods": [
         "ANY"
       ],
@@ -3430,7 +3520,7 @@
     },
     {
       "handler": "api_memory_stats",
-      "line": 958,
+      "line": 841,
       "methods": [
         "GET"
       ],
@@ -3439,7 +3529,7 @@
     },
     {
       "handler": "api_memory_recall",
-      "line": 1037,
+      "line": 920,
       "methods": [
         "POST"
       ],
@@ -3448,7 +3538,7 @@
     },
     {
       "handler": "api_memory_remember",
-      "line": 1058,
+      "line": 941,
       "methods": [
         "POST"
       ],
@@ -3457,7 +3547,7 @@
     },
     {
       "handler": "api_memory_obsidian_sync",
-      "line": 1077,
+      "line": 960,
       "methods": [
         "POST"
       ],
@@ -3466,7 +3556,7 @@
     },
     {
       "handler": "process_monitor_api",
-      "line": 1092,
+      "line": 975,
       "methods": [
         "GET"
       ],
@@ -3475,7 +3565,7 @@
     },
     {
       "handler": "process_guardian_toggle_api",
-      "line": 1108,
+      "line": 991,
       "methods": [
         "POST"
       ],
@@ -3484,7 +3574,7 @@
     },
     {
       "handler": "osc_chat_api",
-      "line": 1121,
+      "line": 1004,
       "methods": [
         "POST"
       ],
@@ -3493,7 +3583,7 @@
     },
     {
       "handler": "osc_magi_modules_run_api",
-      "line": 1150,
+      "line": 1033,
       "methods": [
         "POST"
       ],
@@ -3502,7 +3592,7 @@
     },
     {
       "handler": "osc_chat_upload_api",
-      "line": 1220,
+      "line": 1103,
       "methods": [
         "POST"
       ],
@@ -3511,7 +3601,7 @@
     },
     {
       "handler": "osc_poll_api",
-      "line": 1393,
+      "line": 1276,
       "methods": [
         "GET"
       ],
@@ -3520,7 +3610,7 @@
     },
     {
       "handler": "osc_judgments_api",
-      "line": 1411,
+      "line": 1294,
       "methods": [
         "GET"
       ],
@@ -4303,7 +4393,7 @@
     ],
     "installed": []
   },
-  "root_name": "rc606-canonical-cron-rootfix",
+  "root_name": "magi-rc629-source",
   "schema_version": 1,
   "skill_entrypoints": [
     {
@@ -4599,6 +4689,7 @@
     "tests/test_deep_task_control_rc568.py",
     "tests/test_document_reader.py",
     "tests/test_drive_case_sync_hash_timeout.py",
+    "tests/test_drive_large_resumable_upload_rc641.py",
     "tests/test_drive_sync_identical_aliases_rc245.py",
     "tests/test_durable_deep_delivery_rc568.py",
     "tests/test_export_docx_security.py",
@@ -4615,6 +4706,7 @@
     "tests/test_install_omlx_text.py",
     "tests/test_intent_tool_adversarial_rc556.py",
     "tests/test_intent_tool_grounding_rc555.py",
+    "tests/test_judgment_mcp_gap_fill_rc634.py",
     "tests/test_judgment_nvidia_source_bound_rc194.py",
     "tests/test_judgment_staged_backfill_rc223.py",
     "tests/test_judgment_summary_quality_rc170.py",
@@ -4630,11 +4722,10 @@
     "tests/test_local_deep_queue_worker_rc568.py",
     "tests/test_local_model_champion_eval_rc568.py",
     "tests/test_lottery_blueprint.py",
-    "tests/test_magi_self_repair_guardian_cron_desc.py",
+    "tests/test_magi_encyclopedia_privacy.py",
     "tests/test_market_briefing_quality_gate.py",
     "tests/test_memory_grounding.py",
     "tests/test_memory_policy.py",
-    "tests/test_menubar_cron_semantics.py",
     "tests/test_message_intent_boundaries.py",
     "tests/test_mobile_auth_routes.py",
     "tests/test_model_live_gate_degraded_profiles.py",
@@ -4657,7 +4748,6 @@
     "tests/test_osc_files_move.py",
     "tests/test_osc_folder_rename.py",
     "tests/test_osc_laf_debt_required_checklist.py",
-    "tests/test_osc_offline_root_isolation_rc587.py",
     "tests/test_osc_p2_discord_and_theme.py",
     "tests/test_osc_pdf_blueprint.py",
     "tests/test_osc_saas_workbench.py",
@@ -4667,6 +4757,7 @@
     "tests/test_pdf_cross_case_identity_confirmation.py",
     "tests/test_pdf_namer_nightly_process_isolation.py",
     "tests/test_pdf_namer_state_isolation.py",
+    "tests/test_process_monitor_unification.py",
     "tests/test_rc241_runtime_and_batch_regressions.py",
     "tests/test_rc600_runtime_bootstrap_and_reporting.py",
     "tests/test_reconcile_overdue_todos.py",
@@ -4691,6 +4782,7 @@
     "tests/test_translation_strict_nim_provenance.py",
     "tests/test_tw_output_guard_fidelity.py",
     "tests/test_v3_laf_dedup_compat.py",
+    "tests/test_video_studio_blueprint.py",
     "tests/test_web_information_architecture.py",
     "tests/test_web_runtime_blueprint.py",
     "tests/test_weekend_resummary_budget_semantics.py"

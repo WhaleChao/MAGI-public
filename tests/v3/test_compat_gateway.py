@@ -196,6 +196,42 @@ def test_loaded_url_map_must_exactly_match_service_inventory() -> None:
 def test_declared_native_extensions_do_not_redefine_legacy_inventory() -> None:
     app = Flask(__name__)
     app.add_url_rule(
+        "/tools",
+        endpoint="video_studio.public_tools_page",
+        view_func=lambda: "tools",
+        methods=["GET"],
+    )
+    app.add_url_rule(
+        "/video-studio",
+        endpoint="video_studio.video_studio_page",
+        view_func=lambda: "video",
+        methods=["GET"],
+    )
+    app.add_url_rule(
+        "/api/video-studio/health",
+        endpoint="video_studio.video_studio_health",
+        view_func=lambda: "health",
+        methods=["GET"],
+    )
+    app.add_url_rule(
+        "/api/video-studio/render",
+        endpoint="video_studio.video_studio_render",
+        view_func=lambda: "render",
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/video-studio/interpret",
+        endpoint="video_studio.video_studio_interpret",
+        view_func=lambda: "interpret",
+        methods=["POST"],
+    )
+    app.add_url_rule(
+        "/api/video-studio/render-assets",
+        endpoint="video_studio.video_studio_render_assets",
+        view_func=lambda: "render assets",
+        methods=["POST"],
+    )
+    app.add_url_rule(
         "/cookie-cutter",
         endpoint="cookie_cutter.cookie_cutter_page",
         view_func=lambda: "cookie cutter",
@@ -261,6 +297,13 @@ def test_declared_native_extensions_do_not_redefine_legacy_inventory() -> None:
         view_func=lambda relative_path: relative_path,
         methods=["GET"],
     )
+    for rule, endpoint in (
+        ("/manual", "dashboard_pages.maintenance_manual"),
+        ("/manual/pdf", "dashboard_pages.maintenance_manual_pdf"),
+        ("/manual/markdown", "dashboard_pages.maintenance_manual_markdown"),
+        ("/manual/source-index.json", "dashboard_pages.maintenance_manual_source_index"),
+    ):
+        app.add_url_rule(rule, endpoint=endpoint, view_func=lambda: "manual", methods=["GET"])
 
     verify_loaded_surface(app, "5002", RouteInventory(()))
 

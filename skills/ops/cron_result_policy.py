@@ -142,7 +142,11 @@ def terminal_schedule_deferral_reason(stdout: str, error: str = "") -> str:
     # scheduler only calls this migration for rc 0/75, non-timeout failures;
     # preserving the provider's explicit quota marker lets the new checkpoint
     # semantics repair the old false red light without deleting evidence.
-    if "nim_daily_budget_exceeded:" in normalized_error:
+    if (
+        "nim_daily_budget_exceeded:" in normalized_error
+        or "nim_background_budget_reserved:" in normalized_error
+        or "background_heavy_authorization_budget_exhausted" in normalized_error
+    ):
         return "nim_daily_budget_exhausted"
     return ""
 
