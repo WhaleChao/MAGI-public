@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from api.osc.folder_utils import build_full_case_path, create_folder_structure
+from api.case_path_mapper import (
+    is_authoritative_case_storage_path,
+    is_authoritative_nas_write_path,
+)
 from .case_lifecycle import CaseLifecyclePhase, case_lifecycle_phase, requires_closed_storage
 
 from .osc_cases import CaseTransaction, CreateResult, OscCasesError
@@ -53,6 +57,7 @@ class NativeCaseFilesystemEffects:
         archive_root: Path,
         canonicalize: Callable[[str], str],
         localize: Callable[[str], str],
+        require_authoritative_storage: bool = False,
     ) -> None:
         self.case_root = self._root(case_root, "active case root")
         self.archive_root = self._root(archive_root, "archive root")
@@ -60,6 +65,16 @@ class NativeCaseFilesystemEffects:
             raise OscCasesError("active and archive roots must differ")
         self.canonicalize = canonicalize
         self.localize = localize
+        self.require_authoritative_storage = bool(require_authoritative_storage)
+        self._assert_authoritative_bindings()
+
+    def _assert_authoritative_bindings(self) -> None:
+        if not self.require_authoritative_storage:
+            return
+        if not is_authoritative_nas_write_path(str(self.case_root)):
+            raise OscCasesError("active case root is not a mounted authoritative SMB path")
+        if not is_authoritative_case_storage_path(str(self.archive_root)):
+            raise OscCasesError("archive root is not mounted authoritative storage")
 
     @staticmethod
     def _root(path: Path, description: str) -> Path:
@@ -87,7 +102,8 @@ class NativeCaseFilesystemEffects:
         disposable_raw = str(environ.get("MAGI_V3_DISPOSABLE_NAS_ROOT") or "").strip()
         if not case_raw or not archive_raw:
             raise OscCasesError("native V3 case and archive roots are required")
-        if not _truthy(environ.get("MAGI_V3_EXTERNAL_WRITES_ENABLED")):
+        external_writes = _truthy(environ.get("MAGI_V3_EXTERNAL_WRITES_ENABLED"))
+        if not external_writes:
             if not disposable_raw:
                 raise OscCasesError("native case filesystem writes are disabled")
             disposable = Path(disposable_raw).expanduser().resolve(strict=True)
@@ -100,6 +116,7 @@ class NativeCaseFilesystemEffects:
             archive_root=Path(archive_raw),
             canonicalize=canonicalize,
             localize=localize,
+            require_authoritative_storage=external_writes,
         )
 
     def __call__(
@@ -122,6 +139,7 @@ class NativeCaseFilesystemEffects:
         result: CreateResult,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        self._assert_authoritative_bindings()
         target = Path(
             build_full_case_path(
                 str(self.case_root),
@@ -152,6 +170,7 @@ class NativeCaseFilesystemEffects:
             if not existed and target.exists():
                 shutil.rmtree(target, ignore_errors=True)
             raise OscCasesError(str(created.get("error") or "case folder creation failed"))
+        self._assert_authoritative_bindings()
         if not existed:
             transaction.register_rollback_hook(lambda: shutil.rmtree(target, ignore_errors=False))
         canonical = self.canonicalize(str(target)) or str(target)
@@ -170,6 +189,7 @@ class NativeCaseFilesystemEffects:
         result: CreateResult,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        self._assert_authoritative_bindings()
         row = transaction.find_existing(result.case_number, result.row_id)
         if not row:
             raise OscCasesError("closed case disappeared before archive")

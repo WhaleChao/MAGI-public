@@ -188,7 +188,7 @@ def test_case_folder_creation_prefers_real_nas_over_synology_drive(tmp_path, mon
     assert result["root"] == str(nas_root)
 
 
-def test_case_folder_creation_allows_synology_drive_after_long_outage(tmp_path, monkeypatch):
+def test_case_folder_creation_still_refuses_synology_drive_after_long_outage(tmp_path, monkeypatch):
     from api.blueprints import osc_cases as mod
     import api.nas_mount_guard as nas_mount_guard
 
@@ -201,9 +201,10 @@ def test_case_folder_creation_allows_synology_drive_after_long_outage(tmp_path, 
 
     result = mod._osc_select_case_creation_root()
 
-    assert result["ok"] is True
-    assert result["root"] == str(cloud_root)
-    assert result["temporary_synology_drive"] is True
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["error"] == "nas_case_root_not_mounted"
+    assert result["local_fallback_available"] is True
 
 
 def test_auto_create_folder_skips_closed_case_before_root_selection(monkeypatch):

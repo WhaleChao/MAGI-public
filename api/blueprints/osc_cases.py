@@ -923,17 +923,6 @@ def _osc_select_case_creation_root() -> dict:
                 continue
         return ""
 
-    def _find_existing_cloud_fallback() -> str:
-        for root in roots:
-            if not _osc_is_synology_drive_fallback_path(root):
-                continue
-            try:
-                if os.path.isdir(root):
-                    return root
-            except OSError:
-                continue
-        return ""
-
     selected = _find_existing_non_cloud()
     if selected:
         _osc_clear_case_root_outage()
@@ -953,16 +942,16 @@ def _osc_select_case_creation_root() -> dict:
     outage = _osc_record_case_root_outage(roots)
     elapsed_sec = max(0.0, time.time() - float(outage.get("first_seen") or time.time()))
     threshold_sec = _osc_case_root_outage_threshold_sec()
-    cloud_fallback = _find_existing_cloud_fallback()
-    if cloud_fallback and elapsed_sec >= threshold_sec:
-        return {
-            "ok": True,
-            "root": cloud_fallback,
-            "roots": roots,
-            "temporary_synology_drive": True,
-            "outage_elapsed_sec": elapsed_sec,
-            "outage_threshold_sec": threshold_sec,
-        }
+    cloud_fallback_available = False
+    for root in roots:
+        if not _osc_is_synology_drive_fallback_path(root):
+            continue
+        try:
+            if os.path.isdir(root):
+                cloud_fallback_available = True
+                break
+        except OSError:
+            continue
 
     return {
         "ok": False,
@@ -971,6 +960,7 @@ def _osc_select_case_creation_root() -> dict:
         "error": "nas_case_root_not_mounted",
         "message": "未掛載真正 NAS/SMB 案件根目錄；為避免短暫斷線時 Synology Drive 產生空案件資料夾，暫時拒絕建立。",
         "roots": roots,
+        "local_fallback_available": cloud_fallback_available,
         "outage_elapsed_sec": elapsed_sec,
         "outage_threshold_sec": threshold_sec,
         "retry_after_sec": max(0.0, threshold_sec - elapsed_sec),

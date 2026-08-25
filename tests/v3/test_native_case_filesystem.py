@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+import magi_v3.case_filesystem as case_filesystem
 from magi_v3.case_filesystem import NativeCaseFilesystemEffects
 from magi_v3.osc_cases import OscCasesError, OscCasesService, SQLiteCaseStore, initialize_sqlite_cases_schema
 
@@ -240,3 +241,34 @@ def test_environment_composition_requires_write_flag_or_contained_disposable_roo
         localize=lambda value: value,
     )
     assert effects.case_root == case_root.resolve()
+
+
+def test_production_environment_requires_authoritative_mounted_storage(
+    monkeypatch, tmp_path: Path
+) -> None:
+    case_root = tmp_path / "01_案件"
+    archive_root = tmp_path / "10_結案"
+    case_root.mkdir()
+    archive_root.mkdir()
+    environ = {
+        "MAGI_V3_CASE_ROOT": str(case_root),
+        "MAGI_V3_ARCHIVE_ROOT": str(archive_root),
+        "MAGI_V3_EXTERNAL_WRITES_ENABLED": "1",
+    }
+    monkeypatch.setattr(case_filesystem, "is_authoritative_nas_write_path", lambda _path: False)
+    monkeypatch.setattr(case_filesystem, "is_authoritative_case_storage_path", lambda _path: True)
+
+    with pytest.raises(OscCasesError, match="mounted authoritative SMB"):
+        NativeCaseFilesystemEffects.from_environment(
+            environ,
+            canonicalize=lambda value: value,
+            localize=lambda value: value,
+        )
+
+    monkeypatch.setattr(case_filesystem, "is_authoritative_nas_write_path", lambda _path: True)
+    effects = NativeCaseFilesystemEffects.from_environment(
+        environ,
+        canonicalize=lambda value: value,
+        localize=lambda value: value,
+    )
+    assert effects.require_authoritative_storage is True

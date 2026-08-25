@@ -31,7 +31,9 @@ if str(_MAGI_ROOT) not in sys.path:
 
 from api.runtime_paths import get_config_path
 from api.case_path_mapper import (
-    preferred_case_roots,
+    authoritative_active_case_roots,
+    is_authoritative_nas_write_path,
+    local_case_path_candidates,
     translate_case_path_to_local,
     translate_local_path_to_canonical,
 )
@@ -136,42 +138,50 @@ class LAFFolderBuilder:
                      self.windows_base, self.mac_local_base)
 
     def _detect_local_mount(self):
-        """Detect the local mount point for SynologyDrive."""
-        candidates = list(preferred_case_roots(include_closed=False))
+        """Select only the mounted SMB root backing the canonical ``Z:`` path.
 
-        # Also check if the SMB path is mounted
-        if self.mac_smb_base:
-            # Try to find the mount point via /Volumes
-            import subprocess
-            try:
-                result = subprocess.run(
-                    ["mount"], capture_output=True, text=True, timeout=5
-                )
-                for line in result.stdout.splitlines():
-                    try:
-                        from api.nas_mount_guard import resolve_nas_host
-                        _nas_ip = resolve_nas_host()
-                    except Exception:
-                        _nas_ip = os.environ.get("MAGI_NAS_HOST", "")
-                    active_share = (os.environ.get("MAGI_NAS_HOME_USER") or os.environ.get("MAGI_NAS_USER") or "home").strip().strip("/\\") or "home"
-                    if (_nas_ip and _nas_ip in line) or (active_share and active_share in line):
-                        # Extract mount point
-                        parts = line.split(" on ")
-                        if len(parts) >= 2:
-                            mount_point = parts[1].split(" (")[0].strip()
-                            candidates.insert(0, os.path.join(mount_point, "01_案件"))
-            except Exception:
-                logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 145, exc_info=True)
+        Synology Drive/File Provider paths remain valid *read* candidates in
+        ``case_path_mapper``.  They are never valid creation roots: returning a
+        canonical ``Z:`` path after creating only a local mirror is the exact
+        split-brain condition this guard prevents.
+        """
+        self.mac_local_base = None
+        candidates = []
+        if self.windows_base:
+            candidates.extend(
+                local_case_path_candidates(self.windows_base, for_write=True)
+            )
+        candidates.extend(authoritative_active_case_roots())
 
-        for path in candidates:
-            if os.path.isdir(path):
+        seen: set[str] = set()
+        for raw in candidates:
+            path = os.path.abspath(os.path.expanduser(str(raw or ""))).rstrip("/")
+            key = path.lower()
+            if not path or key in seen:
+                continue
+            seen.add(key)
+            if is_authoritative_nas_write_path(path):
                 self.mac_local_base = path
-                logger.info("Detected local mount: %s", path)
+                logger.info("Detected authoritative SMB case root: %s", path)
                 return
 
-        # Fallback: use first candidate regardless
-        self.mac_local_base = candidates[0] if candidates else str(Path.home() / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件")
-        logger.warning("No mount detected, using fallback: %s", self.mac_local_base)
+        logger.error("No authoritative SMB case root is mounted; folder creation is blocked")
+
+    def _ensure_authoritative_root(self) -> bool:
+        if self.experiment_base_dir:
+            return bool(self.mac_local_base and os.path.isdir(self.mac_local_base))
+        if self.mac_local_base and is_authoritative_nas_write_path(self.mac_local_base):
+            return True
+        try:
+            from api.nas_mount_guard import ensure_nas_mounts
+            ensure_nas_mounts()
+        except Exception as exc:
+            logger.warning("NAS mount refresh before case creation failed: %s", exc)
+        self._detect_local_mount()
+        return bool(
+            self.mac_local_base
+            and is_authoritative_nas_write_path(self.mac_local_base)
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,15 +201,32 @@ class LAFFolderBuilder:
         Returns:
             Canonical Z: path string for DB storage, or None on failure.
         """
+        if not self._ensure_authoritative_root():
+            logger.error("❌ Case folder creation deferred: authoritative NAS mount required")
+            return None
+
         folder_name = self._build_folder_name(case_info)
         local_path = self._get_local_path(folder_name, case_info)
-        canonical_path = self._local_to_canonical(local_path)
 
         # Create the folder + subfolders
         try:
             self._safe_makedirs(local_path)
             for sub in STANDARD_SUBFOLDERS:
                 self._safe_makedirs(os.path.join(local_path, sub))
+
+            if not self.experiment_base_dir:
+                if not self.mac_local_base or not is_authoritative_nas_write_path(self.mac_local_base):
+                    raise RuntimeError("authoritative NAS mount changed during case creation")
+                canonical_path = self._local_to_canonical(local_path)
+                expected_base = str(self.windows_base or "").replace("\\", "/").rstrip("/").lower()
+                actual = str(canonical_path or "").replace("\\", "/").rstrip("/")
+                if not expected_base or not (
+                    actual.lower() == expected_base
+                    or actual.lower().startswith(expected_base + "/")
+                ):
+                    raise RuntimeError("canonical NAS mapping proof failed")
+            else:
+                canonical_path = self._local_to_canonical(local_path)
 
             logger.info("✅ Created case folder: %s", local_path)
             logger.info("   DB canonical path: %s", canonical_path)
@@ -218,6 +245,8 @@ class LAFFolderBuilder:
 
     def folder_exists(self, case_info: Dict) -> bool:
         """Check if the case folder already exists locally."""
+        if not self.mac_local_base:
+            return False
         folder_name = self._build_folder_name(case_info)
         local_path = self._get_local_path(folder_name, case_info)
         return os.path.isdir(local_path)
@@ -371,6 +400,8 @@ class LAFFolderBuilder:
 
     def _get_local_path(self, folder_name: str, case_info: Dict) -> str:
         """Get full local path for a case folder under 法扶案件/<案件類型>."""
+        if not self.mac_local_base:
+            raise RuntimeError("authoritative NAS case root is unavailable")
         case_category = self._resolve_case_category(case_info)
         return os.path.join(self.mac_local_base, "法扶案件", case_category, folder_name)
 

@@ -186,6 +186,98 @@ def _mount_output_lines() -> list[str]:
         return []
 
 
+def _mounted_volume_for_path(path: str, *, require_smb: bool = False) -> str:
+    """Return the longest real ``/Volumes`` mount containing ``path``.
+
+    Merely having a directory below ``/Volumes`` is not sufficient proof that
+    the volume is mounted.  macOS leaves ordinary directories behind after a
+    failed/unmounted share, which previously allowed a canonical NAS path to
+    be satisfied by local bytes.  This parser accepts only a mount-table
+    record and optionally requires the ``smbfs`` filesystem used by the active
+    cases share.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    normalized = os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    if not normalized.startswith("/Volumes/"):
+        return ""
+
+    matches: list[str] = []
+    for line in _mount_output_lines():
+        text = str(line or "").strip()
+        if " on " not in text or " (" not in text or not text.endswith(")"):
+            continue
+        _source, remainder = text.split(" on ", 1)
+        mount_point, options_text = remainder.rsplit(" (", 1)
+        mount_point = os.path.normpath(mount_point.strip())
+        options = [item.strip() for item in options_text[:-1].split(",") if item.strip()]
+        if not mount_point.startswith("/Volumes/") or not options:
+            continue
+        if require_smb and options[0].lower() != "smbfs":
+            continue
+        try:
+            if os.path.commonpath([normalized, mount_point]) != mount_point:
+                continue
+        except ValueError:
+            continue
+        matches.append(mount_point)
+    return max(matches, key=len) if matches else ""
+
+
+def _contains_existing_symlink(path: str, mount_point: str) -> bool:
+    """Reject symlink traversal below the verified mount point."""
+    try:
+        relative = Path(path).relative_to(Path(mount_point))
+    except ValueError:
+        return True
+    current = Path(mount_point)
+    if current.is_symlink():
+        return True
+    for part in relative.parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+            if not current.exists():
+                break
+        except OSError:
+            return True
+    return False
+
+
+def is_authoritative_case_storage_path(path: str) -> bool:
+    """True only for an existing directory on a real mounted volume.
+
+    This is the authority predicate for evidence such as "the NAS copy
+    exists".  File Provider/CloudStorage and user-mount fallbacks are useful
+    read caches, but they are deliberately not authoritative storage proof.
+    """
+    normalized = os.path.normpath(os.path.abspath(os.path.expanduser(str(path or ""))))
+    if _is_file_provider_or_user_mount(normalized) or _is_stale_mount_path(normalized):
+        return False
+    mount_point = _mounted_volume_for_path(normalized)
+    if not mount_point or _contains_existing_symlink(normalized, mount_point):
+        return False
+    return _is_dir_accessible(normalized)
+
+
+def is_authoritative_nas_write_path(path: str) -> bool:
+    """True only for an existing path inside a mounted SMB volume.
+
+    Active-case creation must never use a local File Provider mirror, a stale
+    ``/Volumes`` directory, an external disk, or ``~/.magi_mounts`` while
+    returning a canonical ``Z:`` database path.
+    """
+    normalized = os.path.normpath(os.path.abspath(os.path.expanduser(str(path or ""))))
+    if _is_file_provider_or_user_mount(normalized) or _is_stale_mount_path(normalized):
+        return False
+    mount_point = _mounted_volume_for_path(normalized, require_smb=True)
+    if not mount_point or _contains_existing_symlink(normalized, mount_point):
+        return False
+    return _is_dir_accessible(normalized)
+
+
 def _discover_active_smb_share_roots() -> list[str]:
     """Discover the real mounted homes/user root for active cases.
 
@@ -554,6 +646,15 @@ def default_case_roots(*, include_closed: bool = False, cfg: Optional[dict] = No
         for root in share_roots[active_count:]:
             roots.append(_join_root_rel(root, "03_工作資料/10_結案"))
     return _dedupe_keep_order(roots)
+
+
+def authoritative_active_case_roots(*, cfg: Optional[dict] = None) -> list[str]:
+    """Return only mounted SMB roots that may create canonical active cases."""
+    return [
+        root
+        for root in default_case_roots(include_closed=False, cfg=cfg)
+        if is_authoritative_nas_write_path(root)
+    ]
 
 
 def preferred_case_roots(*, include_closed: bool = False, cfg: Optional[dict] = None) -> list[str]:

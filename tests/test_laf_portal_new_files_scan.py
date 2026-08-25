@@ -348,6 +348,11 @@ def test_schedule_fixture_provider_runs_real_download_and_archive_flow(
     monkeypatch.setenv("MAGI_V3_REALISM_SANDBOX", "1")
     monkeypatch.setenv("MAGI_V3_SCHEDULE_FIXTURE_ROOT", str(tmp_path))
     monkeypatch.setenv("MAGI_LAF_PORTAL_PROVIDER_FIXTURE", str(fixture))
+    monkeypatch.setattr(
+        audit,
+        "is_authoritative_case_storage_path",
+        lambda path: str(path) == str(case_root),
+    )
 
     result = audit.scan_portal_new_files(
         [

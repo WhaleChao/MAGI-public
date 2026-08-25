@@ -40,7 +40,12 @@ from api.case_display import (
     should_trust_folder_client_name as _canonical_should_trust_folder_client_name,
 )
 from api.runtime_paths import get_config_path
-from api.case_path_mapper import default_case_roots, preferred_case_roots, translate_case_path_to_local
+from api.case_path_mapper import (
+    default_case_roots,
+    is_authoritative_case_storage_path,
+    preferred_case_roots,
+    translate_case_path_to_local,
+)
 from api.laf_case_classifier import extract_laf_staff_case_hint, normalize_laf_case_type
 from api.laf_go_live_rules import (
     go_live_missing_labels,
@@ -1010,9 +1015,16 @@ def _is_final_closed_portal_case(case: dict) -> bool:
 
 
 def _collect_existing_portal_files(cases: List[dict]) -> List[str]:
+    """Collect portal files only from authoritative mounted storage.
+
+    A Synology Drive/File Provider mirror is useful for local reading, but it
+    is not proof that the canonical NAS path exists.  Counting mirror-only
+    files here previously produced a false "本地已齊全" result while the SMB
+    case directory was absent.
+    """
     existing_files: List[str] = []
     for case in cases:
-        case_root = _resolve_existing_case_folder(case)
+        case_root = _resolve_existing_case_folder(case, authoritative_only=True)
         if not case_root or not os.path.isdir(case_root):
             continue
         for subfolder in _PORTAL_FILE_CATEGORY_RULES:
@@ -1024,6 +1036,41 @@ def _collect_existing_portal_files(cases: List[dict]) -> List[str]:
             except Exception:
                 continue
     return existing_files
+
+
+def _portal_case_storage_state(cases: List[dict]) -> dict:
+    """Return a PII-free authority state for matched portal cases."""
+    authoritative_count = 0
+    fallback_only_count = 0
+    missing_count = 0
+    for case in cases:
+        authoritative = _resolve_existing_case_folder(
+            case, authoritative_only=True
+        )
+        if authoritative:
+            authoritative_count += 1
+            continue
+        readable = _resolve_existing_case_folder(case)
+        if readable:
+            fallback_only_count += 1
+        else:
+            missing_count += 1
+    if authoritative_count and not fallback_only_count and not missing_count:
+        status = "nas_verified"
+    elif authoritative_count:
+        status = "mixed_authority"
+    elif fallback_only_count:
+        status = "local_fallback_only"
+    elif cases:
+        status = "nas_folder_missing"
+    else:
+        status = "case_unmapped"
+    return {
+        "status": status,
+        "authoritative_count": authoritative_count,
+        "fallback_only_count": fallback_only_count,
+        "missing_count": missing_count,
+    }
 
 
 def _classify_portal_file(filename: str) -> str:
@@ -2874,7 +2921,7 @@ def _to_mac_path(folder: str) -> str:
     return ""
 
 
-def _resolve_existing_case_folder(case: dict) -> str:
+def _resolve_existing_case_folder(case: dict, *, authoritative_only: bool = False) -> str:
     """Resolve a case to one existing folder without creating or guessing.
 
     ``folder_path`` can become stale after an active case is renamed or moved
@@ -2883,8 +2930,16 @@ def _resolve_existing_case_folder(case: dict) -> str:
     roots.  A result is accepted only when it is unique, so attachments can
     never be filed into an arbitrary same-number folder.
     """
+    def _acceptable(path: str) -> bool:
+        if not path or not _is_dir_ok(path):
+            return False
+        return (
+            not authoritative_only
+            or is_authoritative_case_storage_path(path)
+        )
+
     direct = _to_mac_path(str(case.get("folder_path") or "").strip())
-    if direct and _is_dir_ok(direct):
+    if _acceptable(direct):
         return direct
 
     raw_folder = str(case.get("folder_path") or "").replace("\\", "/").rstrip("/")
@@ -2900,7 +2955,7 @@ def _resolve_existing_case_folder(case: dict) -> str:
         if not value:
             continue
         root = os.path.abspath(os.path.expanduser(str(value).strip()))
-        if root in seen_roots or not _is_dir_ok(root):
+        if root in seen_roots or not _acceptable(root):
             continue
         seen_roots.add(root)
         roots.append(root)
@@ -2917,7 +2972,7 @@ def _resolve_existing_case_folder(case: dict) -> str:
             for pattern in patterns:
                 for candidate in glob.glob(pattern):
                     absolute = os.path.abspath(candidate)
-                    if absolute in seen or not _is_dir_ok(absolute):
+                    if absolute in seen or not _acceptable(absolute):
                         continue
                     seen.add(absolute)
                     matches.append(absolute)
@@ -3642,12 +3697,33 @@ def scan_portal_new_files(
                     client,
                 )
                 continue
+            storage_state = _portal_case_storage_state(matched_cases)
             existing_files = _collect_existing_portal_files(matched_cases)
             missing_files = _find_missing_portal_files(file_list, existing_files)
+            mapping_issue = bool(matched_cases) and storage_state["status"] != "nas_verified"
 
-            if not missing_files:
-                logger.info("📁 %s %s — 官網列出 %d 份，但本地已齊全", laf_no, client, len(file_list))
+            if not missing_files and not mapping_issue:
+                logger.info("📁 %s %s — 官網列出 %d 份，NAS 權威副本已齊全", laf_no, client, len(file_list))
                 continue
+
+            if storage_state["status"] == "local_fallback_only":
+                logger.error(
+                    "🚨 %s %s — 僅有 File Provider/本機副本，NAS 映射未驗證；不以本機副本清除缺檔警示",
+                    laf_no,
+                    client,
+                )
+            elif storage_state["status"] == "nas_folder_missing":
+                logger.error(
+                    "🚨 %s %s — 資料庫案件存在但 NAS 權威資料夾缺失",
+                    laf_no,
+                    client,
+                )
+            elif storage_state["status"] == "mixed_authority":
+                logger.error(
+                    "🚨 %s %s — 同一入口案件的儲存映射不一致，拒絕以部分 NAS 副本清除警示",
+                    laf_no,
+                    client,
+                )
 
             logger.info(
                 "📥 %s %s — %d 份文件待下載%s: %s",
@@ -3668,11 +3744,11 @@ def scan_portal_new_files(
 
             if matched_cases and not auto_download:
                 logger.info("  🧪 %s: dry-run 僅比對缺檔，不下載", laf_no)
-            elif matched_cases:
+            elif matched_cases and not mapping_issue:
                 # 取第一個有效的 case_root 作為歸檔目標
                 case_root = ""
                 for mc in matched_cases:
-                    cr = _resolve_existing_case_folder(mc)
+                    cr = _resolve_existing_case_folder(mc, authoritative_only=True)
                     if cr and os.path.isdir(cr):
                         case_root = cr
                         break
@@ -3714,7 +3790,7 @@ def scan_portal_new_files(
                 logger.info("  ⚠️ %s: 新案件無本地資料夾，跳過下載", laf_no)
 
             # 只有仍缺檔才加入通知
-            if still_missing or auto_downloaded_count > 0:
+            if still_missing or auto_downloaded_count > 0 or mapping_issue:
                 new_files_found.append({
                     "case_number": laf_no,
                     "client_name": client,
