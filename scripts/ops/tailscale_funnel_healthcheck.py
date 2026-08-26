@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import time
+from urllib.error import URLError
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -925,13 +926,42 @@ def _reassert_approved_funnel(scope: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _local_funnel_backend_ready() -> dict[str, Any]:
+    """Require the existing local web service before changing Funnel state.
+
+    Funnel repair must never turn an already-working public route into a route
+    that points at a dead local process.  Keep this preflight local-only and
+    bounded; it intentionally does not restart MAGI or Tailscale.
+    """
+
+    url = f"{APPROVED_FUNNEL_PROXY.rstrip('/')}/health"
+    try:
+        with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=5) as response:
+            status = int(getattr(response, "status", 0) or response.getcode() or 0)
+        return {
+            "ok": 200 <= status < 300,
+            "url": url,
+            "http_code": status,
+            "reason_code": "local_backend_ready" if 200 <= status < 300 else "local_backend_unhealthy",
+        }
+    except (OSError, URLError, ValueError) as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "http_code": 0,
+            "reason_code": "local_backend_unreachable",
+            "error": type(exc).__name__,
+        }
+
+
 def _refresh_public_ingress(scope: dict[str, Any]) -> dict[str, Any]:
     """Refresh only the approved Funnel's live ingress bindings.
 
-    A long-running macOS network extension can retain a stale NAT/socket or
-    control-plane binding while ``funnel status`` still reports the expected
-    rule.  These debug operations do not log out, take the tailnet down, reset
-    Serve/Funnel configuration, or alter the approved proxy scope.
+    This is deliberately non-disruptive.  A previous implementation used
+    debug rebind operations here; even though they did not issue ``off``, they
+    could still create a browser-visible gap.  The only permitted mutation is
+    the idempotent root reassert, and only after the existing local backend is
+    healthy.  Never reset, remove, take down, or restart the current Funnel.
     """
 
     approved = scope.get("approved") if isinstance(scope, dict) else None
@@ -952,33 +982,26 @@ def _refresh_public_ingress(scope: dict[str, Any]) -> dict[str, Any]:
             "reason_code": "approved_target_contract_mismatch",
         }
 
-    ts = _tailscale_bin()
-    steps = (
-        ("restun", [ts, "debug", "restun"]),
-        ("rebind", [ts, "debug", "rebind"]),
-        ("netmap_refresh", [ts, "debug", "force-netmap-update"]),
-    )
-    results: list[dict[str, Any]] = []
-    for name, command in steps:
-        result = _run(command, timeout=15)
-        results.append({"step": name, "result": result})
-        if not result.get("ok"):
-            return {
-                "action": "refresh_public_ingress",
-                "status": "failed",
-                "reason_code": f"{name}_failed",
-                "target": approved,
-                "steps": results,
-            }
+    backend = _local_funnel_backend_ready()
+    if not backend.get("ok"):
+        return {
+            "action": "refresh_public_ingress",
+            "status": "blocked",
+            "reason_code": str(backend.get("reason_code") or "local_backend_unhealthy"),
+            "target": approved,
+            "local_backend": backend,
+            "disruption_policy": "no_disruptive_funnel_mutation",
+        }
 
     funnel = _reassert_approved_funnel(scope)
-    results.append({"step": "funnel_reassert", "result": funnel})
+    steps = [{"step": "local_backend_preflight", "result": backend}, {"step": "funnel_reassert", "result": funnel}]
     return {
         "action": "refresh_public_ingress",
         "status": "applied" if funnel.get("status") == "applied" else "failed",
-        "reason_code": "bindings_refreshed" if funnel.get("status") == "applied" else "funnel_reassert_failed",
+        "reason_code": "non_disruptive_root_reassert" if funnel.get("status") == "applied" else "funnel_reassert_failed",
         "target": approved,
-        "steps": results,
+        "steps": steps,
+        "disruption_policy": "no_disruptive_funnel_mutation",
     }
 
 

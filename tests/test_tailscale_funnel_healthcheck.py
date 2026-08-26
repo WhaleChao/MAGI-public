@@ -345,6 +345,11 @@ def test_public_ingress_refresh_is_bounded_and_ordered(monkeypatch):
     monkeypatch.setattr(MODULE, "_tailscale_bin", lambda: "/fixture/tailscale")
     monkeypatch.setattr(
         MODULE,
+        "_local_funnel_backend_ready",
+        lambda: {"ok": True, "reason_code": "local_backend_ready"},
+    )
+    monkeypatch.setattr(
+        MODULE,
         "_run",
         lambda args, **_kwargs: calls.append(args) or {"ok": True, "returncode": 0, "stdout": "", "stderr": ""},
     )
@@ -359,12 +364,38 @@ def test_public_ingress_refresh_is_bounded_and_ordered(monkeypatch):
 
     assert result["status"] == "applied"
     assert calls == [
-        ["/fixture/tailscale", "debug", "restun"],
-        ["/fixture/tailscale", "debug", "rebind"],
-        ["/fixture/tailscale", "debug", "force-netmap-update"],
         ["/fixture/tailscale", "funnel", "--bg", "--yes", "http://127.0.0.1:5002"],
     ]
     assert all("reset" not in call and "down" not in call and "up" not in call for call in calls)
+    assert result["reason_code"] == "non_disruptive_root_reassert"
+    assert result["disruption_policy"] == "no_disruptive_funnel_mutation"
+
+
+def test_public_ingress_refresh_blocks_without_healthy_local_backend(monkeypatch):
+    calls = []
+    monkeypatch.setattr(MODULE, "_tailscale_bin", lambda: "/fixture/tailscale")
+    monkeypatch.setattr(
+        MODULE,
+        "_local_funnel_backend_ready",
+        lambda: {"ok": False, "reason_code": "local_backend_unreachable"},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_run",
+        lambda args, **_kwargs: calls.append(args) or {"ok": True, "returncode": 0, "stdout": "", "stderr": ""},
+    )
+    scope = {
+        "ok": True,
+        "repair_allowed": True,
+        "reason_code": "approved_scope",
+        "approved": {"host": "magi.example.test", "path": "/", "proxy": "http://127.0.0.1:5002"},
+    }
+
+    result = MODULE._refresh_public_ingress(scope)
+
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "local_backend_unreachable"
+    assert calls == []
 
 
 def test_partial_public_dns_is_amber_and_reasserts_only_approved_target(monkeypatch):
