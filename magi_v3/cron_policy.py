@@ -21,6 +21,33 @@ from typing import Any, Mapping
 POLICY_PATH = Path("config/v3_schedule_dispatch_policy.json")
 LANES = ("light", "batch", "maintenance")
 
+# Only these jobs are explicitly allowed to collapse a pending occurrence to
+# the newest snapshot.  Everything else must retain each distinct scheduled
+# occurrence so a restart or a busy lane cannot silently lose work.
+LEGACY_DURABLE_BACKLOG_COALESCING_JOB_IDS = frozenset(
+    {
+        "job_drive_case_sync_all_files",
+        "job_legacy_judgment_resummary_quality",
+    }
+)
+DURABLE_BACKLOG_COALESCING_JOB_IDS = frozenset(
+    {
+        "job_drive_case_sync_all_files",
+        "job_business_module_live_check",
+        "job_business_readiness_snapshot",
+        "job_disk_cleanup_healthcheck",
+        "job_laf_condition_dedup_scan",
+        "job_laf_nightly_audit",
+        "job_laf_portal_new_files_scan",
+        "job_function_health_index",
+        "job_tailscale_funnel_healthcheck",
+        "job_worldmonitor_intel",
+    }
+)
+PENDING_POLICY_LEGACY = "latest_occurrence_wins"
+PENDING_POLICY_QUEUE_ALL = "queue_all_non_durable_except_declared_durable_latest"
+DEFAULT_MAX_PENDING_OCCURRENCES_PER_JOB = 256
+
 
 class CronDispatchPolicyError(RuntimeError):
     """The V3 dispatch policy is missing, stale, or unsafe."""
@@ -103,6 +130,11 @@ class CronDispatchPolicy:
     phase_delay_seconds: Mapping[str, int]
     policy_sha256: str
     cron_jobs_sha256: str
+    coalescing_mode: str = PENDING_POLICY_LEGACY
+    durable_backlog_coalescing_job_ids: frozenset[str] = (
+        LEGACY_DURABLE_BACKLOG_COALESCING_JOB_IDS
+    )
+    max_pending_occurrences_per_job: int = 1
 
     @property
     def max_workers(self) -> int:
@@ -129,6 +161,13 @@ class CronDispatchPolicy:
     def delay_for(self, job: Mapping[str, Any]) -> int:
         return int(self.phase_delay_seconds.get(str(job.get("id") or ""), 0))
 
+    @property
+    def queue_all_non_durable(self) -> bool:
+        return self.coalescing_mode == PENDING_POLICY_QUEUE_ALL
+
+    def coalesces_pending(self, job_id: str) -> bool:
+        return str(job_id or "") in self.durable_backlog_coalescing_job_ids
+
 
 def load_cron_dispatch_policy(release_root: Path) -> CronDispatchPolicy:
     root = release_root.expanduser().resolve()
@@ -150,8 +189,9 @@ def load_cron_dispatch_policy(release_root: Path) -> CronDispatchPolicy:
         raise CronDispatchPolicyError("V3 cron dispatch policy binding drifted")
     if policy.get("queue_order") != "earliest_latest_start_then_scheduled_time":
         raise CronDispatchPolicyError("V3 cron queue order is unsafe")
-    if policy.get("same_job_pending") != "latest_occurrence_wins":
-        raise CronDispatchPolicyError("V3 cron same-job coalescing policy is unsafe")
+    same_job_pending = policy.get("same_job_pending")
+    if same_job_pending not in {PENDING_POLICY_LEGACY, PENDING_POLICY_QUEUE_ALL}:
+        raise CronDispatchPolicyError("V3 cron same-job pending policy is unsafe")
     if policy.get("max_workers") != 4:
         raise CronDispatchPolicyError("V3 cron total worker cap must remain four")
     raw_slots = policy.get("lane_caps")
@@ -176,6 +216,41 @@ def load_cron_dispatch_policy(release_root: Path) -> CronDispatchPolicy:
         for job in jobs
         if isinstance(job, dict) and job.get("enabled") is True
     }
+    raw_durable = policy.get("durable_backlog_coalescing_job_ids")
+    if same_job_pending == PENDING_POLICY_QUEUE_ALL:
+        if (
+            not isinstance(raw_durable, list)
+            or len(raw_durable) != len(set(raw_durable))
+            or not raw_durable
+        ):
+            raise CronDispatchPolicyError(
+                "V3 durable backlog coalescing allowlist is invalid"
+            )
+        durable = frozenset(str(value) for value in raw_durable)
+        if not durable.issubset(enabled):
+            raise CronDispatchPolicyError(
+                "V3 durable backlog coalescing allowlist references unknown jobs"
+            )
+        raw_pending_limit = policy.get(
+            "max_pending_occurrences_per_job",
+            DEFAULT_MAX_PENDING_OCCURRENCES_PER_JOB,
+        )
+        if (
+            isinstance(raw_pending_limit, bool)
+            or not isinstance(raw_pending_limit, int)
+            or not 2 <= raw_pending_limit <= 4096
+        ):
+            raise CronDispatchPolicyError("V3 pending occurrence queue bound is invalid")
+        pending_limit = raw_pending_limit
+    else:
+        durable = frozenset(
+            str(value) for value in raw_durable
+        ) if isinstance(raw_durable, list) else LEGACY_DURABLE_BACKLOG_COALESCING_JOB_IDS
+        if not durable.issubset(enabled):
+            raise CronDispatchPolicyError(
+                "V3 durable backlog coalescing allowlist references unknown jobs"
+            )
+        pending_limit = 1
     expected_enabled = policy.get("enabled_jobs_expected")
     if (
         type(expected_enabled) is not int
@@ -206,4 +281,7 @@ def load_cron_dispatch_policy(release_root: Path) -> CronDispatchPolicy:
         phase_delay_seconds=delays,
         policy_sha256=hashlib.sha256(policy_payload).hexdigest(),
         cron_jobs_sha256=cron_sha,
+        coalescing_mode=str(same_job_pending),
+        durable_backlog_coalescing_job_ids=durable,
+        max_pending_occurrences_per_job=pending_limit,
     )

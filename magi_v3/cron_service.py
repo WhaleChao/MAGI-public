@@ -634,7 +634,7 @@ class CronService:
 
     def _enqueue(
         self,
-        pending: dict[str, PendingCronJob],
+        pending: dict[str, Any],
         job: dict[str, Any],
         *,
         now: float,
@@ -644,13 +644,16 @@ class CronService:
         job_id = str(job.get("id") or "").strip()
         if not job_id:
             return None
-        if running is not None and job_id in running:
+        if (
+            running is not None
+            and job_id in running
+            and bool(job.get("_magi_retry"))
+        ):
             # ``recover_v3_retry_jobs`` deliberately returns receipts in both
             # queued and running states so a restarted scheduler can resume a
             # lost child.  Inside one live owner, however, the in-memory
             # future is authoritative.  Never turn the same running receipt
             # into another pending occurrence on the next poll.
-            pending.pop(job_id, None)
             return None
         raw_due = str(job.get("_magi_due_at") or "").strip()
         try:
@@ -667,27 +670,134 @@ class CronService:
             latest_start_at=effective + self._timeout_seconds(job),
             sequence=sequence,
         )
-        existing = pending.get(job_id)
-        if existing is not None and (
-            bool(existing.job.get("_magi_retry")) or bool(item.job.get("_magi_retry"))
+        existing_value = pending.get(job_id)
+        existing_items = (
+            list(existing_value)
+            if isinstance(existing_value, list)
+            else ([existing_value] if isinstance(existing_value, PendingCronJob) else [])
+        )
+
+        def identity(value: PendingCronJob) -> tuple[str, bool]:
+            return (
+                str(
+                    value.job.get("_magi_occurrence_id")
+                    or value.job.get("_magi_due_at")
+                    or value.scheduled_at
+                ),
+                bool(value.job.get("_magi_retry")),
+            )
+
+        # ``peek_due_jobs`` is deliberately non-claiming while a phase delay is
+        # active.  It can therefore return the same minute more than once;
+        # retain one copy of that occurrence instead of creating a duplicate.
+        if identity(item) in {identity(value) for value in existing_items}:
+            return existing_items[0]
+
+        if self.dispatch_policy.queue_all_non_durable and not self.dispatch_policy.coalesces_pending(job_id):
+            max_pending = int(self.dispatch_policy.max_pending_occurrences_per_job)
+            if len(existing_items) >= max_pending:
+                raise CronServiceError(
+                    "loss-sensitive pending occurrence queue bound exceeded: "
+                    f"{job_id}"
+                )
+            items = [*existing_items, item]
+            items.sort(key=lambda value: (value.latest_start_at, value.scheduled_at, value.sequence))
+            # Preserve the old single-item shape until a second occurrence is
+            # actually present; this keeps compatibility adapters simple.
+            pending[job_id] = items if len(items) > 1 else items[0]
+            return item
+
+        if self.dispatch_policy.queue_all_non_durable and self.dispatch_policy.coalesces_pending(job_id):
+            active_items = [
+                value
+                for value in existing_items
+                if str(value.job.get("_magi_pending_status") or "") == "running"
+            ]
+            recovered_active = str(item.job.get("_magi_pending_status") or "") == "running"
+            if active_items or recovered_active:
+                active = active_items or [item]
+                queued = [
+                    value
+                    for value in existing_items
+                    if str(value.job.get("_magi_pending_status") or "") != "running"
+                ]
+                if not recovered_active:
+                    queued.append(item)
+                if queued:
+                    pending[job_id] = [
+                        *active,
+                        max(
+                            queued,
+                            key=lambda value: (
+                                value.scheduled_at,
+                                value.sequence,
+                            ),
+                        ),
+                    ]
+                else:
+                    pending[job_id] = active[0]
+                return item
+
+        if existing_items and (
+            bool(existing_items[0].job.get("_magi_retry"))
+            or bool(item.job.get("_magi_retry"))
         ):
             # A recovery occurrence must not be pushed behind the next regular
             # schedule.  Coalesce to the earliest retry/scheduled execution.
             selected = min(
-                (existing, item),
+                (*existing_items, item),
                 key=lambda value: (value.scheduled_at, value.sequence),
             )
-            pending[job_id] = selected
+        elif existing_items and self.dispatch_policy.coalesces_pending(job_id):
+            # Explicitly declared snapshot jobs are latest-wins while their
+            # work is pending.  This is the only path allowed to replace work.
+            selected = item
         else:
             selected = item
-            pending[job_id] = selected
+        pending[job_id] = selected
         return selected
+
+    @staticmethod
+    def _pending_items(pending: dict[str, Any]) -> list[PendingCronJob]:
+        items: list[PendingCronJob] = []
+        for value in pending.values():
+            if isinstance(value, PendingCronJob):
+                items.append(value)
+            elif isinstance(value, list):
+                items.extend(
+                    item for item in value if isinstance(item, PendingCronJob)
+                )
+        return items
+
+    @staticmethod
+    def _remove_pending_item(
+        pending: dict[str, Any], item: PendingCronJob
+    ) -> None:
+        job_id = str(item.job.get("id") or "")
+        current = pending.get(job_id)
+        if isinstance(current, PendingCronJob):
+            if current.sequence == item.sequence:
+                pending.pop(job_id, None)
+            return
+        if not isinstance(current, list):
+            return
+        remaining = [
+            value for value in current
+            if not isinstance(value, PendingCronJob)
+            or value.sequence != item.sequence
+        ]
+        if not remaining:
+            pending.pop(job_id, None)
+        elif len(remaining) == 1:
+            pending[job_id] = remaining[0]
+        else:
+            pending[job_id] = remaining
 
     def _dispatch_ready(
         self,
         scheduler: Scheduler,
         executor: Any,
-        pending: dict[str, PendingCronJob],
+        pending: dict[str, Any],
         running: dict[str, Future[Any]],
         running_lanes: dict[str, str],
     ) -> None:
@@ -696,13 +806,14 @@ class CronService:
             # Defence in depth for pending data created before the current
             # owner observed a running future.  A stale duplicate must not run
             # immediately after the genuine occurrence finishes.
-            for running_job_id in tuple(running):
-                pending.pop(running_job_id, None)
+            if not self.dispatch_policy.queue_all_non_durable:
+                for running_job_id in tuple(running):
+                    pending.pop(running_job_id, None)
             now = time.time()
             active_lanes = list(running_lanes.values())
             eligible = [
                 item
-                for item in pending.values()
+                for item in self._pending_items(pending)
                 if item.not_before <= now
                 and str(item.job.get("id") or "") not in running
                 and self.dispatch_policy.can_start_lane(item.lane, active_lanes)
@@ -720,7 +831,7 @@ class CronService:
             )
             job_id = str(item.job.get("id") or "")
             future = executor.submit(self._execute_claimed, scheduler, item.job)
-            pending.pop(job_id, None)
+            self._remove_pending_item(pending, item)
             running[job_id] = future
             running_lanes[job_id] = item.lane
 

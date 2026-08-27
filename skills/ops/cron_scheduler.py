@@ -20,7 +20,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from skills.ops.cron_command_identity import (
     CronCommandIdentityError,
@@ -73,6 +73,7 @@ _RUNTIME_FIELD_EXACT = {
     "timed_out",
     "duration_sec",
     "v3_pending_occurrence",
+    "v3_pending_occurrences",
     "v3_retry",
     "v3_resource_recovery",
 }
@@ -192,6 +193,33 @@ def _update_cron_states(updates: Dict[str, Dict[str, Any]]) -> bool:
             state[job_id] = previous
         _atomic_write_json(p, state)
     return True
+
+
+def _v3_pending_queue(job: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read the plural queue, migrating the pre-RC643 single-slot field."""
+
+    plural = job.get("v3_pending_occurrences")
+    if isinstance(plural, list):
+        return [dict(item) for item in plural if isinstance(item, dict)]
+    legacy = job.get("v3_pending_occurrence")
+    return [dict(legacy)] if isinstance(legacy, dict) else []
+
+
+def _v3_pending_payload(queue: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return backward-compatible runtime fields for one pending queue."""
+
+    normalized = [dict(item) for item in queue if isinstance(item, dict)]
+    return {
+        "v3_pending_occurrences": normalized,
+        "v3_pending_occurrence": normalized[0] if normalized else None,
+    }
+
+
+def _v3_pending_identity(item: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(item.get("_magi_occurrence_id") or item.get("occurrence_id") or ""),
+        str(item.get("due_at") or item.get("effective_at") or ""),
+    )
 
 
 def mark_job_result_from_evidence(
@@ -497,12 +525,14 @@ class CronScheduler:
         changed = False
         for job in self.jobs:
             if str(job.get("id") or "") == jid:
-                pending = job.get("v3_pending_occurrence")
-                if isinstance(pending, dict):
-                    pending = dict(pending)
-                    pending["status"] = "running"
-                    pending["claimed_at"] = now.isoformat()
-                    payload["v3_pending_occurrence"] = pending
+                queue = _v3_pending_queue(job)
+                for pending in queue:
+                    if str(pending.get("status") or "queued") == "queued":
+                        pending["status"] = "running"
+                        pending["claimed_at"] = now.isoformat()
+                        break
+                if queue:
+                    payload.update(_v3_pending_payload(queue))
                 retry = job.get("v3_retry")
                 if isinstance(retry, dict) and retry.get("status") in {"queued", "running"}:
                     retry = dict(retry)
@@ -548,42 +578,74 @@ class CronScheduler:
         for job in self.jobs:
             if str(job.get("id") or "") != jid:
                 continue
-            current = job.get("v3_pending_occurrence")
-            if isinstance(current, dict):
-                try:
-                    current_due = datetime.fromisoformat(str(current.get("due_at") or ""))
-                except ValueError:
-                    current_due = due
-                if current_due > due:
-                    occurrence = current
-            job["v3_pending_occurrence"] = occurrence
+            queue = _v3_pending_queue(job)
+            if _v3_pending_identity(occurrence) in {
+                _v3_pending_identity(item) for item in queue
+            }:
+                return True
+            if jid in DURABLE_BACKLOG_COALESCING_JOB_IDS:
+                active = [
+                    item
+                    for item in queue
+                    if str(item.get("status") or "queued") == "running"
+                ]
+                queued = [
+                    item
+                    for item in queue
+                    if str(item.get("status") or "queued") != "running"
+                ]
+                queued.append(occurrence)
+                latest = max(
+                    queued,
+                    key=lambda item: (
+                        str(item.get("due_at") or item.get("effective_at") or ""),
+                        str(item.get("effective_at") or ""),
+                    ),
+                )
+                queue = [*active, latest]
+            else:
+                if len(queue) >= DEFAULT_MAX_PENDING_OCCURRENCES_PER_JOB:
+                    logger.error(
+                        "loss-sensitive V3 pending queue bound exceeded for %s",
+                        jid,
+                    )
+                    return False
+                queue.append(occurrence)
+                queue.sort(
+                    key=lambda item: (
+                        str(item.get("due_at") or item.get("effective_at") or ""),
+                        str(item.get("effective_at") or ""),
+                    )
+                )
+            job.update(_v3_pending_payload(queue))
             changed = True
             break
         if not changed:
             return False
-        return _update_cron_state(jid, {"v3_pending_occurrence": occurrence})
+        return _update_cron_state(jid, _v3_pending_payload(queue))
 
     def recover_v3_pending_jobs(self) -> list[dict[str, Any]]:
         """Return durable queued/running V3 occurrences for idempotent recovery."""
         self._hot_reload_if_changed()
         recovered: list[tuple[datetime, dict[str, Any]]] = []
         for job in self.jobs:
-            pending = job.get("v3_pending_occurrence")
-            if not isinstance(pending, dict):
-                continue
             job_id = str(job.get("id") or "")
-            if pending.get("job_id") != job_id:
-                continue
-            try:
-                due = datetime.fromisoformat(str(pending.get("due_at") or ""))
-                datetime.fromisoformat(str(pending.get("effective_at") or ""))
-            except ValueError:
-                continue
-            if pending.get("lane") not in {"light", "batch", "maintenance"}:
-                continue
-            occurrence = dict(job)
-            occurrence["_magi_due_at"] = due.isoformat()
-            recovered.append((due, occurrence))
+            for pending in _v3_pending_queue(job):
+                if pending.get("job_id") != job_id:
+                    continue
+                try:
+                    due = datetime.fromisoformat(str(pending.get("due_at") or ""))
+                    datetime.fromisoformat(str(pending.get("effective_at") or ""))
+                except ValueError:
+                    continue
+                if pending.get("lane") not in {"light", "batch", "maintenance"}:
+                    continue
+                occurrence = dict(job)
+                occurrence["_magi_due_at"] = due.isoformat()
+                occurrence["_magi_pending_status"] = str(
+                    pending.get("status") or "queued"
+                )
+                recovered.append((due, occurrence))
         recovered.sort(key=lambda row: (row[0], str(row[1].get("id") or "")))
         return [job for _due, job in recovered]
 
@@ -930,6 +992,17 @@ class CronScheduler:
         normalized_status = str(status or ("success" if success else "failed")).strip().lower()
         if normalized_status not in {"success", "failed", "deferred"}:
             normalized_status = "success" if success else "failed"
+        pending_queue = _v3_pending_queue(current_job)
+        if pending_queue:
+            running_index = next(
+                (
+                    index
+                    for index, item in enumerate(pending_queue)
+                    if str(item.get("status") or "queued") == "running"
+                ),
+                0,
+            )
+            pending_queue.pop(running_index)
         payload: Dict[str, Any] = {
             "last_complete_at": now.isoformat(),
             "last_result_at": now.isoformat(),
@@ -941,7 +1014,6 @@ class CronScheduler:
             "last_stdout_tail": _tail_text(stdout_tail, 1200),
             "last_stderr_tail": _tail_text(stderr_tail, 1200),
             "last_status": normalized_status,
-            "v3_pending_occurrence": None,
             "last_review_required": bool(
                 normalized_status == "deferred"
                 and str(error or "").strip().lower() == "candidate_rejected"
@@ -951,6 +1023,7 @@ class CronScheduler:
                 and str(error or "").strip().lower() == "candidate_rejected"
             ),
         }
+        payload.update(_v3_pending_payload(pending_queue))
         if success:
             recovery_receipt = current_job.get("v3_retry")
             if not isinstance(recovery_receipt, dict):

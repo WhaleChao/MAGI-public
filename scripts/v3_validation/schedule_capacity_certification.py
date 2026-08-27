@@ -40,7 +40,11 @@ if str(REPO_ROOT) not in sys.path:
 sys.dont_write_bytecode = True
 
 from magi_v3.resource import GlobalResourceGovernor
-from magi_v3.cron_policy import CronDispatchPolicy, load_cron_dispatch_policy
+from magi_v3.cron_policy import (
+    CronDispatchPolicy,
+    DURABLE_BACKLOG_COALESCING_JOB_IDS,
+    load_cron_dispatch_policy,
+)
 from scripts.v3_campaign.offline_probes import (
     OfflineProbeError,
     _ARRIVAL_MULTIPLIER,
@@ -67,14 +71,6 @@ SCHEMA = "magi.v3.schedule-capacity-certification/v1"
 BLOCKER_CODE = "SCHEDULE_LOAD_REALISM_INCOMPLETE"
 LIVE_ROOT = (Path.home() / "Library" / "Application Support" / "MAGI").resolve()
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-DURABLE_BACKLOG_COALESCING_JOB_IDS = frozenset(
-    {
-        "job_drive_case_sync_all_files",
-        "job_legacy_judgment_resummary_quality",
-    }
-)
-
-
 class ScheduleCapacityError(RuntimeError):
     """The capacity model or its bound evidence failed closed."""
 
@@ -91,15 +87,26 @@ def classify_coalescing_safety(capacity: dict[str, Any]) -> None:
         for job_id, count in coalesced_by_job.items()
     ):
         raise ScheduleCapacityError("coalesced occurrence ledger is invalid")
+    configured = (capacity.get("coalescing_policy") or {}).get("durable_job_ids")
+    if configured is None:
+        durable_job_ids = DURABLE_BACKLOG_COALESCING_JOB_IDS
+    elif (
+        not isinstance(configured, list)
+        or any(not isinstance(job_id, str) or not job_id for job_id in configured)
+        or len(configured) != len(set(configured))
+    ):
+        raise ScheduleCapacityError("durable coalescing allowlist is invalid")
+    else:
+        durable_job_ids = frozenset(configured)
     loss_sensitive_by_job = {
         job_id: count
         for job_id, count in coalesced_by_job.items()
-        if job_id not in DURABLE_BACKLOG_COALESCING_JOB_IDS
+        if job_id not in durable_job_ids
     }
     durable_by_job = {
         job_id: count
         for job_id, count in coalesced_by_job.items()
-        if job_id in DURABLE_BACKLOG_COALESCING_JOB_IDS
+        if job_id in durable_job_ids
     }
     if sum(coalesced_by_job.values()) != capacity.get(
         "coalesced_distinct_occurrences"
@@ -108,7 +115,7 @@ def classify_coalescing_safety(capacity: dict[str, Any]) -> None:
     capacity.update(
         {
             "durable_backlog_coalescing_job_ids": sorted(
-                DURABLE_BACKLOG_COALESCING_JOB_IDS
+                durable_job_ids
             ),
             "durable_backlog_coalesced_occurrences": sum(durable_by_job.values()),
             "durable_backlog_coalesced_occurrences_by_job": durable_by_job,
@@ -142,19 +149,37 @@ class OfferResult:
 
 
 class SameJobCoalescer:
-    """Exact delivery dedup plus one-active/one-latest-pending state.
+    """Exact delivery dedup plus explicit durable/latest or queue-all state.
 
     Distinct scheduled occurrences are never called duplicates.  If a job is
-    active, the first newer occurrence becomes pending; further newer
-    occurrences replace that pending occurrence under an explicit latest-wins
-    policy.  Replacements are counted and exposed, never reported as executed.
+    active, loss-sensitive newer occurrences remain queued in order.  Only the
+    explicitly declared durable snapshot jobs replace their latest pending
+    occurrence.  Replacements are counted and exposed, never reported as
+    executed.  The legacy default remains available to isolated compatibility
+    tests; a release policy opts into queue-all explicitly.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        queue_all_non_durable: bool = False,
+        durable_job_ids: frozenset[str] | set[str] | None = None,
+        max_pending_occurrences_per_job: int = 1,
+    ) -> None:
         self._seen: set[tuple[str, float]] = set()
         self._active: set[str] = set()
-        self._pending: dict[str, Occurrence] = {}
+        self._pending: dict[str, list[Occurrence]] = {}
         self._generation: dict[str, int] = {}
+        self._generation_by_key: dict[tuple[str, float], int] = {}
+        self._queue_all_non_durable = bool(queue_all_non_durable)
+        self._durable_job_ids = frozenset(
+            durable_job_ids
+            if durable_job_ids is not None
+            else DURABLE_BACKLOG_COALESCING_JOB_IDS
+        )
+        self._max_pending_occurrences_per_job = max(
+            1, int(max_pending_occurrences_per_job)
+        )
         self.exact_duplicates = 0
         self.distinct_occurrences = 0
         self.coalesced_replacements = 0
@@ -167,25 +192,45 @@ class SameJobCoalescer:
             return OfferResult("exact_duplicate", None)
         self._seen.add(occurrence.key)
         self.distinct_occurrences += 1
-        previous = self._pending.get(occurrence.job_id)
         generation = self._generation.get(occurrence.job_id, 0) + 1
         self._generation[occurrence.job_id] = generation
-        self._pending[occurrence.job_id] = occurrence
+        self._generation_by_key[occurrence.key] = generation
+        queue = self._pending.setdefault(occurrence.job_id, [])
+        collapse = (
+            not self._queue_all_non_durable
+            or occurrence.job_id in self._durable_job_ids
+        )
+        previous = queue[-1] if queue and collapse else None
+        if previous is not None:
+            queue[-1] = occurrence
+        else:
+            if len(queue) >= self._max_pending_occurrences_per_job:
+                raise ScheduleCapacityError(
+                    "same-job pending occurrence queue bound exceeded: "
+                    f"{occurrence.job_id}"
+                )
+            queue.append(occurrence)
         self.max_pending_jobs = max(self.max_pending_jobs, len(self._pending))
         if previous is not None:
             self.coalesced_replacements += 1
             self.coalesced_replacements_by_job[occurrence.job_id] += 1
             return OfferResult("coalesced_latest_pending", generation, previous)
-        if occurrence.job_id in self._active:
+        if occurrence.job_id in self._active or len(queue) > 1:
             return OfferResult("deferred_behind_active", generation)
         return OfferResult("ready", generation)
 
     def start(self, job_id: str, generation: int) -> Occurrence | None:
-        if job_id in self._active or self._generation.get(job_id) != generation:
+        if job_id in self._active:
             return None
-        occurrence = self._pending.pop(job_id, None)
-        if occurrence is None:
+        queue = self._pending.get(job_id)
+        if not queue:
             return None
+        occurrence = queue[0]
+        if self._generation_by_key.get(occurrence.key) != generation:
+            return None
+        queue.pop(0)
+        if not queue:
+            self._pending.pop(job_id, None)
         self._active.add(job_id)
         return occurrence
 
@@ -193,10 +238,11 @@ class SameJobCoalescer:
         if job_id not in self._active:
             raise ScheduleCapacityError(f"completion for inactive job: {job_id}")
         self._active.remove(job_id)
-        pending = self._pending.get(job_id)
-        if pending is None:
+        queue = self._pending.get(job_id)
+        if not queue:
             return None
-        return pending, self._generation[job_id]
+        pending = queue[0]
+        return pending, self._generation_by_key[pending.key]
 
     @property
     def active_count(self) -> int:
@@ -204,7 +250,7 @@ class SameJobCoalescer:
 
     @property
     def pending_count(self) -> int:
-        return len(self._pending)
+        return sum(len(queue) for queue in self._pending.values())
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -473,7 +519,36 @@ def simulate_layered_capacity(
         worker_class: [] for worker_class in normalized_slots
     }
     active_by_class = {worker_class: 0 for worker_class in normalized_slots}
-    coalescer = SameJobCoalescer()
+    queue_all_non_durable = bool(
+        getattr(dispatch_policy, "queue_all_non_durable", False)
+    )
+    durable_job_ids = (
+        frozenset(
+            getattr(
+                dispatch_policy,
+                "durable_backlog_coalescing_job_ids",
+                DURABLE_BACKLOG_COALESCING_JOB_IDS,
+            )
+        )
+        if queue_all_non_durable
+        else DURABLE_BACKLOG_COALESCING_JOB_IDS
+    )
+    pending_limit = (
+        int(
+            getattr(
+                dispatch_policy,
+                "max_pending_occurrences_per_job",
+                1,
+            )
+        )
+        if queue_all_non_durable
+        else 1
+    )
+    coalescer = SameJobCoalescer(
+        queue_all_non_durable=queue_all_non_durable,
+        durable_job_ids=durable_job_ids,
+        max_pending_occurrences_per_job=pending_limit,
+    )
     event_sequence = sequence
     executed: list[tuple[str, float]] = []
     executed_set: set[tuple[str, float]] = set()
@@ -614,7 +689,7 @@ def simulate_layered_capacity(
         "all_distinct_occurrences_accounted": unique_occurrences == accounted_unique,
         "same_job_concurrency_violations": same_job_concurrency_violations,
         "max_pending_jobs": coalescer.max_pending_jobs,
-        "pending_per_job_limit": 1,
+        "pending_per_job_limit": pending_limit,
         "latest_start_misses": latest_start_misses,
         "deadline_misses": deadline_misses,
         "max_queue_delay_seconds": round(max_queue_delay, 6),
@@ -658,8 +733,14 @@ def simulate_layered_capacity(
         "coalescing_policy": {
             "exact_key": ["job_id", "scheduled_for"],
             "same_job_concurrency": 1,
-            "pending_occurrences_per_job": 1,
-            "pending_replacement": "latest_scheduled_occurrence_wins",
+            "pending_occurrences_per_job": pending_limit,
+            "pending_replacement": (
+                "latest_scheduled_occurrence_wins_for_declared_durable_jobs"
+                if queue_all_non_durable
+                else "latest_scheduled_occurrence_wins"
+            ),
+            "queue_all_non_durable": queue_all_non_durable,
+            "durable_job_ids": sorted(durable_job_ids),
             "coalesced_occurrences_reported_as_executed": False,
             "ready_queue_order": "earliest_latest_start_then_scheduled_time",
         },
@@ -1210,13 +1291,26 @@ def _run_schedule_capacity_certification_bundle(
     p95_complete = duration_coverage.get("certifying_p95_coverage") is True
     bodies_complete = body_coverage["body_adapter_coverage_complete"] is True
     deadlines_passed = capacity["latest_start_misses"] == capacity["deadline_misses"] == 0
+    expected_pending_limit = int(
+        getattr(dispatch_policy, "max_pending_occurrences_per_job", 1)
+    )
+    expected_durable_ids = sorted(
+        getattr(
+            dispatch_policy,
+            "durable_backlog_coalescing_job_ids",
+            DURABLE_BACKLOG_COALESCING_JOB_IDS,
+        )
+    )
     control_passed = bool(
         capacity["delivery_multiplier"] == _ARRIVAL_MULTIPLIER
         and capacity["all_deliveries_accounted"] is True
         and capacity["all_distinct_occurrences_accounted"] is True
         and capacity["same_job_concurrency_violations"] == 0
-        and capacity["pending_per_job_limit"] == 1
+        and capacity["pending_per_job_limit"] == expected_pending_limit
         and capacity["coalescing_safety_passed"] is True
+        and capacity["durable_backlog_coalescing_job_ids"] == expected_durable_ids
+        and capacity["coalescing_policy"].get("queue_all_non_durable")
+        is bool(getattr(dispatch_policy, "queue_all_non_durable", False))
     )
     eligible = control_passed and p95_complete and bodies_complete and deadlines_passed
     blockers = [

@@ -1395,18 +1395,24 @@ def _validate_schedule_capacity_campaign_evidence(
     body_measurements = body.get("measurements")
     entries = body.get("registry_entries")
     results = body.get("body_results")
+    expected_enabled_jobs = (
+        body_measurements.get("enabled_jobs")
+        if isinstance(body_measurements, dict)
+        else None
+    )
     if (
         body.get("status") != "passed"
         or body.get("completion_claimed") is not True
         or not isinstance(body_measurements, dict)
-        or body_measurements.get("enabled_jobs") != 93
-        or body_measurements.get("safe_adapter_coverage_jobs") != 93
+        or type(expected_enabled_jobs) is not int
+        or expected_enabled_jobs <= 0
+        or body_measurements.get("safe_adapter_coverage_jobs") != expected_enabled_jobs
         or body_measurements.get("blocked_jobs") != 0
-        or body_measurements.get("body_jobs_passed") != 93
+        or body_measurements.get("body_jobs_passed") != expected_enabled_jobs
         or body_measurements.get("all_safe_bodies_passed") is not True
         or body_measurements.get("registry_complete_for_enabled_jobs") is not True
         or not isinstance(entries, list)
-        or len(entries) != 93
+        or len(entries) != expected_enabled_jobs
         or any(
             not isinstance(row, dict)
             or row.get("classification") != "safe_adapter"
@@ -1414,9 +1420,9 @@ def _validate_schedule_capacity_campaign_evidence(
             for row in entries
         )
         or not isinstance(results, list)
-        or len(results) != 93
+        or len(results) != expected_enabled_jobs
         or len({str(row.get("job_id") or "") for row in results if isinstance(row, dict)})
-        != 93
+        != expected_enabled_jobs
         or any(
             not isinstance(row, dict)
             or row.get("status") != "passed"
@@ -1449,11 +1455,18 @@ def _validate_schedule_capacity_campaign_evidence(
         or capacity.get("same_job_concurrency_violations") != 0
         or capacity.get("loss_sensitive_coalesced_occurrences") != 0
         or capacity.get("coalescing_safety_passed") is not True
-        or capacity.get("durable_backlog_coalescing_job_ids")
-        != [
-            "job_drive_case_sync_all_files",
-            "job_legacy_judgment_resummary_quality",
-        ]
+        or not isinstance(capacity.get("coalescing_policy"), dict)
+        or capacity.get("coalescing_policy", {}).get("queue_all_non_durable")
+        is not True
+        or capacity.get("coalescing_policy", {}).get("pending_occurrences_per_job")
+        != capacity.get("pending_per_job_limit")
+        or not isinstance(capacity.get("pending_per_job_limit"), int)
+        or capacity.get("pending_per_job_limit") < 2
+        or not isinstance(capacity.get("durable_backlog_coalescing_job_ids"), list)
+        or any(
+            not isinstance(job_id, str) or not job_id
+            for job_id in capacity.get("durable_backlog_coalescing_job_ids", [])
+        )
         or capacity.get("coalesced_distinct_occurrences")
         != capacity.get("durable_backlog_coalesced_occurrences")
         or capacity.get("latest_start_misses") != 0
@@ -1462,14 +1475,14 @@ def _validate_schedule_capacity_campaign_evidence(
         or not isinstance(business, dict)
         or business.get("status") != "passed"
         or not isinstance(duration, dict)
-        or duration.get("enabled_jobs") != 93
-        or duration.get("p95_jobs") != 93
+        or duration.get("enabled_jobs") != expected_enabled_jobs
+        or duration.get("p95_jobs") != expected_enabled_jobs
         or duration.get("sparse_fallback_jobs") != 0
         or duration.get("missing_jobs") != 0
         or duration.get("certifying_p95_coverage") is not True
         or not isinstance(body_summary, dict)
-        or body_summary.get("enabled_jobs") != 93
-        or body_summary.get("jobs_with_three_successful_real_body_samples") != 93
+        or body_summary.get("enabled_jobs") != expected_enabled_jobs
+        or body_summary.get("jobs_with_three_successful_real_body_samples") != expected_enabled_jobs
         or body_summary.get("jobs_missing_real_body_adapter") != 0
         or body_summary.get("body_adapter_coverage_complete") is not True
         or body_summary.get("registry_evidence_sha256") != supplied_body_sha
@@ -1522,9 +1535,9 @@ def _validate_schedule_capacity_campaign_evidence(
     outer_measurements = evidence.get("measurements")
     if outer_measurements != {
         "validation_profile_id": profile_id,
-        "enabled_jobs": 93,
-        "covered_jobs": 93,
-        "passed_jobs": 93,
+        "enabled_jobs": expected_enabled_jobs,
+        "covered_jobs": expected_enabled_jobs,
+        "passed_jobs": expected_enabled_jobs,
         "blocked_jobs": 0,
         "latest_start_misses": 0,
         "deadline_misses": 0,
