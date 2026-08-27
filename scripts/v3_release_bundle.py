@@ -50,6 +50,7 @@ REQUIRED_PACKAGE_FILES = (
     "daemon.py",
     "osc.py",
     "bin/magi-v3-python",
+    "bin/agent_mcp.py",
     "requirements.txt",
     "requirements-selfhost.txt",
     "requirements-optional.txt",
