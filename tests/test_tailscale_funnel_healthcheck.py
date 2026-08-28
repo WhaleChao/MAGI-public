@@ -559,6 +559,63 @@ def test_tailnet_dns_success_cannot_mask_public_edge_failure(monkeypatch):
     assert result["reason"] == "one or more advertised public Funnel edges failed"
 
 
+def test_canonical_tailnet_route_is_degraded_without_disruptive_refresh(monkeypatch):
+    monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
+    monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        MODULE,
+        "_load_funnel_status",
+        lambda: {
+            "ok": True,
+            "data": {
+                "TCP": {"443": {"HTTPS": True}},
+                "Web": {"magi.example.test:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:5002"}}}},
+                "AllowFunnel": {"magi.example.test:443": True},
+            },
+        },
+    )
+    monkeypatch.setattr(MODULE, "_public_ips", lambda _host: [])
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_dns_route",
+        lambda *_args: {"ok": True, "http_code": 302, "route": "public_dns"},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_mobile_entry_targets_dns",
+        lambda _targets: {"ok": True, "probes": [{"ok": True, "http_code": 302, "route": "public_dns"}]},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_security_boundaries",
+        lambda *_args, **_kwargs: {"ok": True, "checks": [], "route": "public_dns"},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_public_dns_matrix",
+        lambda _host: {"ok": False, "partial": False, "checks": [], "reason_code": "unresolved"},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_refresh_public_ingress",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("canonical route must not refresh Funnel")),
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_local_dns_resolution",
+        lambda host: {"ok": True, "host": host, "address_count": 1, "reason_code": "resolved"},
+    )
+
+    result = MODULE.check(apply=True)
+
+    assert result["status"] == "degraded"
+    assert result["public_edge_unattested"] is True
+    assert result["canonical_dns_is_tailnet_only"] is True
+    assert result["security_boundary"]["route"] == "public_dns"
+    assert result["actions"] == []
+    assert "no Funnel refresh" in result["next_actions"][0]
+
+
 def test_apply_refreshes_bindings_then_requires_public_edge_recovery(monkeypatch):
     monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
     monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
