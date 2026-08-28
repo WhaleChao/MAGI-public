@@ -398,7 +398,7 @@ def test_public_ingress_refresh_blocks_without_healthy_local_backend(monkeypatch
     assert calls == []
 
 
-def test_partial_public_dns_is_amber_and_reasserts_only_approved_target(monkeypatch):
+def test_partial_public_dns_is_amber_and_never_reasserts_healthy_funnel(monkeypatch):
     monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://magi.example.test")
     monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
     monkeypatch.setattr(
@@ -442,7 +442,10 @@ def test_partial_public_dns_is_amber_and_reasserts_only_approved_target(monkeypa
 
     assert result["status"] == "degraded"
     assert result["dns_convergence_pending"] is True
-    assert len(repairs) == 1
+    assert result["ingress_mutation_suppressed"] == "public_route_verified"
+    assert result["actions"] == []
+    assert repairs == []
+    assert "healthy Funnel was left unchanged" in result["next_actions"][0]
 
 
 def test_scope_violation_is_red_and_never_auto_repaired(monkeypatch):

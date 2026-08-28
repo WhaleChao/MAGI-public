@@ -1307,16 +1307,25 @@ def check(apply: bool = False) -> dict[str, Any]:
             _append_unique(payload["next_actions"], "Inspect MAGI authentication routes; Funnel self-repair is intentionally blocked.")
             return payload
         if payload["public_dns"].get("ok") is False:
-            if apply:
-                payload["actions"].append(_reassert_approved_funnel(scope))
+            # The routed edge and mobile entry have already succeeded, and
+            # the exact authentication boundary was verified above.  A
+            # partial resolver matrix is therefore an observation about DNS
+            # cache convergence, not evidence that the Funnel binding is
+            # missing.  Reasserting a healthy Funnel can force a short
+            # restun/rebind window and surface as ERR_CONNECTION_CLOSED to a
+            # browser, so never mutate ingress on this branch.
             payload.update(
                 {
                     "status": "degraded",
                     "reason": "public Funnel is reachable, but public DNS resolvers are still converging",
                     "dns_convergence_pending": True,
+                    "ingress_mutation_suppressed": "public_route_verified",
                 }
             )
-            _append_unique(payload["next_actions"], "Wait for the public DNS negative-cache TTL, then verify Cloudflare and Google DNS again.")
+            _append_unique(
+                payload["next_actions"],
+                "Wait for the public DNS negative-cache TTL, then verify Cloudflare and Google DNS again; the healthy Funnel was left unchanged.",
+            )
             return _observe_local_dns(payload, [target["host"] for target in targets], apply=apply)
         reason = "public Funnel and mobile entry probes succeeded" if mobile_ok is True else "public Funnel probe succeeded"
         payload.update({"status": "ok", "reason": reason})
