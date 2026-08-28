@@ -215,6 +215,56 @@ def test_laf_menubar_separates_automatic_retry_from_manual_action():
     assert "需要處理（1 件）" in detail
 
 
+def test_business_readiness_labels_unverified_nas_mapping_as_waiting(tmp_path, monkeypatch):
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "laf_portal_new_files_latest.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "mapping_unverified",
+                "portal_still_missing": 0,
+                "portal_mapping_unverified_cases": 6,
+                "portal_mapping_unverified_files": 44,
+                "portal_new_files": [
+                    {
+                        "laf_no": "1150529-W-002",
+                        "client_name": "測試甲",
+                        "file_count": 2,
+                        "mapping_unverified_count": 2,
+                        "reason_code": "nas_mapping_unverified",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(readiness_snapshot, "_operations", lambda _exec_fn: {})
+    monkeypatch.setattr(
+        readiness_snapshot,
+        "_scheduled_file_review_download_enabled",
+        lambda _root: False,
+    )
+
+    result = readiness_snapshot.build_snapshot(
+        root=tmp_path,
+        env={
+            "MAGI_MUTABLE_STATIC_DIR": str(static),
+            "MAGI_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "MAGI_AGENT_DIR": str(tmp_path / "agent"),
+            "MAGI_FILE_REVIEW_UNATTENDED_MODE": "1",
+        },
+        now=datetime(2026, 8, 19, 9, 0, 0),
+    )
+
+    item = result["items"]["法扶附件"]
+    assert item["state"] == "waiting"
+    assert item["label"] == "6案 NAS映射待驗證"
+    assert item["missing"] == 0
+    assert item["mapping_unverified"] == 6
+    assert item["mapping_unverified_files"] == 44
+
+
 def test_file_review_worker_failure_snapshot_exposes_only_reconciliation_aggregates(
     tmp_path, monkeypatch
 ):
@@ -593,6 +643,60 @@ def test_laf_ingestion_accepts_fresh_successful_portal_download(tmp_path, monkey
 
     assert result["ok"] is True
     assert result["parsed"]["portal_still_missing"] == 0
+    assert result["parsed"]["reason"] == ""
+
+
+def test_laf_ingestion_accepts_fresh_unverified_nas_mapping(tmp_path, monkeypatch):
+    monitor = tmp_path / "laf_gmail_monitor_state.json"
+    pending = tmp_path / "laf_gmail_dispatch_pending.json"
+    portal = tmp_path / "laf_portal_new_files_latest.json"
+    monitor.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "running": False,
+                "consecutive_errors": 0,
+                "updated_at": "fresh",
+            }
+        ),
+        encoding="utf-8",
+    )
+    pending.write_text(
+        json.dumps(
+            {"ok": True, "pending_count": 0, "failure_count": 0, "updated_at": "fresh"}
+        ),
+        encoding="utf-8",
+    )
+    portal.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "mapping_unverified",
+                "scanned_cases": 150,
+                "portal_still_missing": 0,
+                "portal_mapping_unverified_cases": 6,
+                "portal_mapping_unverified_files": 44,
+                "portal_new_files": [
+                    {"reason_code": "nas_mapping_unverified", "mapping_unverified_count": 44}
+                ],
+                "checked_at": "fresh",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        live_check,
+        "_mutable_static_status_file",
+        lambda name: monitor if name == monitor.name else portal,
+    )
+    monkeypatch.setattr(live_check, "_runtime_status_file", lambda *_parts: pending)
+    monkeypatch.setattr(live_check, "_artifact_age_seconds", lambda *_args: 60)
+
+    result = live_check._laf_ingestion_coverage_live()
+
+    assert result["ok"] is True
+    assert result["parsed"]["portal_still_missing"] == 0
+    assert result["parsed"]["portal_mapping_unverified_files"] == 44
     assert result["parsed"]["reason"] == ""
 
 

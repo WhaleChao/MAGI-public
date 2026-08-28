@@ -310,6 +310,29 @@ def _laf_missing_details(portal: dict) -> list[dict]:
     return details
 
 
+def _laf_mapping_details(portal: dict) -> list[dict]:
+    """Expose NAS authority uncertainty without calling it a missing file."""
+    details = []
+    for row in portal.get("portal_new_files") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("reason_code") or "").strip() != "nas_mapping_unverified":
+            continue
+        details.append(
+            {
+                "laf_case_number": _business_item_text(
+                    row.get("laf_no") or row.get("case_number"), 40
+                ),
+                "client_name": _business_item_text(row.get("client_name"), 80),
+                "file_count": int(
+                    row.get("mapping_unverified_count") or row.get("file_count") or 0
+                ),
+                "storage_status": "NAS映射待驗證",
+            }
+        )
+    return details
+
+
 def _review_ready_items(review_result: dict) -> list[dict]:
     parsed = (review_result.get("check") or {}).get("parsed") or {}
     rows = parsed.get("ready_to_download_items") if isinstance(parsed, dict) else []
@@ -537,6 +560,14 @@ def build_snapshot(
     )
     laf_retry_details = _laf_retry_details(retry_items)
     laf_missing_details = _laf_missing_details(portal)
+    laf_mapping_details = _laf_mapping_details(portal)
+    mapping_unverified_cases = int(
+        portal.get("portal_mapping_unverified_cases") or len(laf_mapping_details)
+    )
+    mapping_unverified_files = int(
+        portal.get("portal_mapping_unverified_files")
+        or sum(int(item.get("file_count") or 0) for item in laf_mapping_details)
+    )
     if portal_scan_failed:
         laf_item = {
             "state": "attention",
@@ -550,6 +581,9 @@ def build_snapshot(
             ),
             "retry_items": laf_retry_details,
             "missing_items": laf_missing_details,
+            "mapping_unverified": mapping_unverified_cases,
+            "mapping_unverified_files": mapping_unverified_files,
+            "mapping_items": laf_mapping_details,
         }
     elif missing_files or manual_retry:
         laf_item = {
@@ -560,6 +594,25 @@ def build_snapshot(
             "manual_review": manual_retry,
             "retry_items": laf_retry_details,
             "missing_items": laf_missing_details,
+            "mapping_unverified": mapping_unverified_cases,
+            "mapping_unverified_files": mapping_unverified_files,
+            "mapping_items": laf_mapping_details,
+        }
+    elif mapping_unverified_cases:
+        labels = [f"{mapping_unverified_cases}案 NAS映射待驗證"]
+        if pending_retry:
+            labels.append(f"{pending_retry}案重試中")
+        laf_item = {
+            "state": "waiting",
+            "label": "／".join(labels),
+            "missing": 0,
+            "pending_retry": pending_retry,
+            "manual_review": 0,
+            "mapping_unverified": mapping_unverified_cases,
+            "mapping_unverified_files": mapping_unverified_files,
+            "retry_items": laf_retry_details,
+            "missing_items": [],
+            "mapping_items": laf_mapping_details,
         }
     elif pending_retry:
         laf_item = {
@@ -570,9 +623,12 @@ def build_snapshot(
             "manual_review": 0,
             "retry_items": laf_retry_details,
             "missing_items": [],
+            "mapping_unverified": 0,
+            "mapping_unverified_files": 0,
+            "mapping_items": [],
         }
     else:
-        laf_item = {"state": "ok", "label": "附件齊全", "missing": 0, "pending_retry": 0, "manual_review": 0, "retry_items": [], "missing_items": []}
+        laf_item = {"state": "ok", "label": "附件齊全", "missing": 0, "pending_retry": 0, "manual_review": 0, "mapping_unverified": 0, "mapping_unverified_files": 0, "retry_items": [], "missing_items": [], "mapping_items": []}
 
     review = _load_json(_mutable_static_dir(root, env) / "file_review_auto_state.json")
     review_result = review.get("result") if isinstance(review.get("result"), dict) else {}

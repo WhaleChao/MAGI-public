@@ -1504,6 +1504,41 @@ def _infer_payload_ok(data: Any) -> tuple[bool | None, str]:
     return None, "unknown"
 
 
+def _nonblocking_deferred_health(data: Any) -> bool:
+    """Recognize an explicit retry/defer receipt without weakening failures.
+
+    Resource protection and Drive owner conflicts are expected to leave a
+    ``success=false`` receipt while preserving the work for a later retry.
+    Only a structured, non-actionable, retryable receipt qualifies; a bare
+    error or an unverified ``deferred`` flag must still fail closed.
+    """
+    if not isinstance(data, dict):
+        return False
+    if (
+        data.get("ok") is not False
+        or data.get("deferred") is not True
+        or data.get("retryable") is not True
+        or data.get("action_required") is not False
+    ):
+        return False
+    text = " ".join(
+        str(data.get(key) or "").strip().lower()
+        for key in ("status", "reason", "reason_code", "error", "message")
+    )
+    return any(
+        marker in text
+        for marker in (
+            "resource_guard",
+            "owner_conflict",
+            "owner conflict",
+            "storage_unavailable",
+            "queued_for_retry",
+            "retry_queued",
+            "deferred",
+        )
+    )
+
+
 def _business_readiness_snapshot_operational(path: Path, data: Any) -> bool:
     """Separate snapshot generation health from its business attention state.
 
@@ -1579,7 +1614,10 @@ def evaluate_health_file(path: Path, root: Path, now: datetime, max_age_hours: f
     mtime = _mtime_dt(path)
     timestamp = _payload_timestamp(data) or mtime
     age = _age_hours(timestamp, now)
-    ok, ok_source = _infer_payload_ok(data)
+    if _nonblocking_deferred_health(data):
+        ok, ok_source = None, "deferred_nonblocking"
+    else:
+        ok, ok_source = _infer_payload_ok(data)
     if _business_readiness_snapshot_operational(path, data):
         ok, ok_source = True, "business_readiness_snapshot_generated"
     status = "ok"
@@ -1593,6 +1631,9 @@ def evaluate_health_file(path: Path, root: Path, now: datetime, max_age_hours: f
     elif ok is None and ok_source == "skipped":
         status = "skipped"
         reason = "skipped_not_health_evidence"
+    elif ok is None and ok_source == "deferred_nonblocking":
+        status = "observed"
+        reason = "deferred_nonblocking"
     elif max_age_hours > 0 and age is not None and age > max_age_hours:
         status = "stale"
         reason = f"age_hours>{max_age_hours:g}"

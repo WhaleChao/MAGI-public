@@ -1053,12 +1053,26 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
         reasons.append("missing_laf_portal_attachment_evidence")
     elif portal_age is None or portal_age > LAF_PORTAL_STATUS_SLA_HOURS * 3600:
         reasons.append("stale_laf_portal_attachment_evidence")
-    elif portal.get("ok") is not True or str(portal.get("status") or "").lower() not in {
-        "ok",
-        "idle",
-        "downloaded",
-    }:
-        reasons.append("laf_portal_attachment_scan_failed")
+    else:
+        portal_status = str(portal.get("status") or "").lower()
+        portal_mapping_only = (
+            portal_status == "mapping_unverified"
+            or (
+                int(portal.get("portal_still_missing") or 0) == 0
+                and int(portal.get("portal_mapping_unverified_cases") or 0) > 0
+                and all(
+                    str(item.get("reason_code") or "").strip()
+                    == "nas_mapping_unverified"
+                    for item in (portal.get("portal_new_files") or [])
+                    if isinstance(item, dict)
+                )
+            )
+        )
+        if portal.get("ok") is not True or (
+            portal_status not in {"ok", "idle", "downloaded"}
+            and not portal_mapping_only
+        ):
+            reasons.append("laf_portal_attachment_scan_failed")
     return {
         "name": "laf_ingestion_coverage_live",
         "ok": not reasons,
@@ -1070,6 +1084,12 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
             "dispatch_failures": int(pending.get("failure_count") or 0),
             "portal_cases_scanned": int(portal.get("scanned_cases") or 0),
             "portal_still_missing": int(portal.get("portal_still_missing") or 0),
+            "portal_mapping_unverified_cases": int(
+                portal.get("portal_mapping_unverified_cases") or 0
+            ),
+            "portal_mapping_unverified_files": int(
+                portal.get("portal_mapping_unverified_files") or 0
+            ),
             "reason": ",".join(reasons),
         },
     }

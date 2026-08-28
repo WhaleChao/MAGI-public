@@ -74,6 +74,40 @@ def test_run_portal_new_files_scan_marks_remaining_missing_as_action_required(mo
     assert "仍有 2 份附件未歸檔" in result["message"]
 
 
+def test_run_portal_new_files_scan_keeps_unverified_mapping_out_of_missing_count(monkeypatch):
+    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(
+        audit,
+        "fetch_laf_cases_for_portal_scan",
+        lambda _db: [{"case_number": "2026-0060"}],
+    )
+    monkeypatch.setattr(
+        audit,
+        "scan_portal_new_files",
+        lambda cases, *, only_laf_no="", auto_download=True: [
+            {
+                "laf_no": "1150529-W-002",
+                "auto_downloaded": 0,
+                "new_count": 0,
+                "file_count": 2,
+                "mapping_unverified_count": 2,
+                "mapping_unverified_files": ["接案通知書.pdf", "委任狀.pdf"],
+                "reason_code": "nas_mapping_unverified",
+            }
+        ],
+    )
+
+    result = audit.run_portal_new_files_scan(auto_download=True)
+
+    assert result["ok"] is True
+    assert result["status"] == "mapping_unverified"
+    assert result["action_required"] is False
+    assert result["portal_still_missing"] == 0
+    assert result["portal_mapping_unverified_cases"] == 1
+    assert result["portal_mapping_unverified_files"] == 2
+    assert "未判定為欠檔" in result["message"]
+
+
 def test_run_portal_new_files_scan_fails_closed_when_listing_unavailable(monkeypatch):
     monkeypatch.setattr(audit, "_get_db", lambda: object())
     monkeypatch.setattr(
@@ -148,7 +182,9 @@ def test_scan_portal_new_files_dry_run_does_not_download(monkeypatch, tmp_path):
     assert fake_laf.download_count == 0
     assert len(result) == 1
     assert result[0]["laf_no"] == "1150529-W-002"
-    assert result[0]["new_count"] == 1
+    assert result[0]["new_count"] == 0
+    assert result[0]["mapping_unverified_count"] == 1
+    assert result[0]["reason_code"] == "nas_mapping_unverified"
 
 
 def test_scan_portal_new_files_ignores_retained_row_for_final_closed_case(

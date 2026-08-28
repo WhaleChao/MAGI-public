@@ -558,6 +558,27 @@ def business_jobs(repo_root: Path = REPO_ROOT, python_path: Path | None = None) 
             "timeout_sec": 960,
         },
         {
+            "id": "job_commercial_readiness_live",
+            "cron": "37 */6 * * *",
+            "command": qcmd(
+                python_bin,
+                run_with_env,
+                "--",
+                python_bin,
+                repo_root / "scripts" / "ops" / "commercial_readiness_live.py",
+                "--skip-backup",
+                "--json-out",
+                repo_root / ".runtime" / "commercial_readiness_live_latest.json",
+            ),
+            "desc": "商用就緒 LIVE 閘門（每 6 小時；綁定目前 release，唯讀驗證）",
+            "channel_id": None,
+            "last_run": None,
+            "last_run_minute": None,
+            "enabled": True,
+            "no_catchup": True,
+            "timeout_sec": 300,
+        },
+        {
             "id": "job_accounting_sheet_import",
             "cron": "20 9 * * 1,5",
             "command": token_refresh_cron_command(

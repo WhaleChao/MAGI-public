@@ -70,6 +70,32 @@ def test_running_drive_all_files_worker_is_not_a_failed_health_artifact(tmp_path
     assert result["contract"] == "status_running"
 
 
+def test_explicit_retryable_deferred_receipt_is_not_a_red_health_artifact(tmp_path) -> None:
+    path = tmp_path / "drive_case_sync_worker_skip_latest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "success": False,
+                "deferred": True,
+                "retryable": True,
+                "action_required": False,
+                "reason_code": "owner_conflict",
+                "status": "queued_for_retry",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_health_file(
+        path, tmp_path, datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc), 2
+    )
+
+    assert result["status"] == "observed"
+    assert result["ok"] is True
+    assert result["contract"] == "deferred_nonblocking"
+
+
 def test_queued_or_running_occurrence_is_deferred() -> None:
     assert _cron_occurrence_waiting_or_running(
         {"v3_pending_occurrence": {"status": "queued"}}

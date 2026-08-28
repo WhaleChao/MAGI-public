@@ -3554,9 +3554,15 @@ def scan_portal_new_files(
                 ", ".join(str(f) for f in missing_files[:5]),
             )
 
+            # A fallback-only mapping is an authority uncertainty, not proof
+            # that every portal file is missing.  Keep the fail-closed
+            # download policy, but do not manufacture a missing-file count
+            # from the deliberately empty authoritative listing.
+            mapping_unverified_only = storage_state["status"] == "local_fallback_only"
+
             # ── 嘗試自動下載 ──────────────────────────────────
             auto_downloaded_count = 0
-            still_missing = list(missing_files)
+            still_missing = [] if mapping_unverified_only else list(missing_files)
 
             if matched_cases and not auto_download:
                 logger.info("  🧪 %s: dry-run 僅比對缺檔，不下載", laf_no)
@@ -3615,7 +3621,17 @@ def scan_portal_new_files(
                     "new_count": len(still_missing),
                     "auto_downloaded": auto_downloaded_count,
                     "missing_files": still_missing,
+                    "mapping_unverified_count": len(file_list) if mapping_unverified_only else 0,
+                    "mapping_unverified_files": file_list if mapping_unverified_only else [],
                     "is_new_case": not matched_cases,
+                    "storage_status": storage_state["status"],
+                    "storage_authoritative_count": storage_state["authoritative_count"],
+                    "storage_fallback_only_count": storage_state["fallback_only_count"],
+                    "storage_missing_count": storage_state["missing_count"],
+                    "reason_code": (
+                        "nas_mapping_unverified" if mapping_unverified_only
+                        else "portal_files_missing"
+                    ),
                 })
 
     except ImportError:
@@ -3704,10 +3720,24 @@ def run_portal_new_files_scan(
         }
     total_auto = sum(int(item.get("auto_downloaded", 0) or 0) for item in portal_new_files)
     total_missing = sum(int(item.get("new_count", 0) or 0) for item in portal_new_files)
+    mapping_unverified = [
+        item for item in portal_new_files
+        if str(item.get("reason_code") or "").strip() == "nas_mapping_unverified"
+    ]
+    mapping_unverified_files = sum(
+        int(item.get("mapping_unverified_count") or item.get("file_count") or 0)
+        for item in mapping_unverified
+    )
     action_required = total_missing > 0
     if action_required:
         status = "action_required"
         message = f"法扶入口仍有 {total_missing} 份附件未歸檔，需人工確認或重新下載。"
+    elif mapping_unverified:
+        status = "mapping_unverified"
+        message = (
+            f"法扶入口已讀取；{len(mapping_unverified)} 案、{mapping_unverified_files} 份附件"
+            "因 NAS 權威映射尚未驗證，保留待驗證狀態，未判定為欠檔。"
+        )
     elif total_auto > 0:
         status = "downloaded"
         message = f"已自動下載並歸檔 {total_auto} 份法扶入口附件。"
@@ -3727,6 +3757,8 @@ def run_portal_new_files_scan(
         "matched_or_missing_cases": len(portal_new_files),
         "portal_auto_downloaded": total_auto,
         "portal_still_missing": total_missing,
+        "portal_mapping_unverified_cases": len(mapping_unverified),
+        "portal_mapping_unverified_files": mapping_unverified_files,
         "portal_new_files": portal_new_files,
         "checked_at": datetime.now().isoformat(timespec="seconds"),
     }
