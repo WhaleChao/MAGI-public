@@ -250,6 +250,12 @@ def test_declared_native_extensions_do_not_redefine_legacy_inventory() -> None:
         methods=["POST"],
     )
     app.add_url_rule(
+        "/api/cookie-cutter/health",
+        endpoint="cookie_cutter.cookie_cutter_health_api",
+        view_func=lambda: "health",
+        methods=["GET"],
+    )
+    app.add_url_rule(
         "/exam-tutor",
         endpoint="exam_tutor.exam_tutor_page",
         view_func=lambda: "page",

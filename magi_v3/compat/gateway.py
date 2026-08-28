@@ -135,6 +135,12 @@ NATIVE_EXTENSION_ROUTES = frozenset(
         ),
         RouteSpec(
             "5002",
+            "/api/cookie-cutter/health",
+            ("GET",),
+            "cookie_cutter.cookie_cutter_health_api",
+        ),
+        RouteSpec(
+            "5002",
             "/api/exam-tutor/choice-attempt",
             ("POST",),
             "exam_tutor.exam_tutor_choice_attempt_api",
