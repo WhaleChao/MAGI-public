@@ -79,6 +79,41 @@ def test_local_dns_resolution_fails_closed_without_addresses(monkeypatch):
     }
 
 
+def test_edge_coverage_requires_every_advertised_public_address():
+    result = MODULE._edge_probe_coverage(
+        [
+            {"ip": "203.0.113.8", "ok": True},
+            {"ip": "203.0.113.9", "ok": False},
+            {"ip": "2001:db8::8", "ok": True},
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["partial"] is True
+    assert result["advertised"] == 3
+    assert result["passed"] == 2
+    assert result["failed"] == 1
+    assert result["by_family"]["ipv4"] == {"advertised": 2, "passed": 1, "failed": 1}
+    assert result["vantage"] == "host_to_public_edge_pinned"
+    assert result["off_host"] is False
+
+
+def test_mobile_entry_requires_every_advertised_edge(monkeypatch):
+    monkeypatch.setattr(
+        MODULE,
+        "_probe_mobile_entry_url",
+        lambda _url, *, host, ip: {"host": host, "ip": ip, "ok": ip.endswith(".8")},
+    )
+
+    result = MODULE._probe_mobile_entry_targets(
+        [{"host": "magi.example.test", "path": "/", "proxy": "http://127.0.0.1:5002"}],
+        {"magi.example.test": ["203.0.113.8", "203.0.113.9"]},
+    )
+
+    assert result["ok"] is False
+    assert [probe["ok"] for probe in result["probes"]] == [True, False]
+
+
 def test_public_success_with_local_nxdomain_is_degraded_not_terminal(monkeypatch):
     monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
     monkeypatch.setattr(MODULE, "_load_funnel_status", lambda: {"ok": False, "error": "daemon unavailable"})
@@ -348,7 +383,11 @@ def test_partial_public_dns_is_amber_and_reasserts_only_approved_target(monkeypa
         },
     )
     monkeypatch.setattr(MODULE, "_public_ips", lambda _host: ["203.0.113.8"])
-    monkeypatch.setattr(MODULE, "_probe", lambda *_args: {"ok": True, "http_code": 200})
+    monkeypatch.setattr(
+        MODULE,
+        "_probe",
+        lambda host, ip, path: {"host": host, "ip": ip, "path": path, "ok": True, "http_code": 200},
+    )
     monkeypatch.setattr(MODULE, "_probe_mobile_entry_targets", lambda *_args: {"ok": True, "probes": []})
     monkeypatch.setattr(
         MODULE,
@@ -486,7 +525,7 @@ def test_tailnet_dns_success_cannot_mask_public_edge_failure(monkeypatch):
     assert result["canonical_dns_probes"][0]["ok"] is True
     assert result["canonical_dns_is_tailnet_only"] is True
     assert boundary_calls == []
-    assert result["reason"] == "all public Funnel probes failed"
+    assert result["reason"] == "one or more advertised public Funnel edges failed"
 
 
 def test_apply_refreshes_bindings_then_requires_public_edge_recovery(monkeypatch):
@@ -507,8 +546,8 @@ def test_apply_refreshes_bindings_then_requires_public_edge_recovery(monkeypatch
     monkeypatch.setattr(MODULE, "_public_ips", lambda _host: ["203.0.113.8"])
     edge_results = iter(
         [
-            {"ok": False, "http_code": 0, "stderr": "tls closed"},
-            {"ok": True, "http_code": 200, "stderr": ""},
+            {"ip": "203.0.113.8", "ok": False, "http_code": 0, "stderr": "tls closed"},
+            {"ip": "203.0.113.8", "ok": True, "http_code": 200, "stderr": ""},
         ]
     )
     monkeypatch.setattr(MODULE, "_probe", lambda *_args: next(edge_results))
@@ -574,4 +613,4 @@ def test_canonical_dns_failure_remains_red_when_edge_pins_also_fail(monkeypatch)
     result = MODULE.check(apply=False)
 
     assert result["status"] == "failed"
-    assert result["reason"] == "all public Funnel probes failed"
+    assert result["reason"] == "one or more advertised public Funnel edges failed"

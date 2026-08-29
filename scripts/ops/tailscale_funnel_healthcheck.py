@@ -395,6 +395,41 @@ def _probe(host: str, ip: str, path: str) -> dict[str, Any]:
     }
 
 
+def _edge_probe_coverage(probes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Require every DNS-advertised edge that this host could probe.
+
+    A browser can be sent to any advertised Funnel address.  Treating one
+    successful address as globally healthy hides a partial relay outage and
+    can disagree with the network an operator is actually using.
+    """
+
+    advertised = [probe for probe in probes if str(probe.get("ip") or "").strip()]
+    by_family: dict[str, dict[str, int]] = {
+        "ipv4": {"advertised": 0, "passed": 0, "failed": 0},
+        "ipv6": {"advertised": 0, "passed": 0, "failed": 0},
+    }
+    for probe in advertised:
+        try:
+            family = "ipv6" if ipaddress.ip_address(str(probe["ip"])).version == 6 else "ipv4"
+        except ValueError:
+            continue
+        by_family[family]["advertised"] += 1
+        outcome = "passed" if probe.get("ok") is True else "failed"
+        by_family[family][outcome] += 1
+    passed = sum(1 for probe in advertised if probe.get("ok") is True)
+    failed = len(advertised) - passed
+    return {
+        "ok": bool(advertised) and failed == 0,
+        "partial": passed > 0 and failed > 0,
+        "advertised": len(advertised),
+        "passed": passed,
+        "failed": failed,
+        "by_family": by_family,
+        "vantage": "host_to_public_edge_pinned",
+        "off_host": False,
+    }
+
+
 def _probe_dns_route(host: str, path: str) -> dict[str, Any]:
     """Probe the same route a browser uses, without pinning an ingress IP.
 
@@ -667,7 +702,11 @@ def _probe_configured_mobile_entry() -> dict[str, Any]:
             if ips
             else [{"kind": "mobile_entry", "url": url, "host": host, "ok": False, "error": "no public DNS A/AAAA record"}]
         )
-    return {"ok": any(probe.get("ok") for probe in probes), "expected": MOBILE_ENTRY_EXPECTED, "probes": probes}
+    return {
+        "ok": bool(probes) and all(probe.get("ok") is True for probe in probes),
+        "expected": MOBILE_ENTRY_EXPECTED,
+        "probes": probes,
+    }
 
 
 def _probe_mobile_entry_targets(targets: list[dict[str, str]], ips_by_host: dict[str, list[str]]) -> dict[str, Any]:
@@ -694,7 +733,11 @@ def _probe_mobile_entry_targets(targets: list[dict[str, str]], ips_by_host: dict
             continue
         for ip in ips:
             probes.append(_probe_mobile_entry_url(f"https://{host}{MOBILE_ENTRY_PATH}", host=host, ip=ip))
-    return {"ok": any(p.get("ok") for p in probes), "expected": MOBILE_ENTRY_EXPECTED, "probes": probes}
+    return {
+        "ok": bool(probes) and all(p.get("ok") is True for p in probes),
+        "expected": MOBILE_ENTRY_EXPECTED,
+        "probes": probes,
+    }
 
 
 def _probe_mobile_entry_targets_dns(targets: list[dict[str, str]]) -> dict[str, Any]:
@@ -708,7 +751,11 @@ def _probe_mobile_entry_targets_dns(targets: list[dict[str, str]]) -> dict[str, 
         probe = _probe_mobile_entry_url(f"https://{host}{MOBILE_ENTRY_PATH}")
         probe["route"] = "public_dns"
         probes.append(probe)
-    return {"ok": any(p.get("ok") for p in probes), "expected": MOBILE_ENTRY_EXPECTED, "probes": probes}
+    return {
+        "ok": bool(probes) and all(p.get("ok") is True for p in probes),
+        "expected": MOBILE_ENTRY_EXPECTED,
+        "probes": probes,
+    }
 
 
 def _boundary_location_ok(location: str, expected_next: str) -> bool:
@@ -1175,7 +1222,8 @@ def check(apply: bool = False) -> dict[str, Any]:
     payload["mobile_entry"] = _probe_mobile_entry_targets(targets, ips_by_host)
     payload["public_dns"] = _public_dns_matrix(targets[0]["host"])
 
-    public_ok = any(p.get("ok") for p in probes)
+    payload["edge_coverage"] = _edge_probe_coverage(probes)
+    public_ok = payload["edge_coverage"]["ok"]
     mobile_ok = payload["mobile_entry"].get("ok")
     if not public_ok or mobile_ok is False:
         payload["canonical_dns_probes"] = [
@@ -1184,6 +1232,41 @@ def check(apply: bool = False) -> dict[str, Any]:
         ]
         payload["canonical_mobile_entry"] = _probe_mobile_entry_targets_dns(targets)
         payload["canonical_dns_is_tailnet_only"] = True
+        # A Tailscale-managed hostname can legitimately resolve through the
+        # local MagicDNS/Tailnet path while public recursive resolvers return
+        # no A record.  That is not evidence that the live ingress is down.
+        # Treat the canonical route as an observable degraded state and do
+        # not run any Funnel mutation; the old path repeatedly performed
+        # restun/rebind/netmap refreshes here and created browser-visible gaps.
+        canonical_public_ok = all(
+            probe.get("ok") is True
+            for probe in payload["canonical_dns_probes"]
+        ) and bool(payload["canonical_dns_probes"])
+        canonical_mobile_ok = payload["canonical_mobile_entry"].get("ok") is True
+        no_public_edge_ips = not any(ips_by_host.values())
+        if no_public_edge_ips and not public_ok and canonical_public_ok and canonical_mobile_ok:
+            payload["security_boundary"] = _probe_security_boundaries(
+                targets,
+                ips_by_host,
+                use_dns_route=True,
+            )
+            if payload["security_boundary"].get("ok") is True:
+                payload.update(
+                    {
+                        "status": "degraded",
+                        "reason": "canonical Tailnet/DNS route is reachable, but public edge DNS is unavailable",
+                        "public_edge_unattested": True,
+                    }
+                )
+                _append_unique(
+                    payload["next_actions"],
+                    "Verify public Funnel DNS from an external resolver; no Funnel refresh was performed because the canonical route is healthy.",
+                )
+                return _observe_local_dns(
+                    payload,
+                    [target["host"] for target in targets],
+                    apply=False,
+                )
     if public_ok and mobile_ok is not False:
         payload["security_boundary"] = _probe_security_boundaries(
             targets,
@@ -1219,8 +1302,88 @@ def check(apply: bool = False) -> dict[str, Any]:
         payload.update({"status": "failed", "reason": "public Funnel probe succeeded, but mobile entry/login probe failed"})
         _add_repair_guidance(payload, targets)
         return payload
-    payload.update({"status": "failed", "reason": "all public Funnel probes failed"})
+    payload.update({"status": "failed", "reason": "one or more advertised public Funnel edges failed"})
     if apply:
+        # A single pinned-edge failure is not sufficient authority to mutate
+        # a CLI-attested Funnel.  Transient edge/TLS churn has repeatedly
+        # recovered within seconds while an immediate reassert introduced a
+        # browser-visible connection gap.  Require a second independent edge
+        # and mobile probe first; when it recovers, verify the exact security
+        # boundary and leave ingress untouched.
+        time.sleep(2.0)
+        confirm_probes: list[dict[str, Any]] = []
+        confirm_ips_by_host: dict[str, list[str]] = {}
+        for target in targets:
+            ips = _public_ips(target["host"])
+            confirm_ips_by_host[target["host"]] = ips
+            for ip in ips:
+                confirm_probes.append(_probe(target["host"], ip, target["path"]))
+        payload["confirmation_probes"] = confirm_probes
+        payload["mobile_entry_confirmation"] = _probe_mobile_entry_targets(targets, confirm_ips_by_host)
+        payload["edge_coverage_confirmation"] = _edge_probe_coverage(confirm_probes)
+        confirmed_public = payload["edge_coverage_confirmation"]["ok"]
+        confirmed_mobile = payload["mobile_entry_confirmation"].get("ok") is not False
+        if confirmed_public and confirmed_mobile:
+            payload["security_boundary_confirmation"] = _probe_security_boundaries(
+                targets,
+                confirm_ips_by_host,
+                use_dns_route=False,
+            )
+            if payload["security_boundary_confirmation"].get("ok") is not True:
+                payload.update(
+                    {
+                        "status": "failed",
+                        "reason": "transient public route recovered, but authentication or endpoint boundary verification failed",
+                        "action_required": True,
+                    }
+                )
+                _append_unique(payload["next_actions"], "Inspect MAGI authentication routes; Funnel self-repair is intentionally blocked.")
+                return payload
+            payload["ingress_mutation_suppressed"] = "transient_public_probe_recovered"
+            if payload["public_dns"].get("ok") is False:
+                payload.update(
+                    {
+                        "status": "degraded",
+                        "reason": "transient public probe recovered; public DNS resolvers are still converging",
+                        "dns_convergence_pending": True,
+                    }
+                )
+                _append_unique(
+                    payload["next_actions"],
+                    "Wait for the public DNS negative-cache TTL; the recovered Funnel was left unchanged.",
+                )
+            else:
+                payload.update(
+                    {
+                        "status": "recovered",
+                        "reason": "transient public probe recovered without changing Funnel",
+                    }
+                )
+            return _observe_local_dns(
+                payload,
+                [target["host"] for target in targets],
+                apply=False,
+            )
+        if scope.get("ok") is True:
+            # The CLI still attests the one exact, code-owned Funnel binding.
+            # Replaying the same command cannot repair an independently
+            # failing public edge with evidence, but it can interrupt the
+            # healthy Tailnet/canonical path.  Keep the failure visible and
+            # defer mutation to a reviewed repair instead of making the
+            # health checker the source of an outage.
+            payload.update(
+                {
+                    "status": "failed",
+                    "reason": "public Funnel probes failed twice, but the exact configured ingress was left unchanged",
+                    "action_required": True,
+                    "ingress_mutation_suppressed": "verified_scope_public_failure",
+                }
+            )
+            _append_unique(
+                payload["next_actions"],
+                "Inspect Tailscale edge/DNS health; the exact configured Funnel was not replayed automatically.",
+            )
+            return payload
         payload["actions"].append(_refresh_public_ingress(scope))
         time.sleep(5.0)
         reprobes: list[dict[str, Any]] = []
@@ -1232,7 +1395,8 @@ def check(apply: bool = False) -> dict[str, Any]:
                 reprobes.append(_probe(target["host"], ip, target["path"]))
         payload["reprobes"] = reprobes
         payload["mobile_entry_after_repair"] = _probe_mobile_entry_targets(targets, re_ips_by_host)
-        repaired_public = any(p.get("ok") for p in reprobes)
+        payload["edge_coverage_after_repair"] = _edge_probe_coverage(reprobes)
+        repaired_public = payload["edge_coverage_after_repair"]["ok"]
         repaired_mobile = payload["mobile_entry_after_repair"].get("ok") is not False
         if not repaired_public or not repaired_mobile:
             payload["canonical_dns_reprobes"] = [
