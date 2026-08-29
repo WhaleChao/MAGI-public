@@ -1,7 +1,7 @@
 {
   "schema": "magi.public_release.v1",
-  "release_id": "v3-20260829-rc643-r58",
-  "source_commit": "d062a8ad4892edf9e75e1590c2515258f6a21ea3",
+  "release_id": "v3-20260829-rc643-r59",
+  "source_commit": "efe2b05fc27530fe51854391213de5b6c6813665",
   "published_scope": "public_source_tests_examples_documentation",
   "privacy_audit": {
     "required": true,
