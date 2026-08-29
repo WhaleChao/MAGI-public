@@ -434,6 +434,25 @@ def test_video_autopilot_minimal_runtime_is_a_sealed_release_surface() -> None:
     ) is False
 
 
+def test_release_quality_targets_are_part_of_the_bundle_allowlist() -> None:
+    suites = json.loads(
+        (ROOT / "config/v3_release_quality_suites.json").read_text(encoding="utf-8")
+    )
+    targets = {
+        target
+        for rows in suites["v3_suites"].values()
+        for target in rows
+    }
+
+    assert all(
+        target.startswith("tests/v3/") or target in bundle.REQUIRED_TEST_TARGETS
+        for target in targets
+    )
+
+
+def test_agent_gateway_stdio_launcher_is_a_sealed_release_surface() -> None:
+    assert "bin/agent_mcp.py" in bundle.REQUIRED_PACKAGE_FILES
+    assert bundle._excluded(Path("bin/agent_mcp.py")) is False
 @pytest.mark.parametrize(
     "literal",
     [

@@ -148,6 +148,7 @@ REQUIRED_TEST_TARGETS = (
     "tests/test_judgment_summary_quality_rc170.py",
     "tests/test_judicial_summary_quality.py",
     "tests/test_judgment_staged_backfill_rc223.py",
+    "tests/test_laf_case_classifier.py",
     "tests/test_laf_gmail_dispatch_scan.py",
     "tests/test_laf_gmail_spam_restore.py",
     "tests/test_laf_portal_new_files_scan.py",
