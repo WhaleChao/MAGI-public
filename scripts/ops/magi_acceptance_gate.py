@@ -36,6 +36,7 @@ if str(MAGI_ROOT) not in sys.path:
     sys.path.insert(0, str(MAGI_ROOT))
 
 from api.platforms import safe_process
+from magi_v3.external_inputs import live_shared_state_environment
 
 
 @dataclass
@@ -205,6 +206,57 @@ def _live_runtime_root() -> Path:
     except Exception:
         pass
     return DEFAULT_LIVE_RUNTIME_ROOT
+
+
+def _active_release_marker_path() -> Path:
+    return Path(
+        str(os.environ.get("MAGI_V3_ACTIVE_RELEASE_MARKER") or "").strip()
+        or Path.home()
+        / "Library"
+        / "Application Support"
+        / "MAGI"
+        / "runtime"
+        / "active-release.json"
+    ).expanduser()
+
+
+def _live_runtime_state_dir(live_root: Path) -> Path:
+    """Resolve mutable runtime state without confusing it with release code."""
+    if _RUNTIME_OVERRIDE:
+        return RUNTIME_DIR
+    try:
+        if live_root.resolve() == MAGI_ROOT.resolve():
+            return MAGI_ROOT / ".runtime"
+    except Exception:
+        pass
+    marker = _active_release_marker_path()
+    canonical = marker.parent / "MAGI_v3" / "shared" / "runtime"
+    if canonical.is_dir():
+        return canonical
+    return live_root / ".runtime"
+
+
+def _doctor_environment() -> dict[str, str]:
+    """Bind doctor to the same release and mutable state as this gate."""
+    live_root = _live_runtime_root()
+    runtime_dir = _live_runtime_state_dir(live_root)
+    environment = {
+        "MAGI_RUNTIME_DIR": str(runtime_dir),
+        "MAGI_V3_ACTIVE_RELEASE_MARKER": str(_active_release_marker_path()),
+    }
+    shared_root = runtime_dir.parent if runtime_dir.name == "runtime" else None
+    if shared_root is not None:
+        environment.update(live_shared_state_environment(shared_root))
+    if live_root.name.startswith("v3-") and "/releases/v3-" in live_root.as_posix():
+        environment.update(
+            {
+                "MAGI_V3_RELEASE_ID": live_root.name,
+                "MAGI_ROOT": str(live_root),
+                "MAGI_ROOT_DIR": str(live_root),
+                "MAGI_LIVE_RUNTIME_ROOT": str(live_root),
+            }
+        )
+    return environment
 
 
 def _source_root() -> Path | None:
@@ -753,7 +805,6 @@ def _gate_command_factory(gate_id: str, *, dry_run: bool) -> GateResult:
                 "-m",
                 "pytest",
                 "-q",
-                "--deselect=tests/test_business_module_live_check.py::test_business_recovery_contract_live_covers_all_declared_domains",
                 *(str(test_root / relative) for relative in CROSS_SURFACE_TESTS),
             ],
             timeout_sec=180,
@@ -799,7 +850,7 @@ def _gate_command_factory(gate_id: str, *, dry_run: bool) -> GateResult:
             [py, "scripts/ops/business_module_live_check.py", "--json-out", artifact],
             timeout_sec=1200,
             evaluator=evaluate_business_live,
-            env={"MAGI_BUSINESS_LIVE_CHECK_NOTIFY": "0"},
+            env={**_doctor_environment(), "MAGI_BUSINESS_LIVE_CHECK_NOTIFY": "0"},
             dry_run=dry_run,
             artifact=artifact,
         )

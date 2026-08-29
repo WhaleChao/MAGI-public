@@ -344,6 +344,7 @@ def _load_live_environment() -> str:
         except Exception:
             continue
     _bind_release_local_environment()
+    _bind_live_shared_state_environment()
     return source
 
 
@@ -364,6 +365,45 @@ def _bind_release_local_environment() -> dict[str, str]:
         os.environ[key] = value
         bound[key] = value
     return bound
+
+
+def _infer_live_shared_state_root() -> Path | None:
+    """Find the canonical shared root when a probe was not launched by launchd."""
+
+    for key in ("MAGI_SHARED_STATE_DIR", "MAGI_V3_SHARED_STATE_DIR"):
+        raw = str(os.environ.get(key) or "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve(strict=False)
+
+    runtime_raw = str(os.environ.get("MAGI_RUNTIME_DIR") or "").strip()
+    if runtime_raw:
+        runtime = Path(runtime_raw).expanduser().resolve(strict=False)
+        if runtime.name == "runtime" and runtime.parent.name == "shared":
+            return runtime.parent
+
+    live_raw = str(os.environ.get("MAGI_LIVE_RUNTIME_ROOT") or "").strip()
+    live_root = Path(live_raw).expanduser() if live_raw else DEFAULT_LIVE_RUNTIME_ROOT
+    shared = live_root / "shared"
+    if shared.is_dir():
+        return shared.resolve(strict=False)
+    return None
+
+
+def _bind_live_shared_state_environment() -> dict[str, str]:
+    """Fill missing probe bindings from the same shared root as production."""
+
+    shared = _infer_live_shared_state_root()
+    if shared is None:
+        return {}
+    from magi_v3.external_inputs import live_shared_state_environment
+
+    bound = live_shared_state_environment(shared)
+    # Explicit launchd values remain authoritative.  Direct/operator
+    # invocations receive the missing values instead of selecting source-tree
+    # fallbacks, which was the old/new acceptance collision.
+    for key, value in bound.items():
+        os.environ.setdefault(key, value)
+    return {key: os.environ.get(key, value) for key, value in bound.items()}
 
 
 def _parse_last_json(text: str) -> Any:

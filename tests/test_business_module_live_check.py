@@ -508,7 +508,51 @@ def test_nested_live_probe_binds_current_release_pythonpath(monkeypatch):
     assert "/tmp/existing" in parts
 
 
-def test_business_recovery_contract_live_covers_all_declared_domains():
+def test_business_recovery_contract_live_covers_all_declared_domains(tmp_path, monkeypatch):
+    # The immutable release receives cron_jobs.v3.json from the deployment
+    # manifest; source checkouts intentionally do not carry that mutable
+    # snapshot.  Give this source-level contract test a complete disposable
+    # catalog so it validates the recovery contract instead of depending on
+    # whichever production environment launched pytest.
+    source_root = Path(__file__).resolve().parents[1]
+    catalog = json.loads(
+        (source_root / "config" / "business_recovery_contracts.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    job_ids = {
+        str(job_id)
+        for contract in catalog["domains"].values()
+        for key in ("owner_job_ids", "verification_job_ids")
+        for job_id in contract[key]
+    }
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "business_recovery_contracts.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": job_id,
+                    "enabled": True,
+                    "command": "python scripts/ops/placeholder.py",
+                }
+                for job_id in sorted(job_ids)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(live_check, "REPO_ROOT", tmp_path)
+    for key in (
+        "MAGI_CRON_JOBS_FILE",
+        "MAGI_CRON_JOBS_SHA256",
+        "MAGI_CRON_JOBS_SOURCE_SHA256",
+        "MAGI_V3_RELEASE_ID",
+        "MAGI_V3_RELEASE_MANIFEST",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     result = live_check._business_recovery_contract_live()
     assert result["ok"] is True
     assert result["parsed"]["domain_count"] == 13
@@ -3153,6 +3197,33 @@ def test_release_local_environment_overrides_stale_shared_dotenv_paths(tmp_path,
         (release / "casper_ecosystem" / "law_firm_orchestrators").resolve()
     )
     assert all("v3-old" not in value for value in bound.values())
+
+
+def test_live_shared_state_environment_derives_missing_launchd_bindings(tmp_path, monkeypatch):
+    shared = tmp_path / "runtime" / "MAGI_v3" / "shared"
+    runtime = shared / "runtime"
+    runtime.mkdir(parents=True)
+    monkeypatch.setenv("MAGI_RUNTIME_DIR", str(runtime))
+    for key in (
+        "MAGI_SHARED_STATE_DIR",
+        "MAGI_V3_SHARED_STATE_DIR",
+        "MAGI_FILE_REVIEW_STATE_DIR",
+        "MAGI_PAYMENT_REGISTRY_PATH",
+        "MAGI_PAYMENT_PROOF_REGISTRY_PATH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    bound = live_check._bind_live_shared_state_environment()
+
+    assert bound["MAGI_SHARED_STATE_DIR"] == str(shared)
+    assert bound["MAGI_V3_SHARED_STATE_DIR"] == str(shared)
+    assert bound["MAGI_FILE_REVIEW_STATE_DIR"] == str(shared / "file-review")
+    assert bound["MAGI_PAYMENT_REGISTRY_PATH"] == str(
+        shared / "file-review" / "downloads" / "payment_registry.json"
+    )
+    assert bound["MAGI_PAYMENT_PROOF_REGISTRY_PATH"] == str(
+        shared / "file-review" / "downloads" / "payment_proof_registry.json"
+    )
 
 
 def test_host_singleton_audit_rejects_older_release_reference(tmp_path, monkeypatch):

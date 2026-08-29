@@ -63,6 +63,53 @@ def named_mutable_state_paths(runtime_root: Path | str) -> dict[str, str]:
     }
 
 
+def live_shared_state_environment(shared_root: Path | str) -> dict[str, str]:
+    """Return the shared-state environment used by deployed V3 probes.
+
+    LaunchAgents receive these values from ``v3_deploy_prepare``.  Validators
+    are also invoked directly by operators and by the acceptance gate, where
+    only ``MAGI_RUNTIME_DIR`` may be present.  Keeping the derivation here
+    prevents those entrypoints from silently selecting different mutable
+    stores (or falling back into the immutable release).
+    """
+
+    shared = Path(shared_root).expanduser().resolve(strict=False)
+    values = {
+        "MAGI_SHARED_STATE_DIR": str(shared),
+        "MAGI_V3_SHARED_STATE_DIR": str(shared),
+        "MAGI_FILE_REVIEW_STATE_DIR": str(shared / "file-review"),
+        "MAGI_FILE_REVIEW_BG_JOB_DIR": str(shared / "file-review" / "bg-jobs"),
+        "MAGI_EEFILE_DOWNLOAD_FOLDER": str(shared / "file-review" / "downloads"),
+        "MAGI_LAF_GMAIL_STATE_PATH": str(shared / "static" / "laf_gmail_monitor_state.json"),
+        "MAGI_LAF_GMAIL_MONITOR_STATE": str(shared / "static" / "laf_gmail_monitor_state.json"),
+        "MAGI_LAF_GMAIL_PENDING_PATH": str(shared / "runtime" / "laf_gmail_dispatch_pending.json"),
+        "MAGI_FILE_REVIEW_EMAIL_MONITOR_STATE": str(
+            shared / "static" / "file_review_email_monitor_state.json"
+        ),
+        "MAGI_FILE_REVIEW_PENDING_PATH": str(
+            shared / "agent" / "file-review" / "review_submit_pending.json"
+        ),
+        "MAGI_BRAIN_SQLITE_PATH": str(shared / "agent" / "magi_brain.db"),
+    }
+    values.update(
+        {
+            key: str(path)
+            for key, path in (
+                ("MAGI_PAYMENT_REGISTRY_PATH", shared / "file-review" / "downloads" / "payment_registry.json"),
+                (
+                    "MAGI_PAYMENT_PROOF_REGISTRY_PATH",
+                    shared / "file-review" / "downloads" / "payment_proof_registry.json",
+                ),
+                (
+                    "MAGI_LAF_PROCESSED_EMAILS_PATH",
+                    shared / "agent" / "laf-orchestrator" / "processed_laf_emails.json",
+                ),
+            )
+        }
+    )
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class BoundCronJobs:
     path: Path
