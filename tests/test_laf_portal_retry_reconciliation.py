@@ -1078,24 +1078,24 @@ def test_user_mount_cache_resolves_to_authoritative_write_target(monkeypatch):
     monkeypatch.setattr(
         laf_module,
         "translate_local_path_to_canonical",
-        lambda _path: r"Y:\\lumi\\03_工作資料\\10_結案\\case",
+        lambda _path: "canonical://case",
     )
     monkeypatch.setattr(
         laf_module,
         "resolve_case_path_for_write",
         lambda path: {
-            "ok": path.startswith("Y:"),
-            "local_path": "/Volumes/lumi/lumi/03_工作資料/10_結案/case"
-            if path.startswith("Y:")
+            "ok": path == "canonical://case",
+            "local_path": "/mnt/authoritative/03_工作資料/10_結案/case"
+            if path == "canonical://case"
             else "",
         },
     )
 
     resolved = LAFOrchestrator._resolve_authoritative_case_folder_for_write(
-        "/Users/test/.magi_mounts/lumi/lumi/03_工作資料/10_結案/case"
+        "/tmp/.magi_mounts/lumi/lumi/03_工作資料/10_結案/case"
     )
 
-    assert resolved == "/Volumes/lumi/lumi/03_工作資料/10_結案/case"
+    assert resolved == "/mnt/authoritative/03_工作資料/10_結案/case"
 
 
 def test_initial_download_clears_only_its_own_receipt_and_empty_token_clears_nothing(tmp_path):
