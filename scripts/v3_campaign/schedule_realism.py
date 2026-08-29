@@ -383,6 +383,9 @@ def bound_duration_replay_profiles(
     source_root: Path,
     jobs: list[dict[str, Any]],
     cron_sha: str,
+    *,
+    baseline_jobs: list[dict[str, Any]] | None = None,
+    baseline_cron_sha: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """Build honest per-job duration inputs for an accelerated replay.
 
@@ -395,7 +398,11 @@ def bound_duration_replay_profiles(
 
     baseline_path = source_root / BASELINE_PATH
     baseline = _load_baseline(source_root)
-    observations, missing = _validate_baseline(baseline, jobs, cron_sha)
+    validation_jobs = baseline_jobs if baseline_jobs is not None else jobs
+    validation_cron_sha = baseline_cron_sha or cron_sha
+    observations, missing = _validate_baseline(
+        baseline, validation_jobs, validation_cron_sha
+    )
     enabled_ids = sorted(
         str(job.get("id") or "") for job in jobs if job.get("enabled") is True
     )

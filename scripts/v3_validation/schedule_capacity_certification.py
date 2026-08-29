@@ -55,6 +55,7 @@ from scripts.v3_validation.schedule_body_registry import (
     REGISTRY_PATH,
     SCHEMA as BODY_REGISTRY_SCHEMA,
     ScheduleBodyRegistryError,
+    _source_bound_cron_jobs,
     run_registry_assessment,
 )
 from scripts.v3_validation.schedule_sample_evidence import (
@@ -742,9 +743,19 @@ def _combined_duration_replay_profiles(
     They are intentionally not described as historical production observations.
     """
 
-    historical, historical_coverage = bound_duration_replay_profiles(
-        source_root, jobs, cron_sha
-    )
+    source_jobs, source_cron_sha = _source_bound_cron_jobs(source_root)
+    if source_cron_sha != cron_sha:
+        historical, historical_coverage = bound_duration_replay_profiles(
+            source_root,
+            jobs,
+            cron_sha,
+            baseline_jobs=source_jobs,
+            baseline_cron_sha=source_cron_sha,
+        )
+    else:
+        historical, historical_coverage = bound_duration_replay_profiles(
+            source_root, jobs, cron_sha
+        )
     registry_unsigned = dict(registry)
     registry_sha = str(registry_unsigned.pop("evidence_sha256", ""))
     if not HEX64.fullmatch(registry_sha) or _sha256(registry_unsigned) != registry_sha:
@@ -763,6 +774,15 @@ def _combined_duration_replay_profiles(
     enabled = {
         str(job.get("id") or ""): job for job in jobs if job.get("enabled") is True
     }
+    source_enabled = {
+        str(job.get("id") or ""): job
+        for job in source_jobs
+        if job.get("enabled") is True
+    }
+    if set(source_enabled) != set(enabled):
+        raise ScheduleCapacityError(
+            "deployed and source cron snapshots do not share enabled job ids"
+        )
     entry_by_id = {
         str(row.get("job_id") or ""): row
         for row in entries
@@ -793,6 +813,7 @@ def _combined_duration_replay_profiles(
         if profile.get("certifying_p95") is True
     )
     for job_id, job in sorted(enabled.items()):
+        source_job = source_enabled[job_id]
         entry = entry_by_id[job_id]
         result = result_by_id.get(job_id)
         historical_profile = historical.get(job_id)
@@ -822,7 +843,7 @@ def _combined_duration_replay_profiles(
             actual_entrypoint = str(entry.get("actual_entrypoint") or "")
             entrypoint_path = source_root / actual_entrypoint
             command_sha = hashlib.sha256(
-                str(job.get("command") or "").encode()
+                str(source_job.get("command") or "").encode()
             ).hexdigest()
             if (
                 entry.get("classification") != "safe_adapter"

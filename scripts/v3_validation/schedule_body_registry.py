@@ -212,6 +212,47 @@ def _bound_cron_bytes(source_root: Path) -> bytes:
     return payload
 
 
+def _source_bound_cron_jobs(source_root: Path) -> tuple[list[dict[str, Any]], str]:
+    """Load the candidate source schedule when production paths are rebased.
+
+    A deployed snapshot legitimately contains release/runtime paths while the
+    candidate source snapshot contains source-tree paths.  Body adapters must
+    resolve against the latter; capacity simulation still consumes the former.
+    Keep both inputs hash-bound and require the source snapshot to be the
+    declared policy source.
+    """
+
+    declared = str(os.environ.get("MAGI_CRON_JOBS_SOURCE_FILE") or "").strip()
+    if not declared:
+        jobs, digest = bound_cron_jobs(source_root)
+        return jobs, digest
+    path = Path(declared).expanduser()
+    expected = str(os.environ.get("MAGI_CRON_JOBS_SOURCE_SHA256") or "").strip()
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or not HEX64.fullmatch(expected)
+        or not path.is_file()
+    ):
+        raise ScheduleBodyRegistryError("cron source snapshot binding is unsafe")
+    payload = _stable_regular_bytes(path, label="cron source snapshot")
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != expected:
+        raise ScheduleBodyRegistryError("cron source snapshot SHA-256 binding mismatch")
+    try:
+        rows = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ScheduleBodyRegistryError(f"cron source snapshot is invalid JSON: {exc}") from exc
+    if (
+        not isinstance(rows, list)
+        or any(not isinstance(row, dict) for row in rows)
+        or any(not str(row.get("id") or "").strip() for row in rows)
+        or len({str(row.get("id") or "").strip() for row in rows}) != len(rows)
+    ):
+        raise ScheduleBodyRegistryError("cron source snapshot must contain unique job ids")
+    return [dict(row) for row in rows], digest
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -5801,9 +5842,20 @@ def run_registry_assessment(
         raise ScheduleBodyRegistryError("formal registry execution requires a release id and manifest SHA-256")
     root = _owned_empty_workdir(workdir)
     jobs, cron_sha = bound_cron_jobs(source_root)
-    registry = _load_registry(source_root, jobs, cron_sha)
-    entries, legacy, new = resolve_registry(source_root, registry, jobs)
-    by_id = {str(job["id"]): job for job in jobs}
+    registry_jobs, registry_cron_sha = _source_bound_cron_jobs(source_root)
+    runtime_identity = {
+        (str(job.get("id") or ""), job.get("enabled")) for job in jobs
+    }
+    source_identity = {
+        (str(job.get("id") or ""), job.get("enabled")) for job in registry_jobs
+    }
+    if runtime_identity != source_identity:
+        raise ScheduleBodyRegistryError(
+            "deployed and source cron snapshots do not share the same job inventory"
+        )
+    registry = _load_registry(source_root, registry_jobs, registry_cron_sha)
+    entries, legacy, new = resolve_registry(source_root, registry, registry_jobs)
+    by_id = {str(job["id"]): job for job in registry_jobs}
 
     body_results: list[dict[str, Any]] = []
     for job_id in sorted(legacy):
@@ -5847,7 +5899,8 @@ def run_registry_assessment(
                 if cron_sha == registry["release_binding"]["cron_jobs_source_sha256"]
                 else "release_rebased_logical_definition"
             ),
-            "logical_definition_sha256": _logical_definition_sha256(jobs),
+            "logical_definition_sha256": _logical_definition_sha256(registry_jobs),
+            "scheduled_replay_logical_definition_sha256": _logical_definition_sha256(jobs),
             "registry_sha256": _sha256_file(source_root / REGISTRY_PATH),
             "inherited_baseline_sha256": _sha256_file(source_root / BASELINE_PATH),
         },
