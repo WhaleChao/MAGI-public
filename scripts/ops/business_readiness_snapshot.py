@@ -550,6 +550,16 @@ def build_snapshot(
         portal.get("ok") is False
         or str(portal.get("status") or "") == "portal_scan_failed"
     )
+    portal_scan_deferred = (
+        portal.get("deferred") is True
+        and portal.get("retryable") is True
+        and portal.get("action_required") is False
+        and str(portal.get("reason") or "").strip()
+        in {"case_inventory_unavailable", "portal_listing_unavailable"}
+        and str(portal.get("last_successful_status") or "").strip().lower()
+        in {"", "ok", "idle", "downloaded", "mapping_unverified"}
+        and missing_files == 0
+    )
     retry = _load_json(_agent_dir(root, env) / "laf_pending_portal_downloads.json")
     retry_items = retry.get("items") if isinstance(retry.get("items"), list) else []
     pending_retry = sum(1 for item in retry_items if str(item.get("status") or "pending_retry") in {"", "pending_retry"})
@@ -568,7 +578,25 @@ def build_snapshot(
         portal.get("portal_mapping_unverified_files")
         or sum(int(item.get("file_count") or 0) for item in laf_mapping_details)
     )
-    if portal_scan_failed:
+    if portal_scan_deferred:
+        laf_item = {
+            "state": "waiting",
+            "label": "附件巡檢待重試（案件清單來源暫不可用）",
+            "missing": 0,
+            "pending_retry": pending_retry,
+            "manual_review": 0,
+            "retry_items": laf_retry_details,
+            "missing_items": [],
+            "mapping_unverified": mapping_unverified_cases,
+            "mapping_unverified_files": mapping_unverified_files,
+            "mapping_items": laf_mapping_details,
+            "scan_deferred": True,
+            "scan_reason": _business_item_text(
+                portal.get("message") or portal.get("reason") or "deferred",
+                160,
+            ),
+        }
+    elif portal_scan_failed:
         laf_item = {
             "state": "attention",
             "label": "入口檢查失敗",

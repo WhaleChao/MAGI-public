@@ -43,6 +43,15 @@ def _preserve_last_successful_missing_state(path: Path, payload: dict) -> dict:
         return payload
     if not isinstance(previous, dict) or previous.get("ok") is not True:
         return payload
+    # A portal scan performed with an empty case inventory is not a valid
+    # successful scan.  Older code wrote every portal row as ``case_unmapped``
+    # and counted it as missing; never preserve that synthetic result as real
+    # missing evidence.
+    if (
+        int(previous.get("scanned_cases") or 0) == 0
+        and int(previous.get("matched_or_missing_cases") or 0) > 0
+    ):
+        return payload
     merged = dict(payload)
     merged["portal_still_missing"] = int(previous.get("portal_still_missing") or 0)
     merged["portal_new_files"] = (
@@ -55,6 +64,14 @@ def _preserve_last_successful_missing_state(path: Path, payload: dict) -> dict:
     )
     merged["stale_last_success"] = True
     merged["last_successful_checked_at"] = previous.get("checked_at") or ""
+    merged["last_successful_status"] = previous.get("status") or ""
+    merged["last_successful_action_required"] = bool(previous.get("action_required"))
+    merged["last_successful_mapping_unverified_cases"] = int(
+        previous.get("portal_mapping_unverified_cases") or 0
+    )
+    merged["last_successful_mapping_unverified_files"] = int(
+        previous.get("portal_mapping_unverified_files") or 0
+    )
     return merged
 
 

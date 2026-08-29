@@ -132,6 +132,21 @@ def test_run_portal_new_files_scan_fails_closed_when_listing_unavailable(monkeyp
     assert result["portal_auto_downloaded"] == 0
 
 
+def test_run_portal_new_files_scan_defers_when_case_inventory_empty(monkeypatch):
+    monkeypatch.setattr(audit, "_get_db", lambda: object())
+    monkeypatch.setattr(audit, "fetch_laf_cases_for_portal_scan", lambda _db: [])
+
+    result = audit.run_portal_new_files_scan(auto_download=False)
+
+    assert result["ok"] is False
+    assert result["status"] == "deferred_case_inventory_unavailable"
+    assert result["deferred"] is True
+    assert result["retryable"] is True
+    assert result["action_required"] is False
+    assert result["portal_still_missing"] == 0
+    assert result["portal_new_files"] == []
+
+
 def test_scan_portal_new_files_dry_run_does_not_download(monkeypatch, tmp_path):
     class FakeLaf:
         def __init__(self):
@@ -485,6 +500,7 @@ def test_laf_portal_scan_script_preserves_known_missing_on_portal_failure(
             {
                 "ok": True,
                 "checked_at": "2026-07-23T12:16:49",
+                "scanned_cases": 1,
                 "portal_still_missing": 1,
                 "matched_or_missing_cases": 1,
                 "portal_new_files": [{"laf_no": "1150507-E-023", "new_count": 1}],
@@ -512,6 +528,50 @@ def test_laf_portal_scan_script_preserves_known_missing_on_portal_failure(
     assert payload["portal_new_files"][0]["laf_no"] == "1150507-E-023"
     assert payload["stale_last_success"] is True
     assert payload["last_successful_checked_at"] == "2026-07-23T12:16:49"
+
+
+def test_laf_portal_scan_script_does_not_preserve_empty_inventory_synthetic_success(
+    monkeypatch, tmp_path
+):
+    from scripts.ops import laf_portal_new_files_scan as script
+
+    out = tmp_path / "latest.json"
+    out.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "action_required",
+                "scanned_cases": 0,
+                "matched_or_missing_cases": 10,
+                "portal_still_missing": 49,
+                "portal_new_files": [{"reason_code": "portal_files_missing"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        audit,
+        "run_portal_new_files_scan",
+        lambda only_laf_no="", auto_download=True: {
+            "ok": False,
+            "status": "deferred_case_inventory_unavailable",
+            "deferred": True,
+            "retryable": True,
+            "action_required": False,
+            "reason": "case_inventory_unavailable",
+            "portal_still_missing": 0,
+            "portal_new_files": [],
+        },
+    )
+
+    code = script.main(["--json-out", str(out)])
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert code == 1
+    assert payload["status"] == "deferred_case_inventory_unavailable"
+    assert payload["portal_still_missing"] == 0
+    assert payload["portal_new_files"] == []
+    assert "stale_last_success" not in payload
 
 
 def test_laf_portal_scan_script_defaults_to_dry_run(monkeypatch, tmp_path):

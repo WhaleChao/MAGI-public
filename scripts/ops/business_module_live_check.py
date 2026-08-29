@@ -1028,6 +1028,7 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
     pending = _load_json_file(pending_path, {})
     portal = _load_json_file(portal_path, {})
     reasons: list[str] = []
+    portal_deferred = False
     monitor_age = _artifact_age_seconds(monitor_path, monitor, "updated_at") if monitor else None
     pending_age = _artifact_age_seconds(pending_path, pending, "updated_at") if pending else None
     portal_age = _artifact_age_seconds(portal_path, portal, "checked_at", "updated_at") if portal else None
@@ -1055,6 +1056,16 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
         reasons.append("stale_laf_portal_attachment_evidence")
     else:
         portal_status = str(portal.get("status") or "").lower()
+        portal_deferred = (
+            portal.get("deferred") is True
+            and portal.get("retryable") is True
+            and portal.get("action_required") is False
+            and str(portal.get("reason") or "").strip()
+            in {"case_inventory_unavailable", "portal_listing_unavailable"}
+            and str(portal.get("last_successful_status") or "").strip().lower()
+            in {"", "ok", "idle", "downloaded", "mapping_unverified"}
+            and int(portal.get("portal_still_missing") or 0) == 0
+        )
         portal_mapping_only = (
             portal_status == "mapping_unverified"
             or (
@@ -1068,9 +1079,10 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
                 )
             )
         )
-        if portal.get("ok") is not True or (
+        if (portal.get("ok") is not True and not portal_deferred) or (
             portal_status not in {"ok", "idle", "downloaded"}
             and not portal_mapping_only
+            and not portal_deferred
         ):
             reasons.append("laf_portal_attachment_scan_failed")
     return {
@@ -1089,6 +1101,10 @@ def _laf_ingestion_coverage_live() -> dict[str, Any]:
             ),
             "portal_mapping_unverified_files": int(
                 portal.get("portal_mapping_unverified_files") or 0
+            ),
+            "portal_scan_deferred": portal_deferred,
+            "portal_last_successful_status": str(
+                portal.get("last_successful_status") or ""
             ),
             "reason": ",".join(reasons),
         },

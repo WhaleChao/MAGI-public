@@ -3685,12 +3685,49 @@ def run_portal_new_files_scan(
     if not db:
         return {
             "ok": False,
+            "status": "deferred_case_inventory_unavailable",
+            "deferred": True,
+            "retryable": True,
+            "action_required": False,
+            "severity": "info",
+            "reason": "case_inventory_unavailable",
             "error": "db_connection_failed",
+            "message": "法扶案件清單來源暫不可用，附件巡檢保留既有證據並等待自動重試；未將入口檔案誤判為欠檔。",
             "scanned_cases": 0,
+            "matched_or_missing_cases": 0,
+            "portal_still_missing": 0,
             "portal_new_files": [],
         }
 
     all_cases = fetch_laf_cases_for_portal_scan(db)
+    # A portal listing without its case inventory cannot be reconciled to a
+    # NAS folder.  Treating every portal row as a new/missing case here caused
+    # false red lights (and could have triggered unnecessary downloads) when
+    # remote DB was unavailable and the local failover had no case rows.
+    if not all_cases:
+        return {
+            "ok": False,
+            "status": "deferred_case_inventory_unavailable",
+            "deferred": True,
+            "retryable": True,
+            "action_required": False,
+            "severity": "info",
+            "reason": "case_inventory_unavailable",
+            "error": "case_inventory_unavailable",
+            "message": "法扶案件清單目前沒有可用資料庫來源，附件巡檢保留既有證據並等待自動重試；未將入口檔案誤判為欠檔。",
+            "mode": "laf_portal_new_files_scan",
+            "only_laf_no": only_laf_no,
+            "auto_download": auto_download,
+            "scanned_cases": 0,
+            "matched_or_missing_cases": 0,
+            "portal_auto_downloaded": 0,
+            "portal_still_missing": 0,
+            "portal_mapping_unverified_cases": 0,
+            "portal_mapping_unverified_files": 0,
+            "portal_new_files": [],
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
     portal_new_files = scan_portal_new_files(
         all_cases,
         only_laf_no=only_laf_no,
