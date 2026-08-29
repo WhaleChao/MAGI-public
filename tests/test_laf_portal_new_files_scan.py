@@ -6,6 +6,10 @@ def _synthetic_windows_path(drive, *parts):
     return f"{drive}:\\" + "\\".join(parts)
 
 
+def _synthetic_posix_path(*parts):
+    return "/" + "/".join(parts)
+
+
 def test_run_portal_new_files_scan_uses_portal_case_fetch(monkeypatch):
     class FakeDb:
         def fetch_all(self, query, params=(), as_dict=False):
