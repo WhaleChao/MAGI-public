@@ -952,22 +952,153 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         except Exception:
             logging.getLogger(__name__).debug("silent-catch at %s:%s", __name__, 400, exc_info=True)
 
-    def _resolve_case_folder_for_laf(self, laf_number: str, fallback: str = "") -> str:
+    def _find_authoritative_case_folder_by_identity(
+        self,
+        *,
+        case_number: str = "",
+        client_name: str = "",
+        laf_case_number: str = "",
+        prefer_closed: bool = False,
+    ) -> str:
+        """Find one durable case folder after an active-to-closed move.
+
+        Portal retry rows can outlive the OSC row that originally supplied
+        ``case_folder``.  In particular, a completed case may move from the
+        active homes share to ``10_結案`` while the retry still points at a
+        CloudStorage mirror.  Resolve that drift by the stable OSC case number
+        and client/LAF identity, but fail closed when the result is ambiguous.
+        """
+
+        osc_no = str(case_number or "").strip()
+        if re.fullmatch(r"20\d{2}-\d{4}", osc_no) is None:
+            return ""
+        client = str(client_name or "").strip()
+        laf_no = str(laf_case_number or "").strip()
+        roots = list(self._laf_case_roots())
+        if prefer_closed:
+            roots.sort(
+                key=lambda value: (
+                    "/03_工作資料/10_結案/" not in str(value).replace("\\", "/"),
+                    str(value),
+                )
+            )
+
+        matches: List[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            root_text = str(root or "").strip()
+            if not root_text or not _is_dir_accessible(root_text):
+                continue
+            root_is_closed = (
+                "/03_工作資料/10_結案/"
+                in root_text.replace("\\", "/") + "/"
+            )
+            root_matches: List[str] = []
+            for category in _safe_listdir(root_text):
+                category_path = os.path.join(root_text, category)
+                if not _is_dir_accessible(category_path):
+                    continue
+                for name in _safe_listdir(category_path):
+                    if not str(name).startswith(f"{osc_no}-"):
+                        continue
+                    candidate = os.path.join(category_path, name)
+                    if not _is_dir_accessible(candidate):
+                        continue
+                    guessed_client = self._guess_client_name_from_folder(candidate)
+                    if client and guessed_client and guessed_client != client:
+                        continue
+                    if client and not guessed_client and client not in str(name):
+                        continue
+                    if not client and laf_no:
+                        shallow_names: List[str] = []
+                        for probe in (
+                            candidate,
+                            os.path.join(candidate, "01_法扶資料"),
+                        ):
+                            if _is_dir_accessible(probe):
+                                shallow_names.extend(_safe_listdir(probe))
+                        if not any(laf_no in value for value in shallow_names):
+                            continue
+                    authoritative = self._resolve_authoritative_case_folder_for_write(
+                        candidate
+                    )
+                    if not authoritative:
+                        continue
+                    alias = self._case_folder_alias_key(authoritative)
+                    if alias in seen:
+                        continue
+                    seen.add(alias)
+                    root_matches.append(authoritative)
+            if prefer_closed and root_is_closed:
+                if len(root_matches) == 1:
+                    return root_matches[0]
+                if len(root_matches) > 1:
+                    return ""
+            matches.extend(root_matches)
+
+        return matches[0] if len(matches) == 1 else ""
+
+    def _resolve_case_folder_for_laf(
+        self,
+        laf_number: str,
+        fallback: str = "",
+        *,
+        case_number: str = "",
+        client_name: str = "",
+        prefer_closed: bool = False,
+    ) -> str:
         laf_case_no = str(laf_number or "").strip()
+        resolved_case_number = str(case_number or "").strip()
+        resolved_client_name = str(client_name or "").strip()
+        candidate_paths: List[str] = []
         if laf_case_no and self.db:
             try:
                 row = self.db.fetch_one(
-                    "SELECT `folder_path` FROM `cases` WHERE `legal_aid_number` = %s ORDER BY `id` DESC LIMIT 1",
+                    "SELECT `case_number`, `client_name`, `status`, `folder_path` "
+                    "FROM `cases` WHERE `legal_aid_number` = %s "
+                    "ORDER BY `id` DESC LIMIT 1",
                     (laf_case_no,),
                     as_dict=True,
                 )
                 if row:
-                    folder_path = self._to_local_case_folder(str(row.get("folder_path") or ""))
-                    if folder_path:
-                        return folder_path
+                    resolved_case_number = str(
+                        row.get("case_number") or resolved_case_number
+                    ).strip()
+                    resolved_client_name = str(
+                        row.get("client_name") or resolved_client_name
+                    ).strip()
+                    status = str(row.get("status") or "").strip().lower()
+                    prefer_closed = prefer_closed or status in {
+                        "已結案",
+                        "closed",
+                        "completed",
+                        "archived",
+                    }
+                    candidate_paths.append(str(row.get("folder_path") or ""))
             except Exception as e:
                 logger.warning("Resolve case folder by laf number failed (%s): %s", laf_case_no, e)
-        return self._to_local_case_folder(str(fallback or ""))
+        candidate_paths.append(str(fallback or ""))
+
+        first_local = ""
+        for raw_path in candidate_paths:
+            if not str(raw_path or "").strip():
+                continue
+            local = self._to_local_case_folder(str(raw_path))
+            if local and not first_local:
+                first_local = local
+            authoritative = self._resolve_authoritative_case_folder_for_write(
+                local or str(raw_path)
+            )
+            if authoritative:
+                return authoritative
+
+        moved = self._find_authoritative_case_folder_by_identity(
+            case_number=resolved_case_number,
+            client_name=resolved_client_name,
+            laf_case_number=laf_case_no,
+            prefer_closed=prefer_closed,
+        )
+        return moved or first_local
 
     def _current_laf_case_state(self, laf_number: str) -> dict:
         """Return the authoritative OSC state for one LAF case."""
@@ -2012,6 +2143,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 local_case_folder = self._resolve_case_folder_for_laf(
                     laf_case_no,
                     fallback=str(item.get("case_folder") or ""),
+                    case_number=str(item.get("case_number") or ""),
+                    client_name=str(item.get("client_name") or ""),
+                    prefer_closed="結案" in str(item.get("case_reason") or ""),
                 )
                 satisfied, _reason = self._nas_satisfies_trigger(
                     origin,
@@ -2054,6 +2188,17 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 local_case_folder = self._resolve_case_folder_for_laf(
                     laf_case_no,
                     fallback=raw_case_folder,
+                    case_number=str(
+                        item.get("case_number")
+                        or current_case.get("case_number")
+                        or ""
+                    ),
+                    client_name=str(item.get("client_name") or ""),
+                    prefer_closed=(
+                        "結案" in str(item.get("case_reason") or "")
+                        or str(current_case.get("status") or "").strip().lower()
+                        in {"已結案", "closed", "completed", "archived"}
+                    ),
                 )
                 if local_case_folder:
                     item["case_folder"] = local_case_folder
@@ -2106,6 +2251,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             item["last_error"] = ""
             item["updated_at"] = datetime.now().isoformat(timespec="seconds")
             item["resolution_reason"] = resolution_reason
+            item["reopened_reason"] = ""
             items[laf_case_no] = item
             queue_changed = True
             queue_updates[laf_case_no] = dict(item)

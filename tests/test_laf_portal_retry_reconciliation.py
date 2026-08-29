@@ -575,6 +575,98 @@ def test_expired_retry_is_done_when_matching_attachment_exists_locally(tmp_path)
     assert saved["resolution_reason"] == "nas_has_closing_fee"
 
 
+def test_retry_reconciles_case_moved_from_cloud_mirror_to_closed_nas(
+    tmp_path, monkeypatch
+):
+    orchestrator = _orch(tmp_path)
+    old_mirror = tmp_path / "CloudStorage" / "2025-0030-測試當事人-一審-測試"
+    old_mirror.mkdir(parents=True)
+    closed_laf_root = (
+        tmp_path
+        / "archive"
+        / "03_工作資料"
+        / "10_結案"
+        / "法扶案件"
+    )
+    closed_case = (
+        closed_laf_root
+        / "民事"
+        / "2025-0030-測試當事人-一審-測試"
+    )
+    laf_docs = closed_case / "01_法扶資料"
+    laf_docs.mkdir(parents=True)
+    closing_docs = closed_case / "03_結案資料"
+    closing_docs.mkdir(parents=True)
+    (
+        closing_docs / "變動審查通知書_115-SYNTHETIC_1140709.pdf"
+    ).write_bytes(
+        b"authoritative review notice"
+    )
+    event_at = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    orchestrator._save_pending_portal_downloads(
+        {
+            "115-SYNTHETIC": {
+                "laf_case_number": "115-SYNTHETIC",
+                "case_number": "2025-0030",
+                "client_name": "測試當事人",
+                "case_reason": "結案轉入",
+                "case_folder": str(old_mirror),
+                "origin_reason": "review_result_download",
+                "reason": "review_result_download",
+                "status": "pending_retry",
+                "reopened_reason": "invalid_legacy_result_evidence",
+                "event_received_at": event_at,
+                "tries": 169,
+            }
+        }
+    )
+    orchestrator._db = _DB(states={"115-SYNTHETIC": {}})
+    monkeypatch.setattr(
+        orchestrator,
+        "_laf_case_roots",
+        lambda: [str(closed_laf_root)],
+    )
+    monkeypatch.setattr(orchestrator, "_to_local_case_folder", lambda path: path)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resolve_authoritative_case_folder_for_write",
+        lambda path: str(path) if str(path).startswith(str(closed_laf_root)) else "",
+    )
+    orchestrator._get_automation = lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("authoritative archived attachments must avoid portal retry")
+    )
+
+    assert orchestrator._find_authoritative_case_folder_by_identity(
+        case_number="2025-0030",
+        client_name="測試當事人",
+        laf_case_number="115-SYNTHETIC",
+        prefer_closed=True,
+    ) == str(closed_case)
+    assert orchestrator._resolve_case_folder_for_laf(
+        "115-SYNTHETIC",
+        fallback=str(old_mirror),
+        case_number="2025-0030",
+        client_name="測試當事人",
+        prefer_closed=True,
+    ) == str(closed_case)
+    assert orchestrator._nas_satisfies_trigger(
+        "review_result_download",
+        str(closed_case),
+        evidence_after=event_at,
+    ) == (True, "nas_has_change_review_notice")
+
+    result = orchestrator._retry_pending_portal_downloads(max_items=1)
+    saved = orchestrator._load_pending_portal_downloads()["115-SYNTHETIC"]
+
+    assert result["ok"] is True
+    assert result["processed"] == 1
+    assert saved["status"] == "done"
+    assert saved["case_folder"] == str(closed_case)
+    assert saved["resolution_reason"] == "nas_has_change_review_notice"
+    assert saved["reopened_reason"] == ""
+    assert saved["tries"] == 169
+
+
 def test_expired_retry_without_available_action_is_archived_not_retried(tmp_path):
     orchestrator = _orch(tmp_path)
     orchestrator._save_pending_portal_downloads(
