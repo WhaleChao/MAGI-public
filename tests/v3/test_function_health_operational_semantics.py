@@ -55,6 +55,87 @@ def test_malformed_business_readiness_still_fails_closed(tmp_path) -> None:
     assert result["contract"] == "ok"
 
 
+def test_predecessor_release_health_receipt_is_archived_not_failed(tmp_path) -> None:
+    old_root = tmp_path / "releases" / "v3-test-old"
+    active_root = tmp_path / "releases" / "v3-test-current"
+    active_root.mkdir(parents=True)
+    path = tmp_path / "production_live_latest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-08-08T06:00:00+00:00",
+                "ok": False,
+                "root": str(old_root),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_health_file(
+        path,
+        tmp_path,
+        datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc),
+        2,
+        active_release={
+            "release_id": "v3-test-current",
+            "release_root": str(active_root),
+        },
+    )
+
+    assert result["status"] == "superseded"
+    assert result["ok"] is True
+    assert result["contract"] == "release_binding"
+
+
+def test_current_release_health_failure_remains_failed(tmp_path) -> None:
+    active_root = tmp_path / "releases" / "v3-test-current"
+    active_root.mkdir(parents=True)
+    path = tmp_path / "production_live_latest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-08-08T06:00:00+00:00",
+                "ok": False,
+                "release_id": "v3-test-current",
+                "root": str(active_root),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_health_file(
+        path,
+        tmp_path,
+        datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc),
+        2,
+        active_release={
+            "release_id": "v3-test-current",
+            "release_root": str(active_root),
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["contract"] == "ok"
+
+
+def test_unbound_health_failure_still_fails_closed(tmp_path) -> None:
+    path = tmp_path / "unbound_health_latest.json"
+    path.write_text(json.dumps({"ok": False}), encoding="utf-8")
+
+    result = evaluate_health_file(
+        path,
+        tmp_path,
+        datetime(2026, 8, 8, 7, 0, tzinfo=timezone.utc),
+        2,
+        active_release={
+            "release_id": "v3-test-current",
+            "release_root": str(tmp_path / "releases" / "v3-test-current"),
+        },
+    )
+
+    assert result["status"] == "failed"
+
+
 def test_running_drive_all_files_worker_is_not_a_failed_health_artifact(tmp_path) -> None:
     path = tmp_path / "drive_case_sync_worker_status_latest.json"
     path.write_text(

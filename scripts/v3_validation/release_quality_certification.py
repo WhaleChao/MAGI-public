@@ -530,13 +530,16 @@ def _v2_compat_node_evidence() -> dict[str, str]:
     raise ReleaseQualityCertificationError("V2 compatibility Node runtime is unavailable")
 
 
-def _paths_from_manifest(manifest: Mapping[str, Any], release_files: Mapping[str, str]) -> tuple[list[str], list[str]]:
-    patterns = manifest["v2_regression"]["include_globs"]
-    from fnmatch import fnmatch
-
-    v2 = sorted(path for path in release_files if any(fnmatch(path, pattern) for pattern in patterns))
+def _paths_from_manifest(
+    manifest: Mapping[str, Any], release_files: Mapping[str, str]
+) -> list[str]:
+    legacy = manifest.get("legacy_v2_validation")
+    if not isinstance(legacy, dict) or legacy.get("mode") != "disabled":
+        raise ReleaseQualityCertificationError(
+            "legacy V2 validation must be explicitly disabled"
+        )
     v3 = sorted({path for rows in manifest["v3_suites"].values() for path in rows})
-    if not v2 or any(path not in release_files for path in [*v2, *v3]):
+    if not v3 or any(path not in release_files for path in v3):
         raise ReleaseQualityCertificationError("quality test selection is not release-bound")
     declared_quality: set[str] = set()
     for section_name in ("quality_contract_groups", "golden_sets"):
@@ -553,20 +556,12 @@ def _paths_from_manifest(manifest: Mapping[str, Any], release_files: Mapping[str
                     f"{section_name} selection is invalid"
                 )
             declared_quality.update(rows)
-    # In retired mode the quality/golden contract is deliberately declared
-    # against the native V3 suite.  The V2 transcript is only a projected
-    # compatibility boundary, so requiring every V3 contract path to also be
-    # selected by the retired V2 glob rejects a valid release before pytest
-    # can run.  Keep the historical strict V2 check for releases that still
-    # execute the legacy regression suite.
-    v2_mode = str(manifest.get("v2_regression", {}).get("mode", "required"))
-    quality_release_paths = set(v3) if v2_mode == "retired_baseline_v3_compatibility" else set(v2)
-    if not declared_quality <= quality_release_paths:
-        missing = sorted(declared_quality - quality_release_paths)
+    if not declared_quality <= set(v3):
+        missing = sorted(declared_quality - set(v3))
         raise ReleaseQualityCertificationError(
             f"quality contract tests are absent from the release: {missing}"
         )
-    return v2, v3
+    return v3
 
 
 def _project_compatibility_transcript(
@@ -682,43 +677,8 @@ def run_certification(workspace: Path) -> dict[str, Any]:
         raise ReleaseQualityCertificationError(
             "golden flow dependency differs from the release manifest"
         )
-    v2_targets, v3_targets = _paths_from_manifest(suite_manifest, release_files)
-    v2_mode = str(
-        suite_manifest.get("v2_regression", {}).get("mode", "required")
-    )
-    if v2_mode not in {"required", "retired_baseline_v3_compatibility"}:
-        raise ReleaseQualityCertificationError(
-            f"unsupported V2 regression mode: {v2_mode}"
-        )
+    v3_targets = _paths_from_manifest(suite_manifest, release_files)
     workspace.mkdir(parents=True, exist_ok=False)
-    v2_transcript: dict[str, Any] | None = None
-    v2_compat_inputs: dict[str, Any]
-    if v2_mode == "required":
-        v2_root = _verified_v2_compat_mirror(workspace, release_files)
-        v2_compat_inputs = _stage_v2_compat_cron(v2_root)
-        v2_transcript = _transcript_run(
-            v2_targets,
-            workspace,
-            cwd=v2_root,
-            v2_compat=True,
-            v2_compat_inputs=v2_compat_inputs,
-        )
-        _verify_v2_compat_mirror(v2_root, release_files)
-        _verify_v2_compat_cron(
-            v2_root / "cron_jobs.json", v2_compat_inputs["cron_jobs_sha256"]
-        )
-    else:
-        # The historical V2 release is retained only as a cold rollback
-        # artifact.  Its external compatibility contract is exercised once by
-        # the native V3 suite below; do not start or mirror the retired V2 test
-        # application during promotion.
-        v2_compat_inputs = {
-            "mode": v2_mode,
-            "execution_source": "v3_suites",
-            "selected_paths_sha256": hashlib.sha256(
-                canonical_bytes(v2_targets)
-            ).hexdigest(),
-        }
     staged_website, v3_external_inputs = _stage_v3_website_admin(workspace)
     previous_website_root = os.environ.get("MAGI_WEBSITE_ROOT")
     os.environ["MAGI_WEBSITE_ROOT"] = str(staged_website)
@@ -733,10 +693,6 @@ def run_certification(workspace: Path) -> dict[str, Any]:
             os.environ.pop("MAGI_WEBSITE_ROOT", None)
         else:
             os.environ["MAGI_WEBSITE_ROOT"] = previous_website_root
-    if v2_transcript is None:
-        v2_transcript = _project_compatibility_transcript(
-            v3_transcript, v2_targets
-        )
     flow_root = workspace / "golden-flows"
     flows = [
         run_osc_file_golden_flow(FIXTURE, flow_root / "osc-preview"),
@@ -745,7 +701,7 @@ def run_certification(workspace: Path) -> dict[str, Any]:
     observed_test_paths = sorted(
         {
             nodeid.split("::", 1)[0]
-            for transcript in (v2_transcript, v3_transcript)
+            for transcript in (v3_transcript,)
             for nodeid in transcript["collected_nodeids"]
         }
     )
@@ -777,10 +733,13 @@ def run_certification(workspace: Path) -> dict[str, Any]:
         "test_source_sha256": {path: release_files.get(path) for path in observed_test_paths},
         "golden_dependency_sha256": dependency_hashes,
         "pytest_runs": {
-            "v2_regression": v2_transcript,
             "v3_suites": v3_transcript,
         },
-        "v2_compat_inputs": v2_compat_inputs,
+        "legacy_v2_validation": {
+            "mode": "disabled",
+            "executed": False,
+            "projected": False,
+        },
         "v3_external_inputs": v3_external_inputs,
         "golden_flows": flows,
         "side_effect_snapshot": _side_effect_snapshot(),

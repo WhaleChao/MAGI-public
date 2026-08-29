@@ -13,29 +13,29 @@ def test_campaign_is_armed_for_certifying_offline_only_and_single_active() -> No
 
     assert campaign["campaign_state"] == "certifying_offline"
     assert campaign["armed"] is True
-    assert campaign["production_release"] == "v2"
+    assert campaign["production_release"] == "v3"
     assert campaign["maximum_simultaneously_active_magi_releases"] == 1
     offline = campaign["offline_campaign"]
-    assert offline["validation_strategy"] == "accelerated_24h_event_coverage"
-    assert offline["maximum_completion_hours"] == 24
+    assert offline["validation_strategy"] == "targeted_v3_once_with_production_observation"
+    assert offline["maximum_completion_hours"] == 4
     assert offline["minimum_consecutive_days"] == 1
-    assert offline["required_independent_passes"] >= 7
+    assert offline["required_independent_passes"] == 1
     profiles = offline["validation_pass_profiles"]
     assert len(profiles) == offline["required_independent_passes"]
     assert len({item["profile_id"] for item in profiles}) == len(profiles)
     assert len({item["replay_start_local"] for item in profiles}) == len(profiles)
     assert len({item["fault_seed"] for item in profiles}) == len(profiles)
     live = campaign["isolated_live_validation"]
-    assert live["required_runs"] >= 3
+    assert live["required_runs"] == 1
     assert live["completion_window_hours"] <= 24
-    assert live["minimum_reset_minutes"] >= 10
+    assert live["minimum_reset_minutes"] == 0
     assert live["allowed_window"] == {"start": "00:00", "end": "23:59"}
-    assert live["allowed_local_dates"] == ["2026-07-22"]
+    assert live["allowed_local_dates"] == ["2026-08-29"]
     assert live["external_writes_enabled"] is False
     assert live["abort_if_any_owner_overlap"] is True
     sequence = live["same_host_sequence"]
-    assert sequence.index("stop_v2_completely") < sequence.index("start_v3_validation_once")
-    assert sequence.index("stop_v3_completely") < sequence.index("restore_v2_once")
+    assert sequence.index("stop_previous_v3_completely") < sequence.index("start_v3_validation_once")
+    assert sequence.index("stop_v3_completely") < sequence.index("restore_previous_v3_once")
     replacement = campaign["final_replacement"]
     assert replacement["schedule_state"] == "not_scheduled_until_all_hard_gates_pass"
     assert replacement["requires_decision"] == "GO"
@@ -71,6 +71,7 @@ def test_all_offline_workloads_are_certified_and_historical_blockers_remain_audi
         item["workload"]: item for item in harness["historical_arming_blockers"]
     }
     verified = {item["workload"]: item for item in harness["verified_workloads"]}
+    active_workloads = set(campaign["offline_campaign"]["workloads"])
 
     assert harness["status"] == "certified"
     assert active_blockers == {}
@@ -90,6 +91,8 @@ def test_all_offline_workloads_are_certified_and_historical_blockers_remain_audi
         "fault_recovery_certification",
         "matched_v2_v3_performance",
     }
+    assert "ime_candidate_window_pressure_probe" not in active_workloads
+    assert "matched_v2_v3_performance" not in active_workloads
     route = verified["346_route_contract_replay"]
     assert route["evidence_schema"] == "magi.v3.route-certification/v1"
     assert route["test_target"] == "scripts/v3_validation/route_certification.py"

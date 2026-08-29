@@ -787,8 +787,6 @@ def _passing_fault_certification(
 def _passing_release_quality_certification(
     release: Path, validation_profile: dict[str, object] | None
 ) -> dict[str, object]:
-    from fnmatch import fnmatch
-
     from scripts.v3_validation.release_quality_evidence import (
         sha256_json,
         summarize_report,
@@ -798,11 +796,6 @@ def _passing_release_quality_certification(
     file_hashes = {row["path"]: row["sha256"] for row in manifest["files"]}
     suites = json.loads(
         (release / "config/v3_release_quality_suites.json").read_text(encoding="utf-8")
-    )
-    v2_paths = sorted(
-        path
-        for path in file_hashes
-        if any(fnmatch(path, pattern) for pattern in suites["v2_regression"]["include_globs"])
     )
     v3_paths = sorted(
         {path for rows in suites["v3_suites"].values() for path in rows}
@@ -828,8 +821,6 @@ def _passing_release_quality_certification(
                 for when in ("setup", "call", "teardown")
             ],
         }
-        if suites["v2_regression"].get("mode") == "retired_baseline_v3_compatibility":
-            result["execution_scope"] = "v3_compatibility_boundary"
         return result
 
     def flow(flow_id: str, ordinal: int) -> dict[str, object]:
@@ -905,7 +896,7 @@ def _passing_release_quality_certification(
             ],
         },
         "test_source_sha256": {
-            path: file_hashes[path] for path in sorted({*v2_paths, *v3_paths})
+            path: file_hashes[path] for path in v3_paths
         },
         "golden_dependency_sha256": {
             path: file_hashes[path]
@@ -917,8 +908,12 @@ def _passing_release_quality_certification(
             )
         },
         "pytest_runs": {
-            "v2_regression": transcript(v2_paths),
             "v3_suites": transcript(v3_paths),
+        },
+        "legacy_v2_validation": {
+            "mode": "disabled",
+            "executed": False,
+            "projected": False,
         },
         "golden_flows": [
             flow("osc_preview_range_download_v1", 1),

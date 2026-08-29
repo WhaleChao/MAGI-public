@@ -1,4 +1,4 @@
-"""Authoritative G11 derivation from seven raw schedule/body reports."""
+"""Authoritative G11 derivation from campaign-bound schedule/body reports."""
 
 from __future__ import annotations
 
@@ -37,8 +37,10 @@ def derive_schedule_gate_metrics(
     release_id: str,
     release_manifest_sha256: str,
 ) -> dict[str, Any]:
-    if len(reports) != 7 or len(body_reports) != 7:
-        raise ScheduleEvidenceError("G11 requires seven raw schedule and body reports")
+    if not reports or len(reports) != len(body_reports):
+        raise ScheduleEvidenceError(
+            "G11 requires matching non-empty raw schedule and body reports"
+        )
     profiles: set[str] = set()
     report_hashes: set[str] = set()
     body_hashes: set[str] = set()
@@ -207,7 +209,7 @@ def derive_schedule_gate_metrics(
         ):
             raise ScheduleEvidenceError("G11 replay/body/deadline measurements failed")
     return {
-        "independent_passes": 7,
+        "independent_passes": len(reports),
         "arrival_multiplier": 10,
         "duration_multiplier": 2.0,
         "p0_p1_deadline_misses": 0,

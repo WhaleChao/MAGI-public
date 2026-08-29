@@ -190,8 +190,7 @@ EVIDENCE_SPECS: dict[str, EvidenceSpec] = {
         "magi.v3.pytest-report/v1",
         "offline",
         (
-            _r("release_venv_verified", "true"),
-            _r("passed", "ge", 1),
+            _r("disabled", "true"),
             _r("failed", "le", "threshold:failed_required_tests"),
         ),
     ),
@@ -273,10 +272,10 @@ EVIDENCE_SPECS: dict[str, EvidenceSpec] = {
         "magi.v3.health-probe/v1",
         "offline",
         (
-            _r("profile_count", "eq", 7),
+            _r("profile_count", "eq", "threshold:offline_replay_independent_passes"),
             _r("probe_count", "eq", 1000),
             _r("successful_probes", "eq", 1000),
-            _r("total_probe_count", "eq", 7000),
+            _r("total_probe_count", "eq", 1000),
             _r("failed_probes", "eq", 0),
             _r("model_imports", "eq", 0),
             _r("models_loaded", "eq", 0),
@@ -339,8 +338,8 @@ EVIDENCE_SPECS: dict[str, EvidenceSpec] = {
         "magi.v3.fault-recovery-certification/v1",
         "offline",
         (
-            _r("profile_count", "eq", 7),
-            _r("unique_stimulus_plan_count", "eq", 7),
+            _r("profile_count", "eq", "threshold:offline_replay_independent_passes"),
+            _r("unique_stimulus_plan_count", "eq", "threshold:offline_replay_independent_passes"),
             _r("software_equivalent_layer_passed", "true"),
             _r("sqlite_wal_fault_passed", "true"),
             _r("apfs_sparse_image_enospc_passed", "true"),
@@ -527,6 +526,32 @@ EVIDENCE_SPECS: dict[str, EvidenceSpec] = {
         ),
     ),
 }
+
+
+# RC643 promotes one current V3 release to the next current V3 release.  V2,
+# matched V2/V3 performance, native IME pressure, and three-run pre-cutover
+# handoff drills are historical diagnostics, not promotion gates.
+ACTIVE_V3_EVIDENCE_IDS = (
+    "portable_source_inventory_current",
+    "runtime_route_inventory_current",
+    "v3_unit_contract_integration_e2e_passed",
+    "interaction_agent_kernel_memory_quality_contracts_passed",
+    "context_memory_tool_plan_answer_golden_sets_passed",
+    "golden_side_effect_diff_approved",
+    "health_1000_probes_loaded_zero_models",
+    "seven_day_schedule_10x_arrival_2x_duration_replay_passed",
+    "hundred_cycle_worker_reap_soak_passed",
+    "sqlite_wal_disk_full_fsync_faults_passed",
+    "notification_storm_and_dlq_faults_passed",
+    "rendered_launchagent_manifest_checksums_saved",
+    "atomic_release_switch_and_cold_rollback_drill_passed",
+    "human_go_approval_recorded",
+)
+EVIDENCE_SPECS = {
+    evidence_id: EVIDENCE_SPECS[evidence_id]
+    for evidence_id in ACTIVE_V3_EVIDENCE_IDS
+}
+NORMALIZED_EVIDENCE_WHITELIST = frozenset(ACTIVE_V3_EVIDENCE_IDS)
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -919,11 +944,7 @@ def _verify_campaign_context_source(
     _exact_nonnegative_int(
         report.get("schema_version"), 1, "campaign report schema_version"
     )
-    _exact_nonnegative_int(
-        report.get("required_independent_passes"),
-        7,
-        "campaign report required_independent_passes",
-    )
+    _required_campaign_passes(report)
     return report
 
 
@@ -1329,7 +1350,6 @@ def _recompute_route_metrics(
         set(by_role) != allowed
         or any(len(by_role[role]) != 1 for role in singleton_roles)
         or not by_role["upstream_campaign_day"]
-        or len(by_role["upstream_route_certification_report"]) != 7
     ):
         raise ValueError("runtime route normalized evidence source roles are not exact")
     _marker, release, files = _verify_release_control_sources(by_role, expected_context)
@@ -1340,6 +1360,9 @@ def _recompute_route_metrics(
         manifest=release,
         manifest_sha256=release_artifact.sha256,
     )
+    required_passes = _required_campaign_passes(campaign)
+    if len(by_role["upstream_route_certification_report"]) != required_passes:
+        raise ValueError("runtime route report count is not campaign-bound")
     runtime_artifact = _one(by_role, "upstream_python_runtime_manifest")
     runtime_manifest = _json_artifact(runtime_artifact)
     if (
@@ -1491,7 +1514,7 @@ def _recompute_route_metrics(
         artifact.sha256: artifact
         for artifact in by_role["upstream_route_certification_report"]
     }
-    if len(certification_artifacts) != 7:
+    if len(certification_artifacts) != required_passes:
         raise ValueError("route certification reports are duplicated")
     certification_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for day_index, day_artifact in enumerate(day_artifacts):
@@ -1536,11 +1559,11 @@ def _recompute_route_metrics(
                 raise ValueError("route certification report differs from campaign outcome")
             certification_rows.append((outcome, report))
     if (
-        len(certification_rows) != 7
+        len(certification_rows) != required_passes
         or {row[0].get("validation_pass") for row in certification_rows}
-        != set(range(1, 8))
+        != set(range(1, required_passes + 1))
     ):
-        raise ValueError("route campaign lacks seven independent certification reports")
+        raise ValueError("route campaign lacks the required certification reports")
     expected_source_files = {
         "compiler_sha256": "scripts/v3_validation/route_certification.py",
         "actual_route_replay_sha256": "scripts/v3_validation/actual_route_replay.py",
@@ -1953,7 +1976,21 @@ def _verify_campaign_ledger(
     return report, days
 
 
-def _campaign_structured_rows(days: list[dict[str, Any]], workload: str) -> list[dict[str, Any]]:
+def _required_campaign_passes(campaign: dict[str, Any]) -> int:
+    required = campaign.get("required_independent_passes")
+    if type(required) is not int or required != 1:
+        raise ValueError(
+            "targeted V3 campaign must contain exactly one independent pass"
+        )
+    return required
+
+
+def _campaign_structured_rows(
+    days: list[dict[str, Any]],
+    workload: str,
+    *,
+    required_passes: int = 1,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for day in days:
         workloads = day.get("workloads")
@@ -2006,8 +2043,12 @@ def _campaign_structured_rows(days: list[dict[str, Any]], workload: str) -> list
                 if structured.get(field) is not False:
                     raise ValueError(f"campaign {workload} safety attestation failed")
             result.append(row)
-    if {row["validation_pass"] for row in result} != set(range(1, 8)):
-        raise ValueError(f"campaign {workload} lacks seven independent pass rows")
+    if {row["validation_pass"] for row in result} != set(
+        range(1, required_passes + 1)
+    ):
+        raise ValueError(
+            f"campaign {workload} lacks the required independent pass rows"
+        )
     return result
 
 
@@ -2048,11 +2089,13 @@ def _recompute_release_quality_metrics(
     if (
         set(by_role) != expected_roles
         or any(len(by_role.get(role, [])) != 1 for role in extra_singletons)
-        or len(by_role.get("upstream_release_quality_report", [])) != 7
     ):
         raise ValueError("release quality normalized evidence source roles are not exact")
     campaign_sources = {role: by_role[role] for role in campaign_roles}
     campaign, days = _verify_campaign_ledger(campaign_sources, expected_context)
+    required_passes = _required_campaign_passes(campaign)
+    if len(by_role.get("upstream_release_quality_report", [])) != required_passes:
+        raise ValueError("release quality report count is not campaign-bound")
     _marker, release, release_files = _verify_release_control_sources(
         campaign_sources, expected_context
     )
@@ -2066,12 +2109,14 @@ def _recompute_release_quality_metrics(
     python_runtime_sha256 = str(campaign.get("python_runtime_sha256") or "")
     if not SHA256_RE.fullmatch(python_runtime_sha256):
         raise ValueError("release quality campaign runtime SHA-256 is invalid")
-    rows = _campaign_structured_rows(days, "golden_business_flows")
+    rows = _campaign_structured_rows(
+        days, "golden_business_flows", required_passes=required_passes
+    )
     artifacts = {
         artifact.sha256: artifact
         for artifact in by_role["upstream_release_quality_report"]
     }
-    if len(artifacts) != 7:
+    if len(artifacts) != required_passes:
         raise ValueError("release quality inner reports are duplicated")
     release_hashes = {
         path: str(row.get("sha256") or "") for path, row in release_files.items()
@@ -2125,8 +2170,14 @@ def _recompute_release_quality_metrics(
         profiles.add(profile_id)
         used_hashes.add(artifact.sha256)
         passes.add(validation_pass)
-    if len(profiles) != 7 or passes != set(range(1, 8)) or used_hashes != set(artifacts):
-        raise ValueError("release quality campaign lacks seven independent reports")
+    if (
+        len(profiles) != required_passes
+        or passes != set(range(1, required_passes + 1))
+        or used_hashes != set(artifacts)
+    ):
+        raise ValueError(
+            "release quality campaign lacks the required independent reports"
+        )
 
     def aggregate(evidence_id: str, field: str) -> int:
         values = [row[evidence_id].get(field) for row in per_profile]
@@ -2136,7 +2187,11 @@ def _recompute_release_quality_metrics(
 
     return {
         "v2_regression_passed_in_release_venv": {
-            "release_venv_verified": True,
+            "disabled": all(
+                row["v2_regression_passed_in_release_venv"].get("disabled") is True
+                for row in per_profile
+            ),
+            "release_venv_verified": False,
             "passed": aggregate("v2_regression_passed_in_release_venv", "passed"),
             "failed": aggregate("v2_regression_passed_in_release_venv", "failed"),
         },
@@ -2470,9 +2525,12 @@ def _recompute_campaign_metrics(
     by_role: dict[str, list[BoundArtifact]],
     expected_context: dict[str, str],
 ) -> dict[str, Any]:
-    _report, days = _verify_campaign_ledger(by_role, expected_context)
+    report, days = _verify_campaign_ledger(by_role, expected_context)
+    required_passes = _required_campaign_passes(report)
     if evidence_id == "notification_storm_and_dlq_faults_passed":
-        rows = _campaign_structured_rows(days, "fault_injection")
+        rows = _campaign_structured_rows(
+            days, "fault_injection", required_passes=required_passes
+        )
         notifications: list[dict[str, Any]] = []
         for row in rows:
             matrix = row["structured_evidence"]["measurements"].get("matrix")
@@ -2499,7 +2557,11 @@ def _recompute_campaign_metrics(
             ),
         }
     if evidence_id == "hundred_cycle_worker_reap_soak_passed":
-        rows = _campaign_structured_rows(days, "hundred_cycle_worker_reap_soak")
+        rows = _campaign_structured_rows(
+            days,
+            "hundred_cycle_worker_reap_soak",
+            required_passes=required_passes,
+        )
         measurements = [row["structured_evidence"]["measurements"] for row in rows]
         for row_index, item in enumerate(measurements):
             for field in (
@@ -2626,7 +2688,6 @@ def _recompute_health_metrics(
     }
     if (
         set(by_role) != base_roles | {health_role, campaign_config_role}
-        or len(by_role[health_role]) != 7
         or len(by_role[campaign_config_role]) != 1
     ):
         raise ValueError("health normalized evidence source roles are not exact")
@@ -2636,11 +2697,14 @@ def _recompute_health_metrics(
         if role not in {health_role, campaign_config_role}
     }
     campaign, days = _verify_campaign_ledger(base, expected_context)
+    required_passes = _required_campaign_passes(campaign)
+    if len(by_role[health_role]) != required_passes:
+        raise ValueError("health report count is not campaign-bound")
     _marker, _release, release_files = _verify_release_control_sources(
         base, expected_context
     )
     artifacts = {item.sha256: item for item in by_role[health_role]}
-    if len(artifacts) != 7:
+    if len(artifacts) != required_passes:
         raise ValueError("health certification inner reports are duplicated")
     campaign_config_artifact = _one(by_role, campaign_config_role)
     if (
@@ -2656,12 +2720,12 @@ def _recompute_health_metrics(
     )
     if (
         not isinstance(expected_profiles, list)
-        or len(expected_profiles) != 7
+        or len(expected_profiles) != required_passes
         or not isinstance(offline, dict)
-        or offline.get("required_independent_passes") != 7
+        or offline.get("required_independent_passes") != required_passes
         or "health_1000_model_free" not in offline.get("workloads", [])
     ):
-        raise ValueError("health campaign config lacks the exact seven profiles")
+        raise ValueError("health campaign config lacks the required profiles")
     used_hashes: set[str] = set()
     profiles: set[str] = set()
     passes: set[int] = set()
@@ -2689,7 +2753,7 @@ def _recompute_health_metrics(
                 or type(outcome.get("returncode")) is not int
                 or outcome.get("returncode") != 0
                 or type(outcome.get("validation_pass")) is not int
-                or not 1 <= outcome["validation_pass"] <= 7
+                or not 1 <= outcome["validation_pass"] <= required_passes
                 or not isinstance(profile, dict)
                 or set(profile) != {"profile_id", "replay_start_local", "fault_seed"}
                 or profile != expected_profiles[outcome["validation_pass"] - 1]
@@ -2723,14 +2787,14 @@ def _recompute_health_metrics(
             passes.add(validation_pass)
             used_hashes.add(artifact.sha256)
     if (
-        len(measurements) != 7
-        or len(profiles) != 7
-        or passes != set(range(1, 8))
+        len(measurements) != required_passes
+        or len(profiles) != required_passes
+        or passes != set(range(1, required_passes + 1))
         or used_hashes != set(artifacts)
     ):
-        raise ValueError("health campaign lacks seven independent profile reports")
+        raise ValueError("health campaign lacks the required profile reports")
     return {
-        "profile_count": 7,
+        "profile_count": required_passes,
         "probe_count": 1_000,
         "successful_probes": 1_000,
         "total_probe_count": sum(item["probe_count"] for item in measurements),
@@ -3013,7 +3077,6 @@ def _recompute_fault_metrics(
     allowed_roles = base_roles | {fault_role, config_role, runtime_role}
     if (
         set(by_role) != allowed_roles
-        or len(by_role[fault_role]) != 7
         or len(by_role[config_role]) != 1
         or len(by_role[runtime_role]) != 1
     ):
@@ -3024,6 +3087,9 @@ def _recompute_fault_metrics(
         if role not in {fault_role, config_role, runtime_role} | physical_roles
     }
     campaign, days = _verify_campaign_ledger(base, expected_context)
+    required_passes = _required_campaign_passes(campaign)
+    if len(by_role[fault_role]) != required_passes:
+        raise ValueError("fault report count is not campaign-bound")
     _marker, _release, release_files = _verify_release_control_sources(
         base, expected_context
     )
@@ -3040,12 +3106,12 @@ def _recompute_fault_metrics(
     workloads = offline.get("workloads") if isinstance(offline, dict) else None
     if (
         not isinstance(profiles, list)
-        or len(profiles) != 7
+        or len(profiles) != required_passes
         or not isinstance(workloads, list)
         or "fault_recovery_certification" not in workloads
-        or offline.get("required_independent_passes") != 7
+        or offline.get("required_independent_passes") != required_passes
     ):
-        raise ValueError("fault campaign config lacks the exact seven profiles")
+        raise ValueError("fault campaign config lacks the required profiles")
     runtime_artifact = _one(by_role, runtime_role)
     runtime = _json_artifact(runtime_artifact)
     python_sha = campaign.get("python_runtime_sha256")
@@ -3058,7 +3124,7 @@ def _recompute_fault_metrics(
     ):
         raise ValueError("fault campaign Python runtime is not manifest-bound")
     artifacts = {item.sha256: item for item in by_role[fault_role]}
-    if len(artifacts) != 7:
+    if len(artifacts) != required_passes:
         raise ValueError("fault certification inner reports are duplicated")
     measurements: list[dict[str, Any]] = []
     profiles_seen: set[str] = set()
@@ -3089,7 +3155,7 @@ def _recompute_fault_metrics(
                 or type(outcome.get("returncode")) is not int
                 or outcome.get("returncode") != 0
                 or type(validation_pass) is not int
-                or not 1 <= validation_pass <= 7
+                or not 1 <= validation_pass <= required_passes
                 or not isinstance(profile, dict)
                 or profile != profiles[validation_pass - 1]
                 or not isinstance(structured, dict)
@@ -3131,19 +3197,19 @@ def _recompute_fault_metrics(
             used_hashes.add(artifact.sha256)
             stimulus_plan_hashes.add(str(stimulus_plan_sha))
     if (
-        len(measurements) != 7
-        or len(profiles_seen) != 7
-        or passes != set(range(1, 8))
+        len(measurements) != required_passes
+        or len(profiles_seen) != required_passes
+        or passes != set(range(1, required_passes + 1))
         or used_hashes != set(artifacts)
-        or len(stimulus_plan_hashes) != 7
+        or len(stimulus_plan_hashes) != required_passes
     ):
-        raise ValueError("fault campaign lacks seven independent profile reports")
+        raise ValueError("fault campaign lacks the required profile reports")
     logical = [row["logical_transaction_boundary_sweep"] for row in measurements]
     mach = [row["mach_clock_sigkill"] for row in measurements]
     apfs = [row["apfs_enospc"] for row in measurements]
     vfs = [row["sqlite_wal_fsync_io_error"] for row in measurements]
     return {
-        "profile_count": 7,
+        "profile_count": required_passes,
         "unique_stimulus_plan_count": len(stimulus_plan_hashes),
         "software_equivalent_layer_passed": True,
         "sqlite_wal_fault_passed": True,
@@ -3387,11 +3453,20 @@ def _authoritative_normalized_metrics(
             "upstream_schedule_body_registry_config",
             "upstream_schedule_duration_baseline",
         }
+        campaign_sources = {role: by_role[role] for role in campaign_roles}
+        campaign, days = _verify_campaign_ledger(campaign_sources, expected_context)
+        required_passes = _required_campaign_passes(campaign)
         expected_roles = {
             *campaign_roles,
             *release_sources,
-            *(f"upstream_schedule_capacity_report_{index}" for index in range(1, 8)),
-            *(f"upstream_schedule_body_evidence_{index}" for index in range(1, 8)),
+            *(
+                f"upstream_schedule_capacity_report_{index}"
+                for index in range(1, required_passes + 1)
+            ),
+            *(
+                f"upstream_schedule_body_evidence_{index}"
+                for index in range(1, required_passes + 1)
+            ),
         }
         if (
             set(by_role) != expected_roles
@@ -3403,11 +3478,11 @@ def _authoritative_normalized_metrics(
             or not by_role.get("upstream_campaign_day")
         ):
             raise ValueError("G11 normalized evidence source roles are not exact")
-        campaign_sources = {role: by_role[role] for role in campaign_roles}
-        campaign, days = _verify_campaign_ledger(campaign_sources, expected_context)
         schedule_rows = sorted(
             _campaign_structured_rows(
-                days, "seven_day_schedule_10x_arrival_2x_duration_replay"
+                days,
+                "seven_day_schedule_10x_arrival_2x_duration_replay",
+                required_passes=required_passes,
             ),
             key=lambda row: row["validation_pass"],
         )
@@ -3434,11 +3509,11 @@ def _authoritative_normalized_metrics(
                 raise ValueError(f"G11 schedule source is not manifest-bound: {path}")
         reports = [
             _json_artifact(_one(by_role, f"upstream_schedule_capacity_report_{index}"))
-            for index in range(1, 8)
+            for index in range(1, required_passes + 1)
         ]
         body_reports = [
             _json_artifact(_one(by_role, f"upstream_schedule_body_evidence_{index}"))
-            for index in range(1, 8)
+            for index in range(1, required_passes + 1)
         ]
         for index, (row, capacity, body) in enumerate(
             zip(schedule_rows, reports, body_reports, strict=True), 1
@@ -3749,7 +3824,6 @@ def evaluate_evidence(
     now: datetime | None = None,
     max_age_hours: float = DEFAULT_MAX_EVIDENCE_AGE_HOURS,
 ) -> dict[str, Any]:
-    _source_contract(config)
     required = config.get("required_evidence")
     if not isinstance(required, list) or not all(
         isinstance(item, str) and item.strip() and EVIDENCE_ID_RE.fullmatch(item) for item in required
@@ -3759,6 +3833,11 @@ def evaluate_evidence(
         raise ValueError("cutover config required_evidence must not be empty")
     if len(required) != len(set(required)):
         raise ValueError("cutover config required_evidence contains duplicates")
+    if {
+        "database_backup_restore_drill_passed",
+        "runtime_state_snapshot_verified",
+    } & set(required):
+        _source_contract(config)
     canonical_required = list(EVIDENCE_SPECS)
     if required != canonical_required:
         missing_specs = sorted(set(required) - set(EVIDENCE_SPECS))

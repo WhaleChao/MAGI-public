@@ -33,6 +33,15 @@ ADMINISTRATIVE_REASON_KEYWORDS = (
 )
 
 
+_CRIMINAL_SERVICE_STAGE_PATTERNS = (
+    ("偵查", re.compile(r"(?:刑事)?偵查(?:中)?辯護(?:案件)?")),
+    ("一審", re.compile(r"刑事(?:通常程序)?(?:第)?一審辯護(?:案件)?")),
+    ("二審", re.compile(r"刑事(?:通常程序)?(?:第)?二審辯護(?:案件)?")),
+    ("三審", re.compile(r"刑事(?:通常程序)?(?:第)?三審辯護(?:案件)?")),
+    ("更審", re.compile(r"刑事(?:通常程序)?更審辯護(?:案件)?")),
+)
+
+
 def is_administrative_laf_reason(reason: str, laf_case_type: str = "") -> bool:
     """Return True when LAF matter text should be filed as 行政."""
     text = f"{laf_case_type or ''} {reason or ''}".strip()
@@ -58,6 +67,22 @@ def normalize_laf_case_type(
 
     if is_administrative_laf_reason(case_reason, laf_case_type):
         return "行政", current_stage or "一審"
+
+    # The LAF portal exposes service labels such as ``刑事一審辯護`` in the
+    # procedure field.  OSC stores the substantive type and procedural stage
+    # separately; keeping the raw service label as ``case_stage`` leaks it into
+    # folder names (for example ``...-刑事一審辯護-...``) and later path indexes.
+    service_text = re.sub(
+        r"\s+",
+        "",
+        " ".join(
+            str(value or "")
+            for value in (current_type, current_stage, laf_case_type)
+        ),
+    )
+    for normalized_stage, pattern in _CRIMINAL_SERVICE_STAGE_PATTERNS:
+        if pattern.search(service_text):
+            return "刑事", normalized_stage
 
     return current_type, current_stage
 

@@ -429,6 +429,11 @@ def test_resolve_existing_case_folder_finds_unique_moved_case(monkeypatch, tmp_p
     monkeypatch.setattr(audit, "NAS_CASE_ROOT", str(active_root))
     monkeypatch.setattr(audit, "Y_DRIVE_ROOT", "")
     monkeypatch.setattr(audit, "translate_case_path_to_local", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        audit,
+        "is_authoritative_case_storage_path",
+        lambda path: str(path).startswith(str(active_root)),
+    )
 
     result = audit._resolve_existing_case_folder(
         {
@@ -465,6 +470,206 @@ def test_resolve_existing_case_folder_fails_closed_when_case_number_is_ambiguous
     )
 
     assert result == ""
+
+
+def test_resolve_existing_case_folder_uses_unique_client_when_ids_differ(
+    monkeypatch, tmp_path
+):
+    active_root = tmp_path / "active" / "01_案件"
+    moved = (
+        active_root
+        / "法扶案件"
+        / "刑事"
+        / "2026-0084-王小明-一審-竊盜"
+    )
+    moved.mkdir(parents=True)
+
+    monkeypatch.setattr(audit, "_CASE_ROOTS", [str(active_root)])
+    monkeypatch.setattr(audit, "_FALLBACK_CASE_ROOTS", [])
+    monkeypatch.setattr(audit, "NAS_CASE_ROOT", str(active_root))
+    monkeypatch.setattr(audit, "Y_DRIVE_ROOT", "")
+    monkeypatch.setattr(audit, "translate_case_path_to_local", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        audit,
+        "is_authoritative_case_storage_path",
+        lambda path: str(path).startswith(str(active_root)),
+    )
+
+    result = audit._resolve_existing_case_folder(
+        {
+            "case_number": "1150812-J-004",
+            "client_name": "王小明",
+            "folder_path": _synthetic_windows_path(
+                "Z", "old", "法扶案件", "刑事", "不存在"
+            ),
+        },
+        authoritative_only=True,
+    )
+
+    assert result == str(moved)
+
+
+def test_resolve_existing_case_folder_rejects_ambiguous_client_name(
+    monkeypatch, tmp_path
+):
+    active_root = tmp_path / "active" / "01_案件"
+    for number in ("2026-0084", "2026-0099"):
+        (
+            active_root
+            / "法扶案件"
+            / "刑事"
+            / f"{number}-王小明-一審-測試"
+        ).mkdir(parents=True)
+
+    monkeypatch.setattr(audit, "_CASE_ROOTS", [str(active_root)])
+    monkeypatch.setattr(audit, "_FALLBACK_CASE_ROOTS", [])
+    monkeypatch.setattr(audit, "NAS_CASE_ROOT", str(active_root))
+    monkeypatch.setattr(audit, "Y_DRIVE_ROOT", "")
+    monkeypatch.setattr(audit, "translate_case_path_to_local", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        audit,
+        "is_authoritative_case_storage_path",
+        lambda path: str(path).startswith(str(active_root)),
+    )
+
+    result = audit._resolve_existing_case_folder(
+        {
+            "case_number": "1150812-J-004",
+            "client_name": "王小明",
+            "folder_path": _synthetic_windows_path(
+                "Z", "old", "法扶案件", "刑事", "不存在"
+            ),
+        },
+        authoritative_only=True,
+    )
+
+    assert result == ""
+
+
+def test_resolve_existing_case_folder_does_not_treat_file_provider_as_nas(
+    monkeypatch, tmp_path
+):
+    cloud_root = tmp_path / "Library" / "CloudStorage" / "SynologyDrive-homes" / "01_案件"
+    case_dir = cloud_root / "法扶案件" / "民事" / "2099-0061-隔離當事人-民事"
+    case_dir.mkdir(parents=True)
+    monkeypatch.setattr(audit, "_CASE_ROOTS", [str(cloud_root)])
+    monkeypatch.setattr(audit, "_FALLBACK_CASE_ROOTS", [str(cloud_root)])
+    monkeypatch.setattr(audit, "NAS_CASE_ROOT", str(cloud_root))
+    monkeypatch.setattr(audit, "Y_DRIVE_ROOT", "")
+    monkeypatch.setattr(
+        audit,
+        "translate_case_path_to_local",
+        lambda *_args, **_kwargs: str(case_dir),
+    )
+    monkeypatch.setattr(audit, "is_authoritative_case_storage_path", lambda _path: False)
+    case = {
+        "case_number": "2099-0061",
+        "folder_path": _synthetic_windows_path(
+            "Z", "office", "01_案件", "法扶案件", "民事", case_dir.name
+        ),
+    }
+
+    assert audit._resolve_existing_case_folder(case) == str(case_dir)
+    assert audit._resolve_existing_case_folder(case, authoritative_only=True) == ""
+    assert audit._portal_case_storage_state([case]) == {
+        "status": "local_fallback_only",
+        "authoritative_count": 0,
+        "fallback_only_count": 1,
+        "missing_count": 0,
+    }
+
+
+def test_collect_existing_portal_files_ignores_local_fallback(monkeypatch, tmp_path):
+    case_dir = tmp_path / "CloudStorage" / "2099-0062-隔離當事人"
+    target = case_dir / "01_法扶資料"
+    target.mkdir(parents=True)
+    (target / "測試接案通知書.pdf").write_bytes(b"fixture")
+
+    def _resolve(_case, *, authoritative_only=False):
+        return "" if authoritative_only else str(case_dir)
+
+    monkeypatch.setattr(audit, "_resolve_existing_case_folder", _resolve)
+
+    assert audit._collect_existing_portal_files([{"case_number": "2099-0062"}]) == []
+
+
+def test_portal_scan_refuses_to_archive_into_file_provider_only_case(
+    monkeypatch, tmp_path
+):
+    class FakeLaf:
+        last_downloadable_cases_scan = {"ok": True}
+
+        def __init__(self):
+            self.download_count = 0
+
+        def login(self):
+            return True
+
+        def get_downloadable_cases(self):
+            return [{
+                "case_number": "1190101-W-001",
+                "client_name": "隔離當事人",
+                "file_list": ["接案通知書.pdf"],
+                "row_element": object(),
+            }]
+
+        def download_case_files(self, **_kwargs):
+            self.download_count += 1
+            return []
+
+        def close(self):
+            pass
+
+    fake = FakeLaf()
+    local_case = tmp_path / "CloudStorage" / "case"
+    local_case.mkdir(parents=True)
+    monkeypatch.setattr(audit, "_make_laf_web_automation", lambda **_kwargs: fake)
+    monkeypatch.setattr(audit, "_local_portal_case_matches", lambda _all, _dc: _all)
+    monkeypatch.setattr(audit, "_collect_existing_portal_files", lambda _cases: [])
+
+    def _resolve(_case, *, authoritative_only=False):
+        return "" if authoritative_only else str(local_case)
+
+    monkeypatch.setattr(audit, "_resolve_existing_case_folder", _resolve)
+
+    result = audit.scan_portal_new_files(
+        [{
+            "case_number": "2099-0063",
+            "client_name": "隔離當事人",
+            "legal_aid_number": "1190101-W-001",
+            "folder_path": _synthetic_windows_path("Z", "office", "01_案件", "case"),
+        }],
+        only_laf_no="1190101-W-001",
+        auto_download=True,
+    )
+
+    assert fake.download_count == 0
+    assert len(result) == 1
+    assert result[0]["storage_status"] == "local_fallback_only"
+    assert result[0]["storage_authoritative_count"] == 0
+    assert result[0]["storage_fallback_only_count"] == 1
+    assert result[0]["storage_missing_count"] == 0
+    assert result[0]["reason_code"] == "nas_mapping_unverified"
+
+
+def test_portal_storage_state_rejects_mixed_authority(monkeypatch):
+    def _resolve(case, *, authoritative_only=False):
+        if case["kind"] == "nas":
+            return _synthetic_posix_path(
+                "Volumes", "homes", "office", "01_案件", "case"
+            )
+        return "" if authoritative_only else _synthetic_posix_path(
+            "Users", "test", "Library", "CloudStorage", "case"
+        )
+
+    monkeypatch.setattr(audit, "_resolve_existing_case_folder", _resolve)
+
+    assert audit._portal_case_storage_state([{"kind": "nas"}, {"kind": "cloud"}]) == {
+        "status": "mixed_authority",
+        "authoritative_count": 1,
+        "fallback_only_count": 1,
+        "missing_count": 0,
+    }
 
 
 def test_laf_portal_scan_script_writes_json(monkeypatch, tmp_path):

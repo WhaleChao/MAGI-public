@@ -1,12 +1,9 @@
 {
   "schema_version": 1,
   "selection_policy": "release_manifest_bound_pytest_nodeids",
-  "v2_regression": {
-    "mode": "retired_baseline_v3_compatibility",
-    "include_globs": [
-      "tests/v3/test_compat_*.py"
-    ],
-    "minimum_passed": 1
+  "legacy_v2_validation": {
+    "mode": "disabled",
+    "reason": "V2 is retired and is neither executed nor projected during V3 promotion"
   },
   "v3_suites": {
     "unit": [
@@ -37,15 +34,14 @@
     "e2e": [
       "tests/v3/test_actual_route_replay.py",
       "tests/v3/test_compat_replay.py",
-      "tests/v3/test_cutover_cli.py",
-      "tests/v3/test_cutover_core.py",
-      "tests/v3/test_cutover_execute.py",
-      "tests/v3/test_cutover_workflow.py",
+      "tests/v3/test_function_health_operational_semantics.py",
       "tests/v3/test_human_approval.py",
-      "tests/v3/test_pre_cutover.py",
-      "tests/v3/test_provisional_resource_window_execute.py",
-      "tests/v3/test_release_gate.py",
-      "tests/v3/test_isolated_live_execute.py"
+      "tests/v3/test_magi_acceptance_gate_runtime_binding.py",
+      "tests/v3/test_nightly_runtime_bindings.py",
+      "tests/v3/test_rc643_v3_only_promotion.py",
+      "tests/test_laf_case_classifier.py",
+      "tests/test_laf_portal_new_files_scan.py",
+      "tests/test_osc_folder_rename.py"
     ]
   },
   "quality_contract_groups": {

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from fnmatch import fnmatch
 from typing import Any, Mapping
 
 
@@ -112,29 +111,25 @@ def _final_outcomes(
 
 def _selected_release_paths(
     release_files: Mapping[str, str], manifest: Mapping[str, Any]
-) -> tuple[list[str], list[str]]:
-    v2 = manifest.get("v2_regression")
+) -> list[str]:
+    legacy = manifest.get("legacy_v2_validation")
     suites = manifest.get("v3_suites")
-    if not isinstance(v2, dict) or not isinstance(suites, dict):
+    if (
+        not isinstance(legacy, dict)
+        or legacy.get("mode") != "disabled"
+        or not isinstance(suites, dict)
+    ):
         raise ReleaseQualityEvidenceError("quality suite manifest is incomplete")
-    globs = v2.get("include_globs")
-    if not isinstance(globs, list) or not globs or any(not isinstance(row, str) for row in globs):
-        raise ReleaseQualityEvidenceError("V2 regression globs are invalid")
-    v2_paths = sorted(
-        path for path in release_files if any(fnmatch(path, pattern) for pattern in globs)
-    )
-    if not v2_paths:
-        raise ReleaseQualityEvidenceError("V2 regression selection matched no release tests")
     if tuple(suites) != EXPECTED_V3_SUITES:
         raise ReleaseQualityEvidenceError("V3 suite names/order are invalid")
     v3_paths = sorted({path for rows in suites.values() for path in rows})
     declared_v3_paths = [path for rows in suites.values() for path in rows]
     if len(declared_v3_paths) != len(set(declared_v3_paths)):
         raise ReleaseQualityEvidenceError("V3 suite files overlap or are duplicated")
-    for path in [*v2_paths, *v3_paths]:
+    for path in v3_paths:
         if path not in release_files or not path.startswith("tests/") or not path.endswith(".py"):
             raise ReleaseQualityEvidenceError(f"selected test is not release-bound: {path}")
-    return v2_paths, v3_paths
+    return v3_paths
 
 
 def _evaluate_selection(
@@ -159,7 +154,7 @@ def _evaluate_selection(
 def _verify_test_sources(
     report: Mapping[str, Any],
     release_files: Mapping[str, str],
-    transcripts: tuple[Mapping[str, Any], Mapping[str, Any]],
+    transcripts: tuple[Mapping[str, Any], ...],
 ) -> None:
     declared = report.get("test_source_sha256")
     observed_paths = sorted(
@@ -294,47 +289,24 @@ def summarize_report(
     }:
         raise ReleaseQualityEvidenceError("release quality sandbox safety binding failed")
     runs = report.get("pytest_runs")
-    if not isinstance(runs, dict) or set(runs) != {"v2_regression", "v3_suites"}:
+    if not isinstance(runs, dict) or set(runs) != {"v3_suites"}:
         raise ReleaseQualityEvidenceError("release quality pytest runs are missing")
-    v2_transcript = runs["v2_regression"]
     v3_transcript = runs["v3_suites"]
-    if not isinstance(v2_transcript, dict) or not isinstance(v3_transcript, dict):
+    if not isinstance(v3_transcript, dict):
         raise ReleaseQualityEvidenceError("release quality pytest transcript is invalid")
-    v2_definition = manifest.get("v2_regression")
-    if not isinstance(v2_definition, dict):
-        raise ReleaseQualityEvidenceError("V2 regression definition is invalid")
-    v2_mode = str(v2_definition.get("mode", "required"))
-    if v2_mode not in {"required", "retired_baseline_v3_compatibility"}:
-        raise ReleaseQualityEvidenceError(f"unsupported V2 regression mode: {v2_mode}")
-    if (
-        v2_mode == "retired_baseline_v3_compatibility"
-        and v2_transcript.get("execution_scope")
-        != "v3_compatibility_boundary"
-    ):
-        raise ReleaseQualityEvidenceError(
-            "retired V2 regression is not projected from the V3 compatibility boundary"
-        )
-    v2_final = _final_outcomes(
-        v2_transcript, python_runtime_sha256=python_runtime_sha256
-    )
+    if report.get("legacy_v2_validation") != {
+        "mode": "disabled",
+        "executed": False,
+        "projected": False,
+    }:
+        raise ReleaseQualityEvidenceError("legacy V2 validation was not disabled")
     v3_final = _final_outcomes(
         v3_transcript, python_runtime_sha256=python_runtime_sha256
     )
-    _verify_test_sources(report, release_files, (v2_transcript, v3_transcript))
-    v2_paths, v3_paths = _selected_release_paths(release_files, manifest)
-    if {_node_path(item) for item in v2_final} != set(v2_paths):
-        raise ReleaseQualityEvidenceError("V2 regression did not collect the exact release test set")
+    _verify_test_sources(report, release_files, (v3_transcript,))
+    v3_paths = _selected_release_paths(release_files, manifest)
     if {_node_path(item) for item in v3_final} != set(v3_paths):
         raise ReleaseQualityEvidenceError("V3 suites did not collect the exact manifest test set")
-    v2 = _evaluate_selection(v2_final, v2_paths, "V2 regression")
-    minimum_v2_passed = manifest["v2_regression"].get("minimum_passed")
-    if (
-        type(minimum_v2_passed) is not int
-        or minimum_v2_passed < 1
-        or int(v2["passed"]) < minimum_v2_passed
-        or v2["passed_all_required"] is not True
-    ):
-        raise ReleaseQualityEvidenceError("V2 release regression is not strictly passing")
     suite_results = {
         name: _evaluate_selection(v3_final, list(manifest["v3_suites"][name]), f"V3 {name}")
         for name in EXPECTED_V3_SUITES
@@ -352,12 +324,10 @@ def summarize_report(
         raise ReleaseQualityEvidenceError("golden flow manifest IDs are invalid")
     def evaluate_declared_paths(paths: list[str], description: str) -> dict[str, int | bool]:
         path_set = set(paths)
-        if path_set <= set(v2_paths):
-            return _evaluate_selection(v2_final, paths, description)
         if path_set <= set(v3_paths):
             return _evaluate_selection(v3_final, paths, description)
         raise ReleaseQualityEvidenceError(
-            f"{description} paths are not covered by either release transcript"
+            f"{description} paths are not covered by the V3 release transcript"
         )
 
     quality_results = {
@@ -411,10 +381,11 @@ def summarize_report(
         raise ReleaseQualityEvidenceError("golden side-effect diff is not strictly approved")
     return {
         "v2_regression_passed_in_release_venv": {
-            "release_venv_verified": True,
-            "passed": v2["passed"],
-            "failed": int(v2["failed"]) + int(v2["skipped"]),
-            "execution_mode": v2_mode,
+            "disabled": True,
+            "release_venv_verified": False,
+            "passed": 0,
+            "failed": 0,
+            "execution_mode": "disabled",
         },
         "v3_unit_contract_integration_e2e_passed": {
             "failed": sum(

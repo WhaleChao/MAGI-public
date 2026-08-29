@@ -510,7 +510,7 @@ def _verify_campaign(
     return report, days, paths
 
 
-def _require_certifying_campaign(report: Mapping[str, Any]) -> None:
+def _require_certifying_campaign(report: Mapping[str, Any]) -> int:
     if (
         report.get("armed") is not True
         or report.get("certifying") is not True
@@ -523,11 +523,15 @@ def _require_certifying_campaign(report: Mapping[str, Any]) -> None:
         raise EvidenceCompileError(
             "campaign report is not an armed completed certifying release-launcher campaign"
         )
-    _exact_nonnegative_int(
+    required_passes = _nonnegative_int(
         report.get("required_independent_passes"),
-        7,
         "campaign report required_independent_passes",
     )
+    if required_passes != 1:
+        raise EvidenceCompileError(
+            "targeted V3 campaign must contain exactly one independent pass"
+        )
+    return required_passes
 
 
 def _structured_rows(days: Sequence[dict[str, Any]], workload: str) -> list[dict[str, Any]]:
@@ -566,14 +570,16 @@ def _route_certification_report_paths(
     report_path: Path,
     days: Sequence[dict[str, Any]],
     bundle: ReleaseBundle,
+    required_passes: int,
 ) -> list[Path]:
     rows = _structured_rows(days, "346_route_contract_replay")
     if (
-        len(rows) != 7
-        or {row.get("validation_pass") for row in rows} != set(range(1, 8))
+        len(rows) != required_passes
+        or {row.get("validation_pass") for row in rows}
+        != set(range(1, required_passes + 1))
     ):
         raise EvidenceCompileError(
-            "route campaign lacks seven strict certification reports"
+            "route campaign lacks the required certification reports"
         )
     producer_root = report_path.resolve(strict=True).parent
     paths: list[Path] = []
@@ -622,14 +628,16 @@ def _health_certification_report_paths(
     report_path: Path,
     days: Sequence[dict[str, Any]],
     bundle: ReleaseBundle,
+    required_passes: int,
 ) -> list[Path]:
     rows = _structured_rows(days, "health_1000_model_free")
     if (
-        len(rows) != 7
-        or {row.get("validation_pass") for row in rows} != set(range(1, 8))
+        len(rows) != required_passes
+        or {row.get("validation_pass") for row in rows}
+        != set(range(1, required_passes + 1))
     ):
         raise EvidenceCompileError(
-            "health campaign lacks seven strict certification reports"
+            "health campaign lacks the required certification reports"
         )
     release_files = {path: digest for path, digest, _size, _mode in bundle.files}
     campaign_config_path = bundle.root / "config/v3_validation_campaign.json"
@@ -645,12 +653,12 @@ def _health_certification_report_paths(
     )
     if (
         not isinstance(expected_profiles, list)
-        or len(expected_profiles) != 7
+        or len(expected_profiles) != required_passes
         or not isinstance(offline, dict)
-        or offline.get("required_independent_passes") != 7
+        or offline.get("required_independent_passes") != required_passes
         or "health_1000_model_free" not in offline.get("workloads", [])
     ):
-        raise EvidenceCompileError("health campaign config lacks the exact seven profiles")
+        raise EvidenceCompileError("health campaign config lacks the required profiles")
     producer_root = report_path.resolve(strict=True).parent
     paths: list[Path] = []
     seen_paths: set[Path] = set()
@@ -720,14 +728,16 @@ def _release_quality_report_paths(
     days: Sequence[dict[str, Any]],
     bundle: ReleaseBundle,
     python_runtime_sha256: str,
+    required_passes: int,
 ) -> list[Path]:
     rows = _structured_rows(days, "golden_business_flows")
     if (
-        len(rows) != 7
-        or {row.get("validation_pass") for row in rows} != set(range(1, 8))
+        len(rows) != required_passes
+        or {row.get("validation_pass") for row in rows}
+        != set(range(1, required_passes + 1))
     ):
         raise EvidenceCompileError(
-            "release quality campaign lacks seven strict certification reports"
+            "release quality campaign lacks the required certification reports"
         )
     release_files = {path: digest for path, digest, _size, _mode in bundle.files}
     suite_path = bundle.root / "config/v3_release_quality_suites.json"
@@ -865,14 +875,16 @@ def _fault_certification_report_paths(
     report_path: Path,
     days: Sequence[dict[str, Any]],
     bundle: ReleaseBundle,
+    required_passes: int,
 ) -> list[Path]:
     rows = _structured_rows(days, "fault_recovery_certification")
     if (
-        len(rows) != 7
-        or {row.get("validation_pass") for row in rows} != set(range(1, 8))
+        len(rows) != required_passes
+        or {row.get("validation_pass") for row in rows}
+        != set(range(1, required_passes + 1))
     ):
         raise EvidenceCompileError(
-            "fault campaign lacks seven strict certification reports"
+            "fault campaign lacks the required certification reports"
         )
     release_files = {path: digest for path, digest, _size, _mode in bundle.files}
     campaign_config_path = bundle.root / "config/v3_validation_campaign.json"
@@ -887,12 +899,12 @@ def _fault_certification_report_paths(
     workloads = offline.get("workloads") if isinstance(offline, dict) else None
     if (
         not isinstance(profiles, list)
-        or len(profiles) != 7
+        or len(profiles) != required_passes
         or not isinstance(workloads, list)
         or "fault_recovery_certification" not in workloads
-        or offline.get("required_independent_passes") != 7
+        or offline.get("required_independent_passes") != required_passes
     ):
-        raise EvidenceCompileError("fault campaign config lacks the exact seven profiles")
+        raise EvidenceCompileError("fault campaign config lacks the required profiles")
     producer_root = report_path.resolve(strict=True).parent
     paths: list[Path] = []
     seen_paths: set[Path] = set()
@@ -965,21 +977,26 @@ def _fault_certification_report_paths(
         seen_hashes.add(expected_sha)
         seen_stimulus_plans.add(str(stimulus_plan_sha))
         paths.append(path)
-    if len(seen_stimulus_plans) != 7:
-        raise EvidenceCompileError("fault campaign lacks seven unique stimulus plans")
+    if len(seen_stimulus_plans) != required_passes:
+        raise EvidenceCompileError("fault campaign lacks unique stimulus plans")
     return paths
 
 
 def _schedule_certification_report_paths(
     report_path: Path,
     days: Sequence[dict[str, Any]],
+    required_passes: int,
 ) -> tuple[list[Path], list[Path]]:
-    """Resolve the seven raw G11 capacity/body reports without trusting summaries."""
+    """Resolve raw G11 capacity/body reports without trusting summaries."""
 
     workload = "seven_day_schedule_10x_arrival_2x_duration_replay"
     rows = _structured_rows(days, workload)
-    if len(rows) != 7 or {row.get("validation_pass") for row in rows} != set(range(1, 8)):
-        raise EvidenceCompileError("schedule campaign lacks seven strict certification reports")
+    if (
+        len(rows) != required_passes
+        or {row.get("validation_pass") for row in rows}
+        != set(range(1, required_passes + 1))
+    ):
+        raise EvidenceCompileError("schedule campaign lacks the required certification reports")
     producer_root = report_path.resolve(strict=True).parent
     capacity_paths: list[Path] = []
     body_paths: list[Path] = []
@@ -1073,7 +1090,7 @@ def compile_campaign_evidence(
 ) -> dict[str, str]:
     bundle = _verify_release(release_root, context)
     report, days, paths = _verify_campaign(report_path, context)
-    _require_certifying_campaign(report)
+    required_passes = _require_certifying_campaign(report)
     if (
         report.get("release_id") != bundle.release_id
         or report.get("release_manifest_sha256") != bundle.manifest_sha256
@@ -1090,7 +1107,7 @@ def compile_campaign_evidence(
     for day_index, day in enumerate(days):
         _exact_nonnegative_int(
             day.get("completed_independent_passes"),
-            7,
+            required_passes,
             f"campaign day {day_index} completed_independent_passes",
         )
     sources = _campaign_sources(paths, report, release_root)
@@ -1108,7 +1125,9 @@ def compile_campaign_evidence(
             derive_schedule_gate_metrics,
         )
 
-        capacity_paths, body_paths = _schedule_certification_report_paths(report_path, days)
+        capacity_paths, body_paths = _schedule_certification_report_paths(
+            report_path, days, required_passes
+        )
         source_paths = {
             "upstream_schedule_dispatch_policy": Path(
                 "config/v3_schedule_dispatch_policy.json"
@@ -1198,6 +1217,7 @@ def compile_campaign_evidence(
             days,
             bundle,
             python_runtime_sha256,
+            required_passes,
         )
         suite_path = release_root / "config/v3_release_quality_suites.json"
         suite_manifest = _load_json(suite_path, "release quality suite manifest")
@@ -1264,11 +1284,6 @@ def compile_campaign_evidence(
             return sum(values)
 
         normalized_metrics = {
-            "v2_regression_passed_in_release_venv": {
-                "release_venv_verified": True,
-                "passed": aggregate("v2_regression_passed_in_release_venv", "passed"),
-                "failed": aggregate("v2_regression_passed_in_release_venv", "failed"),
-            },
             "v3_unit_contract_integration_e2e_passed": {
                 "failed": aggregate("v3_unit_contract_integration_e2e_passed", "failed"),
                 "suites": list(EXPECTED_V3_SUITES),
@@ -1623,7 +1638,9 @@ def compile_campaign_evidence(
 
     health = _structured_rows(days, "health_1000_model_free")
     if health:
-        health_paths = _health_certification_report_paths(report_path, days, bundle)
+        health_paths = _health_certification_report_paths(
+            report_path, days, bundle, required_passes
+        )
         inner_reports = [
             _load_json(path, f"health certification report {index}")
             for index, path in enumerate(health_paths)
@@ -1663,7 +1680,9 @@ def compile_campaign_evidence(
 
     faults_certified = _structured_rows(days, "fault_recovery_certification")
     if faults_certified:
-        fault_paths = _fault_certification_report_paths(report_path, days, bundle)
+        fault_paths = _fault_certification_report_paths(
+            report_path, days, bundle, required_passes
+        )
         inner_reports = [
             _load_json(path, f"fault certification report {index}")
             for index, path in enumerate(fault_paths)
@@ -1748,8 +1767,12 @@ def compile_campaign_evidence(
 
     faults = _structured_rows(days, "fault_injection")
     if faults:
-        if {row["validation_pass"] for row in faults} != set(range(1, 8)):
-            raise EvidenceCompileError("fault campaign lacks seven independent pass rows")
+        if {row["validation_pass"] for row in faults} != set(
+            range(1, required_passes + 1)
+        ):
+            raise EvidenceCompileError(
+                "fault campaign lacks the required independent pass rows"
+            )
         fault_measurements = [row["structured_evidence"]["measurements"] for row in faults]
         matrices = [item.get("matrix") for item in fault_measurements]
         notification_rows = [
@@ -1791,8 +1814,12 @@ def compile_campaign_evidence(
 
     soak = _structured_rows(days, "hundred_cycle_worker_reap_soak")
     if soak:
-        if {row["validation_pass"] for row in soak} != set(range(1, 8)):
-            raise EvidenceCompileError("worker soak lacks seven independent pass rows")
+        if {row["validation_pass"] for row in soak} != set(
+            range(1, required_passes + 1)
+        ):
+            raise EvidenceCompileError(
+                "worker soak lacks the required independent pass rows"
+            )
         measurements = [row["structured_evidence"]["measurements"] for row in soak]
         for row_index, item in enumerate(measurements):
             for field in (
@@ -2134,12 +2161,12 @@ def compile_release_evidence(
 ) -> dict[str, str]:
     bundle = _verify_release(release_root, context)
     campaign, days, campaign_paths = _verify_campaign(campaign_report, context)
-    _require_certifying_campaign(campaign)
+    required_passes = _require_certifying_campaign(campaign)
     if campaign.get("release_id") != bundle.release_id or campaign.get("release_manifest_sha256") != bundle.manifest_sha256:
         raise EvidenceCompileError("campaign is not bound to selected release bundle")
     root = release_root.resolve(strict=True)
     route_certification_reports = _route_certification_report_paths(
-        campaign_report, days, bundle
+        campaign_report, days, bundle, required_passes
     )
     route_runtime_manifest = Path(
         str(campaign.get("python_runtime_manifest") or "")

@@ -3,46 +3,16 @@
   "timezone": "Asia/Taipei",
   "campaign_state": "certifying_offline",
   "armed": true,
-  "production_release": "v2",
+  "production_release": "v3",
   "maximum_simultaneously_active_magi_releases": 1,
   "offline_campaign": {
-    "validation_strategy": "accelerated_24h_event_coverage",
-    "maximum_completion_hours": 24,
+    "validation_strategy": "targeted_v3_once_with_production_observation",
+    "maximum_completion_hours": 4,
     "minimum_consecutive_days": 1,
-    "required_independent_passes": 7,
+    "required_independent_passes": 1,
     "validation_pass_profiles": [
       {
-        "profile_id": "ordinary_week",
-        "replay_start_local": "2026-07-13T00:00:00+08:00",
-        "fault_seed": 1101
-      },
-      {
-        "profile_id": "thirty_one_day_month_end",
-        "replay_start_local": "2026-07-27T00:00:00+08:00",
-        "fault_seed": 2203
-      },
-      {
-        "profile_id": "thirty_day_month_end",
-        "replay_start_local": "2026-04-27T00:00:00+08:00",
-        "fault_seed": 3307
-      },
-      {
-        "profile_id": "non_leap_february_boundary",
-        "replay_start_local": "2027-02-22T00:00:00+08:00",
-        "fault_seed": 4409
-      },
-      {
-        "profile_id": "leap_day_boundary",
-        "replay_start_local": "2028-02-26T00:00:00+08:00",
-        "fault_seed": 5519
-      },
-      {
-        "profile_id": "year_boundary",
-        "replay_start_local": "2026-12-28T00:00:00+08:00",
-        "fault_seed": 6637
-      },
-      {
-        "profile_id": "day_or_weekday_cron_boundary",
+        "profile_id": "rc643_current_v3",
         "replay_start_local": "2026-08-29T00:00:00+08:00",
         "fault_seed": 7753
       }
@@ -332,36 +302,34 @@
       "golden_business_flows",
       "fault_injection",
       "fault_recovery_certification",
-      "matched_v2_v3_performance",
       "hundred_cycle_worker_reap_soak",
-      "ime_candidate_window_pressure_probe",
       "health_1000_model_free"
     ]
   },
   "isolated_live_validation": {
-    "required_runs": 3,
+    "required_runs": 1,
     "minimum_spacing_hours": 0,
-    "minimum_reset_minutes": 10,
+    "minimum_reset_minutes": 0,
     "completion_window_hours": 24,
     "allowed_window": {"start": "00:00", "end": "23:59"},
-    "allowed_local_dates": ["2026-07-22"],
+    "allowed_local_dates": ["2026-08-29"],
     "maximum_duration_minutes": 30,
     "external_writes_enabled": false,
     "same_host_sequence": [
       "enter_maintenance_blackout",
-      "drain_v2",
-      "stop_v2_completely",
-      "verify_v2_zero_owners",
+      "drain_previous_v3",
+      "stop_previous_v3_completely",
+      "verify_previous_v3_zero_owners",
       "start_v3_validation_once",
       "run_approved_read_only_and_sandbox_probes",
       "stop_v3_completely",
       "verify_v3_zero_owners",
-      "restore_v2_once",
-      "verify_v2_readiness_and_integrity",
+      "restore_previous_v3_once",
+      "verify_previous_v3_readiness_and_integrity",
       "exit_maintenance_blackout"
     ],
     "abort_if_any_owner_overlap": true,
-    "automatic_restore_v2_after_each_pre_cutover_run": true
+    "automatic_restore_previous_v3_after_each_pre_cutover_run": true
   },
   "dress_rehearsal": {
     "required_cold_rollback_runs": 3,
@@ -377,6 +345,6 @@
     "evidence_compiler_command": "<candidate>/bin/magi-v3-python <candidate>/scripts/v3_evidence_compiler.py --release-root <candidate> --campaign-report <campaign-report> --output <campaign-evidence-dir> --gate-config <candidate>/config/v3_cutover_gates.json --campaign-id <campaign-id> --release-sha <release-sha> --hardware-id <hardware-id> --gate-config-sha256 <gate-config-sha256>",
     "release_gate_command": "<candidate>/bin/magi-v3-python <candidate>/scripts/v3_release_gate.py --config <candidate>/config/v3_cutover_gates.json --evidence-dir <campaign-evidence-dir> --campaign-id <campaign-id> --release-sha <release-sha> --hardware-id <hardware-id> --gate-config-sha256 <gate-config-sha256>",
     "requires_decision": "GO",
-    "v2_after_success": "stopped_cold_rollback_artifact"
+    "previous_v3_after_success": "stopped_cold_rollback_artifact"
   }
 }

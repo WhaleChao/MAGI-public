@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -37,7 +38,13 @@ except Exception:
 
     current_user = _NoUser()
 
-from api.runtime_paths import get_config_path, get_magi_root_dir, get_orch_dir
+from api.runtime_paths import (
+    get_config_path,
+    get_exports_dir,
+    get_magi_root_dir,
+    get_orch_dir,
+    get_pdf_namer_case_index_path,
+)
 from api.case_path_mapper import (
     local_synology_path_candidates,
     default_synology_share_roots,
@@ -1023,6 +1030,97 @@ _OSC_PATH_REFERENCE_COLUMNS = (
 )
 
 
+def _osc_replace_pdf_namer_case_index_path(old_path: str, new_path: str) -> dict:
+    """Keep the mutable PDF-namer cache coherent with a case-folder rename.
+
+    The cache is not a database table, so SQL prefix replacement cannot update
+    it.  Match by path when possible and by the unique OSC case number when a
+    prior rename already left the cached path stale.  The latter is what lets a
+    later corrective rename repair old placeholder entries safely.
+    """
+    old_value = str(old_path or "").strip().rstrip("/\\")
+    new_value = str(new_path or "").strip().rstrip("/\\")
+    if not old_value or not new_value or old_value == new_value:
+        return {"updated": 0, "error": ""}
+
+    index_path = get_pdf_namer_case_index_path()
+    if not index_path.is_file():
+        return {"updated": 0, "error": ""}
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"updated": 0, "error": f"pdf_namer_index_read_failed:{exc}"}
+    if not isinstance(payload, list):
+        return {"updated": 0, "error": "pdf_namer_index_invalid_root"}
+
+    normalized_old = old_value.replace("\\", "/")
+    normalized_new = new_value.replace("\\", "/")
+    new_basename = normalized_new.rsplit("/", 1)[-1]
+    case_match = re.match(r"^(20\d{2}-\d{4})-(.+)$", new_basename)
+    case_number = case_match.group(1) if case_match else ""
+    case_parts = case_match.group(2).split("-") if case_match else []
+    matching_case_rows = [
+        row
+        for row in payload
+        if isinstance(row, dict)
+        and case_number
+        and str(row.get("case_id") or "").strip() == case_number
+    ]
+    updated = 0
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        row_path = str(row.get("path") or "").strip()
+        normalized_row_path = row_path.replace("\\", "/").rstrip("/")
+        direct_match = normalized_row_path == normalized_old or normalized_row_path.startswith(
+            normalized_old + "/"
+        )
+        unique_case_match = (
+            new_value.startswith("/")
+            and len(matching_case_rows) == 1
+            and row is matching_case_rows[0]
+        )
+        if not direct_match and not unique_case_match:
+            continue
+        suffix = normalized_row_path[len(normalized_old):] if direct_match else ""
+        row["path"] = normalized_new + suffix
+        if not suffix:
+            row["folder_name"] = new_basename
+            if len(case_parts) >= 1:
+                row["parties"] = [case_parts[0].strip()]
+            if len(case_parts) >= 2:
+                row["stage"] = case_parts[1].strip()
+            if len(case_parts) >= 3:
+                row["reason"] = "-".join(case_parts[2:]).strip()
+        updated += 1
+
+    if not updated:
+        return {"updated": 0, "error": ""}
+    try:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(index_path.parent),
+            prefix=f".{index_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = handle.name
+        os.replace(temp_path, index_path)
+    except Exception as exc:
+        try:
+            if "temp_path" in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except OSError:
+            pass
+        return {"updated": 0, "error": f"pdf_namer_index_write_failed:{exc}"}
+    return {"updated": updated, "error": ""}
+
+
 def _osc_replace_path_prefix_references(old_path: str, new_path: str, *, exec_fn=None) -> dict:
     """Replace known OSC path prefixes after a filesystem rename.
 
@@ -1093,6 +1191,10 @@ def _osc_replace_path_prefix_references(old_path: str, new_path: str, *, exec_fn
                     continue
                 errors.append(f"{table}.{column}: {exc}")
                 logger.debug("silent-catch replace path reference %s.%s", table, column, exc_info=True)
+    cache_result = _osc_replace_pdf_namer_case_index_path(old_raw, new_raw)
+    updated += int(cache_result.get("updated") or 0)
+    if cache_result.get("error"):
+        errors.append(str(cache_result["error"]))
     return {"updated": updated, "attempted": attempted, "errors": errors[:8]}
 
 

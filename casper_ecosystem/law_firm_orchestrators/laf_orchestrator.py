@@ -110,6 +110,47 @@ _LAF_UPLOAD_STAGING_SENTINEL = ".magi-self-repair-owned"
 _LAF_UPLOAD_STAGING_SENTINEL_TEXT = "magi-self-repair-owned-v1"
 
 
+def _sync_case_path_references(
+    db,
+    *,
+    old_canonical: str,
+    new_canonical: str,
+    old_local: str = "",
+    new_local: str = "",
+) -> dict:
+    """Update OSC database references and the mutable PDF-namer case index."""
+    from api.osc.utils import _osc_replace_path_prefix_references
+
+    def _exec(sql, params=(), fetch="none"):
+        rowcount = db.execute_write(sql, params)
+        return {"rowcount": int(rowcount or 0)}, None
+
+    results = [
+        _osc_replace_path_prefix_references(
+            old_canonical,
+            new_canonical,
+            exec_fn=_exec,
+        )
+    ]
+    if old_local and new_local:
+        results.append(
+            _osc_replace_path_prefix_references(
+                old_local,
+                new_local,
+                exec_fn=_exec,
+            )
+        )
+    return {
+        "updated": sum(int(item.get("updated") or 0) for item in results),
+        "attempted": sum(int(item.get("attempted") or 0) for item in results),
+        "errors": [
+            error
+            for item in results
+            for error in list(item.get("errors") or [])
+        ],
+    }
+
+
 def _create_laf_upload_staging_dir(path: str) -> str:
     """Create a managed upload staging directory with a cleanup ownership proof."""
     staging = Path(path)
@@ -9709,19 +9750,25 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
 
     @staticmethod
     def _normalized_investigation_case_fields(existing: dict) -> dict:
-        """Return a provable legacy investigation correction, or no change.
+        """Return a provable legacy LAF service-label correction, or no change.
 
-        This intentionally accepts only the legacy shape where a
-        「偵查中辯護」 service label is embedded at the start of case_reason.
-        It must not reinterpret arbitrary existing human-edited fields.
+        This accepts only deterministic service labels: an investigation label
+        embedded in ``case_reason`` or a portal criminal-procedure label such as
+        ``刑事一審辯護`` stored in type/stage.  It must not reinterpret arbitrary
+        existing human-edited fields.
         """
         current_type = str(existing.get("case_type") or "").strip()
         current_stage = str(existing.get("case_stage") or "").strip()
         current_reason = str(existing.get("case_reason") or "").strip()
-        if not re.match(
+        investigation_shape = bool(re.match(
             r"^(?:刑事)?偵查(?:中)?辯護(?:案件)?[\-－—:：/、]*",
             re.sub(r"\s+", "", current_reason),
-        ):
+        ))
+        service_stage_shape = bool(re.search(
+            r"刑事(?:通常程序)?(?:第)?(?:一|二|三)審辯護(?:案件)?|刑事(?:通常程序)?更審辯護(?:案件)?",
+            re.sub(r"\s+", "", f"{current_type} {current_stage}"),
+        ))
+        if not investigation_shape and not service_stage_shape:
             return {}
 
         normalized_type, normalized_stage, normalized_reason = normalize_laf_case_fields(
@@ -9736,7 +9783,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             current_reason,
         ):
             return {}
-        if not normalized_reason:
+        if investigation_shape and not normalized_reason:
             # A service label without a substantive reason still needs human
             # confirmation; never invent one during an automatic repair.
             return {}
@@ -9917,6 +9964,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             return False
 
         existing["folder_path"] = final_canonical
+        path_updates = _sync_case_path_references(
+            self.db,
+            old_canonical=old_canonical or old_local,
+            new_canonical=final_canonical,
+            old_local=old_local,
+            new_local=new_local,
+        )
+        if path_updates["errors"]:
+            logger.warning(
+                "Normalized case path references need retry for %s: %s",
+                case_number,
+                path_updates["errors"],
+            )
         logger.info(
             "  ✅ DB/NAS classification reconciled: %s → %s",
             case_number,
@@ -10042,6 +10102,19 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                                     "UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s",
                                     (new_canonical, case_id),
                                 )
+                                path_updates = _sync_case_path_references(
+                                    self.db,
+                                    old_canonical=old_folder_canonical or old_local,
+                                    new_canonical=new_canonical,
+                                    old_local=old_local,
+                                    new_local=new_local,
+                                )
+                                if path_updates["errors"]:
+                                    logger.warning(
+                                        "placeholder path references need retry for %s: %s",
+                                        case_number,
+                                        path_updates["errors"],
+                                    )
                                 logger.info("  📁 資料夾已 rename → %s", new_basename)
                             except OSError as e:
                                 logger.warning("  ⚠️ rename 失敗: %s", e)

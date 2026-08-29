@@ -23,7 +23,6 @@ from tests.v3 import test_campaign_runner as campaign_fixtures
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_GATE_IDS = (
-    "v2_regression_passed_in_release_venv",
     "v3_unit_contract_integration_e2e_passed",
     "interaction_agent_kernel_memory_quality_contracts_passed",
     "context_memory_tool_plan_answer_golden_sets_passed",
@@ -56,6 +55,22 @@ def _quality_inputs(
     release_files = {str(row["path"]): str(row["sha256"]) for row in manifest["files"]}
     runtime_sha = str(inner["release_binding"]["python_runtime_sha256"])
     return inner, suite_manifest, release_files, runtime_sha
+
+
+def _bind_test_website_admin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provide the same hash-bound external input required by production."""
+    source_root = tmp_path / "test-external" / "website"
+    source = source_root / "admin" / "admin_server.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("class AdminHandler: pass\n", encoding="utf-8")
+    monkeypatch.setenv("MAGI_WEBSITE_ROOT", str(source_root))
+    monkeypatch.setenv(
+        "MAGI_WEBSITE_ADMIN_SHA256",
+        hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
 
 
 def test_v3_website_admin_is_hash_bound_and_staged_inside_workspace(
@@ -117,7 +132,7 @@ def test_release_quality_transcript_tampering_fails_closed(
         "fault_seed": 1101,
     }
     report, suites, release_files, runtime_sha = _quality_inputs(release, profile)
-    transcript = report["pytest_runs"]["v2_regression"]
+    transcript = report["pytest_runs"]["v3_suites"]
     assert isinstance(transcript, dict)
     phase_reports = transcript["phase_reports"]
     assert isinstance(phase_reports, list)
@@ -354,51 +369,10 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
     assert environment["MAGI_V3_PYTHON_RUNTIME"] == str(Path(sys.executable).resolve())
 
 
-def test_retired_v2_baseline_projects_only_v3_compatibility_nodes() -> None:
-    transcript_nodes = [
-        "tests/v3/test_compat_gateway.py::test_gateway",
-        "tests/v3/test_core_health.py::test_health",
-    ]
-    transcript = {
-        "schema_version": 1,
-        "pytest_exitstatus": 0,
-        "python_runtime_sha256": "a" * 64,
-        "python_runtime_realpath_sha256": "a" * 64,
-        "collected_nodeids": transcript_nodes,
-        "phase_reports": [
-            {
-                "nodeid": nodeid,
-                "when": when,
-                "outcome": "passed",
-                "wasxfail": False,
-                "longrepr_sha256": "b" * 64,
-            }
-            for nodeid in transcript_nodes
-            for when in ("setup", "call", "teardown")
-        ],
-    }
-
-    projected = certification._project_compatibility_transcript(
-        transcript,
-        ["tests/v3/test_compat_gateway.py"],
-    )
-
-    assert projected["execution_scope"] == "v3_compatibility_boundary"
-    assert projected["pytest_exitstatus"] == 0
-    assert projected["collected_nodeids"] == [
-        "tests/v3/test_compat_gateway.py::test_gateway"
-    ]
-    assert all(
-        row["nodeid"] == "tests/v3/test_compat_gateway.py::test_gateway"
-        for row in projected["phase_reports"]
-    )
-
-
-def test_retired_v2_manifest_allows_v3_quality_contract_paths() -> None:
+def test_manifest_requires_v2_disabled_and_selects_only_v3_paths() -> None:
     manifest = {
-        "v2_regression": {
-            "mode": "retired_baseline_v3_compatibility",
-            "include_globs": ["tests/v3/test_compat_*.py"],
+        "legacy_v2_validation": {
+            "mode": "disabled",
         },
         "v3_suites": {
             "unit": ["tests/v3/test_core_health.py"],
@@ -411,13 +385,11 @@ def test_retired_v2_manifest_allows_v3_quality_contract_paths() -> None:
         },
     }
     release_files = {
-        "tests/v3/test_compat_gateway.py": "a" * 64,
         "tests/v3/test_core_health.py": "b" * 64,
     }
 
-    v2_paths, v3_paths = certification._paths_from_manifest(manifest, release_files)
+    v3_paths = certification._paths_from_manifest(manifest, release_files)
 
-    assert v2_paths == ["tests/v3/test_compat_gateway.py"]
     assert v3_paths == ["tests/v3/test_core_health.py"]
 
 
@@ -509,6 +481,7 @@ def test_campaign_entrypoint_reexecs_complete_producer_under_seatbelt(
     temporary.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("TMPDIR", str(temporary))
+    _bind_test_website_admin(tmp_path, monkeypatch)
     monkeypatch.delenv(certification.SEATBELT_CHILD_ENV, raising=False)
     observed: dict[str, object] = {}
 
@@ -550,6 +523,7 @@ def test_campaign_entrypoint_uses_fresh_producer_state_per_pass(
     temporary.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("TMPDIR", str(temporary))
+    _bind_test_website_admin(tmp_path, monkeypatch)
     monkeypatch.delenv(certification.SEATBELT_CHILD_ENV, raising=False)
     states: list[Path] = []
 
@@ -579,6 +553,7 @@ def test_campaign_entrypoint_reports_sanitized_child_error(
     temporary.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("TMPDIR", str(temporary))
+    _bind_test_website_admin(tmp_path, monkeypatch)
     monkeypatch.delenv(certification.SEATBELT_CHILD_ENV, raising=False)
 
     def capture(argv, **_kwargs):

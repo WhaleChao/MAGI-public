@@ -1568,6 +1568,84 @@ def _payload_timestamp(data: Any) -> datetime | None:
     return None
 
 
+def _active_release_binding() -> dict[str, str]:
+    """Return a validated active V3 release identity, or an empty mapping.
+
+    Runtime health evidence is intentionally shared across atomic releases.
+    A failed receipt from the previous sealed release must remain auditable,
+    but it must not keep the newly active release red after the marker moves.
+    """
+    marker_raw = os.environ.get("MAGI_V3_ACTIVE_RELEASE_MARKER", "").strip()
+    expected_id = os.environ.get("MAGI_V3_RELEASE_ID", "").strip()
+    marker = Path(
+        marker_raw
+        or Path.home()
+        / "Library"
+        / "Application Support"
+        / "MAGI"
+        / "runtime"
+        / "active-release.json"
+    ).expanduser()
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        release_id = str(payload.get("release_id") or "").strip()
+        release_root = Path(str(payload.get("release_root") or "")).expanduser()
+        if (
+            not marker.is_absolute()
+            or marker.is_symlink()
+            or not marker.is_file()
+            or not isinstance(payload, dict)
+            or payload.get("schema") != "magi.v3.active-release/v1"
+            or not release_id
+            or (expected_id and release_id != expected_id)
+            or not release_root.is_absolute()
+            or release_root.is_symlink()
+            or release_root.name != release_id
+            or release_root.parent.name != "releases"
+        ):
+            return {}
+    except (OSError, ValueError, TypeError):
+        return {}
+    return {"release_id": release_id, "release_root": str(release_root)}
+
+
+def _superseded_release_evidence(
+    data: Any, active_release: Mapping[str, str] | None
+) -> bool:
+    """Recognize an explicitly release-bound receipt from a predecessor.
+
+    Unbound or malformed failures still fail closed.  Only a different sealed
+    V3 release ID/root under the same releases directory is non-blocking.
+    """
+    if not isinstance(data, dict) or not active_release:
+        return False
+    active_id = str(active_release.get("release_id") or "").strip()
+    active_root_raw = str(active_release.get("release_root") or "").strip()
+    if not active_id or not active_root_raw:
+        return False
+    active_root = Path(active_root_raw)
+
+    observed_id = str(data.get("release_id") or "").strip()
+    observed_root_raw = str(
+        data.get("release_root") or data.get("magi_root") or data.get("root") or ""
+    ).strip()
+    observed_root = Path(observed_root_raw).expanduser() if observed_root_raw else None
+
+    id_is_predecessor = bool(
+        observed_id
+        and observed_id != active_id
+        and observed_id.startswith("v3-")
+    )
+    root_is_predecessor = bool(
+        observed_root
+        and observed_root.is_absolute()
+        and observed_root != active_root
+        and observed_root.parent == active_root.parent
+        and observed_root.name.startswith("v3-")
+    )
+    return id_is_predecessor or root_is_predecessor
+
+
 def _health_file_candidate(path: Path, base: Path) -> bool:
     name = path.name.lower()
     # Health/acceptance output must not be ingested as its own dependency.
@@ -1609,7 +1687,14 @@ def discover_runtime_health_files(root: Path, runtime_dir: Path, *, include_stat
     return out
 
 
-def evaluate_health_file(path: Path, root: Path, now: datetime, max_age_hours: float) -> dict[str, Any]:
+def evaluate_health_file(
+    path: Path,
+    root: Path,
+    now: datetime,
+    max_age_hours: float,
+    *,
+    active_release: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     data, error = _read_json(path, None)
     mtime = _mtime_dt(path)
     timestamp = _payload_timestamp(data) or mtime
@@ -1625,6 +1710,10 @@ def evaluate_health_file(path: Path, root: Path, now: datetime, max_age_hours: f
     if error:
         status = "missing" if error == "missing" else "failed"
         reason = error
+    elif _superseded_release_evidence(data, active_release):
+        status = "superseded"
+        reason = "superseded_release_evidence"
+        ok_source = "release_binding"
     elif ok is False:
         status = "failed"
         reason = f"{ok_source}=false"
@@ -1644,7 +1733,7 @@ def evaluate_health_file(path: Path, root: Path, now: datetime, max_age_hours: f
     return {
         "path": _rel(path, root),
         "status": status,
-        "ok": status in {"ok", "observed"},
+        "ok": status in {"ok", "observed", "superseded"},
         "reason": reason,
         "contract": ok_source,
         "timestamp": timestamp.isoformat() if timestamp else "",
@@ -2705,12 +2794,14 @@ def build_index(
         if rel_path not in health_by_rel:
             health_by_rel[rel_path] = root / rel_path
 
+    active_release = _active_release_binding()
     health_files = [
         evaluate_health_file(
             path,
             root,
             now,
             0 if _rel_path in matrix_only_health_paths else max_health_age_hours,
+            active_release=active_release,
         )
         for _rel_path, path in sorted(health_by_rel.items())
     ]
@@ -2763,6 +2854,16 @@ def build_index(
         {"path": item["path"], "age_hours": item["age_hours"], "reason": item["reason"]}
         for item in health_files
         if item["status"] == "stale" and item["path"] not in expected_paths
+    ]
+    superseded_release_artifacts = [
+        {
+            "path": item["path"],
+            "timestamp": item["timestamp"],
+            "reason": item["reason"],
+            "contract": item["contract"],
+        }
+        for item in health_files
+        if item["status"] == "superseded"
     ]
     missing.extend(
         {"path": item["path"], "owners": [], "sources": ["scan"], "reason": item["reason"]}
@@ -2841,7 +2942,12 @@ def build_index(
             "running_cron_job_count": len(cron_jobs.get("running") or []),
             "observed_failed_health_count": len(observed_failed),
             "observed_stale_health_count": 0,
-            "archived_runtime_artifact_count": len(archived_observed_failed) + len(archived_observed_stale),
+            "archived_runtime_artifact_count": (
+                len(archived_observed_failed)
+                + len(archived_observed_stale)
+                + len(superseded_release_artifacts)
+            ),
+            "superseded_release_health_count": len(superseded_release_artifacts),
         },
         "api_routes": api_routes,
         "skills": skills,
@@ -2867,6 +2973,7 @@ def build_index(
                 "archived_observed_stale_count": len(archived_observed_stale),
                 "archived_observed_failed": archived_observed_failed[:30],
                 "archived_observed_stale": archived_observed_stale[:30],
+                "superseded_release_artifacts": superseded_release_artifacts[:30],
             },
         },
         "health": {

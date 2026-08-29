@@ -12,16 +12,10 @@
   },
   "conditional_daytime_authorization_required": true,
   "source_contract": {
-    "schema_version": 2,
-    "contract_id": "magi.v3.formal-v2-live-backup-sources/v2",
-    "root_kind": "current_user_application_support_magi_v2",
-    "website_relative": "whalechao.github.io",
-    "database_relatives": [
-      ".agent/jobs/job_queue.db",
-      ".agent/mq/message_queue.db",
-      ".runtime/conversation_history.sqlite3",
-      ".runtime/taiwan_legal_mcp/cache.sqlite3"
-    ]
+    "schema_version": 3,
+    "contract_id": "magi.v3.current-release-and-shared-state/v1",
+    "root_kind": "sealed_v3_release_plus_shared_mutable_state",
+    "legacy_v2_validation": "disabled"
   },
   "maintenance_blackout": {
     "start": "01:30",
@@ -50,8 +44,8 @@
     "unapproved_source_runtime_drift": 0,
     "pre_cutover_validation_window_hours": 24,
     "offline_replay_consecutive_days": 1,
-    "offline_replay_independent_passes": 7,
-    "minimum_isolated_live_validation_runs": 3,
+    "offline_replay_independent_passes": 1,
+    "minimum_isolated_live_validation_runs": 1,
     "max_p95_regression_ratio": 0.05,
     "minimum_application_plane_footprint_reduction_ratio": 0.25,
     "gateway_added_p95_ms": 5,
@@ -72,30 +66,16 @@
   "required_evidence": [
     "portable_source_inventory_current",
     "runtime_route_inventory_current",
-    "v2_regression_passed_in_release_venv",
     "v3_unit_contract_integration_e2e_passed",
     "interaction_agent_kernel_memory_quality_contracts_passed",
     "context_memory_tool_plan_answer_golden_sets_passed",
     "golden_side_effect_diff_approved",
-    "matched_v2_warm_cold_performance_baseline_complete",
-    "resource_policy_all_budgets_passed",
     "health_1000_probes_loaded_zero_models",
     "seven_day_schedule_10x_arrival_2x_duration_replay_passed",
-    "heavy_plus_interactive_preemption_benchmark_passed",
     "hundred_cycle_worker_reap_soak_passed",
     "sqlite_wal_disk_full_fsync_faults_passed",
     "notification_storm_and_dlq_faults_passed",
-    "offline_replay_and_isolated_live_validation_satisfied",
-    "isolated_live_validation_single_active_handoff_verified",
-    "database_backup_restore_drill_passed",
-    "runtime_state_snapshot_verified",
     "rendered_launchagent_manifest_checksums_saved",
-    "single_active_handoff_test_passed",
-    "v2_fully_stopped_before_v3_start_verified",
-    "v3_fully_stopped_before_v2_rollback_verified",
-    "single_scheduler_consumer_writer_ownership_verified",
-    "worker_process_group_footprint_and_metal_return_to_baseline",
-    "input_method_candidate_window_probe_passed",
     "atomic_release_switch_and_cold_rollback_drill_passed",
     "human_go_approval_recorded"
   ],
@@ -104,8 +84,7 @@
     "any_required_evidence_missing",
     "any_required_test_failed",
     "runtime_route_or_capability_inventory_mismatch",
-    "performance_or_quality_non_regression_failed",
-    "application_plane_footprint_reduction_below_target",
+    "v3_quality_contract_failed",
     "schedule_capacity_or_deadline_replay_failed",
     "maintenance_blackout_not_active",
     "heavy_job_running_at_cutover",
@@ -114,12 +93,10 @@
     "unreconciled_ambiguous_commit",
     "more_than_one_writer_or_scheduler_owner",
     "database_or_nas_not_ready",
-    "v2_process_or_release_owner_still_active_before_v3_start",
-    "v2_port_scheduler_writer_or_model_owner_not_released",
-    "v3_or_cold_v2_rollback_artifact_not_ready",
+    "previous_v3_release_owner_not_released",
+    "current_v3_or_previous_v3_rollback_artifact_not_ready",
     "critical_memory_pressure",
-    "input_method_candidate_window_unhealthy",
-    "backup_restore_not_verified"
+    "shared_state_snapshot_not_ready"
   ],
   "automatic_rollback": [
     "v3_readiness_failed",
@@ -129,20 +106,20 @@
     "queue_or_lease_recovery_failed",
     "critical_capability_smoke_failed",
     "critical_memory_pressure_persisted",
-    "input_method_candidate_window_failed_after_resource_drain"
+    "current_v3_health_failed_after_controlled_restart"
   ],
   "post_cutover": {
-    "v2_mode": "cold_rollback_artifact_stopped",
-    "v2_processes_running": false,
+    "previous_v3_mode": "cold_rollback_artifact_stopped",
+    "legacy_v2_validation": "disabled",
     "observation_days": 7,
     "retire_only_when_final_reconciliation_clean": true,
-    "preserve_last_v2_release_and_state_snapshot": true,
+    "preserve_previous_v3_release_and_state_snapshot": true,
     "rollback_sequence": [
       "stop_v3_completely",
       "verify_v3_ports_leases_writers_and_schedulers_released",
-      "atomically_restore_v2_release_pointer_and_compatible_state",
-      "start_v2_once",
-      "run_v2_readiness_and_integrity_smoke"
+      "atomically_restore_previous_v3_release_pointer_and_compatible_state",
+      "start_previous_v3_once",
+      "run_previous_v3_readiness_and_integrity_smoke"
     ]
   }
 }

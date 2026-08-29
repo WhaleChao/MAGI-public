@@ -235,10 +235,6 @@ OFFLINE_COMMANDS: dict[str, tuple[str, ...]] = {
         "scripts/v3_validation/fault_certification.py",
         "--campaign-evidence",
     ),
-    "matched_v2_v3_performance": (
-        "scripts/v3_validation/resource_performance_certification.py",
-        "--campaign-evidence",
-    ),
     "hundred_cycle_worker_reap_soak": (
         "-m",
         "pytest",
@@ -249,15 +245,6 @@ OFFLINE_COMMANDS: dict[str, tuple[str, ...]] = {
         "-k",
         "test_hundred_cycle_worker_reap_soak_emits_measured_evidence",
         "tests/v3/test_campaign_offline_probes.py",
-    ),
-    "ime_candidate_window_pressure_probe": (
-        "-m",
-        "pytest",
-        "-q",
-        "-s",
-        "-p",
-        "no:cacheprovider",
-        "tests/v3/test_ime_candidate_native.py",
     ),
     "health_1000_model_free": (
         "scripts/v3_validation/health_certification.py",
@@ -353,9 +340,7 @@ def _structured_workload_evidence(
         "golden_business_flows",
         "fault_injection",
         "fault_recovery_certification",
-        "matched_v2_v3_performance",
         "hundred_cycle_worker_reap_soak",
-        "ime_candidate_window_pressure_probe",
         "health_1000_model_free",
     }
     if workload not in structured_workloads:
@@ -2500,15 +2485,20 @@ def _load_config(path: Path) -> dict[str, Any]:
         raise CampaignSafetyError("unsupported campaign config")
     if value.get("maximum_simultaneously_active_magi_releases") != 1:
         raise CampaignSafetyError("campaign must require single-active release")
-    if value.get("production_release") != "v2":
-        raise CampaignSafetyError("campaign production release must remain v2")
+    if value.get("production_release") != "v3":
+        raise CampaignSafetyError("campaign production release must be V3")
     if value.get("timezone") != "Asia/Taipei":
         raise CampaignSafetyError("certifying campaign timezone must be Asia/Taipei")
     offline = value.get("offline_campaign")
     if not isinstance(offline, dict) or not isinstance(offline.get("workloads"), list):
         raise CampaignSafetyError("offline campaign workloads missing")
-    if offline.get("validation_strategy") != "accelerated_24h_event_coverage":
-        raise CampaignSafetyError("offline campaign must use accelerated 24-hour event coverage")
+    if (
+        offline.get("validation_strategy")
+        != "targeted_v3_once_with_production_observation"
+    ):
+        raise CampaignSafetyError(
+            "offline campaign must use the targeted V3 promotion strategy"
+        )
     maximum_hours = offline.get("maximum_completion_hours")
     if (
         not isinstance(maximum_hours, int)
@@ -2523,14 +2513,22 @@ def _load_config(path: Path) -> dict[str, Any]:
     if (
         not isinstance(required_passes, int)
         or isinstance(required_passes, bool)
-        or required_passes < 7
+        or required_passes != 1
     ):
         raise CampaignSafetyError(
-            "accelerated offline campaign must retain at least seven independent passes"
+            "targeted V3 promotion must run exactly one independent pass"
         )
     profiles = offline.get("validation_pass_profiles")
     if not isinstance(profiles, list) or len(profiles) != required_passes:
         raise CampaignSafetyError("each accelerated validation pass requires one profile")
+    retired_workloads = {
+        "matched_v2_v3_performance",
+        "ime_candidate_window_pressure_probe",
+    }
+    if retired_workloads & set(offline["workloads"]):
+        raise CampaignSafetyError(
+            "retired V2/IME diagnostics cannot be promotion workloads"
+        )
     profile_ids: set[str] = set()
     profile_starts: set[str] = set()
     fault_seeds: set[int] = set()

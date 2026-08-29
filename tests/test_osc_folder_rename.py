@@ -297,3 +297,43 @@ def test_path_reference_replace_ignores_missing_optional_schema(monkeypatch):
 
     assert result["attempted"] >= 1
     assert result["errors"] == []
+
+
+def test_path_reference_replace_repairs_stale_pdf_namer_case_index(tmp_path, monkeypatch):
+    import json
+
+    from api.osc import utils as mod
+
+    index = tmp_path / "_case_index.json"
+    index.write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "2026-0089",
+                    "folder_name": "2026-0089-楊○恩-一審-待確認",
+                    "path": "/nas/2026-0089-楊○恩-一審-待確認",
+                    "parties": ["楊○恩"],
+                    "stage": "一審",
+                    "reason": "待確認",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "get_pdf_namer_case_index_path", lambda: index)
+    monkeypatch.setattr(mod, "translate_local_path_to_canonical", lambda p: p)
+
+    result = mod._osc_replace_path_prefix_references(
+        "/nas/2026-0089-楊聖恩-刑事一審辯護-妨害秩序等",
+        "/nas/2026-0089-楊聖恩-一審-妨害秩序等",
+        exec_fn=lambda *_args, **_kwargs: ({"rowcount": 0}, None),
+    )
+
+    repaired = json.loads(index.read_text(encoding="utf-8"))[0]
+    assert result["errors"] == []
+    assert repaired["path"].endswith("2026-0089-楊聖恩-一審-妨害秩序等")
+    assert repaired["folder_name"] == "2026-0089-楊聖恩-一審-妨害秩序等"
+    assert repaired["parties"] == ["楊聖恩"]
+    assert repaired["stage"] == "一審"
+    assert repaired["reason"] == "妨害秩序等"

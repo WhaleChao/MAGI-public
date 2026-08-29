@@ -282,6 +282,11 @@ class LAFFolderBuilder:
         case_type = case_info.get("case_type", "")
         case_stage = case_info.get("case_stage", "")
         reason = case_info.get("case_reason", "")
+        case_type, case_stage = normalize_laf_case_type(
+            str(case_type or ""),
+            str(case_stage or ""),
+            str(reason or ""),
+        )
 
         parts = [name]
         case_category = self._resolve_case_category(case_info)

@@ -72,6 +72,47 @@ _SKIP_IMPORT_PROBES = (
     or os.getenv("MAGI_SKIP_IMPORT_PROBES", "1").strip().lower() not in {"0", "false", "no", "off"}
 )
 
+
+def _sync_case_path_references(
+    db,
+    *,
+    old_canonical: str,
+    new_canonical: str,
+    old_local: str = "",
+    new_local: str = "",
+) -> dict:
+    """Update every known OSC/PDF-namer reference after a LAF folder rename."""
+    from api.osc.utils import _osc_replace_path_prefix_references
+
+    def _exec(sql, params=(), fetch="none"):
+        rowcount = db.execute_write(sql, params)
+        return {"rowcount": int(rowcount or 0)}, None
+
+    results = [
+        _osc_replace_path_prefix_references(
+            old_canonical,
+            new_canonical,
+            exec_fn=_exec,
+        )
+    ]
+    if old_local and new_local:
+        results.append(
+            _osc_replace_path_prefix_references(
+                old_local,
+                new_local,
+                exec_fn=_exec,
+            )
+        )
+    return {
+        "updated": sum(int(item.get("updated") or 0) for item in results),
+        "attempted": sum(int(item.get("attempted") or 0) for item in results),
+        "errors": [
+            error
+            for item in results
+            for error in list(item.get("errors") or [])
+        ],
+    }
+
 # ── DB Failover: 獨立 process 需自行偵測，daemon 的 monitor 不會跑在這裡 ──
 if not _SKIP_IMPORT_PROBES:
     try:
@@ -2185,6 +2226,20 @@ def _reconcile_placeholder_from_local_sources(db, case: dict, folder_builder) ->
                 new_canonical = _replace_folder_basename_canonical(case.get("folder_path") or "", new_basename)
             rename_result["new_canonical"] = new_canonical
             db.execute_write("UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s", (new_canonical, case_id))
+            path_updates = _sync_case_path_references(
+                db,
+                old_canonical=case.get("folder_path") or old_local,
+                new_canonical=new_canonical,
+                old_local=old_local,
+                new_local=new_local,
+            )
+            rename_result["path_references"] = path_updates
+            if path_updates["errors"]:
+                logger.warning(
+                    "path reference sync incomplete for %s: %s",
+                    case_number,
+                    path_updates["errors"],
+                )
 
     return {
         "case_number": case_number,
@@ -2488,6 +2543,20 @@ def reconcile_placeholder_cases(db, *, force: bool = False,
                             "UPDATE `cases` SET `folder_path` = %s WHERE `id` = %s",
                             (new_canonical, case_id),
                         )
+                        path_updates = _sync_case_path_references(
+                            db,
+                            old_canonical=old_folder_path or old_local,
+                            new_canonical=new_canonical,
+                            old_local=old_local,
+                            new_local=new_local,
+                        )
+                        rename_result["path_references"] = path_updates
+                        if path_updates["errors"]:
+                            logger.warning(
+                                "path reference sync incomplete for %s: %s",
+                                case_number,
+                                path_updates["errors"],
+                            )
                         renamed.append({
                             "case_number": case_number,
                             "old_local": old_local,
@@ -2872,6 +2941,39 @@ def _resolve_existing_case_folder(case: dict) -> str:
             return by_number[0]
         if len(by_number) > 1:
             logger.warning("案件編號有 %d 個資料夾候選，拒絕自動歸檔: %s", len(by_number), case_number)
+
+    # Portal and OSC use different identifiers: the portal row is keyed by
+    # the LAF number, while the NAS folder starts with the office case number.
+    # When an old File Provider path is stale, the office number may therefore
+    # be unavailable to this resolver.  Use the already matched DB client's
+    # normalized name only as a final, unique, bounded fallback.  Ambiguous
+    # names remain unresolved and can never become an automatic write target.
+    client_name = _normalize_person_name(case.get("client_name") or "")
+    if client_name:
+        by_client = _matches(
+            f"*-{glob.escape(client_name)}-*",
+            literal=False,
+        )
+        exact_client = [
+            path
+            for path in by_client
+            if _normalize_person_name(
+                _canonical_folder_client_name({"folder_path": path})
+            )
+            == client_name
+        ]
+        if len(exact_client) == 1:
+            logger.info(
+                "案件資料夾路徑已變更，依唯一當事人名稱安全解析: %s",
+                case_number or "(無案號)",
+            )
+            return exact_client[0]
+        if len(exact_client) > 1:
+            logger.warning(
+                "當事人名稱有 %d 個資料夾候選，拒絕自動歸檔: %s",
+                len(exact_client),
+                case_number or "(無案號)",
+            )
 
     return ""
 
