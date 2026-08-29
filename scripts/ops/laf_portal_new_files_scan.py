@@ -94,10 +94,20 @@ def main(argv: list[str] | None = None) -> int:
     dry_run = True if bool(args.dry_run) else not apply_enabled
 
     # Importing laf_nightly_audit used to probe DB failover and NAS mounts. This
-    # wrapper is a bounded scan runner, so imports must stay side-effect free.
-    os.environ.setdefault("MAGI_SKIP_IMPORT_PROBES", "1")
-
-    from casper_ecosystem.law_firm_orchestrators import laf_nightly_audit
+    # wrapper is a bounded scan runner, so the import itself must stay
+    # side-effect free.  The flag must not leak into the actual scan, however:
+    # case_path_mapper also reads it before the read-only mount-table authority
+    # check.  Leaving it set made every real SMB case folder appear to be a
+    # File Provider-only copy and produced false ``mapping_unverified`` rows.
+    previous_skip_import_probes = os.environ.get("MAGI_SKIP_IMPORT_PROBES")
+    os.environ["MAGI_SKIP_IMPORT_PROBES"] = "1"
+    try:
+        from casper_ecosystem.law_firm_orchestrators import laf_nightly_audit
+    finally:
+        if previous_skip_import_probes is None:
+            os.environ.pop("MAGI_SKIP_IMPORT_PROBES", None)
+        else:
+            os.environ["MAGI_SKIP_IMPORT_PROBES"] = previous_skip_import_probes
 
     result = laf_nightly_audit.run_portal_new_files_scan(
         only_laf_no=args.only_laf_no.strip(),

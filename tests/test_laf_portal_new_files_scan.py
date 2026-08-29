@@ -810,7 +810,27 @@ def test_laf_portal_scan_script_defaults_to_dry_run(monkeypatch, tmp_path):
     data = out.read_text(encoding="utf-8")
     assert '"dry_run": true' in data
     assert '"apply": false' in data
-    assert __import__("os").environ["MAGI_SKIP_IMPORT_PROBES"] == "1"
+    assert "MAGI_SKIP_IMPORT_PROBES" not in __import__("os").environ
+
+
+def test_laf_portal_scan_script_restores_explicit_import_probe_policy(
+    monkeypatch, tmp_path
+):
+    from scripts.ops import laf_portal_new_files_scan as script
+
+    out = tmp_path / "latest.json"
+    seen = {}
+
+    def fake_run(only_laf_no="", auto_download=True):
+        seen["policy"] = __import__("os").environ.get("MAGI_SKIP_IMPORT_PROBES")
+        return {"ok": True, "portal_auto_downloaded": 0, "portal_still_missing": 0}
+
+    monkeypatch.setenv("MAGI_SKIP_IMPORT_PROBES", "0")
+    monkeypatch.setattr(audit, "run_portal_new_files_scan", fake_run)
+
+    assert script.main(["--json-out", str(out)]) == 0
+    assert seen["policy"] == "0"
+    assert __import__("os").environ["MAGI_SKIP_IMPORT_PROBES"] == "0"
 
 
 def test_laf_portal_scan_script_apply_enables_download(monkeypatch, tmp_path):
