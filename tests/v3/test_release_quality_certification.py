@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -350,6 +351,7 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
     assert environment["MAGI_V2_COMPAT_CRON_SOURCE_SHA256"] == "c" * 64
     assert environment["MAGI_V3_OFFLINE_CERTIFICATION"] == "1"
     assert environment[certification.SEATBELT_CHILD_ENV] == "1"
+    assert environment["MAGI_V3_PYTHON_RUNTIME"] == str(Path(sys.executable).resolve())
 
 
 def test_v2_compat_stages_complete_hash_bound_cron_without_leaking_environment(

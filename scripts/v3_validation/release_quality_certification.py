@@ -243,6 +243,11 @@ def _transcript_run(
     env = dict(os.environ)
     if v2_compat:
         env = {name: env[name] for name in V2_COMPAT_ENV_ALLOWLIST if name in env}
+        # ``run_certification`` has already verified ``sys.executable`` against
+        # the release runtime evidence. Derive the binding when a legacy
+        # caller did not export it, so the V2 transcript cannot silently fall
+        # back to the removed source-tree ``venv``.
+        env.setdefault("MAGI_V3_PYTHON_RUNTIME", str(Path(sys.executable).resolve()))
         if v2_compat_inputs is not None:
             for evidence_key, environment_key in V2_COMPAT_SAFE_CRON_ENV.items():
                 digest = v2_compat_inputs.get(evidence_key)
