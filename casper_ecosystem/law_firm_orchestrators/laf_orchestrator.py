@@ -60,7 +60,7 @@ from api.runtime_paths import (
     get_laf_processed_emails_path,
     get_orch_dir,
 )
-from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, default_case_roots, local_synology_path_candidates, preferred_case_roots, translate_case_path_to_local, translate_local_path_to_canonical
+from api.case_path_mapper import _is_dir_accessible, canonical_case_roots, default_case_roots, local_synology_path_candidates, preferred_case_roots, resolve_case_path_for_write, translate_case_path_to_local, translate_local_path_to_canonical
 from api.laf_case_classifier import normalize_laf_case_fields
 from api.laf_go_live_rules import (
     go_live_missing_labels,
@@ -1349,6 +1349,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         laf_number: str,
         *,
         expected_queue_token: str = "",
+        successful_evidence_at=None,
     ) -> None:
         target_laf_case_no = str(laf_number or "").strip()
         if not target_laf_case_no:
@@ -1384,10 +1385,50 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                         },
                     )
             current = dict(items.get(target_laf_case_no) or {})
-            if expected_token and str(current.get("queue_token") or "") == expected_token:
+            token_matches = bool(
+                expected_token
+                and str(current.get("queue_token") or "") == expected_token
+            )
+            evidence_covers_current = self._portal_retry_success_covers_row(
+                current, successful_evidence_at
+            )
+            if token_matches or evidence_covers_current:
                 items.pop(target_laf_case_no, None)
 
         self._mutate_pending_portal_downloads(_clear)
+
+    @staticmethod
+    def _portal_retry_success_covers_row(item: dict, evidence_at) -> bool:
+        """Whether a successful download is at least as new as the queue row."""
+
+        if not isinstance(item, dict) or not item or not evidence_at:
+            return False
+        observed_raw = str(
+            item.get("event_received_at")
+            or item.get("first_observed_at")
+            or item.get("first_queued_at")
+            or ""
+        ).strip()
+        if not observed_raw:
+            return False
+        try:
+            observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+            evidence = (
+                evidence_at
+                if isinstance(evidence_at, datetime)
+                else datetime.fromisoformat(str(evidence_at).strip().replace("Z", "+00:00"))
+            )
+        except (TypeError, ValueError):
+            return False
+        observed_aware = observed.tzinfo is not None and observed.utcoffset() is not None
+        evidence_aware = evidence.tzinfo is not None and evidence.utcoffset() is not None
+        if observed_aware and not evidence_aware:
+            evidence = evidence.astimezone(observed.tzinfo)
+        elif evidence_aware and not observed_aware:
+            evidence = evidence.astimezone().replace(tzinfo=None)
+        elif observed_aware and evidence_aware:
+            evidence = evidence.astimezone(observed.tzinfo)
+        return observed <= evidence
 
     # ── Seed permanent skip list ──
 
@@ -1422,9 +1463,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             "zip_backup_skipped": [],
             "error": "",
         }
-        folder = str(case_folder or "").strip()
-        if not folder or not os.path.isdir(folder):
-            result["error"] = "missing_case_folder"
+        folder = self._resolve_authoritative_case_folder_for_write(case_folder)
+        if not folder:
+            result["error"] = "authoritative_case_storage_unavailable"
             return result
         try:
             from skills.legal.laf import OSCCaseCreator
@@ -1470,6 +1511,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
         laf_case_no = str(laf_number or "").strip()
         portal_files = [str(f) for f in (files or []) if f]
         folder = self._resolve_case_folder_for_laf(laf_case_no, fallback=case_folder)
+        folder = self._resolve_authoritative_case_folder_for_write(folder)
         result = {
             "ok": True,
             "laf_case_number": laf_case_no,
@@ -1528,6 +1570,7 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
             self._clear_pending_portal_download(
                 laf_case_no,
                 expected_queue_token=clear_token,
+                successful_evidence_at=trigger_received_at,
             )
             _eventlog(
                 "laf:portal:retry:done" if source == "retry" else "laf:portal:download:done",
@@ -6193,12 +6236,9 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
           - 未知 → 不預檢
         """
         t = str(origin_reason or "").lower()
-        folder = str(case_folder or "").strip()
-        # NAS/Synology Drive 雙向 fallback：任一路徑存在即可繼續
-        resolved_folder = self._resolve_case_folder_with_fallback(folder)
-        if not resolved_folder:
+        folder = self._resolve_authoritative_case_folder_for_write(case_folder)
+        if not folder:
             return False, ""
-        folder = resolved_folder  # 使用解析後的實際路徑（可能已切換至 Synology Drive）
 
         # 審核結果/回報類：不能用開辦文件抵掉，需看到結案酬金或審查結果類文件。
         if any(k in t for k in ("review_result", "result_download", "審核", "審查", "回報")):
@@ -6254,12 +6294,29 @@ class LAFOrchestrator(LAFOrchestratorDocumentMixin):
                 return p
         return ""
 
+    @staticmethod
+    def _resolve_authoritative_case_folder_for_write(folder: str) -> str:
+        """Resolve a case folder to durable storage, never a local mirror."""
+
+        raw = str(folder or "").strip()
+        if not raw:
+            return ""
+        canonical = translate_local_path_to_canonical(raw)
+        for candidate in (canonical, raw):
+            resolved = resolve_case_path_for_write(candidate)
+            if resolved.get("ok") is True and resolved.get("local_path"):
+                return str(resolved["local_path"])
+        return ""
+
     def _resolve_case_folder_with_fallback(self, folder: str) -> str:
         """NAS 找不到時自動 fallback 到 Synology Drive，反之亦然。
 
         按 local_synology_path_candidates() 的候選順序嘗試所有已知掛載路徑
         （NAS /Volumes/、SynologyDrive CloudStation、user-level ~/.magi_mounts/），
         回傳第一個實際存在的資料夾路徑；所有候選都不存在時回空字串。
+
+        This helper is read-only.  Portal downloads and NAS completion proofs
+        must use ``_resolve_authoritative_case_folder_for_write`` instead.
         """
         f = (folder or "").strip()
         if not f:

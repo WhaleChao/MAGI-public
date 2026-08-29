@@ -851,7 +851,7 @@ def test_closing_backfill_uses_closing_document_rules_before_generic_backfill(
     tmp_path,
 ):
     orchestrator = _orch(tmp_path)
-    orchestrator._resolve_case_folder_with_fallback = lambda path: path
+    orchestrator._resolve_authoritative_case_folder_for_write = lambda path: path
     orchestrator._scan_case_folder_docs = lambda folder, action: {
         "closing_fee_files": [str(tmp_path / "結案酬金領款單.pdf")]
     }
@@ -878,7 +878,6 @@ def test_advance_payment_form_never_satisfies_closing_fee_gate(tmp_path):
     (opening / "預付酬金領款單_115-A.pdf").write_bytes(b"%PDF-1.4\n")
 
     orchestrator = _orch(tmp_path)
-    orchestrator._resolve_case_folder_with_fallback = lambda path: path
     docs = orchestrator._scan_case_folder_docs(str(case_folder), action="closing")
 
     assert docs.get("closing_fee_files") == []
@@ -915,7 +914,7 @@ def test_mail_triggered_result_requires_new_exact_attachment(tmp_path):
     os.utime(old_fee, (old_ts, old_ts))
 
     orchestrator = _orch(tmp_path)
-    orchestrator._resolve_case_folder_with_fallback = lambda path: path
+    orchestrator._resolve_authoritative_case_folder_for_write = lambda path: path
     queued_at = datetime.now().isoformat(timespec="seconds")
 
     assert orchestrator._nas_satisfies_trigger(
@@ -948,7 +947,7 @@ def test_closing_transfer_notice_text_is_completion_evidence(tmp_path):
         "案件已轉入",
         encoding="utf-8",
     )
-    orchestrator._resolve_case_folder_with_fallback = lambda path: path
+    orchestrator._resolve_authoritative_case_folder_for_write = lambda path: path
     orchestrator._scan_case_folder_docs = lambda folder, action: {
         "closing_fee_files": []
     }
@@ -1003,6 +1002,9 @@ def test_initial_download_cannot_clear_newer_same_case_receipt(tmp_path):
                 "laf_case_number": "115-SYNTHETIC",
                 "status": "pending_retry",
                 "queue_token": newer_token,
+                "event_received_at": (
+                    datetime.now() + timedelta(days=1)
+                ).isoformat(timespec="seconds"),
             }
         }
     )
@@ -1018,12 +1020,82 @@ def test_initial_download_cannot_clear_newer_same_case_receipt(tmp_path):
         files=["synthetic.pdf"],
         source="initial",
         trigger_id=older_trigger,
+        trigger_received_at=datetime.now(),
     )
     saved = orchestrator._load_pending_portal_downloads()
 
     assert result["ok"] is True
     assert saved["115-SYNTHETIC"]["queue_token"] == newer_token
     assert saved["115-SYNTHETIC"]["status"] == "pending_retry"
+
+
+def test_newer_initial_download_clears_older_same_case_receipt(tmp_path):
+    orchestrator = _orch(tmp_path)
+    old_observed = datetime.now() - timedelta(days=2)
+    orchestrator._save_pending_portal_downloads(
+        {
+            "115-SYNTHETIC": {
+                "laf_case_number": "115-SYNTHETIC",
+                "status": "pending_retry",
+                "queue_token": "older-event-token",
+                "event_received_at": old_observed.isoformat(timespec="seconds"),
+            }
+        }
+    )
+    orchestrator._resolve_case_folder_for_laf = lambda *_args, **_kwargs: str(tmp_path)
+    orchestrator._archive_portal_downloads = lambda *_args, **_kwargs: {
+        "ok": True,
+        "new_files": ["synthetic.pdf"],
+        "skipped_existing": [],
+    }
+
+    result = orchestrator._process_portal_download_result(
+        laf_number="115-SYNTHETIC",
+        files=["synthetic.pdf"],
+        source="initial",
+        trigger_id="newer-successful-message",
+        trigger_received_at=datetime.now(),
+    )
+
+    assert result["ok"] is True
+    assert "115-SYNTHETIC" not in orchestrator._load_pending_portal_downloads()
+
+
+def test_portal_archive_rejects_user_mount_cache(tmp_path):
+    orchestrator = _orch(tmp_path)
+    local_cache = tmp_path / ".magi_mounts" / "lumi" / "case"
+    local_cache.mkdir(parents=True)
+
+    result = orchestrator._archive_portal_downloads(
+        [str(tmp_path / "download.zip")], str(local_cache)
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "authoritative_case_storage_unavailable"
+
+
+def test_user_mount_cache_resolves_to_authoritative_write_target(monkeypatch):
+    monkeypatch.setattr(
+        laf_module,
+        "translate_local_path_to_canonical",
+        lambda _path: r"Y:\\lumi\\03_工作資料\\10_結案\\case",
+    )
+    monkeypatch.setattr(
+        laf_module,
+        "resolve_case_path_for_write",
+        lambda path: {
+            "ok": path.startswith("Y:"),
+            "local_path": "/Volumes/lumi/lumi/03_工作資料/10_結案/case"
+            if path.startswith("Y:")
+            else "",
+        },
+    )
+
+    resolved = LAFOrchestrator._resolve_authoritative_case_folder_for_write(
+        "/Users/test/.magi_mounts/lumi/lumi/03_工作資料/10_結案/case"
+    )
+
+    assert resolved == "/Volumes/lumi/lumi/03_工作資料/10_結案/case"
 
 
 def test_initial_download_clears_only_its_own_receipt_and_empty_token_clears_nothing(tmp_path):
