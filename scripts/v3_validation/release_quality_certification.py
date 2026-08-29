@@ -51,6 +51,12 @@ V2_COMPAT_ENV_ALLOWLIST = (
     "LC_ALL",
     "MAGI_ENABLE_LIVE_TESTS",
     "MAGI_V3_OFFLINE_CERTIFICATION",
+    # The release no longer carries a private copy of ``venv``.  Actual
+    # route-replay workers therefore need the already certifier-bound
+    # centralized runtime path even during the V2 compatibility transcript.
+    # The certifier verifies this executable before entering the transcript;
+    # the worker revalidates it before importing handlers.
+    "MAGI_V3_PYTHON_RUNTIME",
     SEATBELT_CHILD_ENV,
     "PATH",
     "PYTHONDONTWRITEBYTECODE",
