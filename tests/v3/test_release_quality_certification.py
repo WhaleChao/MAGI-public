@@ -292,6 +292,28 @@ def test_release_pytest_transcript_runs_inside_write_and_network_seatbelt(
     assert network.returncode == 0, network.stderr
 
 
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="Seatbelt is a macOS control")
+def test_outer_seatbelt_uses_explicit_producer_home_not_ambient_live_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer_home = tmp_path / "producer-home"
+    producer_temporary = tmp_path / "producer-tmp"
+    workspace = producer_temporary / "quality-work"
+    producer_home.mkdir()
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(Path.home()))
+
+    profile = certification._seatbelt_profile(
+        workspace,
+        isolated_home=producer_home,
+        temporary_root=producer_temporary,
+    )
+
+    assert str(producer_home) in profile
+    assert str(workspace) in profile
+    assert "(deny network*)" in profile
+
+
 def test_v2_compat_environment_removes_sealed_release_bindings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

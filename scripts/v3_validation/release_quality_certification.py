@@ -142,11 +142,18 @@ def _quoted(path: Path) -> str:
     return json.dumps(str(path.resolve()))
 
 
-def _isolated_roots(workspace: Path) -> tuple[Path, ...]:
+def _isolated_roots(
+    workspace: Path,
+    *,
+    isolated_home: Path | None = None,
+    temporary_root: Path | None = None,
+) -> tuple[Path, ...]:
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
     live_root = (real_home / "Library/Application Support/MAGI").resolve()
-    home = Path(os.environ.get("HOME", "")).resolve(strict=True)
-    temporary = Path(os.environ.get("TMPDIR", "")).resolve(strict=True)
+    home = (isolated_home or Path(os.environ.get("HOME", ""))).resolve(strict=True)
+    temporary = (
+        temporary_root or Path(os.environ.get("TMPDIR", ""))
+    ).resolve(strict=True)
     resolved_workspace = workspace.resolve(strict=True)
     if home == real_home or home == live_root or home.is_relative_to(live_root):
         raise ReleaseQualityCertificationError("pytest HOME is not isolated from live MAGI")
@@ -179,7 +186,12 @@ def _live_mutable_read_roots(real_home: Path) -> tuple[Path, ...]:
     )
 
 
-def _seatbelt_profile(workspace: Path) -> str:
+def _seatbelt_profile(
+    workspace: Path,
+    *,
+    isolated_home: Path | None = None,
+    temporary_root: Path | None = None,
+) -> str:
     """Deny network and non-sandbox writes for every release pytest child."""
 
     sandbox_exec = shutil.which("sandbox-exec")
@@ -201,7 +213,14 @@ def _seatbelt_profile(workspace: Path) -> str:
         "(deny network*)",
         "(deny file-write*)",
         '(allow file-write* (literal "/dev/null"))',
-        *(f"(allow file-write* (subpath {_quoted(path)}))" for path in _isolated_roots(workspace)),
+        *(
+            f"(allow file-write* (subpath {_quoted(path)}))"
+            for path in _isolated_roots(
+                workspace,
+                isolated_home=isolated_home,
+                temporary_root=temporary_root,
+            )
+        ),
         *(f"(deny file-read* (literal {_quoted(path)}))" for path in protected),
         *(f"(deny file-read* (subpath {_quoted(path)}))" for path in protected),
         f"(deny file-write* (literal {_quoted(live_root)}))",
@@ -794,6 +813,10 @@ def _run_seatbelt_child() -> int:
         prefix="magi-v3-producer-state-", dir=temporary
     ) as producer_state_value:
         producer_state = Path(producer_state_value)
+        producer_home = producer_state / "home"
+        producer_temporary = producer_state / "tmp"
+        producer_home.mkdir()
+        producer_temporary.mkdir()
         staged_website, _staged_website_receipt = _stage_v3_website_admin(
             producer_state
         )
@@ -803,12 +826,18 @@ def _run_seatbelt_child() -> int:
                 for name, relative in FORMAL_PRODUCER_STATE_PATHS.items()
             }
         )
+        env["HOME"] = str(producer_home)
+        env["TMPDIR"] = str(producer_temporary)
         env["MAGI_WEBSITE_ROOT"] = str(staged_website)
         result = subprocess.run(
             [
                 "/usr/bin/sandbox-exec",
                 "-p",
-                _seatbelt_profile(temporary),
+                _seatbelt_profile(
+                    temporary,
+                    isolated_home=producer_home,
+                    temporary_root=temporary,
+                ),
                 "--",
                 sys.executable,
                 str(Path(__file__).resolve(strict=True)),
