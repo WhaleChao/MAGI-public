@@ -1975,6 +1975,9 @@ def _prepare_fixture(
             + "\n",
             encoding="utf-8",
         )
+    elif kind == "commercial_readiness_schedule_fixture":
+        for directory in ("runtime", "agent", "metrics", "exports"):
+            (fixture_root / directory).mkdir(parents=True)
     elif kind == "nightly_health_report":
         agent = fixture_root / "agent"
         runs = fixture_root / "autopilot-runs"
@@ -5220,6 +5223,43 @@ def _contract_ok(
         backups = sorted((fixture_root / "runtime" / "backups" / "market_watchlist").glob("*.json"))
         ok = len(backups) == 1 and backups[0].read_bytes() == source.read_bytes()
         return ok, {"backup_count": len(backups), "source_preserved": source.exists()}
+    if contract_type == "commercial_readiness_schedule_fixture":
+        path = (fixture_root / Path(str(contract.get("path") or ""))).resolve()
+        if not _is_relative_to(path, fixture_root.resolve()) or not path.is_file():
+            return False, {"error": "commercial readiness fixture report is missing or escaped"}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False, {"error": "commercial readiness fixture report is unreadable"}
+        checks = payload.get("checks") if isinstance(payload, dict) else None
+        omitted = payload.get("omitted_host_checks") if isinstance(payload, dict) else None
+        expected_omitted = {
+            "formal_saas_readiness",
+            "live_conflict_audit",
+            "process_hygiene",
+            "resource_governor",
+            "model_live_gate",
+            "stability_observer_once",
+        }
+        observed_checks = checks if isinstance(checks, list) else []
+        ok = (
+            payload.get("schema") == "magi.v3.commercial-readiness-schedule-fixture/v1"
+            and payload.get("schedule_fixture") is True
+            and payload.get("ok") is True
+            and payload.get("summary") == {"pass": 3, "fail": 0, "total": 3}
+            and len(observed_checks) == 3
+            and all(isinstance(row, dict) and row.get("ok") is True for row in observed_checks)
+            and set(omitted or []) == expected_omitted
+        )
+        return ok, {
+            "checks": {
+                "schema": payload.get("schema") == "magi.v3.commercial-readiness-schedule-fixture/v1",
+                "fixture_mode": payload.get("schedule_fixture") is True,
+                "three_deterministic_checks_passed": payload.get("summary") == {"pass": 3, "fail": 0, "total": 3},
+                "host_checks_explicitly_omitted": set(omitted or []) == expected_omitted,
+            },
+            "payload_sha256": _sha256(payload),
+        }
     system_diagnostic_terminal = contract_type == "system_diagnostic_terminal"
     if contract_type == "stdout_json" or system_diagnostic_terminal:
         payload = _extract_json(stdout)

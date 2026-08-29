@@ -27,6 +27,7 @@ from scripts.v3_validation.schedule_body_registry import (
     resolve_registry,
     run_sandbox_escape_probes,
 )
+from scripts.v3_campaign.schedule_realism import _logical_definition_sha256
 from scripts.v3_validation.schedule_product_fixture_matrix import adapter_proposals
 from scripts.v3_validation.schedule_nonstorage_fixture_matrix import (
     adapter_proposals as nonstorage_adapter_proposals,
@@ -80,11 +81,11 @@ def test_registry_resolves_every_enabled_job_exactly_once() -> None:
     entries, inherited, new = resolve_registry(ROOT, registry, jobs)
     enabled = {str(job["id"]) for job in jobs if job.get("enabled") is True}
 
-    assert len(enabled) == 95
+    assert len(enabled) == 96
     assert len(entries) == len(enabled)
     assert {row["job_id"] for row in entries} == enabled
     assert len(inherited) == 8
-    assert len(new) == 87
+    assert len(new) == 88
     contract_types = [
         str(adapter["success_contract"]["type"])
         for adapter in new.values()
@@ -97,7 +98,7 @@ def test_registry_resolves_every_enabled_job_exactly_once() -> None:
     assert contract_types.count("system_diagnostic_terminal") == len(
         SYSTEM_DIAGNOSTIC_JOB_IDS
     )
-    assert sum(row["classification"] == "safe_adapter" for row in entries) == 95
+    assert sum(row["classification"] == "safe_adapter" for row in entries) == 96
     assert sum(row["classification"] == "blocked" for row in entries) == 0
     assert all(
         (row["classification"] == "blocked") == bool(row["blockers"])
@@ -1041,9 +1042,10 @@ def test_dependency_resolver_uses_trusted_root_with_sealed_path(
         "job_laf_gmail_dispatch_scan",
         "job_laf_portal_new_files_scan",
         "job_laf_condition_draft",
-        "job_laf_nightly_audit",
-        "job_business_module_live_check",
-        "job_heavy_translation_quality_live",
+            "job_laf_nightly_audit",
+            "job_business_module_live_check",
+            "job_commercial_readiness_live",
+            "job_heavy_translation_quality_live",
         "job_distill_train_gemma",
         "job_insight_sync",
         "job_reprocess_insights",
@@ -1397,6 +1399,22 @@ def test_registry_source_declares_formal_release_binding() -> None:
     assert contract["dispatcher_latency_is_forbidden"] is True
     assert contract["sleep_probe_is_forbidden"] is True
     assert contract["fake_handler_is_forbidden"] is True
+
+
+def test_registry_and_baseline_share_the_current_cron_logical_binding() -> None:
+    jobs, cron_digest = bound_cron_jobs(ROOT)
+    registry = json.loads((ROOT / REGISTRY_PATH).read_text(encoding="utf-8"))
+    baseline = json.loads((ROOT / "config/v3_schedule_realism_baseline.json").read_text(encoding="utf-8"))
+    logical_digest = _logical_definition_sha256(jobs)
+
+    assert registry["release_binding"]["cron_jobs_source_sha256"] == cron_digest
+    assert registry["release_binding"]["logical_definition_sha256"] == logical_digest
+    assert baseline["source_evidence"]["job_definitions_sha256"] == cron_digest
+    assert baseline["source_evidence"]["logical_definition_sha256"] == logical_digest
+    assert baseline["coverage"]["job_definitions"] == len(jobs)
+    assert baseline["coverage"]["enabled_job_definitions"] == sum(
+        job.get("enabled") is True for job in jobs
+    )
 
 
 def test_registry_accepts_only_logically_identical_candidate_snapshot_digest() -> None:

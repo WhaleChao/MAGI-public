@@ -648,6 +648,42 @@ def live_validation_commands(py: str | None = None) -> dict[str, list[str]]:
 
 
 def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db: bool) -> dict[str, Any]:
+    # The scheduler body campaign must exercise this real entrypoint without
+    # touching host services.  The production gate below intentionally probes
+    # live model/process state, so it is not a valid Seatbelt fixture.  Keep a
+    # small, explicit release-gate fixture branch here rather than letting the
+    # offline validator accidentally certify host-dependent checks (or fail on
+    # sandbox-denied localhost access).
+    if (
+        os.environ.get("MAGI_V3_REALISM_SANDBOX") == "1"
+        and os.environ.get("MAGI_V3_SCHEDULE_FIXTURE") == "1"
+    ):
+        py = _python()
+        checks = [
+            check_doctor(py),
+            check_installer_dry_run(py),
+            check_public_release_audit(py, strict=True),
+        ]
+        passed = sum(1 for check in checks if check.ok)
+        payload = {
+            "schema": "magi.v3.commercial-readiness-schedule-fixture/v1",
+            "schedule_fixture": True,
+            "ok": passed == len(checks),
+            "summary": {"pass": passed, "fail": len(checks) - passed, "total": len(checks)},
+            "checks": [asdict(check) for check in checks],
+            "omitted_host_checks": [
+                "formal_saas_readiness",
+                "live_conflict_audit",
+                "process_hygiene",
+                "resource_governor",
+                "model_live_gate",
+                "stability_observer_once",
+            ],
+        }
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload["json_out"] = str(json_out)
+        return payload
     runtime_binding = _load_runtime_env()
     py = _python()
     binding = check_deployment_bindings() if _installed_release() else None

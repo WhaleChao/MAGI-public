@@ -215,7 +215,7 @@ def test_duration_profiles_use_p95_only_with_three_independent_successes() -> No
     assert len(profiles) == (
         baseline["coverage"]["enabled_job_definitions"] - len(invalidated_ids)
     )
-    assert coverage["enabled_jobs"] == 95
+    assert coverage["enabled_jobs"] == 96
     assert coverage["profiles"] == len(profiles)
     assert coverage["p95_jobs"] == baseline["coverage"]["jobs_meeting_minimum_samples"]
     assert coverage["sparse_fallback_jobs"] == len(profiles) - coverage["p95_jobs"]

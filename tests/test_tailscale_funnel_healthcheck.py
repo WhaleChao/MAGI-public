@@ -120,6 +120,42 @@ def test_public_and_local_dns_success_without_scope_is_amber(monkeypatch):
     assert result.get("local_access_degraded") is None
 
 
+def test_schedule_fixture_omits_external_probes_and_requires_bounded_reassert(monkeypatch, tmp_path):
+    monkeypatch.setenv("MAGI_V3_REALISM_SANDBOX", "1")
+    monkeypatch.setenv("MAGI_V3_SCHEDULE_ADAPTER", "real_entrypoint_fixture_v1")
+    monkeypatch.setenv("MAGI_TAILSCALE_FIXTURE_LOCAL_BACKEND", str(tmp_path / "health.json"))
+    monkeypatch.setenv("MAGI_PUBLIC_BASE_URL", "https://fixture.tailnet.example")
+    monkeypatch.setattr(MODULE, "_load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        MODULE,
+        "_load_funnel_status",
+        lambda: {
+            "ok": True,
+            "data": {
+                "TCP": {"443": {"HTTPS": True}},
+                "Web": {
+                    "fixture.tailnet.example:443": {
+                        "Handlers": {"/": {"Proxy": "http://127.0.0.1:5002"}}
+                    }
+                },
+                "AllowFunnel": {"fixture.tailnet.example:443": True},
+            },
+        },
+    )
+    monkeypatch.setattr(MODULE, "_local_funnel_backend_ready", lambda: {"ok": True, "fixture": True})
+    monkeypatch.setattr(MODULE, "_reassert_approved_funnel", lambda _scope: {"status": "applied"})
+    monkeypatch.setattr(MODULE, "_public_ips", lambda _host: pytest.fail("external DNS probe must be omitted"))
+
+    result = MODULE.check(apply=True)
+
+    assert result["status"] == "recovered"
+    assert result["external_network_probes"] == "omitted"
+    assert result["public_dns"]["skipped"] is True
+    assert result["probes"][0]["ok"] is False
+    assert result["reprobes"][0]["ok"] is True
+    assert result["mobile_entry_after_repair"]["ok"] is True
+
+
 def test_public_dns_matrix_detects_browser_visible_tcp_nxdomain(monkeypatch):
     monkeypatch.setattr(MODULE.shutil, "which", lambda name: "/usr/bin/dig" if name == "dig" else None)
 

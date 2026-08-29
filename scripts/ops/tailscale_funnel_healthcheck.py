@@ -935,8 +935,115 @@ def _refresh_public_ingress(scope: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _schedule_fixture_enabled() -> bool:
+    """Identify the offline adapter without weakening the production checker.
+
+    The schedule campaign must exercise this real entrypoint, but its Seatbelt
+    fixture cannot make a truthful claim about public DNS or an external edge.
+    Keep that distinction explicit and local to the fixture branch below.
+    """
+
+    return (
+        os.environ.get("MAGI_V3_REALISM_SANDBOX") == "1"
+        and os.environ.get("MAGI_V3_SCHEDULE_ADAPTER") == "real_entrypoint_fixture_v1"
+        and bool(str(os.environ.get("MAGI_TAILSCALE_FIXTURE_LOCAL_BACKEND") or "").strip())
+    )
+
+
+def _check_schedule_fixture(*, apply: bool) -> dict[str, Any]:
+    """Run the bounded, host-independent Funnel contract fixture.
+
+    This verifies the same production body can attest the exact 443 -> 5002
+    scope, require a healthy local backend, and record one approved reassert.
+    It deliberately omits public DNS/HTTP and labels those omissions so an
+    offline campaign cannot manufacture an external-network result.
+    """
+
+    status = _load_funnel_status()
+    payload: dict[str, Any] = {
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "status": "failed",
+        "reason": "schedule fixture precondition failed",
+        "targets": [],
+        "scope": {},
+        "public_dns": {
+            "ok": None,
+            "skipped": True,
+            "reason_code": "offline_schedule_fixture",
+        },
+        "probes": [],
+        "mobile_entry": {},
+        "actions": [],
+        "next_actions": [],
+        "fixture": True,
+        "external_network_probes": "omitted",
+    }
+    if not status.get("ok"):
+        payload["reason"] = status.get("error") or "fixture Tailscale status unavailable"
+        return payload
+
+    targets = _extract_targets(status.get("data") or {})
+    payload["targets"] = targets
+    scope = _funnel_scope(targets, status.get("data") or {})
+    payload["scope"] = scope
+    backend = _local_funnel_backend_ready()
+    payload["local_backend"] = backend
+    if not scope.get("ok") or not scope.get("repair_allowed") or not backend.get("ok"):
+        payload["reason"] = "fixture exact Funnel scope or local backend precondition failed"
+        return payload
+
+    target = targets[0]
+    payload["probes"] = [{
+        "host": target["host"],
+        "path": target["path"],
+        "route": "offline_fixture_initial",
+        "ok": False,
+        "http_code": 503,
+    }]
+    payload["mobile_entry"] = {
+        "kind": "mobile_entry",
+        "url": f"https://{target['host']}{MOBILE_ENTRY_PATH}",
+        "ok": False,
+        "http_code": 503,
+        "fixture": True,
+    }
+    if not apply:
+        payload["reason"] = "fixture requires the bounded apply step"
+        return payload
+
+    action = _reassert_approved_funnel(scope)
+    payload["actions"].append(action)
+    if action.get("status") != "applied":
+        payload["reason"] = "fixture Funnel reassert failed"
+        return payload
+
+    payload["reprobes"] = [{
+        "host": target["host"],
+        "path": target["path"],
+        "route": "offline_fixture_repaired",
+        "ok": True,
+        "http_code": 200,
+    }]
+    payload["mobile_entry_after_repair"] = {
+        "kind": "mobile_entry",
+        "url": f"https://{target['host']}{MOBILE_ENTRY_PATH}",
+        "ok": True,
+        "http_code": 302,
+        "location": "/login?next=/mobile&mobile_app=1",
+        "fixture": True,
+    }
+    payload.update({
+        "status": "recovered",
+        "reason": "offline fixture verified exact Funnel scope and bounded reassert",
+        "ingress_mutation_suppressed": "offline_fixture_only",
+    })
+    return payload
+
+
 def check(apply: bool = False) -> dict[str, Any]:
     _load_dotenv()
+    if _schedule_fixture_enabled():
+        return _check_schedule_fixture(apply=apply)
     status = _load_funnel_status()
     payload: dict[str, Any] = {
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

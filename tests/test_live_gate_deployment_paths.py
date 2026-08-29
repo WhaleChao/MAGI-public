@@ -8,6 +8,41 @@ from scripts.ops import commercial_readiness_live as commercial
 from scripts.ops import smoke_test_full as smoke
 
 
+def test_commercial_schedule_fixture_branch_is_explicitly_host_independent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MAGI_V3_REALISM_SANDBOX", "1")
+    monkeypatch.setenv("MAGI_V3_SCHEDULE_FIXTURE", "1")
+    checks = [commercial.Check(f"check-{index}", True, "pass") for index in range(3)]
+    monkeypatch.setattr(commercial, "check_doctor", lambda _py: checks[0])
+    monkeypatch.setattr(commercial, "check_installer_dry_run", lambda _py: checks[1])
+    monkeypatch.setattr(
+        commercial,
+        "check_public_release_audit",
+        lambda _py, *, strict: checks[2] if strict else commercial.Check("unexpected", False, "fail"),
+    )
+
+    output = tmp_path / "runtime" / "commercial.json"
+    payload = commercial.run_gate(
+        json_out=output,
+        strict_public=False,
+        skip_backup=True,
+        skip_db=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["schedule_fixture"] is True
+    assert payload["summary"] == {"pass": 3, "fail": 0, "total": 3}
+    assert set(payload["omitted_host_checks"]) == {
+        "formal_saas_readiness",
+        "live_conflict_audit",
+        "process_hygiene",
+        "resource_governor",
+        "model_live_gate",
+        "stability_observer_once",
+    }
+
+
 def test_smoke_accepts_bound_runtime_and_environment_for_installed_release(
     tmp_path: Path, monkeypatch
 ) -> None:

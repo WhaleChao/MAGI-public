@@ -615,12 +615,13 @@ def test_current_schedule_capacity_uses_release_bound_compressed_active_p95(
     body = evidence["layers"]["business_body_plane"]
     assert body["status"] == "passed"
     duration = body["duration_evidence"]
-    assert duration["p95_jobs"] == 95
-    assert duration["historical_production_p95_jobs"] == 78
-    assert duration["compressed_active_p95_jobs"] == 95
+    baseline = json.loads((ROOT / "config/v3_schedule_realism_baseline.json").read_text(encoding="utf-8"))
+    assert duration["p95_jobs"] == 96
+    assert duration["historical_production_p95_jobs"] == baseline["coverage"]["jobs_meeting_minimum_samples"]
+    assert duration["compressed_active_p95_jobs"] == 96
     assert duration["sparse_fallback_jobs"] == 0
     assert duration["certifying_p95_coverage"] is True
-    assert len(duration["profile_bindings"]) == 95
+    assert len(duration["profile_bindings"]) == 96
     assert all(
         row["compressed_active"]["sample_kind"]
         == "compressed_active_bounded_real_entrypoint"
@@ -628,7 +629,7 @@ def test_current_schedule_capacity_uses_release_bound_compressed_active_p95(
         and row["compressed_active"]["semantic_success"] is True
         for row in duration["profile_bindings"]
     )
-    assert body["body_evidence"]["jobs_with_three_successful_real_body_samples"] == 95
+    assert body["body_evidence"]["jobs_with_three_successful_real_body_samples"] == 96
     assert body["body_evidence"]["jobs_missing_real_body_adapter"] == 0
     assert body["body_evidence"]["body_adapter_coverage_complete"] is True
     assert body["dispatcher_or_help_latency_substituted"] is False
