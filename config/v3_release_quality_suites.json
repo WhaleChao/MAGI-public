@@ -18,13 +18,14 @@
       "tests/v3/test_dispatcher.py"
     ],
     "contract": [
-      "tests/v3/test_compat_admin.py",
-      "tests/v3/test_compat_gateway.py",
-      "tests/v3/test_compat_http_contract_runner.py",
-      "tests/v3/test_compat_inventory.py",
-      "tests/v3/test_compat_osc_file_contract.py",
-      "tests/v3/test_compat_side_effects.py",
-      "tests/v3/test_service_manifest.py"
+        "tests/v3/test_compat_admin.py",
+        "tests/v3/test_compat_gateway.py",
+        "tests/v3/test_compat_http_contract_runner.py",
+        "tests/v3/test_compat_inventory.py",
+        "tests/v3/test_compat_live_validation.py",
+        "tests/v3/test_compat_osc_file_contract.py",
+        "tests/v3/test_compat_side_effects.py",
+        "tests/v3/test_service_manifest.py"
     ],
     "integration": [
       "tests/v3/test_cron_service.py",
