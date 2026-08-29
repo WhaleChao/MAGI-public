@@ -394,6 +394,33 @@ def test_retired_v2_baseline_projects_only_v3_compatibility_nodes() -> None:
     )
 
 
+def test_retired_v2_manifest_allows_v3_quality_contract_paths() -> None:
+    manifest = {
+        "v2_regression": {
+            "mode": "retired_baseline_v3_compatibility",
+            "include_globs": ["tests/v3/test_compat_*.py"],
+        },
+        "v3_suites": {
+            "unit": ["tests/v3/test_core_health.py"],
+        },
+        "quality_contract_groups": {
+            "quality": ["tests/v3/test_core_health.py"],
+        },
+        "golden_sets": {
+            "answer": ["tests/v3/test_core_health.py"],
+        },
+    }
+    release_files = {
+        "tests/v3/test_compat_gateway.py": "a" * 64,
+        "tests/v3/test_core_health.py": "b" * 64,
+    }
+
+    v2_paths, v3_paths = certification._paths_from_manifest(manifest, release_files)
+
+    assert v2_paths == ["tests/v3/test_compat_gateway.py"]
+    assert v3_paths == ["tests/v3/test_core_health.py"]
+
+
 def test_v2_compat_stages_complete_hash_bound_cron_without_leaking_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

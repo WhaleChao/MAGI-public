@@ -553,8 +553,16 @@ def _paths_from_manifest(manifest: Mapping[str, Any], release_files: Mapping[str
                     f"{section_name} selection is invalid"
                 )
             declared_quality.update(rows)
-    if not declared_quality <= set(v2):
-        missing = sorted(declared_quality - set(v2))
+    # In retired mode the quality/golden contract is deliberately declared
+    # against the native V3 suite.  The V2 transcript is only a projected
+    # compatibility boundary, so requiring every V3 contract path to also be
+    # selected by the retired V2 glob rejects a valid release before pytest
+    # can run.  Keep the historical strict V2 check for releases that still
+    # execute the legacy regression suite.
+    v2_mode = str(manifest.get("v2_regression", {}).get("mode", "required"))
+    quality_release_paths = set(v3) if v2_mode == "retired_baseline_v3_compatibility" else set(v2)
+    if not declared_quality <= quality_release_paths:
+        missing = sorted(declared_quality - quality_release_paths)
         raise ReleaseQualityCertificationError(
             f"quality contract tests are absent from the release: {missing}"
         )
