@@ -376,7 +376,18 @@ def summarize_report(
         row["passed_all_required"] is not True
         for row in (*suite_results.values(), *quality_results.values(), *golden_results.values())
     ):
-        raise ReleaseQualityEvidenceError("required release quality tests are not strictly passing")
+        offenders = [
+            f"{nodeid}={outcome}"
+            for nodeid, outcome in sorted(v3_final.items())
+            if outcome != "passed"
+        ]
+        detail = ", ".join(offenders[:20])
+        if len(offenders) > 20:
+            detail += f", ... (+{len(offenders) - 20})"
+        raise ReleaseQualityEvidenceError(
+            "required release quality tests are not strictly passing"
+            + (f": {detail}" if detail else "")
+        )
     if diff_count != 0 or duplicate_count != 0:
         raise ReleaseQualityEvidenceError("golden side-effect diff is not strictly approved")
     return {

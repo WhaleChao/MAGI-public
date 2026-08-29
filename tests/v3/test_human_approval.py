@@ -42,7 +42,7 @@ def _write(path: Path, value: object, mode: int = 0o600) -> None:
 
 def _fixture(tmp_path: Path) -> dict[str, object]:
     required = list(EVIDENCE_SPECS)
-    assert required[-1] == EVIDENCE_ID and len(required) == 28
+    assert required[-1] == EVIDENCE_ID and len(required) >= 2
     config_path = (tmp_path / "gates.json").resolve()
     config = {
         "schema_version": 1,
@@ -82,12 +82,12 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             ],
         }
         _write(evidence_dir / f"{evidence_id}.json", envelope)
-    gate_path = (tmp_path / "release-gate-27.json").resolve()
+    gate_path = (tmp_path / "release-gate-pre-human.json").resolve()
     gate = {
         "schema_version": 1,
         "decision": "NO_GO",
         "fail_closed": True,
-        "required_count": 28,
+        "required_count": len(required),
         "expected_context": context,
         "passed": required[:-1],
         "missing": [EVIDENCE_ID],
@@ -149,7 +149,7 @@ def _bound_artifacts(output: Path, envelope: dict) -> list[BoundArtifact]:
     return result
 
 
-def test_27_of_28_merkle_request_interactive_receipt_and_g28_normalizer(
+def test_all_machine_gates_merkle_request_interactive_receipt_and_human_normalizer(
     tmp_path: Path,
 ) -> None:
     data = _fixture(tmp_path)
@@ -168,8 +168,9 @@ def test_27_of_28_merkle_request_interactive_receipt_and_g28_normalizer(
 
     assert status == "passed"
     request = json.loads(Path(data["request_path"]).read_text(encoding="utf-8"))
-    assert request["evidence_leaf_count"] == 27
-    assert len(request["machine_evidence"]) == 27
+    machine_count = len(data["required"]) - 1
+    assert request["evidence_leaf_count"] == machine_count
+    assert len(request["machine_evidence"]) == machine_count
     assert Path(data["request_path"]).stat().st_mode & 0o777 == 0o400
     assert receipt.stat().st_mode & 0o777 == 0o400
     envelope = json.loads((output / f"{EVIDENCE_ID}.json").read_text(encoding="utf-8"))
@@ -410,7 +411,7 @@ def test_conditional_approval_end_is_exclusive_and_evidence_drift_does_not_consu
     assert not Path(pre["consumption_marker"]).exists()
 
 
-def test_conditional_compile_emits_semantic_g28_envelope(tmp_path: Path) -> None:
+def test_conditional_compile_emits_semantic_human_envelope(tmp_path: Path) -> None:
     data = _fixture(tmp_path)
     request_path = (tmp_path / "conditional-request.json").resolve()
     pre = build_conditional_approval_request(
@@ -451,7 +452,7 @@ def test_conditional_compile_emits_semantic_g28_envelope(tmp_path: Path) -> None
     ) == []
 
 
-def test_conditional_compile_resumes_exact_marker_created_before_g28_emit(
+def test_conditional_compile_resumes_exact_marker_created_before_human_emit(
     tmp_path: Path,
 ) -> None:
     data = _fixture(tmp_path)

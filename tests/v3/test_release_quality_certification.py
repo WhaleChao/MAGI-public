@@ -187,7 +187,7 @@ def test_truthful_pytest_skip_reaches_strict_no_skip_policy(
     transcript["pytest_exitstatus"] = 0
     _rehash_report(report)
 
-    with pytest.raises(ReleaseQualityEvidenceError, match="strictly passing"):
+    with pytest.raises(ReleaseQualityEvidenceError, match="strictly passing") as error:
         summarize_report(
             report,
             manifest=suites,
@@ -201,6 +201,7 @@ def test_truthful_pytest_skip_reaches_strict_no_skip_policy(
                 (release / "release-manifest.json").read_bytes()
             ).hexdigest(),
         )
+    assert str(transcript["collected_nodeids"][0]) in str(error.value)
 
 
 @pytest.mark.parametrize("mutation", ["golden_dependency", "sandbox_safety", "release_id"])
@@ -413,6 +414,65 @@ def test_manifest_requires_v2_disabled_and_selects_only_v3_paths() -> None:
     v3_paths = certification._paths_from_manifest(manifest, release_files)
 
     assert v3_paths == ["tests/v3/test_core_health.py"]
+
+
+def test_v3_formal_pytest_routes_pdf_index_to_its_isolated_shared_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "quality-work"
+    workspace.mkdir()
+    observed: dict[str, object] = {}
+
+    def capture(command, *, env, **_kwargs):
+        observed["env"] = dict(env)
+        transcript = Path(env["MAGI_V3_PYTEST_TRANSCRIPT"])
+        transcript.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "pytest_exitstatus": 0,
+                    "python_runtime_sha256": "0" * 64,
+                    "python_runtime_realpath_sha256": "0" * 64,
+                    "collected_nodeids": ["tests/test_probe.py::test_probe"],
+                    "phase_reports": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv(certification.SEATBELT_CHILD_ENV, "1")
+    monkeypatch.setenv("MAGI_PDF_NAMER_CASE_INDEX", "/production/must-not-leak.json")
+    monkeypatch.setattr(certification.subprocess, "run", capture)
+    binding = certification.RuntimeBinding(
+        True,
+        "formal_manifest_bound",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        (certification.ROOT,),
+    )
+
+    certification._transcript_run(
+        ["tests/test_probe.py"],
+        workspace,
+        v3_runtime_binding=binding,
+    )
+
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    shared = workspace / "v3-test-state" / "shared"
+    assert environment["MAGI_V3_SHARED_STATE_DIR"] == str(shared)
+    assert environment["MAGI_PDF_NAMER_CASE_INDEX"] == str(
+        shared / "pdf-namer" / "_case_index.json"
+    )
+    assert Path(environment["MAGI_PDF_NAMER_CASE_INDEX"]).parent.is_dir()
 
 
 def test_v2_compat_stages_complete_hash_bound_cron_without_leaking_environment(

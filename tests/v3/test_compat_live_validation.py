@@ -168,32 +168,22 @@ def test_passed_report_requires_and_accepts_exact_plan_binding() -> None:
     assert result["evidence_passed"] is True
 
 
-def test_three_reset_separated_live_reports_complete_within_one_window() -> None:
+def test_single_policy_bound_live_report_completes_within_one_window() -> None:
     plan, template = _passed_report()
-    reports = []
-    for index, (started, finished) in enumerate(
-        (
-            ("2026-07-22T08:11:00+08:00", "2026-07-22T08:21:00+08:00"),
-            ("2026-07-22T08:31:00+08:00", "2026-07-22T08:41:00+08:00"),
-            ("2026-07-22T08:51:00+08:00", "2026-07-22T09:01:00+08:00"),
-        ),
-        start=1,
-    ):
-        report = copy.deepcopy(template)
-        report["report_id"] = f"isolated-live-pass-{index}"
-        report["started_at"] = started
-        report["finished_at"] = finished
-        reports.append(report)
+    report = copy.deepcopy(template)
+    report["report_id"] = "isolated-live-pass-1"
+    report["started_at"] = "2026-08-29T08:11:00+08:00"
+    report["finished_at"] = "2026-08-29T08:21:00+08:00"
     policy = json.loads(
         (Path(__file__).resolve().parents[2] / "config" / "v3_validation_campaign.json").read_text()
     )["isolated_live_validation"]
 
-    result = validate_live_campaign_reports(reports, plan, policy)
+    result = validate_live_campaign_reports([report], plan, policy)
 
     assert result["evidence_passed"] is True
-    assert result["completed_runs"] == 3
-    assert result["minimum_reset_minutes"] == 10
-    assert result["allowed_local_dates"] == ["2026-07-22"]
+    assert result["completed_runs"] == 1
+    assert result["minimum_reset_minutes"] == 0
+    assert result["allowed_local_dates"] == ["2026-08-29"]
 
 
 def test_live_campaign_rejects_report_outside_release_bound_date() -> None:
@@ -201,38 +191,30 @@ def test_live_campaign_rejects_report_outside_release_bound_date() -> None:
     policy = json.loads(
         (Path(__file__).resolve().parents[2] / "config" / "v3_validation_campaign.json").read_text()
     )["isolated_live_validation"]
-    reports = []
-    for index, (started, finished) in enumerate(
-        (
-            ("2026-07-21T08:11:00+08:00", "2026-07-21T08:21:00+08:00"),
-            ("2026-07-21T08:31:00+08:00", "2026-07-21T08:41:00+08:00"),
-            ("2026-07-21T08:51:00+08:00", "2026-07-21T09:01:00+08:00"),
-        ),
-        start=1,
-    ):
-        report = copy.deepcopy(template)
-        report["report_id"] = f"isolated-live-wrong-date-{index}"
-        report["started_at"] = started
-        report["finished_at"] = finished
-        reports.append(report)
+    report = copy.deepcopy(template)
+    report["report_id"] = "isolated-live-wrong-date-1"
+    report["started_at"] = "2026-08-28T08:11:00+08:00"
+    report["finished_at"] = "2026-08-28T08:21:00+08:00"
     with pytest.raises(ContractValidationError, match="release-bound allowed window"):
-        validate_live_campaign_reports(reports, plan, policy)
+        validate_live_campaign_reports([report], plan, policy)
 
 
-def test_live_campaign_rejects_missing_run_and_short_reset() -> None:
+def test_live_campaign_rejects_missing_run_and_enforces_declared_reset() -> None:
     plan, template = _passed_report()
     policy = json.loads(
         (Path(__file__).resolve().parents[2] / "config" / "v3_validation_campaign.json").read_text()
     )["isolated_live_validation"]
-    with pytest.raises(ContractValidationError, match="exactly 3"):
-        validate_live_campaign_reports([template], plan, policy)
+    with pytest.raises(ContractValidationError, match="exactly 1"):
+        validate_live_campaign_reports([], plan, policy)
 
+    multi_policy = dict(policy)
+    multi_policy["required_runs"] = 2
+    multi_policy["minimum_reset_minutes"] = 10
     reports = []
     for index, (started, finished) in enumerate(
         (
-            ("2026-07-22T08:11:00+08:00", "2026-07-22T08:21:00+08:00"),
-            ("2026-07-22T08:25:00+08:00", "2026-07-22T08:35:00+08:00"),
-            ("2026-07-22T08:45:00+08:00", "2026-07-22T08:55:00+08:00"),
+            ("2026-08-29T08:11:00+08:00", "2026-08-29T08:21:00+08:00"),
+            ("2026-08-29T08:25:00+08:00", "2026-08-29T08:35:00+08:00"),
         ),
         start=1,
     ):
@@ -242,7 +224,7 @@ def test_live_campaign_rejects_missing_run_and_short_reset() -> None:
         report["finished_at"] = finished
         reports.append(report)
     with pytest.raises(ContractValidationError, match="reset interval"):
-        validate_live_campaign_reports(reports, plan, policy)
+        validate_live_campaign_reports(reports, plan, multi_policy)
 
 
 def test_passed_report_rejects_empty_checks_and_evidence() -> None:

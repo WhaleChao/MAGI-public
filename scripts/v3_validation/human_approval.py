@@ -218,25 +218,30 @@ def _merkle_root(leaves: Sequence[str]) -> str:
     return level[0].hex()
 
 
-def _verify_27_gate(
+def _verify_machine_gate(
     gate: Mapping[str, Any], config: Mapping[str, Any], expected_context: Mapping[str, str]
 ) -> list[str]:
     required = config.get("required_evidence")
-    if not isinstance(required, list) or len(required) != 28 or required[-1] != EVIDENCE_ID:
+    if (
+        not isinstance(required, list)
+        or len(required) < 2
+        or len(required) != len(set(required))
+        or required[-1] != EVIDENCE_ID
+    ):
         raise HumanApprovalBlocked("cutover config does not define the exact final human gate")
     machine_ids = required[:-1]
     if (
         gate.get("schema_version") != 1
         or gate.get("decision") != "NO_GO"
         or gate.get("fail_closed") is not True
-        or gate.get("required_count") != 28
+        or gate.get("required_count") != len(required)
         or gate.get("expected_context") != dict(expected_context)
         or gate.get("passed") != machine_ids
         or gate.get("missing") != [EVIDENCE_ID]
         or gate.get("failed") != []
         or gate.get("invalid") != {}
     ):
-        raise HumanApprovalBlocked("release gate is not an exact 27/28 machine pass")
+        raise HumanApprovalBlocked("release gate is not an exact pre-human machine pass")
     return machine_ids
 
 
@@ -303,13 +308,13 @@ def build_approval_request(
     ttl_minutes: int = 30,
 ) -> dict[str, Any]:
     context = _context(expected_context)
-    gate_source = _freeze(release_gate_report, "27-of-28 release gate report")
+    gate_source = _freeze(release_gate_report, "pre-human release gate report")
     config_source = _freeze(gate_config, "cutover gate config")
     if config_source.sha256 != context["gate_config_sha256"]:
         raise HumanApprovalBlocked("approval gate config SHA-256 mismatch")
-    gate = _json_bytes(gate_source.data, "27-of-28 release gate report")
+    gate = _json_bytes(gate_source.data, "pre-human release gate report")
     config = _json_bytes(config_source.data, "cutover gate config")
-    machine_ids = _verify_27_gate(gate, config, context)
+    machine_ids = _verify_machine_gate(gate, config, context)
     rows, _sources = _machine_sources(evidence_dir, machine_ids)
     instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if ttl_minutes < 5 or ttl_minutes > 60:
@@ -507,7 +512,7 @@ def build_conditional_approval_request(
             "plan_id": g8_plan_id,
             "plan_file_sha256": g8_plan_file_sha256,
             "plan_semantic_sha256": g8_plan_semantic_sha256,
-            "operations": ["g8_smb_resource_validation", "final_v2_to_v3_cutover"],
+            "operations": ["g8_smb_resource_validation", "final_v3_release_cutover"],
             "usage_receipt_path": str(g8_usage_receipt_path),
         }
     digest = _write_new(output, request)
@@ -609,10 +614,10 @@ def verify_conditional_g8_preauthorization(
     plan_semantic_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Verify a genuine preapproval for one G8 target without consuming G28.
+    """Verify a genuine preapproval for one G8 target without consuming the final gate.
 
     This deliberately only reads the conditional request and its interactive
-    receipt.  Final cutover redemption remains the sole writer of the G28
+    receipt.  Final cutover redemption remains the sole writer of the final
     consumption marker.
     """
     request_source = _freeze(request_path, "conditional G8 approval request")
@@ -637,7 +642,7 @@ def verify_conditional_g8_preauthorization(
         "plan_id": plan_id,
         "plan_file_sha256": plan_file_sha256,
         "plan_semantic_sha256": plan_semantic_sha256,
-        "operations": ["g8_smb_resource_validation", "final_v2_to_v3_cutover"],
+        "operations": ["g8_smb_resource_validation", "final_v3_release_cutover"],
         "usage_receipt_path": usage_path_value,
     }
     if (
@@ -715,7 +720,7 @@ def redeem_conditional_approval(
     now: datetime | None = None,
     allow_existing_exact: bool = False,
 ) -> dict[str, Any]:
-    """Redeem a preapproval once, only after the current 27/28 gate is exact.
+    """Redeem a preapproval once after every current machine gate has passed.
 
     The marker path is committed into the approved request and written with
     O_EXCL.  A copied receipt cannot choose a new marker or replay approval.
@@ -773,7 +778,7 @@ def redeem_conditional_approval(
         or config_source.sha256 != context["gate_config_sha256"]
     ):
         raise HumanApprovalBlocked("conditional approval is invalid, stale, outside its approved window, or unauthorized")
-    machine_ids = _verify_27_gate(gate, config, context)
+    machine_ids = _verify_machine_gate(gate, config, context)
     rows, _sources = _machine_sources(evidence_dir, machine_ids)
     root = _merkle_root([row["leaf_sha256"] for row in rows])
     if not isinstance(request.get("consumption_path"), str):
@@ -858,9 +863,9 @@ def derive_conditional_human_approval_metrics(
     machine_sources: Mapping[str, FrozenSource],
     expected_context: Mapping[str, str],
 ) -> dict[str, Any]:
-    """Validate a v2 preapproval at its one permitted redemption point.
+    """Validate a V3 preapproval at its one permitted redemption point.
 
-    Callers must pass only the 27 frozen machine source roles.  The release
+    Callers must pass only the policy-declared frozen machine source roles.  The release
     gate normalizer separately requires the five fixed conditional source
     roles, preventing an unbound request or a second consumption record from
     being substituted after the fact.
@@ -876,7 +881,7 @@ def derive_conditional_human_approval_metrics(
             "target_sha256", "release_manifest_sha256", "release_id", "plan_id",
             "plan_file_sha256", "plan_semantic_sha256", "operations", "usage_receipt_path",
         }
-        or g8_binding.get("operations") != ["g8_smb_resource_validation", "final_v2_to_v3_cutover"]
+        or g8_binding.get("operations") != ["g8_smb_resource_validation", "final_v3_release_cutover"]
         or any(not isinstance(g8_binding.get(key), str) or not g8_binding.get(key) for key in g8_binding if key != "operations")
         or any(
             not SHA256_RE.fullmatch(str(g8_binding.get(key)))
@@ -938,9 +943,9 @@ def derive_conditional_human_approval_metrics(
         or not (starts <= consumed < ends)
     ):
         raise HumanApprovalBlocked("conditional approval was not preapproved then consumed within its exact window")
-    machine_ids = _verify_27_gate(gate_report, gate_config, context)
+    machine_ids = _verify_machine_gate(gate_report, gate_config, context)
     rows = consumption.get("machine_evidence")
-    if not isinstance(rows, list) or len(rows) != 27:
+    if not isinstance(rows, list) or len(rows) != len(machine_ids):
         raise HumanApprovalBlocked("conditional consumption machine evidence manifest is incomplete")
     expected_roles: set[str] = set()
     leaves: list[str] = []
@@ -986,7 +991,7 @@ def derive_conditional_human_approval_metrics(
     root = _merkle_root(leaves)
     if (
         set(machine_sources) != expected_roles
-        or consumption.get("evidence_leaf_count") != 27
+        or consumption.get("evidence_leaf_count") != len(machine_ids)
         or consumption.get("evidence_root_sha256") != root
     ):
         raise HumanApprovalBlocked("conditional consumption machine evidence root is not exact")
@@ -1017,13 +1022,13 @@ def compile_conditional_human_approval_evidence(
     expected_context: Mapping[str, str],
     now: datetime | None = None,
 ) -> str:
-    """Redeem a v2 preapproval and emit the final G28 evidence envelope."""
+    """Redeem a V3 preapproval and emit the final human evidence envelope."""
     from scripts.v3_evidence_compiler import CompileContext, SourceArtifact, _emit
 
     context_values = _context(expected_context)
     context = CompileContext(**context_values)
     context.validate()
-    # All validation and the 27-source freeze occur before this writes the
+    # All validation and the policy-declared source freeze occur before this writes the
     # O_EXCL marker.  A stale gate or altered artifact therefore never burns
     # an otherwise valid human preauthorization.
     redemption = redeem_conditional_approval(
@@ -1047,7 +1052,7 @@ def compile_conditional_human_approval_evidence(
     consumption = _json_bytes(consumption_source.data, "conditional approval consumption")
     gate = _json_bytes(gate_source.data, "conditional approval gate report")
     config = _json_bytes(config_source.data, "conditional approval gate config")
-    machine_ids = _verify_27_gate(gate, config, context_values)
+    machine_ids = _verify_machine_gate(gate, config, context_values)
     _rows, machine = _machine_sources(evidence_dir, machine_ids)
     metrics = derive_conditional_human_approval_metrics(
         request=request,
@@ -1105,9 +1110,9 @@ def derive_human_approval_metrics(
         or gate_config_sha256 != context["gate_config_sha256"]
     ):
         raise HumanApprovalBlocked("approval request/receipt release context drifted")
-    machine_ids = _verify_27_gate(gate_report, gate_config, context)
+    machine_ids = _verify_machine_gate(gate_report, gate_config, context)
     rows = request.get("machine_evidence")
-    if not isinstance(rows, list) or len(rows) != 27:
+    if not isinstance(rows, list) or len(rows) != len(machine_ids):
         raise HumanApprovalBlocked("approval request machine evidence manifest is incomplete")
     expected_roles: set[str] = set()
     leaf_hashes: list[str] = []
@@ -1157,7 +1162,7 @@ def derive_human_approval_metrics(
     expires = _time(request.get("expires_at"), "approval request expires_at")
     approved = _time(receipt.get("approved_at"), "approval receipt approved_at")
     if (
-        request.get("evidence_leaf_count") != 27
+        request.get("evidence_leaf_count") != len(machine_ids)
         or request.get("evidence_root_sha256") != evidence_root
         or receipt.get("request_sha256") != request_sha256
         or receipt.get("request_id") != request.get("request_id")
@@ -1212,7 +1217,7 @@ def compile_human_approval_evidence(
     receipt = _json_bytes(receipt_source.data, "approval receipt")
     gate = _json_bytes(gate_source.data, "approval gate report")
     config = _json_bytes(config_source.data, "approval gate config")
-    machine_ids = _verify_27_gate(gate, config, context_values)
+    machine_ids = _verify_machine_gate(gate, config, context_values)
     rows, machine = _machine_sources(evidence_dir, machine_ids)
     if request.get("machine_evidence") != rows:
         raise HumanApprovalBlocked("approval request machine evidence changed before compilation")

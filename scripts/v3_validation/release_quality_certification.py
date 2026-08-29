@@ -107,6 +107,7 @@ V3_FORMAL_ENV_ALLOWLIST = (
     "MAGI_V3_SERVICE_MANIFEST",
     "MAGI_V3_SERVICE_MANIFEST_SHA256",
     "MAGI_V3_VALIDATION_PROFILE_ID",
+    "MAGI_PDF_NAMER_CASE_INDEX",
     "MAGI_WEBSITE_ADMIN_SHA256",
     "MAGI_WEBSITE_ROOT",
     "PATH",
@@ -323,9 +324,17 @@ def _transcript_run(
                 "MAGI_SHARED_STATE_DIR": str(sandbox / "shared"),
                 "MAGI_V3_SHARED_STATE_DIR": str(sandbox / "shared"),
                 "MAGI_V3_STATE_DIR": str(sandbox / "state"),
+                "MAGI_PDF_NAMER_CASE_INDEX": str(
+                    sandbox / "shared" / "pdf-namer" / "_case_index.json"
+                ),
             }
         )
-        for directory in (Path(env["HOME"]), Path(env["TMPDIR"]), sandbox):
+        for directory in (
+            Path(env["HOME"]),
+            Path(env["TMPDIR"]),
+            sandbox,
+            sandbox / "shared" / "pdf-namer",
+        ):
             directory.mkdir(parents=True, exist_ok=True)
     else:
         env["PYTHONPATH"] = _pytest_pythonpath()

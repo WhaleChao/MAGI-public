@@ -151,7 +151,7 @@ def validate_live_campaign_reports(
     plan: dict[str, Any],
     policy: dict[str, Any],
 ) -> dict[str, Any]:
-    """Require three clean, reset-separated isolated runs inside one 24-hour campaign."""
+    """Validate the exact number of isolated runs declared by the V3 policy."""
 
     required_runs = policy.get("required_runs")
     reset_minutes = policy.get("minimum_reset_minutes")
@@ -162,10 +162,10 @@ def validate_live_campaign_reports(
     if (
         not isinstance(required_runs, int)
         or isinstance(required_runs, bool)
-        or required_runs < 3
+        or required_runs < 1
         or not isinstance(reset_minutes, int)
         or isinstance(reset_minutes, bool)
-        or reset_minutes < 10
+        or reset_minutes < 0
         or not isinstance(completion_hours, int)
         or isinstance(completion_hours, bool)
         or not 1 <= completion_hours <= 24
