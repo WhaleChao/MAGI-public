@@ -262,6 +262,9 @@ def test_scan_portal_new_files_ignores_retained_row_for_final_closed_case(
 def test_scan_portal_new_files_keeps_pending_report_case_actionable(
     monkeypatch, tmp_path
 ):
+    fallback_case = tmp_path / "CloudStorage" / "pending-report-case"
+    fallback_case.mkdir(parents=True)
+
     class FakeLaf:
         def login(self):
             return True
@@ -283,6 +286,7 @@ def test_scan_portal_new_files_keeps_pending_report_case_actionable(
             pass
 
     monkeypatch.setattr(audit, "_make_laf_web_automation", lambda log_prefix="": FakeLaf())
+    monkeypatch.setattr(audit, "is_authoritative_case_storage_path", lambda _path: False)
     monkeypatch.setattr(audit, "_collect_existing_portal_files", lambda _cases: set())
     monkeypatch.setattr(
         audit,
@@ -300,7 +304,7 @@ def test_scan_portal_new_files_keeps_pending_report_case_actionable(
                 "status": "結案中",
                 "legal_aid_status": "已結案，待報結",
                 "legal_aid_number": "1150507-E-024",
-                "folder_path": str(tmp_path),
+                "folder_path": str(fallback_case),
             }
         ],
         only_laf_no="1150507-E-024",
@@ -308,7 +312,12 @@ def test_scan_portal_new_files_keeps_pending_report_case_actionable(
     )
 
     assert len(result) == 1
-    assert result[0]["new_count"] == 1
+    # A non-authoritative temporary path must not turn an unverified mapping
+    # into a false missing-attachment alarm.  The current contract keeps the
+    # row visible for reconciliation while leaving the missing count at zero.
+    assert result[0]["new_count"] == 0
+    assert result[0]["mapping_unverified_count"] == 1
+    assert result[0]["reason_code"] == "nas_mapping_unverified"
 
 
 def test_schedule_fixture_provider_runs_real_download_and_archive_flow(
