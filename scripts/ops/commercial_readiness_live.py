@@ -268,16 +268,22 @@ def check_installer_dry_run(py: str) -> Check:
     return Check("installer_dry_run", passed, "pass" if passed else "fail", ",".join(steps), elapsed)
 
 
-def check_public_release_audit(py: str, *, strict: bool) -> Check:
-    source_root = public_source_root()
-    if not _is_git_worktree(source_root):
+def check_public_release_audit(
+    py: str,
+    *,
+    strict: bool,
+    audit_root: Path | None = None,
+    require_git: bool = True,
+) -> Check:
+    source_root = (audit_root or public_source_root()).resolve()
+    if require_git and not _is_git_worktree(source_root):
         return Check(
             "public_release_audit",
             False,
             "fail",
             f"source checkout is not a git worktree: {source_root}",
         )
-    cmd = [py, "scripts/public_release_audit.py", "--json"]
+    cmd = [py, "scripts/public_release_audit.py", "--json", "--root", str(source_root)]
     if strict:
         cmd.extend(["--public-isolation", "--strict"])
     ok, payload, raw, elapsed = _run_json(cmd, timeout=60, cwd=source_root)
@@ -662,7 +668,17 @@ def run_gate(*, json_out: Path, strict_public: bool, skip_backup: bool, skip_db:
         checks = [
             check_doctor(py),
             check_installer_dry_run(py),
-            check_public_release_audit(py, strict=True),
+            # A release bundle intentionally has no .git directory.  The
+            # normal live gate must audit the public git checkout, while the
+            # Seatbelt body must audit the exact release tree being executed.
+            # Use public_release_audit's bounded filesystem walker explicitly
+            # instead of applying the old git-worktree precondition here.
+            check_public_release_audit(
+                py,
+                strict=True,
+                audit_root=MAGI_ROOT,
+                require_git=False,
+            ),
         ]
         passed = sum(1 for check in checks if check.ok)
         payload = {

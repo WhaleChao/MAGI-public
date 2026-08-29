@@ -19,7 +19,11 @@ def test_commercial_schedule_fixture_branch_is_explicitly_host_independent(
     monkeypatch.setattr(
         commercial,
         "check_public_release_audit",
-        lambda _py, *, strict: checks[2] if strict else commercial.Check("unexpected", False, "fail"),
+        lambda _py, *, strict, audit_root=None, require_git=True: (
+            checks[2]
+            if strict and audit_root == commercial.MAGI_ROOT and require_git is False
+            else commercial.Check("unexpected", False, "fail")
+        ),
     )
 
     output = tmp_path / "runtime" / "commercial.json"
