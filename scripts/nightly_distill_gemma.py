@@ -201,6 +201,28 @@ def _write_rejected_deploy_record(
     PENDING_DEPLOY_PATH.write_text(json.dumps(record, ensure_ascii=False, indent=2), "utf-8")
 
 
+def _candidate_rejected_schedule_result(
+    *, version: str, validate_result: dict
+) -> dict:
+    """Return the strict non-success contract for a safely blocked candidate."""
+
+    return {
+        "success": False,
+        "status": "deferred",
+        "deferred": True,
+        "partial": False,
+        "retryable": False,
+        "reason": "candidate_rejected",
+        "review_required": True,
+        "candidate_rejected": True,
+        "deploy_allowed": False,
+        "version": str(version or ""),
+        "validation_pass": False,
+        "passed": int(validate_result.get("passed") or 0),
+        "total": int(validate_result.get("total") or 0),
+    }
+
+
 # ── E4B 日間視窗檢查 ──────────────────────────────────────────────────
 def _in_e4b_window() -> bool:
     """E4B 日間視窗（07:00-21:50）。訓練必須在此視窗。"""
@@ -728,7 +750,20 @@ def main() -> int:
                 reason="Validation gate failed; blocked from deploy.",
             )
             _notify(f"Gemma 蒸餾：{version} 驗證失敗，已封鎖部署並重建乾淨訓練集。")
-            return 1
+            print(
+                json.dumps(
+                    _candidate_rejected_schedule_result(
+                        version=version,
+                        validate_result=validate_result,
+                    ),
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            # EX_TEMPFAIL is consumed by the strict structured deferral
+            # contract.  This remains non-success and visible for review, but
+            # is not an infrastructure execution failure and is not retried.
+            return 75
 
         if merged_path and Path(merged_path).exists():
             pending = {

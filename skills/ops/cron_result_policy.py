@@ -58,6 +58,7 @@ _NO_ACTION_RESPONSE_RE = re.compile(
 )
 _DEFERRED_STATUSES = {"deferred"}
 _TERMINAL_SCHEDULE_DEFER_REASONS = {
+    "candidate_rejected",
     "large_files_waiting_for_offpeak_window",
     "repair_budget_reserved",
     "resource_guard_skipped",
@@ -148,6 +149,47 @@ def terminal_schedule_deferral_reason(stdout: str, error: str = "") -> str:
         or "background_heavy_authorization_budget_exhausted" in normalized_error
     ):
         return "nim_daily_budget_exhausted"
+    return ""
+
+
+def legacy_candidate_rejection_reason(
+    job_id: str,
+    stdout: str = "",
+    stderr: str = "",
+    error: str = "",
+) -> str:
+    """Recognize one pre-contract Gemma quality rejection, fail-closed.
+
+    Older ``nightly_distill_gemma.py`` releases returned rc=1 after a trained
+    candidate failed the deployment quality gate.  The candidate was safely
+    blocked, but the generic cron contract could only record an execution
+    failure.  Limit the migration to the exact distillation owner and require
+    either an explicit gate marker or multiple independent output-quality
+    rejection markers.  Generic training failures and arbitrary rc=1 jobs do
+    not qualify.
+    """
+
+    if str(job_id or "").strip() != "job_distill_train_gemma":
+        return ""
+    text = "\n".join(
+        value for value in (stdout, stderr, error) if str(value or "").strip()
+    ).lower()
+    explicit_gate_markers = (
+        "validation gate failed",
+        "candidate_rejected",
+        "candidate rejected",
+        "blocked from deploy",
+        "deploy_allowed=false",
+    )
+    quality_markers = (
+        "channel_marker_leak",
+        "insufficient_traditional_chinese",
+        "too_much_english",
+    )
+    if any(marker in text for marker in explicit_gate_markers):
+        return "candidate_rejected"
+    if sum(marker in text for marker in quality_markers) >= 2:
+        return "candidate_rejected"
     return ""
 
 

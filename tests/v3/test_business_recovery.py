@@ -7,7 +7,10 @@ from pathlib import Path
 from magi_v3.business_recovery import audit_recovery_catalog, decide_recovery
 from skills.ops.cron_command_identity import command_definition_sha256
 from skills.ops import cron_scheduler as scheduler_module
-from skills.ops.cron_result_policy import terminal_schedule_deferral_reason
+from skills.ops.cron_result_policy import (
+    legacy_candidate_rejection_reason,
+    terminal_schedule_deferral_reason,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +21,7 @@ def test_only_expected_schedule_waits_are_terminal_deferrals() -> None:
         "large_files_waiting_for_offpeak_window",
         "regex_budget_exhausted",
         "repair_budget_reserved",
+        "candidate_rejected",
     ):
         payload = (
             '{"success":false,"status":"deferred","deferred":true,'
@@ -33,6 +37,21 @@ def test_only_expected_schedule_waits_are_terminal_deferrals() -> None:
             "}"
         )
         assert terminal_schedule_deferral_reason(payload) == ""
+
+
+def test_legacy_candidate_rejection_is_exact_job_and_strong_evidence_only() -> None:
+    quality_tail = (
+        "channel_marker_leak insufficient_traditional_chinese too_much_english"
+    )
+    assert legacy_candidate_rejection_reason(
+        "job_distill_train_gemma", stderr=quality_tail
+    ) == "candidate_rejected"
+    assert legacy_candidate_rejection_reason(
+        "job_other", stderr=quality_tail
+    ) == ""
+    assert legacy_candidate_rejection_reason(
+        "job_distill_train_gemma", stderr="training process exited unexpectedly"
+    ) == ""
 
 
 def test_transient_business_failure_is_bounded_retry() -> None:
@@ -373,6 +392,13 @@ def test_startup_reconciles_only_strict_terminal_schedule_deferral(
             "desc": "legacy quota wait",
             "enabled": True,
         },
+        {
+            "id": "job_distill_train_gemma",
+            "cron": "* * * * *",
+            "command": "python3 scripts/nightly_distill_gemma.py",
+            "desc": "candidate review",
+            "enabled": True,
+        },
     ]
     jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
     state_path.write_text(
@@ -416,6 +442,19 @@ def test_startup_reconciles_only_strict_terminal_schedule_deferral(
                     "last_error": "本輪已保存進度",
                     "v3_retry": {"status": "exhausted"},
                 },
+                "job_distill_train_gemma": {
+                    "last_status": "failed",
+                    "last_success": False,
+                    "last_returncode": 1,
+                    "last_timed_out": False,
+                    "last_stdout_tail": "",
+                    "last_stderr_tail": (
+                        "channel_marker_leak insufficient_traditional_chinese "
+                        "too_much_english"
+                    ),
+                    "last_error": "quality output tail",
+                    "v3_retry": None,
+                },
             }
         ),
         encoding="utf-8",
@@ -428,6 +467,7 @@ def test_startup_reconciles_only_strict_terminal_schedule_deferral(
     assert scheduler.reconcile_terminal_schedule_deferrals() == [
         "job_expected_wait",
         "job_legacy_nim_budget",
+        "job_distill_train_gemma",
     ]
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["job_expected_wait"]["last_status"] == "deferred"
@@ -437,6 +477,10 @@ def test_startup_reconciles_only_strict_terminal_schedule_deferral(
     assert state["job_legacy_nim_budget"]["last_error"] == (
         "nim_daily_budget_exhausted"
     )
+    assert state["job_distill_train_gemma"]["last_status"] == "deferred"
+    assert state["job_distill_train_gemma"]["last_error"] == "candidate_rejected"
+    assert state["job_distill_train_gemma"]["last_returncode"] == 1
+    assert state["job_distill_train_gemma"]["last_review_required"] is True
 
 
 def test_retry_exhaustion_preserves_one_occurrence_receipt(

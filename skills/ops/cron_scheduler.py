@@ -26,7 +26,14 @@ from skills.ops.cron_command_identity import (
     CronCommandIdentityError,
     command_definition_sha256,
 )
-from skills.ops.cron_result_policy import terminal_schedule_deferral_reason
+from skills.ops.cron_result_policy import (
+    legacy_candidate_rejection_reason,
+    terminal_schedule_deferral_reason,
+)
+from magi_v3.cron_policy import (
+    DURABLE_BACKLOG_COALESCING_JOB_IDS,
+    DEFAULT_MAX_PENDING_OCCURRENCES_PER_JOB,
+)
 
 # === R3: runtime_dir 接入 ===
 try:
@@ -935,6 +942,14 @@ class CronScheduler:
             "last_stderr_tail": _tail_text(stderr_tail, 1200),
             "last_status": normalized_status,
             "v3_pending_occurrence": None,
+            "last_review_required": bool(
+                normalized_status == "deferred"
+                and str(error or "").strip().lower() == "candidate_rejected"
+            ),
+            "last_candidate_rejected": bool(
+                normalized_status == "deferred"
+                and str(error or "").strip().lower() == "candidate_rejected"
+            ),
         }
         if success:
             recovery_receipt = current_job.get("v3_retry")
@@ -1171,19 +1186,26 @@ class CronScheduler:
                 )
             except (TypeError, ValueError):
                 continue
-            if returncode not in {0, 75}:
-                continue
-            reason = terminal_schedule_deferral_reason(
-                str(row.get("last_stdout_tail") or ""),
-                "\n".join(
-                    value
-                    for value in (
-                        str(row.get("last_stderr_tail") or "").strip(),
-                        str(row.get("last_error") or "").strip(),
-                    )
-                    if value
-                ),
+            stdout_tail = str(row.get("last_stdout_tail") or "")
+            stderr_tail = str(row.get("last_stderr_tail") or "").strip()
+            last_error = str(row.get("last_error") or "").strip()
+            combined_error = "\n".join(
+                value for value in (stderr_tail, last_error) if value
             )
+            reason = ""
+            if returncode in {0, 75}:
+                reason = terminal_schedule_deferral_reason(
+                    stdout_tail, combined_error
+                )
+            elif returncode == 1:
+                reason = legacy_candidate_rejection_reason(
+                    job_id,
+                    stdout_tail,
+                    stderr_tail,
+                    last_error,
+                )
+            else:
+                continue
             if not reason:
                 continue
             payload = {
@@ -1192,7 +1214,11 @@ class CronScheduler:
                 "last_error": reason,
                 "v3_retry": None,
                 "last_terminal_deferral_reconciled_at": current.isoformat(),
+                "last_review_required": reason == "candidate_rejected",
+                "last_candidate_rejected": reason == "candidate_rejected",
             }
+            if reason == "candidate_rejected":
+                payload["last_quality_gate_reconciled_at"] = current.isoformat()
             job.update(payload)
             if _update_cron_state(job_id, payload):
                 reconciled.append(job_id)
