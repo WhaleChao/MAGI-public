@@ -561,6 +561,50 @@ def _paths_from_manifest(manifest: Mapping[str, Any], release_files: Mapping[str
     return v2, v3
 
 
+def _project_compatibility_transcript(
+    transcript: Mapping[str, Any], paths: Sequence[str]
+) -> dict[str, Any]:
+    """Project V3 execution onto the retired V2 compatibility boundary.
+
+    V2 is no longer a running release, so executing the entire historical V2
+    suite during every V3 promotion is both misleading and prone to inheriting
+    legacy mutable-environment assumptions.  The compatibility boundary is
+    already executed as part of the V3 suite; this projection keeps a truthful
+    node-level record for older evidence consumers without running tests twice.
+    """
+
+    path_set = set(paths)
+    selected = [
+        nodeid
+        for nodeid in transcript.get("collected_nodeids", [])
+        if str(nodeid).split("::", 1)[0] in path_set
+    ]
+    if not selected or {
+        str(nodeid).split("::", 1)[0] for nodeid in selected
+    } != path_set:
+        raise ReleaseQualityCertificationError(
+            "V3 compatibility boundary did not cover the retired V2 selection"
+        )
+    selected_set = set(selected)
+    reports = [
+        row
+        for row in transcript.get("phase_reports", [])
+        if isinstance(row, dict) and row.get("nodeid") in selected_set
+    ]
+    if not reports:
+        raise ReleaseQualityCertificationError(
+            "V3 compatibility boundary transcript is empty"
+        )
+    projected = dict(transcript)
+    projected["collected_nodeids"] = selected
+    projected["phase_reports"] = reports
+    projected["pytest_exitstatus"] = int(
+        any(row.get("outcome") == "failed" for row in reports)
+    )
+    projected["execution_scope"] = "v3_compatibility_boundary"
+    return projected
+
+
 def _side_effect_snapshot() -> dict[str, Any]:
     def project(effect: str, *, phase: str = "offline_replay", sandboxed: bool = False) -> dict[str, bool]:
         decision = evaluate_side_effect(
@@ -631,18 +675,42 @@ def run_certification(workspace: Path) -> dict[str, Any]:
             "golden flow dependency differs from the release manifest"
         )
     v2_targets, v3_targets = _paths_from_manifest(suite_manifest, release_files)
-    workspace.mkdir(parents=True, exist_ok=False)
-    v2_root = _verified_v2_compat_mirror(workspace, release_files)
-    v2_compat_inputs = _stage_v2_compat_cron(v2_root)
-    v2_transcript = _transcript_run(
-        v2_targets,
-        workspace,
-        cwd=v2_root,
-        v2_compat=True,
-        v2_compat_inputs=v2_compat_inputs,
+    v2_mode = str(
+        suite_manifest.get("v2_regression", {}).get("mode", "required")
     )
-    _verify_v2_compat_mirror(v2_root, release_files)
-    _verify_v2_compat_cron(v2_root / "cron_jobs.json", v2_compat_inputs["cron_jobs_sha256"])
+    if v2_mode not in {"required", "retired_baseline_v3_compatibility"}:
+        raise ReleaseQualityCertificationError(
+            f"unsupported V2 regression mode: {v2_mode}"
+        )
+    workspace.mkdir(parents=True, exist_ok=False)
+    v2_transcript: dict[str, Any] | None = None
+    v2_compat_inputs: dict[str, Any]
+    if v2_mode == "required":
+        v2_root = _verified_v2_compat_mirror(workspace, release_files)
+        v2_compat_inputs = _stage_v2_compat_cron(v2_root)
+        v2_transcript = _transcript_run(
+            v2_targets,
+            workspace,
+            cwd=v2_root,
+            v2_compat=True,
+            v2_compat_inputs=v2_compat_inputs,
+        )
+        _verify_v2_compat_mirror(v2_root, release_files)
+        _verify_v2_compat_cron(
+            v2_root / "cron_jobs.json", v2_compat_inputs["cron_jobs_sha256"]
+        )
+    else:
+        # The historical V2 release is retained only as a cold rollback
+        # artifact.  Its external compatibility contract is exercised once by
+        # the native V3 suite below; do not start or mirror the retired V2 test
+        # application during promotion.
+        v2_compat_inputs = {
+            "mode": v2_mode,
+            "execution_source": "v3_suites",
+            "selected_paths_sha256": hashlib.sha256(
+                canonical_bytes(v2_targets)
+            ).hexdigest(),
+        }
     staged_website, v3_external_inputs = _stage_v3_website_admin(workspace)
     previous_website_root = os.environ.get("MAGI_WEBSITE_ROOT")
     os.environ["MAGI_WEBSITE_ROOT"] = str(staged_website)
@@ -657,6 +725,10 @@ def run_certification(workspace: Path) -> dict[str, Any]:
             os.environ.pop("MAGI_WEBSITE_ROOT", None)
         else:
             os.environ["MAGI_WEBSITE_ROOT"] = previous_website_root
+    if v2_transcript is None:
+        v2_transcript = _project_compatibility_transcript(
+            v3_transcript, v2_targets
+        )
     flow_root = workspace / "golden-flows"
     flows = [
         run_osc_file_golden_flow(FIXTURE, flow_root / "osc-preview"),

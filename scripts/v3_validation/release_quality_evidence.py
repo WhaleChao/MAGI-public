@@ -300,6 +300,20 @@ def summarize_report(
     v3_transcript = runs["v3_suites"]
     if not isinstance(v2_transcript, dict) or not isinstance(v3_transcript, dict):
         raise ReleaseQualityEvidenceError("release quality pytest transcript is invalid")
+    v2_definition = manifest.get("v2_regression")
+    if not isinstance(v2_definition, dict):
+        raise ReleaseQualityEvidenceError("V2 regression definition is invalid")
+    v2_mode = str(v2_definition.get("mode", "required"))
+    if v2_mode not in {"required", "retired_baseline_v3_compatibility"}:
+        raise ReleaseQualityEvidenceError(f"unsupported V2 regression mode: {v2_mode}")
+    if (
+        v2_mode == "retired_baseline_v3_compatibility"
+        and v2_transcript.get("execution_scope")
+        != "v3_compatibility_boundary"
+    ):
+        raise ReleaseQualityEvidenceError(
+            "retired V2 regression is not projected from the V3 compatibility boundary"
+        )
     v2_final = _final_outcomes(
         v2_transcript, python_runtime_sha256=python_runtime_sha256
     )
@@ -336,12 +350,22 @@ def summarize_report(
         raise ReleaseQualityEvidenceError("quality/golden manifest groups are invalid")
     if tuple(manifest.get("golden_flow_ids", ())) != EXPECTED_FLOW_IDS:
         raise ReleaseQualityEvidenceError("golden flow manifest IDs are invalid")
+    def evaluate_declared_paths(paths: list[str], description: str) -> dict[str, int | bool]:
+        path_set = set(paths)
+        if path_set <= set(v2_paths):
+            return _evaluate_selection(v2_final, paths, description)
+        if path_set <= set(v3_paths):
+            return _evaluate_selection(v3_final, paths, description)
+        raise ReleaseQualityEvidenceError(
+            f"{description} paths are not covered by either release transcript"
+        )
+
     quality_results = {
-        name: _evaluate_selection(v2_final, list(quality_manifest[name]), f"quality {name}")
+        name: evaluate_declared_paths(list(quality_manifest[name]), f"quality {name}")
         for name in EXPECTED_QUALITY_GROUPS
     }
     golden_results = {
-        name: _evaluate_selection(v2_final, list(golden_manifest[name]), f"golden {name}")
+        name: evaluate_declared_paths(list(golden_manifest[name]), f"golden {name}")
         for name in EXPECTED_GOLDEN_SETS
     }
     flows = report.get("golden_flows")
@@ -390,6 +414,7 @@ def summarize_report(
             "release_venv_verified": True,
             "passed": v2["passed"],
             "failed": int(v2["failed"]) + int(v2["skipped"]),
+            "execution_mode": v2_mode,
         },
         "v3_unit_contract_integration_e2e_passed": {
             "failed": sum(

@@ -354,6 +354,46 @@ def test_v2_compat_environment_removes_sealed_release_bindings(
     assert environment["MAGI_V3_PYTHON_RUNTIME"] == str(Path(sys.executable).resolve())
 
 
+def test_retired_v2_baseline_projects_only_v3_compatibility_nodes() -> None:
+    transcript_nodes = [
+        "tests/v3/test_compat_gateway.py::test_gateway",
+        "tests/v3/test_core_health.py::test_health",
+    ]
+    transcript = {
+        "schema_version": 1,
+        "pytest_exitstatus": 0,
+        "python_runtime_sha256": "a" * 64,
+        "python_runtime_realpath_sha256": "a" * 64,
+        "collected_nodeids": transcript_nodes,
+        "phase_reports": [
+            {
+                "nodeid": nodeid,
+                "when": when,
+                "outcome": "passed",
+                "wasxfail": False,
+                "longrepr_sha256": "b" * 64,
+            }
+            for nodeid in transcript_nodes
+            for when in ("setup", "call", "teardown")
+        ],
+    }
+
+    projected = certification._project_compatibility_transcript(
+        transcript,
+        ["tests/v3/test_compat_gateway.py"],
+    )
+
+    assert projected["execution_scope"] == "v3_compatibility_boundary"
+    assert projected["pytest_exitstatus"] == 0
+    assert projected["collected_nodeids"] == [
+        "tests/v3/test_compat_gateway.py::test_gateway"
+    ]
+    assert all(
+        row["nodeid"] == "tests/v3/test_compat_gateway.py::test_gateway"
+        for row in projected["phase_reports"]
+    )
+
+
 def test_v2_compat_stages_complete_hash_bound_cron_without_leaking_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

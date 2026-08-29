@@ -810,7 +810,7 @@ def _passing_release_quality_certification(
 
     def transcript(paths: list[str]) -> dict[str, object]:
         nodeids = [f"{path}::test_release_quality_fixture" for path in paths]
-        return {
+        result: dict[str, object] = {
             "schema_version": 1,
             "pytest_exitstatus": 0,
             "python_runtime_sha256": runtime_sha,
@@ -828,6 +828,9 @@ def _passing_release_quality_certification(
                 for when in ("setup", "call", "teardown")
             ],
         }
+        if suites["v2_regression"].get("mode") == "retired_baseline_v3_compatibility":
+            result["execution_scope"] = "v3_compatibility_boundary"
+        return result
 
     def flow(flow_id: str, ordinal: int) -> dict[str, object]:
         payload: dict[str, object] = {
