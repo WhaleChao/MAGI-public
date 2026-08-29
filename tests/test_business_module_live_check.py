@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import plistlib
 from datetime import datetime
 from pathlib import Path
@@ -373,6 +374,45 @@ def test_file_review_worker_failure_snapshot_exposes_only_reconciliation_aggrega
     assert "private-case" not in serialized
     assert "/private/review.pdf" not in serialized
     assert "secret" not in serialized
+
+
+def test_file_review_active_cycle_without_semantics_is_waiting_not_attention(
+    tmp_path, monkeypatch
+):
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "file_review_auto_state.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-08-29T19:13:30",
+                "phase": "running_scheduled_check",
+                "pid": os.getpid(),
+                "result": {"ok": True, "reason": "controlled_handoff"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(readiness_snapshot, "_operations", lambda _exec_fn: {})
+    monkeypatch.setattr(readiness_snapshot, "_latest_file_review_job", lambda *_args: {})
+    monkeypatch.setattr(
+        readiness_snapshot, "_scheduled_file_review_download_enabled", lambda _root: False
+    )
+
+    snapshot = readiness_snapshot.build_snapshot(
+        root=tmp_path,
+        env={
+            "MAGI_MUTABLE_STATIC_DIR": str(static),
+            "MAGI_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "MAGI_AGENT_DIR": str(tmp_path / "agent"),
+            "MAGI_FILE_REVIEW_UNATTENDED_MODE": "1",
+        },
+        now=datetime(2026, 8, 29, 19, 13, 35),
+    )
+
+    item = snapshot["items"]["閱卷下載"]
+    assert item["state"] == "waiting"
+    assert item["label"] == "法院狀態更新中"
+    assert item["scan_phase"] == "running_scheduled_check"
 
 
 def test_file_review_failed_job_snapshot_uses_safe_job_reason(tmp_path, monkeypatch):

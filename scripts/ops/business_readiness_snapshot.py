@@ -33,6 +33,14 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return int(pid) > 0
+
+
 def _mutable_static_dir(root: Path, env: dict[str, str] | None = None) -> Path:
     source = os.environ if env is None else env
     return Path(source.get("MAGI_MUTABLE_STATIC_DIR", "").strip() or root / "static").expanduser()
@@ -671,6 +679,22 @@ def build_snapshot(
         review_interval_sec = 600
     if unattended_mode:
         review_interval_sec = min(review_interval_sec, 600)
+    review_phase = str(review.get("phase") or "").strip().lower()
+    review_pid = int(review.get("pid") or 0)
+    review_updated_at = _parse_time(review.get("updated_at"))
+    review_cycle_active = bool(
+        review_phase
+        in {
+            "cycle_started",
+            "draining_payment_proof_queue",
+            "running_check_emails",
+            "running_scheduled_check",
+        }
+        and review_pid > 0
+        and _pid_alive(review_pid)
+        and review_updated_at is not None
+        and 0 <= (now - review_updated_at).total_seconds() <= max(300, review_interval_sec * 2)
+    )
     scheduled_download = _scheduled_file_review_download_enabled(root)
     review_job_status = str(review_job.get("status") or "").lower()
     review_job_failed = bool(review_job) and (
@@ -714,6 +738,22 @@ def build_snapshot(
             "auto_download": auto_download,
             "ready_items": review_ready_items,
             **review_failure_fields,
+        }
+    elif (
+        review_cycle_active
+        and str(review_parsed.get("portal_status_semantics") or "")
+        != "ola-current-state-v2"
+    ):
+        # A controlled release handoff can leave a terminal observation in
+        # ``result`` while the replacement worker is already producing its
+        # first authoritative portal snapshot.  That bounded, live cycle is
+        # an operational wait, not evidence that portal semantics regressed.
+        review_item = {
+            "state": "waiting",
+            "label": "法院狀態更新中",
+            "auto_download": auto_download,
+            "scan_phase": review_phase,
+            "ready_items": review_ready_items,
         }
     elif review_result and str(review_parsed.get("portal_status_semantics") or "") != "ola-current-state-v2":
         review_item = {"state": "attention", "label": "法院狀態判讀未驗證", "auto_download": auto_download, "ready_items": review_ready_items}
