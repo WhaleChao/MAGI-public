@@ -3,7 +3,7 @@
 This branch is a privacy-isolated root snapshot of the public MAGI contracts,
 agent framework, release/validation framework, tests, examples, and
 de-identified architecture documentation corresponding to private source
-commit `f88f774214d13a56bc8119458d0a6d3fa0c7f33b`.
+commit `ab398a44c99b9e83e6ba5c989312df29cf914006`.
 
 It intentionally excludes production runtime state, case records, credentials,
 browser profiles, real filesystem paths, private legal-service connectors, and
@@ -18,3 +18,6 @@ python3 scripts/public_release_audit.py --public-isolation --strict
 
 The public snapshot is documentation and source evidence. It is not the
 canonical production bundle and cannot be used as proof of live availability.
+
+The de-identified maintenance record for this promotion is
+[RC643_R75_MAINTENANCE.md](RC643_R75_MAINTENANCE.md).
