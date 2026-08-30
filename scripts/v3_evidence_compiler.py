@@ -46,6 +46,11 @@ from scripts.v3_campaign.runner import (
     _validate_route_certification_evidence,
     verify_release_bundle,
 )
+from scripts.v3_deploy_prepare import (
+    DeployPrepareBlocked,
+    _validate_production_release_root,
+    _validate_release as _validate_deploy_release,
+)
 from scripts.v3_validation.release_quality_evidence import (
     EXPECTED_GOLDEN_SETS,
     EXPECTED_QUALITY_GROUPS,
@@ -2327,6 +2332,7 @@ def compile_deploy_evidence(
         marker.get("status") != "prepared_not_installed"
         or marker.get("ready_to_install") is not True
         or marker.get("mutation_performed") is not False
+        or marker.get("deployment_mode") != "production"
         or marker.get("release_id") != bundle.release_id
         or marker.get("release_manifest_sha256") != bundle.manifest_sha256
     ):
@@ -2340,6 +2346,7 @@ def compile_deploy_evidence(
     if (
         manifest.get("status") != "prepared_not_installed"
         or manifest.get("mutation_performed") is not False
+        or manifest.get("deployment_mode") != "production"
         or manifest.get("release_id") != bundle.release_id
         or manifest.get("release_manifest_sha256") != bundle.manifest_sha256
     ):
@@ -2350,8 +2357,25 @@ def compile_deploy_evidence(
         )
     except OSError as exc:
         raise EvidenceCompileError("deploy manifest release path is missing") from exc
-    if bound_release_manifest != (release_root.resolve(strict=True) / "release-manifest.json"):
-        raise EvidenceCompileError("deploy manifest points at another release bundle")
+    try:
+        candidate_root, candidate_identity = _validate_deploy_release(release_root)
+        installed_root, installed_identity = _validate_production_release_root(
+            candidate_root,
+            candidate_identity,
+            bound_release_manifest.parent,
+        )
+    except (OSError, DeployPrepareBlocked) as exc:
+        raise EvidenceCompileError(
+            f"deploy manifest canonical release binding is invalid: {exc}"
+        ) from exc
+    if (
+        bound_release_manifest != installed_identity.manifest_path
+        or installed_identity.release_id != bundle.release_id
+        or installed_identity.manifest_sha256 != bundle.manifest_sha256
+    ):
+        raise EvidenceCompileError(
+            "deploy manifest does not bind the immutable candidate-equivalent installed release"
+        )
     artifact_rows = manifest.get("artifacts")
     roles = manifest.get("roles")
     if not isinstance(artifact_rows, list) or not isinstance(roles, list):
@@ -2385,6 +2409,14 @@ def compile_deploy_evidence(
         SourceArtifact("upstream_deploy_manifest", manifest_path),
         SourceArtifact("upstream_release_marker", release_root / "RELEASE_COMPLETE.json"),
         SourceArtifact("upstream_release_manifest", release_root / "release-manifest.json"),
+        SourceArtifact(
+            "upstream_installed_release_marker",
+            installed_root / "RELEASE_COMPLETE.json",
+        ),
+        SourceArtifact(
+            "upstream_installed_release_manifest",
+            installed_root / "release-manifest.json",
+        ),
         SourceArtifact("upstream_campaign_report", campaign_paths[0]),
         *[
             SourceArtifact("upstream_launchagent", artifact_paths[path], "application/x-plist")

@@ -47,6 +47,7 @@ from scripts.v3_validation.resource_performance_evidence import (
     ResourcePerformanceEvidenceError,
     summarize_report as summarize_resource_performance_report,
 )
+from scripts.v3_validation.route_reviews import ARCHIVED_TERMINAL_GUARD_ROUTE_METHODS
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -1122,6 +1123,8 @@ def _recompute_deploy_metrics(
         "upstream_deploy_manifest",
         "upstream_release_marker",
         "upstream_release_manifest",
+        "upstream_installed_release_marker",
+        "upstream_installed_release_manifest",
         "upstream_campaign_report",
         "upstream_launchagent",
     }
@@ -1139,6 +1142,14 @@ def _recompute_deploy_metrics(
     deploy_marker = _json_artifact(deploy_marker_artifact)
     deploy_manifest_artifact = _one(by_role, "upstream_deploy_manifest")
     deploy = _json_artifact(deploy_manifest_artifact)
+    installed_release_marker_artifact = _one(
+        by_role, "upstream_installed_release_marker"
+    )
+    installed_release_manifest_artifact = _one(
+        by_role, "upstream_installed_release_manifest"
+    )
+    installed_release_marker = _json_artifact(installed_release_marker_artifact)
+    installed_release_manifest = _json_artifact(installed_release_manifest_artifact)
     _exact_nonnegative_int(
         deploy_marker.get("schema_version"), 1, "deploy marker schema_version"
     )
@@ -1147,15 +1158,22 @@ def _recompute_deploy_metrics(
         deploy_marker.get("status") != "prepared_not_installed"
         or deploy_marker.get("ready_to_install") is not True
         or deploy_marker.get("mutation_performed") is not False
+        or deploy_marker.get("deployment_mode") != "production"
         or deploy_marker.get("manifest") != "deploy-manifest.json"
         or deploy_marker.get("manifest_sha256") != deploy_manifest_artifact.sha256
         or deploy_marker.get("release_id") != release.get("release_id")
         or deploy_marker.get("release_manifest_sha256") != release_artifact.sha256
         or deploy.get("status") != "prepared_not_installed"
         or deploy.get("mutation_performed") is not False
+        or deploy.get("deployment_mode") != "production"
         or deploy.get("release_id") != release.get("release_id")
         or deploy.get("release_manifest_sha256") != release_artifact.sha256
         or campaign.get("release_id") != deploy.get("release_id")
+        or installed_release_manifest_artifact.sha256 != release_artifact.sha256
+        or installed_release_manifest != release
+        or installed_release_marker_artifact.sha256
+        != _one(by_role, "upstream_release_marker").sha256
+        or installed_release_marker != marker
     ):
         raise ValueError("deploy marker/manifest/release/campaign binding failed")
     roles = deploy.get("roles")
@@ -1550,7 +1568,8 @@ def _recompute_route_metrics(
             "fully_replayed_routes": 347,
             "remaining_routes": 0,
             "pinned_route_methods": 431,
-            "representative_success_path_passed": 431,
+            "representative_success_path_passed": 429,
+            "terminal_guard_only": 2,
             "remaining_route_methods": 0,
         }
         if (
@@ -1612,6 +1631,10 @@ def _recompute_route_metrics(
         if not isinstance(dispositions, list) or len(dispositions) != len(route_keys):
             raise ValueError("route certification dispositions are incomplete")
         disposition_keys: set[tuple[str, str, str, str]] = set()
+        archived_guard_keys = {
+            (item.service, item.rule, item.method, item.endpoint)
+            for item in ARCHIVED_TERMINAL_GUARD_ROUTE_METHODS
+        }
         for disposition in dispositions:
             if not isinstance(disposition, dict):
                 raise ValueError("route certification disposition is invalid")
@@ -1621,12 +1644,21 @@ def _recompute_route_metrics(
                 str(disposition.get("method") or "").upper(),
                 str(disposition.get("endpoint") or ""),
             )
+            success_path = (
+                disposition.get("disposition") == "actual_handler_passed"
+                and disposition.get("representative_success_path_passed") is True
+            )
+            terminal_guard = (
+                key in archived_guard_keys
+                and disposition.get("disposition") == "validation_guard_only"
+                and disposition.get("branch_class") == "validation_guard_only"
+                and disposition.get("representative_success_path_passed") is False
+            )
             if (
                 key in disposition_keys
-                or disposition.get("disposition") != "actual_handler_passed"
+                or not (success_path or terminal_guard)
                 or disposition.get("reviewed") is not True
                 or disposition.get("handler_dispatch_passed") is not True
-                or disposition.get("representative_success_path_passed") is not True
                 or not SHA256_RE.fullmatch(str(disposition.get("evidence_sha256") or ""))
             ):
                 raise ValueError("validation guard cannot certify a route method")

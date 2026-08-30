@@ -418,6 +418,25 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
         "_verify_campaign",
         lambda *_args: (campaign, [], [campaign_path]),
     )
+    monkeypatch.setattr(
+        compiler,
+        "_validate_deploy_release",
+        lambda *_args: (release, object()),
+    )
+    installed_identity = type(
+        "InstalledIdentity",
+        (),
+        {
+            "release_id": bundle.release_id,
+            "manifest_sha256": bundle.manifest_sha256,
+            "manifest_path": release / "release-manifest.json",
+        },
+    )()
+    monkeypatch.setattr(
+        compiler,
+        "_validate_production_release_root",
+        lambda *_args: (release, installed_identity),
+    )
     deploy = tmp_path / "deploy"
     artifact_rows = []
     roles = []
@@ -441,6 +460,7 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             "schema_version": 1,
             "status": "prepared_not_installed",
             "mutation_performed": False,
+            "deployment_mode": "production",
             "release_id": bundle.release_id,
             "release_manifest_sha256": bundle.manifest_sha256,
             "release_manifest": str(release / "release-manifest.json"),
@@ -457,6 +477,7 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             "status": "prepared_not_installed",
             "ready_to_install": True,
             "mutation_performed": False,
+            "deployment_mode": "production",
             "release_id": bundle.release_id,
             "release_manifest_sha256": bundle.manifest_sha256,
             "manifest": manifest_path.name,
@@ -493,6 +514,26 @@ def test_three_role_deploy_is_recomputed_from_plists_and_release_binding(
             continue
         path = output / artifact_row["path"]
         frozen_sources.append(_bound_file(artifact_row["role"], path, artifact_row["media_type"]))
+    installed_manifest_index = next(
+        index
+        for index, item in enumerate(frozen_sources)
+        if item.role == "upstream_installed_release_manifest"
+    )
+    installed_tampered = list(frozen_sources)
+    original_installed = installed_tampered[installed_manifest_index]
+    installed_bytes = original_installed.data + b"\n"
+    installed_tampered[installed_manifest_index] = BoundArtifact(
+        original_installed.role,
+        original_installed.media_type,
+        original_installed.path,
+        hashlib.sha256(installed_bytes).hexdigest(),
+        installed_bytes,
+    )
+    installed_by_role: dict[str, list[BoundArtifact]] = {}
+    for item in installed_tampered:
+        installed_by_role.setdefault(item.role, []).append(item)
+    with pytest.raises(ValueError, match="binding failed"):
+        _recompute_deploy_metrics(installed_by_role, context.as_dict())
     deploy_index = next(
         index for index, item in enumerate(frozen_sources) if item.role == "upstream_deploy_manifest"
     )
