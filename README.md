@@ -1,8 +1,12 @@
-# MAGI — Multi-Agent Governance Infrastructure
+# MAGI V3 — Multi-Agent Governance Infrastructure
 
 [繁體中文版](README.zh-TW.md)
 
-MAGI v2 is a locally-deployed AI operations platform built for a Taiwanese law firm. It runs entirely on a single Apple Silicon node, combining a Flask control plane, 60+ modular skill runners, a three-philosopher ensemble inference pipeline, a ReAct agentic tool-call engine, scheduled workers, on-device LLM inference, and deep legal workflow automation — all in one repository.
+MAGI V3 is a privacy-conscious, local-first AI operations platform. It combines durable scheduling, isolated workers, on-device LLM inference, document processing, and reusable legal-workflow architecture while keeping private case data and deployment secrets outside the public repository.
+
+**Current public release (2026-08-31):** MAGI RC643 / R75. Private immutable `hotfixN` suffixes do not change the public R75 label. V2 is retired and retained only as repository history; it is not an active runtime or compatibility target.
+
+> The reviewed public V3 snapshot is published on [`release/rc643-r75-public-20260830`](https://github.com/WhaleChao/MAGI-public/tree/release/rc643-r75-public-20260830). This public repository does not contain private connectors, case data, credentials, runtime state, or canonical production receipts.
 
 **macOS-primary.** Production runs on Apple Silicon via [oMLX](https://github.com/omlx/omlx) with a three-model day / night inference architecture. Windows / Linux via Ollama is also supported.
 
@@ -67,7 +71,7 @@ python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --jso
 
 ```bash
 # 1. Clone
-git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
+git clone --branch release/rc643-r75-public-20260830 https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
 # 2. Run the customer install wizard
 #    Omit --yes first if you want to preview the plan without changing anything.
@@ -104,7 +108,7 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 ## Current Public Status
 
-This branch is prepared for public release with private runtime material removed from git tracking. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, and operator deployment notes are ignored and should stay private.
+The current reviewed public source baseline is MAGI RC643 / R75 on `release/rc643-r75-public-20260830`. Private runtime material is removed from Git tracking. Local-only folders such as `.runtime/`, `.claude/`, `.claire/`, `runtime/supplement_cache/`, and operator deployment notes must stay private.
 
 Public readiness checks:
 
@@ -131,7 +135,7 @@ Before publishing or handing MAGI to another operator, treat these as go/no-go g
 Public self-install flow:
 
 ```bash
-git clone https://github.com/WhaleChao/MAGI-public.git
+git clone --branch release/rc643-r75-public-20260830 https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/public_release_audit.py --public-isolation --strict
@@ -620,7 +624,7 @@ Key environment variables (set in `.env`):
 ## Repository Layout
 
 ```
-MAGI_v2/
+MAGI-public/
 ├── daemon.py                   # Main process manager (KeepAlive, reaper, day/night switch)
 ├── api/
 │   ├── server.py               # Flask API (port 5002)

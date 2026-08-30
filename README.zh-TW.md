@@ -1,8 +1,12 @@
-# MAGI — 多代理治理基礎設施
+# MAGI V3 — 多代理治理基礎設施
 
 [English](README.md)
 
-MAGI v2 是一套部署於本地硬體的 AI 作業平台，專為台灣法律事務所的日常業務設計。全系統在單台 Apple Silicon 節點上執行，結合 Flask 控制平面、60+ 模組化技能、三哲人 ensemble 推理流程、ReAct Agentic 工具呼叫引擎、定時排程、本地 LLM 推理，以及深度法務工作流程自動化——全部整合於一個程式碼庫。
+MAGI V3 是重視隱私、本機優先的 AI 作業平台，整合持久化排程、隔離 worker、本機 LLM 推理、文件處理及可重用的法律工作流程架構；私有案件資料與部署機密不會進入公開儲存庫。
+
+**目前公開版本（2026-08-31）：** MAGI RC643／R75。私有不可變封裝的 `hotfixN` 後綴不改變公開 R75 版號。V2 已退役，只保留為儲存庫歷史，不再是現行 runtime 或相容性目標。
+
+> 經驗收的公開 V3 快照位於 [`release/rc643-r75-public-20260830`](https://github.com/WhaleChao/MAGI-public/tree/release/rc643-r75-public-20260830)。本公開庫不含私有 connector、案件資料、帳密、runtime state 或正式 production receipts。
 
 **macOS 原生。** 生產環境在 Apple Silicon 透過 [oMLX](https://github.com/omlx/omlx) 以三模型日夜輪換架構執行。Windows / Linux 透過 Ollama 亦可支援。
 
@@ -61,7 +65,7 @@ python3 scripts/packaging/runtime_bootstrap.py --dry-run --download-models --jso
 
 ```bash
 # 1. 複製專案
-git clone https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
+git clone --branch release/rc643-r75-public-20260830 https://github.com/WhaleChao/MAGI-public.git && cd MAGI-public
 
 # 2. 執行客戶安裝精靈
 #    如需先預演，先省略 --yes。
@@ -98,7 +102,7 @@ MAGI_ALLOW_CLOUD_MODELS=1 python daemon.py
 
 ## 目前公開狀態
 
-此分支已整理為可公開版本：私有 runtime、代理工作記錄、部署手札、OCR 暫存等資料不再納入 git 追蹤，並由 `.gitignore` 保護。`.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、`docs/deploy/` 應維持本機私有。
+目前經驗收的公開原始碼基準是 `release/rc643-r75-public-20260830` 上的 MAGI RC643／R75。私有 runtime、代理工作記錄、部署手札、OCR 暫存等資料不納入 Git；`.runtime/`、`.claude/`、`.claire/`、`runtime/supplement_cache/`、`docs/deploy/` 必須維持本機私有。
 
 公開前檢查：
 
@@ -123,7 +127,7 @@ python3 scripts/install_magi.py --dry-run --check-live
 外部客戶自行安裝流程：
 
 ```bash
-git clone https://github.com/WhaleChao/MAGI-public.git
+git clone --branch release/rc643-r75-public-20260830 https://github.com/WhaleChao/MAGI-public.git
 cd MAGI-public
 python3 scripts/customer_install_wizard.py --public --yes
 python3 scripts/public_release_audit.py --public-isolation --strict
@@ -591,7 +595,7 @@ NAS 狀態同時檢查 `/Volumes/` 與 `~/.magi_mounts/`（Tailscale fallback �
 ## 目錄結構
 
 ```
-MAGI_v2/
+MAGI-public/
 ├── daemon.py                   # 主程序管理（KeepAlive、reaper、日夜切換）
 ├── api/
 │   ├── server.py               # Flask API（port 5002）
