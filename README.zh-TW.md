@@ -4,15 +4,29 @@ MAGI V3 不是「聊天伺服器加上一堆腳本」，而是一套單一有效
 可驗證且可回滾的作業平台。它統合互動式網頁、排程、隔離工作程序、律師業務、
 文件與影音處理、儲存同步、本機模型、通知及自動復原。
 
-本私有倉庫就是原 MAGI V2 倉庫，已**原地更名為 MAGI-v3**；V2 的 commit、
-branch 與 tag 歷史全部保留。V3 已把舊版多常駐程序、來源樹直接執行、狀態與程式
-混放的結構，改為「不可變 release＋三個正式角色＋明確 owner＋有界 worker＋
-持久化狀態＋雜湊綁定升級」。
+本倉庫是經隱私隔離的 MAGI V3 公開來源快照，只發布可重用架構、契約、測試、
+範例與去識別文件。私有法律 connector、案件資料、帳密、工作站路徑、runtime
+狀態與正式 production receipts 均不公開。
 
 > Git 倉庫是工程來源，不是 LIVE runtime。密碼、Cookie、token、案件資料、
 > 資料庫、瀏覽器 profile、mutable queue 與正式收據都不得提交。
 
 English: [README.md](README.md)
+
+## 現行公開版本
+
+- **版本：** MAGI RC643／R75（2026-08-30）。
+- **公開發布契約：** [`PUBLIC_RELEASE.json`](PUBLIC_RELEASE.json)。
+- **去識別發布說明：**
+  [`RC643_R75_PUBLIC_RELEASE.md`](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md)。
+- **去識別維修紀錄：**
+  [`RC643_R75_MAINTENANCE.md`](docs/architecture/v3/RC643_R75_MAINTENANCE.md)。
+- **私有已驗證來源基準：**
+  `ab398a44c99b9e83e6ba5c989312df29cf914006`（僅公開 digest）。
+
+私有不可變封裝的 `hotfixN` 後綴不會改變公開 R75 版號。本公開倉庫也不能作為
+私有部署已在線的證明；production 身分仍須由該部署自己的 active marker 與簽章
+收據確認。
 
 ## 目錄
 
@@ -317,17 +331,13 @@ worker，孤兒必須沿真 worker ancestry 找 canonical MAGI owner，殭屍則
 
 ## 文件入口
 
-- [MAGI V3 維修百科全書 HTML](docs/MAGI_V3_維修百科全書_rc633.html)
-- [MAGI V3 維修百科全書 PDF](docs/MAGI_V3_維修百科全書_rc633.pdf)
-- [可維護 Markdown 原稿](docs/MAGI_V3_維修百科全書_rc633.md)
-- [逐檔／行號／symbol／SHA 原始碼索引](docs/MAGI_V3_原始碼索引_rc633.json)
-- [私版工程索引](docs/MAGI_V3_工程技術手冊_rc632_私版.md)
-- [公版技術手冊](docs/MAGI_V3_技術手冊_rc632_公版.md)
+- [RC643／R75 公開發布說明](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md)
+- [RC643／R75 去識別維修紀錄](docs/architecture/v3/RC643_R75_MAINTENANCE.md)
 - [V3 架構參考](docs/architecture/v3/MAGI_V3_ARCHITECTURE.md)
-- [通用自架部署](docs/SELFHOST_DEPLOYMENT.md)
+- [Agent Gateway](docs/architecture/v3/MAGI_AGENT_GATEWAY.md)
 
-HTML 百科也封裝在 `magi_v3/manual_assets/`，會在 MAGI 導覽列另開分頁。它具有目錄、
-全文搜尋、原始碼連結與日／夜切換，並沿用 MAGI 的本機主題偏好。
+完整私有維修百科與 machine-readable 私有原始碼索引不會複製到公開倉庫；上述兩份
+RC643／R75 文件就是經去識別的公開投影。
 
 ## 公私版邊界
 

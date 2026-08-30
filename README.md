@@ -5,16 +5,31 @@ local-first operations platform that coordinates interactive web services,
 durable schedules, isolated workers, legal-office workflows, document and media
 processing, storage synchronization, local models, and verifiable recovery.
 
-This private repository is the original MAGI V2 repository renamed in place to
-**MAGI-v3**. The V2 commit, branch, and tag history is preserved. V3 replaces the
-old many-daemon runtime with an immutable release, three production roles,
-explicit ownership, bounded workers, durable state, and hash-bound promotion.
+This repository is the privacy-isolated public MAGI V3 source snapshot. It
+publishes reusable architecture, contracts, tests, examples, and de-identified
+documentation. Private legal connectors, case data, credentials, workstation
+paths, runtime state, and canonical production receipts are excluded.
 
 > This Git repository is an engineering source snapshot, not the live runtime.
 > Credentials, cookies, case data, databases, browser profiles, mutable queues,
 > and canonical production receipts are deliberately excluded.
 
 Traditional Chinese: [README.zh-TW.md](README.zh-TW.md)
+
+## Current public release
+
+- **Release:** MAGI RC643 / R75 (2026-08-30).
+- **Release contract:** [`PUBLIC_RELEASE.json`](PUBLIC_RELEASE.json).
+- **De-identified release notes:**
+  [`RC643_R75_PUBLIC_RELEASE.md`](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md).
+- **Maintenance record:**
+  [`RC643_R75_MAINTENANCE.md`](docs/architecture/v3/RC643_R75_MAINTENANCE.md).
+- **Private verified source baseline:**
+  `ab398a44c99b9e83e6ba5c989312df29cf914006` (digest only).
+
+Private immutable `hotfixN` suffixes do not alter the public R75 label. This
+public repository is not evidence that a private deployment is live; production
+identity must be verified from its own active marker and signed receipts.
 
 ## Contents
 
@@ -364,19 +379,14 @@ linked below.
 
 ## Documentation
 
-- [Maintenance encyclopedia — self-contained HTML](docs/MAGI_V3_維修百科全書_rc641.html)
-- [Maintenance encyclopedia — PDF](docs/MAGI_V3_維修百科全書_rc641.pdf)
-- [Maintainable encyclopedia source — Markdown](docs/MAGI_V3_維修百科全書_rc641.md)
-- [Machine-readable source index](docs/MAGI_V3_原始碼索引_rc641.json)
-- [Private engineering index](docs/MAGI_V3_工程技術手冊_rc632_私版.md)
-- [Public technical manual](docs/MAGI_V3_技術手冊_rc632_公版.md)
+- [RC643/R75 public release](docs/architecture/v3/RC643_R75_PUBLIC_RELEASE.md)
+- [RC643/R75 de-identified maintenance record](docs/architecture/v3/RC643_R75_MAINTENANCE.md)
 - [Architecture reference](docs/architecture/v3/MAGI_V3_ARCHITECTURE.md)
-- [Self-host deployment](docs/SELFHOST_DEPLOYMENT.md)
+- [Agent Gateway](docs/architecture/v3/MAGI_AGENT_GATEWAY.md)
 
-The HTML encyclopedia is also packaged into each release under
-`magi_v3/manual_assets/` and exposed through authenticated MAGI navigation. It
-includes a generated table of contents, full-text search, source links, and a
-day/night theme using the same local preference as the MAGI UI.
+The complete private maintenance encyclopedia and machine-readable private
+source index are intentionally not copied into the public repository. The two
+RC643/R75 documents above are the de-identified public projection.
 
 ## Public/private repository boundary
 
